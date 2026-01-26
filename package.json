@@ -1,0 +1,31 @@
+{
+  "name": "mitto-web",
+  "version": "1.0.0",
+  "description": "JavaScript tests for Mitto web interface",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0"
+  },
+  "jest": {
+    "testEnvironment": "jsdom",
+    "roots": [
+      "<rootDir>/web/static"
+    ],
+    "testMatch": [
+      "**/*.test.js"
+    ],
+    "moduleFileExtensions": [
+      "js"
+    ],
+    "transform": {},
+    "verbose": true
+  }
+}
+

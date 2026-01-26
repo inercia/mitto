@@ -1,0 +1,135 @@
+# =============================================================================
+# Mitto Project .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Go Build Artifacts
+# -----------------------------------------------------------------------------
+# Binary (project-specific)
+/mitto
+
+# Compiled binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries and outputs
+*.test
+*.out
+*.prof
+
+# Go workspace files (Go 1.18+)
+go.work
+go.work.sum
+
+# Vendor directory (if vendoring)
+/vendor/
+
+# Build output directories
+/bin/
+/dist/
+
+# -----------------------------------------------------------------------------
+# Go Test and Coverage
+# -----------------------------------------------------------------------------
+coverage/
+*.cover
+*.coverage
+coverage.html
+coverage.xml
+coverage.txt
+
+# -----------------------------------------------------------------------------
+# Node.js / JavaScript
+# -----------------------------------------------------------------------------
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+
+# Jest cache and coverage
+.jest/
+jest-coverage/
+
+# -----------------------------------------------------------------------------
+# IDE and Editor Files
+# -----------------------------------------------------------------------------
+# Visual Studio Code
+.vscode/
+
+# JetBrains IDEs (GoLand, IntelliJ, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Vim/Neovim
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+Session.vim
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# -----------------------------------------------------------------------------
+# Operating System Files
+# -----------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+.directory
+
+# -----------------------------------------------------------------------------
+# Temporary and Generated Files
+# -----------------------------------------------------------------------------
+*.tmp
+*.temp
+*.log
+*.bak
+*.backup
+
+# Session data (user-specific)
+.mitto-sessions/
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+
+# Debug files
+debug
+*.debug
+
