@@ -1,0 +1,267 @@
+package session
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"sync"
+	"time"
+)
+
+// Recorder records events to a session store.
+type Recorder struct {
+	store     *Store
+	sessionID string
+	mu        sync.Mutex
+	started   bool
+}
+
+// NewRecorder creates a new session recorder.
+func NewRecorder(store *Store) *Recorder {
+	return &Recorder{
+		store:     store,
+		sessionID: generateSessionID(),
+	}
+}
+
+// generateSessionID generates a unique session ID using timestamp and random bytes.
+func generateSessionID() string {
+	timestamp := time.Now().Format("20060102-150405")
+	randomBytes := make([]byte, 4)
+	if _, err := rand.Read(randomBytes); err != nil {
+		// Fallback to just timestamp if random fails
+		return timestamp
+	}
+	return fmt.Sprintf("%s-%s", timestamp, hex.EncodeToString(randomBytes))
+}
+
+// NewRecorderWithID creates a new session recorder with a specific session ID.
+func NewRecorderWithID(store *Store, sessionID string) *Recorder {
+	return &Recorder{
+		store:     store,
+		sessionID: sessionID,
+	}
+}
+
+// SessionID returns the session ID.
+func (r *Recorder) SessionID() string {
+	return r.sessionID
+}
+
+// Start starts a new recording session.
+func (r *Recorder) Start(acpServer, workingDir string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.started {
+		return fmt.Errorf("session already started")
+	}
+
+	meta := Metadata{
+		SessionID:  r.sessionID,
+		ACPServer:  acpServer,
+		WorkingDir: workingDir,
+	}
+
+	if err := r.store.Create(meta); err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+
+	r.started = true
+
+	// Record session start event (call store directly to avoid deadlock)
+	return r.store.AppendEvent(r.sessionID, Event{
+		Type:      EventTypeSessionStart,
+		Timestamp: time.Now(),
+		Data: SessionStartData{
+			SessionID:  r.sessionID,
+			ACPServer:  acpServer,
+			WorkingDir: workingDir,
+		},
+	})
+}
+
+// Resume resumes recording to an existing session.
+// This is used when switching back to a previously created session.
+func (r *Recorder) Resume() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.started {
+		return fmt.Errorf("session already started")
+	}
+
+	// Verify the session exists
+	if !r.store.Exists(r.sessionID) {
+		return fmt.Errorf("session %s does not exist", r.sessionID)
+	}
+
+	r.started = true
+	return nil
+}
+
+// RecordUserPrompt records a user prompt event.
+func (r *Recorder) RecordUserPrompt(message string) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeUserPrompt,
+		Timestamp: time.Now(),
+		Data:      UserPromptData{Message: message},
+	})
+}
+
+// RecordAgentMessage records an agent message event.
+func (r *Recorder) RecordAgentMessage(text string) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeAgentMessage,
+		Timestamp: time.Now(),
+		Data:      AgentMessageData{Text: text},
+	})
+}
+
+// RecordAgentThought records an agent thought event.
+func (r *Recorder) RecordAgentThought(text string) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeAgentThought,
+		Timestamp: time.Now(),
+		Data:      AgentThoughtData{Text: text},
+	})
+}
+
+// RecordToolCall records a tool call event.
+func (r *Recorder) RecordToolCall(toolCallID, title, status, kind string, rawInput, rawOutput any) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeToolCall,
+		Timestamp: time.Now(),
+		Data: ToolCallData{
+			ToolCallID: toolCallID,
+			Title:      title,
+			Status:     status,
+			Kind:       kind,
+			RawInput:   rawInput,
+			RawOutput:  rawOutput,
+		},
+	})
+}
+
+// RecordToolCallUpdate records a tool call update event.
+func (r *Recorder) RecordToolCallUpdate(toolCallID string, status, title *string) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeToolCallUpdate,
+		Timestamp: time.Now(),
+		Data: ToolCallUpdateData{
+			ToolCallID: toolCallID,
+			Status:     status,
+			Title:      title,
+		},
+	})
+}
+
+// RecordPlan records a plan event.
+func (r *Recorder) RecordPlan(entries []PlanEntry) error {
+	return r.recordEvent(Event{
+		Type:      EventTypePlan,
+		Timestamp: time.Now(),
+		Data:      PlanData{Entries: entries},
+	})
+}
+
+// RecordPermission records a permission event.
+func (r *Recorder) RecordPermission(title, selectedOption, outcome string) error {
+	return r.recordEvent(Event{
+		Type:      EventTypePermission,
+		Timestamp: time.Now(),
+		Data: PermissionData{
+			Title:          title,
+			SelectedOption: selectedOption,
+			Outcome:        outcome,
+		},
+	})
+}
+
+// RecordError records an error event.
+func (r *Recorder) RecordError(message string, code int) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeError,
+		Timestamp: time.Now(),
+		Data:      ErrorData{Message: message, Code: code},
+	})
+}
+
+// RecordFileRead records a file read event.
+func (r *Recorder) RecordFileRead(path string, size int) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeFileRead,
+		Timestamp: time.Now(),
+		Data:      FileOperationData{Path: path, Size: size},
+	})
+}
+
+// RecordFileWrite records a file write event.
+func (r *Recorder) RecordFileWrite(path string, size int) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeFileWrite,
+		Timestamp: time.Now(),
+		Data:      FileOperationData{Path: path, Size: size},
+	})
+}
+
+// Suspend suspends the recording session but keeps it active for later resumption.
+// This is used when the connection is temporarily closed (e.g., browser refresh).
+// The session remains "active" so it can be resumed without creating a new session.
+func (r *Recorder) Suspend() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.started {
+		return nil
+	}
+
+	// Mark as not started so further operations are blocked,
+	// but don't record a session end event or change the status.
+	// The session remains "active" in the metadata.
+	r.started = false
+	return nil
+}
+
+// End ends the recording session.
+func (r *Recorder) End(reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.started {
+		return nil
+	}
+
+	// Record session end event
+	if err := r.store.AppendEvent(r.sessionID, Event{
+		Type:      EventTypeSessionEnd,
+		Timestamp: time.Now(),
+		Data:      SessionEndData{Reason: reason},
+	}); err != nil {
+		return err
+	}
+
+	// Update metadata status
+	return r.store.UpdateMetadata(r.sessionID, func(meta *Metadata) {
+		meta.Status = "completed"
+	})
+}
+
+// recordEvent records an event to the store.
+func (r *Recorder) recordEvent(event Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.started {
+		return fmt.Errorf("session not started")
+	}
+
+	return r.store.AppendEvent(r.sessionID, event)
+}
+
+// IsStarted returns whether the session has been started.
+func (r *Recorder) IsStarted() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.started
+}
