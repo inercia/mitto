@@ -1,0 +1,307 @@
+package session
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/inercia/mitto/internal/fileutil"
+)
+
+const (
+	eventsFileName   = "events.jsonl"
+	metadataFileName = "metadata.json"
+	lockFileName     = ".lock"
+)
+
+var (
+	ErrSessionNotFound = errors.New("session not found")
+	ErrSessionLocked   = errors.New("session is locked by another process")
+	ErrStoreClosed     = errors.New("store is closed")
+)
+
+// Store provides session persistence operations.
+type Store struct {
+	baseDir string
+	mu      sync.RWMutex
+	closed  bool
+}
+
+// NewStore creates a new session store with the given base directory.
+func NewStore(baseDir string) (*Store, error) {
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create session directory: %w", err)
+	}
+	return &Store{baseDir: baseDir}, nil
+}
+
+// sessionDir returns the directory path for a session.
+func (s *Store) sessionDir(sessionID string) string {
+	return filepath.Join(s.baseDir, sessionID)
+}
+
+// eventsPath returns the events file path for a session.
+func (s *Store) eventsPath(sessionID string) string {
+	return filepath.Join(s.sessionDir(sessionID), eventsFileName)
+}
+
+// metadataPath returns the metadata file path for a session.
+func (s *Store) metadataPath(sessionID string) string {
+	return filepath.Join(s.sessionDir(sessionID), metadataFileName)
+}
+
+// lockPath returns the lock file path for a session.
+func (s *Store) lockPath(sessionID string) string {
+	return filepath.Join(s.sessionDir(sessionID), lockFileName)
+}
+
+// Create creates a new session with the given metadata.
+func (s *Store) Create(meta Metadata) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	sessionDir := s.sessionDir(meta.SessionID)
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		return fmt.Errorf("failed to create session directory: %w", err)
+	}
+
+	// Create empty events file
+	eventsFile, err := os.Create(s.eventsPath(meta.SessionID))
+	if err != nil {
+		return fmt.Errorf("failed to create events file: %w", err)
+	}
+	eventsFile.Close()
+
+	// Write metadata
+	meta.CreatedAt = time.Now()
+	meta.UpdatedAt = meta.CreatedAt
+	meta.EventCount = 0
+	meta.Status = "active"
+
+	return s.writeMetadata(meta)
+}
+
+// AppendEvent appends an event to the session's event log.
+// The event's Seq field is automatically assigned based on the current event count.
+func (s *Store) AppendEvent(sessionID string, event Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	// Read metadata first to get current event count for sequence number
+	meta, err := s.readMetadata(sessionID)
+	if err != nil {
+		return err
+	}
+
+	eventsPath := s.eventsPath(sessionID)
+	f, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("failed to open events file: %w", err)
+	}
+	defer f.Close()
+
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+
+	// Assign sequence number (1-based, so first event is seq=1)
+	event.Seq = int64(meta.EventCount + 1)
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("failed to write event: %w", err)
+	}
+
+	// Update metadata
+	meta.EventCount++
+	meta.UpdatedAt = time.Now()
+	// Track last user message time for sorting conversations
+	if event.Type == EventTypeUserPrompt {
+		meta.LastUserMessageAt = event.Timestamp
+	}
+	return s.writeMetadata(meta)
+}
+
+// GetMetadata retrieves the metadata for a session.
+func (s *Store) GetMetadata(sessionID string) (Metadata, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return Metadata{}, ErrStoreClosed
+	}
+
+	return s.readMetadata(sessionID)
+}
+
+// readMetadata reads metadata from disk (must be called with lock held).
+func (s *Store) readMetadata(sessionID string) (Metadata, error) {
+	var meta Metadata
+	if err := fileutil.ReadJSON(s.metadataPath(sessionID), &meta); err != nil {
+		if os.IsNotExist(err) {
+			return Metadata{}, ErrSessionNotFound
+		}
+		return Metadata{}, fmt.Errorf("failed to read metadata: %w", err)
+	}
+	return meta, nil
+}
+
+// writeMetadata writes metadata to disk (must be called with lock held).
+func (s *Store) writeMetadata(meta Metadata) error {
+	if err := fileutil.WriteJSON(s.metadataPath(meta.SessionID), meta, 0644); err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
+	return nil
+}
+
+// UpdateMetadata updates the metadata for a session.
+func (s *Store) UpdateMetadata(sessionID string, updateFn func(*Metadata)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	meta, err := s.readMetadata(sessionID)
+	if err != nil {
+		return err
+	}
+
+	updateFn(&meta)
+	meta.UpdatedAt = time.Now()
+	return s.writeMetadata(meta)
+}
+
+// ReadEvents reads all events from a session's event log.
+func (s *Store) ReadEvents(sessionID string) ([]Event, error) {
+	return s.ReadEventsFrom(sessionID, 0)
+}
+
+// ReadEventsFrom reads events from a session's event log starting after the given sequence number.
+// If afterSeq is 0, all events are returned.
+// If afterSeq is 5, only events with seq > 5 are returned.
+func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64) ([]Event, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	f, err := os.Open(s.eventsPath(sessionID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("failed to open events file: %w", err)
+	}
+	defer f.Close()
+
+	var events []Event
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var event Event
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal event: %w", err)
+		}
+		// Only include events after the specified sequence number
+		if event.Seq > afterSeq {
+			events = append(events, event)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read events: %w", err)
+	}
+
+	return events, nil
+}
+
+// List returns metadata for all sessions.
+func (s *Store) List() ([]Metadata, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sessions directory: %w", err)
+	}
+
+	var sessions []Metadata
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		meta, err := s.readMetadata(entry.Name())
+		if err != nil {
+			// Skip sessions with invalid metadata
+			continue
+		}
+		sessions = append(sessions, meta)
+	}
+
+	return sessions, nil
+}
+
+// Delete removes a session and all its data.
+func (s *Store) Delete(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	sessionDir := s.sessionDir(sessionID)
+	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
+		return ErrSessionNotFound
+	}
+
+	return os.RemoveAll(sessionDir)
+}
+
+// Exists checks if a session exists.
+func (s *Store) Exists(sessionID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return false
+	}
+
+	_, err := os.Stat(s.metadataPath(sessionID))
+	return err == nil
+}
+
+// Close closes the store.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
