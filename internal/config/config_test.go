@@ -73,6 +73,77 @@ func TestParse_InvalidYAML(t *testing.T) {
 	}
 }
 
+func TestParse_ExternalPort(t *testing.T) {
+	tests := []struct {
+		name         string
+		yaml         string
+		expectedPort int
+		description  string
+	}{
+		{
+			name: "disabled",
+			yaml: `
+acp:
+  - test:
+      command: "test-cmd"
+web:
+  external_port: -1
+`,
+			expectedPort: -1,
+			description:  "Port -1 means external listener is disabled",
+		},
+		{
+			name: "random",
+			yaml: `
+acp:
+  - test:
+      command: "test-cmd"
+web:
+  external_port: 0
+`,
+			expectedPort: 0,
+			description:  "Port 0 means OS chooses a random available port",
+		},
+		{
+			name: "specific",
+			yaml: `
+acp:
+  - test:
+      command: "test-cmd"
+web:
+  external_port: 8443
+`,
+			expectedPort: 8443,
+			description:  "Port > 0 means use that specific port",
+		},
+		{
+			name: "not_specified",
+			yaml: `
+acp:
+  - test:
+      command: "test-cmd"
+web:
+  port: 8080
+`,
+			expectedPort: 0,
+			description:  "When not specified, defaults to 0 (Go zero value)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+
+			if cfg.Web.ExternalPort != tt.expectedPort {
+				t.Errorf("ExternalPort = %d, want %d (%s)", cfg.Web.ExternalPort, tt.expectedPort, tt.description)
+			}
+		})
+	}
+}
+
 func TestParse_WebHooks(t *testing.T) {
 	yaml := `
 acp:

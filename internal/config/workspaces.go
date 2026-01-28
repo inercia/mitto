@@ -16,6 +16,8 @@ type WorkspacesFile struct {
 }
 
 // WorkspaceSettings is the JSON representation of a workspace.
+// It represents an ACP server + working directory pair.
+// Each workspace can run its own ACP server instance.
 type WorkspaceSettings struct {
 	// ACPServer is the name of the ACP server (from settings.json)
 	ACPServer string `json:"acp_server"`
@@ -25,6 +27,12 @@ type WorkspaceSettings struct {
 	WorkingDir string `json:"working_dir"`
 	// Color is the optional custom color for the workspace badge (e.g., "#ff5500")
 	Color string `json:"color,omitempty"`
+}
+
+// WorkspaceID returns a unique identifier for this workspace.
+// Currently uses the working directory since one-dir <-> one-ACP is enforced.
+func (w *WorkspaceSettings) WorkspaceID() string {
+	return w.WorkingDir
 }
 
 // LoadWorkspaces loads workspaces from the Mitto data directory.

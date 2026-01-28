@@ -10,6 +10,48 @@ import (
 	defaultConfig "github.com/inercia/mitto/config"
 )
 
+// ConfigSource indicates where the configuration was loaded from.
+type ConfigSource int
+
+const (
+	// ConfigSourceNone indicates no configuration was loaded.
+	ConfigSourceNone ConfigSource = iota
+	// ConfigSourceRCFile indicates configuration was loaded from ~/.mittorc or equivalent.
+	ConfigSourceRCFile
+	// ConfigSourceSettingsJSON indicates configuration was loaded from settings.json.
+	ConfigSourceSettingsJSON
+	// ConfigSourceEmbeddedDefaults indicates configuration was loaded from embedded defaults.
+	ConfigSourceEmbeddedDefaults
+	// ConfigSourceCustomFile indicates configuration was loaded from a custom file (--config flag).
+	ConfigSourceCustomFile
+)
+
+// String returns a human-readable name for the config source.
+func (s ConfigSource) String() string {
+	switch s {
+	case ConfigSourceRCFile:
+		return "RC file"
+	case ConfigSourceSettingsJSON:
+		return "settings.json"
+	case ConfigSourceEmbeddedDefaults:
+		return "embedded defaults"
+	case ConfigSourceCustomFile:
+		return "custom config file"
+	default:
+		return "none"
+	}
+}
+
+// LoadResult contains the loaded configuration and metadata about its source.
+type LoadResult struct {
+	// Config is the loaded configuration.
+	Config *Config
+	// Source indicates where the configuration was loaded from.
+	Source ConfigSource
+	// SourcePath is the path to the configuration file (empty for embedded defaults).
+	SourcePath string
+}
+
 // Settings represents the persisted Mitto settings in JSON format.
 // This struct mirrors the Config struct but uses JSON serialization
 // and is stored in the Mitto data directory as settings.json.
@@ -20,6 +62,19 @@ type Settings struct {
 	Web WebConfig `json:"web"`
 	// UI contains desktop app UI configuration
 	UI UIConfig `json:"ui,omitempty"`
+	// Session contains session storage limits configuration
+	Session *SessionConfig `json:"session,omitempty"`
+}
+
+// SessionConfig represents session storage configuration.
+// These settings are not exposed in the Settings dialog.
+type SessionConfig struct {
+	// MaxMessagesPerSession is the maximum number of messages to retain per conversation.
+	// When exceeded, oldest messages are pruned. Default: 0 (unlimited)
+	MaxMessagesPerSession int `json:"max_messages_per_session,omitempty"`
+	// MaxSessionSizeBytes is the maximum total size in bytes for a session's stored data.
+	// When exceeded, oldest messages are pruned. Default: 0 (unlimited)
+	MaxSessionSizeBytes int64 `json:"max_session_size_bytes,omitempty"`
 }
 
 // ACPServerSettings is the JSON representation of an ACP server.
@@ -38,6 +93,7 @@ func (s *Settings) ToConfig() *Config {
 		ACPServers: make([]ACPServer, len(s.ACPServers)),
 		Web:        s.Web,
 		UI:         s.UI,
+		Session:    s.Session,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer{
@@ -55,6 +111,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		ACPServers: make([]ACPServerSettings, len(cfg.ACPServers)),
 		Web:        cfg.Web,
 		UI:         cfg.UI,
+		Session:    cfg.Session,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings{
@@ -136,4 +193,119 @@ func SaveSettings(settings *Settings) error {
 // This is a convenience function that delegates to appdir.SettingsPath().
 func SettingsPath() (string, error) {
 	return appdir.SettingsPath()
+}
+
+// LoadWithHierarchy loads configuration using the following hierarchy:
+//  1. If an RC file exists (~/.mittorc), use it exclusively
+//  2. If no RC file exists, check for settings.json (macOS app only creates it)
+//  3. If neither exists, return ErrNoRCFile
+//
+// The macOS app should use LoadSettingsWithFallback instead, which creates
+// settings.json from embedded defaults when needed.
+func LoadWithHierarchy() (*LoadResult, error) {
+	// Check for RC file first (highest priority)
+	rcPath, err := appdir.RCFilePath()
+	if err != nil {
+		return nil, fmt.Errorf("failed to check RC file: %w", err)
+	}
+
+	if rcPath != "" {
+		// RC file exists - use it exclusively
+		cfg, err := Load(rcPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load RC file %s: %w", rcPath, err)
+		}
+		return &LoadResult{
+			Config:     cfg,
+			Source:     ConfigSourceRCFile,
+			SourcePath: rcPath,
+		}, nil
+	}
+
+	// No RC file found
+	return nil, ErrNoRCFile
+}
+
+// ErrNoRCFile is returned when no RC file is found and one is required.
+var ErrNoRCFile = fmt.Errorf("no configuration file found")
+
+// RCFileRequiredError provides a helpful error message for users.
+type RCFileRequiredError struct {
+	DefaultPath string
+}
+
+func (e *RCFileRequiredError) Error() string {
+	return fmt.Sprintf(`Configuration file required.
+
+Mitto requires a configuration file to run. Please create one at:
+
+    %s
+
+Example configuration:
+
+    acp:
+      - auggie:
+          command: auggie --acp
+      - claude-code:
+          command: npx -y @zed-industries/claude-code-acp@latest
+
+    web:
+      port: 8080
+
+For more options, see the Mitto documentation.
+`, e.DefaultPath)
+}
+
+// NewRCFileRequiredError returns an error with instructions for creating an RC file.
+func NewRCFileRequiredError() *RCFileRequiredError {
+	defaultPath, err := appdir.DefaultRCFilePath()
+	if err != nil {
+		defaultPath = "~/.mittorc"
+	}
+	return &RCFileRequiredError{DefaultPath: defaultPath}
+}
+
+// LoadSettingsWithFallback loads configuration with the following hierarchy:
+//  1. If an RC file exists (~/.mittorc), use it exclusively (ignores settings.json)
+//  2. If no RC file exists, use settings.json (creates from defaults if needed)
+//
+// This is intended for the macOS native app which can work without an RC file.
+func LoadSettingsWithFallback() (*LoadResult, error) {
+	// Check for RC file first (highest priority)
+	rcPath, err := appdir.RCFilePath()
+	if err != nil {
+		return nil, fmt.Errorf("failed to check RC file: %w", err)
+	}
+
+	if rcPath != "" {
+		// RC file exists - use it exclusively
+		cfg, err := Load(rcPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load RC file %s: %w", rcPath, err)
+		}
+		return &LoadResult{
+			Config:     cfg,
+			Source:     ConfigSourceRCFile,
+			SourcePath: rcPath,
+		}, nil
+	}
+
+	// No RC file - fall back to settings.json (existing behavior)
+	cfg, err := LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+
+	settingsPath, _ := appdir.SettingsPath()
+	return &LoadResult{
+		Config:     cfg,
+		Source:     ConfigSourceSettingsJSON,
+		SourcePath: settingsPath,
+	}, nil
+}
+
+// LoadEmbeddedDefaults parses and returns the embedded default configuration.
+// This is useful for getting default values without creating settings.json.
+func LoadEmbeddedDefaults() (*Config, error) {
+	return Parse(defaultConfig.DefaultConfigYAML)
 }

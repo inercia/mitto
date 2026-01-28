@@ -183,3 +183,131 @@ func TestConfigToSettings_RoundTripWithPrompts(t *testing.T) {
 		t.Errorf("Web.Prompts[0].Name = %q, want %q", result.Web.Prompts[0].Name, "Global")
 	}
 }
+
+func TestConfigToSettings_RoundTripWithSession(t *testing.T) {
+	original := &Config{
+		ACPServers: []ACPServer{
+			{Name: "server1", Command: "cmd1"},
+		},
+		Web: WebConfig{
+			Host: "127.0.0.1",
+			Port: 8080,
+		},
+		Session: &SessionConfig{
+			MaxMessagesPerSession: 500,
+			MaxSessionSizeBytes:   50000000,
+		},
+	}
+
+	// Convert to Settings
+	settings := ConfigToSettings(original)
+
+	// Verify Session is preserved
+	if settings.Session == nil {
+		t.Fatal("Session config should not be nil after conversion")
+	}
+	if settings.Session.MaxMessagesPerSession != 500 {
+		t.Errorf("Session.MaxMessagesPerSession = %d, want 500", settings.Session.MaxMessagesPerSession)
+	}
+	if settings.Session.MaxSessionSizeBytes != 50000000 {
+		t.Errorf("Session.MaxSessionSizeBytes = %d, want 50000000", settings.Session.MaxSessionSizeBytes)
+	}
+
+	// Convert back to Config
+	result := settings.ToConfig()
+
+	// Verify round-trip
+	if result.Session == nil {
+		t.Fatal("Session config should not be nil after round-trip")
+	}
+	if result.Session.MaxMessagesPerSession != original.Session.MaxMessagesPerSession {
+		t.Errorf("Session.MaxMessagesPerSession = %d, want %d",
+			result.Session.MaxMessagesPerSession, original.Session.MaxMessagesPerSession)
+	}
+	if result.Session.MaxSessionSizeBytes != original.Session.MaxSessionSizeBytes {
+		t.Errorf("Session.MaxSessionSizeBytes = %d, want %d",
+			result.Session.MaxSessionSizeBytes, original.Session.MaxSessionSizeBytes)
+	}
+}
+
+func TestLoadSettings_WithSessionConfig(t *testing.T) {
+	// Save original env
+	originalDir := os.Getenv(appdir.MittoDirEnv)
+	defer func() {
+		os.Setenv(appdir.MittoDirEnv, originalDir)
+		appdir.ResetCache()
+	}()
+
+	// Use temp dir
+	tmpDir := t.TempDir()
+	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+
+	// Create a settings.json with session config
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	customSettings := `{
+		"acp_servers": [
+			{"name": "test-server", "command": "test-cmd"}
+		],
+		"session": {
+			"max_messages_per_session": 1000,
+			"max_session_size_bytes": 100000000
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(customSettings), 0644); err != nil {
+		t.Fatalf("failed to create test settings.json: %v", err)
+	}
+
+	// Load settings
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+
+	// Verify session config was loaded
+	if cfg.Session == nil {
+		t.Fatal("Session config should not be nil")
+	}
+	if cfg.Session.MaxMessagesPerSession != 1000 {
+		t.Errorf("Session.MaxMessagesPerSession = %d, want 1000", cfg.Session.MaxMessagesPerSession)
+	}
+	if cfg.Session.MaxSessionSizeBytes != 100000000 {
+		t.Errorf("Session.MaxSessionSizeBytes = %d, want 100000000", cfg.Session.MaxSessionSizeBytes)
+	}
+}
+
+func TestLoadSettings_NoSessionConfig(t *testing.T) {
+	// Save original env
+	originalDir := os.Getenv(appdir.MittoDirEnv)
+	defer func() {
+		os.Setenv(appdir.MittoDirEnv, originalDir)
+		appdir.ResetCache()
+	}()
+
+	// Use temp dir
+	tmpDir := t.TempDir()
+	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+
+	// Create a settings.json without session config
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	customSettings := `{
+		"acp_servers": [
+			{"name": "test-server", "command": "test-cmd"}
+		]
+	}`
+	if err := os.WriteFile(settingsPath, []byte(customSettings), 0644); err != nil {
+		t.Fatalf("failed to create test settings.json: %v", err)
+	}
+
+	// Load settings
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+
+	// Session config should be nil (not set)
+	if cfg.Session != nil {
+		t.Errorf("Session config should be nil when not configured, got %+v", cfg.Session)
+	}
+}

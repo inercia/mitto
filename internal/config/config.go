@@ -101,19 +101,19 @@ type WebSecurity struct {
 }
 
 // HotkeyConfig represents a keyboard shortcut configuration.
-// Format: "modifier+modifier+key" (e.g., "cmd+shift+m", "ctrl+alt+space")
+// Format: "modifier+modifier+key" (e.g., "cmd+ctrl+m", "ctrl+alt+space")
 // Supported modifiers: cmd, ctrl, alt, shift
 // Supported keys: a-z, 0-9, space, tab, return, escape, delete, f1-f12
 type HotkeyConfig struct {
 	// Enabled controls whether this hotkey is active (default: true)
 	Enabled *bool `json:"enabled,omitempty"`
-	// Key is the hotkey combination (e.g., "cmd+shift+m")
+	// Key is the hotkey combination (e.g., "cmd+ctrl+m")
 	Key string `json:"key,omitempty"`
 }
 
 // MacHotkeys represents macOS-specific hotkey configuration.
 type MacHotkeys struct {
-	// ShowHide is the hotkey to toggle app visibility (default: "cmd+shift+m")
+	// ShowHide is the hotkey to toggle app visibility (default: "cmd+ctrl+m")
 	ShowHide *HotkeyConfig `json:"show_hide,omitempty"`
 }
 
@@ -135,6 +135,10 @@ type MacUIConfig struct {
 	Hotkeys *MacHotkeys `json:"hotkeys,omitempty"`
 	// Notifications contains notification settings for macOS
 	Notifications *NotificationsConfig `json:"notifications,omitempty"`
+	// ShowInAllSpaces makes the window appear in all macOS Spaces (virtual desktops)
+	// When enabled, the Mitto window will be visible across all Spaces.
+	// Requires app restart to take effect. (default: false)
+	ShowInAllSpaces bool `json:"show_in_all_spaces,omitempty"`
 }
 
 // ConfirmationsConfig represents confirmation dialog settings.
@@ -162,10 +166,15 @@ type WebConfig struct {
 	// Port is the HTTP server port for local access (default: 8080, or random if 0)
 	// This is the primary port used by the Web UI and macOS native app.
 	Port int `json:"port,omitempty"`
-	// ExternalPort is the HTTP server port for external access (default: 0 = random)
+	// ExternalPort is the HTTP server port for external access.
 	// This port is only used when external access is enabled (Auth is configured).
 	// The external listener binds to 0.0.0.0 on this port.
-	ExternalPort int `json:"external_port,omitempty"`
+	// Values:
+	//   -1 = disabled (no external listener, default)
+	//    0 = random port (OS chooses an available port)
+	//   >0 = specific port number
+	// Note: omitempty is NOT used here because 0 is a valid value meaning "random port".
+	ExternalPort int `json:"external_port"`
 	// Theme is the UI theme/stylesheet to use.
 	// Options: "default" (original Tailwind-based), "v2" (Clawdbot-inspired)
 	// Default: "default"
@@ -191,6 +200,8 @@ type Config struct {
 	Web WebConfig
 	// UI contains desktop app UI configuration
 	UI UIConfig
+	// Session contains session storage limits configuration (not exposed in Settings dialog)
+	Session *SessionConfig
 }
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
@@ -260,6 +271,7 @@ type rawConfig struct {
 					AgentCompleted bool `yaml:"agent_completed"`
 				} `yaml:"sounds"`
 			} `yaml:"notifications"`
+			ShowInAllSpaces bool `yaml:"show_in_all_spaces"`
 		} `yaml:"mac"`
 	} `yaml:"ui"`
 }
@@ -441,6 +453,9 @@ func Parse(data []byte) (*Config, error) {
 					}
 				}
 			}
+
+			// Populate show in all spaces setting
+			cfg.UI.Mac.ShowInAllSpaces = raw.UI.Mac.ShowInAllSpaces
 		}
 	}
 
@@ -475,11 +490,11 @@ func (c *Config) ServerNames() []string {
 }
 
 // DefaultShowHideHotkey is the default hotkey for toggling app visibility.
-const DefaultShowHideHotkey = "cmd+shift+m"
+const DefaultShowHideHotkey = "cmd+ctrl+m"
 
 // GetShowHideHotkey returns the configured show/hide hotkey.
 // Returns the hotkey string and whether it's enabled.
-// If not configured, returns the default ("cmd+shift+m", true).
+// If not configured, returns the default ("cmd+ctrl+m", true).
 func (c *Config) GetShowHideHotkey() (key string, enabled bool) {
 	// Default values
 	key = DefaultShowHideHotkey
