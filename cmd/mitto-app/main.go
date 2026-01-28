@@ -1,3 +1,5 @@
+//go:build darwin
+
 // Package main provides the entry point for the Mitto macOS desktop application.
 //
 // This is a native macOS app wrapper that embeds the existing web interface
