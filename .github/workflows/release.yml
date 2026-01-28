@@ -1,0 +1,199 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # Run the same tests as PR/main before building release
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: make deps
+
+      - name: Check Go formatting
+        run: make fmt-check
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: Run Go unit tests
+        run: make test-go
+
+      - name: Run JavaScript unit tests
+        run: make test-js
+
+  # Build binaries for all platforms
+  build:
+    name: Build
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary: mitto
+            artifact: mitto-linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            binary: mitto
+            artifact: mitto-linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            binary: mitto
+            artifact: mitto-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            binary: mitto
+            artifact: mitto-darwin-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary: mitto.exe
+            artifact: mitto-windows-amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags "-s -w" -o ${{ matrix.binary }} ./cmd/mitto
+
+      - name: Create archive (Unix)
+        if: matrix.goos != 'windows'
+        run: |
+          tar -czvf ${{ matrix.artifact }}.tar.gz ${{ matrix.binary }}
+
+      - name: Create archive (Windows)
+        if: matrix.goos == 'windows'
+        run: |
+          Compress-Archive -Path ${{ matrix.binary }} -DestinationPath ${{ matrix.artifact }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.goos == 'windows' && format('{0}.zip', matrix.artifact) || format('{0}.tar.gz', matrix.artifact) }}
+          retention-days: 1
+
+  # Build macOS app bundle (requires macOS runner with CGO)
+  build-mac-app:
+    name: Build macOS App
+    needs: test
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            artifact: Mitto-darwin-amd64
+          - goarch: arm64
+            artifact: Mitto-darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Install dependencies
+        run: make deps-go
+
+      - name: Build macOS app bundle
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          # Generate icon if needed
+          if [ ! -f platform/mac/AppIcon.icns ]; then
+            pip3 install Pillow
+            cd platform/mac && ./generate-icon.sh && cd ../..
+          fi
+          # Create app bundle structure
+          mkdir -p "Mitto.app/Contents/MacOS"
+          mkdir -p "Mitto.app/Contents/Resources"
+          # Build the binary
+          go build -ldflags "-s -w" -o "Mitto.app/Contents/MacOS/mitto-app" ./cmd/mitto-app
+          # Copy resources
+          cp platform/mac/Info.plist "Mitto.app/Contents/"
+          cp platform/mac/AppIcon.icns "Mitto.app/Contents/Resources/"
+
+      - name: Create app archive
+        run: |
+          zip -r ${{ matrix.artifact }}.zip Mitto.app
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+          retention-days: 1
+
+  # Create GitHub release with all artifacts
+  release:
+    name: Create Release
+    needs: [build, build-mac-app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          # Move all artifacts to release directory
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
