@@ -32,7 +32,13 @@ import {
     hslToHex,
     validateUsername,
     validatePassword,
-    validateCredentials
+    validateCredentials,
+    generatePromptId,
+    savePendingPrompt,
+    removePendingPrompt,
+    getPendingPrompts,
+    getPendingPromptsForSession,
+    cleanupExpiredPrompts
 } from './lib.js';
 
 // =============================================================================
@@ -795,5 +801,208 @@ describe('validateCredentials', () => {
         expect(validateCredentials('admin', '')).toBe('Password is required');
         expect(validateCredentials('admin', 'short')).toBe('Password must be at least 8 characters');
         expect(validateCredentials('admin', 'password')).toBe('Password is too common. Please choose a stronger password');
+    });
+});
+
+// =============================================================================
+// Pending Prompts Queue Tests
+// =============================================================================
+
+// Mock localStorage for testing
+const localStorageMock = (() => {
+    let store = {};
+    return {
+        getItem: (key) => store[key] || null,
+        setItem: (key, value) => { store[key] = value; },
+        removeItem: (key) => { delete store[key]; },
+        clear: () => { store = {}; }
+    };
+})();
+
+// Replace global localStorage with mock
+Object.defineProperty(global, 'localStorage', { value: localStorageMock });
+
+describe('generatePromptId', () => {
+    test('generates unique IDs', () => {
+        const id1 = generatePromptId();
+        const id2 = generatePromptId();
+        expect(id1).not.toBe(id2);
+    });
+
+    test('generates IDs with prompt_ prefix', () => {
+        const id = generatePromptId();
+        expect(id.startsWith('prompt_')).toBe(true);
+    });
+
+    test('generates IDs with timestamp component', () => {
+        const before = Date.now();
+        const id = generatePromptId();
+        const after = Date.now();
+
+        // Extract timestamp from ID (format: prompt_<timestamp>_<random>)
+        const parts = id.split('_');
+        expect(parts.length).toBe(3);
+        const timestamp = parseInt(parts[1], 10);
+        expect(timestamp).toBeGreaterThanOrEqual(before);
+        expect(timestamp).toBeLessThanOrEqual(after);
+    });
+});
+
+describe('savePendingPrompt and getPendingPrompts', () => {
+    beforeEach(() => {
+        localStorageMock.clear();
+    });
+
+    test('saves and retrieves a pending prompt', () => {
+        savePendingPrompt('session1', 'prompt1', 'Hello world', []);
+
+        const pending = getPendingPrompts();
+        expect(pending['prompt1']).toBeDefined();
+        expect(pending['prompt1'].sessionId).toBe('session1');
+        expect(pending['prompt1'].message).toBe('Hello world');
+        expect(pending['prompt1'].imageIds).toEqual([]);
+        expect(pending['prompt1'].timestamp).toBeDefined();
+    });
+
+    test('saves prompt with image IDs', () => {
+        savePendingPrompt('session1', 'prompt1', 'With images', ['img1', 'img2']);
+
+        const pending = getPendingPrompts();
+        expect(pending['prompt1'].imageIds).toEqual(['img1', 'img2']);
+    });
+
+    test('saves multiple prompts', () => {
+        savePendingPrompt('session1', 'prompt1', 'First', []);
+        savePendingPrompt('session1', 'prompt2', 'Second', []);
+        savePendingPrompt('session2', 'prompt3', 'Third', []);
+
+        const pending = getPendingPrompts();
+        expect(Object.keys(pending).length).toBe(3);
+    });
+
+    test('returns empty object when no pending prompts', () => {
+        const pending = getPendingPrompts();
+        expect(pending).toEqual({});
+    });
+});
+
+describe('removePendingPrompt', () => {
+    beforeEach(() => {
+        localStorageMock.clear();
+    });
+
+    test('removes a pending prompt', () => {
+        savePendingPrompt('session1', 'prompt1', 'Hello', []);
+        savePendingPrompt('session1', 'prompt2', 'World', []);
+
+        removePendingPrompt('prompt1');
+
+        const pending = getPendingPrompts();
+        expect(pending['prompt1']).toBeUndefined();
+        expect(pending['prompt2']).toBeDefined();
+    });
+
+    test('handles removing non-existent prompt gracefully', () => {
+        savePendingPrompt('session1', 'prompt1', 'Hello', []);
+
+        // Should not throw
+        removePendingPrompt('nonexistent');
+
+        const pending = getPendingPrompts();
+        expect(pending['prompt1']).toBeDefined();
+    });
+});
+
+describe('getPendingPromptsForSession', () => {
+    beforeEach(() => {
+        localStorageMock.clear();
+    });
+
+    test('returns prompts for specific session', () => {
+        savePendingPrompt('session1', 'prompt1', 'First', []);
+        savePendingPrompt('session1', 'prompt2', 'Second', []);
+        savePendingPrompt('session2', 'prompt3', 'Third', []);
+
+        const session1Prompts = getPendingPromptsForSession('session1');
+        expect(session1Prompts.length).toBe(2);
+        expect(session1Prompts.map(p => p.promptId)).toContain('prompt1');
+        expect(session1Prompts.map(p => p.promptId)).toContain('prompt2');
+    });
+
+    test('returns empty array for session with no prompts', () => {
+        savePendingPrompt('session1', 'prompt1', 'Hello', []);
+
+        const prompts = getPendingPromptsForSession('session2');
+        expect(prompts).toEqual([]);
+    });
+
+    test('returns prompts sorted by timestamp (oldest first)', () => {
+        // Save prompts with explicit timestamps by manipulating the stored data
+        const now = Date.now();
+        localStorageMock.setItem('mitto_pending_prompts', JSON.stringify({
+            'prompt1': { sessionId: 'session1', message: 'First', imageIds: [], timestamp: now - 2000 },
+            'prompt2': { sessionId: 'session1', message: 'Second', imageIds: [], timestamp: now - 1000 },
+            'prompt3': { sessionId: 'session1', message: 'Third', imageIds: [], timestamp: now }
+        }));
+
+        const prompts = getPendingPromptsForSession('session1');
+        expect(prompts[0].promptId).toBe('prompt1');
+        expect(prompts[1].promptId).toBe('prompt2');
+        expect(prompts[2].promptId).toBe('prompt3');
+    });
+
+    test('excludes expired prompts (older than 5 minutes)', () => {
+        const now = Date.now();
+        const fiveMinutesAgo = now - (5 * 60 * 1000);
+
+        localStorageMock.setItem('mitto_pending_prompts', JSON.stringify({
+            'prompt1': { sessionId: 'session1', message: 'Fresh', imageIds: [], timestamp: now - 1000 },
+            'prompt2': { sessionId: 'session1', message: 'Expired', imageIds: [], timestamp: fiveMinutesAgo - 1000 }
+        }));
+
+        const prompts = getPendingPromptsForSession('session1');
+        expect(prompts.length).toBe(1);
+        expect(prompts[0].promptId).toBe('prompt1');
+    });
+});
+
+describe('cleanupExpiredPrompts', () => {
+    beforeEach(() => {
+        localStorageMock.clear();
+    });
+
+    test('removes expired prompts', () => {
+        const now = Date.now();
+        const fiveMinutesAgo = now - (5 * 60 * 1000);
+
+        localStorageMock.setItem('mitto_pending_prompts', JSON.stringify({
+            'prompt1': { sessionId: 'session1', message: 'Fresh', imageIds: [], timestamp: now - 1000 },
+            'prompt2': { sessionId: 'session1', message: 'Expired1', imageIds: [], timestamp: fiveMinutesAgo - 1000 },
+            'prompt3': { sessionId: 'session2', message: 'Expired2', imageIds: [], timestamp: fiveMinutesAgo - 2000 }
+        }));
+
+        cleanupExpiredPrompts();
+
+        const pending = getPendingPrompts();
+        expect(Object.keys(pending).length).toBe(1);
+        expect(pending['prompt1']).toBeDefined();
+        expect(pending['prompt2']).toBeUndefined();
+        expect(pending['prompt3']).toBeUndefined();
+    });
+
+    test('does nothing when no prompts exist', () => {
+        // Should not throw
+        cleanupExpiredPrompts();
+        expect(getPendingPrompts()).toEqual({});
+    });
+
+    test('does nothing when all prompts are fresh', () => {
+        savePendingPrompt('session1', 'prompt1', 'Fresh1', []);
+        savePendingPrompt('session1', 'prompt2', 'Fresh2', []);
+
+        cleanupExpiredPrompts();
+
+        const pending = getPendingPrompts();
+        expect(Object.keys(pending).length).toBe(2);
     });
 });

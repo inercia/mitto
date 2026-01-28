@@ -553,3 +553,114 @@ export function validateCredentials(username, password) {
     if (usernameError) return usernameError;
     return validatePassword(password);
 }
+
+// =============================================================================
+// Pending Prompts Queue (for reliable message delivery on mobile)
+// =============================================================================
+
+const PENDING_PROMPTS_KEY = 'mitto_pending_prompts';
+const PROMPT_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes - prompts older than this are considered stale
+
+/**
+ * Generates a unique prompt ID for tracking delivery.
+ * @returns {string} A unique prompt ID
+ */
+export function generatePromptId() {
+    return `prompt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * Saves a pending prompt to localStorage before sending.
+ * @param {string} sessionId - The session ID
+ * @param {string} promptId - The unique prompt ID
+ * @param {string} message - The message text
+ * @param {Array} imageIds - Optional array of image IDs
+ */
+export function savePendingPrompt(sessionId, promptId, message, imageIds = []) {
+    try {
+        const pending = getPendingPrompts();
+        pending[promptId] = {
+            sessionId,
+            message,
+            imageIds,
+            timestamp: Date.now()
+        };
+        localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+    } catch (err) {
+        console.warn('Failed to save pending prompt:', err);
+    }
+}
+
+/**
+ * Removes a pending prompt after receiving acknowledgment.
+ * @param {string} promptId - The prompt ID to remove
+ */
+export function removePendingPrompt(promptId) {
+    try {
+        const pending = getPendingPrompts();
+        delete pending[promptId];
+        localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+    } catch (err) {
+        console.warn('Failed to remove pending prompt:', err);
+    }
+}
+
+/**
+ * Gets all pending prompts from localStorage.
+ * @returns {Object} Map of promptId -> { sessionId, message, imageIds, timestamp }
+ */
+export function getPendingPrompts() {
+    try {
+        const data = localStorage.getItem(PENDING_PROMPTS_KEY);
+        if (!data) return {};
+        return JSON.parse(data) || {};
+    } catch (err) {
+        console.warn('Failed to get pending prompts:', err);
+        return {};
+    }
+}
+
+/**
+ * Gets pending prompts for a specific session that haven't expired.
+ * @param {string} sessionId - The session ID
+ * @returns {Array} Array of { promptId, message, imageIds, timestamp }
+ */
+export function getPendingPromptsForSession(sessionId) {
+    const pending = getPendingPrompts();
+    const now = Date.now();
+    const results = [];
+
+    for (const [promptId, data] of Object.entries(pending)) {
+        if (data.sessionId === sessionId && (now - data.timestamp) < PROMPT_EXPIRY_MS) {
+            results.push({ promptId, ...data });
+        }
+    }
+
+    // Sort by timestamp (oldest first for retry order)
+    results.sort((a, b) => a.timestamp - b.timestamp);
+    return results;
+}
+
+/**
+ * Cleans up expired pending prompts.
+ */
+export function cleanupExpiredPrompts() {
+    try {
+        const pending = getPendingPrompts();
+        const now = Date.now();
+        let changed = false;
+
+        for (const [promptId, data] of Object.entries(pending)) {
+            if ((now - data.timestamp) >= PROMPT_EXPIRY_MS) {
+                delete pending[promptId];
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+        }
+    } catch (err) {
+        console.warn('Failed to cleanup expired prompts:', err);
+    }
+}

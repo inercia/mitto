@@ -19,7 +19,12 @@ import {
     updateGlobalWorkingDir,
     getGlobalWorkingDir,
     validateUsername,
-    validatePassword
+    validatePassword,
+    generatePromptId,
+    savePendingPrompt,
+    removePendingPrompt,
+    getPendingPromptsForSession,
+    cleanupExpiredPrompts
 } from './lib.js';
 
 // =============================================================================
@@ -61,6 +66,26 @@ async function pickFolder() {
     // Web browser - no native folder picker available
     // The caller should use a file input with webkitdirectory as fallback
     return '';
+}
+
+// Opens a native image picker dialog and returns the selected file paths.
+// In the native macOS app, uses the bound native function.
+// Returns a Promise that resolves to an array of file paths or empty array if cancelled.
+async function pickImages() {
+    if (typeof window.mittoPickImages === 'function') {
+        // Native macOS app - use bound function
+        // The webview binding returns a Promise
+        const result = await window.mittoPickImages();
+        return result || [];
+    }
+    // Web browser - no native image picker available
+    // The caller should use a file input as fallback
+    return null; // null indicates native picker is not available
+}
+
+// Check if the native image picker is available (running in macOS app)
+function hasNativeImagePicker() {
+    return typeof window.mittoPickImages === 'function';
 }
 
 // =============================================================================
@@ -197,8 +222,10 @@ function useWebSocket() {
     const reconnectRef = useRef(null);
     const activeSessionIdRef = useRef(activeSessionId);
     const sessionWsRefs = useRef({}); // { sessionId: WebSocket }
+    const sessionReconnectRefs = useRef({}); // { sessionId: timeoutId } for session reconnection
     const sessionsRef = useRef(sessions); // For accessing sessions in callbacks
     const workspacesRef = useRef(workspaces); // For accessing workspaces in callbacks
+    const retryPendingPromptsRef = useRef(null); // Ref to retry function (set later to avoid circular deps)
 
     // Track if this is a reconnection (vs initial connection)
     const wasConnectedRef = useRef(false);
@@ -366,6 +393,12 @@ function useWebSocket() {
 
     // Connect to per-session WebSocket
     const connectToSession = useCallback((sessionId) => {
+        // Clear any pending reconnect timer for this session
+        if (sessionReconnectRefs.current[sessionId]) {
+            clearTimeout(sessionReconnectRefs.current[sessionId]);
+            delete sessionReconnectRefs.current[sessionId];
+        }
+
         // Don't connect if already connected
         if (sessionWsRefs.current[sessionId]) {
             return sessionWsRefs.current[sessionId];
@@ -376,6 +409,12 @@ function useWebSocket() {
 
         ws.onopen = () => {
             console.log(`Session WebSocket connected: ${sessionId}`);
+            // Retry any pending prompts after a short delay to ensure connection is stable
+            setTimeout(() => {
+                if (retryPendingPromptsRef.current) {
+                    retryPendingPromptsRef.current(sessionId);
+                }
+            }, 500);
         };
 
         ws.onmessage = (event) => {
@@ -396,6 +435,20 @@ function useWebSocket() {
                 if (!session) return prev;
                 return { ...prev, [sessionId]: { ...session, isStreaming: false } };
             });
+
+            // Reconnect if this session is still active (user hasn't switched away)
+            // This handles cases like mobile browser suspension when phone is locked
+            if (activeSessionIdRef.current === sessionId) {
+                console.log(`Scheduling reconnect for active session: ${sessionId}`);
+                sessionReconnectRefs.current[sessionId] = setTimeout(() => {
+                    delete sessionReconnectRefs.current[sessionId];
+                    // Double-check the session is still active before reconnecting
+                    if (activeSessionIdRef.current === sessionId) {
+                        console.log(`Reconnecting to session: ${sessionId}`);
+                        connectToSession(sessionId);
+                    }
+                }, 2000);
+            }
         };
 
         ws.onerror = (err) => {
@@ -474,7 +527,8 @@ function useWebSocket() {
                         messages.push({ role: ROLE_THOUGHT, text: msg.data.text, complete: false, timestamp: Date.now() });
                         messages = limitMessages(messages);
                     }
-                    return { ...prev, [sessionId]: { ...session, messages } };
+                    // Agent thoughts indicate the agent is still working
+                    return { ...prev, [sessionId]: { ...session, messages, isStreaming: true } };
                 });
                 break;
 
@@ -485,7 +539,8 @@ function useWebSocket() {
                     const messages = limitMessages([...session.messages, {
                         role: ROLE_TOOL, id: msg.data.id, title: msg.data.title, status: msg.data.status, timestamp: Date.now()
                     }]);
-                    return { ...prev, [sessionId]: { ...session, messages } };
+                    // Tool calls indicate the agent is still working
+                    return { ...prev, [sessionId]: { ...session, messages, isStreaming: true } };
                 });
                 break;
 
@@ -498,7 +553,8 @@ function useWebSocket() {
                     if (idx >= 0 && msg.data.status) {
                         messages[idx] = { ...messages[idx], status: msg.data.status };
                     }
-                    return { ...prev, [sessionId]: { ...session, messages } };
+                    // Tool updates indicate the agent is still working
+                    return { ...prev, [sessionId]: { ...session, messages, isStreaming: true } };
                 });
                 break;
 
@@ -594,6 +650,15 @@ function useWebSocket() {
                 });
                 break;
 
+            case 'prompt_received':
+                // Acknowledgment that the prompt was received and persisted by the server
+                // Remove from pending queue - the message is now safely stored
+                if (msg.data.prompt_id) {
+                    removePendingPrompt(msg.data.prompt_id);
+                    console.log('Prompt acknowledged:', msg.data.prompt_id);
+                }
+                break;
+
             case 'permission':
                 console.log('Permission requested:', msg.data);
                 break;
@@ -607,22 +672,31 @@ function useWebSocket() {
 
         socket.onopen = () => {
             setEventsConnected(true);
-            console.log('Global events WebSocket connected');
+            const isReconnect = wasConnectedRef.current;
+            console.log('Global events WebSocket connected', isReconnect ? '(reconnect)' : '(initial)');
 
-            // On connect, fetch stored sessions and try to resume last session
-            fetchStoredSessions().then((storedSessionsList) => {
-                const lastSessionId = getLastActiveSessionId();
-                if (lastSessionId) {
-                    // Connect to the last session from localStorage
-                    switchSession(lastSessionId);
-                } else if (storedSessionsList && storedSessionsList.length > 0) {
-                    // No last session in localStorage, but there are stored sessions
-                    // Switch to the most recent one (first in the list, sorted by updated_at desc)
-                    const mostRecentSession = storedSessionsList[0];
-                    switchSession(mostRecentSession.session_id);
-                }
-                // No stored sessions - show empty state, let user create manually
-            });
+            if (isReconnect) {
+                // On reconnect: refresh the session list to catch any changes
+                // that occurred while disconnected (e.g., mobile phone locked)
+                // but don't switch sessions - keep the user's current session
+                console.log('Refreshing session list after reconnect');
+                fetchStoredSessions();
+            } else {
+                // Initial connection: fetch stored sessions and resume last session
+                fetchStoredSessions().then((storedSessionsList) => {
+                    const lastSessionId = getLastActiveSessionId();
+                    if (lastSessionId) {
+                        // Connect to the last session from localStorage
+                        switchSession(lastSessionId);
+                    } else if (storedSessionsList && storedSessionsList.length > 0) {
+                        // No last session in localStorage, but there are stored sessions
+                        // Switch to the most recent one (first in the list, sorted by updated_at desc)
+                        const mostRecentSession = storedSessionsList[0];
+                        switchSession(mostRecentSession.session_id);
+                    }
+                    // No stored sessions - show empty state, let user create manually
+                });
+            }
         };
 
         socket.onmessage = (event) => {
@@ -714,6 +788,11 @@ function useWebSocket() {
                     }
                     return rest;
                 });
+                // Cancel any pending reconnect for this session
+                if (sessionReconnectRefs.current[deletedId]) {
+                    clearTimeout(sessionReconnectRefs.current[deletedId]);
+                    delete sessionReconnectRefs.current[deletedId];
+                }
                 // Close the session WebSocket
                 if (sessionWsRefs.current[deletedId]) {
                     sessionWsRefs.current[deletedId].close();
@@ -758,9 +837,9 @@ function useWebSocket() {
             const sessionId = data.session_id;
 
             // Build system message with workspace info
-            let systemMsg = `Connected to ${data.acp_server}`;
+            let systemMsg = `Start chatting with ${data.acp_server}`;
             if (data.working_dir) {
-                systemMsg += ` in ${data.working_dir}`;
+                systemMsg += ` to work on ${data.working_dir}`;
             }
 
             // Initialize session state
@@ -923,23 +1002,65 @@ function useWebSocket() {
         const ws = sessionWsRefs.current[sessionId];
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(msg));
+            return true;
         }
+        return false;
     }, []);
 
-    const sendPrompt = useCallback((message) => {
+    const sendPrompt = useCallback((message, images = []) => {
         if (!activeSessionId) return;
-        addMessageToSession(activeSessionId, { role: ROLE_USER, text: message, timestamp: Date.now() });
+        // Add user message with optional images
+        const userMessage = { role: ROLE_USER, text: message, timestamp: Date.now() };
+        if (images.length > 0) {
+            userMessage.images = images; // Array of { id, url, name, mimeType }
+        }
+        addMessageToSession(activeSessionId, userMessage);
         // Mark any previous streaming message as complete
         updateLastMessage(activeSessionId, m =>
             !m.complete && (m.role === ROLE_AGENT || m.role === ROLE_THOUGHT) ? { ...m, complete: true } : m
         );
-        sendToSession(activeSessionId, { type: 'prompt', data: { message } });
+        // Generate a unique prompt ID for delivery tracking
+        const promptId = generatePromptId();
+        const imageIds = images.map(img => img.id);
+
+        // Save to pending queue BEFORE sending (for mobile reliability)
+        savePendingPrompt(activeSessionId, promptId, message, imageIds);
+
+        // Send prompt with prompt_id for acknowledgment
+        sendToSession(activeSessionId, { type: 'prompt', data: { message, image_ids: imageIds, prompt_id: promptId } });
     }, [activeSessionId, addMessageToSession, updateLastMessage, sendToSession]);
 
     const cancelPrompt = useCallback(() => {
         if (!activeSessionId) return;
         sendToSession(activeSessionId, { type: 'cancel' });
     }, [activeSessionId, sendToSession]);
+
+    // Retry pending prompts for a session (called on reconnect or visibility change)
+    const retryPendingPrompts = useCallback((sessionId) => {
+        const pending = getPendingPromptsForSession(sessionId);
+        if (pending.length === 0) return;
+
+        console.log(`Retrying ${pending.length} pending prompt(s) for session ${sessionId}`);
+
+        for (const { promptId, message, imageIds } of pending) {
+            const sent = sendToSession(sessionId, {
+                type: 'prompt',
+                data: { message, image_ids: imageIds || [], prompt_id: promptId }
+            });
+            if (sent) {
+                console.log(`Retried pending prompt: ${promptId}`);
+            } else {
+                console.warn(`Failed to retry pending prompt (WebSocket not ready): ${promptId}`);
+                // Stop retrying if WebSocket is not ready - will retry on next reconnect
+                break;
+            }
+        }
+    }, [sendToSession]);
+
+    // Keep the ref in sync with the callback
+    useEffect(() => {
+        retryPendingPromptsRef.current = retryPendingPrompts;
+    }, [retryPendingPrompts]);
 
     const newSession = useCallback(async (options) => {
         return await createNewSession(options);
@@ -1072,6 +1193,11 @@ function useWebSocket() {
         const currentActiveSessionId = activeSessionIdRef.current;
         const wasActiveSession = sessionId === currentActiveSessionId;
 
+        // Cancel any pending reconnect for this session
+        if (sessionReconnectRefs.current[sessionId]) {
+            clearTimeout(sessionReconnectRefs.current[sessionId]);
+            delete sessionReconnectRefs.current[sessionId];
+        }
         // Close the session WebSocket
         if (sessionWsRefs.current[sessionId]) {
             sessionWsRefs.current[sessionId].close();
@@ -1112,12 +1238,46 @@ function useWebSocket() {
         return () => {
             if (reconnectRef.current) clearTimeout(reconnectRef.current);
             if (eventsWsRef.current) eventsWsRef.current.close();
+            // Clear all session reconnect timers
+            for (const timerId of Object.values(sessionReconnectRefs.current)) {
+                clearTimeout(timerId);
+            }
+            sessionReconnectRefs.current = {};
             // Close all session WebSockets
             for (const ws of Object.values(sessionWsRefs.current)) {
                 ws.close();
             }
         };
     }, [connectToEvents]);
+
+    // Refresh session list and retry pending prompts when app becomes visible
+    useEffect(() => {
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                console.log('App became visible, refreshing session list and checking pending prompts');
+
+                // Clean up expired prompts first
+                cleanupExpiredPrompts();
+
+                // Fetch stored sessions
+                fetchStoredSessions();
+
+                // Retry pending prompts for the active session after a short delay
+                // (to allow WebSocket to reconnect if needed)
+                const currentSessionId = activeSessionIdRef.current;
+                if (currentSessionId) {
+                    setTimeout(() => {
+                        retryPendingPrompts(currentSessionId);
+                    }, 1000);
+                }
+            }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, [fetchStoredSessions, retryPendingPrompts]);
 
     // Clear background completion notification
     const clearBackgroundCompletion = useCallback(() => {
@@ -1254,11 +1414,26 @@ function Message({ message, isLast, isStreaming }) {
         `;
     }
 
-    // User message (plain text)
+    // User message (plain text with optional images)
     if (isUser) {
+        const hasImages = message.images && message.images.length > 0;
         return html`
             <div class="message-enter flex justify-end mb-3">
                 <div class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm">
+                    ${hasImages && html`
+                        <div class="flex flex-wrap gap-2 mb-2">
+                            ${message.images.map(img => html`
+                                <div key=${img.id} class="relative group">
+                                    <img
+                                        src=${img.url}
+                                        alt=${img.name || 'Attached image'}
+                                        class="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                                        onClick=${() => window.open(img.url, '_blank')}
+                                    />
+                                </div>
+                            `)}
+                        </div>
+                    `}
                     <pre class="whitespace-pre-wrap font-sans text-sm m-0">${message.text}</pre>
                 </div>
             </div>
@@ -1303,6 +1478,26 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
     const textareaRef = useRef(null);
     const dropupRef = useRef(null);
 
+    // Image upload state
+    const [pendingImages, setPendingImages] = useState([]); // Array of { id, url, name, mimeType, uploading }
+    const [isDragOver, setIsDragOver] = useState(false);
+    const [uploadError, setUploadError] = useState(null);
+    const fileInputRef = useRef(null);
+
+    // Track window width for responsive placeholder
+    const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
+    useEffect(() => {
+        const handleResize = () => setIsSmallWindow(window.innerWidth < 640);
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
+    // Clear pending images when session changes
+    useEffect(() => {
+        setPendingImages([]);
+        setUploadError(null);
+    }, [sessionId]);
+
     // For backwards compatibility
     const isImproving = !!improvingState;
 
@@ -1346,9 +1541,14 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (text.trim() && !disabled && !isReadOnly && !isStreaming) {
-            onSend(text.trim());
+        // Allow sending if there's text OR images (or both)
+        const hasContent = text.trim() || pendingImages.some(img => !img.uploading);
+        if (hasContent && !disabled && !isReadOnly && !isStreaming) {
+            // Filter out images that are still uploading
+            const readyImages = pendingImages.filter(img => !img.uploading);
+            onSend(text.trim(), readyImages);
             setText('');
+            setPendingImages([]);
             if (textareaRef.current) {
                 textareaRef.current.style.height = 'auto';
             }
@@ -1469,23 +1669,281 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
         if (noSession) return "Create a new conversation to start chatting...";
         if (isReadOnly) return "This is a read-only session. Create a new session to chat.";
         if (isStreaming) return "Agent is responding...";
-        return "Type your message...";
+        if (isImproving) return "Improving prompt...";
+        if (isDragOver) return "Drop image here...";
+        return isSmallWindow ? "Type your message..." : "Type your message... (drop or paste images)";
+    };
+
+    // Upload an image file to the session
+    const uploadImage = async (file) => {
+        if (!sessionId) return null;
+
+        // Validate file type
+        const validTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+        if (!validTypes.includes(file.type)) {
+            setUploadError('Only PNG, JPEG, GIF, and WebP images are supported');
+            setTimeout(() => setUploadError(null), 5000);
+            return null;
+        }
+
+        // Validate file size (10MB)
+        if (file.size > 10 * 1024 * 1024) {
+            setUploadError('Image exceeds 10MB limit');
+            setTimeout(() => setUploadError(null), 5000);
+            return null;
+        }
+
+        // Create a temporary preview
+        const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const previewUrl = URL.createObjectURL(file);
+        const tempImage = { id: tempId, url: previewUrl, name: file.name, mimeType: file.type, uploading: true };
+        setPendingImages(prev => [...prev, tempImage]);
+
+        try {
+            const formData = new FormData();
+            formData.append('image', file);
+
+            const response = await fetch(`/api/sessions/${sessionId}/images`, {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.message || 'Failed to upload image');
+            }
+
+            const data = await response.json();
+
+            // Replace temp image with uploaded image
+            setPendingImages(prev => prev.map(img =>
+                img.id === tempId
+                    ? { id: data.id, url: data.url, name: data.name, mimeType: data.mime_type, uploading: false }
+                    : img
+            ));
+
+            // Revoke the temporary blob URL
+            URL.revokeObjectURL(previewUrl);
+
+            return data;
+        } catch (err) {
+            console.error('Failed to upload image:', err);
+            setUploadError(err.message || 'Failed to upload image');
+            setTimeout(() => setUploadError(null), 5000);
+            // Remove the temp image
+            setPendingImages(prev => prev.filter(img => img.id !== tempId));
+            URL.revokeObjectURL(previewUrl);
+            return null;
+        }
+    };
+
+    // Upload images from file paths (for native macOS app)
+    const uploadImagesFromPaths = async (paths) => {
+        if (!sessionId || !paths || paths.length === 0) return [];
+
+        // Create temporary placeholders for each path
+        const tempImages = paths.map(path => {
+            const filename = path.split('/').pop() || 'image';
+            const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            return { id: tempId, filename, path };
+        });
+
+        // Add placeholders to pending images (without preview URL since we don't have the image data)
+        tempImages.forEach(({ id, filename }) => {
+            setPendingImages(prev => [...prev, { id, url: '', name: filename, mimeType: '', uploading: true }]);
+        });
+
+        try {
+            const response = await fetch(`/api/sessions/${sessionId}/images/from-path`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ paths }),
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.message || 'Failed to upload images');
+            }
+
+            const results = await response.json();
+
+            // Remove all temp placeholders
+            const tempIds = tempImages.map(t => t.id);
+            setPendingImages(prev => prev.filter(img => !tempIds.includes(img.id)));
+
+            // Add uploaded images
+            for (const data of results) {
+                setPendingImages(prev => [...prev, {
+                    id: data.id,
+                    url: data.url,
+                    name: data.name,
+                    mimeType: data.mime_type,
+                    uploading: false
+                }]);
+            }
+
+            return results;
+        } catch (err) {
+            console.error('Failed to upload images from paths:', err);
+            setUploadError(err.message || 'Failed to upload images');
+            setTimeout(() => setUploadError(null), 5000);
+            // Remove temp placeholders
+            const tempIds = tempImages.map(t => t.id);
+            setPendingImages(prev => prev.filter(img => !tempIds.includes(img.id)));
+            return [];
+        }
+    };
+
+    // Handle attach button click - uses native picker on macOS, file input otherwise
+    const handleAttachClick = async () => {
+        if (hasNativeImagePicker()) {
+            // Use native macOS image picker
+            const paths = await pickImages();
+            if (paths && paths.length > 0) {
+                await uploadImagesFromPaths(paths);
+            }
+        } else {
+            // Fall back to file input
+            if (fileInputRef.current) {
+                fileInputRef.current.click();
+            }
+        }
+    };
+
+    // Handle file drop
+    const handleDrop = async (e) => {
+        e.preventDefault();
+        setIsDragOver(false);
+
+        if (isFullyDisabled || isReadOnly || !sessionId) return;
+
+        const files = Array.from(e.dataTransfer.files);
+        const imageFiles = files.filter(f => f.type.startsWith('image/'));
+
+        for (const file of imageFiles) {
+            await uploadImage(file);
+        }
+    };
+
+    const handleDragOver = (e) => {
+        e.preventDefault();
+        if (!isFullyDisabled && !isReadOnly && sessionId) {
+            setIsDragOver(true);
+        }
+    };
+
+    const handleDragLeave = (e) => {
+        e.preventDefault();
+        setIsDragOver(false);
+    };
+
+    // Handle paste (for clipboard images)
+    const handlePaste = async (e) => {
+        if (isFullyDisabled || isReadOnly || !sessionId) return;
+
+        const items = Array.from(e.clipboardData.items);
+        const imageItems = items.filter(item => item.type.startsWith('image/'));
+
+        if (imageItems.length > 0) {
+            e.preventDefault(); // Prevent pasting image as text
+            for (const item of imageItems) {
+                const file = item.getAsFile();
+                if (file) {
+                    await uploadImage(file);
+                }
+            }
+        }
+    };
+
+    // Remove a pending image
+    const removeImage = (imageId) => {
+        setPendingImages(prev => {
+            const img = prev.find(i => i.id === imageId);
+            if (img && img.url.startsWith('blob:')) {
+                URL.revokeObjectURL(img.url);
+            }
+            return prev.filter(i => i.id !== imageId);
+        });
+    };
+
+    // Handle file input change
+    const handleFileInputChange = async (e) => {
+        const files = Array.from(e.target.files);
+        for (const file of files) {
+            await uploadImage(file);
+        }
+        // Reset input so the same file can be selected again
+        e.target.value = '';
     };
 
     const hasPrompts = predefinedPrompts && predefinedPrompts.length > 0;
+    const hasPendingImages = pendingImages.length > 0;
 
     return html`
-        <form onSubmit=${handleSubmit} class="p-4 bg-mitto-input border-t border-slate-700">
+        <form
+            onSubmit=${handleSubmit}
+            onDrop=${handleDrop}
+            onDragOver=${handleDragOver}
+            onDragLeave=${handleDragLeave}
+            class="p-4 bg-mitto-input border-t border-slate-700 ${isDragOver ? 'ring-2 ring-blue-500 ring-inset' : ''}"
+        >
+            <!-- Hidden file input for image picker -->
+            <input
+                ref=${fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                multiple
+                class="hidden"
+                onChange=${handleFileInputChange}
+            />
+
+            <!-- Image preview area -->
+            ${hasPendingImages && html`
+                <div class="max-w-4xl mx-auto mb-3">
+                    <div class="flex flex-wrap gap-2">
+                        ${pendingImages.map(img => html`
+                            <div key=${img.id} class="relative group">
+                                <img
+                                    src=${img.url}
+                                    alt=${img.name || 'Pending image'}
+                                    class="w-16 h-16 rounded-lg object-cover border border-slate-600 ${img.uploading ? 'opacity-50' : ''}"
+                                />
+                                ${img.uploading ? html`
+                                    <div class="absolute inset-0 flex items-center justify-center">
+                                        <svg class="w-5 h-5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                    </div>
+                                ` : html`
+                                    <button
+                                        type="button"
+                                        onClick=${() => removeImage(img.id)}
+                                        class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 hover:bg-red-700 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                        title="Remove image"
+                                    >
+                                        <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                    </button>
+                                `}
+                            </div>
+                        `)}
+                    </div>
+                </div>
+            `}
+
             <div class="flex gap-2 max-w-4xl mx-auto">
                 <textarea
                     ref=${textareaRef}
                     value=${text}
                     onInput=${handleInput}
                     onKeyDown=${handleKeyDown}
+                    onPaste=${handlePaste}
                     placeholder=${getPlaceholder()}
                     rows="1"
-                    class="flex-1 bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled || isReadOnly ? 'opacity-50 cursor-not-allowed' : ''}"
-                    disabled=${isFullyDisabled || isReadOnly}
+                    class="flex-1 bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled || isReadOnly || isImproving ? 'opacity-50 cursor-not-allowed' : ''}"
+                    disabled=${isFullyDisabled || isReadOnly || isImproving}
                 />
                 <!-- Split button container -->
                 <div class="relative self-end" ref=${dropupRef}>
@@ -1510,29 +1968,45 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
                         </div>
                     `}
 
-                    <!-- Button group -->
-                    <div class="flex gap-1 items-end">
-                        <!-- Magic wand button -->
-                        <button
-                            type="button"
-                            onClick=${handleImprovePrompt}
-                            disabled=${isFullyDisabled || !text.trim() || isReadOnly || isStreaming || isImproving}
-                            class="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-3 py-3 rounded-xl transition-colors"
-                            title="Improve prompt with AI"
-                        >
-                            ${isImproving ? html`
-                                <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                            ` : html`
+                    <!-- Button group: horizontal on desktop, stacked on mobile -->
+                    <div class="flex sm:flex-row gap-1.5 items-center">
+                        <!-- Auxiliary buttons (attach + magic wand) - hidden on mobile, shown on sm+ screens -->
+                        <div class="hidden sm:flex gap-1">
+                            <!-- Image attach button -->
+                            <button
+                                type="button"
+                                onClick=${handleAttachClick}
+                                disabled=${isFullyDisabled || isReadOnly || isStreaming}
+                                class="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-3 py-3 rounded-xl transition-colors"
+                                title="Attach image"
+                            >
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                                 </svg>
-                            `}
-                        </button>
+                            </button>
 
-                        <!-- Split button -->
+                            <!-- Magic wand button -->
+                            <button
+                                type="button"
+                                onClick=${handleImprovePrompt}
+                                disabled=${isFullyDisabled || !text.trim() || isReadOnly || isStreaming || isImproving}
+                                class="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-3 rounded-xl transition-colors"
+                                title="Improve prompt with AI"
+                            >
+                                ${isImproving ? html`
+                                    <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                ` : html`
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                                    </svg>
+                                `}
+                            </button>
+                        </div>
+
+                        <!-- Split button (send/stop + dropdown) -->
                         <div class="flex rounded-xl overflow-hidden">
                             <!-- Primary send/stop button -->
                             ${isStreaming ? html`
@@ -1549,8 +2023,8 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
                             ` : html`
                                 <button
                                     type="submit"
-                                    disabled=${isFullyDisabled || !text.trim() || isReadOnly}
-                                    class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white px-5 py-3 font-medium transition-colors"
+                                    disabled=${isFullyDisabled || (!text.trim() && !hasPendingImages) || isReadOnly}
+                                    class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3 font-medium transition-colors"
                                 >
                                     Send
                                 </button>
@@ -1584,6 +2058,26 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
                         <button
                             type="button"
                             onClick=${() => setImproveError(null)}
+                            class="ml-auto text-red-300 hover:text-red-100"
+                        >
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            `}
+            <!-- Error toast for image upload -->
+            ${uploadError && html`
+                <div class="max-w-4xl mx-auto mt-2">
+                    <div class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        <span>${uploadError}</span>
+                        <button
+                            type="button"
+                            onClick=${() => setUploadError(null)}
                             class="ml-auto text-red-300 hover:text-red-100"
                         >
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1843,19 +2337,22 @@ function CleanInactiveDialog({ isOpen, inactiveCount, onConfirm, onCancel }) {
 // =============================================================================
 
 // Define keyboard shortcuts in a central location for easy maintenance
-// Note: Some shortcuts only work in the native macOS app
+// Note: Some shortcuts only work in the native macOS app (handled by native menu)
 const KEYBOARD_SHORTCUTS = [
     // Global hotkey (works even when app is not focused - macOS app only)
-    { keys: '⌘⇧M', description: 'Show/hide window', macOnly: true, section: 'Global' },
-    // File menu shortcuts
-    { keys: '⌘N', description: 'New conversation', section: 'Conversations' },
-    { keys: '⌘W', description: 'Close conversation', section: 'Conversations' },
+    { keys: '⌘⌃M', description: 'Show/hide window', macOnly: true, section: 'Global' },
+    // File menu shortcuts (native menu in macOS app, not available in browser)
+    { keys: '⌘N', description: 'New conversation', macOnly: true, section: 'Conversations' },
+    { keys: '⌘W', description: 'Close conversation', macOnly: true, section: 'Conversations' },
+    // Web shortcuts (work in both macOS app and browser)
     { keys: '⌘1-9', description: 'Switch to conversation 1-9', section: 'Conversations' },
-    // View menu shortcuts
+    { keys: '⌘⌃↑', description: 'Previous conversation', macOnly: true, section: 'Conversations' },
+    { keys: '⌘⌃↓', description: 'Next conversation', macOnly: true, section: 'Conversations' },
     { keys: '⌘,', description: 'Settings', section: 'Navigation' },
-    { keys: '⌘L', description: 'Focus input', section: 'Navigation' },
-    { keys: '⌘⇧S', description: 'Toggle sidebar', section: 'Navigation' },
-    // Input shortcuts
+    // View menu shortcuts (native menu in macOS app, not available in browser)
+    { keys: '⌘L', description: 'Focus input', macOnly: true, section: 'Navigation' },
+    { keys: '⌘⇧S', description: 'Toggle sidebar', macOnly: true, section: 'Navigation' },
+    // Input shortcuts (work in both macOS app and browser)
     { keys: '⌃P', description: 'Improve prompt (magic wand)', section: 'Input' },
 ];
 
@@ -1876,9 +2373,14 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [onClose]);
 
-    // Group shortcuts by section
+    // Filter shortcuts based on environment and group by section
+    // In browser (not macOS app), hide macOnly shortcuts since they're handled by native menu
     const sections = {};
     KEYBOARD_SHORTCUTS.forEach(shortcut => {
+        // Skip macOnly shortcuts when not in the macOS app
+        if (shortcut.macOnly && !isMacApp) {
+            return;
+        }
         const section = shortcut.section || 'General';
         if (!sections[section]) {
             sections[section] = [];
@@ -1888,7 +2390,7 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
 
     return html`
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick=${onClose}>
-            <div class="bg-mitto-sidebar rounded-xl p-6 w-[420px] shadow-2xl max-h-[80vh] overflow-y-auto" onClick=${e => e.stopPropagation()}>
+            <div class="bg-mitto-sidebar rounded-xl p-6 w-[420px] md:w-[700px] shadow-2xl max-h-[80vh] overflow-y-auto" onClick=${e => e.stopPropagation()}>
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="text-lg font-semibold">Keyboard Shortcuts</h3>
                     <button
@@ -1901,7 +2403,7 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
                         </svg>
                     </button>
                 </div>
-                <div class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     ${Object.entries(sections).map(([sectionName, shortcuts]) => html`
                         <div key=${sectionName}>
                             <h4 class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">${sectionName}</h4>
@@ -1938,6 +2440,11 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
 // =============================================================================
 
 function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
+    // Sort workspaces alphabetically by working_dir for deterministic ordering
+    const sortedWorkspaces = useMemo(() => {
+        return [...workspaces].sort((a, b) => a.working_dir.localeCompare(b.working_dir));
+    }, [workspaces]);
+
     // Handle keyboard shortcuts (1-9) to select workspaces
     useEffect(() => {
         if (!isOpen) return;
@@ -1947,9 +2454,9 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
             const key = e.key;
             if (key >= '1' && key <= '9') {
                 const index = parseInt(key, 10) - 1;
-                if (index < workspaces.length) {
+                if (index < sortedWorkspaces.length) {
                     e.preventDefault();
-                    onSelect(workspaces[index]);
+                    onSelect(sortedWorkspaces[index]);
                 }
             }
             // Escape to cancel
@@ -1961,7 +2468,7 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isOpen, workspaces, onSelect, onCancel]);
+    }, [isOpen, sortedWorkspaces, onSelect, onCancel]);
 
     if (!isOpen) return null;
 
@@ -1973,7 +2480,7 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
                     Click on a workspace or press its number to select it.
                 </p>
                 <div class="space-y-2">
-                    ${workspaces.map((ws, index) => html`
+                    ${sortedWorkspaces.map((ws, index) => html`
                         <button
                             key=${ws.working_dir}
                             onClick=${() => onSelect(ws)}
@@ -2063,6 +2570,10 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
 
     // UI settings state (macOS only)
     const [agentCompletedSound, setAgentCompletedSound] = useState(false);
+    const [showInAllSpaces, setShowInAllSpaces] = useState(false);
+
+    // Confirmation settings (all platforms)
+    const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
 
     // Check if running in the native macOS app
     const isMacApp = typeof window.mittoPickFolder === 'function';
@@ -2165,6 +2676,10 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
 
             // Load UI settings (macOS only)
             setAgentCompletedSound(config.ui?.mac?.notifications?.sounds?.agent_completed || false);
+            setShowInAllSpaces(config.ui?.mac?.show_in_all_spaces || false);
+
+            // Load confirmation settings (all platforms, default to true)
+            setConfirmDeleteSession(config.ui?.confirmations?.delete_session !== false);
 
             // Set default server for new workspace
             if (servers.length > 0) {
@@ -2239,16 +2754,25 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
             // Add prompts
             webConfig.prompts = prompts;
 
-            // Build UI config (macOS only)
-            const uiConfig = isMacApp ? {
-                mac: {
+            // Build UI config
+            const uiConfig = {
+                // Confirmations (all platforms)
+                confirmations: {
+                    delete_session: confirmDeleteSession
+                }
+            };
+
+            // Add macOS-specific settings
+            if (isMacApp) {
+                uiConfig.mac = {
                     notifications: {
                         sounds: {
                             agent_completed: agentCompletedSound
                         }
-                    }
-                }
-            } : undefined;
+                    },
+                    show_in_all_spaces: showInAllSpaces
+                };
+            }
 
             const config = {
                 workspaces: workspaces,
@@ -2292,10 +2816,8 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
 
             // Build success message based on what was applied
             let successMsg = 'Configuration saved successfully';
-            let showExternalPort = false;
             if (externalAccessActive && actualExternalPort) {
                 successMsg = `Configuration saved. External access on port ${actualExternalPort}`;
-                showExternalPort = true;
             } else if (result.applied) {
                 const details = [];
                 if (result.applied.external_access_enabled) {
@@ -2311,11 +2833,8 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
             setSuccess(successMsg);
             onSave?.();
 
-            // If showing external port info, don't auto-close - let user see the port
-            // Otherwise close dialog after short delay
-            if (!showExternalPort) {
-                setTimeout(() => onClose?.(), 500);
-            }
+            // Always close dialog after short delay
+            setTimeout(() => onClose?.(), 500);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -2526,14 +3045,12 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                     >
                         Web
                     </button>
-                    ${isMacApp && html`
-                        <button
-                            onClick=${() => setActiveTab('ui')}
-                            class="flex-1 px-4 py-3 text-sm font-medium transition-colors ${activeTab === 'ui' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-white'}"
-                        >
-                            UI
-                        </button>
-                    `}
+                    <button
+                        onClick=${() => setActiveTab('ui')}
+                        class="flex-1 px-4 py-3 text-sm font-medium transition-colors ${activeTab === 'ui' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-white'}"
+                    >
+                        UI
+                    </button>
                 </div>
 
                 <!-- Content -->
@@ -2985,7 +3502,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                 ${authEnabled && html`
                                     <div class="space-y-3 pt-2">
                                         <h4 class="text-sm font-medium text-gray-300">Lifecycle Hooks</h4>
-                                        <p class="text-xs text-gray-500">Commands to run when the server starts or stops. Useful for setting up tunnels (ngrok, Tailscale, etc.). Use \${PORT} as a placeholder for the server port.</p>
+                                        <p class="text-xs text-gray-500">Commands to run when the server starts or stops. Useful for setting up tunnels (<a href="https://github.com/inercia/mitto/blob/main/docs/config-web.md#using-ngrok" onClick=${(e) => { e.preventDefault(); openExternalURL('https://github.com/inercia/mitto/blob/main/docs/config-web.md#using-ngrok'); }} class="text-blue-400 hover:underline cursor-pointer">ngrok</a>, <a href="https://github.com/inercia/mitto/blob/main/docs/config-web.md#using-tailscale-funnel" onClick=${(e) => { e.preventDefault(); openExternalURL('https://github.com/inercia/mitto/blob/main/docs/config-web.md#using-tailscale-funnel'); }} class="text-blue-400 hover:underline cursor-pointer">Tailscale</a>, etc.). Use \${PORT} as a placeholder for the server port.</p>
 
                                         <div class="p-4 bg-slate-800/30 rounded-lg space-y-3">
                                             <div class="flex items-center gap-3">
@@ -3014,31 +3531,70 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                             </div>
                         `}
 
-                        <!-- UI Tab (macOS only) -->
-                        ${activeTab === 'ui' && isMacApp && html`
+                        <!-- UI Tab -->
+                        ${activeTab === 'ui' && html`
                             <div class="space-y-4">
-                                <p class="text-gray-400 text-sm">Configure macOS-specific UI settings.</p>
+                                <p class="text-gray-400 text-sm">Configure UI preferences.</p>
 
-                                <!-- Notifications Section -->
+                                <!-- Confirmations Section -->
                                 <div class="space-y-3">
-                                    <h4 class="text-sm font-medium text-gray-300">Notifications</h4>
+                                    <h4 class="text-sm font-medium text-gray-300">Confirmations</h4>
 
-                                    <div class="space-y-2">
-                                        <h5 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Sounds</h5>
+                                    <label class="flex items-center gap-3 p-4 bg-slate-800/30 rounded-lg cursor-pointer hover:bg-slate-800/50 transition-colors">
+                                        <input
+                                            type="checkbox"
+                                            checked=${confirmDeleteSession}
+                                            onChange=${e => setConfirmDeleteSession(e.target.checked)}
+                                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                        />
+                                        <div>
+                                            <div class="font-medium text-sm">Conversation delete</div>
+                                            <div class="text-xs text-gray-500">Show confirmation dialog before deleting a conversation</div>
+                                        </div>
+                                    </label>
+                                </div>
+
+                                <!-- macOS-specific sections -->
+                                ${isMacApp && html`
+                                    <!-- Window Section -->
+                                    <div class="space-y-3">
+                                        <h4 class="text-sm font-medium text-gray-300">Window</h4>
+
                                         <label class="flex items-center gap-3 p-4 bg-slate-800/30 rounded-lg cursor-pointer hover:bg-slate-800/50 transition-colors">
                                             <input
                                                 type="checkbox"
-                                                checked=${agentCompletedSound}
-                                                onChange=${e => setAgentCompletedSound(e.target.checked)}
+                                                checked=${showInAllSpaces}
+                                                onChange=${e => setShowInAllSpaces(e.target.checked)}
                                                 class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
                                             />
                                             <div>
-                                                <div class="font-medium text-sm">Agent Completed</div>
-                                                <div class="text-xs text-gray-500">Play a sound when the agent finishes its response</div>
+                                                <div class="font-medium text-sm">Show in All Spaces</div>
+                                                <div class="text-xs text-gray-500">Window appears in all macOS Spaces (virtual desktops). Requires app restart.</div>
                                             </div>
                                         </label>
                                     </div>
-                                </div>
+
+                                    <!-- Notifications Section -->
+                                    <div class="space-y-3">
+                                        <h4 class="text-sm font-medium text-gray-300">Notifications</h4>
+
+                                        <div class="space-y-2">
+                                            <h5 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Sounds</h5>
+                                            <label class="flex items-center gap-3 p-4 bg-slate-800/30 rounded-lg cursor-pointer hover:bg-slate-800/50 transition-colors">
+                                                <input
+                                                    type="checkbox"
+                                                    checked=${agentCompletedSound}
+                                                    onChange=${e => setAgentCompletedSound(e.target.checked)}
+                                                    class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                                />
+                                                <div>
+                                                    <div class="font-medium text-sm">Agent Completed</div>
+                                                    <div class="text-xs text-gray-500">Play a sound when the agent finishes its response</div>
+                                                </div>
+                                            </label>
+                                        </div>
+                                    </div>
+                                `}
                             </div>
                         `}
                     `}
@@ -3360,7 +3916,7 @@ function SessionItem({ session, isActive, onSelect, onRename, onDelete, workspac
 // Session List Component (Sidebar)
 // =============================================================================
 
-function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect, onNewSession, onCleanInactive, onRename, onDelete, onClose, workspaces, theme, onToggleTheme, fontSize, onToggleFontSize, onShowSettings, onShowKeyboardShortcuts, configReadonly = false }) {
+function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect, onNewSession, onCleanInactive, onRename, onDelete, onClose, workspaces, theme, onToggleTheme, fontSize, onToggleFontSize, onShowSettings, onShowKeyboardShortcuts, configReadonly = false, rcFilePath = null }) {
     // Combine active and stored sessions using shared helper function
     // Note: Not using useMemo to ensure working_dir is always up-to-date
     const allSessions = computeAllSessions(activeSessions, storedSessions);
@@ -3434,8 +3990,8 @@ function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect
             <!-- Footer with settings, theme and font size toggles -->
             <div class="p-4 border-t border-slate-700">
                 <div class="flex items-center justify-center gap-3">
-                    <!-- Settings button (hidden when config is read-only) -->
-                    ${!configReadonly && html`
+                    <!-- Settings button (disabled with tooltip when using RC file, hidden when fully read-only without RC file) -->
+                    ${!configReadonly ? html`
                         <button
                             onClick=${onShowSettings}
                             class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
@@ -3446,7 +4002,18 @@ function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                             </svg>
                         </button>
-                    `}
+                    ` : rcFilePath ? html`
+                        <button
+                            disabled
+                            class="p-2 rounded-lg opacity-50 cursor-not-allowed"
+                            title="Using ${rcFilePath}"
+                        >
+                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </button>
+                    ` : null}
                     <!-- Theme toggle -->
                     <div
                         class="theme-toggle-v2"
@@ -3554,8 +4121,10 @@ function App() {
     const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({ isOpen: false }); // Keyboard shortcuts dialog
     const [globalPrompts, setGlobalPrompts] = useState([]); // Global prompts from web.prompts
     const [acpServersWithPrompts, setAcpServersWithPrompts] = useState([]); // ACP servers with their per-server prompts
-    const [configReadonly, setConfigReadonly] = useState(false); // True when --config flag was used
+    const [configReadonly, setConfigReadonly] = useState(false); // True when --config flag was used or using RC file
+    const [rcFilePath, setRcFilePath] = useState(null); // Path to RC file when config is read-only due to RC file
     const [swipeDirection, setSwipeDirection] = useState(null); // 'left' or 'right' for animation
+    const [swipeArrow, setSwipeArrow] = useState(null); // 'left' or 'right' for arrow indicator
     const [toastVisible, setToastVisible] = useState(false);
     const [toastData, setToastData] = useState(null); // { sessionId, sessionName }
     const [loadingMore, setLoadingMore] = useState(false);
@@ -3603,6 +4172,14 @@ function App() {
             return () => clearTimeout(timer);
         }
     }, [swipeDirection, activeSessionId]);
+
+    // Clear swipe arrow indicator after animation completes (1 second)
+    useEffect(() => {
+        if (swipeArrow) {
+            const timer = setTimeout(() => setSwipeArrow(null), 1000);
+            return () => clearTimeout(timer);
+        }
+    }, [swipeArrow]);
 
     // Ref to track toast hide timer
     const toastTimerRef = useRef(null);
@@ -3680,13 +4257,14 @@ function App() {
         }
     }, [loadingMore, activeSessionId, hasMoreMessages, loadMoreMessages]);
 
-    // Navigate to previous/next session with animation direction
+    // Navigate to previous/next session with animation direction (wraps around for swipe gestures)
     const navigateToPreviousSession = useCallback(() => {
         if (allSessions.length <= 1) return;
         const currentIndex = allSessions.findIndex(s => s.session_id === activeSessionId);
         if (currentIndex === -1) return;
         const prevIndex = currentIndex === 0 ? allSessions.length - 1 : currentIndex - 1;
         setSwipeDirection('right'); // Content slides in from left
+        setSwipeArrow('right'); // Show right arrow (user swiped right)
         switchSession(allSessions[prevIndex].session_id);
     }, [allSessions, activeSessionId, switchSession]);
 
@@ -3696,7 +4274,26 @@ function App() {
         if (currentIndex === -1) return;
         const nextIndex = currentIndex === allSessions.length - 1 ? 0 : currentIndex + 1;
         setSwipeDirection('left'); // Content slides in from right
+        setSwipeArrow('left'); // Show left arrow (user swiped left)
         switchSession(allSessions[nextIndex].session_id);
+    }, [allSessions, activeSessionId, switchSession]);
+
+    // Navigate to session above in the list (no wrap-around, for keyboard shortcuts)
+    const navigateToSessionAbove = useCallback(() => {
+        if (allSessions.length <= 1) return;
+        const currentIndex = allSessions.findIndex(s => s.session_id === activeSessionId);
+        if (currentIndex === -1 || currentIndex === 0) return; // Already at top or not found
+        setSwipeDirection('right');
+        switchSession(allSessions[currentIndex - 1].session_id);
+    }, [allSessions, activeSessionId, switchSession]);
+
+    // Navigate to session below in the list (no wrap-around, for keyboard shortcuts)
+    const navigateToSessionBelow = useCallback(() => {
+        if (allSessions.length <= 1) return;
+        const currentIndex = allSessions.findIndex(s => s.session_id === activeSessionId);
+        if (currentIndex === -1 || currentIndex === allSessions.length - 1) return; // Already at bottom or not found
+        setSwipeDirection('left');
+        switchSession(allSessions[currentIndex + 1].session_id);
     }, [allSessions, activeSessionId, switchSession]);
 
     // Open sidebar handler for edge swipe
@@ -3727,6 +4324,30 @@ function App() {
     // Global keyboard shortcuts for Command+1-9 to switch sessions and Command+, for settings
     useEffect(() => {
         const handleGlobalKeyDown = (e) => {
+            // Command+Control+Up/Down to navigate between conversations (macOS)
+            if (e.metaKey && e.ctrlKey && !e.shiftKey && !e.altKey) {
+                if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    navigateToSessionAbove();
+                    setTimeout(() => {
+                        if (chatInputRef.current) {
+                            chatInputRef.current.focus();
+                        }
+                    }, 100);
+                    return;
+                }
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    navigateToSessionBelow();
+                    setTimeout(() => {
+                        if (chatInputRef.current) {
+                            chatInputRef.current.focus();
+                        }
+                    }, 100);
+                    return;
+                }
+            }
+
             // Check for Command (macOS) or Ctrl (other platforms)
             if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
                 const key = e.key;
@@ -3754,7 +4375,7 @@ function App() {
 
         window.addEventListener('keydown', handleGlobalKeyDown);
         return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-    }, [navigateToSessionByIndex, configReadonly]);
+    }, [navigateToSessionByIndex, navigateToSessionAbove, navigateToSessionBelow, configReadonly]);
 
     // State for UI theme style (v2 = Clawdbot-inspired)
     const [uiTheme, setUiTheme] = useState('default');
@@ -3782,9 +4403,13 @@ function App() {
                     console.log('[config] ACP servers with prompts:', config.acp_servers);
                     setAcpServersWithPrompts(config.acp_servers);
                 }
-                // Track if config is read-only (loaded from --config file)
+                // Track if config is read-only (loaded from --config file or RC file)
                 if (config?.config_readonly) {
                     setConfigReadonly(true);
+                    // If using an RC file, store the path for tooltip display
+                    if (config?.rc_file_path) {
+                        setRcFilePath(config.rc_file_path);
+                    }
                 }
                 // Load v2 stylesheet if configured
                 if (config?.web?.theme === 'v2') {
@@ -3940,7 +4565,18 @@ function App() {
         setHasNewMessages(false);
         prevMessagesLengthRef.current = 0;
         // Scroll to bottom when switching sessions
-        setTimeout(() => scrollToBottom(false), 50);
+        // Use multiple attempts to ensure content is fully rendered, especially on mobile
+        // First attempt immediately after state update
+        requestAnimationFrame(() => {
+            scrollToBottom(false);
+            // Second attempt after a short delay for initial render
+            setTimeout(() => {
+                scrollToBottom(false);
+                // Third attempt with longer delay for mobile devices where
+                // content loading/rendering may take more time
+                setTimeout(() => scrollToBottom(false), 150);
+            }, 50);
+        });
     }, [activeSessionId, scrollToBottom]);
 
     // Ref for the chat input component to allow focusing from native menu
@@ -3991,6 +4627,13 @@ function App() {
             setShowSidebar(prev => !prev);
         };
 
+        // Show Settings - called from native Cmd+, menu
+        window.mittoShowSettings = () => {
+            if (!configReadonly) {
+                setSettingsDialog({ isOpen: true, forceOpen: false });
+            }
+        };
+
         // Close Conversation - called from native Cmd+W menu
         window.mittoCloseConversation = async () => {
             if (!activeSessionId) return;
@@ -4016,9 +4659,10 @@ function App() {
             delete window.mittoNewConversation;
             delete window.mittoFocusInput;
             delete window.mittoToggleSidebar;
+            delete window.mittoShowSettings;
             delete window.mittoCloseConversation;
         };
-    }, [newSession, workspaces, removeSession, fetchStoredSessions, activeSessionId, confirmDeleteSession, activeSessions, storedSessions]);
+    }, [newSession, workspaces, removeSession, fetchStoredSessions, activeSessionId, confirmDeleteSession, activeSessions, storedSessions, configReadonly]);
 
     const handleNewSession = async () => {
         // If no workspaces configured, open settings dialog (unless config is read-only)
@@ -4193,9 +4837,24 @@ function App() {
                 isOpen=${settingsDialog.isOpen}
                 forceOpen=${settingsDialog.forceOpen}
                 onClose=${() => setSettingsDialog({ isOpen: false, forceOpen: false })}
-                onSave=${() => {
+                onSave=${async () => {
                     // Refresh workspaces after saving
                     refreshWorkspaces();
+                    // Reload config to update prompts and UI settings
+                    try {
+                        const res = await fetch('/api/config');
+                        if (res.ok) {
+                            const config = await res.json();
+                            // Reload global prompts (use empty array if not present)
+                            setGlobalPrompts(config?.web?.prompts || []);
+                            // Reload ACP servers with their per-server prompts
+                            setAcpServersWithPrompts(config?.acp_servers || []);
+                            // Reload UI settings
+                            setConfirmDeleteSession(config?.ui?.confirmations?.delete_session !== false);
+                        }
+                    } catch (err) {
+                        console.error('Failed to reload config after save:', err);
+                    }
                 }}
             />
 
@@ -4242,6 +4901,7 @@ function App() {
                     onShowSettings=${handleShowSettings}
                     onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
                     configReadonly=${configReadonly}
+                    rcFilePath=${rcFilePath}
                 />
             </div>
 
@@ -4267,6 +4927,7 @@ function App() {
                             onShowSettings=${handleShowSettings}
                             onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
                             configReadonly=${configReadonly}
+                            rcFilePath=${rcFilePath}
                         />
                     </div>
                     <div class="flex-1 bg-black/50" onClick=${() => setShowSidebar(false)} />
@@ -4305,6 +4966,13 @@ function App() {
                 <div ref=${messagesContainerRef} class="flex-1 overflow-y-auto scroll-smooth scrollbar-hide p-4 relative">
                     ${swipeDirection && html`
                         <div key=${`flash-${activeSessionId}`} class="swipe-flash swipe-flash-${swipeDirection}" />
+                    `}
+                    ${swipeArrow && html`
+                        <div key=${`arrow-${activeSessionId}-${Date.now()}`} class="swipe-arrow-indicator">
+                            <div class="swipe-arrow-indicator__content">
+                                <span class="swipe-arrow-indicator__arrow">${swipeArrow === 'left' ? '←' : '→'}</span>
+                            </div>
+                        </div>
                     `}
                     <div key=${activeSessionId} class="max-w-4xl mx-auto ${swipeDirection ? `swipe-slide-${swipeDirection}` : ''}">
                         ${hasMoreMessages && html`

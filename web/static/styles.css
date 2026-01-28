@@ -34,6 +34,9 @@
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 .scroll-smooth { scroll-behavior: smooth; }
 
+/* Prevent horizontal scrolling in conversation area on mobile */
+.overflow-y-auto { overflow-x: hidden; }
+
 /* Message animation */
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(10px); }
@@ -74,6 +77,41 @@
 }
 .swipe-flash-right {
     background: linear-gradient(to right, rgba(59, 130, 246, 0.3), transparent 50%);
+}
+
+/* Swipe arrow indicator */
+@keyframes swipeArrowFadeInOut {
+    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+    15% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    75% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+}
+.swipe-arrow-indicator {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 100;
+    pointer-events: none;
+    animation: swipeArrowFadeInOut 1s ease-in-out forwards;
+}
+.swipe-arrow-indicator__content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100px;
+    height: 100px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.9), rgba(99, 102, 241, 0.85));
+    box-shadow: 0 8px 32px rgba(59, 130, 246, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(8px);
+}
+.swipe-arrow-indicator__arrow {
+    font-size: 48px;
+    font-weight: 300;
+    color: white;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    line-height: 1;
 }
 
 /* Toast notification for background session completion */
