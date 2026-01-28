@@ -58,7 +58,7 @@ func GenerateTitle(ctx context.Context, initialMessage string) (string, error) {
 	prompt := fmt.Sprintf(
 		`Consider this initial message in a conversation with an LLM: "%s"
 
-What title would you use for this conversation? Keep it very short, just 2 or 3 words. 
+What title would you use for this conversation? Keep it very short, just 2 or 3 words.
 Reply with ONLY the title, nothing else.`,
 		initialMessage,
 	)
@@ -78,6 +78,27 @@ Reply with ONLY the title, nothing else.`,
 	}
 
 	return title, nil
+}
+
+// ImprovePrompt enhances a user's prompt to make it clearer, more specific, and more effective.
+func ImprovePrompt(ctx context.Context, userPrompt string) (string, error) {
+	prompt := fmt.Sprintf(
+		`The user wants to improve the following prompt. Please enhance it by making it clearer, more specific, and more effective, while preserving the user's intent. Consider the current project context. Return ONLY the improved prompt text without any explanations or preamble.
+
+Original prompt:
+%s`,
+		userPrompt,
+	)
+
+	response, err := Prompt(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("failed to improve prompt: %w", err)
+	}
+
+	// Clean up the response - remove quotes, trim whitespace
+	improved := trimQuotes(response)
+
+	return improved, nil
 }
 
 // trimQuotes removes surrounding quotes from a string.

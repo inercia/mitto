@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/coder/acp-go-sdk"
+
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 )
 
 // auxiliaryClient implements acp.Client for the auxiliary session.
@@ -58,30 +60,7 @@ func (c *auxiliaryClient) SessionUpdate(ctx context.Context, params acp.SessionN
 // RequestPermission auto-approves all permission requests.
 // The auxiliary session should never block on permissions.
 func (c *auxiliaryClient) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	// Find the first "allow" option, or use the first option
-	for _, opt := range params.Options {
-		if opt.Kind == acp.PermissionOptionKindAllowOnce || opt.Kind == acp.PermissionOptionKindAllowAlways {
-			return acp.RequestPermissionResponse{
-				Outcome: acp.RequestPermissionOutcome{
-					Selected: &acp.RequestPermissionOutcomeSelected{OptionId: opt.OptionId},
-				},
-			}, nil
-		}
-	}
-
-	// Fallback to first option
-	if len(params.Options) > 0 {
-		return acp.RequestPermissionResponse{
-			Outcome: acp.RequestPermissionOutcome{
-				Selected: &acp.RequestPermissionOutcomeSelected{OptionId: params.Options[0].OptionId},
-			},
-		}, nil
-	}
-
-	// No options available, cancel
-	return acp.RequestPermissionResponse{
-		Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
-	}, nil
+	return mittoAcp.AutoApprovePermission(params.Options), nil
 }
 
 // WriteTextFile handles file write requests - deny for auxiliary session.
