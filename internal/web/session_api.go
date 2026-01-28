@@ -2,19 +2,151 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/inercia/mitto/internal/session"
 )
 
-// handleListSessions handles GET /api/sessions
-func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+// handleSessions handles GET and POST /api/sessions
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListSessions(w, r)
+	case http.MethodPost:
+		s.handleCreateSession(w, r)
+	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// SessionCreateRequest represents a request to create a new session.
+type SessionCreateRequest struct {
+	Name       string `json:"name,omitempty"`
+	WorkingDir string `json:"working_dir,omitempty"`
+	ACPServer  string `json:"acp_server,omitempty"` // Optional: specify ACP server for the session
+}
+
+// handleCreateSession handles POST /api/sessions
+func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	var req SessionCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Allow empty body for default session creation
+		req = SessionCreateRequest{}
+	}
+
+	// Default name
+	if req.Name == "" {
+		req.Name = "New conversation"
+	}
+
+	// Determine workspace to use
+	var workspace *WorkspaceConfig
+	workspaces := s.config.GetWorkspaces()
+
+	if req.WorkingDir != "" {
+		// User specified a working directory - find matching workspace
+		for i := range workspaces {
+			if workspaces[i].WorkingDir == req.WorkingDir {
+				workspace = &workspaces[i]
+				break
+			}
+		}
+		// If not found in workspaces but working dir provided, create ad-hoc workspace
+		if workspace == nil {
+			// Use default workspace's ACP config with the requested directory
+			defaultWs := s.config.GetDefaultWorkspace()
+			if defaultWs != nil {
+				workspace = &WorkspaceConfig{
+					ACPServer:  defaultWs.ACPServer,
+					ACPCommand: defaultWs.ACPCommand,
+					WorkingDir: req.WorkingDir,
+				}
+			}
+		}
+	} else if len(workspaces) == 1 {
+		// Single workspace configured - use it
+		workspace = &workspaces[0]
+		req.WorkingDir = workspace.WorkingDir
+	} else {
+		// Multiple workspaces - use default
+		workspace = s.config.GetDefaultWorkspace()
+		if workspace != nil {
+			req.WorkingDir = workspace.WorkingDir
+		}
+	}
+
+	// Fall back to current directory if still no working dir
+	if req.WorkingDir == "" {
+		req.WorkingDir, _ = os.Getwd()
+	}
+
+	// Validate that we have a valid ACP configuration
+	if workspace == nil || workspace.ACPCommand == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "no_workspace_configured",
+			"message": "No workspace configured. Please configure a workspace in Settings first.",
+		})
 		return
 	}
+
+	// Set the store on the session manager
+	store, err := session.DefaultStore()
+	if err == nil {
+		s.sessionManager.SetStore(store)
+	}
+
+	// Create the background session with workspace configuration
+	bs, err := s.sessionManager.CreateSessionWithWorkspace(req.Name, req.WorkingDir, workspace)
+	if err != nil {
+		if err == ErrTooManySessions {
+			http.Error(w, "Maximum number of sessions reached (32)", http.StatusServiceUnavailable)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Error("Failed to create session", "error", err)
+		}
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
+
+	// Determine the ACP server name for the response
+	acpServerName := s.config.ACPServer
+	if workspace != nil && workspace.ACPServer != "" {
+		acpServerName = workspace.ACPServer
+	}
+
+	// Broadcast session creation to all global events clients
+	s.eventsManager.Broadcast(WSMsgTypeSessionCreated, map[string]interface{}{
+		"session_id":     bs.GetSessionID(),
+		"acp_session_id": bs.GetACPID(),
+		"name":           req.Name,
+		"acp_server":     acpServerName,
+		"working_dir":    req.WorkingDir,
+		"status":         "active",
+	})
+
+	// Return session info
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"session_id":     bs.GetSessionID(),
+		"acp_session_id": bs.GetACPID(),
+		"name":           req.Name,
+		"acp_server":     acpServerName,
+		"working_dir":    req.WorkingDir,
+		"status":         "active",
+	})
+}
+
+// handleListSessions handles GET /api/sessions
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 	store, err := session.DefaultStore()
 	if err != nil {
@@ -35,9 +167,9 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sort by creation time, newest first
+	// Sort by update time, most recently used first
 	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -48,9 +180,9 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSessionDetail handles GET, PATCH, DELETE /api/sessions/{id} and GET /api/sessions/{id}/events
+// handleSessionDetail handles GET, PATCH, DELETE /api/sessions/{id}, GET /api/sessions/{id}/events, and WS /api/sessions/{id}/ws
 func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from path: /api/sessions/{id} or /api/sessions/{id}/events
+	// Extract session ID from path: /api/sessions/{id} or /api/sessions/{id}/events or /api/sessions/{id}/ws
 	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	parts := strings.Split(path, "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -59,11 +191,25 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := parts[0]
+
+	// Validate session ID format to prevent path traversal
+	if !IsValidSessionID(sessionID) {
+		http.Error(w, "Invalid session ID format", http.StatusBadRequest)
+		return
+	}
+
 	isEventsRequest := len(parts) > 1 && parts[1] == "events"
+	isWSRequest := len(parts) > 1 && parts[1] == "ws"
+
+	// Handle WebSocket upgrade for per-session connections
+	if isWSRequest {
+		s.handleSessionWS(w, r)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
-		s.handleGetSession(w, sessionID, isEventsRequest)
+		s.handleGetSession(w, r, sessionID, isEventsRequest)
 	case http.MethodPatch:
 		s.handleUpdateSession(w, r, sessionID)
 	case http.MethodDelete:
@@ -74,7 +220,10 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetSession handles GET /api/sessions/{id} and GET /api/sessions/{id}/events
-func (s *Server) handleGetSession(w http.ResponseWriter, sessionID string, isEventsRequest bool) {
+// For events, supports query parameters:
+//   - limit: maximum number of events to return (returns last N events)
+//   - before: only return events with seq < before (for pagination)
+func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessionID string, isEventsRequest bool) {
 	store, err := session.DefaultStore()
 	if err != nil {
 		if s.logger != nil {
@@ -86,8 +235,31 @@ func (s *Server) handleGetSession(w http.ResponseWriter, sessionID string, isEve
 	defer store.Close()
 
 	if isEventsRequest {
-		// Return session events
-		events, err := store.ReadEvents(sessionID)
+		// Parse query parameters for pagination
+		query := r.URL.Query()
+		var limit int
+		var beforeSeq int64
+
+		if limitStr := query.Get("limit"); limitStr != "" {
+			if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+				limit = l
+			}
+		}
+		if beforeStr := query.Get("before"); beforeStr != "" {
+			if b, err := strconv.ParseInt(beforeStr, 10, 64); err == nil && b > 0 {
+				beforeSeq = b
+			}
+		}
+
+		var events []session.Event
+		if limit > 0 {
+			// Use paginated read
+			events, err = store.ReadEventsLast(sessionID, limit, beforeSeq)
+		} else {
+			// Read all events (backward compatible)
+			events, err = store.ReadEvents(sessionID)
+		}
+
 		if err != nil {
 			if err == session.ErrSessionNotFound {
 				http.Error(w, "Session not found", http.StatusNotFound)
@@ -190,6 +362,78 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 	json.NewEncoder(w).Encode(meta)
 }
 
+// RunningSessionInfo contains information about a running session.
+type RunningSessionInfo struct {
+	SessionID   string `json:"session_id"`
+	Name        string `json:"name"`
+	WorkingDir  string `json:"working_dir"`
+	IsPrompting bool   `json:"is_prompting"`
+	PromptCount int    `json:"prompt_count"`
+}
+
+// RunningSessionsResponse is the response for GET /api/sessions/running
+type RunningSessionsResponse struct {
+	TotalRunning int                  `json:"total_running"`
+	Prompting    int                  `json:"prompting"`
+	Sessions     []RunningSessionInfo `json:"sessions"`
+}
+
+// handleRunningSessions handles GET /api/sessions/running
+// Returns information about all running sessions, including which ones are actively prompting.
+func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	store, err := session.DefaultStore()
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to access session store", "error", err)
+		}
+		http.Error(w, "Failed to access session store", http.StatusInternalServerError)
+		return
+	}
+	defer store.Close()
+
+	// Get list of running session IDs
+	runningIDs := s.sessionManager.ListRunningSessions()
+
+	response := RunningSessionsResponse{
+		TotalRunning: len(runningIDs),
+		Sessions:     make([]RunningSessionInfo, 0, len(runningIDs)),
+	}
+
+	for _, sessionID := range runningIDs {
+		bs := s.sessionManager.GetSession(sessionID)
+		if bs == nil {
+			continue
+		}
+
+		info := RunningSessionInfo{
+			SessionID:   sessionID,
+			IsPrompting: bs.IsPrompting(),
+			PromptCount: bs.GetPromptCount(),
+		}
+
+		// Get session metadata for name and working dir
+		meta, err := store.GetMetadata(sessionID)
+		if err == nil {
+			info.Name = meta.Name
+			info.WorkingDir = meta.WorkingDir
+		}
+
+		if info.IsPrompting {
+			response.Prompting++
+		}
+
+		response.Sessions = append(response.Sessions, info)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 // handleDeleteSession handles DELETE /api/sessions/{id}
 func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 	// First, close any running background session for this ID
@@ -222,6 +466,181 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 
 	// Broadcast the deletion to all connected WebSocket clients
 	s.BroadcastSessionDeleted(sessionID)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleWorkspaces handles /api/workspaces
+// GET: List all workspaces
+// POST: Add a new workspace
+// DELETE: Remove a workspace (via query param ?dir=...)
+func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetWorkspaces(w, r)
+	case http.MethodPost:
+		s.handleAddWorkspace(w, r)
+	case http.MethodDelete:
+		s.handleRemoveWorkspace(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleGetWorkspaces returns the list of workspaces and available ACP servers
+func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
+	workspaces := s.sessionManager.GetWorkspaces()
+
+	// Get available ACP servers from config
+	var acpServers []map[string]string
+	if s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			acpServers = append(acpServers, map[string]string{
+				"name":    srv.Name,
+				"command": srv.Command,
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"workspaces":  workspaces,
+		"acp_servers": acpServers,
+	})
+}
+
+// WorkspaceAddRequest represents a request to add a new workspace
+type WorkspaceAddRequest struct {
+	ACPServer  string `json:"acp_server"`
+	WorkingDir string `json:"working_dir"`
+	Color      string `json:"color,omitempty"`
+}
+
+// handleAddWorkspace adds a new workspace
+func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
+	var req WorkspaceAddRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.WorkingDir == "" {
+		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.ACPServer == "" {
+		http.Error(w, "acp_server is required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate the directory exists
+	info, err := os.Stat(req.WorkingDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Directory does not exist: %s", req.WorkingDir), http.StatusBadRequest)
+		return
+	}
+	if !info.IsDir() {
+		http.Error(w, fmt.Sprintf("Path is not a directory: %s", req.WorkingDir), http.StatusBadRequest)
+		return
+	}
+
+	// Get the ACP server command from config
+	var acpCommand string
+	if s.config.MittoConfig != nil {
+		srv, err := s.config.MittoConfig.GetServer(req.ACPServer)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Unknown ACP server: %s", req.ACPServer), http.StatusBadRequest)
+			return
+		}
+		acpCommand = srv.Command
+	} else {
+		// Fallback: use server name as command
+		acpCommand = req.ACPServer
+	}
+
+	// Check if workspace already exists
+	if ws := s.sessionManager.GetWorkspace(req.WorkingDir); ws != nil {
+		http.Error(w, fmt.Sprintf("Workspace already exists for directory: %s", req.WorkingDir), http.StatusConflict)
+		return
+	}
+
+	// Add the workspace
+	newWorkspace := WorkspaceConfig{
+		ACPServer:  req.ACPServer,
+		ACPCommand: acpCommand,
+		WorkingDir: req.WorkingDir,
+		Color:      req.Color,
+	}
+	s.sessionManager.AddWorkspace(newWorkspace)
+
+	// Also update the server config
+	s.config.Workspaces = s.sessionManager.GetWorkspaces()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(newWorkspace)
+}
+
+// handleRemoveWorkspace removes a workspace
+func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
+	workingDir := r.URL.Query().Get("dir")
+	if workingDir == "" {
+		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if workspace exists
+	if ws := s.sessionManager.GetWorkspace(workingDir); ws == nil {
+		http.Error(w, fmt.Sprintf("Workspace not found for directory: %s", workingDir), http.StatusNotFound)
+		return
+	}
+
+	// Check if there are conversations using this workspace
+	store, err := session.DefaultStore()
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to create session store", "error", err)
+		}
+		http.Error(w, "Failed to check workspace usage", http.StatusInternalServerError)
+		return
+	}
+	defer store.Close()
+
+	sessions, err := store.List()
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to list sessions", "error", err)
+		}
+		http.Error(w, "Failed to check workspace usage", http.StatusInternalServerError)
+		return
+	}
+
+	// Count conversations using this workspace
+	var conversationCount int
+	for _, sess := range sessions {
+		if sess.WorkingDir == workingDir {
+			conversationCount++
+		}
+	}
+
+	if conversationCount > 0 {
+		// Return error with count - don't allow deletion
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":              "workspace_in_use",
+			"message":            fmt.Sprintf("Cannot delete workspace: %d conversation(s) are using it", conversationCount),
+			"conversation_count": conversationCount,
+		})
+		return
+	}
+
+	// Remove the workspace
+	s.sessionManager.RemoveWorkspace(workingDir)
+
+	// Also update the server config
+	s.config.Workspaces = s.sessionManager.GetWorkspaces()
 
 	w.WriteHeader(http.StatusNoContent)
 }

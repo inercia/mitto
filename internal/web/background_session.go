@@ -11,12 +11,13 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/session"
 )
 
 // BackgroundSession manages an ACP session that runs independently of WebSocket connections.
 // It continues running even when no client is connected, persisting all events to disk.
-// Clients can attach/detach to receive real-time updates.
+// Multiple observers can subscribe to receive real-time updates.
 type BackgroundSession struct {
 	// Immutable identifiers
 	persistedID string // Session ID for persistence and routing
@@ -37,7 +38,11 @@ type BackgroundSession struct {
 	cancel context.CancelFunc
 	closed atomic.Int32
 
-	// Attached client (can be nil when no client is connected)
+	// Observers (multiple clients can observe this session)
+	observersMu sync.RWMutex
+	observers   map[SessionObserver]struct{}
+
+	// Legacy client support (for backward compatibility during migration)
 	clientMu sync.RWMutex
 	client   *WSClient
 
@@ -53,6 +58,11 @@ type BackgroundSession struct {
 	// Configuration
 	autoApprove bool
 	logger      *slog.Logger
+
+	// Resume state - for injecting conversation history
+	isResumed       bool           // True if this session was resumed from storage
+	store           *session.Store // Store reference for reading history
+	historyInjected bool           // True after history has been injected
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -80,13 +90,15 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 		agentMsgBuffer:  &agentMessageBuffer{},
 		agentThoughtBuf: &agentMessageBuffer{},
 		permissionChan:  make(chan acp.RequestPermissionResponse, 1),
+		observers:       make(map[SessionObserver]struct{}),
 	}
 
 	// Create recorder for persistence
 	if config.Store != nil {
 		bs.recorder = session.NewRecorder(config.Store)
 		bs.persistedID = bs.recorder.SessionID()
-		if err := bs.recorder.Start(config.ACPServer, config.WorkingDir); err != nil {
+		// Use StartWithCommand to store the ACP command for session resume
+		if err := bs.recorder.StartWithCommand(config.ACPServer, config.ACPCommand, config.WorkingDir); err != nil {
 			cancel()
 			return nil, err
 		}
@@ -95,6 +107,57 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 			config.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
 				meta.Name = config.SessionName
 			})
+		}
+	}
+
+	// Start ACP process
+	if err := bs.startACPProcess(config.ACPCommand, config.WorkingDir); err != nil {
+		cancel()
+		if bs.recorder != nil {
+			bs.recorder.End("failed_to_start")
+		}
+		return nil, err
+	}
+
+	return bs, nil
+}
+
+// ResumeBackgroundSession creates a background session for an existing persisted session.
+// This is used when switching to an old conversation - we create a new ACP connection
+// but continue recording to the existing session.
+func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, error) {
+	if config.PersistedID == "" {
+		return nil, &sessionError{"persisted session ID is required for resume"}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	bs := &BackgroundSession{
+		persistedID:     config.PersistedID,
+		ctx:             ctx,
+		cancel:          cancel,
+		autoApprove:     config.AutoApprove,
+		logger:          config.Logger,
+		agentMsgBuffer:  &agentMessageBuffer{},
+		agentThoughtBuf: &agentMessageBuffer{},
+		permissionChan:  make(chan acp.RequestPermissionResponse, 1),
+		observers:       make(map[SessionObserver]struct{}),
+		isResumed:       true, // Mark as resumed session
+		store:           config.Store,
+	}
+
+	// Resume recorder for the existing session
+	if config.Store != nil {
+		bs.recorder = session.NewRecorderWithID(config.Store, config.PersistedID)
+		if err := bs.recorder.Resume(); err != nil {
+			cancel()
+			return nil, &sessionError{"failed to resume session recording: " + err.Error()}
+		}
+		// Update the metadata to mark it as active again
+		if err := config.Store.UpdateMetadata(config.PersistedID, func(m *session.Metadata) {
+			m.Status = "active"
+		}); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to update session status", "error", err)
 		}
 	}
 
@@ -175,6 +238,47 @@ func (bs *BackgroundSession) HasAttachedClient() bool {
 	return bs.GetAttachedClient() != nil
 }
 
+// --- Observer Management (new architecture) ---
+
+// AddObserver adds an observer to receive session events.
+// Multiple observers can be added to the same session.
+func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
+	bs.observersMu.Lock()
+	defer bs.observersMu.Unlock()
+	if bs.observers == nil {
+		bs.observers = make(map[SessionObserver]struct{})
+	}
+	bs.observers[observer] = struct{}{}
+}
+
+// RemoveObserver removes an observer from the session.
+func (bs *BackgroundSession) RemoveObserver(observer SessionObserver) {
+	bs.observersMu.Lock()
+	defer bs.observersMu.Unlock()
+	delete(bs.observers, observer)
+}
+
+// ObserverCount returns the number of attached observers.
+func (bs *BackgroundSession) ObserverCount() int {
+	bs.observersMu.RLock()
+	defer bs.observersMu.RUnlock()
+	return len(bs.observers)
+}
+
+// HasObservers returns true if any observers are attached.
+func (bs *BackgroundSession) HasObservers() bool {
+	return bs.ObserverCount() > 0
+}
+
+// notifyObservers calls a function on all observers.
+func (bs *BackgroundSession) notifyObservers(fn func(SessionObserver)) {
+	bs.observersMu.RLock()
+	defer bs.observersMu.RUnlock()
+	for observer := range bs.observers {
+		fn(observer)
+	}
+}
+
 // Close shuts down the session and releases all resources.
 func (bs *BackgroundSession) Close(reason string) {
 	if !bs.closed.CompareAndSwap(0, 1) {
@@ -214,26 +318,62 @@ func (bs *BackgroundSession) Suspend() {
 	}
 }
 
+// buildPromptWithHistory prepends conversation history to the user's message.
+// This is used when resuming a session to give the ACP agent context about
+// the previous conversation.
+func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
+	if bs.store == nil {
+		return message
+	}
+
+	// Read stored events for this session
+	events, err := bs.store.ReadEvents(bs.persistedID)
+	if err != nil {
+		if bs.logger != nil {
+			bs.logger.Warn("Failed to read events for history injection", "error", err)
+		}
+		return message
+	}
+
+	// Build conversation history (limit to last 5 turns to avoid token limits)
+	history := session.BuildConversationHistory(events, 5)
+	if history == "" {
+		return message
+	}
+
+	if bs.logger != nil {
+		bs.logger.Info("Injecting conversation history into resumed session",
+			"session_id", bs.persistedID,
+			"history_length", len(history))
+	}
+
+	return history + message
+}
+
 // flushAndPersistMessages persists any buffered agent messages.
+// Note: Thoughts are persisted BEFORE messages to maintain correct display order
+// (the agent thinks before responding).
 func (bs *BackgroundSession) flushAndPersistMessages() {
 	if bs.recorder == nil {
 		return
 	}
 
-	if bs.agentMsgBuffer != nil {
-		text := bs.agentMsgBuffer.Flush()
-		if text != "" {
-			if err := bs.recorder.RecordAgentMessage(text); err != nil && bs.logger != nil {
-				bs.logger.Error("Failed to persist agent message", "error", err)
-			}
-		}
-	}
-
+	// Persist thoughts FIRST (agent thinks before responding)
 	if bs.agentThoughtBuf != nil {
 		text := bs.agentThoughtBuf.Flush()
 		if text != "" {
 			if err := bs.recorder.RecordAgentThought(text); err != nil && bs.logger != nil {
 				bs.logger.Error("Failed to persist agent thought", "error", err)
+			}
+		}
+	}
+
+	// Then persist the agent message
+	if bs.agentMsgBuffer != nil {
+		text := bs.agentMsgBuffer.Flush()
+		if text != "" {
+			if err := bs.recorder.RecordAgentMessage(text); err != nil && bs.logger != nil {
+				bs.logger.Error("Failed to persist agent message", "error", err)
 			}
 		}
 	}
@@ -342,11 +482,25 @@ func (bs *BackgroundSession) Prompt(message string) error {
 	bs.isPrompting = true
 	bs.promptCount++
 	isFirstPrompt := bs.promptCount == 1
+
+	// Check if we need to inject conversation history (first prompt of resumed session)
+	shouldInjectHistory := bs.isResumed && !bs.historyInjected
+	if shouldInjectHistory {
+		bs.historyInjected = true
+	}
 	bs.promptMu.Unlock()
 
-	// Persist user prompt
+	// Persist user prompt (the original message, not with history prefix)
 	if bs.recorder != nil {
-		bs.recorder.RecordUserPrompt(message)
+		if err := bs.recorder.RecordUserPrompt(message); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist user prompt", "error", err)
+		}
+	}
+
+	// Build the actual prompt to send to ACP
+	promptMessage := message
+	if shouldInjectHistory {
+		promptMessage = bs.buildPromptWithHistory(message)
 	}
 
 	// Run prompt in background
@@ -359,7 +513,7 @@ func (bs *BackgroundSession) Prompt(message string) error {
 
 		_, err := bs.acpConn.Prompt(bs.ctx, acp.PromptRequest{
 			SessionId: acp.SessionId(bs.acpID),
-			Prompt:    []acp.ContentBlock{acp.TextBlock(message)},
+			Prompt:    []acp.ContentBlock{acp.TextBlock(promptMessage)},
 		})
 
 		if bs.IsClosed() {
@@ -374,7 +528,18 @@ func (bs *BackgroundSession) Prompt(message string) error {
 		// Persist buffered messages
 		bs.flushAndPersistMessages()
 
-		// Notify attached client
+		// Notify all observers
+		if err != nil {
+			bs.notifyObservers(func(o SessionObserver) {
+				o.OnError("Prompt failed: " + err.Error())
+			})
+		} else {
+			bs.notifyObservers(func(o SessionObserver) {
+				o.OnPromptComplete()
+			})
+		}
+
+		// Notify legacy attached client
 		client := bs.GetAttachedClient()
 		if client != nil {
 			if err != nil {
@@ -417,7 +582,12 @@ func (bs *BackgroundSession) onAgentMessage(html string) {
 		bs.agentMsgBuffer.Write(html)
 	}
 
-	// Forward to attached client
+	// Notify all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnAgentMessage(html)
+	})
+
+	// Forward to legacy attached client
 	if client := bs.GetAttachedClient(); client != nil {
 		client.sendMessage(WSMsgTypeAgentMessage, map[string]interface{}{
 			"html":       html,
@@ -437,7 +607,12 @@ func (bs *BackgroundSession) onAgentThought(text string) {
 		bs.agentThoughtBuf.Write(text)
 	}
 
-	// Forward to attached client
+	// Notify all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnAgentThought(text)
+	})
+
+	// Forward to legacy attached client
 	if client := bs.GetAttachedClient(); client != nil {
 		client.sendMessage(WSMsgTypeAgentThought, map[string]interface{}{
 			"text":       text,
@@ -456,7 +631,12 @@ func (bs *BackgroundSession) onToolCall(id, title, status string) {
 		bs.recorder.RecordToolCall(id, title, status, "", nil, nil)
 	}
 
-	// Forward to attached client
+	// Notify all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnToolCall(id, title, status)
+	})
+
+	// Forward to legacy attached client
 	if client := bs.GetAttachedClient(); client != nil {
 		client.sendMessage(WSMsgTypeToolCall, map[string]interface{}{
 			"id":         id,
@@ -477,7 +657,12 @@ func (bs *BackgroundSession) onToolUpdate(id string, status *string) {
 		bs.recorder.RecordToolCallUpdate(id, status, nil)
 	}
 
-	// Forward to attached client
+	// Notify all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnToolUpdate(id, status)
+	})
+
+	// Forward to legacy attached client
 	if client := bs.GetAttachedClient(); client != nil {
 		data := map[string]interface{}{
 			"id":         id,
@@ -495,7 +680,12 @@ func (bs *BackgroundSession) onPlan() {
 		return
 	}
 
-	// Forward to attached client
+	// Notify all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnPlan()
+	})
+
+	// Forward to legacy attached client
 	if client := bs.GetAttachedClient(); client != nil {
 		client.sendMessage(WSMsgTypePlan, map[string]interface{}{
 			"session_id": bs.persistedID,
@@ -508,7 +698,12 @@ func (bs *BackgroundSession) onFileWrite(path string, size int) {
 		return
 	}
 
-	// Forward to attached client
+	// Notify all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnFileWrite(path, size)
+	})
+
+	// Forward to legacy attached client
 	if client := bs.GetAttachedClient(); client != nil {
 		client.sendMessage(WSMsgTypeFileWrite, map[string]interface{}{
 			"path":       path,
@@ -523,7 +718,12 @@ func (bs *BackgroundSession) onFileRead(path string, size int) {
 		return
 	}
 
-	// Forward to attached client
+	// Notify all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnFileRead(path, size)
+	})
+
+	// Forward to legacy attached client
 	if client := bs.GetAttachedClient(); client != nil {
 		client.sendMessage(WSMsgTypeFileRead, map[string]interface{}{
 			"path":       path,
@@ -544,83 +744,101 @@ func (bs *BackgroundSession) onPermission(ctx context.Context, params acp.Reques
 		title = *params.ToolCall.Title
 	}
 
+	// Check if we have any observers or legacy clients
+	hasObservers := bs.HasObservers()
 	client := bs.GetAttachedClient()
 
-	// If no client is attached, auto-approve if configured
-	if client == nil {
+	// If no observers and no client, auto-approve if configured
+	if !hasObservers && client == nil {
 		if bs.autoApprove {
-			// Find an "allow" option
-			for _, opt := range params.Options {
-				if opt.Kind == acp.PermissionOptionKindAllowOnce || opt.Kind == acp.PermissionOptionKindAllowAlways {
-					if bs.recorder != nil {
-						bs.recorder.RecordPermission(title, string(opt.OptionId), "auto_approved_no_client")
-					}
-					return acp.RequestPermissionResponse{
-						Outcome: acp.RequestPermissionOutcome{
-							Selected: &acp.RequestPermissionOutcomeSelected{OptionId: opt.OptionId},
-						},
-					}, nil
-				}
+			resp := mittoAcp.AutoApprovePermission(params.Options)
+			// Record the permission decision
+			if bs.recorder != nil && resp.Outcome.Selected != nil {
+				bs.recorder.RecordPermission(title, string(resp.Outcome.Selected.OptionId), "auto_approved_no_client")
 			}
-			// Default to first option
-			if len(params.Options) > 0 {
+			return resp, nil
+		}
+		// No observers and no auto-approve - cancel
+		return mittoAcp.CancelledPermissionResponse(), nil
+	}
+
+	// Try to get response from observers first
+	// The first observer to respond wins
+	if hasObservers {
+		// Get a snapshot of observers
+		bs.observersMu.RLock()
+		observers := make([]SessionObserver, 0, len(bs.observers))
+		for o := range bs.observers {
+			observers = append(observers, o)
+		}
+		bs.observersMu.RUnlock()
+
+		// Ask first observer for permission (others just observe)
+		if len(observers) > 0 {
+			resp, err := observers[0].OnPermission(ctx, params)
+			if err == nil {
+				// Persist the permission decision
 				if bs.recorder != nil {
-					bs.recorder.RecordPermission(title, string(params.Options[0].OptionId), "auto_approved_no_client")
+					if resp.Outcome.Selected != nil {
+						bs.recorder.RecordPermission(title, string(resp.Outcome.Selected.OptionId), "user_selected")
+					} else {
+						bs.recorder.RecordPermission(title, "", "cancelled")
+					}
 				}
-				return acp.RequestPermissionResponse{
-					Outcome: acp.RequestPermissionOutcome{
-						Selected: &acp.RequestPermissionOutcomeSelected{OptionId: params.Options[0].OptionId},
-					},
-				}, nil
+				return resp, nil
 			}
 		}
-		// No client and no auto-approve - cancel
-		return acp.RequestPermissionResponse{
-			Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
-		}, nil
 	}
 
-	// Forward to attached client - format options for frontend
-	options := make([]map[string]string, len(params.Options))
-	for i, opt := range params.Options {
-		options[i] = map[string]string{
-			"id":   string(opt.OptionId),
-			"name": opt.Name,
-			"kind": string(opt.Kind),
-		}
-	}
-
-	client.sendMessage(WSMsgTypePermission, map[string]interface{}{
-		"title":      title,
-		"options":    options,
-		"session_id": bs.persistedID,
-	})
-
-	// Wait for response from client
-	bs.permissionMu.Lock()
-	// Clear any stale response
-	select {
-	case <-bs.permissionChan:
-	default:
-	}
-	bs.permissionMu.Unlock()
-
-	select {
-	case <-ctx.Done():
-		return acp.RequestPermissionResponse{}, ctx.Err()
-	case <-bs.ctx.Done():
-		return acp.RequestPermissionResponse{}, bs.ctx.Err()
-	case resp := <-bs.permissionChan:
-		// Persist the permission decision
-		if bs.recorder != nil {
-			if resp.Outcome.Selected != nil {
-				bs.recorder.RecordPermission(title, string(resp.Outcome.Selected.OptionId), "user_selected")
-			} else {
-				bs.recorder.RecordPermission(title, "", "cancelled")
+	// Fallback to legacy client if no observers handled it
+	if client != nil {
+		// Format options for frontend
+		options := make([]map[string]string, len(params.Options))
+		for i, opt := range params.Options {
+			options[i] = map[string]string{
+				"id":   string(opt.OptionId),
+				"name": opt.Name,
+				"kind": string(opt.Kind),
 			}
 		}
-		return resp, nil
+
+		client.sendMessage(WSMsgTypePermission, map[string]interface{}{
+			"title":      title,
+			"options":    options,
+			"session_id": bs.persistedID,
+		})
+
+		// Wait for response from client
+		bs.permissionMu.Lock()
+		// Clear any stale response
+		select {
+		case <-bs.permissionChan:
+		default:
+		}
+		bs.permissionMu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return acp.RequestPermissionResponse{}, ctx.Err()
+		case <-bs.ctx.Done():
+			return acp.RequestPermissionResponse{}, bs.ctx.Err()
+		case resp := <-bs.permissionChan:
+			// Persist the permission decision
+			if bs.recorder != nil {
+				if resp.Outcome.Selected != nil {
+					bs.recorder.RecordPermission(title, string(resp.Outcome.Selected.OptionId), "user_selected")
+				} else {
+					bs.recorder.RecordPermission(title, "", "cancelled")
+				}
+			}
+			return resp, nil
+		}
 	}
+
+	// Shouldn't reach here, but cancel if we do
+	return acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
+	}, nil
 }
 
 // AnswerPermission provides a response to a pending permission request.

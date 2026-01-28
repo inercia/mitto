@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -75,10 +76,18 @@ func (sc *SessionContext) GetSessionID() string {
 	return sc.persistedID
 }
 
-var upgrader = websocket.Upgrader{
+// defaultUpgrader is the default WebSocket upgrader.
+// It is replaced by a secure upgrader when the server is initialized.
+// DEPRECATED: Use server.getSecureUpgrader() instead.
+var defaultUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin:     func(r *http.Request) bool { return true },
+}
+
+// getSecureUpgrader returns a WebSocket upgrader with security checks.
+func (s *Server) getSecureUpgrader() websocket.Upgrader {
+	return createSecureUpgrader(s.wsSecurityConfig)
 }
 
 // WSMessage represents a WebSocket message between frontend and backend.
@@ -126,6 +135,9 @@ type WSClient struct {
 	conn   *websocket.Conn
 	send   chan []byte
 
+	// Client IP address (for connection tracking cleanup)
+	clientIP string
+
 	// Current session context - holds all session-specific state
 	// This is replaced atomically when switching sessions
 	session   *SessionContext
@@ -152,20 +164,46 @@ type WSClient struct {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("WebSocket upgrade failed", "error", err)
-		}
+	wsLogger := logging.WebSocket()
+	clientIP := getClientIPWithProxyCheck(r)
+
+	// Check connection limit per IP
+	if s.connectionTracker != nil && !s.connectionTracker.TryAdd(clientIP) {
+		wsLogger.Warn("WebSocket connection rejected: too many connections from IP",
+			"client_ip", clientIP,
+			"current_count", s.connectionTracker.Count(clientIP),
+		)
+		http.Error(w, "Too many connections", http.StatusTooManyRequests)
 		return
 	}
+
+	// Use secure upgrader with origin checking
+	secureUpgrader := s.getSecureUpgrader()
+	conn, err := secureUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		// Release connection slot on upgrade failure
+		if s.connectionTracker != nil {
+			s.connectionTracker.Remove(clientIP)
+		}
+		wsLogger.Error("WebSocket upgrade failed",
+			"error", err,
+			"client_ip", clientIP,
+		)
+		return
+	}
+
+	// Apply security settings to connection
+	configureWebSocketConn(conn, s.wsSecurityConfig)
+
+	wsLogger.Info("WebSocket connection established",
+		"client_ip", clientIP,
+		"user_agent", r.UserAgent(),
+	)
 
 	// Initialize session store for persistence
 	store, err := session.DefaultStore()
 	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to create session store", "error", err)
-		}
+		wsLogger.Error("Failed to create session store", "error", err)
 		// Continue without persistence - not fatal
 		store = nil
 	}
@@ -181,6 +219,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		store:          store,
 	}
 
+	// Store client IP for cleanup on disconnect
+	client.clientIP = clientIP
+
 	// Register client for broadcasts
 	s.registerClient(client)
 
@@ -193,13 +234,20 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *WSClient) readPump() {
+	wsLogger := logging.WebSocket()
+
 	defer func() {
 		c.cancel()
 		// Unregister client from broadcasts
 		c.server.unregisterClient(c)
-		if err := c.conn.Close(); err != nil && c.server.logger != nil {
-			c.server.logger.Debug("WebSocket close error", "error", err)
+		// Release connection slot
+		if c.server.connectionTracker != nil && c.clientIP != "" {
+			c.server.connectionTracker.Remove(c.clientIP)
 		}
+		if err := c.conn.Close(); err != nil {
+			wsLogger.Debug("WebSocket close error", "error", err)
+		}
+		wsLogger.Info("WebSocket connection closed")
 		// Suspend the current session (keeps it active for later resumption)
 		c.suspendCurrentSession()
 	}()
@@ -207,11 +255,18 @@ func (c *WSClient) readPump() {
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
+			// Check if it's a normal close
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				wsLogger.Debug("WebSocket closed normally")
+			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				wsLogger.Warn("WebSocket unexpected close", "error", err)
+			}
 			return
 		}
 
 		var msg WSMessage
 		if err := json.Unmarshal(message, &msg); err != nil {
+			wsLogger.Warn("Invalid WebSocket message format", "error", err)
 			c.sendError("Invalid message format")
 			continue
 		}
@@ -221,16 +276,30 @@ func (c *WSClient) readPump() {
 }
 
 func (c *WSClient) writePump() {
-	defer c.conn.Close()
+	// Create ping ticker using server's WebSocket security config
+	pingPeriod := c.server.wsSecurityConfig.PingPeriod
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.conn.Close()
+	}()
 
 	for {
 		select {
 		case message, ok := <-c.send:
+			// Set write deadline
+			c.conn.SetWriteDeadline(time.Now().Add(c.server.wsSecurityConfig.WriteWait))
 			if !ok {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			c.conn.WriteMessage(websocket.TextMessage, message)
+		case <-ticker.C:
+			// Send ping to keep connection alive and detect stale connections
+			c.conn.SetWriteDeadline(time.Now().Add(c.server.wsSecurityConfig.WriteWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		case <-c.ctx.Done():
 			return
 		}
@@ -243,14 +312,20 @@ func (c *WSClient) handleMessage(msg WSMessage) {
 		var data struct {
 			Name string `json:"name,omitempty"`
 		}
-		json.Unmarshal(msg.Data, &data)
+		if err := json.Unmarshal(msg.Data, &data); err != nil && len(msg.Data) > 0 {
+			c.sendError("Invalid message data")
+			return
+		}
 		c.handleNewSession(data.Name)
 
 	case WSMsgTypePrompt:
 		var data struct {
 			Message string `json:"message"`
 		}
-		json.Unmarshal(msg.Data, &data)
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
 		c.handlePrompt(data.Message)
 
 	case WSMsgTypeCancel:
@@ -260,14 +335,20 @@ func (c *WSClient) handleMessage(msg WSMessage) {
 		var data struct {
 			SessionID string `json:"session_id"`
 		}
-		json.Unmarshal(msg.Data, &data)
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
 		c.handleLoadSession(data.SessionID)
 
 	case WSMsgTypeSwitchSession:
 		var data struct {
 			SessionID string `json:"session_id"`
 		}
-		json.Unmarshal(msg.Data, &data)
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
 		c.handleSwitchSession(data.SessionID)
 
 	case WSMsgTypePermissionAnswer:
@@ -275,7 +356,10 @@ func (c *WSClient) handleMessage(msg WSMessage) {
 			OptionID string `json:"option_id"`
 			Cancel   bool   `json:"cancel"`
 		}
-		json.Unmarshal(msg.Data, &data)
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
 		c.handlePermissionAnswer(data.OptionID, data.Cancel)
 
 	case WSMsgTypeRenameSession:
@@ -283,7 +367,10 @@ func (c *WSClient) handleMessage(msg WSMessage) {
 			SessionID string `json:"session_id"`
 			Name      string `json:"name"`
 		}
-		json.Unmarshal(msg.Data, &data)
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
 		c.handleRenameSession(data.SessionID, data.Name)
 
 	case WSMsgTypeSyncSession:
@@ -291,7 +378,10 @@ func (c *WSClient) handleMessage(msg WSMessage) {
 			SessionID string `json:"session_id"`
 			AfterSeq  int64  `json:"after_seq"` // Last sequence number the client has seen
 		}
-		json.Unmarshal(msg.Data, &data)
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
 		c.handleSyncSession(data.SessionID, data.AfterSeq)
 	}
 }
@@ -301,13 +391,18 @@ func (c *WSClient) handleNewSession(name string) {
 	c.detachFromBackgroundSession()
 	c.closeCurrentSession("new_session")
 
-	// Set default name if not provided
-	sessionName := name
+	// Sanitize and set default name if not provided
+	sessionName := SanitizeSessionName(name)
 	if sessionName == "" {
 		sessionName = "New conversation"
 	}
 
-	cwd, _ := os.Getwd()
+	// Use server's default working directory if set, otherwise current directory
+	cwd := c.server.config.DefaultWorkingDir
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	cwd = SanitizeWorkingDir(cwd)
 	createdAt := time.Now()
 
 	// Set the store on the session manager if we have one
@@ -318,7 +413,10 @@ func (c *WSClient) handleNewSession(name string) {
 	// Create a new background session via the session manager
 	bs, err := c.server.sessionManager.CreateSession(sessionName, cwd)
 	if err != nil {
-		c.sendError("Failed to create session: " + err.Error())
+		if c.server.logger != nil {
+			c.server.logger.Error("Failed to create session", "error", err)
+		}
+		c.sendError(GenericErrorMessages["session_create"])
 		return
 	}
 
@@ -341,7 +439,10 @@ func (c *WSClient) handlePrompt(message string) {
 	bs := c.getBackgroundSession()
 	if bs != nil {
 		if err := bs.Prompt(message); err != nil {
-			c.sendError("Failed to send prompt: " + err.Error())
+			if c.server.logger != nil {
+				c.server.logger.Error("Failed to send prompt", "error", err)
+			}
+			c.sendError(GenericErrorMessages["prompt_send"])
 		}
 		return
 	}
@@ -384,7 +485,10 @@ func (c *WSClient) handlePrompt(message string) {
 
 		if err != nil {
 			if !ctx.IsClosed() {
-				c.sendError("Prompt failed: " + err.Error())
+				if c.server.logger != nil {
+					c.server.logger.Error("Prompt failed", "error", err, "session_id", ctx.GetSessionID())
+				}
+				c.sendError(GenericErrorMessages["prompt_failed"])
 				c.persistErrorForSession(ctx, err.Error())
 			}
 		} else {
@@ -420,8 +524,16 @@ func (c *WSClient) handleCancel() {
 }
 
 func (c *WSClient) handleRenameSession(sessionID, name string) {
-	if sessionID == "" || name == "" {
-		c.sendError("Session ID and name are required")
+	// Validate session ID
+	if !IsValidSessionID(sessionID) {
+		c.sendError("Invalid session ID")
+		return
+	}
+
+	// Sanitize and validate name
+	name = SanitizeSessionName(name)
+	if name == "" {
+		c.sendError("Session name cannot be empty")
 		return
 	}
 
@@ -451,13 +563,29 @@ func (c *WSClient) handleRenameSession(sessionID, name string) {
 }
 
 func (c *WSClient) handleLoadSession(sessionID string) {
-	// Load session events from store and send to frontend
-	store, err := session.DefaultStore()
-	if err != nil {
-		c.sendError("Failed to access session store: " + err.Error())
+	// Validate session ID
+	if !IsValidSessionID(sessionID) {
+		c.sendError("Invalid session ID")
 		return
 	}
-	defer store.Close()
+
+	// Load session events from store and send to frontend
+	var store *session.Store
+	var err error
+	if c.store != nil {
+		store = c.store
+	} else {
+		store, err = session.DefaultStore()
+		if err != nil {
+			if c.server.logger != nil {
+				c.server.logger.Error("Failed to access session store", "error", err)
+			}
+			c.sendError(GenericErrorMessages["session_store"])
+			return
+		}
+		// Assign to client for reuse
+		c.store = store
+	}
 
 	// Get session metadata
 	meta, err := store.GetMetadata(sessionID)
@@ -466,14 +594,20 @@ func (c *WSClient) handleLoadSession(sessionID string) {
 			c.sendError("Session not found")
 			return
 		}
-		c.sendError("Failed to get session metadata: " + err.Error())
+		if c.server.logger != nil {
+			c.server.logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
+		}
+		c.sendError(GenericErrorMessages["metadata_read"])
 		return
 	}
 
 	// Get session events
 	events, err := store.ReadEvents(sessionID)
 	if err != nil {
-		c.sendError("Failed to read session events: " + err.Error())
+		if c.server.logger != nil {
+			c.server.logger.Error("Failed to read session events", "error", err, "session_id", sessionID)
+		}
+		c.sendError(GenericErrorMessages["events_read"])
 		return
 	}
 
@@ -515,7 +649,8 @@ func (c *WSClient) handleSyncSession(sessionID string, afterSeq int64) {
 			c.sendError("Failed to access session store: " + err.Error())
 			return
 		}
-		defer store.Close()
+		// Assign to client for reuse - don't close it since active sessions may use it
+		c.store = store
 	}
 
 	// Get session metadata
@@ -561,10 +696,17 @@ func (c *WSClient) handleSyncSession(sessionID string, afterSeq int64) {
 }
 
 func (c *WSClient) handleSwitchSession(sessionID string) {
-	// Close current session first
+	// Validate session ID
+	if !IsValidSessionID(sessionID) {
+		c.sendError("Invalid session ID")
+		return
+	}
+
+	// Detach from any existing background session and close legacy session
+	c.detachFromBackgroundSession()
 	c.closeCurrentSession("session_switch")
 
-	// Load session from store
+	// Load session from store to get metadata and events
 	var store *session.Store
 	var err error
 	if c.store != nil {
@@ -575,7 +717,8 @@ func (c *WSClient) handleSwitchSession(sessionID string) {
 			c.sendError("Failed to access session store: " + err.Error())
 			return
 		}
-		defer store.Close()
+		// Assign to client for reuse - don't close it since the resumed session will use it
+		c.store = store
 	}
 
 	// Get session metadata
@@ -589,206 +732,50 @@ func (c *WSClient) handleSwitchSession(sessionID string) {
 		return
 	}
 
-	// Get session events
+	// Get session events for UI to display
 	events, err := store.ReadEvents(sessionID)
 	if err != nil {
 		c.sendError("Failed to read session events: " + err.Error())
 		return
 	}
 
-	// Start a new ACP process for this session
-	args := strings.Fields(c.server.config.ACPCommand)
-	if len(args) == 0 {
-		c.sendError("Empty ACP command")
-		return
-	}
-
-	cmd := exec.CommandContext(c.ctx, args[0], args[1:]...)
-	cmd.Stderr = os.Stderr
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		c.sendError("Failed to create stdin pipe: " + err.Error())
-		return
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		c.sendError("Failed to create stdout pipe: " + err.Error())
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		c.sendError("Failed to start ACP server: " + err.Error())
-		return
-	}
-
-	// Resume recording to the existing session
-	var recorder *session.Recorder
+	// Set the store on the session manager if we have one
 	if c.store != nil {
-		recorder = session.NewRecorderWithID(c.store, sessionID)
-		if err := recorder.Resume(); err != nil {
-			if c.server.logger != nil {
-				c.server.logger.Error("Failed to resume session recording", "error", err)
-			}
-			recorder = nil
-		} else {
-			// Update the metadata to mark it as active again
-			if err := c.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
-				m.Status = "active"
-			}); err != nil && c.server.logger != nil {
-				c.server.logger.Error("Failed to update session status", "error", err)
-			}
-		}
+		c.server.sessionManager.SetStore(c.store)
 	}
 
-	// Create the session context with the existing session ID
-	sessCtx := &SessionContext{
-		persistedID:     sessionID,
-		acpCmd:          cmd,
-		recorder:        recorder,
-		agentMsgBuffer:  &agentMessageBuffer{},
-		agentThoughtBuf: &agentMessageBuffer{},
-	}
-
-	// Create web client with streaming callbacks that capture the session context
-	sessCtx.acpClient = NewWebClient(WebClientConfig{
-		AutoApprove: c.server.config.AutoApprove,
-		OnAgentMessage: func(html string) {
-			if sessCtx.IsClosed() {
-				return
-			}
-			c.sendMessage(WSMsgTypeAgentMessage, map[string]interface{}{
-				"html":       html,
-				"format":     "html",
-				"session_id": sessCtx.GetSessionID(),
-			})
-			if sessCtx.agentMsgBuffer != nil {
-				sessCtx.agentMsgBuffer.Write(html)
-			}
-		},
-		OnAgentThought: func(text string) {
-			if sessCtx.IsClosed() {
-				return
-			}
-			c.sendMessage(WSMsgTypeAgentThought, map[string]interface{}{
-				"text":       text,
-				"session_id": sessCtx.GetSessionID(),
-			})
-			if sessCtx.agentThoughtBuf != nil {
-				sessCtx.agentThoughtBuf.Write(text)
-			}
-		},
-		OnToolCall: func(id, title, status string) {
-			if sessCtx.IsClosed() {
-				return
-			}
-			c.sendMessage(WSMsgTypeToolCall, map[string]interface{}{
-				"id":         id,
-				"title":      title,
-				"status":     status,
-				"session_id": sessCtx.GetSessionID(),
-			})
-			c.persistToolCallForSession(sessCtx, id, title, status)
-		},
-		OnToolUpdate: func(id string, status *string) {
-			if sessCtx.IsClosed() {
-				return
-			}
-			data := map[string]interface{}{
-				"id":         id,
-				"session_id": sessCtx.GetSessionID(),
-			}
-			if status != nil {
-				data["status"] = *status
-			}
-			c.sendMessage(WSMsgTypeToolUpdate, data)
-			c.persistToolUpdateForSession(sessCtx, id, status)
-		},
-		OnPlan: func() {
-			if sessCtx.IsClosed() {
-				return
-			}
-			c.sendMessage(WSMsgTypePlan, map[string]interface{}{
-				"session_id": sessCtx.GetSessionID(),
-			})
-		},
-		OnFileWrite: func(path string, size int) {
-			if sessCtx.IsClosed() {
-				return
-			}
-			c.sendMessage(WSMsgTypeFileWrite, map[string]interface{}{
-				"path":       path,
-				"size":       size,
-				"session_id": sessCtx.GetSessionID(),
-			})
-			c.persistFileWriteForSession(sessCtx, path, size)
-		},
-		OnFileRead: func(path string, size int) {
-			if sessCtx.IsClosed() {
-				return
-			}
-			c.sendMessage(WSMsgTypeFileRead, map[string]interface{}{
-				"path":       path,
-				"size":       size,
-				"session_id": sessCtx.GetSessionID(),
-			})
-			c.persistFileReadForSession(sessCtx, path, size)
-		},
-		OnPermission: c.handlePermissionRequest,
-	})
-
-	// Create ACP connection
-	sessCtx.acpConn = acp.NewClientSideConnection(sessCtx.acpClient, stdin, stdout)
-	if c.server.config.Debug && c.server.logger != nil {
-		sessCtx.acpConn.SetLogger(c.server.logger)
-	}
-
-	// Initialize
-	_, err = sessCtx.acpConn.Initialize(c.ctx, acp.InitializeRequest{
-		ProtocolVersion: acp.ProtocolVersionNumber,
-		ClientCapabilities: acp.ClientCapabilities{
-			Fs: acp.FileSystemCapability{
-				ReadTextFile:  true,
-				WriteTextFile: true,
-			},
-		},
-	})
-	if err != nil {
-		c.sendError("Failed to initialize: " + err.Error())
-		sessCtx.Close()
-		return
-	}
-
-	// Create a new ACP session (we can't resume the old one, but we can continue the conversation)
+	// Get working directory
 	cwd := meta.WorkingDir
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	sessResp, err := sessCtx.acpConn.NewSession(c.ctx, acp.NewSessionRequest{
-		Cwd:        cwd,
-		McpServers: []acp.McpServer{},
-	})
+
+	// Resume or create a background session for this persisted session
+	bs, err := c.server.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
 	if err != nil {
-		c.sendError("Failed to create session: " + err.Error())
-		sessCtx.Close()
+		c.sendError("Failed to resume session: " + err.Error())
 		return
 	}
 
-	sessCtx.acpID = string(sessResp.SessionId)
-
-	// Set the new session as current
-	c.setCurrentSession(sessCtx)
+	// Attach this client to the background session
+	c.attachToBackgroundSession(bs)
 
 	// Send session switched message with events for UI to display
 	c.sendMessage(WSMsgTypeSessionSwitched, map[string]interface{}{
 		"session_id":         sessionID,
-		"new_acp_session_id": sessCtx.acpID,
+		"new_acp_session_id": bs.GetACPID(),
 		"name":               meta.Name,
 		"acp_server":         meta.ACPServer,
 		"created_at":         meta.CreatedAt.Format(time.RFC3339),
 		"status":             "active",
 		"events":             events,
 	})
+
+	if c.server.logger != nil {
+		c.server.logger.Info("Switched to session",
+			"session_id", sessionID,
+			"acp_id", bs.GetACPID())
+	}
 }
 
 func (c *WSClient) handlePermissionRequest(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {

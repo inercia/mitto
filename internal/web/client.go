@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
+
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 )
 
 // WebClient implements acp.Client for web-based interaction.
@@ -134,27 +136,7 @@ func (c *WebClient) RequestPermission(ctx context.Context, params acp.RequestPer
 
 // autoApprovePermission automatically approves permission requests.
 func (c *WebClient) autoApprovePermission(params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	// Prefer an allow option if present
-	for _, o := range params.Options {
-		if o.Kind == acp.PermissionOptionKindAllowOnce || o.Kind == acp.PermissionOptionKindAllowAlways {
-			return acp.RequestPermissionResponse{
-				Outcome: acp.RequestPermissionOutcome{
-					Selected: &acp.RequestPermissionOutcomeSelected{OptionId: o.OptionId},
-				},
-			}, nil
-		}
-	}
-	// Otherwise choose the first option
-	if len(params.Options) > 0 {
-		return acp.RequestPermissionResponse{
-			Outcome: acp.RequestPermissionOutcome{
-				Selected: &acp.RequestPermissionOutcomeSelected{OptionId: params.Options[0].OptionId},
-			},
-		}, nil
-	}
-	return acp.RequestPermissionResponse{
-		Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
-	}, nil
+	return mittoAcp.AutoApprovePermission(params.Options), nil
 }
 
 // WriteTextFile handles file write requests from the agent.
