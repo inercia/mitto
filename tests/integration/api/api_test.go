@@ -230,4 +230,3 @@ func TestCreateSession(t *testing.T) {
 		t.Error("Response missing 'session_id' field")
 	}
 }
-

@@ -205,4 +205,3 @@ func createTestDir(t *testing.T) string {
 	os.MkdirAll(filepath.Join(dir, "sessions"), 0755)
 	return dir
 }
-
