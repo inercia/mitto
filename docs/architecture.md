@@ -73,22 +73,55 @@ Implements the command-line interface using [Cobra](https://github.com/spf13/cob
 - Handle user input via readline
 - Process slash commands (`/quit`, `/help`, `/cancel`)
 
+### `internal/appdir` - Platform-Native Directory Management
+
+Manages the Mitto data directory, which stores configuration and session data.
+
+**Directory Locations (in priority order):**
+1. `MITTO_DIR` environment variable (if set)
+2. Platform-specific default:
+   - **macOS**: `~/Library/Application Support/Mitto`
+   - **Linux**: `$XDG_DATA_HOME/mitto` or `~/.local/share/mitto`
+   - **Windows**: `%APPDATA%\Mitto`
+
+**Key Functions:**
+- `Dir()` - Returns the Mitto data directory path
+- `EnsureDir()` - Creates the directory structure if needed
+- `SettingsPath()` - Returns path to `settings.json`
+- `SessionsDir()` - Returns path to `sessions/` subdirectory
+
 ### `internal/config` - Configuration Management
 
-Handles loading and parsing of the YAML configuration file.
+Handles loading, parsing, and persisting Mitto configuration.
 
-**Configuration File Locations:**
-- macOS/Linux: `~/.mittorc`
-- Windows: `%APPDATA%\.mittorc`
-- Override: `MITTORC` environment variable
+**Configuration System:**
+- **Default config**: `config/config.default.yaml` (embedded in binary)
+- **User settings**: `MITTO_DIR/settings.json` (auto-created from defaults)
+- **Override**: `--config` flag accepts YAML or JSON files
 
-**Configuration Format:**
+**Configuration Formats:**
+
+YAML format (for `--config` flag):
 ```yaml
 acp:
   - auggie:
       command: auggie --acp
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
+web:
+  host: 127.0.0.1
+  port: 8080
+```
+
+JSON format (for `settings.json` or `--config` flag):
+```json
+{
+  "acp_servers": [
+    {"name": "auggie", "command": "auggie --acp"},
+    {"name": "claude-code", "command": "npx -y @zed-industries/claude-code-acp@latest"}
+  ],
+  "web": {"host": "127.0.0.1", "port": 8080}
+}
 ```
 
 ### `internal/acp` - ACP Client Implementation
@@ -139,7 +172,9 @@ Provides a browser-based UI for ACP communication via HTTP and WebSocket.
 | `websocket.go` | WebSocket handler for real-time ACP communication |
 | `client.go` | Web-specific ACP client with streaming callbacks |
 | `markdown.go` | Smart Markdown-to-HTML streaming buffer |
-| `session_api.go` | REST API endpoints for session management |
+| `session_api.go` | REST API endpoints for session and workspace management |
+| `session_manager.go` | Registry of background sessions and workspace management |
+| `workspace.go` | WorkspaceConfig type definition |
 
 **Key Components:**
 
@@ -147,6 +182,8 @@ Provides a browser-based UI for ACP communication via HTTP and WebSocket.
 - **WSClient**: WebSocket client managing per-connection ACP sessions
 - **WebClient**: Implements `acp.Client` with callback-based output for web streaming
 - **MarkdownBuffer**: Accumulates streaming text and converts to HTML at semantic boundaries
+- **SessionManager**: Manages background sessions and workspace configurations
+- **WorkspaceConfig**: Pairs an ACP server with a working directory
 
 ### `web/` - Frontend Assets
 
@@ -220,12 +257,14 @@ The `internal/acp` package is independent of the CLI presentation layer:
 
 ### 5. Configuration File Strategy
 
-Configuration uses a simple YAML file with platform-specific defaults:
+Configuration uses a two-tier system with platform-native directories:
 
-- **XDG-like approach**: `~/.mittorc` follows Unix conventions
-- **Environment override**: `MITTORC` for flexibility
-- **Ordered list**: First server is default (explicit, predictable)
-- **Minimal config**: Only essential settings (server name + command)
+- **Data directory**: Platform-native location (`~/Library/Application Support/Mitto` on macOS)
+- **Environment override**: `MITTO_DIR` overrides the data directory location
+- **Auto-bootstrap**: `settings.json` auto-created from embedded defaults on first run
+- **Dual format support**: `--config` flag accepts both YAML and JSON files
+- **JSON for persistence**: User settings stored as JSON for easy programmatic editing
+- **Ordered list**: First ACP server is default (explicit, predictable)
 
 ## Data Flow
 
@@ -454,7 +493,10 @@ App
 │   ├── Message (tool - centered status badge)
 │   ├── Message (error - red accent)
 │   └── Message (system - centered, subtle)
-└── ChatInput (textarea + send/cancel button)
+├── ChatInput (textarea + send/cancel button)
+├── WorkspaceDialog (workspace selection for new sessions)
+├── WorkspaceConfigDialog (view/add/remove workspaces)
+└── SessionPropertiesDialog (rename session, view workspace info)
 ```
 
 ### Responsive Design
@@ -463,6 +505,146 @@ App
 - **Mobile (<768px)**: Sidebar hidden, hamburger menu to open overlay
 - **Touch support**: Tap to open/close sidebar on mobile
 
+## Multi-Workspace Architecture
+
+The web interface supports multiple workspaces, where each workspace pairs a directory with an ACP server. This enables running different AI agents for different projects simultaneously.
+
+### Workspace Configuration
+
+```mermaid
+graph TB
+    subgraph "CLI Startup"
+        FLAGS[--dir flags] --> PARSE[Parse workspaces]
+        PARSE --> WS1[Workspace 1<br/>auggie:/project1]
+        PARSE --> WS2[Workspace 2<br/>claude-code:/project2]
+    end
+
+    subgraph "SessionManager"
+        WS1 --> SM[SessionManager]
+        WS2 --> SM
+        SM --> |GetWorkspaces| API[REST API]
+        SM --> |AddWorkspace| API
+        SM --> |RemoveWorkspace| API
+    end
+
+    subgraph "ACP Instances"
+        SM --> |CreateSession| ACP1[ACP Server 1<br/>auggie]
+        SM --> |CreateSession| ACP2[ACP Server 2<br/>claude-code]
+    end
+```
+
+### CLI Usage
+
+```bash
+# Single workspace (uses default ACP server and current directory)
+mitto web
+
+# Multiple workspaces with explicit directories
+mitto web --dir /path/to/project1 --dir /path/to/project2
+
+# Specify ACP server per workspace (server:path syntax)
+mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
+
+# Mix default and explicit servers
+mitto web --dir /path/to/project1 --dir claude-code:/path/to/project2
+```
+
+### Workspace REST API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/workspaces` | List all workspaces and available ACP servers |
+| POST | `/api/workspaces` | Add a new workspace dynamically |
+| DELETE | `/api/workspaces?dir=...` | Remove a workspace |
+
+**GET /api/workspaces Response:**
+
+```json
+{
+  "workspaces": [
+    {
+      "acp_server": "auggie",
+      "acp_command": "auggie --acp",
+      "working_dir": "/path/to/project1"
+    },
+    {
+      "acp_server": "claude-code",
+      "acp_command": "npx -y @zed-industries/claude-code-acp@latest",
+      "working_dir": "/path/to/project2"
+    }
+  ],
+  "acp_servers": [
+    {"name": "auggie", "command": "auggie --acp"},
+    {"name": "claude-code", "command": "npx -y @zed-industries/claude-code-acp@latest"}
+  ]
+}
+```
+
+**POST /api/workspaces Request:**
+
+```json
+{
+  "working_dir": "/path/to/new/project",
+  "acp_server": "auggie"
+}
+```
+
+### Session Creation with Workspaces
+
+When multiple workspaces are configured:
+
+1. User clicks "New Session" button
+2. If multiple workspaces exist, `WorkspaceDialog` opens for selection
+3. User selects a workspace (directory + ACP server)
+4. Session is created with the selected workspace's ACP server
+5. Session metadata stores `working_dir` and `acp_server`
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant UI as Frontend
+    participant API as REST API
+    participant SM as SessionManager
+    participant ACP as ACP Server
+
+    User->>UI: Click "New Session"
+    UI->>API: GET /api/workspaces
+    API-->>UI: List of workspaces
+    UI->>User: Show WorkspaceDialog
+    User->>UI: Select workspace
+    UI->>API: POST /api/sessions {working_dir, acp_server}
+    API->>SM: CreateSession(workspace)
+    SM->>ACP: Start ACP process
+    ACP-->>SM: Session ready
+    SM-->>API: Session ID
+    API-->>UI: Session created
+    UI->>User: Switch to new session
+```
+
+### WorkspaceConfig Type
+
+```go
+// WorkspaceConfig represents an ACP server + working directory pair.
+type WorkspaceConfig struct {
+    // ACPServer is the name of the ACP server (from .mittorc config)
+    ACPServer string `json:"acp_server"`
+    // ACPCommand is the shell command to start the ACP server
+    ACPCommand string `json:"acp_command"`
+    // WorkingDir is the absolute path to the working directory
+    WorkingDir string `json:"working_dir"`
+}
+```
+
+### SessionManager Workspace Methods
+
+| Method | Description |
+|--------|-------------|
+| `GetWorkspaces()` | Returns all configured workspaces |
+| `GetWorkspace(workingDir)` | Returns workspace for a specific directory |
+| `GetDefaultWorkspace()` | Returns the first (default) workspace |
+| `AddWorkspace(ws)` | Dynamically adds a new workspace at runtime |
+| `RemoveWorkspace(workingDir)` | Removes a workspace by directory path |
+
 ## File Structure
 
 ### Project Layout
@@ -470,25 +652,33 @@ App
 ```
 mitto/
 ├── cmd/
-│   └── mitto/
-│       └── main.go              # Application entry point
+│   ├── mitto/
+│   │   └── main.go              # CLI entry point
+│   └── mitto-app/
+│       └── main.go              # macOS native app entry point
+├── config/
+│   ├── config.default.yaml      # Embedded default configuration
+│   └── embed.go                 # Go embed directive for defaults
 ├── internal/
 │   ├── acp/
 │   │   ├── client.go            # ACP protocol handlers
 │   │   ├── connection.go        # Process & connection management
 │   │   └── terminal.go          # Terminal operations
+│   ├── appdir/
+│   │   └── appdir.go            # Platform-native directory management
 │   ├── cmd/
 │   │   ├── root.go              # Root command & global flags
 │   │   ├── cli.go               # Interactive CLI command
 │   │   └── web.go               # Web interface command
 │   ├── config/
-│   │   └── config.go            # Configuration loading & parsing
+│   │   ├── config.go            # Configuration loading & parsing (YAML)
+│   │   └── settings.go          # Settings persistence (JSON)
 │   ├── session/
 │   │   ├── types.go             # Event & metadata types
 │   │   ├── store.go             # File-based storage
 │   │   ├── recorder.go          # Session recording
 │   │   ├── player.go            # Session playback
-│   │   ├── config.go            # Default paths
+│   │   ├── config.go            # Default paths (uses appdir)
 │   │   └── *_test.go            # Unit tests
 │   └── web/
 │       ├── server.go            # HTTP server setup
@@ -497,7 +687,7 @@ mitto/
 │       ├── markdown.go          # Markdown streaming buffer
 │       └── session_api.go       # REST API for sessions
 ├── web/
-│   ├── embed.go                 # Go embed directive
+│   ├── embed.go                 # Go embed directive for static files
 │   └── static/
 │       ├── index.html           # Main HTML page
 │       ├── app.js               # Preact application
@@ -510,32 +700,67 @@ mitto/
 └── README.md                    # User documentation
 ```
 
-### Session Storage Layout
+### Mitto Data Directory Layout
+
+The Mitto data directory (`MITTO_DIR`) contains configuration and session data:
 
 ```mermaid
 flowchart TB
-    subgraph "~/.local/share/mitto/sessions/"
-        subgraph "20260125-143052-a1b2c3d4/"
-            E1[events.jsonl]
-            M1[metadata.json]
-        end
-        subgraph "20260125-150000-b2c3d4e5/"
-            E2[events.jsonl]
-            M2[metadata.json]
+    subgraph "MITTO_DIR (platform-specific)"
+        SETTINGS[settings.json]
+        subgraph "sessions/"
+            subgraph "20260125-143052-a1b2c3d4/"
+                E1[events.jsonl]
+                M1[metadata.json]
+            end
+            subgraph "20260125-150000-b2c3d4e5/"
+                E2[events.jsonl]
+                M2[metadata.json]
+            end
         end
     end
 ```
 
+**Platform-specific locations:**
+- **macOS**: `~/Library/Application Support/Mitto/`
+- **Linux**: `~/.local/share/mitto/`
+- **Windows**: `%APPDATA%\Mitto\`
+- **Override**: Set `MITTO_DIR` environment variable
+
 **Directory Structure:**
 ```
-~/.local/share/mitto/
+~/Library/Application Support/Mitto/    # (or platform equivalent)
+├── settings.json                        # User configuration (JSON)
+├── workspaces.json                      # Workspace configuration (JSON, optional)
 └── sessions/
     ├── 20260125-143052-a1b2c3d4/
-    │   ├── events.jsonl         # Event log (append-only)
-    │   └── metadata.json        # Session metadata
+    │   ├── events.jsonl                 # Event log (append-only)
+    │   └── metadata.json                # Session metadata
     └── 20260125-150000-b2c3d4e5/
         ├── events.jsonl
         └── metadata.json
+```
+
+### Workspace Persistence
+
+Workspaces are persisted to `workspaces.json` when:
+- Running the macOS app (always persists changes)
+- Running CLI without `--dir` flags (loads from and saves to file)
+
+Workspaces are NOT persisted when:
+- Running CLI with `--dir` flags (CLI flags take precedence)
+
+**workspaces.json:**
+```json
+{
+  "workspaces": [
+    {
+      "acp_server": "auggie",
+      "acp_command": "auggie --acp",
+      "working_dir": "/path/to/project"
+    }
+  ]
+}
 ```
 
 ### File Formats

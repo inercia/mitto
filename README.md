@@ -106,6 +106,109 @@ acp:
 
 The command should start an ACP-compatible server that communicates via stdin/stdout.
 
+## macOS Desktop App
+
+Mitto can be built as a native macOS application that displays the web interface in a native window.
+
+### Requirements
+
+- macOS 10.15 (Catalina) or later
+- Command Line Tools (`xcode-select --install`)
+- Go 1.23 or later
+
+### Building the App
+
+```bash
+# Build the macOS app bundle
+make build-mac-app
+```
+
+This creates `Mitto.app` in the project root.
+
+### Running the App
+
+```bash
+# Run directly
+open Mitto.app
+
+# Or install to Applications
+cp -r Mitto.app /Applications/
+```
+
+### Configuration
+
+The desktop app uses the same `.mittorc` configuration file as the CLI. You can also use environment variables:
+
+```bash
+# Override the ACP server
+MITTO_ACP_SERVER=claude open Mitto.app
+
+# Override the working directory
+MITTO_WORK_DIR=/path/to/project open Mitto.app
+```
+
+### Keyboard Shortcuts
+
+The macOS app provides native keyboard shortcuts:
+
+| Shortcut | Action |
+|----------|--------|
+| **⌘+N** | New Conversation |
+| **⌘+L** | Focus Input |
+| **⌘+Shift+S** | Toggle Sidebar |
+| **⌘+Shift+M** | Toggle App Visibility (global) |
+
+The **⌘+Shift+M** hotkey works system-wide, even when Mitto is not the active application:
+- Press once to hide the app
+- Press again to show and focus the app
+
+#### Configuring the Hotkey
+
+You can customize or disable the hotkey in your `.mittorc` file:
+
+```yaml
+ui:
+  mac:
+    hotkeys:
+      show_hide:
+        key: "ctrl+alt+m"  # Custom hotkey
+```
+
+To disable the hotkey:
+
+```yaml
+ui:
+  mac:
+    hotkeys:
+      show_hide:
+        enabled: false
+```
+
+**Supported modifiers:** `cmd`, `ctrl`, `alt` (or `option`), `shift`
+
+**Supported keys:** `a-z`, `0-9`, `f1-f12`, `space`, `tab`, `return`, `escape`, `delete`, arrow keys
+
+You can also use the `MITTO_HOTKEY` environment variable:
+
+```bash
+# Custom hotkey
+MITTO_HOTKEY="ctrl+shift+space" open Mitto.app
+
+# Disable hotkey
+MITTO_HOTKEY=disabled open Mitto.app
+```
+
+### How It Works
+
+The macOS app:
+1. Starts the internal web server on a random localhost port
+2. Opens a native WebView window pointing to that URL
+3. Creates native menus with keyboard shortcuts that trigger actions in the web UI
+4. Registers a global hotkey (⌘+Shift+M) for quick access
+5. Shuts down the server when the window is closed
+
+This approach reuses 100% of the existing web interface code while providing a native app experience with proper macOS integration.
+
 ## Development
 
 ```bash
@@ -117,6 +220,12 @@ make fmt
 
 # Build and run
 make run ARGS="cli"
+
+# Build macOS app
+make build-mac-app
+
+# Clean all build artifacts (including macOS app)
+make clean
 ```
 
 ## License
