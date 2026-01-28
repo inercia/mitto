@@ -26,6 +26,8 @@ var (
 
 	// Loaded configuration
 	cfg *config.Config
+	// configResult contains metadata about where config was loaded from
+	configResult *config.LoadResult
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -72,7 +74,11 @@ like auggie, claude-code, and others that implement ACP.`,
 			return fmt.Errorf("failed to create Mitto directory: %w", err)
 		}
 
-		// Load configuration
+		// Load configuration using the new hierarchy:
+		// 1. --config flag (explicit path) takes highest priority
+		// 2. RC file (~/.mittorc) if it exists
+		// 3. For CLI/Web: error if no RC file found
+		// (macOS app has its own loading logic with fallback to settings.json)
 		var err error
 		if configPath != "" {
 			// Load from specified config file (YAML or JSON format)
@@ -80,12 +86,22 @@ like auggie, claude-code, and others that implement ACP.`,
 			if err != nil {
 				return fmt.Errorf("failed to load configuration from %s: %w", configPath, err)
 			}
-		} else {
-			// Default: load from settings.json in Mitto directory
-			cfg, err = config.LoadSettings()
-			if err != nil {
-				return fmt.Errorf("failed to load settings: %w", err)
+			configResult = &config.LoadResult{
+				Config:     cfg,
+				Source:     config.ConfigSourceCustomFile,
+				SourcePath: configPath,
 			}
+		} else {
+			// Use RC file hierarchy - RC file is required for CLI/Web modes
+			configResult, err = config.LoadWithHierarchy()
+			if err == config.ErrNoRCFile {
+				// No RC file found - return helpful error message
+				return config.NewRCFileRequiredError()
+			}
+			if err != nil {
+				return fmt.Errorf("failed to load configuration: %w", err)
+			}
+			cfg = configResult.Config
 		}
 		return nil
 	},
