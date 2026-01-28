@@ -40,6 +40,9 @@ jobs:
           version: latest
           args: --timeout=5m
 
+      - name: Build mock ACP server
+        run: make build-mock-acp
+
       - name: Run Go unit tests
         run: make test-go
 
@@ -74,11 +77,7 @@ jobs:
             goarch: arm64
             binary: mitto
             artifact: mitto-darwin-arm64
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
-            binary: mitto.exe
-            artifact: mitto-windows-amd64
+          # Windows is not supported - hooks package uses Unix-specific syscalls
     steps:
       - uses: actions/checkout@v4
 
@@ -96,21 +95,15 @@ jobs:
         run: |
           go build -ldflags "-s -w" -o ${{ matrix.binary }} ./cmd/mitto
 
-      - name: Create archive (Unix)
-        if: matrix.goos != 'windows'
+      - name: Create archive
         run: |
           tar -czvf ${{ matrix.artifact }}.tar.gz ${{ matrix.binary }}
-
-      - name: Create archive (Windows)
-        if: matrix.goos == 'windows'
-        run: |
-          Compress-Archive -Path ${{ matrix.binary }} -DestinationPath ${{ matrix.artifact }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.goos == 'windows' && format('{0}.zip', matrix.artifact) || format('{0}.tar.gz', matrix.artifact) }}
+          path: ${{ matrix.artifact }}.tar.gz
           retention-days: 1
 
   # Build macOS app bundle (requires macOS runner with CGO)
