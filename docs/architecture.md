@@ -10,36 +10,66 @@ The project is written in Go and follows idiomatic Go project structure with cle
 
 ```mermaid
 graph TB
-    subgraph "User Interface"
-        CLI[CLI Command]
-        Web[Web Interface]
+    subgraph "Entry Points"
+        MITTO[cmd/mitto/<br/>CLI Binary]
+        MITTOAPP[cmd/mitto-app/<br/>macOS App]
     end
 
-    subgraph "Core Application"
-        CMD[internal/cmd<br/>Command Handlers]
-        ACP[internal/acp<br/>ACP Client]
-        WEBPKG[internal/web<br/>Web Server]
-        CFG[internal/config<br/>Configuration]
-        SES[internal/session<br/>Session Management]
+    subgraph "CLI Layer"
+        CMD[internal/cmd/<br/>Cobra Commands]
+    end
+
+    subgraph "Core Services"
+        ACP[internal/acp/<br/>ACP Client]
+        WEBPKG[internal/web/<br/>Web Server]
+        SES[internal/session/<br/>Session Management]
+        AUX[internal/auxiliary/<br/>Auxiliary ACP Session]
+    end
+
+    subgraph "Infrastructure"
+        CFG[internal/config/<br/>Configuration]
+        APPDIR[internal/appdir/<br/>Directory Management]
+        FILEUTIL[internal/fileutil/<br/>File I/O Utilities]
+        LOG[internal/logging/<br/>Logging]
     end
 
     subgraph "External"
         AGENT[ACP Server Process<br/>auggie, claude-code, etc.]
-        FS[File System<br/>Config & Sessions]
+        FS[(File System<br/>Config & Sessions)]
         BROWSER[Web Browser]
     end
 
-    CLI --> CMD
-    Web --> CMD
-    CMD --> CFG
+    %% Entry point dependencies
+    MITTO --> CMD
+    MITTOAPP --> WEBPKG
+    MITTOAPP --> CFG
+    MITTOAPP --> APPDIR
+
+    %% CMD dependencies
     CMD --> ACP
     CMD --> WEBPKG
-    CMD --> SES
+    CMD --> CFG
+    CMD --> AUX
+    CMD --> LOG
+
+    %% Core service dependencies
+    WEBPKG --> SES
+    WEBPKG --> CFG
+    WEBPKG --> AUX
+    WEBPKG --> APPDIR
+    WEBPKG --> LOG
+    SES --> FILEUTIL
+    SES --> APPDIR
+    SES --> LOG
+    CFG --> APPDIR
+    CFG --> FILEUTIL
+
+    %% External connections
     ACP <-->|stdin/stdout| AGENT
-    WEBPKG <-->|stdin/stdout| AGENT
+    AUX <-->|stdin/stdout| AGENT
     WEBPKG <-->|WebSocket| BROWSER
-    CFG --> FS
-    SES --> FS
+    APPDIR --> FS
+    FILEUTIL --> FS
 ```
 
 ## Component Breakdown

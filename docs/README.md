@@ -6,9 +6,11 @@ This directory contains documentation for Mitto, a CLI client for the Agent Comm
 
 | Document | Description |
 |----------|-------------|
+| [usage.md](usage.md) | Commands, flags, and usage examples |
 | [config.md](config.md) | Configuration overview and main settings |
 | [config-web.md](config-web.md) | Web server, authentication, hooks, and security |
-| [config-mac.md](config-mac.md) | macOS desktop app settings (hotkeys, notifications) |
+| [config-mac.md](config-mac.md) | macOS desktop app (building, hotkeys, notifications) |
+| [development.md](development.md) | Building, testing, and contributing |
 | [architecture.md](architecture.md) | System architecture, component design, and internal structure |
 
 ## Quick Links
@@ -44,6 +46,8 @@ The [config-web.md](config-web.md) document covers:
 
 The [config-mac.md](config-mac.md) document covers:
 
+- Building and running the app
+- Environment variable overrides
 - Global hotkeys (show/hide app)
 - Notification sounds (agent completed)
 - Settings dialog UI tab
@@ -57,6 +61,15 @@ The [architecture.md](architecture.md) document covers:
 - ACP protocol integration
 - Background sessions and WebSocket handling
 - Frontend component structure
+
+### Development
+
+The [development.md](development.md) document covers:
+
+- Building CLI, web server, and macOS app
+- Running tests
+- Project structure
+- Contributing guidelines
 
 ## Contributing
 

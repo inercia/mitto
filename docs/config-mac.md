@@ -1,9 +1,63 @@
-# macOS Configuration
+# macOS Desktop App
 
-This document covers macOS-specific configuration options for the Mitto desktop app.
+This document covers building, running, and configuring the Mitto macOS desktop app.
 
-> **Note:** These settings only apply when running the native macOS app (`Mitto.app`),
-> not when using `mitto web` in a browser.
+> **Note:** Configuration settings in this document only apply when running the native macOS app (`Mitto.app`), not when using `mitto web` in a browser.
+
+## Building
+
+### Requirements
+
+- macOS 10.15 (Catalina) or later
+- Command Line Tools (`xcode-select --install`)
+- Go 1.23 or later
+
+### Build the App
+
+```bash
+make build-mac-app
+```
+
+This creates `Mitto.app` in the project root.
+
+### Running
+
+```bash
+# Run directly
+open Mitto.app
+
+# Or install to Applications
+cp -r Mitto.app /Applications/
+```
+
+### Environment Variables
+
+Override settings when launching:
+
+```bash
+# Use a specific ACP server
+MITTO_ACP_SERVER=claude-code open Mitto.app
+
+# Use a specific working directory
+MITTO_WORK_DIR=/path/to/project open Mitto.app
+
+# Custom global hotkey
+MITTO_HOTKEY="ctrl+shift+space" open Mitto.app
+
+# Disable global hotkey
+MITTO_HOTKEY=disabled open Mitto.app
+```
+
+## How It Works
+
+The macOS app:
+1. Starts the internal web server on a random localhost port
+2. Opens a native WebView window pointing to that URL
+3. Creates native menus with keyboard shortcuts
+4. Registers a global hotkey (⌘+Control+M) for quick access
+5. Shuts down the server when the window is closed
+
+This reuses 100% of the web interface code while providing native macOS integration.
 
 ## Configuration
 
@@ -15,7 +69,7 @@ ui:
     hotkeys:
       show_hide:
         enabled: true
-        key: "cmd+shift+m"
+        key: "cmd+ctrl+m"
     notifications:
       sounds:
         agent_completed: true
@@ -40,7 +94,7 @@ ui:
     hotkeys:
       show_hide:
         enabled: true # Enable/disable the hotkey (default: true)
-        key: "cmd+shift+m" # Hotkey combination (default: cmd+shift+m)
+        key: "cmd+ctrl+m" # Hotkey combination (default: cmd+ctrl+m)
 ```
 
 **Supported modifiers:**
@@ -91,6 +145,7 @@ The following keyboard shortcuts are available from the app menu:
 
 | Shortcut | Action | Description |
 |----------|--------|-------------|
+| `⌘,` | Settings | Open the settings dialog |
 | `⌘L` | Focus Input | Focus the chat input field |
 | `⌘⇧S` | Toggle Sidebar | Show/hide the sidebar |
 
@@ -105,11 +160,36 @@ Here's a complete reference of all keyboard shortcuts:
 | `⌘⇧M` | Show/Hide Window | Global hotkey (works even when app is not focused) |
 | `⌘N` | New Conversation | |
 | `⌘W` | Close Conversation | |
+| `⌘,` | Settings | Standard macOS preference shortcut |
 | `⌘1-9` | Switch to Conversation 1-9 | Based on sidebar order |
 | `⌘L` | Focus Input | |
 | `⌘⇧S` | Toggle Sidebar | |
 
 You can also view these shortcuts in the app by clicking the keyboard icon in the sidebar footer.
+
+## Window Behavior
+
+### Show in All Spaces
+
+Make the Mitto window appear in all macOS Spaces (virtual desktops):
+
+```yaml
+ui:
+  mac:
+    show_in_all_spaces: true  # Show window in all Spaces (default: false)
+```
+
+When enabled, the Mitto window will be visible regardless of which Space you're currently in. This is useful if you frequently switch between Spaces and want quick access to Mitto.
+
+> **Note:** This setting requires an app restart to take effect.
+
+You can also configure this through the Settings dialog:
+
+1. Open the Settings dialog (gear icon in sidebar)
+2. Click the **UI** tab (only visible in macOS app)
+3. Toggle **Show in All Spaces** under Window
+4. Click **Save Changes**
+5. Restart the app
 
 ## Notifications
 
@@ -159,6 +239,9 @@ ui:
         enabled: true
         key: "cmd+shift+m"
 
+    # Window behavior
+    show_in_all_spaces: true  # Requires app restart
+
     # Notification settings
     notifications:
       sounds:
@@ -179,6 +262,7 @@ When using `settings.json`:
           "key": "cmd+shift+m"
         }
       },
+      "show_in_all_spaces": true,
       "notifications": {
         "sounds": {
           "agent_completed": true
