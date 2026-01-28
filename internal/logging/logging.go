@@ -219,3 +219,8 @@ func WebSocket() *slog.Logger {
 func Session() *slog.Logger {
 	return WithComponent("session")
 }
+
+// Shutdown returns a logger for shutdown events.
+func Shutdown() *slog.Logger {
+	return WithComponent("shutdown")
+}
