@@ -14,10 +14,11 @@ package main
 
 /*
 #cgo darwin CFLAGS: -x objective-c
-#cgo darwin LDFLAGS: -framework Cocoa -framework Carbon
+#cgo darwin LDFLAGS: -framework Cocoa -framework Carbon -framework UniformTypeIdentifiers
 
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "menu_darwin.h"
 
 // Global hotkey reference (static to avoid duplicate symbols)
@@ -144,19 +145,80 @@ static inline char* openFolderPicker(void) {
 
     return result;
 }
+
+// openImagePicker opens a native file picker dialog for selecting images.
+// Returns a JSON array of selected file paths, or NULL if cancelled.
+// The caller is responsible for freeing the returned string.
+// Note: This function is called from webview binding callbacks which already run on the main thread.
+static inline char* openImagePicker(void) {
+    char* result = NULL;
+
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        [panel setCanChooseFiles:YES];
+        [panel setCanChooseDirectories:NO];
+        [panel setAllowsMultipleSelection:YES];
+        [panel setMessage:@"Select images to attach"];
+        [panel setPrompt:@"Attach"];
+
+        // Set allowed content types for images (using modern UTType API)
+        if (@available(macOS 11.0, *)) {
+            NSArray *imageTypes = @[UTTypeImage, UTTypePNG, UTTypeJPEG, UTTypeGIF, UTTypeWebP];
+            [panel setAllowedContentTypes:imageTypes];
+        } else {
+            // Fallback for older macOS versions
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            NSArray *imageTypes = @[@"png", @"jpg", @"jpeg", @"gif", @"webp"];
+            [panel setAllowedFileTypes:imageTypes];
+            #pragma clang diagnostic pop
+        }
+
+        // Run the panel modally - we're already on the main thread from the webview callback
+        NSModalResponse response = [panel runModal];
+
+        if (response == NSModalResponseOK) {
+            NSArray *urls = [panel URLs];
+            if (urls != nil && [urls count] > 0) {
+                // Build a JSON array of file paths
+                NSMutableArray *paths = [NSMutableArray arrayWithCapacity:[urls count]];
+                for (NSURL *url in urls) {
+                    NSString *path = [url path];
+                    if (path != nil) {
+                        [paths addObject:path];
+                    }
+                }
+
+                // Convert to JSON
+                NSError *error = nil;
+                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:paths
+                                                                   options:0
+                                                                     error:&error];
+                if (jsonData != nil && error == nil) {
+                    NSString *jsonString = [[NSString alloc] initWithData:jsonData
+                                                                 encoding:NSUTF8StringEncoding];
+                    if (jsonString != nil) {
+                        result = strdup([jsonString UTF8String]);
+                    }
+                }
+            }
+        }
+    }
+
+    return result;
+}
 */
 import "C"
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"unsafe"
 
 	webview "github.com/webview/webview_go"
@@ -164,6 +226,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/web"
 )
@@ -172,6 +235,12 @@ import (
 var (
 	globalWebView   webview.WebView
 	globalWebViewMu sync.Mutex
+)
+
+// Global shutdown manager reference for quit callback
+var (
+	globalShutdown   *hooks.ShutdownManager
+	globalShutdownMu sync.Mutex
 )
 
 //export goMenuActionCallback
@@ -200,6 +269,9 @@ func goMenuActionCallback(action *C.char) {
 	case "toggle_sidebar":
 		// Toggle the sidebar visibility
 		js = "if (window.mittoToggleSidebar) window.mittoToggleSidebar();"
+	case "show_settings":
+		// Open the settings dialog
+		js = "if (window.mittoShowSettings) window.mittoShowSettings();"
 	default:
 		slog.Warn("Unknown menu action", "action", actionStr)
 		return
@@ -225,6 +297,24 @@ func goWindowShownCallback() {
 	w.Dispatch(func() {
 		w.Eval("setTimeout(function() { if (window.mittoFocusInput) window.mittoFocusInput(); }, 100);")
 	})
+}
+
+//export goQuitCallback
+func goQuitCallback() {
+	// Run shutdown in a goroutine to avoid blocking the main thread
+	go func() {
+		globalShutdownMu.Lock()
+		shutdown := globalShutdown
+		globalShutdownMu.Unlock()
+
+		if shutdown != nil {
+			// Trigger the shutdown sequence (stops hooks, runs cleanup)
+			shutdown.Shutdown("app_quit")
+		}
+
+		// Signal to macOS that cleanup is complete and the app can terminate
+		C.completeTermination()
+	}()
 }
 
 // setupMenu creates the native macOS menu bar with standard items.
@@ -263,6 +353,24 @@ func pickFolder() string {
 	}
 	defer C.free(unsafe.Pointer(cPath))
 	return C.GoString(cPath)
+}
+
+// pickImages opens a native file picker dialog for selecting images.
+// Returns a JSON array of file paths, or an empty array if cancelled.
+// This is exposed to JavaScript via webview.Bind.
+func pickImages() []string {
+	cJSON := C.openImagePicker()
+	if cJSON == nil {
+		return []string{}
+	}
+	defer C.free(unsafe.Pointer(cJSON))
+
+	jsonStr := C.GoString(cJSON)
+	var paths []string
+	if err := json.Unmarshal([]byte(jsonStr), &paths); err != nil {
+		return []string{}
+	}
+	return paths
 }
 
 // macOS virtual key codes for common keys
@@ -348,10 +456,12 @@ func unregisterHotkey() {
 }
 
 const (
-	appName       = "Mitto"
-	windowWidth   = 1200
-	windowHeight  = 800
-	defaultServer = "claude" // Default ACP server if none configured
+	appName         = "Mitto"
+	windowWidth     = 1200
+	windowHeight    = 800
+	windowMinWidth  = 480
+	windowMinHeight = 400
+	defaultServer   = "claude" // Default ACP server if none configured
 )
 
 func main() {
@@ -375,12 +485,21 @@ func run() error {
 		return fmt.Errorf("failed to create Mitto directory: %w", err)
 	}
 
-	// Load configuration from settings.json (auto-creates from defaults if missing)
-	cfg, err := config.LoadSettings()
+	// Load configuration using the hierarchy:
+	// 1. RC file (~/.mittorc) if it exists - settings become read-only
+	// 2. settings.json if no RC file (auto-creates from defaults if missing)
+	configResult, err := config.LoadSettingsWithFallback()
+	var cfg *config.Config
 	if err != nil {
 		// Config loading failure is not fatal - we can use defaults
 		slog.Warn("Failed to load settings, using defaults", "error", err)
 		cfg = nil
+		configResult = nil
+	} else {
+		cfg = configResult.Config
+		if configResult.Source == config.ConfigSourceRCFile {
+			slog.Info("Configuration loaded from RC file", "path", configResult.SourcePath)
+		}
 	}
 
 	// Get ACP server configuration
@@ -390,20 +509,14 @@ func run() error {
 	}
 
 	// Load workspaces from workspaces.json (macOS app always uses file-based persistence)
-	var workspaces []web.WorkspaceConfig
+	var workspaces []config.WorkspaceSettings
 	savedWorkspaces, err := config.LoadWorkspaces()
 	if err != nil {
 		slog.Warn("Failed to load workspaces", "error", err)
 	}
 	if savedWorkspaces != nil {
-		workspaces = make([]web.WorkspaceConfig, len(savedWorkspaces))
-		for i, ws := range savedWorkspaces {
-			workspaces[i] = web.WorkspaceConfig{
-				ACPServer:  ws.ACPServer,
-				ACPCommand: ws.ACPCommand,
-				WorkingDir: ws.WorkingDir,
-			}
-		}
+		// Use saved workspaces directly (same type)
+		workspaces = savedWorkspaces
 	}
 
 	// Check for MITTO_WORK_DIR environment variable (for testing/development)
@@ -420,7 +533,7 @@ func run() error {
 				}
 			}
 			if !exists {
-				workspaces = append(workspaces, web.WorkspaceConfig{
+				workspaces = append(workspaces, config.WorkspaceSettings{
 					ACPServer:  server.Name,
 					ACPCommand: server.Command,
 					WorkingDir: absPath,
@@ -434,22 +547,20 @@ func run() error {
 	defer auxiliary.Shutdown()
 
 	// Create workspace save callback for persistence
-	onWorkspaceSave := func(ws []web.WorkspaceConfig) error {
-		settings := make([]config.WorkspaceSettings, len(ws))
-		for i, w := range ws {
-			settings[i] = config.WorkspaceSettings{
-				ACPServer:  w.ACPServer,
-				ACPCommand: w.ACPCommand,
-				WorkingDir: w.WorkingDir,
-				Color:      w.Color,
-			}
-		}
-		return config.SaveWorkspaces(settings)
+	onWorkspaceSave := func(ws []config.WorkspaceSettings) error {
+		return config.SaveWorkspaces(ws)
 	}
 
 	// Create web server
 	// For macOS app, workspaces are persisted to workspaces.json
 	// If no workspaces exist, the frontend will show the Settings dialog
+	// If config came from RC file, settings are read-only
+	configReadOnly := configResult != nil && configResult.Source == config.ConfigSourceRCFile
+	var rcFilePath string
+	if configReadOnly {
+		rcFilePath = configResult.SourcePath
+	}
+
 	webConfig := web.Config{
 		Workspaces:      workspaces,
 		AutoApprove:     false,
@@ -457,6 +568,8 @@ func run() error {
 		MittoConfig:     cfg,
 		FromCLI:         false, // macOS app always uses file-based persistence
 		OnWorkspaceSave: onWorkspaceSave,
+		ConfigReadOnly:  configReadOnly,
+		RCFilePath:      rcFilePath,
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)
@@ -469,7 +582,8 @@ func run() error {
 	}
 
 	// Set external port from config (used when external access is enabled via UI)
-	if cfg != nil && cfg.Web.ExternalPort != 0 {
+	// Note: -1 = disabled, 0 = random port, >0 = specific port. Always set from config.
+	if cfg != nil {
 		srv.SetExternalPort(cfg.Web.ExternalPort)
 	}
 
@@ -490,14 +604,22 @@ func run() error {
 		close(serverErr)
 	}()
 
-	// Handle signals for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		auxiliary.Shutdown()
-		srv.Shutdown()
-	}()
+	// Start external listener if auth is configured and external port is not disabled
+	// External port: -1 = disabled, 0 = random, >0 = specific port
+	if cfg != nil && cfg.Web.Auth != nil && cfg.Web.ExternalPort >= 0 {
+		externalPort, err := srv.StartExternalListener(cfg.Web.ExternalPort)
+		if err != nil {
+			slog.Error("Failed to start external listener", "error", err)
+		} else {
+			slog.Info("External listener started", "port", externalPort)
+		}
+	}
+
+	// Run the up hook if configured
+	var upHook *hooks.Process
+	if cfg != nil {
+		upHook = hooks.StartUp(cfg.Web.Hooks.Up, port)
+	}
 
 	// Create and run WebView
 	w := webview.New(false)
@@ -531,6 +653,7 @@ func run() error {
 	// This allows the frontend to call native functions
 	w.Bind("mittoOpenExternalURL", openExternalURL)
 	w.Bind("mittoPickFolder", pickFolder)
+	w.Bind("mittoPickImages", pickImages)
 
 	// Register global hotkey to toggle app visibility
 	hotkeyStr, hotkeyEnabled := getHotkeyConfig(cfg)
@@ -548,17 +671,68 @@ func run() error {
 
 	w.SetTitle(appName)
 	w.SetSize(windowWidth, windowHeight, webview.HintNone)
+	w.SetSize(windowMinWidth, windowMinHeight, webview.HintMin)
 	w.Navigate(url)
+
+	// Configure window to show in all Spaces if enabled
+	// This is dispatched to run after the window is fully created
+	showInAllSpaces := false
+	if cfg != nil && cfg.UI.Mac != nil {
+		showInAllSpaces = cfg.UI.Mac.ShowInAllSpaces
+	}
+	if showInAllSpaces {
+		w.Dispatch(func() {
+			C.setWindowShowInAllSpaces(C.int(1))
+			slog.Info("Window configured to show in all Spaces")
+		})
+	}
+
+	// Set up shutdown manager for graceful shutdown
+	shutdown := hooks.NewShutdownManager()
+
+	// Store global reference for quit callback
+	globalShutdownMu.Lock()
+	globalShutdown = shutdown
+	globalShutdownMu.Unlock()
+	defer func() {
+		globalShutdownMu.Lock()
+		globalShutdown = nil
+		globalShutdownMu.Unlock()
+	}()
+
+	// Configure hooks
+	var downHook config.WebHook
+	if cfg != nil {
+		downHook = cfg.Web.Hooks.Down
+	}
+	shutdown.SetHooks(upHook, downHook, port)
+
+	// Add cleanup functions
+	shutdown.AddCleanup(func(reason string) {
+		auxiliary.Shutdown()
+	})
+	shutdown.AddCleanup(func(reason string) {
+		srv.Shutdown()
+	})
+
+	// Set the UI termination callback - this will be called after all cleanup
+	// to terminate the WebView event loop
+	shutdown.SetTerminateUI(func() {
+		w.Terminate()
+	})
+
+	// Start listening for signals
+	shutdown.Start()
 
 	// Run the WebView event loop (blocks until window is closed)
 	w.Run()
 
-	// Cleanup
+	// Cleanup (runs once, whether from signal, app quit callback, or normal exit)
+	// Note: This may have already been triggered by goQuitCallback if user quit via menu
 	if hotkeyEnabled {
 		unregisterHotkey()
 	}
-	auxiliary.Shutdown()
-	srv.Shutdown()
+	shutdown.Shutdown("window_closed")
 
 	// Check for server errors
 	if err := <-serverErr; err != nil {

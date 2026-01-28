@@ -3,8 +3,9 @@
 
 #import <Cocoa/Cocoa.h>
 
-// Forward declaration of Go callback function
+// Forward declaration of Go callback functions
 extern void goMenuActionCallback(char* action);
+extern void goQuitCallback(void);
 
 // Custom menu action handler
 @interface MittoMenuHandler : NSObject
@@ -13,6 +14,7 @@ extern void goMenuActionCallback(char* action);
 - (void)closeConversation:(id)sender;
 - (void)focusInput:(id)sender;
 - (void)toggleSidebar:(id)sender;
+- (void)showSettings:(id)sender;
 @end
 
 @implementation MittoMenuHandler
@@ -42,85 +44,104 @@ extern void goMenuActionCallback(char* action);
     goMenuActionCallback((char*)"toggle_sidebar");
 }
 
+- (void)showSettings:(id)sender {
+    goMenuActionCallback((char*)"show_settings");
+}
+
 @end
 
 // Application delegate for intercepting quit
 @interface MittoAppDelegate : NSObject <NSApplicationDelegate>
 @property (nonatomic) BOOL confirmQuitEnabled;
 @property (nonatomic) int serverPort;
+@property (nonatomic) BOOL isTerminating;
 @end
 
 @implementation MittoAppDelegate
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
-    if (!self.confirmQuitEnabled) {
+    // If we're already terminating (cleanup complete), allow immediate termination
+    if (self.isTerminating) {
         return NSTerminateNow;
     }
 
-    // Check for running sessions by making a synchronous HTTP request to the local server
-    NSString *urlString = [NSString stringWithFormat:@"http://127.0.0.1:%d/api/sessions/running", self.serverPort];
-    NSURL *url = [NSURL URLWithString:urlString];
-    NSURLRequest *request = [NSURLRequest requestWithURL:url
-                                             cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                         timeoutInterval:2.0];
+    // Check if confirmation is needed for running sessions
+    if (self.confirmQuitEnabled) {
+        // Check for running sessions by making a synchronous HTTP request to the local server
+        NSString *urlString = [NSString stringWithFormat:@"http://127.0.0.1:%d/api/sessions/running", self.serverPort];
+        NSURL *url = [NSURL URLWithString:urlString];
+        NSURLRequest *request = [NSURLRequest requestWithURL:url
+                                                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                             timeoutInterval:2.0];
 
-    NSURLResponse *response = nil;
-    NSError *error = nil;
-    NSData *data = [NSURLConnection sendSynchronousRequest:request
-                                         returningResponse:&response
-                                                     error:&error];
+        NSURLResponse *response = nil;
+        NSError *error = nil;
+        NSData *data = [NSURLConnection sendSynchronousRequest:request
+                                             returningResponse:&response
+                                                         error:&error];
 
-    if (error != nil || data == nil) {
-        // If we can't reach the server, allow quit
-        return NSTerminateNow;
+        if (error == nil && data != nil) {
+            // Parse JSON response
+            NSError *jsonError = nil;
+            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data
+                                                                 options:0
+                                                                   error:&jsonError];
+            if (jsonError == nil && json != nil) {
+                NSNumber *prompting = json[@"prompting"];
+                int promptingCount = prompting ? [prompting intValue] : 0;
+
+                // Show confirmation if there are agents actively responding
+                if (promptingCount > 0) {
+                    // Build alert message
+                    NSString *message = [NSString stringWithFormat:
+                        @"There %@ %d conversation%@ with an agent actively responding.\n\n"
+                        @"Quitting now will interrupt the response and may lose unsaved work.",
+                        promptingCount == 1 ? @"is" : @"are",
+                        promptingCount,
+                        promptingCount == 1 ? @"" : @"s"];
+
+                    // Show alert
+                    NSAlert *alert = [[NSAlert alloc] init];
+                    [alert setMessageText:@"Quit Mitto?"];
+                    [alert setInformativeText:message];
+                    [alert setAlertStyle:NSAlertStyleWarning];
+                    [alert addButtonWithTitle:@"Quit"];
+                    [alert addButtonWithTitle:@"Cancel"];
+
+                    NSModalResponse result = [alert runModal];
+
+                    if (result != NSAlertFirstButtonReturn) {
+                        return NSTerminateCancel;
+                    }
+                }
+            }
+        }
     }
 
-    // Parse JSON response
-    NSError *jsonError = nil;
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data
-                                                         options:0
-                                                           error:&jsonError];
-    if (jsonError != nil || json == nil) {
-        return NSTerminateNow;
-    }
+    // User confirmed quit (or no confirmation needed)
+    // Trigger Go cleanup callback and wait for it to complete
+    // The callback will call completeTermination() when done
+    goQuitCallback();
 
-    NSNumber *prompting = json[@"prompting"];
-    int promptingCount = prompting ? [prompting intValue] : 0;
-
-    // Only show confirmation if there are agents actively responding
-    if (promptingCount == 0) {
-        return NSTerminateNow;
-    }
-
-    // Build alert message
-    NSString *message = [NSString stringWithFormat:
-        @"There %@ %d conversation%@ with an agent actively responding.\n\n"
-        @"Quitting now will interrupt the response and may lose unsaved work.",
-        promptingCount == 1 ? @"is" : @"are",
-        promptingCount,
-        promptingCount == 1 ? @"" : @"s"];
-
-    // Show alert
-    NSAlert *alert = [[NSAlert alloc] init];
-    [alert setMessageText:@"Quit Mitto?"];
-    [alert setInformativeText:message];
-    [alert setAlertStyle:NSAlertStyleWarning];
-    [alert addButtonWithTitle:@"Quit"];
-    [alert addButtonWithTitle:@"Cancel"];
-
-    NSModalResponse result = [alert runModal];
-
-    if (result == NSAlertFirstButtonReturn) {
-        return NSTerminateNow;
-    } else {
-        return NSTerminateCancel;
-    }
+    // Return NSTerminateLater to defer termination until cleanup is complete
+    return NSTerminateLater;
 }
 
 @end
 
 // Global delegate instance (must be kept alive)
 static MittoAppDelegate *gAppDelegate = nil;
+
+// completeTermination signals that cleanup is complete and the app can terminate.
+// This is called from Go after shutdown cleanup has finished.
+void completeTermination(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gAppDelegate != nil) {
+            gAppDelegate.isTerminating = YES;
+        }
+        [[NSApplication sharedApplication] replyToApplicationShouldTerminate:YES];
+    });
+}
 
 // setupMacOSMenu creates the standard macOS application menu with Quit option.
 // This must be called from the main thread after the app is running.
@@ -140,12 +161,24 @@ void setupMacOSMenu(const char* appName) {
         NSMenu *appMenu = [[NSMenu alloc] init];
         [appMenuItem setSubmenu:appMenu];
 
+        // Get the shared menu handler for custom actions
+        MittoMenuHandler *handler = [MittoMenuHandler sharedHandler];
+
         // Add "About" menu item
         NSString *aboutTitle = [NSString stringWithFormat:@"About %s", appName];
         NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:aboutTitle
                                                            action:@selector(orderFrontStandardAboutPanel:)
                                                     keyEquivalent:@""];
         [appMenu addItem:aboutItem];
+
+        [appMenu addItem:[NSMenuItem separatorItem]];
+
+        // Add "Settings" menu item with Cmd+, shortcut (standard macOS convention)
+        NSMenuItem *settingsItem = [[NSMenuItem alloc] initWithTitle:@"Settings..."
+                                                              action:@selector(showSettings:)
+                                                       keyEquivalent:@","];
+        [settingsItem setTarget:handler];
+        [appMenu addItem:settingsItem];
 
         [appMenu addItem:[NSMenuItem separatorItem]];
 
@@ -186,7 +219,6 @@ void setupMacOSMenu(const char* appName) {
         [fileMenuItem setSubmenu:fileMenu];
 
         // Add "New Conversation" menu item with Cmd+N shortcut
-        MittoMenuHandler *handler = [MittoMenuHandler sharedHandler];
         NSMenuItem *newConvoItem = [[NSMenuItem alloc] initWithTitle:@"New Conversation"
                                                               action:@selector(newConversation:)
                                                        keyEquivalent:@"n"];
@@ -301,5 +333,21 @@ void setupQuitInterceptor(int confirmEnabled, int serverPort) {
 
         // Set as the application delegate
         [app setDelegate:gAppDelegate];
+    }
+}
+
+// setWindowShowInAllSpaces configures the main window to appear in all macOS Spaces.
+void setWindowShowInAllSpaces(int enabled) {
+    @autoreleasepool {
+        NSWindow *window = [[NSApplication sharedApplication] mainWindow];
+        if (window) {
+            if (enabled) {
+                // Add canJoinAllSpaces to existing collection behavior
+                window.collectionBehavior |= NSWindowCollectionBehaviorCanJoinAllSpaces;
+            } else {
+                // Remove canJoinAllSpaces from collection behavior
+                window.collectionBehavior &= ~NSWindowCollectionBehaviorCanJoinAllSpaces;
+            }
+        }
     }
 }
