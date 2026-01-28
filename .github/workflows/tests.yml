@@ -49,6 +49,9 @@ jobs:
       - name: Install dependencies
         run: make deps
 
+      - name: Build mock ACP server
+        run: make build-mock-acp
+
       - name: Run Go unit tests
         run: make test-go
 

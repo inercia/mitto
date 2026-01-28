@@ -142,3 +142,4 @@ debug
 # -----------------------------------------------------------------------------
 tests/ui/test-results/
 /mitto-app
+tests/mocks/acp-server/mock-acp-server
