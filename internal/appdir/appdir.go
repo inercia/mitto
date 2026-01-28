@@ -15,6 +15,12 @@ const (
 	// MittoDirEnv is the environment variable to override the Mitto directory.
 	MittoDirEnv = "MITTO_DIR"
 
+	// MittoRCEnv is the environment variable to override the RC file location.
+	MittoRCEnv = "MITTORC"
+
+	// RCFileName is the name of the RC file (without leading dot for some paths).
+	RCFileName = "mittorc"
+
 	// SettingsFileName is the name of the settings file.
 	SettingsFileName = "settings.json"
 
@@ -166,4 +172,93 @@ func ResetCache() {
 	mu.Lock()
 	defer mu.Unlock()
 	cachedDir = ""
+}
+
+// RCFilePath returns the path to the user's RC file if it exists.
+// It checks the following locations in order:
+//  1. MITTORC environment variable (if set and file exists)
+//  2. Platform-specific locations:
+//     - macOS: ~/.mittorc
+//     - Linux: ~/.mittorc, then $XDG_CONFIG_HOME/mitto/mittorc
+//     - Windows: %USERPROFILE%\.mittorc
+//
+// Returns the path to the RC file if found, or an empty string if not found.
+// Returns an error only if there's a problem getting the home directory.
+func RCFilePath() (string, error) {
+	// Check environment variable first
+	if envPath := os.Getenv(MittoRCEnv); envPath != "" {
+		if _, err := os.Stat(envPath); err == nil {
+			return envPath, nil
+		}
+		// Env var set but file doesn't exist - continue checking other locations
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	// Platform-specific RC file locations
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS: ~/.mittorc
+		rcPath := filepath.Join(homeDir, ".mittorc")
+		if _, err := os.Stat(rcPath); err == nil {
+			return rcPath, nil
+		}
+
+	case "windows":
+		// Windows: %USERPROFILE%\.mittorc
+		rcPath := filepath.Join(homeDir, ".mittorc")
+		if _, err := os.Stat(rcPath); err == nil {
+			return rcPath, nil
+		}
+
+	default:
+		// Linux and other Unix-like systems
+		// First check ~/.mittorc
+		rcPath := filepath.Join(homeDir, ".mittorc")
+		if _, err := os.Stat(rcPath); err == nil {
+			return rcPath, nil
+		}
+
+		// Then check $XDG_CONFIG_HOME/mitto/mittorc
+		xdgConfig := os.Getenv("XDG_CONFIG_HOME")
+		if xdgConfig == "" {
+			xdgConfig = filepath.Join(homeDir, ".config")
+		}
+		xdgRCPath := filepath.Join(xdgConfig, "mitto", RCFileName)
+		if _, err := os.Stat(xdgRCPath); err == nil {
+			return xdgRCPath, nil
+		}
+	}
+
+	return "", nil
+}
+
+// RCFileExists returns true if an RC file exists at any of the standard locations.
+func RCFileExists() (bool, error) {
+	path, err := RCFilePath()
+	if err != nil {
+		return false, err
+	}
+	return path != "", nil
+}
+
+// DefaultRCFilePath returns the default RC file path for the current platform.
+// This is the path where the user should create their RC file.
+// Unlike RCFilePath(), this does not check if the file exists.
+func DefaultRCFilePath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return filepath.Join(homeDir, ".mittorc"), nil
+	default:
+		// Linux: prefer ~/.mittorc for simplicity
+		return filepath.Join(homeDir, ".mittorc"), nil
+	}
 }
