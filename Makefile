@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration clean run fmt fmt-check lint deps-go deps-js deps build-mac-app clean-mac-app
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp
 
 # Binary name
 BINARY_NAME=mitto
@@ -34,23 +34,93 @@ install:
 # Run all unit tests (Go + JavaScript)
 test: test-go test-js
 
-# Run Go unit tests
+# Run Go unit tests (excludes integration tests)
 test-go:
-	@echo "Running Go tests..."
-	$(GOTEST) -v ./...
+	@echo "Running Go unit tests..."
+	$(GOTEST) -v ./internal/... ./cmd/...
 
 # Run JavaScript unit tests
 test-js: deps-js
 	@echo "Running JavaScript tests..."
 	$(NPM) test
 
-# Run integration tests (requires ACP server like auggie)
-test-integration: build
-	@echo "Running integration tests..."
+# =============================================================================
+# Integration & UI Tests
+# =============================================================================
+# These tests use a mock ACP server for deterministic, repeatable testing.
+# Build the mock server first with: make build-mock-acp
+# =============================================================================
+
+# Build mock ACP server
+build-mock-acp:
+	@echo "Building mock ACP server..."
+	$(GOBUILD) -o tests/mocks/acp-server/mock-acp-server ./tests/mocks/acp-server
+
+# Run legacy integration tests (bash scripts, requires real ACP server)
+test-integration-legacy: build
+	@echo "Running legacy integration tests..."
 	@./tests/integration/run_all.sh
 
-# Run all tests (unit + integration)
-test-all: test test-integration
+# Run Go-based integration tests (uses mock ACP server)
+test-integration-go: build build-mock-acp
+	@echo "Running Go integration tests..."
+	$(GOTEST) -v -tags=integration ./tests/integration/...
+
+# Run CLI integration tests only
+test-integration-cli: build build-mock-acp
+	@echo "Running CLI integration tests..."
+	$(GOTEST) -v -tags=integration ./tests/integration/cli/...
+
+# Run API integration tests only
+test-integration-api: build build-mock-acp
+	@echo "Running API integration tests..."
+	$(GOTEST) -v -tags=integration ./tests/integration/api/...
+
+# Run all integration tests (Go-based, uses mock ACP)
+test-integration: test-integration-go
+
+# Run UI tests with Playwright
+test-ui: build deps-js build-mock-acp
+	@echo "Running UI tests..."
+	npx playwright test --config=tests/ui/playwright.config.ts
+
+# Run UI tests in headed mode (visible browser)
+test-ui-headed: build deps-js build-mock-acp
+	@echo "Running UI tests (headed)..."
+	npx playwright test --config=tests/ui/playwright.config.ts --headed
+
+# Run UI tests in debug mode
+test-ui-debug: build deps-js build-mock-acp
+	@echo "Running UI tests (debug)..."
+	npx playwright test --config=tests/ui/playwright.config.ts --debug
+
+# Show Playwright test report
+test-ui-report:
+	npx playwright show-report tests/ui/playwright-report
+
+# Run all tests (unit + integration + UI)
+test-all: test test-integration test-ui
+
+# Setup test environment (install Playwright browsers, etc.)
+test-setup: deps
+	@echo "Setting up test environment..."
+	npx playwright install chromium
+	@echo "Test environment ready."
+
+# Clean test artifacts
+test-clean:
+	@echo "Cleaning test artifacts..."
+	rm -rf tests/ui/test-results
+	rm -rf tests/ui/playwright-report
+	rm -f tests/mocks/acp-server/mock-acp-server
+	rm -rf /tmp/mitto-test-*
+
+# Run tests in CI mode
+test-ci: test-setup
+	@echo "Running tests in CI mode..."
+	CI=true $(MAKE) test
+	CI=true $(MAKE) test-integration
+	CI=true $(MAKE) test-ui
 
 # Clean build artifacts
 clean: clean-mac-app

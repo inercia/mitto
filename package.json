@@ -8,15 +8,18 @@
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
-    "test:ui": "npx playwright test --config=tests/ui/playwright.config.js",
-    "test:ui:headed": "npx playwright test --config=tests/ui/playwright.config.js --headed",
-    "test:ui:debug": "npx playwright test --config=tests/ui/playwright.config.js --debug",
-    "test:ui:report": "npx playwright show-report tests/ui/playwright-report"
+    "test:ui": "npx playwright test --config=tests/ui/playwright.config.ts",
+    "test:ui:headed": "npx playwright test --config=tests/ui/playwright.config.ts --headed",
+    "test:ui:debug": "npx playwright test --config=tests/ui/playwright.config.ts --debug",
+    "test:ui:report": "npx playwright show-report tests/ui/playwright-report",
+    "test:ui:legacy": "npx playwright test --config=tests/ui/playwright.config.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.50.1",
+    "@types/node": "^20.11.0",
     "jest": "^29.7.0",
-    "jest-environment-jsdom": "^29.7.0"
+    "jest-environment-jsdom": "^29.7.0",
+    "typescript": "^5.4.0"
   },
   "jest": {
     "testEnvironment": "jsdom",
