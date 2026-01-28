@@ -1,27 +1,18 @@
 package session
 
 import (
-	"os"
-	"path/filepath"
-)
-
-const (
-	// DefaultSessionDirName is the default name for the sessions directory.
-	DefaultSessionDirName = "sessions"
+	"github.com/inercia/mitto/internal/appdir"
 )
 
 // DefaultSessionDir returns the default session storage directory.
-// It uses XDG_DATA_HOME if set, otherwise falls back to ~/.local/share/mitto/sessions.
+// It uses the Mitto data directory from appdir, which handles:
+//   - MITTO_DIR environment variable override
+//   - Platform-specific directories:
+//   - Linux: $XDG_DATA_HOME/mitto/sessions or ~/.local/share/mitto/sessions
+//   - macOS: ~/Library/Application Support/Mitto/sessions
+//   - Windows: %APPDATA%\Mitto\sessions
 func DefaultSessionDir() (string, error) {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		dataHome = filepath.Join(homeDir, ".local", "share")
-	}
-	return filepath.Join(dataHome, "mitto", DefaultSessionDirName), nil
+	return appdir.SessionsDir()
 }
 
 // DefaultStore creates a new store using the default session directory.

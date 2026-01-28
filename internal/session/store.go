@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/fileutil"
+	"github.com/inercia/mitto/internal/logging"
 )
 
 const (
@@ -25,6 +26,9 @@ var (
 	ErrStoreClosed     = errors.New("store is closed")
 )
 
+// Verify Store implements SessionStore at compile time.
+var _ SessionStore = (*Store)(nil)
+
 // Store provides session persistence operations.
 type Store struct {
 	baseDir string
@@ -34,9 +38,11 @@ type Store struct {
 
 // NewStore creates a new session store with the given base directory.
 func NewStore(baseDir string) (*Store, error) {
+	log := logging.Session()
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create session directory: %w", err)
 	}
+	log.Debug("session store initialized", "base_dir", baseDir)
 	return &Store{baseDir: baseDir}, nil
 }
 
@@ -62,6 +68,7 @@ func (s *Store) lockPath(sessionID string) string {
 
 // Create creates a new session with the given metadata.
 func (s *Store) Create(meta Metadata) error {
+	log := logging.Session()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -87,7 +94,16 @@ func (s *Store) Create(meta Metadata) error {
 	meta.EventCount = 0
 	meta.Status = "active"
 
-	return s.writeMetadata(meta)
+	if err := s.writeMetadata(meta); err != nil {
+		return err
+	}
+
+	log.Info("session created",
+		"session_id", meta.SessionID,
+		"acp_server", meta.ACPServer,
+		"working_dir", meta.WorkingDir,
+		"session_dir", sessionDir)
+	return nil
 }
 
 // AppendEvent appends an event to the session's event log.
@@ -238,6 +254,52 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64) ([]Event, error
 	return events, nil
 }
 
+// ReadEventsLast reads the last N events from a session's event log.
+// If beforeSeq > 0, only events with seq < beforeSeq are considered.
+// Returns events in chronological order (oldest first).
+func (s *Store) ReadEventsLast(sessionID string, limit int, beforeSeq int64) ([]Event, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	f, err := os.Open(s.eventsPath(sessionID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("failed to open events file: %w", err)
+	}
+	defer f.Close()
+
+	// Read all matching events first (we need to know total count to get last N)
+	var allEvents []Event
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var event Event
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal event: %w", err)
+		}
+		// If beforeSeq is specified, only include events before it
+		if beforeSeq > 0 && event.Seq >= beforeSeq {
+			continue
+		}
+		allEvents = append(allEvents, event)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read events: %w", err)
+	}
+
+	// Return last N events
+	if limit > 0 && len(allEvents) > limit {
+		return allEvents[len(allEvents)-limit:], nil
+	}
+	return allEvents, nil
+}
+
 // List returns metadata for all sessions.
 func (s *Store) List() ([]Metadata, error) {
 	s.mu.RLock()
@@ -270,6 +332,7 @@ func (s *Store) List() ([]Metadata, error) {
 
 // Delete removes a session and all its data.
 func (s *Store) Delete(sessionID string) error {
+	log := logging.Session()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -282,7 +345,12 @@ func (s *Store) Delete(sessionID string) error {
 		return ErrSessionNotFound
 	}
 
-	return os.RemoveAll(sessionDir)
+	if err := os.RemoveAll(sessionDir); err != nil {
+		return err
+	}
+
+	log.Info("session deleted", "session_id", sessionID, "session_dir", sessionDir)
+	return nil
 }
 
 // Exists checks if a session exists.
@@ -300,8 +368,10 @@ func (s *Store) Exists(sessionID string) bool {
 
 // Close closes the store.
 func (s *Store) Close() error {
+	log := logging.Session()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	log.Debug("session store closed", "base_dir", s.baseDir)
 	return nil
 }

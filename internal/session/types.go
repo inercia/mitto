@@ -6,6 +6,48 @@ import (
 	"time"
 )
 
+// SessionStore defines the interface for session persistence operations.
+// This interface allows for easier testing by enabling mock implementations.
+type SessionStore interface {
+	// Create creates a new session with the given metadata.
+	Create(meta Metadata) error
+
+	// AppendEvent appends an event to the session's event log.
+	// The event's Seq field is automatically assigned based on the current event count.
+	AppendEvent(sessionID string, event Event) error
+
+	// GetMetadata retrieves the metadata for a session.
+	GetMetadata(sessionID string) (Metadata, error)
+
+	// UpdateMetadata updates the metadata for a session using the provided update function.
+	UpdateMetadata(sessionID string, updateFn func(*Metadata)) error
+
+	// ReadEvents reads all events from a session's event log.
+	ReadEvents(sessionID string) ([]Event, error)
+
+	// ReadEventsFrom reads events from a session's event log starting after the given sequence number.
+	// If afterSeq is 0, all events are returned.
+	// If afterSeq is 5, only events with seq > 5 are returned.
+	ReadEventsFrom(sessionID string, afterSeq int64) ([]Event, error)
+
+	// ReadEventsLast reads the last N events from a session's event log.
+	// If beforeSeq > 0, only events with seq < beforeSeq are considered.
+	// Returns events in chronological order (oldest first).
+	ReadEventsLast(sessionID string, limit int, beforeSeq int64) ([]Event, error)
+
+	// List returns metadata for all sessions.
+	List() ([]Metadata, error)
+
+	// Delete removes a session and all its data.
+	Delete(sessionID string) error
+
+	// Exists checks if a session exists.
+	Exists(sessionID string) bool
+
+	// Close closes the store and releases any resources.
+	Close() error
+}
+
 // EventType represents the type of event in a session log.
 type EventType string
 
@@ -114,6 +156,7 @@ type Metadata struct {
 	SessionID         string    `json:"session_id"`
 	Name              string    `json:"name,omitempty"` // User-friendly session name
 	ACPServer         string    `json:"acp_server"`
+	ACPCommand        string    `json:"acp_command,omitempty"` // Shell command used to start the ACP server
 	WorkingDir        string    `json:"working_dir"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Player provides session playback functionality.
@@ -153,6 +154,87 @@ func DecodeEventData(event Event) (interface{}, error) {
 
 	// Data is likely a map from JSON unmarshaling, convert it
 	return decodeMapToStruct(event.Type, event.Data)
+}
+
+// BuildConversationHistory builds a text summary of the conversation from events.
+// This is used to provide context when resuming a session with a new ACP process.
+// It extracts user prompts and agent messages, limiting to the most recent exchanges.
+func BuildConversationHistory(events []Event, maxTurns int) string {
+	if len(events) == 0 {
+		return ""
+	}
+
+	// Extract conversation turns (user prompt + agent response pairs)
+	type turn struct {
+		userMessage  string
+		agentMessage string
+	}
+	var turns []turn
+	var currentTurn turn
+
+	for _, event := range events {
+		data, err := DecodeEventData(event)
+		if err != nil {
+			continue
+		}
+
+		switch event.Type {
+		case EventTypeUserPrompt:
+			// Start a new turn
+			if currentTurn.userMessage != "" {
+				turns = append(turns, currentTurn)
+			}
+			if d, ok := data.(UserPromptData); ok {
+				currentTurn = turn{userMessage: d.Message}
+			}
+		case EventTypeAgentMessage:
+			// Add to current turn
+			if d, ok := data.(AgentMessageData); ok {
+				currentTurn.agentMessage += d.Text
+			}
+		}
+	}
+
+	// Don't forget the last turn
+	if currentTurn.userMessage != "" {
+		turns = append(turns, currentTurn)
+	}
+
+	if len(turns) == 0 {
+		return ""
+	}
+
+	// Limit to most recent turns
+	if maxTurns > 0 && len(turns) > maxTurns {
+		turns = turns[len(turns)-maxTurns:]
+	}
+
+	// Build the history text
+	var sb strings.Builder
+	sb.WriteString("[CONVERSATION HISTORY - This is a resumed session. Previous context:]\n\n")
+
+	for i, t := range turns {
+		// Truncate very long messages
+		userMsg := truncateText(t.userMessage, 500)
+		agentMsg := truncateText(t.agentMessage, 1000)
+
+		sb.WriteString(fmt.Sprintf("--- Turn %d ---\n", i+1))
+		sb.WriteString(fmt.Sprintf("USER: %s\n\n", userMsg))
+		if agentMsg != "" {
+			sb.WriteString(fmt.Sprintf("ASSISTANT: %s\n\n", agentMsg))
+		}
+	}
+
+	sb.WriteString("[END OF HISTORY - Continue the conversation:]\n\n")
+	return sb.String()
+}
+
+// truncateText truncates text to maxLen characters, adding "..." if truncated.
+func truncateText(text string, maxLen int) string {
+	if len(text) <= maxLen {
+		return text
+	}
+	return text[:maxLen-3] + "..."
 }
 
 // decodeMapToStruct converts a map to the appropriate struct type.

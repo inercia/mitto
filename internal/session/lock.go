@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/fileutil"
+	"github.com/inercia/mitto/internal/logging"
 )
 
 const (
@@ -82,6 +83,7 @@ func (s *Store) ForceInterruptLock(sessionID, clientType string) (*Lock, error) 
 
 // acquireLock is the internal implementation for lock acquisition.
 func (s *Store) acquireLock(sessionID, clientType string, force, interrupt bool) (*Lock, error) {
+	log := logging.Session()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -106,12 +108,19 @@ func (s *Store) acquireLock(sessionID, clientType string, force, interrupt bool)
 		// First, check if the owning process is dead (crashed without cleanup)
 		if existingLock.IsProcessDead(currentHostname) {
 			// Process is dead, we can safely take over
-			// Log this for debugging (the lock will be overwritten below)
+			log.Debug("taking over lock from dead process",
+				"session_id", sessionID,
+				"dead_pid", existingLock.PID,
+				"dead_hostname", existingLock.Hostname)
 		} else if !force {
 			// Not forcing, check if lock is stale
 			if !existingLock.IsStale(DefaultStaleTimeout) {
 				return nil, ErrSessionLocked
 			}
+			log.Debug("taking over stale lock",
+				"session_id", sessionID,
+				"stale_pid", existingLock.PID,
+				"last_heartbeat", existingLock.Heartbeat)
 		} else {
 			// Forcing, but check if safe to steal
 			if !interrupt && !existingLock.IsSafeToSteal(DefaultStaleTimeout) {
@@ -124,6 +133,11 @@ func (s *Store) acquireLock(sessionID, clientType string, force, interrupt bool)
 					return nil, ErrSessionLocked
 				}
 			}
+			log.Debug("forcing lock acquisition",
+				"session_id", sessionID,
+				"previous_pid", existingLock.PID,
+				"previous_status", existingLock.Status,
+				"interrupt", interrupt)
 		}
 	}
 
@@ -158,6 +172,12 @@ func (s *Store) acquireLock(sessionID, clientType string, force, interrupt bool)
 
 	// Start heartbeat goroutine
 	go lock.heartbeatLoop()
+
+	log.Info("session lock acquired",
+		"session_id", sessionID,
+		"client_type", clientType,
+		"instance_id", instanceID,
+		"pid", lockInfo.PID)
 
 	return lock, nil
 }
@@ -271,6 +291,7 @@ func (l *Lock) SetWaitingPermission(message string) error {
 
 // Release releases the lock.
 func (l *Lock) Release() error {
+	log := logging.Session()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -293,6 +314,7 @@ func (l *Lock) Release() error {
 		return fmt.Errorf("failed to remove lock file: %w", err)
 	}
 
+	log.Info("session lock released", "session_id", l.sessionID, "instance_id", l.instanceID)
 	return nil
 }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/inercia/mitto/internal/logging"
 )
 
 // Recorder records events to a session store.
@@ -49,7 +51,17 @@ func (r *Recorder) SessionID() string {
 }
 
 // Start starts a new recording session.
+// For backward compatibility, this method does not store the ACP command.
+// Use StartWithCommand to also store the ACP command for session resume.
 func (r *Recorder) Start(acpServer, workingDir string) error {
+	return r.StartWithCommand(acpServer, "", workingDir)
+}
+
+// StartWithCommand starts a new recording session with the ACP command stored.
+// The acpCommand is stored in metadata so sessions can be resumed even if
+// the workspace configuration is not available.
+func (r *Recorder) StartWithCommand(acpServer, acpCommand, workingDir string) error {
+	log := logging.Session()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -60,6 +72,7 @@ func (r *Recorder) Start(acpServer, workingDir string) error {
 	meta := Metadata{
 		SessionID:  r.sessionID,
 		ACPServer:  acpServer,
+		ACPCommand: acpCommand,
 		WorkingDir: workingDir,
 	}
 
@@ -70,7 +83,7 @@ func (r *Recorder) Start(acpServer, workingDir string) error {
 	r.started = true
 
 	// Record session start event (call store directly to avoid deadlock)
-	return r.store.AppendEvent(r.sessionID, Event{
+	if err := r.store.AppendEvent(r.sessionID, Event{
 		Type:      EventTypeSessionStart,
 		Timestamp: time.Now(),
 		Data: SessionStartData{
@@ -78,12 +91,22 @@ func (r *Recorder) Start(acpServer, workingDir string) error {
 			ACPServer:  acpServer,
 			WorkingDir: workingDir,
 		},
-	})
+	}); err != nil {
+		return err
+	}
+
+	log.Info("session recording started",
+		"session_id", r.sessionID,
+		"acp_server", acpServer,
+		"acp_command", acpCommand,
+		"working_dir", workingDir)
+	return nil
 }
 
 // Resume resumes recording to an existing session.
 // This is used when switching back to a previously created session.
 func (r *Recorder) Resume() error {
+	log := logging.Session()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -97,6 +120,7 @@ func (r *Recorder) Resume() error {
 	}
 
 	r.started = true
+	log.Info("session recording resumed", "session_id", r.sessionID)
 	return nil
 }
 
@@ -209,6 +233,7 @@ func (r *Recorder) RecordFileWrite(path string, size int) error {
 // This is used when the connection is temporarily closed (e.g., browser refresh).
 // The session remains "active" so it can be resumed without creating a new session.
 func (r *Recorder) Suspend() error {
+	log := logging.Session()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -220,11 +245,13 @@ func (r *Recorder) Suspend() error {
 	// but don't record a session end event or change the status.
 	// The session remains "active" in the metadata.
 	r.started = false
+	log.Info("session recording suspended", "session_id", r.sessionID)
 	return nil
 }
 
 // End ends the recording session.
 func (r *Recorder) End(reason string) error {
+	log := logging.Session()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -242,9 +269,14 @@ func (r *Recorder) End(reason string) error {
 	}
 
 	// Update metadata status
-	return r.store.UpdateMetadata(r.sessionID, func(meta *Metadata) {
+	if err := r.store.UpdateMetadata(r.sessionID, func(meta *Metadata) {
 		meta.Status = "completed"
-	})
+	}); err != nil {
+		return err
+	}
+
+	log.Info("session recording ended", "session_id", r.sessionID, "reason", reason)
+	return nil
 }
 
 // recordEvent records an event to the store.
