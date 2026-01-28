@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
@@ -125,17 +124,8 @@ func (c *Client) SessionUpdate(ctx context.Context, params acp.SessionNotificati
 
 // WriteTextFile handles file write requests from the agent.
 func (c *Client) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
-	if !filepath.IsAbs(params.Path) {
-		return acp.WriteTextFileResponse{}, fmt.Errorf("path must be absolute: %s", params.Path)
-	}
-	dir := filepath.Dir(params.Path)
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return acp.WriteTextFileResponse{}, fmt.Errorf("mkdir %s: %w", dir, err)
-		}
-	}
-	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
-		return acp.WriteTextFileResponse{}, fmt.Errorf("write %s: %w", params.Path, err)
+	if err := DefaultFileSystem.WriteTextFile(params.Path, params.Content); err != nil {
+		return acp.WriteTextFileResponse{}, err
 	}
 	c.print("\n📝 Wrote %d bytes to %s\n", len(params.Content), params.Path)
 	return acp.WriteTextFileResponse{}, nil
@@ -143,27 +133,9 @@ func (c *Client) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequ
 
 // ReadTextFile handles file read requests from the agent.
 func (c *Client) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
-	if !filepath.IsAbs(params.Path) {
-		return acp.ReadTextFileResponse{}, fmt.Errorf("path must be absolute: %s", params.Path)
-	}
-	b, err := os.ReadFile(params.Path)
+	content, err := DefaultFileSystem.ReadTextFile(params.Path, params.Line, params.Limit)
 	if err != nil {
-		return acp.ReadTextFileResponse{}, fmt.Errorf("read %s: %w", params.Path, err)
-	}
-	content := string(b)
-	if params.Line != nil || params.Limit != nil {
-		lines := strings.Split(content, "\n")
-		start := 0
-		if params.Line != nil && *params.Line > 0 {
-			start = min(max(*params.Line-1, 0), len(lines))
-		}
-		end := len(lines)
-		if params.Limit != nil && *params.Limit > 0 {
-			if start+*params.Limit < end {
-				end = start + *params.Limit
-			}
-		}
-		content = strings.Join(lines[start:end], "\n")
+		return acp.ReadTextFileResponse{}, err
 	}
 	c.print("\n📖 Read %d bytes from %s\n", len(content), params.Path)
 	return acp.ReadTextFileResponse{Content: content}, nil

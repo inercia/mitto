@@ -13,11 +13,12 @@ import (
 
 // Connection manages an ACP server process and its communication channel.
 type Connection struct {
-	cmd     *exec.Cmd
-	conn    *acp.ClientSideConnection
-	session *acp.NewSessionResponse
-	client  *Client
-	logger  *slog.Logger
+	cmd          *exec.Cmd
+	conn         *acp.ClientSideConnection
+	session      *acp.NewSessionResponse
+	client       *Client
+	logger       *slog.Logger
+	capabilities *acp.AgentCapabilities
 }
 
 // NewConnection starts an ACP server process and establishes a connection.
@@ -75,8 +76,19 @@ func (c *Connection) Initialize(ctx context.Context) error {
 		return fmt.Errorf("initialize error: %w", err)
 	}
 
+	// Store agent capabilities for later use
+	c.capabilities = &initResp.AgentCapabilities
+
 	c.client.print("✅ Connected (protocol v%v)\n", initResp.ProtocolVersion)
 	return nil
+}
+
+// HasImageSupport returns true if the agent supports image content in prompts.
+func (c *Connection) HasImageSupport() bool {
+	if c.capabilities == nil {
+		return false
+	}
+	return c.capabilities.PromptCapabilities.Image
 }
 
 // NewSession creates a new ACP session.
@@ -96,13 +108,19 @@ func (c *Connection) NewSession(ctx context.Context, cwd string) error {
 
 // Prompt sends a message to the agent and waits for the response.
 func (c *Connection) Prompt(ctx context.Context, message string) error {
+	return c.PromptWithContent(ctx, []acp.ContentBlock{acp.TextBlock(message)})
+}
+
+// PromptWithContent sends content blocks to the agent and waits for the response.
+// This allows sending images and other content types along with text.
+func (c *Connection) PromptWithContent(ctx context.Context, content []acp.ContentBlock) error {
 	if c.session == nil {
 		return fmt.Errorf("no active session")
 	}
 
 	_, err := c.conn.Prompt(ctx, acp.PromptRequest{
 		SessionId: c.session.SessionId,
-		Prompt:    []acp.ContentBlock{acp.TextBlock(message)},
+		Prompt:    content,
 	})
 	return err
 }
