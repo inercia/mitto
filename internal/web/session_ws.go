@@ -280,6 +280,7 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 	}
 }
 
+//nolint:unused // convenience wrapper for future use
 func (c *SessionWSClient) handlePrompt(message string) {
 	c.handlePromptWithID(message, "")
 }

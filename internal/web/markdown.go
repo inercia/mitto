@@ -108,11 +108,7 @@ func hasUnmatchedInlineFormatting(content string) bool {
 			inlineCodeCount++
 		}
 	}
-	if inlineCodeCount%2 != 0 {
-		return true
-	}
-
-	return false
+	return inlineCodeCount%2 != 0
 }
 
 // Write adds a chunk of text to the buffer and triggers smart flushing.

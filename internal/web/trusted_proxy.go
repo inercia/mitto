@@ -10,7 +10,6 @@ import (
 // TrustedProxyChecker validates whether requests come from trusted proxies.
 // It is safe for concurrent use.
 type TrustedProxyChecker struct {
-	mu          sync.RWMutex
 	trustedNets []*net.IPNet
 	trustedIPs  []net.IP
 }

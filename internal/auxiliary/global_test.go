@@ -1,6 +1,7 @@
 package auxiliary
 
 import (
+	"context"
 	"testing"
 )
 
@@ -63,7 +64,7 @@ func TestPrompt_NotInitialized(t *testing.T) {
 		globalMu.Unlock()
 	}()
 
-	_, err := Prompt(nil, "test")
+	_, err := Prompt(context.TODO(), "test")
 	if err == nil {
 		t.Error("Prompt should fail when manager is not initialized")
 	}

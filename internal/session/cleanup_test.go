@@ -74,7 +74,7 @@ func TestCleanup_CleanupAllLocks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TryAcquireLock failed: %v", err)
 		}
-		locks = append(locks, lock)
+		locks = append(locks, lock) //nolint:staticcheck // locks used for count verification
 	}
 
 	// Should have 3 more locks

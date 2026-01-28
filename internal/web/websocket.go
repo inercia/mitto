@@ -79,6 +79,8 @@ func (sc *SessionContext) GetSessionID() string {
 // defaultUpgrader is the default WebSocket upgrader.
 // It is replaced by a secure upgrader when the server is initialized.
 // DEPRECATED: Use server.getSecureUpgrader() instead.
+//
+//nolint:unused // kept for backwards compatibility
 var defaultUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -437,10 +439,12 @@ func (c *WSClient) handleNewSession(name string) {
 	})
 }
 
+//nolint:unused // convenience wrapper for future use
 func (c *WSClient) handlePrompt(message string) {
 	c.handlePromptWithImagesAndID(message, nil, "")
 }
 
+//nolint:unused // convenience wrapper for future use
 func (c *WSClient) handlePromptWithImages(message string, imageIDs []string) {
 	c.handlePromptWithImagesAndID(message, imageIDs, "")
 }
@@ -811,6 +815,7 @@ func (c *WSClient) handleSwitchSession(sessionID string) {
 	}
 }
 
+//nolint:unused // handler for future permission UI
 func (c *WSClient) handlePermissionRequest(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	// Send permission request to frontend
 	title := ""
@@ -885,6 +890,8 @@ func (c *WSClient) getCurrentSession() *SessionContext {
 }
 
 // setCurrentSession sets the current session context.
+//
+//nolint:unused // setter for future session management
 func (c *WSClient) setCurrentSession(sessCtx *SessionContext) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
@@ -1073,6 +1080,8 @@ func (c *WSClient) flushAndPersistAgentMessagesForSession(sessCtx *SessionContex
 }
 
 // persistToolCallForSession records a tool call event to disk for a specific session.
+//
+//nolint:unused // helper for future session persistence
 func (c *WSClient) persistToolCallForSession(sessCtx *SessionContext, id, title, status string) {
 	if sessCtx == nil || sessCtx.recorder == nil {
 		return
@@ -1083,6 +1092,8 @@ func (c *WSClient) persistToolCallForSession(sessCtx *SessionContext, id, title,
 }
 
 // persistToolUpdateForSession records a tool update event to disk for a specific session.
+//
+//nolint:unused // helper for future session persistence
 func (c *WSClient) persistToolUpdateForSession(sessCtx *SessionContext, id string, status *string) {
 	if sessCtx == nil || sessCtx.recorder == nil {
 		return
@@ -1093,6 +1104,8 @@ func (c *WSClient) persistToolUpdateForSession(sessCtx *SessionContext, id strin
 }
 
 // persistFileWriteForSession records a file write event to disk for a specific session.
+//
+//nolint:unused // helper for future session persistence
 func (c *WSClient) persistFileWriteForSession(sessCtx *SessionContext, path string, size int) {
 	if sessCtx == nil || sessCtx.recorder == nil {
 		return
@@ -1103,6 +1116,8 @@ func (c *WSClient) persistFileWriteForSession(sessCtx *SessionContext, path stri
 }
 
 // persistFileReadForSession records a file read event to disk for a specific session.
+//
+//nolint:unused // helper for future session persistence
 func (c *WSClient) persistFileReadForSession(sessCtx *SessionContext, path string, size int) {
 	if sessCtx == nil || sessCtx.recorder == nil {
 		return

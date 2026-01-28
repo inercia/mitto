@@ -252,11 +252,7 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	// Build ACP server list for internal config (including per-server prompts)
 	newACPServers := make([]configPkg.ACPServer, len(settings.ACPServers))
 	for i, srv := range settings.ACPServers {
-		newACPServers[i] = configPkg.ACPServer{
-			Name:    srv.Name,
-			Command: srv.Command,
-			Prompts: srv.Prompts,
-		}
+		newACPServers[i] = configPkg.ACPServer(srv)
 	}
 
 	// Determine if external access is being enabled or disabled

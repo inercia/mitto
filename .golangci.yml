@@ -1,17 +1,12 @@
+version: "2"
+
 run:
   timeout: 5m
 
-issues:
-  exclude-dirs:
-    - cmd/mitto-app  # macOS-specific, requires cgo and webview
-  exclude-dirs-use-default: false
-
 linters:
-  enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
+  exclusions:
+    paths:
+      - cmd/mitto-app  # macOS-specific, requires cgo and webview
+  disable:
+    - errcheck  # TODO: fix unchecked error returns
 

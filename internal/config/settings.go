@@ -96,11 +96,7 @@ func (s *Settings) ToConfig() *Config {
 		Session:    s.Session,
 	}
 	for i, srv := range s.ACPServers {
-		cfg.ACPServers[i] = ACPServer{
-			Name:    srv.Name,
-			Command: srv.Command,
-			Prompts: srv.Prompts,
-		}
+		cfg.ACPServers[i] = ACPServer(srv)
 	}
 	return cfg
 }
@@ -114,11 +110,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		Session:    cfg.Session,
 	}
 	for i, srv := range cfg.ACPServers {
-		s.ACPServers[i] = ACPServerSettings{
-			Name:    srv.Name,
-			Command: srv.Command,
-			Prompts: srv.Prompts,
-		}
+		s.ACPServers[i] = ACPServerSettings(srv)
 	}
 	return s
 }
