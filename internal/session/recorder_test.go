@@ -44,8 +44,8 @@ func TestRecorder_StartAndEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMetadata failed: %v", err)
 	}
-	if meta.Status != "completed" {
-		t.Errorf("Status = %q, want %q", meta.Status, "completed")
+	if meta.Status != SessionStatusCompleted {
+		t.Errorf("Status = %q, want %q", meta.Status, SessionStatusCompleted)
 	}
 }
 

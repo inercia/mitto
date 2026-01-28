@@ -12,10 +12,11 @@ import (
 
 // Recorder records events to a session store.
 type Recorder struct {
-	store     *Store
-	sessionID string
-	mu        sync.Mutex
-	started   bool
+	store       *Store
+	sessionID   string
+	mu          sync.Mutex
+	started     bool
+	pruneConfig *PruneConfig
 }
 
 // NewRecorder creates a new session recorder.
@@ -24,6 +25,15 @@ func NewRecorder(store *Store) *Recorder {
 		store:     store,
 		sessionID: generateSessionID(),
 	}
+}
+
+// SetPruneConfig sets the pruning configuration for the recorder.
+// When set, pruning is automatically performed after recording events
+// to keep the session within the configured limits.
+func (r *Recorder) SetPruneConfig(config *PruneConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneConfig = config
 }
 
 // generateSessionID generates a unique session ID using timestamp and random bytes.
@@ -126,10 +136,15 @@ func (r *Recorder) Resume() error {
 
 // RecordUserPrompt records a user prompt event.
 func (r *Recorder) RecordUserPrompt(message string) error {
+	return r.RecordUserPromptWithImages(message, nil)
+}
+
+// RecordUserPromptWithImages records a user prompt event with optional image references.
+func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef) error {
 	return r.recordEvent(Event{
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
-		Data:      UserPromptData{Message: message},
+		Data:      UserPromptData{Message: message, Images: images},
 	})
 }
 
@@ -270,7 +285,7 @@ func (r *Recorder) End(reason string) error {
 
 	// Update metadata status
 	if err := r.store.UpdateMetadata(r.sessionID, func(meta *Metadata) {
-		meta.Status = "completed"
+		meta.Status = SessionStatusCompleted
 	}); err != nil {
 		return err
 	}
@@ -288,7 +303,22 @@ func (r *Recorder) recordEvent(event Event) error {
 		return fmt.Errorf("session not started")
 	}
 
-	return r.store.AppendEvent(r.sessionID, event)
+	if err := r.store.AppendEvent(r.sessionID, event); err != nil {
+		return err
+	}
+
+	// Prune if configured and limits are exceeded
+	if r.pruneConfig != nil && r.pruneConfig.IsEnabled() {
+		// Pruning is best-effort; log errors but don't fail the recording
+		if _, err := r.store.PruneIfNeeded(r.sessionID, r.pruneConfig); err != nil {
+			log := logging.Session()
+			log.Warn("failed to prune session after recording event",
+				"session_id", r.sessionID,
+				"error", err)
+		}
+	}
+
+	return nil
 }
 
 // IsStarted returns whether the session has been started.

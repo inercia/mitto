@@ -43,8 +43,8 @@ func TestStore_CreateAndGet(t *testing.T) {
 	if gotMeta.ACPServer != meta.ACPServer {
 		t.Errorf("ACPServer = %q, want %q", gotMeta.ACPServer, meta.ACPServer)
 	}
-	if gotMeta.Status != "active" {
-		t.Errorf("Status = %q, want %q", gotMeta.Status, "active")
+	if gotMeta.Status != SessionStatusActive {
+		t.Errorf("Status = %q, want %q", gotMeta.Status, SessionStatusActive)
 	}
 }
 

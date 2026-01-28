@@ -92,7 +92,7 @@ func (s *Store) Create(meta Metadata) error {
 	meta.CreatedAt = time.Now()
 	meta.UpdatedAt = meta.CreatedAt
 	meta.EventCount = 0
-	meta.Status = "active"
+	meta.Status = SessionStatusActive
 
 	if err := s.writeMetadata(meta); err != nil {
 		return err
@@ -236,6 +236,10 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64) ([]Event, error
 
 	var events []Event
 	scanner := bufio.NewScanner(f)
+	// Increase buffer size to handle large events (e.g., agent messages with code blocks)
+	// Default is 64KB, increase to 10MB to handle very long lines
+	const maxScannerBuffer = 10 * 1024 * 1024
+	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
 	for scanner.Scan() {
 		var event Event
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
@@ -277,6 +281,10 @@ func (s *Store) ReadEventsLast(sessionID string, limit int, beforeSeq int64) ([]
 	// Read all matching events first (we need to know total count to get last N)
 	var allEvents []Event
 	scanner := bufio.NewScanner(f)
+	// Increase buffer size to handle large events (e.g., agent messages with code blocks)
+	// Default is 64KB, increase to 10MB to handle very long lines
+	const maxScannerBuffer = 10 * 1024 * 1024
+	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
 	for scanner.Scan() {
 		var event Event
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {

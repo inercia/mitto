@@ -66,6 +66,18 @@ const (
 	EventTypeSessionEnd     EventType = "session_end"
 )
 
+// SessionStatus represents the status of a session.
+type SessionStatus string
+
+const (
+	// SessionStatusActive indicates the session is active and can receive prompts.
+	SessionStatusActive SessionStatus = "active"
+	// SessionStatusCompleted indicates the session has been completed normally.
+	SessionStatusCompleted SessionStatus = "completed"
+	// SessionStatusError indicates the session ended with an error.
+	SessionStatusError SessionStatus = "error"
+)
+
 // Event represents a single event in the session log.
 type Event struct {
 	Seq       int64       `json:"seq"` // Sequence number (1-based, monotonically increasing per session)
@@ -76,7 +88,8 @@ type Event struct {
 
 // UserPromptData contains data for a user prompt event.
 type UserPromptData struct {
-	Message string `json:"message"`
+	Message string     `json:"message"`
+	Images  []ImageRef `json:"images,omitempty"`
 }
 
 // AgentMessageData contains data for an agent message event.
@@ -153,17 +166,17 @@ type SessionEndData struct {
 
 // Metadata contains session metadata stored separately from the event log.
 type Metadata struct {
-	SessionID         string    `json:"session_id"`
-	Name              string    `json:"name,omitempty"` // User-friendly session name
-	ACPServer         string    `json:"acp_server"`
-	ACPCommand        string    `json:"acp_command,omitempty"` // Shell command used to start the ACP server
-	WorkingDir        string    `json:"working_dir"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	LastUserMessageAt time.Time `json:"last_user_message_at,omitempty"` // Time of last user prompt
-	EventCount        int       `json:"event_count"`
-	Status            string    `json:"status"` // "active", "completed", "error"
-	Description       string    `json:"description,omitempty"`
+	SessionID         string        `json:"session_id"`
+	Name              string        `json:"name,omitempty"` // User-friendly session name
+	ACPServer         string        `json:"acp_server"`
+	ACPCommand        string        `json:"acp_command,omitempty"` // Shell command used to start the ACP server
+	WorkingDir        string        `json:"working_dir"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	LastUserMessageAt time.Time     `json:"last_user_message_at,omitempty"` // Time of last user prompt
+	EventCount        int           `json:"event_count"`
+	Status            SessionStatus `json:"status"`
+	Description       string        `json:"description,omitempty"`
 }
 
 // LockStatus represents the current activity status of a locked session.
