@@ -1,0 +1,229 @@
+package web
+
+import (
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// WebSocketSecurityConfig holds security configuration for WebSocket connections.
+type WebSocketSecurityConfig struct {
+	// AllowedOrigins is a list of allowed origins for WebSocket connections.
+	// If empty, only same-origin requests are allowed.
+	// Use "*" to allow all origins (not recommended for production).
+	AllowedOrigins []string
+
+	// MaxMessageSize is the maximum size of a WebSocket message in bytes.
+	// Default: 64KB
+	MaxMessageSize int64
+
+	// MaxConnectionsPerIP is the maximum number of concurrent WebSocket connections per IP.
+	// Default: 10
+	MaxConnectionsPerIP int
+
+	// PongWait is the time to wait for a pong response.
+	// Default: 60 seconds
+	PongWait time.Duration
+
+	// PingPeriod is the interval between ping messages.
+	// Should be less than PongWait.
+	// Default: 54 seconds (90% of PongWait)
+	PingPeriod time.Duration
+
+	// WriteWait is the time allowed to write a message.
+	// Default: 10 seconds
+	WriteWait time.Duration
+}
+
+// DefaultWebSocketSecurityConfig returns sensible defaults.
+func DefaultWebSocketSecurityConfig() WebSocketSecurityConfig {
+	return WebSocketSecurityConfig{
+		AllowedOrigins:      nil,       // Same-origin only by default
+		MaxMessageSize:      64 * 1024, // 64KB
+		MaxConnectionsPerIP: 10,
+		PongWait:            60 * time.Second,
+		PingPeriod:          54 * time.Second,
+		WriteWait:           10 * time.Second,
+	}
+}
+
+// ConnectionTracker tracks WebSocket connections per IP.
+type ConnectionTracker struct {
+	mu          sync.RWMutex
+	connections map[string]int
+	maxPerIP    int
+}
+
+// NewConnectionTracker creates a new connection tracker.
+func NewConnectionTracker(maxPerIP int) *ConnectionTracker {
+	return &ConnectionTracker{
+		connections: make(map[string]int),
+		maxPerIP:    maxPerIP,
+	}
+}
+
+// TryAdd attempts to add a connection for the given IP.
+// Returns true if the connection is allowed, false if the limit is exceeded.
+func (ct *ConnectionTracker) TryAdd(ip string) bool {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	current := ct.connections[ip]
+	if current >= ct.maxPerIP {
+		return false
+	}
+	ct.connections[ip] = current + 1
+	return true
+}
+
+// Remove decrements the connection count for the given IP.
+func (ct *ConnectionTracker) Remove(ip string) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	current := ct.connections[ip]
+	if current <= 1 {
+		delete(ct.connections, ip)
+	} else {
+		ct.connections[ip] = current - 1
+	}
+}
+
+// Count returns the current connection count for an IP.
+func (ct *ConnectionTracker) Count(ip string) int {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
+	return ct.connections[ip]
+}
+
+// TotalConnections returns the total number of tracked connections.
+func (ct *ConnectionTracker) TotalConnections() int {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
+
+	total := 0
+	for _, count := range ct.connections {
+		total += count
+	}
+	return total
+}
+
+// createSecureUpgrader creates a WebSocket upgrader with security checks.
+func createSecureUpgrader(config WebSocketSecurityConfig) websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     createOriginChecker(config.AllowedOrigins),
+	}
+}
+
+// createOriginChecker returns a function that validates WebSocket origins.
+func createOriginChecker(allowedOrigins []string) func(*http.Request) bool {
+	// Build a set of allowed origins for fast lookup
+	allowedSet := make(map[string]bool)
+	allowAll := false
+	for _, origin := range allowedOrigins {
+		if origin == "*" {
+			allowAll = true
+			break
+		}
+		allowedSet[strings.ToLower(origin)] = true
+	}
+
+	return func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+
+		// No origin header - likely a non-browser client (curl, etc.)
+		// Allow these as they can't perform CSWSH attacks
+		if origin == "" {
+			return true
+		}
+
+		// Allow all origins if configured (not recommended)
+		if allowAll {
+			return true
+		}
+
+		// Parse the origin URL
+		originURL, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+
+		// Check against explicit allowlist
+		if len(allowedSet) > 0 {
+			return allowedSet[strings.ToLower(origin)] ||
+				allowedSet[strings.ToLower(originURL.Host)]
+		}
+
+		// Default: same-origin check
+		return isSameOrigin(r, originURL)
+	}
+}
+
+// isSameOrigin checks if the origin matches the request host.
+// This implements a strict same-origin check where both host and port must match.
+func isSameOrigin(r *http.Request, originURL *url.URL) bool {
+	// Get the request host (may or may not include port)
+	requestHost := r.Host
+
+	// Parse request host and port
+	requestHostname, requestPort, err := net.SplitHostPort(requestHost)
+	if err != nil {
+		// No port in request host
+		requestHostname = requestHost
+		requestPort = ""
+	}
+
+	// Parse origin host and port
+	originHostname, originPort, err := net.SplitHostPort(originURL.Host)
+	if err != nil {
+		// No port in origin host
+		originHostname = originURL.Host
+		originPort = ""
+	}
+
+	// Hostnames must match (case-insensitive)
+	if !strings.EqualFold(requestHostname, originHostname) {
+		return false
+	}
+
+	// Normalize ports: if not specified, use default for scheme
+	if originPort == "" {
+		switch originURL.Scheme {
+		case "https", "wss":
+			originPort = "443"
+		case "http", "ws":
+			originPort = "80"
+		}
+	}
+
+	// If request port is empty, we can't strictly compare
+	// In this case, allow if hostnames match (common behind reverse proxies)
+	if requestPort == "" {
+		return true
+	}
+
+	// Both ports specified - must match
+	return requestPort == originPort
+}
+
+// configureWebSocketConn applies security settings to a WebSocket connection.
+func configureWebSocketConn(conn *websocket.Conn, config WebSocketSecurityConfig) {
+	// Set maximum message size
+	conn.SetReadLimit(config.MaxMessageSize)
+
+	// Set initial read deadline
+	conn.SetReadDeadline(time.Now().Add(config.PongWait))
+
+	// Set pong handler to extend read deadline
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(config.PongWait))
+		return nil
+	})
+}
