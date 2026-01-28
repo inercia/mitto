@@ -222,6 +222,14 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) *configPkg.Settings {
 	// Update prompts
 	newWebConfig.Prompts = req.Web.Prompts
 
+	// Update hooks
+	if req.Web.Hooks != nil {
+		newWebConfig.Hooks = *req.Web.Hooks
+	} else {
+		// Clear hooks if not provided
+		newWebConfig.Hooks = configPkg.WebHooks{}
+	}
+
 	// Build UI config - preserve existing settings, update from request if provided
 	newUIConfig := configPkg.UIConfig{}
 	if s.config.MittoConfig != nil {
@@ -270,9 +278,9 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		acpCommandMap[srv.Name] = srv.Command
 	}
 
-	newWorkspaces := make([]WorkspaceConfig, len(req.Workspaces))
+	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
 	for i, ws := range req.Workspaces {
-		newWorkspaces[i] = WorkspaceConfig{
+		newWorkspaces[i] = configPkg.WorkspaceSettings{
 			ACPServer:  ws.ACPServer,
 			ACPCommand: acpCommandMap[ws.ACPServer],
 			WorkingDir: ws.WorkingDir,
@@ -320,19 +328,24 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 
 		// Start external listener if not already running
 		if !s.IsExternalListenerRunning() {
-			// Use configured external port (0 means random)
+			// Use configured external port: -1 = disabled, 0 = random, >0 = specific port
 			port := s.GetExternalPort()
-			if port == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort != 0 {
+			if port == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
 				port = s.config.MittoConfig.Web.ExternalPort
 			}
-			// Port 0 is valid - it means random port selection
-			actualPort, err := s.StartExternalListener(port)
-			if err != nil {
-				if s.logger != nil {
-					s.logger.Error("Failed to start external listener", "error", err)
+			// Only start if port is >= 0 (port 0 = random, port > 0 = specific)
+			// Port -1 means disabled
+			if port >= 0 {
+				actualPort, err := s.StartExternalListener(port)
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Error("Failed to start external listener", "error", err)
+					}
+				} else if s.logger != nil {
+					s.logger.Info("External listener started", "port", actualPort)
 				}
 			} else if s.logger != nil {
-				s.logger.Info("External listener started", "port", actualPort)
+				s.logger.Debug("External listener disabled (port = -1)")
 			}
 		}
 		return
@@ -365,17 +378,24 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 
 		// Ensure external listener is running (it might have been stopped or never started)
 		if !s.IsExternalListenerRunning() {
+			// Use configured external port: -1 = disabled, 0 = random, >0 = specific port
 			port := s.GetExternalPort()
-			if port == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort != 0 {
+			if port == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
 				port = s.config.MittoConfig.Web.ExternalPort
 			}
-			actualPort, err := s.StartExternalListener(port)
-			if err != nil {
-				if s.logger != nil {
-					s.logger.Error("Failed to start external listener", "error", err)
+			// Only start if port is >= 0 (port 0 = random, port > 0 = specific)
+			// Port -1 means disabled
+			if port >= 0 {
+				actualPort, err := s.StartExternalListener(port)
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Error("Failed to start external listener", "error", err)
+					}
+				} else if s.logger != nil {
+					s.logger.Info("External listener started", "port", actualPort)
 				}
 			} else if s.logger != nil {
-				s.logger.Info("External listener started", "port", actualPort)
+				s.logger.Debug("External listener disabled (port = -1)")
 			}
 		}
 		return

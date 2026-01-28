@@ -23,7 +23,7 @@ import (
 type Config struct {
 	// Workspaces is the list of configured workspaces (ACP server + directory pairs).
 	// If empty, a single workspace is created from ACPCommand/ACPServer/DefaultWorkingDir.
-	Workspaces []WorkspaceConfig
+	Workspaces []configPkg.WorkspaceSettings
 
 	// Legacy single-workspace fields (used if Workspaces is empty)
 	ACPCommand        string
@@ -45,13 +45,16 @@ type Config struct {
 	// OnWorkspaceSave is called when workspaces are modified (only if FromCLI is false).
 	OnWorkspaceSave WorkspaceSaveFunc
 	// ConfigReadOnly indicates that configuration was loaded from a custom config file
-	// (via --config flag). When true, the Settings dialog is disabled in the UI.
+	// (via --config flag or RC file). When true, the Settings dialog is disabled in the UI.
 	ConfigReadOnly bool
+	// RCFilePath is the path to the RC file if config was loaded from one.
+	// This is used to show the user which file is being used when ConfigReadOnly is true.
+	RCFilePath string
 }
 
 // GetWorkspaces returns the effective list of workspaces.
 // If Workspaces is empty, creates a single workspace from legacy fields.
-func (c *Config) GetWorkspaces() []WorkspaceConfig {
+func (c *Config) GetWorkspaces() []configPkg.WorkspaceSettings {
 	if len(c.Workspaces) > 0 {
 		return c.Workspaces
 	}
@@ -60,7 +63,7 @@ func (c *Config) GetWorkspaces() []WorkspaceConfig {
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}
-	return []WorkspaceConfig{{
+	return []configPkg.WorkspaceSettings{{
 		ACPServer:  c.ACPServer,
 		ACPCommand: c.ACPCommand,
 		WorkingDir: workDir,
@@ -68,7 +71,7 @@ func (c *Config) GetWorkspaces() []WorkspaceConfig {
 }
 
 // GetDefaultWorkspace returns the first (default) workspace.
-func (c *Config) GetDefaultWorkspace() *WorkspaceConfig {
+func (c *Config) GetDefaultWorkspace() *configPkg.WorkspaceSettings {
 	workspaces := c.GetWorkspaces()
 	if len(workspaces) == 0 {
 		return nil
@@ -77,7 +80,7 @@ func (c *Config) GetDefaultWorkspace() *WorkspaceConfig {
 }
 
 // GetWorkspaceByDir returns the workspace for a given directory, or nil if not found.
-func (c *Config) GetWorkspaceByDir(dir string) *WorkspaceConfig {
+func (c *Config) GetWorkspaceByDir(dir string) *configPkg.WorkspaceSettings {
 	for i := range c.Workspaces {
 		if c.Workspaces[i].WorkingDir == dir {
 			return &c.Workspaces[i]
@@ -85,7 +88,7 @@ func (c *Config) GetWorkspaceByDir(dir string) *WorkspaceConfig {
 	}
 	// Check legacy fields
 	if len(c.Workspaces) == 0 && c.DefaultWorkingDir == dir {
-		return &WorkspaceConfig{
+		return &configPkg.WorkspaceSettings{
 			ACPServer:  c.ACPServer,
 			ACPCommand: c.ACPCommand,
 			WorkingDir: dir,
@@ -136,6 +139,13 @@ func NewServer(config Config) (*Server, error) {
 	store, err := session.DefaultStore()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session store: %w", err)
+	}
+
+	// Cleanup old images on startup
+	if removed, err := store.CleanupOldImages(session.ImageCleanupAge, session.ImagePreserveRecent); err != nil {
+		logger.Warn("Failed to cleanup old images", "error", err)
+	} else if removed > 0 {
+		logger.Info("Cleaned up old images on startup", "removed_count", removed)
 	}
 
 	// Create session manager with workspace support
@@ -592,6 +602,11 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"config_readonly": s.config.ConfigReadOnly,
 	}
 
+	// Include RC file path if config is from an RC file
+	if s.config.RCFilePath != "" {
+		response["rc_file_path"] = s.config.RCFilePath
+	}
+
 	if s.config.MittoConfig != nil {
 		response["web"] = s.config.MittoConfig.Web
 		response["ui"] = s.config.MittoConfig.UI
@@ -616,7 +631,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 // ConfigSaveRequest represents the request body for saving configuration.
 type ConfigSaveRequest struct {
-	Workspaces []WorkspaceConfig `json:"workspaces"`
+	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
 	ACPServers []struct {
 		Name    string                `json:"name"`
 		Command string                `json:"command"`
@@ -631,6 +646,7 @@ type ConfigSaveRequest struct {
 				Password string `json:"password"`
 			} `json:"simple,omitempty"`
 		} `json:"auth,omitempty"`
+		Hooks   *configPkg.WebHooks   `json:"hooks,omitempty"`
 		Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
 	} `json:"web"`
 	UI *configPkg.UIConfig `json:"ui,omitempty"`

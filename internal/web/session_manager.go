@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -16,7 +17,7 @@ var ErrTooManySessions = errors.New("maximum number of sessions reached")
 
 // WorkspaceSaveFunc is a callback function called when workspaces are modified.
 // It receives the current list of workspaces to be persisted.
-type WorkspaceSaveFunc func(workspaces []WorkspaceConfig) error
+type WorkspaceSaveFunc func(workspaces []config.WorkspaceSettings) error
 
 // SessionManager manages background sessions that run independently of WebSocket connections.
 // It is safe for concurrent use.
@@ -26,10 +27,10 @@ type SessionManager struct {
 	logger   *slog.Logger
 
 	// Workspaces configuration - maps directory to workspace config
-	workspaces map[string]*WorkspaceConfig
+	workspaces map[string]*config.WorkspaceSettings
 
 	// Default workspace (used when no specific workspace is requested)
-	defaultWorkspace *WorkspaceConfig
+	defaultWorkspace *config.WorkspaceSettings
 
 	// fromCLI indicates whether workspaces came from CLI flags.
 	// When true, workspace changes are NOT persisted to disk.
@@ -49,7 +50,7 @@ type SessionManager struct {
 func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *slog.Logger) *SessionManager {
 	return &SessionManager{
 		sessions:    make(map[string]*BackgroundSession),
-		workspaces:  make(map[string]*WorkspaceConfig),
+		workspaces:  make(map[string]*config.WorkspaceSettings),
 		logger:      logger,
 		acpCommand:  acpCommand,
 		acpServer:   acpServer,
@@ -60,7 +61,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 // SessionManagerOptions contains options for creating a SessionManager.
 type SessionManagerOptions struct {
 	// Workspaces is the initial list of workspaces.
-	Workspaces []WorkspaceConfig
+	Workspaces []config.WorkspaceSettings
 	// AutoApprove enables automatic approval of permission requests.
 	AutoApprove bool
 	// Logger is the logger to use.
@@ -72,22 +73,11 @@ type SessionManagerOptions struct {
 	OnWorkspaceSave WorkspaceSaveFunc
 }
 
-// NewSessionManagerWithWorkspaces creates a new session manager with multiple workspaces.
-// Deprecated: Use NewSessionManagerWithOptions instead.
-func NewSessionManagerWithWorkspaces(workspaces []WorkspaceConfig, autoApprove bool, logger *slog.Logger) *SessionManager {
-	return NewSessionManagerWithOptions(SessionManagerOptions{
-		Workspaces:  workspaces,
-		AutoApprove: autoApprove,
-		Logger:      logger,
-		FromCLI:     true, // Default to CLI behavior for backward compatibility
-	})
-}
-
 // NewSessionManagerWithOptions creates a new session manager with the given options.
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
 		sessions:        make(map[string]*BackgroundSession),
-		workspaces:      make(map[string]*WorkspaceConfig),
+		workspaces:      make(map[string]*config.WorkspaceSettings),
 		logger:          opts.Logger,
 		autoApprove:     opts.AutoApprove,
 		fromCLI:         opts.FromCLI,
@@ -109,10 +99,10 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 }
 
 // SetWorkspaces sets the available workspaces.
-func (sm *SessionManager) SetWorkspaces(workspaces []WorkspaceConfig) {
+func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
 	sm.mu.Lock()
 
-	sm.workspaces = make(map[string]*WorkspaceConfig)
+	sm.workspaces = make(map[string]*config.WorkspaceSettings)
 	sm.defaultWorkspace = nil
 
 	for i := range workspaces {
@@ -127,7 +117,7 @@ func (sm *SessionManager) SetWorkspaces(workspaces []WorkspaceConfig) {
 
 	// Save workspaces if not from CLI and callback is set
 	shouldSave := !sm.fromCLI && sm.onWorkspaceSave != nil
-	var workspacesToSave []WorkspaceConfig
+	var workspacesToSave []config.WorkspaceSettings
 	if shouldSave {
 		workspacesToSave = sm.getWorkspacesLocked()
 	}
@@ -141,24 +131,24 @@ func (sm *SessionManager) SetWorkspaces(workspaces []WorkspaceConfig) {
 }
 
 // GetWorkspaces returns all configured workspaces.
-func (sm *SessionManager) GetWorkspaces() []WorkspaceConfig {
+func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	if len(sm.workspaces) == 0 {
 		// Only return legacy single workspace if it has valid configuration
 		if sm.acpCommand != "" {
-			return []WorkspaceConfig{{
+			return []config.WorkspaceSettings{{
 				ACPServer:  sm.acpServer,
 				ACPCommand: sm.acpCommand,
 				WorkingDir: "", // Will be set at session creation time
 			}}
 		}
 		// No valid workspace configuration - return empty slice
-		return []WorkspaceConfig{}
+		return []config.WorkspaceSettings{}
 	}
 
-	result := make([]WorkspaceConfig, 0, len(sm.workspaces))
+	result := make([]config.WorkspaceSettings, 0, len(sm.workspaces))
 	for _, ws := range sm.workspaces {
 		result = append(result, *ws)
 	}
@@ -166,7 +156,7 @@ func (sm *SessionManager) GetWorkspaces() []WorkspaceConfig {
 }
 
 // GetWorkspace returns the workspace for a given directory.
-func (sm *SessionManager) GetWorkspace(workingDir string) *WorkspaceConfig {
+func (sm *SessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
@@ -177,7 +167,7 @@ func (sm *SessionManager) GetWorkspace(workingDir string) *WorkspaceConfig {
 }
 
 // GetDefaultWorkspace returns the default workspace.
-func (sm *SessionManager) GetDefaultWorkspace() *WorkspaceConfig {
+func (sm *SessionManager) GetDefaultWorkspace() *config.WorkspaceSettings {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
@@ -185,7 +175,7 @@ func (sm *SessionManager) GetDefaultWorkspace() *WorkspaceConfig {
 		return sm.defaultWorkspace
 	}
 	// Return legacy config as workspace
-	return &WorkspaceConfig{
+	return &config.WorkspaceSettings{
 		ACPServer:  sm.acpServer,
 		ACPCommand: sm.acpCommand,
 		WorkingDir: "",
@@ -195,12 +185,12 @@ func (sm *SessionManager) GetDefaultWorkspace() *WorkspaceConfig {
 // AddWorkspace adds a new workspace to the manager.
 // If workspaces were not loaded from CLI flags and a save callback is set,
 // the workspaces will be persisted to disk.
-func (sm *SessionManager) AddWorkspace(ws WorkspaceConfig) {
+func (sm *SessionManager) AddWorkspace(ws config.WorkspaceSettings) {
 	sm.mu.Lock()
 
 	// Initialize workspaces map if needed
 	if sm.workspaces == nil {
-		sm.workspaces = make(map[string]*WorkspaceConfig)
+		sm.workspaces = make(map[string]*config.WorkspaceSettings)
 	}
 
 	// Add the workspace
@@ -222,7 +212,7 @@ func (sm *SessionManager) AddWorkspace(ws WorkspaceConfig) {
 
 	// Save workspaces if not from CLI and callback is set
 	shouldSave := !sm.fromCLI && sm.onWorkspaceSave != nil
-	var workspacesToSave []WorkspaceConfig
+	var workspacesToSave []config.WorkspaceSettings
 	if shouldSave {
 		workspacesToSave = sm.getWorkspacesLocked()
 	}
@@ -236,8 +226,8 @@ func (sm *SessionManager) AddWorkspace(ws WorkspaceConfig) {
 }
 
 // getWorkspacesLocked returns all workspaces (must be called with lock held).
-func (sm *SessionManager) getWorkspacesLocked() []WorkspaceConfig {
-	result := make([]WorkspaceConfig, 0, len(sm.workspaces))
+func (sm *SessionManager) getWorkspacesLocked() []config.WorkspaceSettings {
+	result := make([]config.WorkspaceSettings, 0, len(sm.workspaces))
 	for _, ws := range sm.workspaces {
 		result = append(result, *ws)
 	}
@@ -276,7 +266,7 @@ func (sm *SessionManager) RemoveWorkspace(workingDir string) {
 
 	// Save workspaces if not from CLI and callback is set
 	shouldSave := !sm.fromCLI && sm.onWorkspaceSave != nil
-	var workspacesToSave []WorkspaceConfig
+	var workspacesToSave []config.WorkspaceSettings
 	if shouldSave {
 		workspacesToSave = sm.getWorkspacesLocked()
 	}
@@ -319,7 +309,7 @@ func (sm *SessionManager) CreateSession(name, workingDir string) (*BackgroundSes
 
 // CreateSessionWithWorkspace creates a new session using the specified workspace configuration.
 // If workspace is nil, looks up the workspace by workingDir or uses the default.
-func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, workspace *WorkspaceConfig) (*BackgroundSession, error) {
+func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, workspace *config.WorkspaceSettings) (*BackgroundSession, error) {
 	sm.mu.Lock()
 	if len(sm.sessions) >= MaxSessions {
 		sm.mu.Unlock()

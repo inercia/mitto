@@ -245,13 +245,14 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 	switch msg.Type {
 	case WSMsgTypePrompt:
 		var data struct {
-			Message string `json:"message"`
+			Message  string `json:"message"`
+			PromptID string `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
 		}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handlePrompt(data.Message)
+		c.handlePromptWithID(data.Message, data.PromptID)
 
 	case WSMsgTypeCancel:
 		c.handleCancel()
@@ -280,6 +281,10 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 }
 
 func (c *SessionWSClient) handlePrompt(message string) {
+	c.handlePromptWithID(message, "")
+}
+
+func (c *SessionWSClient) handlePromptWithID(message string, promptID string) {
 	if c.bgSession == nil {
 		c.sendError("Session not running. Create or resume the session first.")
 		return
@@ -291,6 +296,15 @@ func (c *SessionWSClient) handlePrompt(message string) {
 	if err := c.bgSession.Prompt(message); err != nil {
 		c.sendError("Failed to send prompt: " + err.Error())
 		return
+	}
+
+	// Send prompt_received ack after successful handoff to background session
+	// The background session persists the prompt before processing
+	if promptID != "" {
+		c.sendMessage(WSMsgTypePromptReceived, map[string]interface{}{
+			"prompt_id":  promptID,
+			"session_id": c.sessionID,
+		})
 	}
 
 	// Auto-generate title after first prompt

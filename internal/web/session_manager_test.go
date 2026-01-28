@@ -3,6 +3,7 @@ package web
 import (
 	"testing"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -156,16 +157,19 @@ func TestSessionManager_ResumeSession_AlreadyRunning(t *testing.T) {
 	}
 }
 
-func TestNewSessionManagerWithWorkspaces(t *testing.T) {
-	workspaces := []WorkspaceConfig{
+func TestNewSessionManagerWithOptions(t *testing.T) {
+	workspaces := []config.WorkspaceSettings{
 		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
 		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
 	}
 
-	sm := NewSessionManagerWithWorkspaces(workspaces, true, nil)
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: true,
+	})
 
 	if sm == nil {
-		t.Fatal("NewSessionManagerWithWorkspaces returned nil")
+		t.Fatal("NewSessionManagerWithOptions returned nil")
 	}
 
 	// Check that workspaces are stored
@@ -191,12 +195,15 @@ func TestNewSessionManagerWithWorkspaces(t *testing.T) {
 }
 
 func TestSessionManager_GetWorkspaces(t *testing.T) {
-	workspaces := []WorkspaceConfig{
+	workspaces := []config.WorkspaceSettings{
 		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
 		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
 	}
 
-	sm := NewSessionManagerWithWorkspaces(workspaces, true, nil)
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: true,
+	})
 
 	got := sm.GetWorkspaces()
 	if len(got) != 2 {
@@ -205,12 +212,15 @@ func TestSessionManager_GetWorkspaces(t *testing.T) {
 }
 
 func TestSessionManager_GetWorkspace(t *testing.T) {
-	workspaces := []WorkspaceConfig{
+	workspaces := []config.WorkspaceSettings{
 		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
 		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
 	}
 
-	sm := NewSessionManagerWithWorkspaces(workspaces, true, nil)
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: true,
+	})
 
 	// Get existing workspace
 	ws := sm.GetWorkspace("/path1")
@@ -229,11 +239,14 @@ func TestSessionManager_GetWorkspace(t *testing.T) {
 }
 
 func TestSessionManager_GetDefaultWorkspace(t *testing.T) {
-	workspaces := []WorkspaceConfig{
+	workspaces := []config.WorkspaceSettings{
 		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
 	}
 
-	sm := NewSessionManagerWithWorkspaces(workspaces, true, nil)
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: true,
+	})
 
 	ws := sm.GetDefaultWorkspace()
 	if ws == nil {
@@ -262,7 +275,7 @@ func TestSessionManager_GetDefaultWorkspace_Legacy(t *testing.T) {
 func TestSessionManager_GetWorkspaces_NoConfig(t *testing.T) {
 	// Create session manager with no workspaces and no legacy config
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
-		Workspaces:  []WorkspaceConfig{},
+		Workspaces:  []config.WorkspaceSettings{},
 		AutoApprove: true,
 		Logger:      nil,
 		FromCLI:     false,
@@ -284,7 +297,7 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 	}
 
 	// Add a workspace
-	ws := WorkspaceConfig{
+	ws := config.WorkspaceSettings{
 		ACPServer:  "new-server",
 		ACPCommand: "echo new",
 		WorkingDir: "/path/to/project",
@@ -313,12 +326,15 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 }
 
 func TestSessionManager_RemoveWorkspace(t *testing.T) {
-	workspaces := []WorkspaceConfig{
+	workspaces := []config.WorkspaceSettings{
 		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
 		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
 	}
 
-	sm := NewSessionManagerWithWorkspaces(workspaces, true, nil)
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: true,
+	})
 
 	// Remove first workspace
 	sm.RemoveWorkspace("/path1")

@@ -123,6 +123,7 @@ const (
 	WSMsgTypePermission      = "permission"
 	WSMsgTypeError           = "error"
 	WSMsgTypeSessionLoaded   = "session_loaded"
+	WSMsgTypePromptReceived  = "prompt_received" // Ack that prompt was received and persisted
 	WSMsgTypePromptComplete  = "prompt_complete"
 	WSMsgTypeFileWrite       = "file_write"
 	WSMsgTypeFileRead        = "file_read"
@@ -320,13 +321,15 @@ func (c *WSClient) handleMessage(msg WSMessage) {
 
 	case WSMsgTypePrompt:
 		var data struct {
-			Message string `json:"message"`
+			Message  string   `json:"message"`
+			ImageIDs []string `json:"image_ids,omitempty"`
+			PromptID string   `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
 		}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handlePrompt(data.Message)
+		c.handlePromptWithImagesAndID(data.Message, data.ImageIDs, data.PromptID)
 
 	case WSMsgTypeCancel:
 		c.handleCancel()
@@ -435,19 +438,41 @@ func (c *WSClient) handleNewSession(name string) {
 }
 
 func (c *WSClient) handlePrompt(message string) {
+	c.handlePromptWithImagesAndID(message, nil, "")
+}
+
+func (c *WSClient) handlePromptWithImages(message string, imageIDs []string) {
+	c.handlePromptWithImagesAndID(message, imageIDs, "")
+}
+
+func (c *WSClient) handlePromptWithImagesAndID(message string, imageIDs []string, promptID string) {
 	// Try background session first
 	bs := c.getBackgroundSession()
 	if bs != nil {
-		if err := bs.Prompt(message); err != nil {
+		if err := bs.PromptWithImages(message, imageIDs); err != nil {
 			if c.server.logger != nil {
 				c.server.logger.Error("Failed to send prompt", "error", err)
 			}
 			c.sendError(GenericErrorMessages["prompt_send"])
+			return
+		}
+		// Send prompt_received ack after successful handoff to background session
+		// The background session persists the prompt before processing
+		if promptID != "" {
+			c.sendMessage(WSMsgTypePromptReceived, map[string]interface{}{
+				"prompt_id":  promptID,
+				"session_id": bs.GetSessionID(),
+			})
 		}
 		return
 	}
 
-	// Fall back to legacy SessionContext
+	// Fall back to legacy SessionContext (no image support in legacy mode)
+	if len(imageIDs) > 0 {
+		c.sendError("Image attachments require a background session")
+		return
+	}
+
 	sessCtx := c.getCurrentSession()
 	if sessCtx == nil || sessCtx.acpConn == nil {
 		c.sendError("No active session. Create a new session first.")
@@ -461,6 +486,14 @@ func (c *WSClient) handlePrompt(message string) {
 
 	// Persist user prompt immediately
 	c.persistUserPromptForSession(sessCtx, message)
+
+	// Send prompt_received ack after persistence
+	if promptID != "" {
+		c.sendMessage(WSMsgTypePromptReceived, map[string]interface{}{
+			"prompt_id":  promptID,
+			"session_id": sessionID,
+		})
+	}
 
 	// Send prompt (this blocks until response is complete)
 	// Capture sessCtx to ensure we use the correct session even if switched

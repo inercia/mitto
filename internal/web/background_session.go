@@ -467,6 +467,13 @@ func (e *sessionError) Error() string {
 // Prompt sends a message to the agent. This runs asynchronously.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) Prompt(message string) error {
+	return bs.PromptWithImages(message, nil)
+}
+
+// PromptWithImages sends a message with optional images to the agent. This runs asynchronously.
+// The imageIDs should be IDs of images previously uploaded to this session.
+// The response is streamed via callbacks to the attached client (if any) and persisted.
+func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string) error {
 	if bs.IsClosed() {
 		return &sessionError{"session is closed"}
 	}
@@ -490,9 +497,50 @@ func (bs *BackgroundSession) Prompt(message string) error {
 	}
 	bs.promptMu.Unlock()
 
-	// Persist user prompt (the original message, not with history prefix)
+	// Load images and build content blocks
+	var imageRefs []session.ImageRef
+	var contentBlocks []acp.ContentBlock
+
+	if len(imageIDs) > 0 && bs.store != nil {
+		for _, imageID := range imageIDs {
+			imagePath, err := bs.store.GetImagePath(bs.persistedID, imageID)
+			if err != nil {
+				if bs.logger != nil {
+					bs.logger.Warn("Failed to get image path", "image_id", imageID, "error", err)
+				}
+				continue
+			}
+
+			// Determine MIME type from extension
+			ext := ""
+			if idx := strings.LastIndex(imageID, "."); idx >= 0 {
+				ext = imageID[idx:]
+			}
+			mimeType := session.GetMimeTypeFromExt(ext)
+			if mimeType == "" {
+				mimeType = "image/png" // Default fallback
+			}
+
+			// Load image and create attachment
+			att, err := mittoAcp.ImageAttachmentFromFile(imagePath, mimeType)
+			if err != nil {
+				if bs.logger != nil {
+					bs.logger.Warn("Failed to load image", "image_id", imageID, "error", err)
+				}
+				continue
+			}
+
+			contentBlocks = append(contentBlocks, att.ToContentBlock())
+			imageRefs = append(imageRefs, session.ImageRef{
+				ID:       imageID,
+				MimeType: mimeType,
+			})
+		}
+	}
+
+	// Persist user prompt with image references
 	if bs.recorder != nil {
-		if err := bs.recorder.RecordUserPrompt(message); err != nil && bs.logger != nil {
+		if err := bs.recorder.RecordUserPromptWithImages(message, imageRefs); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 	}
@@ -502,6 +550,11 @@ func (bs *BackgroundSession) Prompt(message string) error {
 	if shouldInjectHistory {
 		promptMessage = bs.buildPromptWithHistory(message)
 	}
+
+	// Build final content blocks: images first, then text
+	finalBlocks := make([]acp.ContentBlock, 0, len(contentBlocks)+1)
+	finalBlocks = append(finalBlocks, contentBlocks...)
+	finalBlocks = append(finalBlocks, acp.TextBlock(promptMessage))
 
 	// Run prompt in background
 	go func() {
@@ -513,7 +566,7 @@ func (bs *BackgroundSession) Prompt(message string) error {
 
 		_, err := bs.acpConn.Prompt(bs.ctx, acp.PromptRequest{
 			SessionId: acp.SessionId(bs.acpID),
-			Prompt:    []acp.ContentBlock{acp.TextBlock(promptMessage)},
+			Prompt:    finalBlocks,
 		})
 
 		if bs.IsClosed() {

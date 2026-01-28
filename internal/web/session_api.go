@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -45,7 +46,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine workspace to use
-	var workspace *WorkspaceConfig
+	var workspace *config.WorkspaceSettings
 	workspaces := s.config.GetWorkspaces()
 
 	if req.WorkingDir != "" {
@@ -61,7 +62,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			// Use default workspace's ACP config with the requested directory
 			defaultWs := s.config.GetDefaultWorkspace()
 			if defaultWs != nil {
-				workspace = &WorkspaceConfig{
+				workspace = &config.WorkspaceSettings{
 					ACPServer:  defaultWs.ACPServer,
 					ACPCommand: defaultWs.ACPCommand,
 					WorkingDir: req.WorkingDir,
@@ -180,9 +181,9 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSessionDetail handles GET, PATCH, DELETE /api/sessions/{id}, GET /api/sessions/{id}/events, and WS /api/sessions/{id}/ws
+// handleSessionDetail handles GET, PATCH, DELETE /api/sessions/{id}, GET /api/sessions/{id}/events, WS /api/sessions/{id}/ws, and image operations
 func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from path: /api/sessions/{id} or /api/sessions/{id}/events or /api/sessions/{id}/ws
+	// Extract session ID from path: /api/sessions/{id} or /api/sessions/{id}/events or /api/sessions/{id}/ws or /api/sessions/{id}/images/...
 	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	parts := strings.Split(path, "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -200,10 +201,22 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 
 	isEventsRequest := len(parts) > 1 && parts[1] == "events"
 	isWSRequest := len(parts) > 1 && parts[1] == "ws"
+	isImagesRequest := len(parts) > 1 && parts[1] == "images"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
 		s.handleSessionWS(w, r)
+		return
+	}
+
+	// Handle image operations
+	if isImagesRequest {
+		// Extract image ID if present: /api/sessions/{id}/images/{imageId}
+		imagePath := ""
+		if len(parts) > 2 {
+			imagePath = parts[2]
+		}
+		s.handleSessionImages(w, r, sessionID, imagePath)
 		return
 	}
 
@@ -566,7 +579,7 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add the workspace
-	newWorkspace := WorkspaceConfig{
+	newWorkspace := config.WorkspaceSettings{
 		ACPServer:  req.ACPServer,
 		ACPCommand: acpCommand,
 		WorkingDir: req.WorkingDir,

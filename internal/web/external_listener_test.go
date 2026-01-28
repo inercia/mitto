@@ -142,3 +142,86 @@ func TestServer_SetExternalPort(t *testing.T) {
 		t.Errorf("External port = %d, want 8080", s.GetExternalPort())
 	}
 }
+
+func TestServer_SetExternalPort_DisabledValue(t *testing.T) {
+	// Test that -1 (disabled) is properly stored and retrieved
+	s := &Server{}
+
+	// Set to disabled (-1)
+	s.SetExternalPort(-1)
+	if s.GetExternalPort() != -1 {
+		t.Errorf("External port = %d, want -1 (disabled)", s.GetExternalPort())
+	}
+
+	// Set to random (0)
+	s.SetExternalPort(0)
+	if s.GetExternalPort() != 0 {
+		t.Errorf("External port = %d, want 0 (random)", s.GetExternalPort())
+	}
+
+	// Set to specific port
+	s.SetExternalPort(8443)
+	if s.GetExternalPort() != 8443 {
+		t.Errorf("External port = %d, want 8443", s.GetExternalPort())
+	}
+}
+
+func TestExternalPortSemantics(t *testing.T) {
+	// Document and test the external port semantics:
+	// -1 = disabled (no external listener)
+	//  0 = random port (OS chooses)
+	// >0 = specific port number
+
+	tests := []struct {
+		name        string
+		port        int
+		isDisabled  bool
+		isRandom    bool
+		isSpecific  bool
+		description string
+	}{
+		{
+			name:        "disabled",
+			port:        -1,
+			isDisabled:  true,
+			isRandom:    false,
+			isSpecific:  false,
+			description: "Port -1 means external listener is disabled",
+		},
+		{
+			name:        "random",
+			port:        0,
+			isDisabled:  false,
+			isRandom:    true,
+			isSpecific:  false,
+			description: "Port 0 means OS chooses a random available port",
+		},
+		{
+			name:        "specific",
+			port:        8443,
+			isDisabled:  false,
+			isRandom:    false,
+			isSpecific:  true,
+			description: "Port > 0 means use that specific port",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test the semantic interpretation
+			isDisabled := tt.port < 0
+			isRandom := tt.port == 0
+			isSpecific := tt.port > 0
+
+			if isDisabled != tt.isDisabled {
+				t.Errorf("port %d: isDisabled = %v, want %v", tt.port, isDisabled, tt.isDisabled)
+			}
+			if isRandom != tt.isRandom {
+				t.Errorf("port %d: isRandom = %v, want %v", tt.port, isRandom, tt.isRandom)
+			}
+			if isSpecific != tt.isSpecific {
+				t.Errorf("port %d: isSpecific = %v, want %v", tt.port, isSpecific, tt.isSpecific)
+			}
+		})
+	}
+}

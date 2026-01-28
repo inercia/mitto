@@ -2,10 +2,6 @@ package web
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/coder/acp-go-sdk"
 
@@ -141,17 +137,8 @@ func (c *WebClient) autoApprovePermission(params acp.RequestPermissionRequest) (
 
 // WriteTextFile handles file write requests from the agent.
 func (c *WebClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
-	if !filepath.IsAbs(params.Path) {
-		return acp.WriteTextFileResponse{}, fmt.Errorf("path must be absolute: %s", params.Path)
-	}
-	dir := filepath.Dir(params.Path)
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return acp.WriteTextFileResponse{}, fmt.Errorf("mkdir %s: %w", dir, err)
-		}
-	}
-	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
-		return acp.WriteTextFileResponse{}, fmt.Errorf("write %s: %w", params.Path, err)
+	if err := mittoAcp.DefaultFileSystem.WriteTextFile(params.Path, params.Content); err != nil {
+		return acp.WriteTextFileResponse{}, err
 	}
 	if c.onFileWrite != nil {
 		c.onFileWrite(params.Path, len(params.Content))
@@ -161,27 +148,9 @@ func (c *WebClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileR
 
 // ReadTextFile handles file read requests from the agent.
 func (c *WebClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
-	if !filepath.IsAbs(params.Path) {
-		return acp.ReadTextFileResponse{}, fmt.Errorf("path must be absolute: %s", params.Path)
-	}
-	b, err := os.ReadFile(params.Path)
+	content, err := mittoAcp.DefaultFileSystem.ReadTextFile(params.Path, params.Line, params.Limit)
 	if err != nil {
-		return acp.ReadTextFileResponse{}, fmt.Errorf("read %s: %w", params.Path, err)
-	}
-	content := string(b)
-	if params.Line != nil || params.Limit != nil {
-		lines := strings.Split(content, "\n")
-		start := 0
-		if params.Line != nil && *params.Line > 0 {
-			start = min(max(*params.Line-1, 0), len(lines))
-		}
-		end := len(lines)
-		if params.Limit != nil && *params.Limit > 0 {
-			if start+*params.Limit < end {
-				end = start + *params.Limit
-			}
-		}
-		content = strings.Join(lines[start:end], "\n")
+		return acp.ReadTextFileResponse{}, err
 	}
 	if c.onFileRead != nil {
 		c.onFileRead(params.Path, len(content))
@@ -189,29 +158,32 @@ func (c *WebClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileReq
 	return acp.ReadTextFileResponse{Content: content}, nil
 }
 
+// webTerminalStub is the shared stub handler for terminal operations.
+var webTerminalStub = &mittoAcp.StubTerminalHandler{}
+
 // CreateTerminal handles terminal creation requests.
 func (c *WebClient) CreateTerminal(ctx context.Context, params acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
-	return acp.CreateTerminalResponse{TerminalId: "term-1"}, nil
+	return webTerminalStub.CreateTerminal(ctx, params)
 }
 
 // TerminalOutput handles requests to get terminal output.
 func (c *WebClient) TerminalOutput(ctx context.Context, params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {
-	return acp.TerminalOutputResponse{Output: "", Truncated: false}, nil
+	return webTerminalStub.TerminalOutput(ctx, params)
 }
 
 // ReleaseTerminal handles terminal release requests.
 func (c *WebClient) ReleaseTerminal(ctx context.Context, params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error) {
-	return acp.ReleaseTerminalResponse{}, nil
+	return webTerminalStub.ReleaseTerminal(ctx, params)
 }
 
 // WaitForTerminalExit handles requests to wait for terminal exit.
 func (c *WebClient) WaitForTerminalExit(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
-	return acp.WaitForTerminalExitResponse{}, nil
+	return webTerminalStub.WaitForTerminalExit(ctx, params)
 }
 
 // KillTerminalCommand handles requests to kill terminal commands.
 func (c *WebClient) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-	return acp.KillTerminalCommandResponse{}, nil
+	return webTerminalStub.KillTerminalCommand(ctx, params)
 }
 
 // FlushMarkdown forces a flush of any buffered markdown content.
