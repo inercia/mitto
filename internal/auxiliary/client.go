@@ -2,7 +2,6 @@ package auxiliary
 
 import (
 	"context"
-	"os"
 	"strings"
 	"sync"
 
@@ -63,42 +62,46 @@ func (c *auxiliaryClient) RequestPermission(ctx context.Context, params acp.Requ
 	return mittoAcp.AutoApprovePermission(params.Options), nil
 }
 
+// auxTerminalStub is the shared stub handler for terminal operations.
+// Uses "aux-term-1" to distinguish from main session terminals.
+var auxTerminalStub = &mittoAcp.StubTerminalHandler{TerminalID: "aux-term-1"}
+
 // WriteTextFile handles file write requests - deny for auxiliary session.
+// The auxiliary session should not write files.
 func (c *auxiliaryClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
-	// Auxiliary session should not write files
 	return acp.WriteTextFileResponse{}, nil
 }
 
 // ReadTextFile handles file read requests - allow for auxiliary session.
 func (c *auxiliaryClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
-	b, err := os.ReadFile(params.Path)
+	content, err := mittoAcp.DefaultFileSystem.ReadTextFile(params.Path, params.Line, params.Limit)
 	if err != nil {
 		return acp.ReadTextFileResponse{}, err
 	}
-	return acp.ReadTextFileResponse{Content: string(b)}, nil
+	return acp.ReadTextFileResponse{Content: content}, nil
 }
 
 // CreateTerminal handles terminal creation requests - stub for auxiliary session.
 func (c *auxiliaryClient) CreateTerminal(ctx context.Context, params acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
-	return acp.CreateTerminalResponse{TerminalId: "aux-term-1"}, nil
+	return auxTerminalStub.CreateTerminal(ctx, params)
 }
 
 // TerminalOutput handles requests to get terminal output - stub for auxiliary session.
 func (c *auxiliaryClient) TerminalOutput(ctx context.Context, params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {
-	return acp.TerminalOutputResponse{Output: "", Truncated: false}, nil
+	return auxTerminalStub.TerminalOutput(ctx, params)
 }
 
 // ReleaseTerminal handles terminal release requests - stub for auxiliary session.
 func (c *auxiliaryClient) ReleaseTerminal(ctx context.Context, params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error) {
-	return acp.ReleaseTerminalResponse{}, nil
+	return auxTerminalStub.ReleaseTerminal(ctx, params)
 }
 
 // WaitForTerminalExit handles requests to wait for terminal exit - stub for auxiliary session.
 func (c *auxiliaryClient) WaitForTerminalExit(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
-	return acp.WaitForTerminalExitResponse{}, nil
+	return auxTerminalStub.WaitForTerminalExit(ctx, params)
 }
 
 // KillTerminalCommand handles requests to kill terminal commands - stub for auxiliary session.
 func (c *auxiliaryClient) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-	return acp.KillTerminalCommandResponse{}, nil
+	return auxTerminalStub.KillTerminalCommand(ctx, params)
 }
