@@ -101,8 +101,14 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Get working directory
+	workDir, err := getWorkingDir()
+	if err != nil {
+		return err
+	}
+
 	// Create session
-	if err := conn.NewSession(ctx, mustGetCwd()); err != nil {
+	if err := conn.NewSession(ctx, workDir); err != nil {
 		return err
 	}
 
