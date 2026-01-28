@@ -1,0 +1,16 @@
+# Test configuration with authentication enabled
+# Uses mock ACP server for deterministic testing
+
+acp:
+  - mock-acp:
+      command: ./tests/mocks/acp-server/mock-acp-server
+
+web:
+  host: 127.0.0.1
+  port: 8089
+  theme: v2
+  auth:
+    username: testuser
+    # Password: testpass123 (bcrypt hash)
+    password_hash: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+

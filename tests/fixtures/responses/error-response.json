@@ -1,0 +1,31 @@
+{
+  "scenario": "error-response",
+  "description": "Simulates various error conditions",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)trigger.*(error|fail)"
+      },
+      "actions": [
+        {
+          "type": "error",
+          "message": "Simulated error for testing purposes"
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)trigger.*timeout"
+      },
+      "actions": [
+        {
+          "type": "delay",
+          "delay_ms": 60000
+        }
+      ]
+    }
+  ]
+}
+

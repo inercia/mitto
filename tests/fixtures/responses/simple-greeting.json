@@ -1,0 +1,24 @@
+{
+  "scenario": "simple-greeting",
+  "description": "A simple greeting response from the agent",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)(hello|hi|hey)"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 100,
+          "chunks": [
+            "Hello! ",
+            "I'm the mock ACP agent. ",
+            "How can I help you today?"
+          ]
+        }
+      ]
+    }
+  ]
+}
+

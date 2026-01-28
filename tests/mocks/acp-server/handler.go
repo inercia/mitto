@@ -1,0 +1,190 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"time"
+)
+
+func (s *MockACPServer) handleMessage(line string) error {
+	var req JSONRPCRequest
+	if err := json.Unmarshal([]byte(line), &req); err != nil {
+		return fmt.Errorf("invalid JSON-RPC: %w", err)
+	}
+
+	switch req.Method {
+	case "initialize":
+		return s.handleInitialize(req)
+	case "session/new", "acp/newSession":
+		return s.handleNewSession(req)
+	case "session/prompt", "acp/prompt":
+		return s.handlePrompt(req)
+	case "session/cancel", "acp/cancelPrompt":
+		return s.handleCancelPrompt(req)
+	case "shutdown":
+		return s.handleShutdown(req)
+	default:
+		s.log("Unknown method: %s", req.Method)
+		return s.sendError(req.ID, -32601, "Method not found", nil)
+	}
+}
+
+func (s *MockACPServer) handleInitialize(req JSONRPCRequest) error {
+	s.initialized = true
+	s.log("Initialized")
+
+	result := InitializeResult{
+		ProtocolVersion: 1, // ACP protocol version 1
+	}
+	result.ServerInfo.Name = "mock-acp-server"
+	result.ServerInfo.Version = "1.0.0"
+	result.Capabilities.Streaming = true
+	result.AgentCapabilities.Streaming = true
+
+	return s.sendResponse(req.ID, result)
+}
+
+func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
+	var params NewSessionParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return s.sendError(req.ID, -32602, "Invalid params", nil)
+	}
+
+	// Use Cwd (new format) or fallback to WorkingDirectory (legacy)
+	workdir := params.Cwd
+	if workdir == "" {
+		workdir = params.WorkingDirectory
+	}
+
+	s.sessionID = fmt.Sprintf("mock-session-%d", time.Now().UnixNano())
+	s.log("Created session: %s (workdir: %s)", s.sessionID, workdir)
+
+	return s.sendResponse(req.ID, NewSessionResult{SessionID: s.sessionID})
+}
+
+func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
+	s.log("Prompt raw params: %s", string(req.Params))
+
+	var params PromptParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		s.log("Unmarshal error: %v", err)
+		return s.sendError(req.ID, -32602, "Invalid params", nil)
+	}
+
+	// Extract text message from prompt content blocks
+	message := params.Message // Use legacy message field as fallback
+	s.log("Prompt blocks: %d, legacy message: %q", len(params.Prompt), message)
+	for _, block := range params.Prompt {
+		text := block.GetText()
+		if text != "" {
+			message = text
+			break
+		}
+	}
+
+	s.log("Prompt received: %s", message)
+
+	// Find matching scenario
+	actions := s.findMatchingActions(message)
+	if len(actions) == 0 {
+		// Default response
+		actions = []Action{
+			{
+				Type:   "agent_message",
+				Chunks: []string{"I received your message: ", message, "\n\nThis is a mock response."},
+			},
+		}
+	}
+
+	// Execute actions synchronously - streaming happens BEFORE the prompt response
+	// This is the ACP protocol: notifications first, then response
+	for _, action := range actions {
+		s.executeAction(action)
+	}
+
+	// Return proper PromptResponse with stopReason (matches SDK's PromptResponse type)
+	return s.sendResponse(req.ID, PromptResponse{StopReason: "end_turn"})
+}
+
+func (s *MockACPServer) handleCancelPrompt(req JSONRPCRequest) error {
+	s.log("Prompt cancelled")
+	return s.sendResponse(req.ID, map[string]bool{"success": true})
+}
+
+func (s *MockACPServer) handleShutdown(req JSONRPCRequest) error {
+	s.log("Shutdown requested")
+	return s.sendResponse(req.ID, nil)
+}
+
+func (s *MockACPServer) findMatchingActions(message string) []Action {
+	for _, scenario := range s.scenarios {
+		for _, resp := range scenario.Responses {
+			if resp.Trigger.Type == "prompt" {
+				re, err := regexp.Compile(resp.Trigger.Pattern)
+				if err != nil {
+					s.log("Invalid pattern %s: %v", resp.Trigger.Pattern, err)
+					continue
+				}
+				if re.MatchString(message) {
+					s.log("Matched scenario: %s", scenario.Name)
+					return resp.Actions
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (s *MockACPServer) executeAction(action Action) {
+	delay := time.Duration(action.DelayMs) * time.Millisecond
+	if delay == 0 {
+		delay = s.defaultDelay
+	}
+
+	switch action.Type {
+	case "agent_message":
+		for _, chunk := range action.Chunks {
+			s.sendSessionUpdate(SessionUpdate{
+				AgentMessageChunk: &AgentMessageChunk{
+					Content: ContentBlock{Type: "text", Text: chunk},
+				},
+			})
+			time.Sleep(delay)
+		}
+
+	case "agent_thought":
+		s.sendSessionUpdate(SessionUpdate{
+			AgentThoughtChunk: &AgentThoughtChunk{
+				Content: ContentBlock{Type: "text", Text: action.Text},
+			},
+		})
+		time.Sleep(delay)
+
+	case "tool_call":
+		s.sendSessionUpdate(SessionUpdate{
+			ToolCall: &ToolCall{
+				ToolCallID: action.ID,
+				Title:      action.Title,
+				Status:     action.Status,
+			},
+		})
+		time.Sleep(delay)
+
+	case "tool_update":
+		status := action.Status
+		s.sendSessionUpdate(SessionUpdate{
+			ToolCallUpdate: &ToolCallUpdate{
+				ToolCallID: action.ID,
+				Status:     &status,
+			},
+		})
+		time.Sleep(delay)
+
+	case "delay":
+		time.Sleep(time.Duration(action.DelayMs) * time.Millisecond)
+
+	case "error":
+		s.log("Simulating error: %s", action.Message)
+	}
+}

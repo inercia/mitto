@@ -1,0 +1,12 @@
+# Test configuration with multiple workspaces
+# Uses mock ACP server for deterministic testing
+
+acp:
+  - mock-acp:
+      command: ./tests/mocks/acp-server/mock-acp-server
+
+web:
+  host: 127.0.0.1
+  port: 8089
+  theme: v2
+

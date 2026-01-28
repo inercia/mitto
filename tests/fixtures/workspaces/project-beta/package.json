@@ -1,0 +1,14 @@
+{
+  "name": "project-beta",
+  "version": "1.0.0",
+  "description": "A mock Node.js project for testing",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"No tests configured\""
+  },
+  "keywords": ["test", "mock"],
+  "author": "Test",
+  "license": "MIT"
+}
+

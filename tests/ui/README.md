@@ -1,74 +1,101 @@
 # Mitto Web UI Tests
 
-End-to-end tests for the Mitto Web UI using Playwright.
+End-to-end tests for the Mitto Web UI using Playwright with TypeScript.
 
 ## Prerequisites
 
-1. **Node.js** - Ensure Node.js is installed
-2. **Playwright** - Install dependencies:
+1. **Node.js** - Ensure Node.js 18+ is installed
+2. **Dependencies** - Install from project root:
    ```bash
    npm install
-   npx playwright install chromium
    ```
-
-3. **Running Mitto Server** - Start the web server before running tests:
+3. **Playwright Browsers** - Install Chromium:
    ```bash
-   # From the project root
-   go run ./cmd/mitto web --port 8080
+   npx playwright install chromium
    ```
 
 ## Running Tests
 
 ```bash
-# Run all UI tests
+# Run all UI tests (headless)
 npm run test:ui
 
-# Run tests in headed mode (see the browser)
+# Run tests with visible browser
 npm run test:ui:headed
 
-# Run tests in debug mode
+# Run tests in debug mode (step through)
 npm run test:ui:debug
 
 # View test report after running
 npm run test:ui:report
 ```
 
-## Configuration
+Or using Make:
 
-Tests are configured in `playwright.config.js`.
-
-### Environment Variables
-
-- `MITTO_TEST_URL` - Base URL for the Mitto web server (default: `http://127.0.0.1:8080`)
-
-Example:
 ```bash
-MITTO_TEST_URL=http://localhost:3000 npm run test:ui
+make test-ui
+make test-ui-headed
+make test-ui-debug
 ```
 
 ## Test Structure
 
-- `page-load.spec.js` - Basic page load and initial state tests
-- `sessions.spec.js` - Session management (create, list, rename, delete)
-- `chat.spec.js` - Chat input and message display tests
-- `connection.spec.js` - WebSocket connection and status tests
-- `keyboard.spec.js` - Keyboard navigation and accessibility tests
-- `markdown.spec.js` - Markdown rendering and message display tests
-- `errors.spec.js` - Error handling and UI resilience tests
-- `workspaces.spec.js` - Multi-workspace session functionality tests
+```
+tests/ui/
+├── specs/                  # Test specifications (TypeScript)
+│   ├── page-load.spec.ts   # Page load and initial state
+│   ├── chat.spec.ts        # Chat input and messages
+│   ├── connection.spec.ts  # WebSocket connection
+│   ├── sessions.spec.ts    # Session management
+│   ├── keyboard.spec.ts    # Keyboard navigation
+│   ├── markdown.spec.ts    # Markdown rendering
+│   ├── errors.spec.ts      # Error handling
+│   ├── workspaces.spec.ts  # Multi-workspace
+│   └── auth.spec.ts        # Authentication
+├── fixtures/               # Playwright fixtures
+│   └── test-fixtures.ts    # Custom test fixtures
+├── utils/                  # Utilities
+│   ├── selectors.ts        # Centralized selectors
+│   └── helpers.ts          # Helper functions
+├── playwright.config.ts    # Playwright configuration
+├── global-setup.ts         # Pre-test setup
+├── global-teardown.ts      # Post-test cleanup
+└── tsconfig.json           # TypeScript config
+```
 
-## Writing New Tests
+## Configuration
 
-Tests use Playwright Test syntax:
+### Environment Variables
 
-```javascript
-import { test, expect } from '@playwright/test';
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MITTO_TEST_URL` | `http://127.0.0.1:8089` | Base URL for tests |
+| `MITTO_DIR` | `/tmp/mitto-test` | Test data directory |
+| `MITTO_TEST_AUTH` | - | Set to `1` to enable auth tests |
+| `CI` | - | Set in CI environments |
 
-test('should do something', async ({ page }) => {
-  await page.goto('/');
-  await expect(page.locator('.some-element')).toBeVisible();
+## Writing Tests
+
+### Basic Test
+
+```typescript
+import { test, expect } from '../fixtures/test-fixtures';
+
+test('should do something', async ({ page, selectors, helpers }) => {
+  await helpers.navigateAndWait(page);
+
+  const element = page.locator(selectors.chatInput);
+  await expect(element).toBeVisible();
 });
 ```
+
+### Using Fixtures
+
+The custom fixtures provide:
+
+- `selectors` - Centralized CSS selectors
+- `timeouts` - Standard timeout values
+- `helpers` - Common operations (navigate, send message, etc.)
 
 See [Playwright documentation](https://playwright.dev/docs/intro) for more details.
 

@@ -1,29 +1,16 @@
-// @ts-check
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures/test-fixtures';
 
 /**
  * Authentication tests for Mitto Web UI.
  *
  * These tests verify the login flow when authentication is enabled.
- * To run these tests, start the server with auth enabled:
- *
- *   Create a config with auth:
- *   web:
- *     auth:
- *       simple:
- *         username: testuser
- *         password: testpass
- *
- *   Then run: go run ./cmd/mitto web --config /path/to/auth-config
- *
  * Set MITTO_TEST_AUTH=1 to enable these tests.
- * Set MITTO_TEST_USERNAME and MITTO_TEST_PASSWORD for credentials.
  */
 
 // Skip auth tests unless explicitly enabled
 const authEnabled = process.env.MITTO_TEST_AUTH === '1';
 const testUsername = process.env.MITTO_TEST_USERNAME || 'testuser';
-const testPassword = process.env.MITTO_TEST_PASSWORD || 'testpass';
+const testPassword = process.env.MITTO_TEST_PASSWORD || 'testpass123';
 
 test.describe('Authentication - Login Page', () => {
   test.skip(!authEnabled, 'Auth tests disabled. Set MITTO_TEST_AUTH=1 to enable.');
@@ -56,8 +43,7 @@ test.describe('Authentication - Login Page', () => {
     // Try to submit empty form
     await page.locator('button[type="submit"]').click();
 
-    // Browser validation should prevent submission, but if it doesn't,
-    // the API should return an error
+    // Browser validation should prevent submission
     const usernameInput = page.locator('input#username');
     await expect(usernameInput).toHaveAttribute('required', '');
   });
@@ -76,7 +62,7 @@ test.describe('Authentication - Login Page', () => {
     await expect(errorDiv).toContainText(/invalid/i);
   });
 
-  test('should login successfully with valid credentials', async ({ page }) => {
+  test('should login successfully with valid credentials', async ({ page, selectors, timeouts }) => {
     await page.goto('/_auth.html');
 
     // Enter valid credentials
@@ -88,12 +74,16 @@ test.describe('Authentication - Login Page', () => {
     await expect(page).toHaveURL(/^(?!.*login).*$/);
 
     // Main app should be visible
-    await expect(page.locator('#app')).toBeVisible();
-    await expect(page.locator('.animate-spin')).toBeHidden({ timeout: 10000 });
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(selectors.app)).toBeVisible();
+    await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
+      timeout: timeouts.appReady,
+    });
+    await expect(page.locator(selectors.chatInput)).toBeVisible({
+      timeout: timeouts.appReady,
+    });
   });
 
-  test('should maintain session after login', async ({ page }) => {
+  test('should maintain session after login', async ({ page, selectors, timeouts }) => {
     // Login first
     await page.goto('/_auth.html');
     await page.locator('input#username').fill(testUsername);
@@ -101,14 +91,18 @@ test.describe('Authentication - Login Page', () => {
     await page.locator('button[type="submit"]').click();
 
     // Wait for redirect to main app
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(selectors.chatInput)).toBeVisible({
+      timeout: timeouts.appReady,
+    });
 
     // Refresh the page
     await page.reload();
 
     // Should still be logged in (not redirected to login)
     await expect(page).not.toHaveURL(/_auth\.html/);
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(selectors.chatInput)).toBeVisible({
+      timeout: timeouts.appReady,
+    });
   });
 });
 
@@ -118,8 +112,8 @@ test.describe('Authentication - API Protection', () => {
   test('should return 401 for unauthenticated API requests', async ({ request }) => {
     const response = await request.get('/api/sessions', {
       headers: {
-        'Cookie': '' // Clear any cookies
-      }
+        Cookie: '', // Clear any cookies
+      },
     });
 
     expect(response.status()).toBe(401);
@@ -135,15 +129,15 @@ test.describe('Authentication - API Protection', () => {
 
     // Get cookies from the page context
     const cookies = await page.context().cookies();
-    const sessionCookie = cookies.find(c => c.name === 'mitto_session');
+    const sessionCookie = cookies.find((c) => c.name === 'mitto_session');
 
     expect(sessionCookie).toBeDefined();
 
     // API request with the session cookie should work
     const response = await request.get('/api/sessions', {
       headers: {
-        'Cookie': `mitto_session=${sessionCookie?.value}`
-      }
+        Cookie: `mitto_session=${sessionCookie?.value}`,
+      },
     });
 
     expect(response.status()).toBe(200);

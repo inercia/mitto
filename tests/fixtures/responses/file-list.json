@@ -1,0 +1,46 @@
+{
+  "scenario": "file-list",
+  "description": "Response for listing files in a directory",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)(list|show|what).*(files|directory|folder)"
+      },
+      "actions": [
+        {
+          "type": "agent_thought",
+          "text": "I'll list the files in the current directory."
+        },
+        {
+          "type": "tool_call",
+          "id": "tool-list-files-1",
+          "title": "List directory contents",
+          "status": "running"
+        },
+        {
+          "type": "tool_update",
+          "id": "tool-list-files-1",
+          "status": "completed",
+          "delay_ms": 500
+        },
+        {
+          "type": "agent_message",
+          "delay_ms": 100,
+          "chunks": [
+            "Here are the files in the current directory:\n\n",
+            "```\n",
+            "README.md\n",
+            "go.mod\n",
+            "go.sum\n",
+            "main.go\n",
+            "src/\n",
+            "```\n\n",
+            "The project contains a Go module with source files in the `src/` directory."
+          ]
+        }
+      ]
+    }
+  ]
+}
+
