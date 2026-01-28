@@ -1,0 +1,146 @@
+# Mitto Default Configuration
+# This file contains the default settings that are used when settings.json doesn't exist.
+# Your personal settings are stored in settings.json in your Mitto data directory:
+#   - macOS: ~/Library/Application Support/Mitto/settings.json
+#   - Linux: ~/.local/share/mitto/settings.json
+#   - Windows: %APPDATA%\Mitto\settings.json
+
+acp:
+  - auggie:
+      command: auggie --acp
+      prompts:
+        - name: Improve rules
+          prompt: |
+            Please improve the Augment rules in .augment/rules
+            for this project using all the information you have learned so far.
+  - claude-code:
+      command: npx -y @zed-industries/claude-code-acp@latest
+
+web:
+  host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security
+  port: 8080       # Local port (use 0 for random)
+  # external_port: 0  # External port when auth is enabled (0 = random)
+  theme: v2  # Options: "default", "v2" (modern theme)
+
+  # hooks:
+  #   up:
+  #     command: echo "ngrok http ${PORT}"
+  #     name: "ngrok"
+  #   # down:
+  #   #   command: echo "Shutting down server on port ${PORT}"
+  #   #   name: "cleanup"
+
+  prompts:
+    - name: "Continue"
+      prompt: "Please continue with the current task."
+    - name: "Propose a plan"
+      prompt: |
+        Please propose a plan for the current task."
+    - name: "Create commits"
+      prompt: |
+        Follow this workflow to create Git commits for the changes that we have in this repository:
+
+        ### 1. Analyze Changes
+
+        - Run `git status --porcelain` to list all changes
+        - Verify the directory is a valid Git repository
+        - Group changes by scope:
+          - **Feature/component**: Related source files + their tests
+          - **Type**: Config files, documentation, dependencies
+          - **Path**: Files in the same module/directory
+        - Make sure there are no staged changes. If there are, check
+          how they relate to the changes you are seeing, if they should go first,
+          or if they should be unstaged in order to be included in the commits
+          you are going to propose.
+        - If you are not sure about anything, just ask me.
+
+        ### 2. Propose Commits
+
+        Present a table, formatted as Makefown, with a each proposed commit, with
+
+        SEQUENCE-NUMBER | COMMIT MESSAGE | FILES | REASON
+
+        Use conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
+        Files can be expressed with Unix shell-style wildcards (e.g. `*.md`, `docs/*`).
+
+        Order commits logically (e.g., implementation before documentation).
+
+        ### 3. Wait for Approval
+
+        Ask the user to:
+
+        - **Approve all** - proceed with commits
+        - **Modify** - specify changes (reorder, merge, split, edit messages)
+        - **Cancel** - abort without committing
+
+        **Do not commit until the user explicitly approves.**
+
+        ### 4. Execute Commits
+
+        For each approved commit:
+
+        1. `git add <files>`
+        2. `git commit -m "<message>"`
+
+        Report success or errors after execution.
+
+        ## Rules
+
+        - Respect `.gitignore`
+        - Skip empty commits
+        - Handle binary/large files appropriately
+
+  # auth:
+  #   simple:
+  #     username: admin
+  #     password: your-secure-password  # Use a strong password
+  #   allow:
+  #     ips:  # IP addresses/CIDR ranges that bypass authentication
+  #       - 127.0.0.1
+  #       - ::1
+  #       - 192.168.0.0/24
+
+  # security:
+  #   # Trusted reverse proxies - only trust X-Forwarded-For from these IPs
+  #   # Required when running behind nginx, Caddy, or cloud load balancers
+  #   trusted_proxies:
+  #     - 127.0.0.1
+  #     - 10.0.0.0/8
+  #     - 172.16.0.0/12
+  #     - 192.168.0.0/16
+  #
+  #   # Allowed origins for WebSocket connections (CSRF protection)
+  #   # If empty, only same-origin requests are allowed
+  #   # Use "*" to allow all origins (not recommended for production)
+  #   allowed_origins:
+  #     - https://your-domain.com
+  #     - https://your-tunnel.ngrok.io
+  #
+  #   # Rate limiting for API requests (per IP)
+  #   rate_limit_rps: 10        # Requests per second (default: 10)
+  #   rate_limit_burst: 20      # Maximum burst size (default: 20)
+  #
+  #   # WebSocket connection limits (per IP)
+  #   max_ws_connections_per_ip: 10  # Default: 10
+  #
+  #   # Maximum WebSocket message size in bytes
+  #   max_ws_message_size: 65536     # Default: 64KB
+
+# UI settings
+# ui:
+#   # Confirmation dialogs - set to false to skip confirmations
+#   confirmations:
+#     delete_session: true  # Confirm before deleting a conversation (default: true)
+#     quit_with_running_sessions: true  # Confirm before quitting with running conversations (default: true, macOS only)
+#
+#   # macOS desktop app settings (only applies to Mitto.app)
+#   mac:
+#     # Global hotkeys
+#     hotkeys:
+#       show_hide:
+#         enabled: true
+#         key: "cmd+shift+m"  # Hotkey to toggle app visibility
+#     # Notification sounds
+#     notifications:
+#       sounds:
+#         agent_completed: true  # Play a sound when the agent finishes
