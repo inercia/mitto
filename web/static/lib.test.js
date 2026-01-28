@@ -10,6 +10,10 @@ import {
     ROLE_ERROR,
     ROLE_SYSTEM,
     MAX_MESSAGES,
+    MIN_USERNAME_LENGTH,
+    MAX_USERNAME_LENGTH,
+    MIN_PASSWORD_LENGTH,
+    MAX_PASSWORD_LENGTH,
     computeAllSessions,
     convertEventsToMessages,
     safeJsonParse,
@@ -17,7 +21,18 @@ import {
     addMessageToSessionState,
     updateLastMessageInSession,
     removeSessionFromState,
-    limitMessages
+    limitMessages,
+    getBasename,
+    getWorkspaceAbbreviation,
+    getWorkspaceColor,
+    getWorkspaceVisualInfo,
+    hexToRgb,
+    getLuminance,
+    getColorFromHex,
+    hslToHex,
+    validateUsername,
+    validatePassword,
+    validateCredentials
 } from './lib.js';
 
 // =============================================================================
@@ -62,31 +77,23 @@ describe('computeAllSessions', () => {
         expect(result.find(s => s.session_id === '1').name).toBe('Active Version');
     });
 
-    test('sorts by last_user_message_at first', () => {
+    test('sorts by created_at (most recent first)', () => {
         const sessions = [
-            { session_id: '1', last_user_message_at: '2024-01-01T08:00:00Z', created_at: '2024-01-01T01:00:00Z' },
-            { session_id: '2', last_user_message_at: '2024-01-01T12:00:00Z', created_at: '2024-01-01T02:00:00Z' },
-            { session_id: '3', last_user_message_at: '2024-01-01T10:00:00Z', created_at: '2024-01-01T03:00:00Z' }
+            { session_id: '1', created_at: '2024-01-01T08:00:00Z' },
+            { session_id: '2', created_at: '2024-01-01T12:00:00Z' },
+            { session_id: '3', created_at: '2024-01-01T10:00:00Z' }
         ];
         const result = computeAllSessions(sessions, []);
         expect(result.map(s => s.session_id)).toEqual(['2', '3', '1']);
     });
 
-    test('falls back to updated_at when last_user_message_at is missing', () => {
+    test('ignores last_user_message_at and updated_at for sorting', () => {
         const sessions = [
-            { session_id: '1', updated_at: '2024-01-01T08:00:00Z', created_at: '2024-01-01T01:00:00Z' },
-            { session_id: '2', updated_at: '2024-01-01T12:00:00Z', created_at: '2024-01-01T02:00:00Z' }
+            { session_id: '1', last_user_message_at: '2024-01-01T23:00:00Z', updated_at: '2024-01-01T22:00:00Z', created_at: '2024-01-01T01:00:00Z' },
+            { session_id: '2', last_user_message_at: '2024-01-01T01:00:00Z', updated_at: '2024-01-01T02:00:00Z', created_at: '2024-01-01T12:00:00Z' }
         ];
         const result = computeAllSessions(sessions, []);
-        expect(result.map(s => s.session_id)).toEqual(['2', '1']);
-    });
-
-    test('falls back to created_at when both timestamps are missing', () => {
-        const sessions = [
-            { session_id: '1', created_at: '2024-01-01T08:00:00Z' },
-            { session_id: '2', created_at: '2024-01-01T12:00:00Z' }
-        ];
-        const result = computeAllSessions(sessions, []);
+        // Session 2 created later, so it should be first despite older last_user_message_at
         expect(result.map(s => s.session_id)).toEqual(['2', '1']);
     });
 });
@@ -446,3 +453,347 @@ describe('removeSessionFromState', () => {
     });
 });
 
+// =============================================================================
+// Workspace Visual Identification Tests
+// =============================================================================
+
+describe('getBasename', () => {
+    test('extracts basename from Unix path', () => {
+        expect(getBasename('/home/user/my-project')).toBe('my-project');
+        expect(getBasename('/Users/dev/awesome-app')).toBe('awesome-app');
+        expect(getBasename('/path/to/src')).toBe('src');
+    });
+
+    test('extracts basename from Windows path', () => {
+        expect(getBasename('C:\\Users\\dev\\project')).toBe('project');
+        expect(getBasename('D:\\work\\my-app')).toBe('my-app');
+    });
+
+    test('handles paths with trailing slashes', () => {
+        expect(getBasename('/home/user/project/')).toBe('project');
+    });
+
+    test('handles single component paths', () => {
+        expect(getBasename('project')).toBe('project');
+        expect(getBasename('/project')).toBe('project');
+    });
+
+    test('returns empty string for empty input', () => {
+        expect(getBasename('')).toBe('');
+        expect(getBasename(null)).toBe('');
+        expect(getBasename(undefined)).toBe('');
+    });
+});
+
+describe('getWorkspaceAbbreviation', () => {
+    test('generates abbreviation from hyphenated names', () => {
+        // Two-word names get padded to 3 chars from last word
+        expect(getWorkspaceAbbreviation('/home/user/my-project')).toBe('MPR');
+        expect(getWorkspaceAbbreviation('/path/to/awesome-web-app')).toBe('AWA');
+        expect(getWorkspaceAbbreviation('/path/to/a-b')).toBe('AB');
+    });
+
+    test('generates abbreviation from underscored names', () => {
+        expect(getWorkspaceAbbreviation('/path/to/my_project')).toBe('MPR');
+        expect(getWorkspaceAbbreviation('/path/to/awesome_web_app')).toBe('AWA');
+    });
+
+    test('generates abbreviation from camelCase names', () => {
+        expect(getWorkspaceAbbreviation('/path/to/myProject')).toBe('MPR');
+        expect(getWorkspaceAbbreviation('/path/to/AwesomeWebApp')).toBe('AWA');
+    });
+
+    test('generates abbreviation from single words using consonants', () => {
+        expect(getWorkspaceAbbreviation('/path/to/project')).toBe('PRJ');
+        expect(getWorkspaceAbbreviation('/path/to/mitto')).toBe('MTT');
+    });
+
+    test('falls back to first 3 characters for short names', () => {
+        expect(getWorkspaceAbbreviation('/path/to/src')).toBe('SRC');
+        expect(getWorkspaceAbbreviation('/path/to/app')).toBe('APP');
+    });
+
+    test('returns ??? for empty input', () => {
+        expect(getWorkspaceAbbreviation('')).toBe('???');
+        expect(getWorkspaceAbbreviation(null)).toBe('???');
+    });
+
+    test('abbreviations are uppercase', () => {
+        const abbr = getWorkspaceAbbreviation('/path/to/lowercase');
+        expect(abbr).toBe(abbr.toUpperCase());
+    });
+});
+
+describe('getWorkspaceColor', () => {
+    test('returns color object with required properties', () => {
+        const color = getWorkspaceColor('/path/to/project');
+        expect(color).toHaveProperty('hue');
+        expect(color).toHaveProperty('background');
+        expect(color).toHaveProperty('backgroundHex');
+        expect(color).toHaveProperty('text');
+        expect(color).toHaveProperty('border');
+    });
+
+    test('backgroundHex is a valid hex color', () => {
+        const color = getWorkspaceColor('/path/to/project');
+        expect(color.backgroundHex).toMatch(/^#[0-9a-f]{6}$/i);
+    });
+
+    test('generates consistent colors for same path', () => {
+        const color1 = getWorkspaceColor('/path/to/project');
+        const color2 = getWorkspaceColor('/path/to/project');
+        expect(color1.hue).toBe(color2.hue);
+        expect(color1.background).toBe(color2.background);
+    });
+
+    test('generates different colors for different paths', () => {
+        const color1 = getWorkspaceColor('/path/to/project1');
+        const color2 = getWorkspaceColor('/path/to/project2');
+        // Different basenames should produce different hues (usually)
+        // Note: There's a small chance of collision, but it's unlikely
+        expect(color1.hue).not.toBe(color2.hue);
+    });
+
+    test('hue is in valid range (0-360)', () => {
+        const paths = ['/a', '/b', '/c', '/project', '/my-app', '/test-123'];
+        paths.forEach(path => {
+            const color = getWorkspaceColor(path);
+            expect(color.hue).toBeGreaterThanOrEqual(0);
+            expect(color.hue).toBeLessThan(360);
+        });
+    });
+
+    test('returns gray for empty path', () => {
+        const color = getWorkspaceColor('');
+        expect(color.background).toBe('rgb(100, 100, 100)');
+    });
+});
+
+describe('getWorkspaceVisualInfo', () => {
+    test('returns complete visual info object', () => {
+        const info = getWorkspaceVisualInfo('/home/user/my-project');
+        expect(info).toHaveProperty('abbreviation');
+        expect(info).toHaveProperty('color');
+        expect(info).toHaveProperty('basename');
+        expect(info.abbreviation).toBe('MPR');
+        expect(info.basename).toBe('my-project');
+        expect(info.color).toHaveProperty('background');
+    });
+
+    test('all properties are consistent with individual functions', () => {
+        const path = '/path/to/awesome-app';
+        const info = getWorkspaceVisualInfo(path);
+        expect(info.abbreviation).toBe(getWorkspaceAbbreviation(path));
+        expect(info.basename).toBe(getBasename(path));
+        expect(info.color.hue).toBe(getWorkspaceColor(path).hue);
+    });
+
+    test('uses custom color when provided', () => {
+        const path = '/home/user/my-project';
+        const customColor = '#ff5500';
+        const info = getWorkspaceVisualInfo(path, customColor);
+        expect(info.color.background).toBe(customColor);
+        expect(info.abbreviation).toBe('MPR'); // abbreviation unchanged
+    });
+
+    test('ignores invalid custom color', () => {
+        const path = '/home/user/my-project';
+        const invalidColor = 'not-a-color';
+        const info = getWorkspaceVisualInfo(path, invalidColor);
+        // Should fall back to auto-generated color
+        expect(info.color.hue).toBeDefined();
+    });
+});
+
+// =============================================================================
+// Color Helper Functions Tests
+// =============================================================================
+
+describe('hexToRgb', () => {
+    test('converts valid hex colors', () => {
+        expect(hexToRgb('#ff0000')).toEqual({ r: 255, g: 0, b: 0 });
+        expect(hexToRgb('#00ff00')).toEqual({ r: 0, g: 255, b: 0 });
+        expect(hexToRgb('#0000ff')).toEqual({ r: 0, g: 0, b: 255 });
+        expect(hexToRgb('#ffffff')).toEqual({ r: 255, g: 255, b: 255 });
+        expect(hexToRgb('#000000')).toEqual({ r: 0, g: 0, b: 0 });
+    });
+
+    test('handles hex without hash', () => {
+        expect(hexToRgb('ff5500')).toEqual({ r: 255, g: 85, b: 0 });
+    });
+
+    test('returns null for invalid hex', () => {
+        expect(hexToRgb('invalid')).toBeNull();
+        expect(hexToRgb('#fff')).toBeNull(); // short form not supported
+        expect(hexToRgb('')).toBeNull();
+        expect(hexToRgb(null)).toBeNull();
+    });
+});
+
+describe('getLuminance', () => {
+    test('returns high luminance for white', () => {
+        expect(getLuminance(255, 255, 255)).toBeCloseTo(1, 2);
+    });
+
+    test('returns low luminance for black', () => {
+        expect(getLuminance(0, 0, 0)).toBe(0);
+    });
+
+    test('returns mid-range luminance for gray', () => {
+        const lum = getLuminance(128, 128, 128);
+        expect(lum).toBeGreaterThan(0.1);
+        expect(lum).toBeLessThan(0.5);
+    });
+});
+
+describe('getColorFromHex', () => {
+    test('returns color object for valid hex', () => {
+        const color = getColorFromHex('#ff5500');
+        expect(color).toHaveProperty('background', '#ff5500');
+        expect(color).toHaveProperty('text');
+        expect(color).toHaveProperty('border');
+    });
+
+    test('returns white text for dark backgrounds', () => {
+        const color = getColorFromHex('#000000');
+        expect(color.text).toBe('white');
+    });
+
+    test('returns dark text for light backgrounds', () => {
+        const color = getColorFromHex('#ffffff');
+        expect(color.text).toBe('rgb(30, 30, 30)');
+    });
+
+    test('returns null for invalid hex', () => {
+        expect(getColorFromHex('invalid')).toBeNull();
+    });
+});
+
+describe('hslToHex', () => {
+    test('converts primary colors', () => {
+        expect(hslToHex(0, 100, 50)).toBe('#ff0000'); // red
+        expect(hslToHex(120, 100, 50)).toBe('#00ff00'); // green
+        expect(hslToHex(240, 100, 50)).toBe('#0000ff'); // blue
+    });
+
+    test('converts grayscale', () => {
+        expect(hslToHex(0, 0, 0)).toBe('#000000'); // black
+        expect(hslToHex(0, 0, 100)).toBe('#ffffff'); // white
+        expect(hslToHex(0, 0, 50)).toBe('#808080'); // gray
+    });
+});
+
+// =============================================================================
+// Credential Validation Tests
+// =============================================================================
+
+describe('validateUsername', () => {
+    test('accepts valid usernames', () => {
+        expect(validateUsername('admin')).toBe('');
+        expect(validateUsername('user123')).toBe('');
+        expect(validateUsername('john.doe')).toBe('');
+        expect(validateUsername('my-user')).toBe('');
+        expect(validateUsername('my_user')).toBe('');
+        expect(validateUsername('User123')).toBe('');
+        expect(validateUsername('a1b')).toBe(''); // minimum length
+    });
+
+    test('rejects empty or missing username', () => {
+        expect(validateUsername('')).toBe('Username is required');
+        expect(validateUsername('   ')).toBe('Username is required');
+        expect(validateUsername(null)).toBe('Username is required');
+        expect(validateUsername(undefined)).toBe('Username is required');
+    });
+
+    test('rejects too short usernames', () => {
+        expect(validateUsername('ab')).toBe('Username must be at least 3 characters');
+        expect(validateUsername('a')).toBe('Username must be at least 3 characters');
+    });
+
+    test('rejects too long usernames', () => {
+        const longUsername = 'a'.repeat(MAX_USERNAME_LENGTH + 1);
+        expect(validateUsername(longUsername)).toBe('Username must be at most 64 characters');
+    });
+
+    test('rejects usernames not starting with letter or number', () => {
+        expect(validateUsername('_user')).toBe('Username must start with a letter or number');
+        expect(validateUsername('-user')).toBe('Username must start with a letter or number');
+        expect(validateUsername('.user')).toBe('Username must start with a letter or number');
+    });
+
+    test('rejects usernames with invalid characters', () => {
+        expect(validateUsername('user@name')).toBe('Username can only contain letters, numbers, underscore, hyphen, and dot');
+        expect(validateUsername('user name')).toBe('Username can only contain letters, numbers, underscore, hyphen, and dot');
+        expect(validateUsername('user!123')).toBe('Username can only contain letters, numbers, underscore, hyphen, and dot');
+    });
+
+    test('trims whitespace before validation', () => {
+        expect(validateUsername('  admin  ')).toBe('');
+    });
+});
+
+describe('validatePassword', () => {
+    test('accepts valid passwords', () => {
+        expect(validatePassword('MyP@ssw0rd')).toBe('');
+        expect(validatePassword('SecurePass123')).toBe('');
+        expect(validatePassword('abcd1234')).toBe('');
+        expect(validatePassword('Pass!@#$%')).toBe('');
+        expect(validatePassword('a1b2c3d4')).toBe(''); // minimum length with complexity
+    });
+
+    test('rejects empty or missing password', () => {
+        expect(validatePassword('')).toBe('Password is required');
+        expect(validatePassword(null)).toBe('Password is required');
+        expect(validatePassword(undefined)).toBe('Password is required');
+    });
+
+    test('rejects too short passwords', () => {
+        expect(validatePassword('abc123')).toBe('Password must be at least 8 characters');
+        expect(validatePassword('Pass1')).toBe('Password must be at least 8 characters');
+    });
+
+    test('rejects too long passwords', () => {
+        const longPassword = 'a1'.repeat(65); // 130 chars
+        expect(validatePassword(longPassword)).toBe('Password must be at most 128 characters');
+    });
+
+    test('rejects common weak passwords', () => {
+        expect(validatePassword('password')).toBe('Password is too common. Please choose a stronger password');
+        expect(validatePassword('PASSWORD')).toBe('Password is too common. Please choose a stronger password');
+        expect(validatePassword('12345678')).toBe('Password is too common. Please choose a stronger password');
+        expect(validatePassword('qwerty123')).toBe('Password is too common. Please choose a stronger password');
+        expect(validatePassword('admin123')).toBe('Password is too common. Please choose a stronger password');
+        expect(validatePassword('changeme')).toBe('Password is too common. Please choose a stronger password');
+    });
+
+    test('rejects passwords without letters', () => {
+        expect(validatePassword('12345678!')).toBe('Password must contain at least one letter and one number or special character');
+    });
+
+    test('rejects passwords without numbers or special characters', () => {
+        expect(validatePassword('abcdefgh')).toBe('Password must contain at least one letter and one number or special character');
+        expect(validatePassword('PasswordOnly')).toBe('Password must contain at least one letter and one number or special character');
+    });
+
+    test('accepts passwords with special characters instead of numbers', () => {
+        expect(validatePassword('Password!')).toBe('');
+        expect(validatePassword('SecurePass@#')).toBe('');
+    });
+});
+
+describe('validateCredentials', () => {
+    test('returns empty string when both are valid', () => {
+        expect(validateCredentials('admin', 'SecurePass123')).toBe('');
+    });
+
+    test('returns username error first if username is invalid', () => {
+        expect(validateCredentials('', 'SecurePass123')).toBe('Username is required');
+        expect(validateCredentials('ab', 'SecurePass123')).toBe('Username must be at least 3 characters');
+    });
+
+    test('returns password error if username is valid but password is invalid', () => {
+        expect(validateCredentials('admin', '')).toBe('Password is required');
+        expect(validateCredentials('admin', 'short')).toBe('Password must be at least 8 characters');
+        expect(validateCredentials('admin', 'password')).toBe('Password is too common. Please choose a stronger password');
+    });
+});

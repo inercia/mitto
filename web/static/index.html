@@ -19,6 +19,8 @@
                         'mitto-input': 'var(--mitto-input)',
                         'mitto-input-box': 'var(--mitto-input-box)',
                         'mitto-user': 'var(--mitto-user)',
+                        'mitto-user-text': 'var(--mitto-user-text)',
+                        'mitto-user-border': 'var(--mitto-user-border)',
                         'mitto-agent': 'var(--mitto-agent)',
                     }
                 }
@@ -33,8 +35,10 @@
             --mitto-chat: #0f172a;
             --mitto-input: #1e293b;
             --mitto-input-box: #1e3a5f;
-            --mitto-user: #3b82f6;
-            --mitto-agent: #334155;
+            --mitto-user: #1e293b;
+            --mitto-user-text: #f1f5f9;
+            --mitto-user-border: #334155;
+            --mitto-agent: #1e293b;
             --mitto-text: #f1f5f9;
             --mitto-text-secondary: #94a3b8;
             --mitto-border: #334155;
@@ -46,7 +50,9 @@
             --mitto-chat: #f8fafc;
             --mitto-input: #e2e8f0;
             --mitto-input-box: #cbd5e1;
-            --mitto-user: #3b82f6;
+            --mitto-user: #e5e7eb;
+            --mitto-user-text: #1e293b;
+            --mitto-user-border: #f97316;
             --mitto-agent: #e2e8f0;
             --mitto-text: #1e293b;
             --mitto-text-secondary: #64748b;
@@ -59,6 +65,34 @@
     
     <!-- Custom styles -->
     <link rel="stylesheet" href="./styles.css">
+
+    <!-- V2 theme stylesheet - always loaded, only applies when .v2-theme class is on body -->
+    <link rel="stylesheet" href="./styles-v2.css">
+
+    <!-- Theme loader - adds v2-theme class to body if configured -->
+    <script>
+        (function() {
+            fetch('/api/config')
+                .then(function(res) { return res.json(); })
+                .then(function(config) {
+                    if (config && config.web && config.web.theme === 'v2') {
+                        // Add v2-theme class to html element immediately
+                        document.documentElement.classList.add('v2-theme');
+                        // Add v2-theme class to body when it's ready
+                        if (document.body) {
+                            document.body.classList.add('v2-theme');
+                        } else {
+                            document.addEventListener('DOMContentLoaded', function() {
+                                document.body.classList.add('v2-theme');
+                            });
+                        }
+                        // Store theme for app.js to use
+                        window.mittoTheme = 'v2';
+                    }
+                })
+                .catch(function(err) { console.error('Failed to load theme config:', err); });
+        })();
+    </script>
 </head>
 <body class="bg-mitto-bg text-white h-screen overflow-hidden">
     <div id="app">
