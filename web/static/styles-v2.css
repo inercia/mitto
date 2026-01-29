@@ -935,6 +935,7 @@ a:hover {
 .mitto-compose__actions {
     display: flex;
     align-items: flex-end;
+    align-self: flex-end;
     gap: 8px;
 }
 

@@ -75,11 +75,18 @@ export function computeAllSessions(activeSessions, storedSessions) {
 /**
  * Helper function to convert stored events to messages for display.
  * @param {Array} events - Array of stored session events
- * @returns {Array} Array of message objects for rendering
+ * @param {Object} options - Optional configuration
+ * @param {boolean} options.reverseInput - If true, events are in reverse order (newest first) and will be reversed to chronological
+ * @returns {Array} Array of message objects for rendering (always in chronological order, oldest first)
  */
-export function convertEventsToMessages(events) {
+export function convertEventsToMessages(events, options = {}) {
+    const { reverseInput = false } = options;
+
+    // If events are in reverse order (newest first), reverse them to chronological order
+    const orderedEvents = reverseInput ? [...events].reverse() : events;
+
     const messages = [];
-    for (const event of events) {
+    for (const event of orderedEvents) {
         const seq = event.seq || 0; // Include sequence number for tracking
         switch (event.type) {
             case 'user_prompt':
@@ -129,6 +136,27 @@ export function convertEventsToMessages(events) {
         }
     }
     return messages;
+
+}
+
+/**
+ * Get the minimum sequence number from an array of events.
+ * @param {Array} events - Array of events with seq property
+ * @returns {number} The minimum sequence number, or 0 if no events
+ */
+export function getMinSeq(events) {
+    if (!events || events.length === 0) return 0;
+    return Math.min(...events.map(e => e.seq || 0));
+}
+
+/**
+ * Get the maximum sequence number from an array of events.
+ * @param {Array} events - Array of events with seq property
+ * @returns {number} The maximum sequence number, or 0 if no events
+ */
+export function getMaxSeq(events) {
+    if (!events || events.length === 0) return 0;
+    return Math.max(...events.map(e => e.seq || 0));
 }
 
 /**

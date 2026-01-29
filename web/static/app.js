@@ -1,5 +1,5 @@
 // Mitto Web Interface - Preact Application
-const { h, render, useState, useEffect, useRef, useCallback, useMemo, html } = window.preact;
+const { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, html } = window.preact;
 
 // Import shared library functions (for browser, we also define them inline as fallback)
 import {
@@ -12,6 +12,8 @@ import {
     INITIAL_EVENTS_LIMIT,
     computeAllSessions,
     convertEventsToMessages,
+    getMinSeq,
+    getMaxSeq,
     safeJsonParse,
     limitMessages,
     getWorkspaceVisualInfo,
@@ -66,6 +68,25 @@ document.addEventListener('click', (e) => {
         openExternalURL(href);
     }
 });
+
+// =============================================================================
+// Disable WebView Context Menu (macOS app only)
+// =============================================================================
+
+// In the native macOS app, disable the default WebView context menu (which shows "Reload")
+// to provide a cleaner, more native app experience. This only applies to areas without
+// a custom context menu handler (session items have their own context menu).
+if (typeof window.mittoPickFolder === 'function') {
+    document.addEventListener('contextmenu', (e) => {
+        // Allow default behavior for text inputs and textareas (for paste, etc.)
+        const tagName = e.target.tagName.toLowerCase();
+        if (tagName === 'input' || tagName === 'textarea') {
+            return;
+        }
+        // Prevent the default WebView context menu
+        e.preventDefault();
+    });
+}
 
 // =============================================================================
 // Folder Picker Helper
@@ -897,6 +918,8 @@ function useWebSocket() {
     }, [connectToSession]);
 
     // Switch to an existing session
+    // Uses reverse-order loading for better UX: newest messages load first,
+    // so the conversation opens already positioned at the latest message.
     const switchSession = useCallback(async (sessionId) => {
         // Use sessionsRef to get current sessions state and avoid stale closures
         const currentSessions = sessionsRef.current;
@@ -916,7 +939,6 @@ function useWebSocket() {
             // Get session metadata first to know total event count and working_dir
             const metaResponse = await fetch(`/api/sessions/${sessionId}`);
             const meta = metaResponse.ok ? await metaResponse.json() : {};
-            const totalEvents = meta.event_count || 0;
 
             // If we already have messages, just update the info with working_dir
             if (hasLoadedMessages) {
@@ -942,29 +964,27 @@ function useWebSocket() {
                 return;
             }
 
-            // Load only the last N events initially
-            const eventsResponse = await fetch(`/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}`);
+            // Load only the last N events initially, in reverse order (newest first)
+            // This allows the UI to render the most recent messages immediately
+            const eventsResponse = await fetch(`/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}&order=desc`);
             if (!eventsResponse.ok) {
                 console.error('Failed to load session events');
                 return;
             }
             const events = await eventsResponse.json();
 
-            // Convert events to messages
-            const messages = convertEventsToMessages(events);
+            // Convert events to messages (events are in reverse order, so we reverse them back)
+            const messages = convertEventsToMessages(events, { reverseInput: true });
 
             // Determine if there are more messages to load
-            const firstSeq = events.length > 0 ? events[0].seq : 0;
+            // With reverse order, the last event in the array has the lowest seq (oldest loaded)
+            const firstSeq = events.length > 0 ? getMinSeq(events) : 0;
             const hasMoreMessages = firstSeq > 1;
 
             // Store working_dir in both ref and state
-            console.log('[switchSession] meta.working_dir:', meta.working_dir);
             if (meta.working_dir) {
                 workingDirMapRef.current[sessionId] = meta.working_dir;
-                setWorkingDirMap(prev => {
-                    console.log('[switchSession] setWorkingDirMap called with:', sessionId, meta.working_dir);
-                    return { ...prev, [sessionId]: meta.working_dir };
-                });
+                setWorkingDirMap(prev => ({ ...prev, [sessionId]: meta.working_dir }));
             }
 
             // Initialize session state (merge with any existing state from WebSocket)
@@ -986,7 +1006,9 @@ function useWebSocket() {
                         },
                         isStreaming: existing.isStreaming || false,
                         hasMoreMessages,
-                        firstLoadedSeq: firstSeq
+                        firstLoadedSeq: firstSeq,
+                        // Flag to indicate this is a fresh load - used for instant scroll positioning
+                        justLoaded: true
                     }
                 };
             });
@@ -1112,6 +1134,7 @@ function useWebSocket() {
 
         try {
             // Load events before the first currently loaded sequence
+            // Use chronological order (oldest first) since we're prepending to existing messages
             const eventsResponse = await fetch(
                 `/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}&before=${session.firstLoadedSeq}`
             );
@@ -1130,11 +1153,11 @@ function useWebSocket() {
                 return;
             }
 
-            // Convert events to messages
+            // Convert events to messages (events are in chronological order)
             const olderMessages = convertEventsToMessages(events);
 
             // Determine if there are still more messages
-            const newFirstSeq = events.length > 0 ? events[0].seq : 0;
+            const newFirstSeq = getMinSeq(events);
             const hasMoreMessages = newFirstSeq > 1;
 
             // Prepend older messages to existing messages
@@ -2015,13 +2038,27 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
                                 <span class="text-blue-300 text-xs hidden sm:inline">⌘↵</span>
                             </button>
                         `}
-                        <!-- Dropdown toggle (only show if there are prompts and not streaming) -->
+                        <!-- Dropdown toggle (only show if there are prompts) -->
                         ${hasPrompts && !isStreaming && html`
                             <button
                                 type="button"
                                 onClick=${() => setShowDropup(!showDropup)}
-                                disabled=${isFullyDisabled || isReadOnly || isStreaming}
+                                disabled=${isFullyDisabled || isReadOnly}
                                 class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white px-2 py-2 border-l border-blue-500 transition-colors"
+                                title="Insert predefined prompt"
+                            >
+                                <svg class="w-4 h-4 transition-transform ${showDropup ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                                </svg>
+                            </button>
+                        `}
+                        <!-- Dropdown toggle during streaming (gray style) -->
+                        ${hasPrompts && isStreaming && html`
+                            <button
+                                type="button"
+                                onClick=${() => setShowDropup(!showDropup)}
+                                disabled=${isFullyDisabled || isReadOnly}
+                                class="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-2 py-2 border-l border-slate-600 transition-colors"
                                 title="Insert predefined prompt"
                             >
                                 <svg class="w-4 h-4 transition-transform ${showDropup ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2037,7 +2074,7 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
                         <button
                             type="button"
                             onClick=${handleAttachClick}
-                            disabled=${isFullyDisabled || isReadOnly || isStreaming}
+                            disabled=${isFullyDisabled || isReadOnly}
                             class="flex-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl transition-colors flex items-center justify-center"
                             title="Attach image"
                         >
@@ -2425,7 +2462,9 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
                     </button>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    ${Object.entries(sections).map(([sectionName, shortcuts]) => html`
+                    ${Object.entries(sections)
+                        .sort((a, b) => b[1].length - a[1].length)
+                        .map(([sectionName, shortcuts]) => html`
                         <div key=${sectionName}>
                             <h4 class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">${sectionName}</h4>
                             <div class="space-y-1">
@@ -3846,20 +3885,101 @@ function PromptEditForm({ prompt, onSave, onCancel }) {
 }
 
 // =============================================================================
+// Context Menu Component
+// =============================================================================
+
+function ContextMenu({ x, y, items, onClose }) {
+    const menuRef = useRef(null);
+
+    // Close menu when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (menuRef.current && !menuRef.current.contains(e.target)) {
+                onClose();
+            }
+        };
+        const handleEscape = (e) => {
+            if (e.key === 'Escape') {
+                onClose();
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        document.addEventListener('keydown', handleEscape);
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+            document.removeEventListener('keydown', handleEscape);
+        };
+    }, [onClose]);
+
+    // Adjust position to keep menu within viewport
+    const [adjustedPos, setAdjustedPos] = useState({ x, y });
+    useEffect(() => {
+        if (menuRef.current) {
+            const rect = menuRef.current.getBoundingClientRect();
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            let newX = x;
+            let newY = y;
+            if (x + rect.width > viewportWidth) {
+                newX = viewportWidth - rect.width - 8;
+            }
+            if (y + rect.height > viewportHeight) {
+                newY = viewportHeight - rect.height - 8;
+            }
+            setAdjustedPos({ x: newX, y: newY });
+        }
+    }, [x, y]);
+
+    return html`
+        <div
+            ref=${menuRef}
+            class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]"
+            style="left: ${adjustedPos.x}px; top: ${adjustedPos.y}px;"
+        >
+            ${items.map(item => html`
+                <button
+                    key=${item.label}
+                    onClick=${(e) => {
+                        e.stopPropagation();
+                        item.onClick();
+                        onClose();
+                    }}
+                    class="w-full px-3 py-2 text-left text-sm hover:bg-slate-700 transition-colors flex items-center gap-2 ${item.danger ? 'text-red-400 hover:text-red-300' : 'text-gray-200'}"
+                >
+                    ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
+                    ${item.label}
+                </button>
+            `)}
+        </div>
+    `;
+}
+
+// =============================================================================
 // Session Item Component
 // =============================================================================
 
 function SessionItem({ session, isActive, onSelect, onRename, onDelete, workspaceColor = null }) {
     const [showActions, setShowActions] = useState(false);
+    const [contextMenu, setContextMenu] = useState(null);
 
     const handleRename = (e) => {
-        e.stopPropagation();
+        if (e) e.stopPropagation();
         onRename(session);
     };
 
     const handleDelete = (e) => {
-        e.stopPropagation();
+        if (e) e.stopPropagation();
         onDelete(session);
+    };
+
+    const handleContextMenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setContextMenu({ x: e.clientX, y: e.clientY });
+    };
+
+    const closeContextMenu = () => {
+        setContextMenu(null);
     };
 
     const displayName = session.name || session.description || 'Untitled';
@@ -3868,15 +3988,38 @@ function SessionItem({ session, isActive, onSelect, onRename, onDelete, workspac
     // Get working_dir from session, or fall back to global map
     const workingDir = session.working_dir || getGlobalWorkingDir(session.session_id) || '';
 
+    const contextMenuItems = [
+        {
+            label: 'Rename',
+            icon: html`<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>`,
+            onClick: () => handleRename()
+        },
+        {
+            label: 'Delete',
+            icon: html`<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>`,
+            onClick: () => handleDelete(),
+            danger: true
+        }
+    ];
+
     return html`
         <div
             onClick=${() => onSelect(session.session_id)}
+            onContextMenu=${handleContextMenu}
             onMouseEnter=${() => setShowActions(true)}
             onMouseLeave=${() => setShowActions(false)}
             class="p-3 border-b border-slate-700 cursor-pointer hover:bg-slate-700/50 transition-colors relative ${
                 isActive ? 'bg-blue-900/30 border-l-2 border-l-blue-500' : ''
             }"
         >
+            ${contextMenu && html`
+                <${ContextMenu}
+                    x=${contextMenu.x}
+                    y=${contextMenu.y}
+                    items=${contextMenuItems}
+                    onClose=${closeContextMenu}
+                />
+            `}
             <!-- Top row: status indicator, title, and action buttons -->
             <div class="flex items-start gap-2">
                 <div class="flex-1 min-w-0">
@@ -4300,20 +4443,20 @@ function App() {
     }, [allSessions, activeSessionId, switchSession]);
 
     // Navigate to session above in the list (no wrap-around, for keyboard shortcuts)
+    // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
     const navigateToSessionAbove = useCallback(() => {
         if (allSessions.length <= 1) return;
         const currentIndex = allSessions.findIndex(s => s.session_id === activeSessionId);
         if (currentIndex === -1 || currentIndex === 0) return; // Already at top or not found
-        setSwipeDirection('right');
         switchSession(allSessions[currentIndex - 1].session_id);
     }, [allSessions, activeSessionId, switchSession]);
 
     // Navigate to session below in the list (no wrap-around, for keyboard shortcuts)
+    // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
     const navigateToSessionBelow = useCallback(() => {
         if (allSessions.length <= 1) return;
         const currentIndex = allSessions.findIndex(s => s.session_id === activeSessionId);
         if (currentIndex === -1 || currentIndex === allSessions.length - 1) return; // Already at bottom or not found
-        setSwipeDirection('left');
         switchSession(allSessions[currentIndex + 1].session_id);
     }, [allSessions, activeSessionId, switchSession]);
 
@@ -4561,10 +4704,69 @@ function App() {
         return () => container.removeEventListener('scroll', handleScroll);
     }, [checkIfAtBottom]);
 
-    // Smart auto-scroll: only scroll if user is at bottom
+    // Track the active session to detect when we switch sessions
+    const prevActiveSessionIdRef = useRef(activeSessionId);
+    // Track if we're still in the initial load phase after a session switch
+    const sessionJustSwitchedRef = useRef(false);
+
+    // Position at bottom synchronously BEFORE paint when switching sessions
+    // This prevents any visible "jump" - the content appears already at the bottom
+    useLayoutEffect(() => {
+        const currentLength = messages.length;
+        const container = messagesContainerRef.current;
+
+        // Helper to scroll to bottom instantly (bypassing CSS scroll-behavior: smooth)
+        const scrollToBottomInstant = () => {
+            if (!container) return;
+            // Temporarily disable smooth scrolling to make scroll instant
+            const originalBehavior = container.style.scrollBehavior;
+            container.style.scrollBehavior = 'auto';
+            container.scrollTop = container.scrollHeight;
+            // Restore original behavior after the scroll completes
+            container.style.scrollBehavior = originalBehavior;
+        };
+
+        // Detect session switch (activeSessionId changed)
+        const sessionSwitched = prevActiveSessionIdRef.current !== activeSessionId;
+        if (sessionSwitched) {
+            prevActiveSessionIdRef.current = activeSessionId;
+            prevMessagesLengthRef.current = currentLength;
+
+            // Position at bottom instantly - useLayoutEffect ensures this happens BEFORE paint
+            if (currentLength > 0) {
+                scrollToBottomInstant();
+            } else {
+                // No messages yet - set flag so we scroll when messages arrive
+                sessionJustSwitchedRef.current = true;
+            }
+            return;
+        }
+
+        // If we just switched sessions and now messages appeared, this is the initial load
+        // Position at bottom instantly BEFORE paint
+        if (sessionJustSwitchedRef.current && currentLength > 0) {
+            sessionJustSwitchedRef.current = false;
+            prevMessagesLengthRef.current = currentLength;
+            scrollToBottomInstant();
+            return;
+        }
+    }, [messages, activeSessionId]);
+
+    // Smart auto-scroll for new content during active conversation
     useEffect(() => {
         const currentLength = messages.length;
         const prevLength = prevMessagesLengthRef.current;
+
+        // Skip if this is a session switch (handled by useLayoutEffect above)
+        if (prevActiveSessionIdRef.current !== activeSessionId) {
+            return;
+        }
+
+        // Skip if this is initial load after session switch (handled by useLayoutEffect above)
+        if (sessionJustSwitchedRef.current) {
+            return;
+        }
+
         const hasNewContent = currentLength > prevLength || (isStreaming && currentLength > 0);
 
         if (hasNewContent) {
@@ -4578,27 +4780,14 @@ function App() {
         }
 
         prevMessagesLengthRef.current = currentLength;
-    }, [messages, isStreaming, isUserAtBottom, scrollToBottom]);
+    }, [messages, isStreaming, isUserAtBottom, scrollToBottom, activeSessionId]);
 
     // Reset scroll state when switching sessions
+    // The auto-scroll effect above handles the initial positioning after messages load
     useEffect(() => {
         setIsUserAtBottom(true);
         setHasNewMessages(false);
-        prevMessagesLengthRef.current = 0;
-        // Scroll to bottom when switching sessions
-        // Use multiple attempts to ensure content is fully rendered, especially on mobile
-        // First attempt immediately after state update
-        requestAnimationFrame(() => {
-            scrollToBottom(false);
-            // Second attempt after a short delay for initial render
-            setTimeout(() => {
-                scrollToBottom(false);
-                // Third attempt with longer delay for mobile devices where
-                // content loading/rendering may take more time
-                setTimeout(() => scrollToBottom(false), 150);
-            }, 50);
-        });
-    }, [activeSessionId, scrollToBottom]);
+    }, [activeSessionId]);
 
     // Ref for the chat input component to allow focusing from native menu
     const chatInputRef = useRef(null);
@@ -4675,6 +4864,16 @@ function App() {
             fetchStoredSessions();
         };
 
+        // Next Conversation - called from native swipe gesture (swipe left)
+        window.mittoNextConversation = () => {
+            navigateToNextSession();
+        };
+
+        // Previous Conversation - called from native swipe gesture (swipe right)
+        window.mittoPrevConversation = () => {
+            navigateToPreviousSession();
+        };
+
         // Cleanup on unmount
         return () => {
             delete window.mittoNewConversation;
@@ -4682,8 +4881,10 @@ function App() {
             delete window.mittoToggleSidebar;
             delete window.mittoShowSettings;
             delete window.mittoCloseConversation;
+            delete window.mittoNextConversation;
+            delete window.mittoPrevConversation;
         };
-    }, [newSession, workspaces, removeSession, fetchStoredSessions, activeSessionId, confirmDeleteSession, activeSessions, storedSessions, configReadonly]);
+    }, [newSession, workspaces, removeSession, fetchStoredSessions, activeSessionId, confirmDeleteSession, activeSessions, storedSessions, configReadonly, navigateToNextSession, navigateToPreviousSession]);
 
     const handleNewSession = async () => {
         // If no workspaces configured, open settings dialog (unless config is read-only)
@@ -4991,7 +5192,7 @@ function App() {
                     ${swipeArrow && html`
                         <div key=${`arrow-${activeSessionId}-${Date.now()}`} class="swipe-arrow-indicator">
                             <div class="swipe-arrow-indicator__content">
-                                <span class="swipe-arrow-indicator__arrow">${swipeArrow === 'left' ? '←' : '→'}</span>
+                                <span class="swipe-arrow-indicator__arrow">${swipeArrow === 'left' ? '→' : '←'}</span>
                             </div>
                         </div>
                     `}

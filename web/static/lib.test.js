@@ -16,6 +16,8 @@ import {
     MAX_PASSWORD_LENGTH,
     computeAllSessions,
     convertEventsToMessages,
+    getMinSeq,
+    getMaxSeq,
     safeJsonParse,
     createSessionState,
     addMessageToSessionState,
@@ -197,6 +199,88 @@ describe('convertEventsToMessages', () => {
         expect(result[0].role).toBe(ROLE_USER);
         expect(result[1].role).toBe(ROLE_AGENT);
         expect(result[2].role).toBe(ROLE_USER);
+    });
+
+    test('reverses events when reverseInput option is true', () => {
+        // Events in reverse order (newest first, as returned by API with order=desc)
+        const events = [
+            { seq: 3, type: 'user_prompt', data: { message: 'Bye' }, timestamp: '2024-01-01T10:00:02Z' },
+            { seq: 2, type: 'agent_message', data: { html: 'Hello!' }, timestamp: '2024-01-01T10:00:01Z' },
+            { seq: 1, type: 'user_prompt', data: { message: 'Hi' }, timestamp: '2024-01-01T10:00:00Z' }
+        ];
+        const result = convertEventsToMessages(events, { reverseInput: true });
+        expect(result).toHaveLength(3);
+        // Should be in chronological order (oldest first)
+        expect(result[0].seq).toBe(1);
+        expect(result[0].text).toBe('Hi');
+        expect(result[1].seq).toBe(2);
+        expect(result[2].seq).toBe(3);
+        expect(result[2].text).toBe('Bye');
+    });
+
+    test('does not modify original array when reverseInput is true', () => {
+        const events = [
+            { seq: 3, type: 'user_prompt', data: { message: 'C' }, timestamp: '2024-01-01T10:00:02Z' },
+            { seq: 2, type: 'user_prompt', data: { message: 'B' }, timestamp: '2024-01-01T10:00:01Z' },
+            { seq: 1, type: 'user_prompt', data: { message: 'A' }, timestamp: '2024-01-01T10:00:00Z' }
+        ];
+        convertEventsToMessages(events, { reverseInput: true });
+        // Original array should be unchanged
+        expect(events[0].seq).toBe(3);
+        expect(events[1].seq).toBe(2);
+        expect(events[2].seq).toBe(1);
+    });
+});
+
+// =============================================================================
+// getMinSeq and getMaxSeq Tests
+// =============================================================================
+
+describe('getMinSeq', () => {
+    test('returns minimum sequence number', () => {
+        const events = [{ seq: 5 }, { seq: 2 }, { seq: 8 }, { seq: 1 }];
+        expect(getMinSeq(events)).toBe(1);
+    });
+
+    test('returns 0 for empty array', () => {
+        expect(getMinSeq([])).toBe(0);
+    });
+
+    test('returns 0 for null input', () => {
+        expect(getMinSeq(null)).toBe(0);
+    });
+
+    test('returns 0 for undefined input', () => {
+        expect(getMinSeq(undefined)).toBe(0);
+    });
+
+    test('handles events with missing seq', () => {
+        const events = [{ seq: 5 }, { }, { seq: 3 }];
+        expect(getMinSeq(events)).toBe(0);
+    });
+});
+
+describe('getMaxSeq', () => {
+    test('returns maximum sequence number', () => {
+        const events = [{ seq: 5 }, { seq: 2 }, { seq: 8 }, { seq: 1 }];
+        expect(getMaxSeq(events)).toBe(8);
+    });
+
+    test('returns 0 for empty array', () => {
+        expect(getMaxSeq([])).toBe(0);
+    });
+
+    test('returns 0 for null input', () => {
+        expect(getMaxSeq(null)).toBe(0);
+    });
+
+    test('returns 0 for undefined input', () => {
+        expect(getMaxSeq(undefined)).toBe(0);
+    });
+
+    test('handles events with missing seq', () => {
+        const events = [{ seq: 5 }, { }, { seq: 3 }];
+        expect(getMaxSeq(events)).toBe(5);
     });
 });
 

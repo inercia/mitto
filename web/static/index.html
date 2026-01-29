@@ -108,11 +108,11 @@
     <!-- Preact + HTM (from Skypack CDN) -->
     <script type="module">
         import { h, render } from 'https://cdn.skypack.dev/preact@10.19.3';
-        import { useState, useEffect, useRef, useCallback, useMemo } from 'https://cdn.skypack.dev/preact@10.19.3/hooks';
+        import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'https://cdn.skypack.dev/preact@10.19.3/hooks';
         import htm from 'https://cdn.skypack.dev/htm@3.1.1';
 
         const html = htm.bind(h);
-        window.preact = { h, render, useState, useEffect, useRef, useCallback, useMemo, html };
+        window.preact = { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, html };
 
         // Load the app after preact is ready
         import('./app.js');
