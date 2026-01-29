@@ -1,5 +1,27 @@
 /* Mitto Web Interface Styles */
 
+/* Safari-safe viewport height utilities
+   Uses dvh (dynamic viewport height) for Safari iOS/macOS with 100vh fallback.
+   This fixes issues where 100vh doesn't account for Safari's dynamic toolbar. */
+.h-screen-safe {
+    height: 100vh;
+    height: 100dvh;
+    /* Ensure flex children can shrink properly in Safari */
+    min-height: 0;
+}
+
+/* Safari flexbox fix: ensure flex containers allow children to shrink */
+.flex-col {
+    min-height: 0;
+}
+
+/* Safe area padding for iOS devices with notch/home indicator */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+    .bg-mitto-input {
+        padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    }
+}
+
 /* Theme toggle switch */
 .theme-toggle {
     position: relative;

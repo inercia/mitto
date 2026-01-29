@@ -415,7 +415,7 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly,
             onDrop=${handleDrop}
             onDragOver=${handleDragOver}
             onDragLeave=${handleDragLeave}
-            class="p-4 bg-mitto-input border-t border-slate-700 ${isDragOver ? 'ring-2 ring-blue-500 ring-inset' : ''}"
+            class="p-4 bg-mitto-input border-t border-slate-700 flex-shrink-0 ${isDragOver ? 'ring-2 ring-blue-500 ring-inset' : ''}"
         >
             <input ref=${fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple class="hidden" onChange=${handleFileInputChange} />
 
