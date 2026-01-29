@@ -167,6 +167,82 @@ func TestStore_ReadEventsFrom(t *testing.T) {
 	}
 }
 
+func TestStore_ReadEventsLastReverse(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	meta := Metadata{
+		SessionID:  "test-session-reverse",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Append 5 events
+	for i := 0; i < 5; i++ {
+		event := Event{
+			Type:      EventTypeUserPrompt,
+			Timestamp: time.Now(),
+			Data:      UserPromptData{Message: "Message " + string(rune('A'+i))},
+		}
+		if err := store.AppendEvent("test-session-reverse", event); err != nil {
+			t.Fatalf("AppendEvent failed: %v", err)
+		}
+	}
+
+	// Read last 3 events in reverse order (should get seq 5, 4, 3)
+	reverseEvents, err := store.ReadEventsLastReverse("test-session-reverse", 3, 0)
+	if err != nil {
+		t.Fatalf("ReadEventsLastReverse failed: %v", err)
+	}
+	if len(reverseEvents) != 3 {
+		t.Errorf("ReadEventsLastReverse got %d events, want 3", len(reverseEvents))
+	}
+	// First event should be the newest (seq 5)
+	if reverseEvents[0].Seq != 5 {
+		t.Errorf("First event Seq = %d, want 5 (newest)", reverseEvents[0].Seq)
+	}
+	// Last event should be the oldest of the 3 (seq 3)
+	if reverseEvents[2].Seq != 3 {
+		t.Errorf("Last event Seq = %d, want 3 (oldest of batch)", reverseEvents[2].Seq)
+	}
+
+	// Read all events in reverse order
+	allReverse, err := store.ReadEventsLastReverse("test-session-reverse", 10, 0)
+	if err != nil {
+		t.Fatalf("ReadEventsLastReverse(all) failed: %v", err)
+	}
+	if len(allReverse) != 5 {
+		t.Errorf("ReadEventsLastReverse(all) got %d events, want 5", len(allReverse))
+	}
+	// Verify order: newest first
+	for i, event := range allReverse {
+		expectedSeq := int64(5 - i)
+		if event.Seq != expectedSeq {
+			t.Errorf("Event %d has Seq = %d, want %d", i, event.Seq, expectedSeq)
+		}
+	}
+
+	// Read events before seq 4 in reverse order (should get seq 3, 2, 1)
+	beforeEvents, err := store.ReadEventsLastReverse("test-session-reverse", 10, 4)
+	if err != nil {
+		t.Fatalf("ReadEventsLastReverse(before=4) failed: %v", err)
+	}
+	if len(beforeEvents) != 3 {
+		t.Errorf("ReadEventsLastReverse(before=4) got %d events, want 3", len(beforeEvents))
+	}
+	if beforeEvents[0].Seq != 3 {
+		t.Errorf("First event before seq 4 has Seq = %d, want 3", beforeEvents[0].Seq)
+	}
+}
+
 func TestStore_List(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)

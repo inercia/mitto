@@ -308,6 +308,24 @@ func (s *Store) ReadEventsLast(sessionID string, limit int, beforeSeq int64) ([]
 	return allEvents, nil
 }
 
+// ReadEventsLastReverse reads the last N events in reverse chronological order (newest first).
+// If beforeSeq > 0, only events with seq < beforeSeq are considered.
+// This is optimized for UIs that render newest messages first.
+func (s *Store) ReadEventsLastReverse(sessionID string, limit int, beforeSeq int64) ([]Event, error) {
+	// Get events in chronological order first
+	events, err := s.ReadEventsLast(sessionID, limit, beforeSeq)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reverse the slice to get newest first
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
+
+	return events, nil
+}
+
 // List returns metadata for all sessions.
 func (s *Store) List() ([]Metadata, error) {
 	s.mu.RLock()

@@ -35,6 +35,12 @@ type SessionStore interface {
 	// Returns events in chronological order (oldest first).
 	ReadEventsLast(sessionID string, limit int, beforeSeq int64) ([]Event, error)
 
+	// ReadEventsLastReverse reads the last N events from a session's event log in reverse order.
+	// If beforeSeq > 0, only events with seq < beforeSeq are considered.
+	// Returns events in reverse chronological order (newest first).
+	// This is optimized for UIs that render newest messages first.
+	ReadEventsLastReverse(sessionID string, limit int, beforeSeq int64) ([]Event, error)
+
 	// List returns metadata for all sessions.
 	List() ([]Metadata, error)
 
