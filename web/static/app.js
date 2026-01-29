@@ -1442,7 +1442,7 @@ function Message({ message, isLast, isStreaming }) {
         const hasImages = message.images && message.images.length > 0;
         return html`
             <div class="message-enter flex justify-end mb-3">
-                <div class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm">
+                <div class="max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm">
                     ${hasImages && html`
                         <div class="flex flex-wrap gap-2 mb-2">
                             ${message.images.map(img => html`
@@ -1468,7 +1468,7 @@ function Message({ message, isLast, isStreaming }) {
         const showCursor = isLast && isStreaming && !message.complete;
         return html`
             <div class="message-enter flex justify-start mb-3">
-                <div class="max-w-[85%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-gray-100 rounded-bl-sm">
+                <div class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-gray-100 rounded-bl-sm">
                     <div
                         class="markdown-content text-sm ${showCursor ? 'streaming-cursor' : ''}"
                         dangerouslySetInnerHTML=${{ __html: message.html || '' }}
@@ -1957,6 +1957,7 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
             `}
 
             <div class="flex gap-2 max-w-4xl mx-auto">
+                <!-- Textarea column -->
                 <textarea
                     ref=${textareaRef}
                     value=${text}
@@ -1964,12 +1965,12 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
                     onKeyDown=${handleKeyDown}
                     onPaste=${handlePaste}
                     placeholder=${getPlaceholder()}
-                    rows="1"
+                    rows="2"
                     class="flex-1 bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled || isReadOnly || isImproving ? 'opacity-50 cursor-not-allowed' : ''}"
                     disabled=${isFullyDisabled || isReadOnly || isImproving}
                 />
-                <!-- Split button container -->
-                <div class="relative self-end" ref=${dropupRef}>
+                <!-- Right column: stacked buttons -->
+                <div class="relative flex flex-col gap-1.5" ref=${dropupRef}>
                     <!-- Dropup menu -->
                     ${showDropup && hasPrompts && html`
                         <div class="absolute bottom-full right-0 mb-2 w-56 bg-slate-800 border border-slate-600 rounded-xl shadow-lg overflow-hidden z-50">
@@ -1991,82 +1992,79 @@ function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly, predef
                         </div>
                     `}
 
-                    <!-- Button group: horizontal on desktop, stacked on mobile -->
-                    <div class="flex sm:flex-row gap-1.5 items-center">
-                        <!-- Auxiliary buttons (attach + magic wand) - hidden on mobile, shown on sm+ screens -->
-                        <div class="hidden sm:flex gap-1">
-                            <!-- Image attach button -->
+                    <!-- Top row: Send/Stop button (full width of right column) -->
+                    <div class="flex rounded-xl overflow-hidden flex-1">
+                        ${isStreaming ? html`
                             <button
                                 type="button"
-                                onClick=${handleAttachClick}
-                                disabled=${isFullyDisabled || isReadOnly || isStreaming}
-                                class="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-3 py-3 rounded-xl transition-colors"
-                                title="Attach image"
+                                onClick=${onCancel}
+                                class="w-full bg-red-600 hover:bg-red-700 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
                             >
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                                </svg>
+                                <span>Stop</span>
+                            </button>
+                        ` : html`
+                            <button
+                                type="submit"
+                                disabled=${isFullyDisabled || (!text.trim() && !hasPendingImages) || isReadOnly}
+                                class="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-1.5"
+                            >
+                                <span>Send</span>
+                                <span class="text-blue-300 text-xs hidden sm:inline">⌘↵</span>
+                            </button>
+                        `}
+                        <!-- Dropdown toggle (only show if there are prompts and not streaming) -->
+                        ${hasPrompts && !isStreaming && html`
+                            <button
+                                type="button"
+                                onClick=${() => setShowDropup(!showDropup)}
+                                disabled=${isFullyDisabled || isReadOnly || isStreaming}
+                                class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white px-2 py-2 border-l border-blue-500 transition-colors"
+                                title="Insert predefined prompt"
+                            >
+                                <svg class="w-4 h-4 transition-transform ${showDropup ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
                                 </svg>
                             </button>
+                        `}
+                    </div>
 
-                            <!-- Magic wand button -->
-                            <button
-                                type="button"
-                                onClick=${handleImprovePrompt}
-                                disabled=${isFullyDisabled || !text.trim() || isReadOnly || isStreaming || isImproving}
-                                class="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-3 rounded-xl transition-colors"
-                                title="Improve prompt with AI"
-                            >
-                                ${isImproving ? html`
-                                    <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                ` : html`
-                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-                                    </svg>
-                                `}
-                            </button>
-                        </div>
+                    <!-- Bottom row: Image + Magic Wand buttons side by side -->
+                    <div class="flex gap-1.5 flex-1">
+                        <!-- Image attach button -->
+                        <button
+                            type="button"
+                            onClick=${handleAttachClick}
+                            disabled=${isFullyDisabled || isReadOnly || isStreaming}
+                            class="flex-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl transition-colors flex items-center justify-center"
+                            title="Attach image"
+                        >
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                        </button>
 
-                        <!-- Split button (send/stop + dropdown) -->
-                        <div class="flex rounded-xl overflow-hidden">
-                            <!-- Primary send/stop button -->
-                            ${isStreaming ? html`
-                                <button
-                                    type="button"
-                                    onClick=${onCancel}
-                                    class="bg-red-600 hover:bg-red-700 text-white px-5 py-3 font-medium transition-colors flex items-center gap-2"
-                                >
-                                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                        <rect x="6" y="6" width="12" height="12" rx="2" />
-                                    </svg>
-                                    Stop
-                                </button>
+                        <!-- Magic wand button -->
+                        <button
+                            type="button"
+                            onClick=${handleImprovePrompt}
+                            disabled=${isFullyDisabled || !text.trim() || isReadOnly || isStreaming || isImproving}
+                            class="flex-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl transition-colors flex items-center justify-center"
+                            title="Improve prompt with AI"
+                        >
+                            ${isImproving ? html`
+                                <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
                             ` : html`
-                                <button
-                                    type="submit"
-                                    disabled=${isFullyDisabled || (!text.trim() && !hasPendingImages) || isReadOnly}
-                                    class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3 font-medium transition-colors"
-                                >
-                                    Send
-                                </button>
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                                </svg>
                             `}
-                            <!-- Dropdown toggle (only show if there are prompts) -->
-                            ${hasPrompts && html`
-                                <button
-                                    type="button"
-                                    onClick=${() => setShowDropup(!showDropup)}
-                                    disabled=${isFullyDisabled || isReadOnly || isStreaming}
-                                    class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white px-2 py-3 border-l border-blue-500 transition-colors"
-                                    title="Insert predefined prompt"
-                                >
-                                    <svg class="w-4 h-4 transition-transform ${showDropup ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-                                    </svg>
-                                </button>
-                            `}
-                        </div>
+                        </button>
                     </div>
                 </div>
             </div>
