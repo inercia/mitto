@@ -57,6 +57,8 @@ const hasNativeURLOpener = typeof window.mittoOpenExternalURL === 'function';
 | `window.mittoFocusInput()` | Focus the chat input | Exposed by web frontend |
 | `window.mittoToggleSidebar()` | Toggle sidebar visibility | Exposed by web frontend |
 | `window.mittoCloseConversation()` | Close current conversation | Exposed by web frontend |
+| `window.mittoNextConversation()` | Navigate to next conversation | Exposed by web frontend |
+| `window.mittoPrevConversation()` | Navigate to previous conversation | Exposed by web frontend |
 
 ### Conditional UI Based on Environment
 
@@ -92,6 +94,25 @@ Keyboard shortcuts are handled at two levels:
 | Native menu shortcuts | `menu_darwin.m` | ❌ No | ✅ Yes |
 | Web shortcuts | `handleGlobalKeyDown` | ✅ Yes | ✅ Yes |
 | Global hotkey | Carbon Events API | ❌ No | ✅ Yes (system-wide) |
+| Trackpad gestures | `menu_darwin.m` (scroll event monitor) | ❌ No | ✅ Yes |
+
+## Trackpad Gestures
+
+### Two-Finger Horizontal Swipe Navigation
+
+The macOS app supports two-finger horizontal swipe gestures to navigate between conversations:
+
+| Gesture | Action | Implementation |
+|---------|--------|----------------|
+| Swipe left (two fingers) | Go to next conversation | Calls `window.mittoNextConversation()` |
+| Swipe right (two fingers) | Go to previous conversation | Calls `window.mittoPrevConversation()` |
+
+**Implementation details** (`cmd/mitto-app/menu_darwin.m`):
+- Uses `NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel` to track scroll events
+- Accumulates scroll delta during the gesture (from `NSEventPhaseBegan` to `NSEventPhaseEnded`)
+- Requires horizontal movement > 100px and dominant over vertical (2:1 ratio)
+- Passes events through so normal WebView scrolling still works
+- Calls Go callback `goSwipeNavigationCallback()` which evaluates JavaScript
 
 ### KEYBOARD_SHORTCUTS Array
 

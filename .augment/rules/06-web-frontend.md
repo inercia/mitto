@@ -117,9 +117,16 @@ const handleMessage = useCallback((msg) => {
 <!-- Recommended -->
 <script type="module">
     import { h, render } from 'https://cdn.skypack.dev/preact@10.19.3';
-    import { useState, useEffect } from 'https://cdn.skypack.dev/preact@10.19.3/hooks';
+    import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'https://cdn.skypack.dev/preact@10.19.3/hooks';
     import htm from 'https://cdn.skypack.dev/htm@3.1.1';
 </script>
+```
+
+**Note**: This project bundles hooks via `window.preact` in `index.html` to avoid separate imports:
+
+```javascript
+// app.js - imports from window.preact bundle
+const { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, html } = window.preact;
 ```
 
 ## Dual Validation (Frontend + Backend)
@@ -191,5 +198,110 @@ const [configReadonly, setConfigReadonly] = useState(false);
 if (configReadonly) {
     return;  // Don't open settings dialog
 }
+```
+
+## useEffect vs useLayoutEffect
+
+**Critical distinction** for DOM positioning and scroll handling:
+
+| Hook | Timing | Use When |
+|------|--------|----------|
+| `useEffect` | After paint (async) | Data fetching, subscriptions, side effects |
+| `useLayoutEffect` | Before paint (sync) | DOM positioning, scroll restoration, measurements |
+
+### Scroll Positioning Pattern
+
+**Problem**: Using `useEffect` for scroll positioning causes visible "jump" artifacts:
+1. Content renders at wrong scroll position
+2. Browser paints (user sees wrong position)
+3. `useEffect` runs and fixes scroll
+4. Browser paints again (user sees jump)
+
+**Solution**: Use `useLayoutEffect` for all scroll positioning on session switches:
+
+```javascript
+// Position at bottom synchronously BEFORE paint when switching sessions
+useLayoutEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    // Detect session switch
+    if (prevActiveSessionIdRef.current !== activeSessionId) {
+        prevActiveSessionIdRef.current = activeSessionId;
+
+        // Instant scroll - bypass CSS scroll-behavior: smooth
+        const originalBehavior = container.style.scrollBehavior;
+        container.style.scrollBehavior = 'auto';
+        container.scrollTop = container.scrollHeight;
+        container.style.scrollBehavior = originalBehavior;
+    }
+}, [activeSessionId, messages.length]);
+```
+
+### Bypassing CSS Smooth Scrolling
+
+When you need instant scroll positioning but CSS has `scroll-behavior: smooth`:
+
+```javascript
+const scrollToBottomInstant = () => {
+    if (!container) return;
+    // Temporarily disable smooth scrolling
+    const originalBehavior = container.style.scrollBehavior;
+    container.style.scrollBehavior = 'auto';
+    container.scrollTop = container.scrollHeight;
+    // Restore after scroll completes
+    container.style.scrollBehavior = originalBehavior;
+};
+```
+
+### Separating Concerns: Session Switch vs Streaming
+
+Use separate hooks for different scroll scenarios:
+
+```javascript
+// useLayoutEffect: Session switch - instant scroll, no animation, before paint
+useLayoutEffect(() => {
+    if (sessionJustChanged) {
+        scrollToBottomInstant();
+    }
+}, [activeSessionId, messages.length]);
+
+// useEffect: Streaming updates - smooth scroll, after paint is fine
+useEffect(() => {
+    if (isStreaming && isUserAtBottom) {
+        scrollToBottom(true);  // smooth: true
+    }
+}, [messages.length, isStreaming]);
+```
+
+### Async Message Loading Pattern
+
+When session switching involves async data loading:
+
+```javascript
+// Problem: useLayoutEffect fires, but messages haven't loaded yet
+
+// Solution: Use a ref to track "just switched" state
+const sessionJustSwitchedRef = useRef(false);
+
+useLayoutEffect(() => {
+    if (activeSessionId !== prevActiveSessionIdRef.current) {
+        prevActiveSessionIdRef.current = activeSessionId;
+
+        if (messages.length > 0) {
+            // Messages already loaded, scroll now
+            scrollToBottomInstant();
+        } else {
+            // Messages loading async, scroll when they arrive
+            sessionJustSwitchedRef.current = true;
+        }
+    }
+
+    // Handle delayed message arrival
+    if (sessionJustSwitchedRef.current && messages.length > 0) {
+        sessionJustSwitchedRef.current = false;
+        scrollToBottomInstant();
+    }
+}, [activeSessionId, messages.length]);
 ```
 
