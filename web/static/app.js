@@ -60,7 +60,14 @@ import {
     TrashIcon,
     EditIcon,
     ArrowDownIcon,
-    SaveIcon
+    SaveIcon,
+    ServerIcon,
+    ServerEmptyIcon,
+    FolderIcon,
+    KeyboardIcon,
+    SunIcon,
+    MoonIcon,
+    LightningIcon
 } from './components/Icons.js';
 
 // Import constants
@@ -238,9 +245,7 @@ function SessionPropertiesDialog({ isOpen, session, onSave, onCancel, workspaces
                             `}
                             ${acpServer && html`
                                 <div class="flex items-center gap-2 ${workingDir ? 'ml-13 pl-0.5' : ''}">
-                                    <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
-                                    </svg>
+                                    <${ServerIcon} className="w-4 h-4 text-gray-400 flex-shrink-0" />
                                     <span class="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs">
                                         ${acpServer}
                                     </span>
@@ -394,9 +399,7 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
                         class="p-1 hover:bg-slate-700 rounded-lg transition-colors"
                         title="Close"
                     >
-                        <svg class="w-5 h-5 text-gray-400 hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
+                        <${CloseIcon} className="w-5 h-5 text-gray-400 hover:text-white" />
                     </button>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1002,17 +1005,12 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                 <!-- Header -->
                 <div class="flex items-center justify-between p-4 border-b border-slate-700">
                     <h3 class="text-lg font-semibold flex items-center gap-2">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
+                        <${SettingsIcon} className="w-5 h-5" />
                         Settings
                     </h3>
                     ${canClose && html`
                         <button onClick=${handleClose} class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
+                            <${CloseIcon} className="w-5 h-5" />
                         </button>
                     `}
                 </div>
@@ -1055,10 +1053,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                 <div class="flex-1 overflow-y-auto p-4">
                     ${loading ? html`
                         <div class="flex items-center justify-center py-12">
-                            <svg class="w-8 h-8 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
+                            <${SpinnerIcon} className="w-8 h-8 text-blue-400" />
                         </div>
                     ` : html`
                         <!-- Workspaces Tab -->
@@ -1081,9 +1076,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                         class="p-1.5 rounded-lg transition-colors ${acpServers.length === 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-700'} ${showAddWorkspace ? 'bg-slate-700' : ''}"
                                         title=${acpServers.length === 0 ? "Add an ACP server first" : "Add Workspace"}
                                     >
-                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                                        </svg>
+                                        <${PlusIcon} className="w-5 h-5" />
                                     </button>
                                 </div>
                                 ${acpServers.length === 0 && html`
@@ -1147,9 +1140,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
 
                                 ${workspaces.length === 0 ? html`
                                     <div class="text-center py-8 text-gray-500">
-                                        <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                                        </svg>
+                                        <${FolderIcon} className="w-12 h-12 mx-auto mb-2 opacity-50" />
                                         <p>No workspaces configured.</p>
                                         <p class="text-xs mt-1">Click + to add a workspace.</p>
                                     </div>
@@ -1177,9 +1168,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                                     class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                                     title="Remove workspace"
                                                 >
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                    </svg>
+                                                    <${TrashIcon} className="w-4 h-4" />
                                                 </button>
                                             </div>
                                         `)}
@@ -1198,9 +1187,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                         class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddServer ? 'bg-slate-700' : ''}"
                                         title="Add Server"
                                     >
-                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                                        </svg>
+                                        <${PlusIcon} className="w-5 h-5" />
                                     </button>
                                 </div>
 
@@ -1245,9 +1232,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
 
                                 ${acpServers.length === 0 ? html`
                                     <div class="text-center py-8 text-gray-500">
-                                        <svg class="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-                                        </svg>
+                                        <${ServerEmptyIcon} className="w-12 h-12 mx-auto mb-2 opacity-50" />
                                         <p>No ACP servers configured.</p>
                                         <p class="text-xs mt-1">Click + to add a server.</p>
                                     </div>
@@ -1268,7 +1253,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                                                 ${srv.name}
                                                                 ${srv.prompts?.length > 0 && html`
                                                                     <span class="flex items-center gap-1 text-xs text-blue-400" title="${srv.prompts.length} custom prompt(s)">
-                                                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                                                        <${LightningIcon} className="w-3.5 h-3.5" />
                                                                         ${srv.prompts.length}
                                                                     </span>
                                                                 `}
@@ -1280,18 +1265,14 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                                             class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                                             title="Edit server"
                                                         >
-                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                                            </svg>
+                                                            <${EditIcon} className="w-4 h-4" />
                                                         </button>
                                                         <button
                                                             onClick=${() => removeServer(srv.name)}
                                                             class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                                             title="Remove server"
                                                         >
-                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                            </svg>
+                                                            <${TrashIcon} className="w-4 h-4" />
                                                         </button>
                                                     </div>
                                                 `}
@@ -1312,9 +1293,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                         class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddPrompt ? 'bg-slate-700' : ''}"
                                         title="Add Prompt"
                                     >
-                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                                        </svg>
+                                        <${PlusIcon} className="w-5 h-5" />
                                     </button>
                                 </div>
 
@@ -1401,9 +1380,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                                             class="p-1.5 hover:bg-slate-700 rounded transition-colors"
                                                             title="Edit"
                                                         >
-                                                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                                            </svg>
+                                                            <${EditIcon} className="w-4 h-4 text-gray-400" />
                                                         </button>
                                                         <button
                                                             onClick=${() => {
@@ -1413,9 +1390,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                                             class="p-1.5 hover:bg-red-500/20 rounded transition-colors"
                                                             title="Delete"
                                                         >
-                                                            <svg class="w-4 h-4 text-gray-400 hover:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                            </svg>
+                                                            <${TrashIcon} className="w-4 h-4 text-gray-400 hover:text-red-400" />
                                                         </button>
                                                     </div>
                                                 </div>
@@ -1621,10 +1596,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                             class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
                         >
                             ${saving ? html`
-                                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
+                                <${SpinnerIcon} className="w-4 h-4" />
                                 Saving...
                             ` : 'Save Changes'}
                         </button>
@@ -1688,9 +1660,7 @@ function ServerEditForm({ server, onSave, onCancel }) {
                         class="p-1 hover:bg-slate-600 rounded transition-colors ${showAddPrompt ? 'bg-slate-600' : ''}"
                         title="Add prompt"
                     >
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                        </svg>
+                        <${PlusIcon} className="w-4 h-4" />
                     </button>
                 </div>
 
@@ -1746,9 +1716,7 @@ function ServerEditForm({ server, onSave, onCancel }) {
                                     class="p-1 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors opacity-0 group-hover:opacity-100"
                                     title="Remove"
                                 >
-                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                                    </svg>
+                                    <${CloseIcon} className="w-3 h-3" />
                                 </button>
                             </div>
                         `)}
@@ -1925,12 +1893,12 @@ function SessionItem({ session, isActive, onSelect, onRename, onDelete, workspac
     const contextMenuItems = [
         {
             label: 'Rename',
-            icon: html`<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>`,
+            icon: html`<${EditIcon} />`,
             onClick: () => handleRename()
         },
         {
             label: 'Delete',
-            icon: html`<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>`,
+            icon: html`<${TrashIcon} />`,
             onClick: () => handleDelete(),
             danger: true
         }
@@ -1975,18 +1943,14 @@ function SessionItem({ session, isActive, onSelect, onRename, onDelete, workspac
                         class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
                         title="Rename"
                     >
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
+                        <${EditIcon} className="w-4 h-4" />
                     </button>
                     <button
                         onClick=${handleDelete}
                         class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
                         title="Delete"
                     >
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
+                        <${TrashIcon} className="w-4 h-4" />
                     </button>
                 </div>
             </div>
@@ -2032,18 +1996,14 @@ function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect
                         class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
                         title="New Conversation"
                     >
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                        </svg>
+                        <${PlusIcon} className="w-5 h-5" />
                     </button>
                     <button
                         onClick=${onCleanInactive}
                         class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
                         title="Clean Inactive Conversations"
                     >
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
+                        <${TrashIcon} className="w-5 h-5" />
                     </button>
                     ${onClose && html`
                         <button
@@ -2051,9 +2011,7 @@ function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect
                             class="p-2 hover:bg-slate-700 rounded-lg transition-colors md:hidden"
                             title="Close"
                         >
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
+                            <${CloseIcon} className="w-5 h-5" />
                         </button>
                     `}
                 </div>
@@ -2095,10 +2053,7 @@ function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect
                             class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
                             title="Settings"
                         >
-                            <svg class="w-5 h-5 text-gray-400 hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                            </svg>
+                            <${SettingsIcon} className="w-5 h-5 text-gray-400 hover:text-white" />
                         </button>
                     ` : rcFilePath ? html`
                         <button
@@ -2106,10 +2061,7 @@ function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect
                             class="p-2 rounded-lg opacity-50 cursor-not-allowed"
                             title="Using ${rcFilePath}"
                         >
-                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                            </svg>
+                            <${SettingsIcon} className="w-5 h-5 text-gray-400" />
                         </button>
                     ` : null}
                     <!-- Theme toggle -->
@@ -2123,23 +2075,11 @@ function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect
                     >
                         <!-- Sun icon -->
                         <div class="theme-toggle-v2__option ${isLight ? 'active' : ''}">
-                            <svg viewBox="0 0 24 24">
-                                <circle cx="12" cy="12" r="4"></circle>
-                                <path d="M12 2v2"></path>
-                                <path d="M12 20v2"></path>
-                                <path d="m4.93 4.93 1.41 1.41"></path>
-                                <path d="m17.66 17.66 1.41 1.41"></path>
-                                <path d="M2 12h2"></path>
-                                <path d="M20 12h2"></path>
-                                <path d="m6.34 17.66-1.41 1.41"></path>
-                                <path d="m19.07 4.93-1.41 1.41"></path>
-                            </svg>
+                            <${SunIcon} />
                         </div>
                         <!-- Moon icon -->
                         <div class="theme-toggle-v2__option ${!isLight ? 'active' : ''}">
-                            <svg viewBox="0 0 24 24">
-                                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
-                            </svg>
+                            <${MoonIcon} />
                         </div>
                     </div>
                     <!-- Font size toggle -->
@@ -2160,17 +2100,7 @@ function SessionList({ activeSessions, storedSessions, activeSessionId, onSelect
                         class="p-2 hover:bg-slate-700 rounded-lg transition-colors group"
                         title="Keyboard Shortcuts"
                     >
-                        <svg class="w-4 h-4 text-gray-400 group-hover:text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
-                            <path d="M6 8h.001"></path>
-                            <path d="M10 8h.001"></path>
-                            <path d="M14 8h.001"></path>
-                            <path d="M18 8h.001"></path>
-                            <path d="M8 12h.001"></path>
-                            <path d="M12 12h.001"></path>
-                            <path d="M16 12h.001"></path>
-                            <path d="M7 16h10"></path>
-                        </svg>
+                        <${KeyboardIcon} className="w-4 h-4 text-gray-400 group-hover:text-white" />
                     </button>
                 </div>
             </div>
@@ -3098,9 +3028,7 @@ function App() {
                         class="md:hidden p-2 hover:bg-slate-700 rounded-lg transition-colors"
                         onClick=${() => setShowSidebar(true)}
                     >
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                        </svg>
+                        <${MenuIcon} className="w-6 h-6" />
                     </button>
                     <h1 class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] ${!activeSessionId ? 'text-gray-500' : ''}">${activeSessionId ? (sessionInfo?.name || 'New conversation') : 'No Active Session'}</h1>
                     <div class="ml-auto flex items-center gap-2">
@@ -3109,9 +3037,7 @@ function App() {
                         `}
                         ${activeSessionId && html`
                             <span class="text-gray-500" title="Session is auto-saved">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
-                                </svg>
+                                <${SaveIcon} className="w-4 h-4" />
                             </span>
                         `}
                         <span class="w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}" title="${connected ? 'Connected' : 'Disconnected'}"></span>
@@ -3139,15 +3065,10 @@ function App() {
                                     class="px-4 py-2 text-sm text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-full transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     ${loadingMore ? html`
-                                        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
+                                        <${SpinnerIcon} className="w-4 h-4" />
                                         <span>Loading...</span>
                                     ` : html`
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-                                        </svg>
+                                        <${ChevronUpIcon} className="w-4 h-4" />
                                         <span>Load earlier messages</span>
                                     `}
                                 </button>
@@ -3162,10 +3083,7 @@ function App() {
                                         <p class="text-base text-gray-500 max-w-md">
                                             Get started by creating a workspace in Settings
                                             (<span class="inline-block align-middle">
-                                                <svg class="w-5 h-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                                </svg>
+                                                <${SettingsIcon} className="w-5 h-5 inline" />
                                             </span> icon in the sidebar)
                                         </p>
                                     ` : activeSessionId ? html`
@@ -3205,9 +3123,7 @@ function App() {
                             class="scroll-to-bottom-btn ${hasNewMessages ? 'has-new' : ''}"
                             title="Scroll to bottom"
                         >
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                            </svg>
+                            <${ArrowDownIcon} className="w-5 h-5" />
                             ${hasNewMessages && html`
                                 <span class="new-messages-indicator"></span>
                             `}
