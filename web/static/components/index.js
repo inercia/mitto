@@ -23,6 +23,11 @@ export {
     LightningIcon,
     StopIcon,
     ErrorIcon,
-    ServerIcon
+    ServerIcon,
+    ServerEmptyIcon,
+    FolderIcon,
+    KeyboardIcon,
+    SunIcon,
+    MoonIcon
 } from './Icons.js';
 
