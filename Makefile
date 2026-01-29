@@ -182,11 +182,9 @@ deps: deps-go deps-js
 
 build-mac-app: deps-go
 	@echo "Building macOS app bundle..."
-	@# Ensure the icon exists
-	@if [ ! -f platform/mac/AppIcon.icns ]; then \
-		echo "Generating app icon..."; \
-		cd platform/mac && ICONSET_DIR="./AppIcon.iconset" ./generate-icon.sh; \
-	fi
+	@# Generate app icon from source icon.png
+	@echo "Generating app icon..."
+	@platform/mac/generate-icon.sh
 	@# Create app bundle structure
 	@mkdir -p "$(APP_BUNDLE)/Contents/MacOS"
 	@mkdir -p "$(APP_BUNDLE)/Contents/Resources"

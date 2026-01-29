@@ -130,16 +130,17 @@ jobs:
       - name: Install dependencies
         run: make deps-go
 
+      - name: Generate app icon from source
+        run: |
+          # Always regenerate AppIcon.icns from the root icon.png
+          # This ensures any updates to icon.png are reflected in releases
+          platform/mac/generate-icon.sh
+
       - name: Build macOS app bundle
         env:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
         run: |
-          # Generate icon if needed
-          if [ ! -f platform/mac/AppIcon.icns ]; then
-            pip3 install Pillow
-            cd platform/mac && ./generate-icon.sh && cd ../..
-          fi
           # Create app bundle structure
           mkdir -p "Mitto.app/Contents/MacOS"
           mkdir -p "Mitto.app/Contents/Resources"
