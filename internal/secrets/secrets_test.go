@@ -62,4 +62,3 @@ func TestErrors(t *testing.T) {
 		t.Errorf("ErrNotSupported.Error() = %q, want %q", ErrNotSupported.Error(), "secret store not supported on this platform")
 	}
 }
-

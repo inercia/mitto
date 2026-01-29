@@ -89,4 +89,3 @@ func SetExternalAccessPassword(password string) error {
 func DeleteExternalAccessPassword() error {
 	return Delete(ServiceName, AccountExternalAccess)
 }
-

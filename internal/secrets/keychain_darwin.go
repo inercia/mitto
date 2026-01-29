@@ -95,4 +95,3 @@ func (k *KeychainStore) Delete(service, account string) error {
 func (k *KeychainStore) IsSupported() bool {
 	return true
 }
-

@@ -23,4 +23,3 @@ func (n *NoopStore) Delete(service, account string) error {
 func (n *NoopStore) IsSupported() bool {
 	return false
 }
-
