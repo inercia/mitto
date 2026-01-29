@@ -319,6 +319,37 @@ func goQuitCallback() {
 	}()
 }
 
+//export goSwipeNavigationCallback
+func goSwipeNavigationCallback(direction *C.char) {
+	globalWebViewMu.Lock()
+	w := globalWebView
+	globalWebViewMu.Unlock()
+
+	if w == nil {
+		return
+	}
+
+	dirStr := C.GoString(direction)
+	var js string
+
+	switch dirStr {
+	case "next":
+		// Swipe left -> go to next conversation
+		js = "if (window.mittoNextConversation) window.mittoNextConversation();"
+	case "prev":
+		// Swipe right -> go to previous conversation
+		js = "if (window.mittoPrevConversation) window.mittoPrevConversation();"
+	default:
+		slog.Warn("Unknown swipe direction", "direction", dirStr)
+		return
+	}
+
+	// Dispatch to main thread and evaluate JavaScript
+	w.Dispatch(func() {
+		w.Eval(js)
+	})
+}
+
 // setupMenu creates the native macOS menu bar with standard items.
 func setupMenu(appName string) {
 	cAppName := C.CString(appName)
@@ -335,6 +366,13 @@ func setupQuitInterceptor(confirmEnabled bool, serverPort int) {
 		enabled = 1
 	}
 	C.setupQuitInterceptor(enabled, C.int(serverPort))
+}
+
+// setupSwipeGesture sets up the two-finger swipe gesture recognizer for
+// navigating between conversations. Swipe left goes to next, swipe right
+// goes to previous conversation.
+func setupSwipeGesture() {
+	C.setupSwipeGestureRecognizer()
 }
 
 // openExternalURL opens a URL in the default browser.
@@ -688,6 +726,19 @@ func run() error {
 			slog.Info("Window configured to show in all Spaces")
 		})
 	}
+
+	// Activate the app to bring it to the foreground on launch
+	// This is dispatched to run after the window is fully created
+	w.Dispatch(func() {
+		C.activateApp()
+	})
+
+	// Set up two-finger swipe gesture for navigating between conversations
+	// This is dispatched to run after the window is fully created
+	w.Dispatch(func() {
+		setupSwipeGesture()
+		slog.Info("Two-finger swipe gesture enabled for conversation navigation")
+	})
 
 	// Set up shutdown manager for graceful shutdown
 	shutdown := hooks.NewShutdownManager()

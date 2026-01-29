@@ -18,9 +18,18 @@ void setupQuitInterceptor(int confirmEnabled, int serverPort);
 // This must be called after the window is created.
 void setWindowShowInAllSpaces(int enabled);
 
+// activateApp activates the application and brings its window to the foreground.
+// This should be called after the window is created to ensure the app gets focus on launch.
+void activateApp(void);
+
 // completeTermination signals that cleanup is complete and the app can terminate.
 // This is called from Go after shutdown cleanup has finished.
 void completeTermination(void);
+
+// setupSwipeGestureRecognizer installs a two-finger horizontal swipe gesture
+// recognizer on the main window. This allows navigating between conversations
+// with trackpad swipes: swipe left goes to next, swipe right goes to previous.
+void setupSwipeGestureRecognizer(void);
 
 #endif // MENU_DARWIN_H
 

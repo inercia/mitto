@@ -351,3 +351,108 @@ void setWindowShowInAllSpaces(int enabled) {
         }
     }
 }
+
+// activateApp activates the application and brings its window to the foreground.
+// This ensures the app gets focus when launched.
+void activateApp(void) {
+    @autoreleasepool {
+        NSApplication *app = [NSApplication sharedApplication];
+        [app activateIgnoringOtherApps:YES];
+        NSWindow *window = [app mainWindow];
+        if (window) {
+            [window makeKeyAndOrderFront:nil];
+        }
+    }
+}
+
+// Forward declaration of Go callback for swipe navigation
+extern void goSwipeNavigationCallback(char* direction);
+
+// Swipe gesture state tracking
+static CGFloat gSwipeAccumulatedDeltaX = 0.0;
+static CGFloat gSwipeAccumulatedDeltaY = 0.0;
+static BOOL gSwipeInProgress = NO;
+
+// setupSwipeGestureRecognizer installs a scroll event monitor that tracks
+// horizontal two-finger swipe gestures to navigate between conversations:
+// - Swipe left (fingers move left) -> Go to next conversation
+// - Swipe right (fingers move right) -> Go to previous conversation
+//
+// The implementation tracks accumulated scroll delta during a gesture and only
+// triggers navigation when the gesture ends with a significant horizontal
+// displacement and minimal vertical displacement.
+void setupSwipeGestureRecognizer(void) {
+    @autoreleasepool {
+        // Monitor scroll wheel events to detect two-finger swipe gestures
+        // We track the full gesture from start to end to accumulate the total delta
+        [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel handler:^NSEvent *(NSEvent *event) {
+            // Only process trackpad events (not mouse scroll wheel)
+            // Trackpad events have a phase, mouse events don't
+            if (event.phase == NSEventPhaseNone && event.momentumPhase == NSEventPhaseNone) {
+                return event;
+            }
+
+            // Gesture phases:
+            // NSEventPhaseBegan - fingers down, gesture starting
+            // NSEventPhaseChanged - fingers moving
+            // NSEventPhaseEnded - fingers lifted
+            // NSEventPhaseMayBegin - system is determining if this is a gesture
+
+            if (event.phase == NSEventPhaseBegan || event.phase == NSEventPhaseMayBegin) {
+                // Start of a new gesture - reset accumulators
+                gSwipeAccumulatedDeltaX = 0.0;
+                gSwipeAccumulatedDeltaY = 0.0;
+                gSwipeInProgress = YES;
+            }
+
+            if (gSwipeInProgress && (event.phase == NSEventPhaseChanged || event.phase == NSEventPhaseBegan)) {
+                // Accumulate deltas during the gesture
+                gSwipeAccumulatedDeltaX += event.scrollingDeltaX;
+                gSwipeAccumulatedDeltaY += event.scrollingDeltaY;
+            }
+
+            if (event.phase == NSEventPhaseEnded && gSwipeInProgress) {
+                gSwipeInProgress = NO;
+
+                // Threshold for triggering navigation (in pixels)
+                // Require a deliberate horizontal swipe with minimal vertical movement
+                CGFloat horizontalThreshold = 100.0;  // Significant horizontal movement required
+                CGFloat verticalLimit = 50.0;         // Maximum vertical movement allowed
+
+                CGFloat absX = fabs(gSwipeAccumulatedDeltaX);
+                CGFloat absY = fabs(gSwipeAccumulatedDeltaY);
+
+                // Only trigger if:
+                // 1. Horizontal movement exceeds threshold
+                // 2. Horizontal movement is dominant (at least 2x vertical)
+                // 3. Vertical movement is within limits
+                if (absX > horizontalThreshold && absX > absY * 2.0 && absY < verticalLimit) {
+                    // Natural scrolling: positive deltaX means fingers moved right
+                    // In natural scrolling: swipe right = scroll content left = go to previous
+                    // Swipe right (fingers right, deltaX > 0) -> prev conversation
+                    // Swipe left (fingers left, deltaX < 0) -> next conversation
+                    if (gSwipeAccumulatedDeltaX > 0) {
+                        goSwipeNavigationCallback((char*)"prev");
+                    } else {
+                        goSwipeNavigationCallback((char*)"next");
+                    }
+                }
+
+                // Reset accumulators
+                gSwipeAccumulatedDeltaX = 0.0;
+                gSwipeAccumulatedDeltaY = 0.0;
+            }
+
+            if (event.phase == NSEventPhaseCancelled) {
+                // Gesture was cancelled - reset state
+                gSwipeInProgress = NO;
+                gSwipeAccumulatedDeltaX = 0.0;
+                gSwipeAccumulatedDeltaY = 0.0;
+            }
+
+            // Always return the event so it can be processed normally by the WebView
+            // This ensures normal scrolling still works within the content
+            return event;
+        }];
+    }
+}
