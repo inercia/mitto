@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/coder/acp-go-sdk v0.6.3
 	github.com/gorilla/websocket v1.5.3
+	github.com/keybase/go-keychain v0.0.1
 	github.com/reeflective/readline v1.1.4
 	github.com/spf13/cobra v1.8.1
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6

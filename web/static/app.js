@@ -45,6 +45,29 @@ function openExternalURL(url) {
 }
 
 // =============================================================================
+// Global Link Click Handler
+// =============================================================================
+
+// Intercept clicks on external links (http/https) to prevent WebView navigation.
+// In the native macOS app, this ensures links open in the default browser
+// instead of navigating within the WebView window.
+document.addEventListener('click', (e) => {
+    // Find the closest anchor element (handles clicks on nested elements inside links)
+    const link = e.target.closest('a');
+    if (!link) return;
+
+    const href = link.getAttribute('href');
+    if (!href) return;
+
+    // Only intercept external URLs (http/https)
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+        e.preventDefault();
+        e.stopPropagation();
+        openExternalURL(href);
+    }
+});
+
+// =============================================================================
 // Folder Picker Helper
 // =============================================================================
 

@@ -105,6 +105,55 @@ func TestRecorder_RecordEvents(t *testing.T) {
 	}
 }
 
+func TestRecorder_EventCount(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+
+	// Before starting, event count should be 0
+	if count := recorder.EventCount(); count != 0 {
+		t.Errorf("EventCount before start = %d, want 0", count)
+	}
+
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// After starting, event count should be 1 (session_start event)
+	if count := recorder.EventCount(); count != 1 {
+		t.Errorf("EventCount after start = %d, want 1", count)
+	}
+
+	// Record some events
+	if err := recorder.RecordUserPrompt("Hello!"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+	if count := recorder.EventCount(); count != 2 {
+		t.Errorf("EventCount after user prompt = %d, want 2", count)
+	}
+
+	if err := recorder.RecordAgentMessage("Hi there!"); err != nil {
+		t.Fatalf("RecordAgentMessage failed: %v", err)
+	}
+	if count := recorder.EventCount(); count != 3 {
+		t.Errorf("EventCount after agent message = %d, want 3", count)
+	}
+
+	// Verify the count matches the actual events in the store
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(events) != recorder.EventCount() {
+		t.Errorf("EventCount() = %d, but actual events = %d", recorder.EventCount(), len(events))
+	}
+}
+
 func TestRecorder_RecordBeforeStart(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)

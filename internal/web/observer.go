@@ -35,7 +35,8 @@ type SessionObserver interface {
 	OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
 
 	// OnPromptComplete is called when a prompt response is complete.
-	OnPromptComplete()
+	// eventCount is the current total event count for the session (for sync tracking).
+	OnPromptComplete(eventCount int)
 
 	// OnError is called when an error occurs.
 	OnError(message string)

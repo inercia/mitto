@@ -678,8 +678,15 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build new settings
-	settings := s.buildNewSettings(&req)
+	// Build new settings (also stores password in Keychain on macOS)
+	settings, err := s.buildNewSettings(&req)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to build settings", "error", err)
+		}
+		http.Error(w, "Failed to build settings: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	// Save settings to disk
 	if err := configPkg.SaveSettings(settings); err != nil {

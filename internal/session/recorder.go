@@ -327,3 +327,16 @@ func (r *Recorder) IsStarted() bool {
 	defer r.mu.Unlock()
 	return r.started
 }
+
+// EventCount returns the current event count for the session.
+// Returns 0 if the session doesn't exist or there's an error.
+func (r *Recorder) EventCount() int {
+	if r.store == nil {
+		return 0
+	}
+	meta, err := r.store.GetMetadata(r.sessionID)
+	if err != nil {
+		return 0
+	}
+	return meta.EventCount
+}

@@ -40,10 +40,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		req = SessionCreateRequest{}
 	}
 
-	// Default name
-	if req.Name == "" {
-		req.Name = "New conversation"
-	}
+	// Note: Empty names are allowed - they will be auto-generated after first message
+	// The frontend displays "New Conversation" as a placeholder for empty names
 
 	// Determine workspace to use
 	var workspace *config.WorkspaceSettings

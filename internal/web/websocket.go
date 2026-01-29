@@ -107,29 +107,31 @@ const (
 	WSMsgTypeSwitchSession    = "switch_session"
 	WSMsgTypePermissionAnswer = "permission_answer"
 	WSMsgTypeRenameSession    = "rename_session"
-	WSMsgTypeSyncSession      = "sync_session" // Request incremental sync from a sequence number
+	WSMsgTypeSyncSession      = "sync_session"  // Request incremental sync from a sequence number
+	WSMsgTypeKeepalive        = "keepalive"     // Application-level keepalive with timestamp
 )
 
 // Message types (backend -> frontend)
 const (
-	WSMsgTypeConnected       = "connected"
-	WSMsgTypeSessionCreated  = "session_created"
-	WSMsgTypeSessionSwitched = "session_switched"
-	WSMsgTypeSessionRenamed  = "session_renamed"
-	WSMsgTypeSessionDeleted  = "session_deleted"
-	WSMsgTypeAgentMessage    = "agent_message"
-	WSMsgTypeAgentThought    = "agent_thought"
-	WSMsgTypeToolCall        = "tool_call"
-	WSMsgTypeToolUpdate      = "tool_update"
-	WSMsgTypePlan            = "plan"
-	WSMsgTypePermission      = "permission"
-	WSMsgTypeError           = "error"
-	WSMsgTypeSessionLoaded   = "session_loaded"
-	WSMsgTypePromptReceived  = "prompt_received" // Ack that prompt was received and persisted
-	WSMsgTypePromptComplete  = "prompt_complete"
-	WSMsgTypeFileWrite       = "file_write"
-	WSMsgTypeFileRead        = "file_read"
-	WSMsgTypeSessionSync     = "session_sync" // Incremental sync response with events since last seen
+	WSMsgTypeConnected        = "connected"
+	WSMsgTypeSessionCreated   = "session_created"
+	WSMsgTypeSessionSwitched  = "session_switched"
+	WSMsgTypeSessionRenamed   = "session_renamed"
+	WSMsgTypeSessionDeleted   = "session_deleted"
+	WSMsgTypeAgentMessage     = "agent_message"
+	WSMsgTypeAgentThought     = "agent_thought"
+	WSMsgTypeToolCall         = "tool_call"
+	WSMsgTypeToolUpdate       = "tool_update"
+	WSMsgTypePlan             = "plan"
+	WSMsgTypePermission       = "permission"
+	WSMsgTypeError            = "error"
+	WSMsgTypeSessionLoaded    = "session_loaded"
+	WSMsgTypePromptReceived   = "prompt_received"  // Ack that prompt was received and persisted
+	WSMsgTypePromptComplete   = "prompt_complete"
+	WSMsgTypeFileWrite        = "file_write"
+	WSMsgTypeFileRead         = "file_read"
+	WSMsgTypeSessionSync      = "session_sync"     // Incremental sync response with events since last seen
+	WSMsgTypeKeepaliveAck     = "keepalive_ack"    // Response to keepalive with server timestamp
 )
 
 // WSClient represents a connected WebSocket client.
@@ -161,9 +163,6 @@ type WSClient struct {
 	// Permission handling
 	permissionChan chan acp.RequestPermissionResponse
 	permissionMu   sync.Mutex
-
-	// Prompt tracking for auto-title generation
-	promptCount int
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +387,16 @@ func (c *WSClient) handleMessage(msg WSMessage) {
 			return
 		}
 		c.handleSyncSession(data.SessionID, data.AfterSeq)
+
+	case WSMsgTypeKeepalive:
+		var data struct {
+			ClientTime int64 `json:"client_time"` // Client's timestamp in milliseconds
+		}
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
+		c.handleKeepalive(data.ClientTime)
 	}
 }
 
@@ -396,11 +405,8 @@ func (c *WSClient) handleNewSession(name string) {
 	c.detachFromBackgroundSession()
 	c.closeCurrentSession("new_session")
 
-	// Sanitize and set default name if not provided
+	// Sanitize name - empty names are allowed (will be auto-generated after first message)
 	sessionName := SanitizeSessionName(name)
-	if sessionName == "" {
-		sessionName = "New conversation"
-	}
 
 	// Use server's default working directory if set, otherwise current directory
 	cwd := c.server.config.DefaultWorkingDir
@@ -483,10 +489,11 @@ func (c *WSClient) handlePromptWithImagesAndID(message string, imageIDs []string
 		return
 	}
 
-	// Track prompt count for auto-title generation
-	c.promptCount++
-	isFirstPrompt := c.promptCount == 1
 	sessionID := sessCtx.GetSessionID()
+
+	// Check if session needs auto-title generation (before any state changes)
+	// Only generate title if metadata.Name is empty
+	shouldGenerateTitle := c.sessionNeedsTitle(sessionID)
 
 	// Persist user prompt immediately
 	c.persistUserPromptForSession(sessCtx, message)
@@ -535,8 +542,8 @@ func (c *WSClient) handlePromptWithImagesAndID(message string, imageIDs []string
 					"session_id": ctx.GetSessionID(),
 				})
 
-				// Auto-generate title after first successful prompt
-				if isFirstPrompt && sessionID != "" {
+				// Auto-generate title if session has no title yet
+				if shouldGenerateTitle && sessionID != "" {
 					c.generateAndSetTitle(message, sessionID)
 				}
 			}
@@ -730,6 +737,19 @@ func (c *WSClient) handleSyncSession(sessionID string, afterSeq int64) {
 			"total_events", meta.EventCount,
 			"is_running", isRunning)
 	}
+}
+
+// handleKeepalive responds to application-level keepalive messages.
+// This allows the frontend to detect time gaps (e.g., phone sleep) by comparing
+// the client timestamp with the server timestamp.
+func (c *WSClient) handleKeepalive(clientTime int64) {
+	serverTime := time.Now().UnixMilli()
+
+	// Send keepalive acknowledgment with both timestamps
+	c.sendMessage(WSMsgTypeKeepaliveAck, map[string]interface{}{
+		"client_time": clientTime,
+		"server_time": serverTime,
+	})
 }
 
 func (c *WSClient) handleSwitchSession(sessionID string) {
@@ -1146,6 +1166,19 @@ func (c *WSClient) persistPermission(title, selectedOption, outcome string) {
 	if err := sessCtx.recorder.RecordPermission(title, selectedOption, outcome); err != nil && c.server.logger != nil {
 		c.server.logger.Error("Failed to persist permission", "error", err)
 	}
+}
+
+// sessionNeedsTitle returns true if the session has no title yet and needs auto-title generation.
+// Returns false if the session already has a title (either auto-generated or user-set).
+func (c *WSClient) sessionNeedsTitle(sessionID string) bool {
+	if c.store == nil || sessionID == "" {
+		return false
+	}
+	meta, err := c.store.GetMetadata(sessionID)
+	if err != nil {
+		return false
+	}
+	return meta.Name == ""
 }
 
 // generateAndSetTitle uses the auxiliary session to generate a title for the conversation.

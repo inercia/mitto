@@ -37,9 +37,6 @@ type SessionWSClient struct {
 	// Permission handling
 	permissionChan chan acp.RequestPermissionResponse
 	permissionMu   sync.Mutex
-
-	// Prompt tracking for auto-title
-	promptCount int
 }
 
 // handleSessionWS handles WebSocket connections for a specific session.
@@ -277,6 +274,16 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			return
 		}
 		c.handleSync(data.AfterSeq)
+
+	case WSMsgTypeKeepalive:
+		var data struct {
+			ClientTime int64 `json:"client_time"` // Client's timestamp in milliseconds
+		}
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
+		c.handleKeepalive(data.ClientTime)
 	}
 }
 
@@ -291,8 +298,9 @@ func (c *SessionWSClient) handlePromptWithID(message string, promptID string) {
 		return
 	}
 
-	c.promptCount++
-	isFirstPrompt := c.promptCount == 1
+	// Check if session needs auto-title generation (before any state changes)
+	// Only generate title if metadata.Name is empty
+	shouldGenerateTitle := c.sessionNeedsTitle()
 
 	if err := c.bgSession.Prompt(message); err != nil {
 		c.sendError("Failed to send prompt: " + err.Error())
@@ -308,8 +316,8 @@ func (c *SessionWSClient) handlePromptWithID(message string, promptID string) {
 		})
 	}
 
-	// Auto-generate title after first prompt
-	if isFirstPrompt {
+	// Auto-generate title if session has no title yet
+	if shouldGenerateTitle {
 		go c.generateAndSetTitle(message)
 	}
 }
@@ -340,16 +348,44 @@ func (c *SessionWSClient) handleSync(afterSeq int64) {
 
 	meta, _ := c.store.GetMetadata(c.sessionID)
 	isRunning := c.bgSession != nil && !c.bgSession.IsClosed()
+	isPrompting := isRunning && c.bgSession.IsPrompting()
 
 	c.sendMessage(WSMsgTypeSessionSync, map[string]interface{}{
-		"session_id":  c.sessionID,
-		"after_seq":   afterSeq,
-		"events":      events,
-		"event_count": meta.EventCount,
-		"status":      meta.Status,
-		"name":        meta.Name,
-		"is_running":  isRunning,
+		"session_id":   c.sessionID,
+		"after_seq":    afterSeq,
+		"events":       events,
+		"event_count":  meta.EventCount,
+		"status":       meta.Status,
+		"name":         meta.Name,
+		"is_running":   isRunning,
+		"is_prompting": isPrompting,
 	})
+}
+
+// handleKeepalive responds to application-level keepalive messages.
+// This allows the frontend to detect time gaps (e.g., phone sleep) by comparing
+// the client timestamp with the server timestamp.
+func (c *SessionWSClient) handleKeepalive(clientTime int64) {
+	serverTime := time.Now().UnixMilli()
+
+	// Send keepalive acknowledgment with both timestamps
+	c.sendMessage(WSMsgTypeKeepaliveAck, map[string]interface{}{
+		"client_time": clientTime,
+		"server_time": serverTime,
+	})
+}
+
+// sessionNeedsTitle returns true if the session has no title yet and needs auto-title generation.
+// Returns false if the session already has a title (either auto-generated or user-set).
+func (c *SessionWSClient) sessionNeedsTitle() bool {
+	if c.store == nil || c.sessionID == "" {
+		return false
+	}
+	meta, err := c.store.GetMetadata(c.sessionID)
+	if err != nil {
+		return false
+	}
+	return meta.Name == ""
 }
 
 func (c *SessionWSClient) generateAndSetTitle(initialMessage string) {
@@ -510,9 +546,11 @@ func (c *SessionWSClient) OnPermission(ctx context.Context, params acp.RequestPe
 }
 
 // OnPromptComplete is called when a prompt response is complete.
-func (c *SessionWSClient) OnPromptComplete() {
+// eventCount is the current total event count for the session (for sync tracking).
+func (c *SessionWSClient) OnPromptComplete(eventCount int) {
 	c.sendMessage(WSMsgTypePromptComplete, map[string]interface{}{
-		"session_id": c.sessionID,
+		"session_id":  c.sessionID,
+		"event_count": eventCount,
 	})
 }
 

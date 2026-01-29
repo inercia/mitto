@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -31,6 +32,16 @@ const (
 
 	// sessionCleanupInterval is how often to clean up expired sessions
 	sessionCleanupInterval = 5 * time.Minute
+)
+
+// Credential validation errors
+var (
+	// ErrNoCredentials is returned when no credentials are configured.
+	ErrNoCredentials = errors.New("no credentials configured for external access")
+	// ErrEmptyUsername is returned when the username is empty.
+	ErrEmptyUsername = errors.New("username cannot be empty for external access")
+	// ErrEmptyPassword is returned when the password is empty.
+	ErrEmptyPassword = errors.New("password cannot be empty for external access")
 )
 
 // AuthSession represents an authenticated user session.
@@ -174,9 +185,39 @@ func (a *AuthManager) cleanupExpiredSessions() {
 	}
 }
 
-// IsEnabled returns true if authentication is enabled.
+// IsEnabled returns true if authentication is enabled and credentials are configured.
+// Returns false if username or password is empty, as external access must NEVER
+// proceed with empty credentials.
 func (a *AuthManager) IsEnabled() bool {
-	return a.config != nil && a.config.Simple != nil
+	return a.config != nil &&
+		a.config.Simple != nil &&
+		a.config.Simple.Username != "" &&
+		a.config.Simple.Password != ""
+}
+
+// HasValidCredentials returns true if both username and password are non-empty.
+// This is used to validate that credentials are properly configured before
+// enabling external access.
+func (a *AuthManager) HasValidCredentials() bool {
+	if a.config == nil || a.config.Simple == nil {
+		return false
+	}
+	return a.config.Simple.Username != "" && a.config.Simple.Password != ""
+}
+
+// CredentialError returns an error describing why credentials are invalid,
+// or nil if credentials are valid.
+func (a *AuthManager) CredentialError() error {
+	if a.config == nil || a.config.Simple == nil {
+		return ErrNoCredentials
+	}
+	if a.config.Simple.Username == "" {
+		return ErrEmptyUsername
+	}
+	if a.config.Simple.Password == "" {
+		return ErrEmptyPassword
+	}
+	return nil
 }
 
 // IsIPAllowed checks if the given IP address is in the allow list.

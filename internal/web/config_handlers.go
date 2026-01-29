@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -182,7 +183,10 @@ func (s *Server) checkWorkspaceConflicts(req *ConfigSaveRequest) *configValidati
 }
 
 // buildNewSettings builds the new settings from a ConfigSaveRequest.
-func (s *Server) buildNewSettings(req *ConfigSaveRequest) *configPkg.Settings {
+// It also handles secure storage of the external access password on supported platforms.
+// On macOS, the password is stored in the Keychain and omitted from settings.json.
+// On other platforms, the password is stored in settings.json.
+func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, error) {
 	// Build new ACP servers (including per-server prompts)
 	newACPServers := make([]configPkg.ACPServerSettings, len(req.ACPServers))
 	for i, srv := range req.ACPServers {
@@ -209,14 +213,30 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) *configPkg.Settings {
 
 	// Update auth settings
 	if req.Web.Auth != nil && req.Web.Auth.Simple != nil {
+		password := req.Web.Auth.Simple.Password
+
+		// On platforms with secure storage, store password in Keychain
+		// and omit it from settings.json
+		if secrets.IsSupported() {
+			if err := secrets.SetExternalAccessPassword(password); err != nil {
+				return nil, fmt.Errorf("failed to store password in secure storage: %w", err)
+			}
+			// Omit password from settings.json when stored in Keychain
+			password = ""
+		}
+
 		newWebConfig.Auth = &configPkg.WebAuth{
 			Simple: &configPkg.SimpleAuth{
 				Username: req.Web.Auth.Simple.Username,
-				Password: req.Web.Auth.Simple.Password,
+				Password: password, // Empty when stored in Keychain
 			},
 		}
 	} else {
 		newWebConfig.Auth = nil
+		// Clean up any stored password when auth is disabled
+		if secrets.IsSupported() {
+			_ = secrets.DeleteExternalAccessPassword() // Ignore errors
+		}
 	}
 
 	// Update prompts
@@ -244,10 +264,12 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) *configPkg.Settings {
 		ACPServers: newACPServers,
 		Web:        newWebConfig,
 		UI:         newUIConfig,
-	}
+	}, nil
 }
 
 // applyConfigChanges applies the new configuration to the running server.
+// Note: The settings parameter may have an empty password when Keychain is used,
+// so we use the original password from req for runtime auth configuration.
 func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.Settings) {
 	// Build ACP server list for internal config (including per-server prompts)
 	newACPServers := make([]configPkg.ACPServer, len(settings.ACPServers))
@@ -261,10 +283,22 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		s.config.MittoConfig.Web.Auth.Simple != nil
 	newAuthEnabled := settings.Web.Auth != nil && settings.Web.Auth.Simple != nil
 
+	// Build runtime web config with the actual password (from request, not settings)
+	// This is needed because settings may have an empty password when Keychain is used
+	runtimeWebConfig := settings.Web
+	if newAuthEnabled && req.Web.Auth != nil && req.Web.Auth.Simple != nil {
+		runtimeWebConfig.Auth = &configPkg.WebAuth{
+			Simple: &configPkg.SimpleAuth{
+				Username: req.Web.Auth.Simple.Username,
+				Password: req.Web.Auth.Simple.Password, // Use original password for runtime
+			},
+		}
+	}
+
 	// Update ACP servers, web config, and UI config
 	if s.config.MittoConfig != nil {
 		s.config.MittoConfig.ACPServers = newACPServers
-		s.config.MittoConfig.Web = settings.Web
+		s.config.MittoConfig.Web = runtimeWebConfig
 		s.config.MittoConfig.UI = settings.UI
 	}
 
@@ -296,8 +330,8 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	}
 	s.SetExternalPort(newExternalPort)
 
-	// Handle auth manager and external listener changes
-	s.applyAuthChanges(oldAuthEnabled, newAuthEnabled, settings.Web.Auth)
+	// Handle auth manager and external listener changes (use runtimeWebConfig with actual password)
+	s.applyAuthChanges(oldAuthEnabled, newAuthEnabled, runtimeWebConfig.Auth)
 
 	if s.logger != nil {
 		s.logger.Info("Configuration saved",
@@ -309,9 +343,19 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 }
 
 // applyAuthChanges handles dynamic changes to authentication and external access.
+// It validates that credentials are non-empty before enabling external access.
 func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthConfig *configPkg.WebAuth) {
 	// Case 1: Auth was disabled, now enabled -> create auth manager and start external listener
 	if !oldAuthEnabled && newAuthEnabled {
+		// Validate credentials are non-empty before enabling external access
+		if newAuthConfig == nil || newAuthConfig.Simple == nil ||
+			newAuthConfig.Simple.Username == "" || newAuthConfig.Simple.Password == "" {
+			if s.logger != nil {
+				s.logger.Error("Cannot enable external access: credentials are incomplete")
+			}
+			return
+		}
+
 		// Create new auth manager if it doesn't exist
 		if s.authManager == nil {
 			s.authManager = NewAuthManager(newAuthConfig)
@@ -365,6 +409,19 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 
 	// Case 3: Auth was enabled and still enabled -> update credentials and ensure listener is running
 	if oldAuthEnabled && newAuthEnabled {
+		// Validate credentials are non-empty before updating
+		if newAuthConfig == nil || newAuthConfig.Simple == nil ||
+			newAuthConfig.Simple.Username == "" || newAuthConfig.Simple.Password == "" {
+			if s.logger != nil {
+				s.logger.Error("Cannot update external access: credentials are incomplete, stopping listener")
+			}
+			s.StopExternalListener()
+			if s.authManager != nil {
+				s.authManager.UpdateConfig(nil)
+			}
+			return
+		}
+
 		if s.authManager != nil {
 			s.authManager.UpdateConfig(newAuthConfig)
 			if s.logger != nil {

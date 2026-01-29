@@ -296,10 +296,353 @@ func (m *mockSessionObserver) OnPermission(ctx context.Context, params acp.Reque
 	return acp.RequestPermissionResponse{}, nil
 }
 
-func (m *mockSessionObserver) OnPromptComplete() {
+func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 	m.completed = true
 }
 
 func (m *mockSessionObserver) OnError(message string) {
 	m.errors = append(m.errors, message)
+}
+
+// Tests for NeedsTitle
+
+func TestBackgroundSession_NeedsTitle_NoStore(t *testing.T) {
+	bs := &BackgroundSession{
+		persistedID: "test-session",
+		store:       nil, // No store
+	}
+
+	if bs.NeedsTitle() {
+		t.Error("NeedsTitle should return false when store is nil")
+	}
+}
+
+func TestBackgroundSession_NeedsTitle_NoPersistedID(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	bs := &BackgroundSession{
+		persistedID: "", // Empty persisted ID
+		store:       store,
+	}
+
+	if bs.NeedsTitle() {
+		t.Error("NeedsTitle should return false when persistedID is empty")
+	}
+}
+
+func TestBackgroundSession_NeedsTitle_SessionNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	bs := &BackgroundSession{
+		persistedID: "non-existent-session",
+		store:       store,
+	}
+
+	// Session doesn't exist in store, GetMetadata will fail
+	if bs.NeedsTitle() {
+		t.Error("NeedsTitle should return false when session is not found in store")
+	}
+}
+
+func TestBackgroundSession_NeedsTitle_EmptyName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with empty name
+	meta := session.Metadata{
+		SessionID:  "test-session-empty-name",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "", // Empty name - needs title
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: "test-session-empty-name",
+		store:       store,
+	}
+
+	if !bs.NeedsTitle() {
+		t.Error("NeedsTitle should return true when session name is empty")
+	}
+}
+
+func TestBackgroundSession_NeedsTitle_HasName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with a name
+	meta := session.Metadata{
+		SessionID:  "test-session-with-name",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "My Conversation", // Has a name - doesn't need title
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: "test-session-with-name",
+		store:       store,
+	}
+
+	if bs.NeedsTitle() {
+		t.Error("NeedsTitle should return false when session already has a name")
+	}
+}
+
+func TestBackgroundSession_NeedsTitle_AfterRename(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with empty name
+	meta := session.Metadata{
+		SessionID:  "test-session-rename",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "", // Empty name initially
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: "test-session-rename",
+		store:       store,
+	}
+
+	// Initially needs title
+	if !bs.NeedsTitle() {
+		t.Error("NeedsTitle should return true initially when name is empty")
+	}
+
+	// Simulate auto-rename or user rename
+	err = store.UpdateMetadata("test-session-rename", func(m *session.Metadata) {
+		m.Name = "Auto-generated Title"
+	})
+	if err != nil {
+		t.Fatalf("UpdateMetadata failed: %v", err)
+	}
+
+	// After rename, should not need title
+	if bs.NeedsTitle() {
+		t.Error("NeedsTitle should return false after name is set")
+	}
+}
+
+// Tests for WSClient.sessionNeedsTitle
+
+func TestWSClient_SessionNeedsTitle_NoStore(t *testing.T) {
+	client := &WSClient{
+		store: nil, // No store
+	}
+
+	if client.sessionNeedsTitle("test-session") {
+		t.Error("sessionNeedsTitle should return false when store is nil")
+	}
+}
+
+func TestWSClient_SessionNeedsTitle_EmptySessionID(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	client := &WSClient{
+		store: store,
+	}
+
+	if client.sessionNeedsTitle("") {
+		t.Error("sessionNeedsTitle should return false when sessionID is empty")
+	}
+}
+
+func TestWSClient_SessionNeedsTitle_SessionNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	client := &WSClient{
+		store: store,
+	}
+
+	// Session doesn't exist in store
+	if client.sessionNeedsTitle("non-existent-session") {
+		t.Error("sessionNeedsTitle should return false when session is not found")
+	}
+}
+
+func TestWSClient_SessionNeedsTitle_EmptyName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with empty name
+	meta := session.Metadata{
+		SessionID:  "test-ws-empty-name",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "", // Empty name - needs title
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	client := &WSClient{
+		store: store,
+	}
+
+	if !client.sessionNeedsTitle("test-ws-empty-name") {
+		t.Error("sessionNeedsTitle should return true when session name is empty")
+	}
+}
+
+func TestWSClient_SessionNeedsTitle_HasName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with a name
+	meta := session.Metadata{
+		SessionID:  "test-ws-with-name",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "User's Conversation", // Has a name
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	client := &WSClient{
+		store: store,
+	}
+
+	if client.sessionNeedsTitle("test-ws-with-name") {
+		t.Error("sessionNeedsTitle should return false when session already has a name")
+	}
+}
+
+// Tests for SessionWSClient.sessionNeedsTitle
+
+func TestSessionWSClient_SessionNeedsTitle_NoStore(t *testing.T) {
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		store:     nil, // No store
+	}
+
+	if client.sessionNeedsTitle() {
+		t.Error("sessionNeedsTitle should return false when store is nil")
+	}
+}
+
+func TestSessionWSClient_SessionNeedsTitle_EmptySessionID(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	client := &SessionWSClient{
+		sessionID: "", // Empty session ID
+		store:     store,
+	}
+
+	if client.sessionNeedsTitle() {
+		t.Error("sessionNeedsTitle should return false when sessionID is empty")
+	}
+}
+
+func TestSessionWSClient_SessionNeedsTitle_EmptyName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with empty name
+	meta := session.Metadata{
+		SessionID:  "test-session-ws-empty",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "", // Empty name - needs title
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	client := &SessionWSClient{
+		sessionID: "test-session-ws-empty",
+		store:     store,
+	}
+
+	if !client.sessionNeedsTitle() {
+		t.Error("sessionNeedsTitle should return true when session name is empty")
+	}
+}
+
+func TestSessionWSClient_SessionNeedsTitle_HasName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with a name
+	meta := session.Metadata{
+		SessionID:  "test-session-ws-named",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "Named Session", // Has a name
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	client := &SessionWSClient{
+		sessionID: "test-session-ws-named",
+		store:     store,
+	}
+
+	if client.sessionNeedsTitle() {
+		t.Error("sessionNeedsTitle should return false when session already has a name")
+	}
 }

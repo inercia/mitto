@@ -6,6 +6,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/fileutil"
+	"github.com/inercia/mitto/internal/secrets"
 
 	defaultConfig "github.com/inercia/mitto/config"
 )
@@ -118,6 +119,11 @@ func ConfigToSettings(cfg *Config) *Settings {
 // LoadSettings loads settings from the Mitto data directory.
 // If settings.json doesn't exist, it creates it from the embedded default config.
 // This function also ensures the Mitto directory exists.
+//
+// On platforms with secure credential storage (macOS Keychain):
+//   - If a password exists in settings.json, it is migrated to the keychain
+//     and removed from settings.json for security
+//   - If no password is in settings.json, it is loaded from the keychain
 func LoadSettings() (*Config, error) {
 	// Ensure Mitto directory exists
 	if err := appdir.EnsureDir(); err != nil {
@@ -150,7 +156,50 @@ func LoadSettings() (*Config, error) {
 		return nil, fmt.Errorf("no ACP servers configured in settings")
 	}
 
+	// Handle external access password with secure storage
+	if cfg.Web.Auth != nil && cfg.Web.Auth.Simple != nil {
+		if secrets.IsSupported() {
+			if cfg.Web.Auth.Simple.Password != "" {
+				// Password found in settings.json - migrate it to keychain
+				if err := migratePasswordToKeychain(&settings, cfg); err != nil {
+					// Log warning but don't fail - password still works from settings
+					// The migration will be attempted again on next load
+					_ = err // Ignore migration error, password is still usable
+				}
+			} else {
+				// No password in settings.json - try to load from keychain
+				password, err := secrets.GetExternalAccessPassword()
+				if err == nil && password != "" {
+					cfg.Web.Auth.Simple.Password = password
+				}
+				// If password not found in Keychain, leave it empty
+				// Validation should catch this case when external access is attempted
+			}
+		}
+	}
+
 	return cfg, nil
+}
+
+// migratePasswordToKeychain moves the password from settings.json to the system keychain.
+// This improves security by not storing passwords in plain text files.
+func migratePasswordToKeychain(settings *Settings, cfg *Config) error {
+	password := cfg.Web.Auth.Simple.Password
+
+	// Save password to keychain
+	if err := secrets.SetExternalAccessPassword(password); err != nil {
+		return fmt.Errorf("failed to save password to keychain: %w", err)
+	}
+
+	// Clear password from settings and save
+	settings.Web.Auth.Simple.Password = ""
+	if err := SaveSettings(settings); err != nil {
+		// Password is in keychain but settings.json still has the old password
+		// This is not ideal but not critical - next load will try again
+		return fmt.Errorf("failed to update settings after keychain migration: %w", err)
+	}
+
+	return nil
 }
 
 // createDefaultSettings parses the embedded YAML config and saves it as JSON.

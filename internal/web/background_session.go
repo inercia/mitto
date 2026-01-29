@@ -202,6 +202,15 @@ func (bs *BackgroundSession) GetPromptCount() int {
 	return bs.promptCount
 }
 
+// GetEventCount returns the current event count for the session.
+// Returns 0 if the recorder is not available or there's an error.
+func (bs *BackgroundSession) GetEventCount() int {
+	if bs.recorder == nil {
+		return 0
+	}
+	return bs.recorder.EventCount()
+}
+
 // CreatedAt returns when the session was created.
 func (bs *BackgroundSession) CreatedAt() time.Time {
 	if bs.recorder != nil {
@@ -464,6 +473,19 @@ func (e *sessionError) Error() string {
 	return e.msg
 }
 
+// NeedsTitle returns true if the session has no title yet and needs auto-title generation.
+// Returns false if the session already has a title (either auto-generated or user-set).
+func (bs *BackgroundSession) NeedsTitle() bool {
+	if bs.store == nil || bs.persistedID == "" {
+		return false
+	}
+	meta, err := bs.store.GetMetadata(bs.persistedID)
+	if err != nil {
+		return false
+	}
+	return meta.Name == ""
+}
+
 // Prompt sends a message to the agent. This runs asynchronously.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) Prompt(message string) error {
@@ -488,7 +510,6 @@ func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string)
 	}
 	bs.isPrompting = true
 	bs.promptCount++
-	isFirstPrompt := bs.promptCount == 1
 
 	// Check if we need to inject conversation history (first prompt of resumed session)
 	shouldInjectHistory := bs.isResumed && !bs.historyInjected
@@ -496,6 +517,10 @@ func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string)
 		bs.historyInjected = true
 	}
 	bs.promptMu.Unlock()
+
+	// Check if session needs auto-title generation (before any state changes)
+	// Only generate title if metadata.Name is empty
+	shouldGenerateTitle := bs.NeedsTitle()
 
 	// Load images and build content blocks
 	var imageRefs []session.ImageRef
@@ -582,13 +607,14 @@ func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string)
 		bs.flushAndPersistMessages()
 
 		// Notify all observers
+		eventCount := bs.GetEventCount()
 		if err != nil {
 			bs.notifyObservers(func(o SessionObserver) {
 				o.OnError("Prompt failed: " + err.Error())
 			})
 		} else {
 			bs.notifyObservers(func(o SessionObserver) {
-				o.OnPromptComplete()
+				o.OnPromptComplete(eventCount)
 			})
 		}
 
@@ -598,12 +624,14 @@ func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string)
 			if err != nil {
 				client.sendError("Prompt failed: " + err.Error())
 			} else {
+				// Include event_count so frontend can update lastSeq for sync
 				client.sendMessage(WSMsgTypePromptComplete, map[string]interface{}{
-					"session_id": bs.persistedID,
+					"session_id":  bs.persistedID,
+					"event_count": bs.GetEventCount(),
 				})
 
-				// Auto-generate title after first prompt
-				if isFirstPrompt && bs.persistedID != "" {
+				// Auto-generate title if session has no title yet
+				if shouldGenerateTitle && bs.persistedID != "" {
 					client.generateAndSetTitle(message, bs.persistedID)
 				}
 			}
