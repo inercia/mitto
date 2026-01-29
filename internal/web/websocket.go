@@ -107,31 +107,31 @@ const (
 	WSMsgTypeSwitchSession    = "switch_session"
 	WSMsgTypePermissionAnswer = "permission_answer"
 	WSMsgTypeRenameSession    = "rename_session"
-	WSMsgTypeSyncSession      = "sync_session"  // Request incremental sync from a sequence number
-	WSMsgTypeKeepalive        = "keepalive"     // Application-level keepalive with timestamp
+	WSMsgTypeSyncSession      = "sync_session" // Request incremental sync from a sequence number
+	WSMsgTypeKeepalive        = "keepalive"    // Application-level keepalive with timestamp
 )
 
 // Message types (backend -> frontend)
 const (
-	WSMsgTypeConnected        = "connected"
-	WSMsgTypeSessionCreated   = "session_created"
-	WSMsgTypeSessionSwitched  = "session_switched"
-	WSMsgTypeSessionRenamed   = "session_renamed"
-	WSMsgTypeSessionDeleted   = "session_deleted"
-	WSMsgTypeAgentMessage     = "agent_message"
-	WSMsgTypeAgentThought     = "agent_thought"
-	WSMsgTypeToolCall         = "tool_call"
-	WSMsgTypeToolUpdate       = "tool_update"
-	WSMsgTypePlan             = "plan"
-	WSMsgTypePermission       = "permission"
-	WSMsgTypeError            = "error"
-	WSMsgTypeSessionLoaded    = "session_loaded"
-	WSMsgTypePromptReceived   = "prompt_received"  // Ack that prompt was received and persisted
-	WSMsgTypePromptComplete   = "prompt_complete"
-	WSMsgTypeFileWrite        = "file_write"
-	WSMsgTypeFileRead         = "file_read"
-	WSMsgTypeSessionSync      = "session_sync"     // Incremental sync response with events since last seen
-	WSMsgTypeKeepaliveAck     = "keepalive_ack"    // Response to keepalive with server timestamp
+	WSMsgTypeConnected       = "connected"
+	WSMsgTypeSessionCreated  = "session_created"
+	WSMsgTypeSessionSwitched = "session_switched"
+	WSMsgTypeSessionRenamed  = "session_renamed"
+	WSMsgTypeSessionDeleted  = "session_deleted"
+	WSMsgTypeAgentMessage    = "agent_message"
+	WSMsgTypeAgentThought    = "agent_thought"
+	WSMsgTypeToolCall        = "tool_call"
+	WSMsgTypeToolUpdate      = "tool_update"
+	WSMsgTypePlan            = "plan"
+	WSMsgTypePermission      = "permission"
+	WSMsgTypeError           = "error"
+	WSMsgTypeSessionLoaded   = "session_loaded"
+	WSMsgTypePromptReceived  = "prompt_received" // Ack that prompt was received and persisted
+	WSMsgTypePromptComplete  = "prompt_complete"
+	WSMsgTypeFileWrite       = "file_write"
+	WSMsgTypeFileRead        = "file_read"
+	WSMsgTypeSessionSync     = "session_sync"  // Incremental sync response with events since last seen
+	WSMsgTypeKeepaliveAck    = "keepalive_ack" // Response to keepalive with server timestamp
 )
 
 // WSClient represents a connected WebSocket client.

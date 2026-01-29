@@ -234,6 +234,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 // For events, supports query parameters:
 //   - limit: maximum number of events to return (returns last N events)
 //   - before: only return events with seq < before (for pagination)
+//   - order: "asc" (default, oldest first) or "desc" (newest first)
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessionID string, isEventsRequest bool) {
 	store, err := session.DefaultStore()
 	if err != nil {
@@ -250,6 +251,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessio
 		query := r.URL.Query()
 		var limit int
 		var beforeSeq int64
+		reverseOrder := query.Get("order") == "desc"
 
 		if limitStr := query.Get("limit"); limitStr != "" {
 			if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
@@ -264,11 +266,22 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessio
 
 		var events []session.Event
 		if limit > 0 {
-			// Use paginated read
-			events, err = store.ReadEventsLast(sessionID, limit, beforeSeq)
+			if reverseOrder {
+				// Use reverse order read (newest first)
+				events, err = store.ReadEventsLastReverse(sessionID, limit, beforeSeq)
+			} else {
+				// Use paginated read (oldest first)
+				events, err = store.ReadEventsLast(sessionID, limit, beforeSeq)
+			}
 		} else {
 			// Read all events (backward compatible)
 			events, err = store.ReadEvents(sessionID)
+			// If reverse order requested, reverse the result
+			if reverseOrder && err == nil {
+				for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+					events[i], events[j] = events[j], events[i]
+				}
+			}
 		}
 
 		if err != nil {
