@@ -4,3 +4,25 @@
 export { Message } from './Message.js';
 export { ChatInput } from './ChatInput.js';
 
+// Icon components
+export {
+    SpinnerIcon,
+    CloseIcon,
+    SettingsIcon,
+    PlusIcon,
+    ChevronUpIcon,
+    ChevronDownIcon,
+    MenuIcon,
+    TrashIcon,
+    EditIcon,
+    CheckIcon,
+    ArrowDownIcon,
+    SaveIcon,
+    MagicWandIcon,
+    ImageIcon,
+    LightningIcon,
+    StopIcon,
+    ErrorIcon,
+    ServerIcon
+} from './Icons.js';
+

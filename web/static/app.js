@@ -45,11 +45,26 @@ import {
 } from './utils/index.js';
 
 // Import hooks
-import { useWebSocket } from './hooks/useWebSocket.js';
+import { useWebSocket, useSwipeNavigation } from './hooks/index.js';
 
 // Import components
 import { Message } from './components/Message.js';
 import { ChatInput } from './components/ChatInput.js';
+import {
+    SpinnerIcon,
+    CloseIcon,
+    SettingsIcon,
+    PlusIcon,
+    ChevronUpIcon,
+    MenuIcon,
+    TrashIcon,
+    EditIcon,
+    ArrowDownIcon,
+    SaveIcon
+} from './components/Icons.js';
+
+// Import constants
+import { KEYBOARD_SHORTCUTS } from './constants.js';
 
 // =============================================================================
 // Global Link Click Handler
@@ -336,26 +351,6 @@ function CleanInactiveDialog({ isOpen, inactiveCount, onConfirm, onCancel }) {
 // =============================================================================
 // Keyboard Shortcuts Dialog
 // =============================================================================
-
-// Define keyboard shortcuts in a central location for easy maintenance
-// Note: Some shortcuts only work in the native macOS app (handled by native menu)
-const KEYBOARD_SHORTCUTS = [
-    // Global hotkey (works even when app is not focused - macOS app only)
-    { keys: '⌘⌃M', description: 'Show/hide window', macOnly: true, section: 'Global' },
-    // File menu shortcuts (native menu in macOS app, not available in browser)
-    { keys: '⌘N', description: 'New conversation', macOnly: true, section: 'Conversations' },
-    { keys: '⌘W', description: 'Close conversation', macOnly: true, section: 'Conversations' },
-    // Web shortcuts (work in both macOS app and browser)
-    { keys: '⌘1-9', description: 'Switch to conversation 1-9', section: 'Conversations' },
-    { keys: '⌘⌃↑', description: 'Previous conversation', macOnly: true, section: 'Conversations' },
-    { keys: '⌘⌃↓', description: 'Next conversation', macOnly: true, section: 'Conversations' },
-    { keys: '⌘,', description: 'Settings', section: 'Navigation' },
-    // View menu shortcuts (native menu in macOS app, not available in browser)
-    { keys: '⌘L', description: 'Focus input', macOnly: true, section: 'Navigation' },
-    { keys: '⌘⇧S', description: 'Toggle sidebar', macOnly: true, section: 'Navigation' },
-    // Input shortcuts (work in both macOS app and browser)
-    { keys: '⌃P', description: 'Improve prompt (magic wand)', section: 'Input' },
-];
 
 function KeyboardShortcutsDialog({ isOpen, onClose }) {
     if (!isOpen) return null;
@@ -1161,7 +1156,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                 ` : html`
                                     <div class="space-y-2">
                                         ${workspaces.map(ws => html`
-                                            <div key=${ws.working_dir} class="flex items-center gap-3 p-3 bg-slate-800/30 rounded-lg hover:bg-slate-800/50 transition-colors group">
+                                            <div key=${ws.working_dir} class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 hover:bg-slate-700/30 transition-colors group">
                                                 <${WorkspaceBadge} path=${ws.working_dir} customColor=${ws.color} size="sm" />
                                                 <div class="flex-1 min-w-0">
                                                     <div class="font-medium text-sm">${getBasename(ws.working_dir)}</div>
@@ -1259,7 +1254,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                 ` : html`
                                     <div class="space-y-2">
                                         ${acpServers.map(srv => html`
-                                            <div key=${srv.name} class="p-3 bg-slate-800/30 rounded-lg hover:bg-slate-800/50 transition-colors group">
+                                            <div key=${srv.name} class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 hover:bg-slate-700/30 transition-colors group">
                                                 ${editingServer === srv.name ? html`
                                                     <${ServerEditForm}
                                                         server=${srv}
@@ -1272,8 +1267,9 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                                             <div class="font-medium text-sm flex items-center gap-2">
                                                                 ${srv.name}
                                                                 ${srv.prompts?.length > 0 && html`
-                                                                    <span class="text-xs text-purple-400" title="${srv.prompts.length} custom prompt(s)">
-                                                                        📝 ${srv.prompts.length}
+                                                                    <span class="flex items-center gap-1 text-xs text-blue-400" title="${srv.prompts.length} custom prompt(s)">
+                                                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                                                        ${srv.prompts.length}
                                                                     </span>
                                                                 `}
                                                             </div>
@@ -1381,7 +1377,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                             No prompts configured. Click + to add one.
                                         </div>
                                     ` : prompts.map((prompt, index) => html`
-                                        <div key=${index} class="p-3 bg-slate-800/30 rounded-lg border border-slate-700">
+                                        <div key=${index} class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50">
                                             ${editingPrompt === index ? html`
                                                 <${PromptEditForm}
                                                     prompt=${prompt}
@@ -1439,7 +1435,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                 <div class="space-y-3">
                                     <h4 class="text-sm font-medium text-gray-300">External Access</h4>
 
-                                    <label class="flex items-center gap-3 p-4 bg-slate-800/30 rounded-lg cursor-pointer hover:bg-slate-800/50 transition-colors">
+                                    <label class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors">
                                         <input
                                             type="checkbox"
                                             checked=${authEnabled}
@@ -1453,7 +1449,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                     </label>
 
                                     ${authEnabled && html`
-                                        <div class="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-3">
+                                        <div class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3">
                                             <!-- Username and Password in same row -->
                                             <div class="flex items-center gap-4">
                                                 <div class="flex items-center gap-2">
@@ -1507,7 +1503,7 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                         <h4 class="text-sm font-medium text-gray-300">Lifecycle Hooks</h4>
                                         <p class="text-xs text-gray-500">Commands to run when the server starts or stops. Useful for setting up tunnels (<a href="https://github.com/inercia/mitto/blob/main/docs/config-web.md#using-ngrok" onClick=${(e) => { e.preventDefault(); openExternalURL('https://github.com/inercia/mitto/blob/main/docs/config-web.md#using-ngrok'); }} class="text-blue-400 hover:underline cursor-pointer">ngrok</a>, <a href="https://github.com/inercia/mitto/blob/main/docs/config-web.md#using-tailscale-funnel" onClick=${(e) => { e.preventDefault(); openExternalURL('https://github.com/inercia/mitto/blob/main/docs/config-web.md#using-tailscale-funnel'); }} class="text-blue-400 hover:underline cursor-pointer">Tailscale</a>, etc.). Use \${PORT} as a placeholder for the server port.</p>
 
-                                        <div class="p-4 bg-slate-800/30 rounded-lg space-y-3">
+                                        <div class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3">
                                             <div class="flex items-center gap-3">
                                                 <label class="text-sm text-gray-400 w-32 flex-shrink-0">Post Up Command</label>
                                                 <input
@@ -1536,14 +1532,12 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
 
                         <!-- UI Tab -->
                         ${activeTab === 'ui' && html`
-                            <div class="space-y-4">
-                                <p class="text-gray-400 text-sm">Configure UI preferences.</p>
-
+                            <div class="space-y-3">
                                 <!-- Confirmations Section -->
-                                <div class="space-y-3">
+                                <div class="space-y-2">
                                     <h4 class="text-sm font-medium text-gray-300">Confirmations</h4>
 
-                                    <label class="flex items-center gap-3 p-4 bg-slate-800/30 rounded-lg cursor-pointer hover:bg-slate-800/50 transition-colors">
+                                    <label class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors">
                                         <input
                                             type="checkbox"
                                             checked=${confirmDeleteSession}
@@ -1560,10 +1554,10 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                 <!-- macOS-specific sections -->
                                 ${isMacApp && html`
                                     <!-- Window Section -->
-                                    <div class="space-y-3">
+                                    <div class="space-y-2">
                                         <h4 class="text-sm font-medium text-gray-300">Window</h4>
 
-                                        <label class="flex items-center gap-3 p-4 bg-slate-800/30 rounded-lg cursor-pointer hover:bg-slate-800/50 transition-colors">
+                                        <label class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors">
                                             <input
                                                 type="checkbox"
                                                 checked=${showInAllSpaces}
@@ -1578,24 +1572,21 @@ function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false }) {
                                     </div>
 
                                     <!-- Notifications Section -->
-                                    <div class="space-y-3">
+                                    <div class="space-y-2">
                                         <h4 class="text-sm font-medium text-gray-300">Notifications</h4>
 
-                                        <div class="space-y-2">
-                                            <h5 class="text-xs font-medium text-gray-400 uppercase tracking-wide">Sounds</h5>
-                                            <label class="flex items-center gap-3 p-4 bg-slate-800/30 rounded-lg cursor-pointer hover:bg-slate-800/50 transition-colors">
-                                                <input
-                                                    type="checkbox"
-                                                    checked=${agentCompletedSound}
-                                                    onChange=${e => setAgentCompletedSound(e.target.checked)}
-                                                    class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                                                />
-                                                <div>
-                                                    <div class="font-medium text-sm">Agent Completed</div>
-                                                    <div class="text-xs text-gray-500">Play a sound when the agent finishes its response</div>
-                                                </div>
-                                            </label>
-                                        </div>
+                                        <label class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors">
+                                            <input
+                                                type="checkbox"
+                                                checked=${agentCompletedSound}
+                                                onChange=${e => setAgentCompletedSound(e.target.checked)}
+                                                class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                            />
+                                            <div>
+                                                <div class="font-medium text-sm">Agent Completed Sound</div>
+                                                <div class="text-xs text-gray-500">Play a sound when the agent finishes its response</div>
+                                            </div>
+                                        </label>
                                     </div>
                                 `}
                             </div>
@@ -2961,7 +2952,7 @@ function App() {
     };
 
     return html`
-        <div class="h-screen flex">
+        <div class="h-screen-safe flex">
             <!-- Session Properties Dialog -->
             <${SessionPropertiesDialog}
                 isOpen=${renameDialog.isOpen}
@@ -3100,7 +3091,7 @@ function App() {
             `}
 
             <!-- Main chat area (swipe left/right to switch sessions on mobile) -->
-            <div ref=${mainContentRef} class="flex-1 flex flex-col min-w-0">
+            <div ref=${mainContentRef} class="flex-1 flex flex-col min-w-0 overflow-hidden">
                 <!-- Header -->
                 <div class="p-4 bg-mitto-sidebar border-b border-slate-700 flex items-center gap-3 flex-shrink-0">
                     <button
@@ -3133,7 +3124,7 @@ function App() {
                         <div key=${`flash-${activeSessionId}`} class="swipe-flash swipe-flash-${swipeDirection}" />
                     `}
                     ${swipeArrow && html`
-                        <div key=${`arrow-${activeSessionId}-${Date.now()}`} class="swipe-arrow-indicator">
+                        <div key=${`arrow-${activeSessionId}-${swipeArrow}`} class="swipe-arrow-indicator">
                             <div class="swipe-arrow-indicator__content">
                                 <span class="swipe-arrow-indicator__arrow">${swipeArrow === 'left' ? '→' : '←'}</span>
                             </div>
@@ -3242,97 +3233,6 @@ function App() {
             </div>
         </div>
     `;
-}
-
-// =============================================================================
-// Swipe Navigation Hook
-// =============================================================================
-
-function useSwipeNavigation(ref, onSwipeLeft, onSwipeRight, options = {}) {
-    const {
-        threshold = 50,           // Minimum distance to trigger swipe
-        maxVertical = 100,        // Maximum vertical movement allowed
-        edgeWidth = 30,           // Width of edge zone where swipe starts (mobile)
-        onEdgeSwipeRight = null,  // Callback for right swipe from left edge (e.g., open sidebar)
-        onEdgeSwipeLeft = null    // Callback for left swipe from right edge
-    } = options;
-
-    const touchStartRef = useRef(null);
-
-    useEffect(() => {
-        const element = ref.current;
-        if (!element) return;
-
-        const handleTouchStart = (e) => {
-            const touch = e.touches[0];
-            // Track if touch begins near the edge (for mobile)
-            const isNearLeftEdge = touch.clientX < edgeWidth;
-            const isNearRightEdge = touch.clientX > window.innerWidth - edgeWidth;
-
-            touchStartRef.current = {
-                x: touch.clientX,
-                y: touch.clientY,
-                time: Date.now(),
-                isLeftEdge: isNearLeftEdge,
-                isRightEdge: isNearRightEdge
-            };
-        };
-
-        const handleTouchEnd = (e) => {
-            if (!touchStartRef.current) return;
-
-            const touch = e.changedTouches[0];
-            const deltaX = touch.clientX - touchStartRef.current.x;
-            const deltaY = touch.clientY - touchStartRef.current.y;
-            const duration = Date.now() - touchStartRef.current.time;
-            const { isLeftEdge, isRightEdge } = touchStartRef.current;
-
-            // Only trigger if:
-            // - Horizontal movement exceeds threshold
-            // - Vertical movement is within limit (not scrolling)
-            // - Gesture was reasonably quick (under 500ms)
-            if (Math.abs(deltaX) >= threshold &&
-                Math.abs(deltaY) <= maxVertical &&
-                duration < 500) {
-
-                if (deltaX > 0) {
-                    // Swiped right
-                    if (isLeftEdge && onEdgeSwipeRight) {
-                        // Edge swipe from left -> open sidebar
-                        onEdgeSwipeRight();
-                    } else {
-                        // Regular swipe right -> go to previous session
-                        onSwipeRight?.();
-                    }
-                } else {
-                    // Swiped left
-                    if (isRightEdge && onEdgeSwipeLeft) {
-                        // Edge swipe from right -> custom action
-                        onEdgeSwipeLeft();
-                    } else {
-                        // Regular swipe left -> go to next session
-                        onSwipeLeft?.();
-                    }
-                }
-            }
-
-            touchStartRef.current = null;
-        };
-
-        const handleTouchCancel = () => {
-            touchStartRef.current = null;
-        };
-
-        element.addEventListener('touchstart', handleTouchStart, { passive: true });
-        element.addEventListener('touchend', handleTouchEnd, { passive: true });
-        element.addEventListener('touchcancel', handleTouchCancel, { passive: true });
-
-        return () => {
-            element.removeEventListener('touchstart', handleTouchStart);
-            element.removeEventListener('touchend', handleTouchEnd);
-            element.removeEventListener('touchcancel', handleTouchCancel);
-        };
-    }, [ref, onSwipeLeft, onSwipeRight, onEdgeSwipeRight, onEdgeSwipeLeft, threshold, maxVertical, edgeWidth]);
 }
 
 // =============================================================================
