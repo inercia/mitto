@@ -356,7 +356,14 @@ func (s *Store) List() ([]Metadata, error) {
 	return sessions, nil
 }
 
-// Delete removes a session and all its data.
+// Delete removes a session and all its data from local storage.
+//
+// Note: This only deletes the local session data (events, metadata).
+// If the session was associated with an ACP server session (via ACPSessionID
+// in metadata), that server-side session is NOT deleted. The ACP protocol
+// does not provide a session deletion mechanism - server-side sessions are
+// managed by the ACP server itself (typically cleaned up on server restart
+// or via server-specific expiration policies).
 func (s *Store) Delete(sessionID string) error {
 	log := logging.Session()
 	s.mu.Lock()

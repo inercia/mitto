@@ -402,9 +402,10 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 }
 
 // ResumeSession resumes an existing persisted session by creating a new ACP process.
-// This is used when switching to an old conversation - we can't truly resume the ACP
-// session, but we can create a new ACP connection and continue using the same
-// persisted session ID for recording.
+// This is used when switching to an old conversation. If the agent supports session
+// loading and we have a stored ACP session ID, we attempt to resume the ACP session
+// on the server side as well. Otherwise, we create a new ACP connection and continue
+// using the same persisted session ID for recording.
 func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
 	// Check if already running
 	if bs := sm.GetSession(sessionID); bs != nil {
@@ -426,12 +427,17 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		acpServer = ws.ACPServer
 	}
 
-	// If still no ACP command, try to get it from session metadata
-	// This handles the case where the workspace configuration is not available
-	// (e.g., server restarted without the same --dir flags)
-	if acpCommand == "" && store != nil {
+	// Get session metadata for ACP command and ACP session ID
+	var acpSessionID string
+	if store != nil {
 		if meta, err := store.GetMetadata(sessionID); err == nil {
-			if meta.ACPCommand != "" {
+			// Get ACP session ID for potential resumption
+			acpSessionID = meta.ACPSessionID
+
+			// If still no ACP command, try to get it from session metadata
+			// This handles the case where the workspace configuration is not available
+			// (e.g., server restarted without the same --dir flags)
+			if acpCommand == "" && meta.ACPCommand != "" {
 				acpCommand = meta.ACPCommand
 				if sm.logger != nil {
 					sm.logger.Info("Using ACP command from session metadata",
@@ -447,15 +453,17 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	sm.mu.Unlock()
 
 	// Create a background session with the existing persisted session ID
+	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
-		PersistedID: sessionID,
-		ACPCommand:  acpCommand,
-		ACPServer:   acpServer,
-		WorkingDir:  workingDir,
-		AutoApprove: sm.autoApprove,
-		Logger:      sm.logger,
-		Store:       store,
-		SessionName: sessionName,
+		PersistedID:  sessionID,
+		ACPCommand:   acpCommand,
+		ACPServer:    acpServer,
+		ACPSessionID: acpSessionID,
+		WorkingDir:   workingDir,
+		AutoApprove:  sm.autoApprove,
+		Logger:       sm.logger,
+		Store:        store,
+		SessionName:  sessionName,
 	})
 	if err != nil {
 		return nil, err

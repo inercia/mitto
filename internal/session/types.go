@@ -175,7 +175,8 @@ type Metadata struct {
 	SessionID         string        `json:"session_id"`
 	Name              string        `json:"name,omitempty"` // User-friendly session name
 	ACPServer         string        `json:"acp_server"`
-	ACPCommand        string        `json:"acp_command,omitempty"` // Shell command used to start the ACP server
+	ACPCommand        string        `json:"acp_command,omitempty"`    // Shell command used to start the ACP server
+	ACPSessionID      string        `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
 	WorkingDir        string        `json:"working_dir"`
 	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`

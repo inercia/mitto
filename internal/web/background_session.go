@@ -67,14 +67,15 @@ type BackgroundSession struct {
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
 type BackgroundSessionConfig struct {
-	PersistedID string
-	ACPCommand  string
-	ACPServer   string
-	WorkingDir  string
-	AutoApprove bool
-	Logger      *slog.Logger
-	Store       *session.Store
-	SessionName string
+	PersistedID  string
+	ACPCommand   string
+	ACPServer    string
+	ACPSessionID string // ACP-assigned session ID for resumption (optional)
+	WorkingDir   string
+	AutoApprove  bool
+	Logger       *slog.Logger
+	Store        *session.Store
+	SessionName  string
 }
 
 // NewBackgroundSession creates a new background session.
@@ -110,13 +111,22 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 		}
 	}
 
-	// Start ACP process
-	if err := bs.startACPProcess(config.ACPCommand, config.WorkingDir); err != nil {
+	// Start ACP process (no ACP session ID for new sessions)
+	if err := bs.startACPProcess(config.ACPCommand, config.WorkingDir, ""); err != nil {
 		cancel()
 		if bs.recorder != nil {
 			bs.recorder.End("failed_to_start")
 		}
 		return nil, err
+	}
+
+	// Store the ACP session ID in metadata for future resumption
+	if config.Store != nil && bs.acpID != "" {
+		if err := config.Store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+			m.ACPSessionID = bs.acpID
+		}); err != nil && bs.logger != nil {
+			bs.logger.Warn("Failed to store ACP session ID in metadata", "error", err)
+		}
 	}
 
 	return bs, nil
@@ -125,6 +135,8 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 // ResumeBackgroundSession creates a background session for an existing persisted session.
 // This is used when switching to an old conversation - we create a new ACP connection
 // but continue recording to the existing session.
+// If the agent supports session loading and we have a stored ACP session ID, we attempt
+// to resume the ACP session on the server side as well.
 func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, error) {
 	if config.PersistedID == "" {
 		return nil, &sessionError{"persisted session ID is required for resume"}
@@ -161,13 +173,23 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		}
 	}
 
-	// Start ACP process
-	if err := bs.startACPProcess(config.ACPCommand, config.WorkingDir); err != nil {
+	// Start ACP process, passing the ACP session ID for potential resumption
+	if err := bs.startACPProcess(config.ACPCommand, config.WorkingDir, config.ACPSessionID); err != nil {
 		cancel()
 		if bs.recorder != nil {
 			bs.recorder.End("failed_to_start")
 		}
 		return nil, err
+	}
+
+	// If we created a new ACP session (different from the one we tried to resume),
+	// update the metadata with the new ACP session ID
+	if config.Store != nil && bs.acpID != "" && bs.acpID != config.ACPSessionID {
+		if err := config.Store.UpdateMetadata(config.PersistedID, func(m *session.Metadata) {
+			m.ACPSessionID = bs.acpID
+		}); err != nil && bs.logger != nil {
+			bs.logger.Warn("Failed to update ACP session ID in metadata", "error", err)
+		}
 	}
 
 	return bs, nil
@@ -389,7 +411,9 @@ func (bs *BackgroundSession) flushAndPersistMessages() {
 }
 
 // startACPProcess starts the ACP server process and initializes the connection.
-func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir string) error {
+// If acpSessionID is provided and the agent supports session loading, it attempts
+// to resume that session. Otherwise, it creates a new session.
+func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionID string) error {
 	args := strings.Fields(acpCommand)
 	if len(args) == 0 {
 		return &sessionError{"empty ACP command"}
@@ -431,8 +455,8 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir string) erro
 		bs.acpConn.SetLogger(bs.logger)
 	}
 
-	// Initialize
-	_, err = bs.acpConn.Initialize(bs.ctx, acp.InitializeRequest{
+	// Initialize and get agent capabilities
+	initResp, err := bs.acpConn.Initialize(bs.ctx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
 			Fs: acp.FileSystemCapability{
@@ -446,11 +470,37 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir string) erro
 		return &sessionError{"failed to initialize: " + err.Error()}
 	}
 
-	// Create session
 	cwd := workingDir
 	if cwd == "" {
 		cwd = "."
 	}
+
+	// Try to load existing session if we have an ACP session ID and the agent supports it
+	if acpSessionID != "" && initResp.AgentCapabilities.LoadSession {
+		loadResp, err := bs.acpConn.LoadSession(bs.ctx, acp.LoadSessionRequest{
+			SessionId:  acp.SessionId(acpSessionID),
+			Cwd:        cwd,
+			McpServers: []acp.McpServer{},
+		})
+		if err == nil {
+			bs.acpID = acpSessionID
+			if bs.logger != nil {
+				bs.logger.Info("Resumed ACP session",
+					"acp_session_id", acpSessionID,
+					"modes", loadResp.Modes,
+					"models", loadResp.Models)
+			}
+			return nil
+		}
+		// Log the error but fall through to create a new session
+		if bs.logger != nil {
+			bs.logger.Warn("Failed to load ACP session, creating new session",
+				"acp_session_id", acpSessionID,
+				"error", err)
+		}
+	}
+
+	// Create new session
 	sessResp, err := bs.acpConn.NewSession(bs.ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
