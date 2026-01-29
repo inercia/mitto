@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="icon.png" alt="Mitto" width="128" height="128">
+
 # Mitto
 
 [![Tests](https://github.com/inercia/mitto/actions/workflows/tests.yml/badge.svg)](https://github.com/inercia/mitto/actions/workflows/tests.yml)
