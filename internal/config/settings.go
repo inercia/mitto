@@ -67,6 +67,8 @@ type Settings struct {
 	UI UIConfig `json:"ui,omitempty"`
 	// Session contains session storage limits configuration
 	Session *SessionConfig `json:"session,omitempty"`
+	// Conversations contains global conversation processing configuration
+	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 }
 
 // SessionConfig represents session storage configuration.
@@ -93,11 +95,12 @@ type ACPServerSettings struct {
 // ToConfig converts Settings to the internal Config struct.
 func (s *Settings) ToConfig() *Config {
 	cfg := &Config{
-		ACPServers: make([]ACPServer, len(s.ACPServers)),
-		Prompts:    s.Prompts,
-		Web:        s.Web,
-		UI:         s.UI,
-		Session:    s.Session,
+		ACPServers:    make([]ACPServer, len(s.ACPServers)),
+		Prompts:       s.Prompts,
+		Web:           s.Web,
+		UI:            s.UI,
+		Session:       s.Session,
+		Conversations: s.Conversations,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -108,11 +111,12 @@ func (s *Settings) ToConfig() *Config {
 // ConfigToSettings converts a Config to Settings for persistence.
 func ConfigToSettings(cfg *Config) *Settings {
 	s := &Settings{
-		ACPServers: make([]ACPServerSettings, len(cfg.ACPServers)),
-		Prompts:    cfg.Prompts,
-		Web:        cfg.Web,
-		UI:         cfg.UI,
-		Session:    cfg.Session,
+		ACPServers:    make([]ACPServerSettings, len(cfg.ACPServers)),
+		Prompts:       cfg.Prompts,
+		Web:           cfg.Web,
+		UI:            cfg.UI,
+		Session:       cfg.Session,
+		Conversations: cfg.Conversations,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)

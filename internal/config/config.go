@@ -210,6 +210,129 @@ func (c *WebConfig) GetAPIPrefix() string {
 	return c.APIPrefix
 }
 
+// ProcessorWhen defines when a message processor should be applied.
+type ProcessorWhen string
+
+const (
+	// ProcessorWhenFirst applies only to the first message in a conversation.
+	ProcessorWhenFirst ProcessorWhen = "first"
+	// ProcessorWhenAll applies to all messages.
+	ProcessorWhenAll ProcessorWhen = "all"
+	// ProcessorWhenAllExceptFirst applies to all messages except the first.
+	ProcessorWhenAllExceptFirst ProcessorWhen = "all-except-first"
+)
+
+// ProcessorPosition defines where the processor text is inserted.
+type ProcessorPosition string
+
+const (
+	// ProcessorPositionPrepend inserts text before the message.
+	ProcessorPositionPrepend ProcessorPosition = "prepend"
+	// ProcessorPositionAppend inserts text after the message.
+	ProcessorPositionAppend ProcessorPosition = "append"
+)
+
+// MessageProcessor defines a single message transformation.
+// Processors are applied in order to transform user messages before sending to ACP.
+type MessageProcessor struct {
+	// When specifies when this processor applies: "first", "all", "all-except-first"
+	When ProcessorWhen `json:"when" yaml:"when"`
+	// Position specifies where to insert: "prepend" or "append"
+	Position ProcessorPosition `json:"position" yaml:"position"`
+	// Text is the content to insert
+	Text string `json:"text" yaml:"text"`
+}
+
+// ShouldApply returns true if the processor should apply given the message context.
+func (p *MessageProcessor) ShouldApply(isFirstMessage bool) bool {
+	switch p.When {
+	case ProcessorWhenFirst:
+		return isFirstMessage
+	case ProcessorWhenAll:
+		return true
+	case ProcessorWhenAllExceptFirst:
+		return !isFirstMessage
+	default:
+		return false
+	}
+}
+
+// Apply applies this processor to the message and returns the result.
+func (p *MessageProcessor) Apply(message string) string {
+	switch p.Position {
+	case ProcessorPositionPrepend:
+		return p.Text + message
+	case ProcessorPositionAppend:
+		return message + p.Text
+	default:
+		return message
+	}
+}
+
+// ConversationProcessing contains the list of message processors.
+type ConversationProcessing struct {
+	// Override if true, workspace processors replace global processors entirely.
+	// If false (default), workspace processors are appended to global processors.
+	Override bool `json:"override,omitempty" yaml:"override,omitempty"`
+	// Processors is the ordered list of message transformations
+	Processors []MessageProcessor `json:"processors,omitempty" yaml:"processors,omitempty"`
+}
+
+// ConversationsConfig represents conversation processing configuration.
+type ConversationsConfig struct {
+	// Processing contains message transformation processors
+	Processing *ConversationProcessing `json:"processing,omitempty" yaml:"processing,omitempty"`
+}
+
+// GetProcessors returns the list of processors, or nil if none configured.
+func (c *ConversationsConfig) GetProcessors() []MessageProcessor {
+	if c == nil || c.Processing == nil {
+		return nil
+	}
+	return c.Processing.Processors
+}
+
+// ShouldOverride returns true if workspace config should override global config.
+func (c *ConversationsConfig) ShouldOverride() bool {
+	if c == nil || c.Processing == nil {
+		return false
+	}
+	return c.Processing.Override
+}
+
+// MergeProcessors merges global and workspace processors according to precedence rules.
+// If workspace has override=true, only workspace processors are returned.
+// Otherwise, global processors are applied first, then workspace processors.
+func MergeProcessors(global, workspace *ConversationsConfig) []MessageProcessor {
+	// If workspace wants to override, use only workspace processors
+	if workspace != nil && workspace.ShouldOverride() {
+		return workspace.GetProcessors()
+	}
+
+	// Merge: global first, then workspace
+	var result []MessageProcessor
+
+	if global != nil {
+		result = append(result, global.GetProcessors()...)
+	}
+	if workspace != nil {
+		result = append(result, workspace.GetProcessors()...)
+	}
+
+	return result
+}
+
+// ApplyProcessors applies a list of processors to a message.
+func ApplyProcessors(message string, processors []MessageProcessor, isFirstMessage bool) string {
+	result := message
+	for _, processor := range processors {
+		if processor.ShouldApply(isFirstMessage) {
+			result = processor.Apply(result)
+		}
+	}
+	return result
+}
+
 // Config represents the complete Mitto configuration.
 type Config struct {
 	// ACPServers is the list of configured ACP servers (order matters - first is default)
@@ -222,6 +345,8 @@ type Config struct {
 	UI UIConfig
 	// Session contains session storage limits configuration (not exposed in Settings dialog)
 	Session *SessionConfig
+	// Conversations contains global conversation processing configuration
+	Conversations *ConversationsConfig
 }
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
@@ -298,6 +423,16 @@ type rawConfig struct {
 			ShowInAllSpaces bool `yaml:"show_in_all_spaces"`
 		} `yaml:"mac"`
 	} `yaml:"ui"`
+	Conversations *struct {
+		Processing *struct {
+			Override   bool `yaml:"override"`
+			Processors []struct {
+				When     string `yaml:"when"`
+				Position string `yaml:"position"`
+				Text     string `yaml:"text"`
+			} `yaml:"processors"`
+		} `yaml:"processing"`
+	} `yaml:"conversations"`
 }
 
 // DefaultConfigPath returns the default configuration file path for the current platform.
@@ -485,6 +620,26 @@ func Parse(data []byte) (*Config, error) {
 
 			// Populate show in all spaces setting
 			cfg.UI.Mac.ShowInAllSpaces = raw.UI.Mac.ShowInAllSpaces
+		}
+	}
+
+	// Populate conversations config
+	if raw.Conversations != nil && raw.Conversations.Processing != nil {
+		processors := make([]MessageProcessor, 0, len(raw.Conversations.Processing.Processors))
+		for _, p := range raw.Conversations.Processing.Processors {
+			processors = append(processors, MessageProcessor{
+				When:     ProcessorWhen(p.When),
+				Position: ProcessorPosition(p.Position),
+				Text:     p.Text,
+			})
+		}
+		if len(processors) > 0 || raw.Conversations.Processing.Override {
+			cfg.Conversations = &ConversationsConfig{
+				Processing: &ConversationProcessing{
+					Override:   raw.Conversations.Processing.Override,
+					Processors: processors,
+				},
+			}
 		}
 	}
 
