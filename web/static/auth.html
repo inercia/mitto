@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mitto - Login</title>
+
+    <!-- Tailwind CSS (Play CDN) -->
+    <script nonce="{{CSP_NONCE}}" src="https://cdn.tailwindcss.com"></script>
+    <script nonce="{{CSP_NONCE}}" src="./tailwind-config-auth.js"></script>
+
+    <!-- API prefix for all API calls -->
+    <script nonce="{{CSP_NONCE}}">window.mittoApiPrefix = "{{API_PREFIX}}";</script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        }
+        /* Fix browser autofill styling - ensures text is always visible */
+        /* Safari-specific fix: use transition to prevent Safari's autofill animation */
+        input[type="text"],
+        input[type="password"] {
+            color: #1e293b !important; /* Dark text for visibility on autofill */
+            background-color: #ffffff !important; /* White background */
+            /* Safari needs transition to override autofill animation */
+            transition: background-color 5000s ease-in-out 0s, color 5000s ease-in-out 0s;
+        }
+        input[type="text"]::placeholder,
+        input[type="password"]::placeholder {
+            color: #6b7280 !important; /* Gray placeholder */
+        }
+        /* WebKit autofill override - works for Chrome, Safari, and other WebKit browsers */
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover,
+        input:-webkit-autofill:focus,
+        input:-webkit-autofill:active {
+            -webkit-box-shadow: 0 0 0 30px #ffffff inset !important;
+            -webkit-text-fill-color: #1e293b !important;
+            caret-color: #1e293b !important;
+            /* Additional Safari-specific fixes */
+            transition: background-color 5000s ease-in-out 0s !important;
+            -webkit-background-clip: text !important;
+            background-clip: text !important;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md">
+        <!-- Logo/Title -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-white mb-2">Mitto</h1>
+        </div>
+
+        <!-- Login Card -->
+        <div class="bg-mitto-sidebar rounded-lg shadow-xl p-8 border border-mitto-border">
+            <h2 class="text-xl font-semibold text-white mb-6 text-center">Sign In</h2>
+            
+            <!-- Error Message -->
+            <div id="error" class="hidden mb-4 p-3 bg-red-500/20 border border-red-500 rounded text-red-400 text-sm">
+            </div>
+
+            <form id="loginForm" class="space-y-6">
+                <div>
+                    <label for="username" class="block text-sm font-medium text-gray-300 mb-2">
+                        Username
+                    </label>
+                    <input
+                        type="text"
+                        id="username"
+                        name="username"
+                        required
+                        autocomplete="username"
+                        class="w-full px-4 py-3 border border-mitto-border rounded-lg placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="Enter your username"
+                    >
+                </div>
+
+                <div>
+                    <label for="password" class="block text-sm font-medium text-gray-300 mb-2">
+                        Password
+                    </label>
+                    <input
+                        type="password"
+                        id="password"
+                        name="password"
+                        required
+                        autocomplete="current-password"
+                        class="w-full px-4 py-3 border border-mitto-border rounded-lg placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="Enter your password"
+                    >
+                </div>
+
+                <button
+                    type="submit"
+                    id="submitBtn"
+                    class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-mitto-sidebar disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    Sign In
+                </button>
+            </form>
+        </div>
+
+
+    </div>
+
+    <script nonce="{{CSP_NONCE}}" src="./auth.js"></script>
+</body>
+</html>
+
