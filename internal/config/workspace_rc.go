@@ -14,10 +14,12 @@ import (
 const WorkspaceRCFileName = ".mittorc"
 
 // WorkspaceRC represents workspace-specific configuration loaded from .mittorc.
-// Only the prompts section is currently supported; other sections are ignored.
+// Supports prompts and conversations sections; other sections are ignored.
 type WorkspaceRC struct {
 	// Prompts is the list of workspace-specific prompts.
 	Prompts []WebPrompt `json:"prompts,omitempty"`
+	// Conversations contains workspace-specific conversation processing configuration.
+	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 	// LoadedAt is the time when this config was loaded.
 	LoadedAt time.Time `json:"-"`
 }
@@ -25,12 +27,23 @@ type WorkspaceRC struct {
 // rawWorkspaceRC is used for YAML unmarshaling of workspace .mittorc files.
 // It uses a permissive structure to ignore unsupported sections.
 type rawWorkspaceRC struct {
-	// Prompts section - the only currently supported section
+	// Prompts section
 	Prompts []struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
 	} `yaml:"prompts"`
+	// Conversations section for message processing
+	Conversations *struct {
+		Processing *struct {
+			Override   bool `yaml:"override"`
+			Processors []struct {
+				When     string `yaml:"when"`
+				Position string `yaml:"position"`
+				Text     string `yaml:"text"`
+			} `yaml:"processors"`
+		} `yaml:"processing"`
+	} `yaml:"conversations"`
 }
 
 // LoadWorkspaceRC loads the .mittorc file from a workspace directory.
@@ -86,6 +99,26 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 				Prompt:          p.Prompt,
 				BackgroundColor: p.BackgroundColor,
 			})
+		}
+	}
+
+	// Copy conversations config
+	if raw.Conversations != nil && raw.Conversations.Processing != nil {
+		processors := make([]MessageProcessor, 0, len(raw.Conversations.Processing.Processors))
+		for _, p := range raw.Conversations.Processing.Processors {
+			processors = append(processors, MessageProcessor{
+				When:     ProcessorWhen(p.When),
+				Position: ProcessorPosition(p.Position),
+				Text:     p.Text,
+			})
+		}
+		if len(processors) > 0 || raw.Conversations.Processing.Override {
+			rc.Conversations = &ConversationsConfig{
+				Processing: &ConversationProcessing{
+					Override:   raw.Conversations.Processing.Override,
+					Processors: processors,
+				},
+			}
 		}
 	}
 
@@ -154,4 +187,3 @@ func (c *WorkspaceRCCache) Clear() {
 	c.cache = make(map[string]*WorkspaceRC)
 	c.mu.Unlock()
 }
-
