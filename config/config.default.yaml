@@ -340,6 +340,7 @@ web:
   host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security
   port: 8080       # Local port (use 0 for random)
   external_port: -1  # External port when auth is enabled (-1 = disabled, 0 = random, >0 = specific port)
+  api_prefix: /mitto  # URL prefix for API endpoints (security through obscurity). Set to "" to disable.
   theme: v2  # Options: "default", "v2" (modern theme)
 
   # hooks:

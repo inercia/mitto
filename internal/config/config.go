@@ -177,6 +177,13 @@ type WebConfig struct {
 	//   >0 = specific port number
 	// Note: omitempty is NOT used here because 0 is a valid value meaning "random port".
 	ExternalPort int `json:"external_port"`
+	// APIPrefix is a URL path prefix for all API endpoints and WebSocket routes.
+	// This provides security through obscurity by making endpoints harder to discover.
+	// The prefix is applied to /api/*, /ws, and session WebSocket endpoints.
+	// Static assets (CSS, JS) and the root landing page (/) remain unprefixed.
+	// Default: "/mitto"
+	// Set to empty string "" to disable prefixing (use original paths).
+	APIPrefix string `json:"api_prefix,omitempty"`
 	// Theme is the UI theme/stylesheet to use.
 	// Options: "default" (original Tailwind-based), "v2" (Clawdbot-inspired)
 	// Default: "default"
@@ -190,6 +197,17 @@ type WebConfig struct {
 	Auth *WebAuth `json:"auth,omitempty"`
 	// Security contains security configuration (rate limiting, WebSocket security, etc.)
 	Security *WebSecurity `json:"security,omitempty"`
+}
+
+// DefaultAPIPrefix is the default URL prefix for API endpoints.
+const DefaultAPIPrefix = "/mitto"
+
+// GetAPIPrefix returns the API prefix, using the default if not set.
+func (c *WebConfig) GetAPIPrefix() string {
+	if c.APIPrefix == "" {
+		return DefaultAPIPrefix
+	}
+	return c.APIPrefix
 }
 
 // Config represents the complete Mitto configuration.
@@ -229,6 +247,7 @@ type rawConfig struct {
 		Host         string `yaml:"host"`
 		Port         int    `yaml:"port"`
 		ExternalPort int    `yaml:"external_port"`
+		APIPrefix    string `yaml:"api_prefix"`
 		Theme        string `yaml:"theme"`
 		StaticDir    string `yaml:"static_dir"`
 		Hooks        struct {
@@ -393,6 +412,7 @@ func Parse(data []byte) (*Config, error) {
 	cfg.Web.Host = raw.Web.Host
 	cfg.Web.Port = raw.Web.Port
 	cfg.Web.ExternalPort = raw.Web.ExternalPort
+	cfg.Web.APIPrefix = raw.Web.APIPrefix
 	cfg.Web.Theme = raw.Web.Theme
 	cfg.Web.StaticDir = raw.Web.StaticDir
 	cfg.Web.Hooks.Up.Command = raw.Web.Hooks.Up.Command
