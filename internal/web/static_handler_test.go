@@ -163,4 +163,3 @@ func TestStaticFileHandler_RootRedirectsToIndex(t *testing.T) {
 		t.Error("/ should serve index.html content")
 	}
 }
-

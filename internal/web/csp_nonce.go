@@ -197,4 +197,3 @@ func cspNonceMiddlewareWithOptions(opts cspNonceMiddlewareOptions) func(http.Han
 		})
 	}
 }
-

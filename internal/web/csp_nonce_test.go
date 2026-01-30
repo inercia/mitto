@@ -317,4 +317,3 @@ func TestCSPNonceMiddleware_ContentLengthUpdated(t *testing.T) {
 		}
 	}
 }
-

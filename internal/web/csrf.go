@@ -307,4 +307,3 @@ func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-

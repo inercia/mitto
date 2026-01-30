@@ -259,4 +259,3 @@ func TestCSRFMiddleware_DoubleSubmitPattern(t *testing.T) {
 		t.Errorf("Double-submit with mismatching tokens: status = %d, want %d", w2.Code, http.StatusForbidden)
 	}
 }
-
