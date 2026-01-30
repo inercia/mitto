@@ -23,8 +23,8 @@ type RateLimitConfig struct {
 // DefaultRateLimitConfig returns sensible defaults for rate limiting.
 func DefaultRateLimitConfig() RateLimitConfig {
 	return RateLimitConfig{
-		RequestsPerSecond: 10,               // 10 requests per second
-		BurstSize:         20,               // Allow bursts up to 20
+		RequestsPerSecond: 20,               // 20 requests per second
+		BurstSize:         50,               // Allow bursts up to 50 (for page loads with many API calls)
 		CleanupInterval:   5 * time.Minute,  // Clean up every 5 minutes
 		EntryTTL:          10 * time.Minute, // Keep entries for 10 minutes
 	}
@@ -87,6 +87,14 @@ func (rl *GeneralRateLimiter) Allow(ip string) bool {
 // Middleware returns an HTTP middleware that enforces rate limiting.
 func (rl *GeneralRateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip rate limiting for static files - they are cacheable and browsers
+		// fetch many of them simultaneously during page load. Rate limiting
+		// should focus on API endpoints where abuse is more likely.
+		if rl.isStaticPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Use getClientIPWithProxyCheck to only trust X-Forwarded-For headers
 		// from configured trusted proxies. This prevents IP spoofing attacks
 		// where attackers set fake X-Forwarded-For headers to bypass rate limiting.
@@ -100,6 +108,26 @@ func (rl *GeneralRateLimiter) Middleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isStaticPath returns true if the path is for a static file that should
+// be exempt from rate limiting.
+func (rl *GeneralRateLimiter) isStaticPath(path string) bool {
+	// Static file extensions that should be exempt from rate limiting
+	staticExtensions := []string{
+		".js", ".css", ".html", ".htm",
+		".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+		".woff", ".woff2", ".ttf", ".eot",
+		".json", ".map",
+	}
+
+	for _, ext := range staticExtensions {
+		if len(path) > len(ext) && path[len(path)-len(ext):] == ext {
+			return true
+		}
+	}
+
+	return false
 }
 
 // cleanupLoop periodically removes stale entries.

@@ -383,6 +383,12 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		bs.Close("session_limit_exceeded")
 		return nil, ErrTooManySessions
 	}
+	// Check if a session with this ID somehow already exists (shouldn't happen for new sessions)
+	if existing, ok := sm.sessions[bs.GetSessionID()]; ok {
+		sm.mu.Unlock()
+		bs.Close("duplicate_session")
+		return existing, nil
+	}
 	sm.sessions[bs.GetSessionID()] = bs
 	sm.mu.Unlock()
 
@@ -505,6 +511,12 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		sm.mu.Unlock()
 		bs.Close("session_limit_exceeded")
 		return nil, ErrTooManySessions
+	}
+	// Check if another goroutine already created this session while we were creating ours
+	if existing, ok := sm.sessions[bs.GetSessionID()]; ok {
+		sm.mu.Unlock()
+		bs.Close("duplicate_session")
+		return existing, nil
 	}
 	sm.sessions[bs.GetSessionID()] = bs
 	sm.mu.Unlock()

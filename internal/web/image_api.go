@@ -33,15 +33,12 @@ type ImageUploadResponse struct {
 //   - GET /api/sessions/{id}/images/{imageId} - Serve an image
 //   - DELETE /api/sessions/{id}/images/{imageId} - Delete an image
 func (s *Server) handleSessionImages(w http.ResponseWriter, r *http.Request, sessionID string, imagePath string) {
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to access session store", "error", err)
-		}
-		http.Error(w, "Failed to access session store", http.StatusInternalServerError)
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
+	if store == nil {
+		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
 	}
-	defer store.Close()
 
 	// Check if session exists
 	if !store.Exists(sessionID) {

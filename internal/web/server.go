@@ -105,6 +105,10 @@ type Server struct {
 	mu         sync.Mutex
 	shutdown   bool
 
+	// apiPrefix is the URL prefix for all API and WebSocket endpoints.
+	// Static assets and root landing page are not prefixed.
+	apiPrefix string
+
 	// Global events manager for broadcasting session lifecycle events
 	eventsManager *GlobalEventsManager
 
@@ -115,8 +119,14 @@ type Server struct {
 	// Session manager for background sessions that persist across WebSocket disconnects
 	sessionManager *SessionManager
 
+	// Session store for persistence (owned by the server, shared across handlers)
+	store *session.Store
+
 	// Auth manager for handling authentication (nil if auth is disabled)
 	authManager *AuthManager
+
+	// CSRF manager for protecting state-changing requests
+	csrfManager *CSRFManager
 
 	// Security components
 	rateLimiter       *GeneralRateLimiter
@@ -125,9 +135,16 @@ type Server struct {
 	proxyChecker      *TrustedProxyChecker
 
 	// External access listener management
-	externalListener net.Listener
-	externalMu       sync.Mutex
-	externalPort     int // Port for external listener (same as main port by default)
+	externalListener   net.Listener
+	externalHTTPServer *http.Server // Separate server for external connections (marks them as external)
+	externalMu         sync.Mutex
+	externalPort       int // Port for external listener (same as main port by default)
+}
+
+// APIPrefix returns the URL prefix for all API and WebSocket endpoints.
+// This is used by the frontend to construct API URLs.
+func (s *Server) APIPrefix() string {
+	return s.apiPrefix
 }
 
 // NewServer creates a new web server.
@@ -216,13 +233,33 @@ func NewServer(config Config) (*Server, error) {
 	// Initialize connection tracker
 	connectionTracker := NewConnectionTracker(wsSecurityConfig.MaxConnectionsPerIP)
 
+	// Initialize CSRF manager
+	csrfMgr := NewCSRFManager()
+
+	// Get API prefix from config (defaults to "/mitto")
+	apiPrefix := configPkg.DefaultAPIPrefix
+	if config.MittoConfig != nil && config.MittoConfig.Web.APIPrefix != "" {
+		apiPrefix = config.MittoConfig.Web.APIPrefix
+	}
+
+	// Set API prefix on auth manager for public path matching
+	if authMgr != nil {
+		authMgr.SetAPIPrefix(apiPrefix)
+	}
+
+	// Set API prefix on CSRF manager for exempt path matching
+	csrfMgr.SetAPIPrefix(apiPrefix)
+
 	s := &Server{
 		config:            config,
 		logger:            logger,
+		apiPrefix:         apiPrefix,
 		clients:           make(map[*WSClient]struct{}),
 		eventsManager:     NewGlobalEventsManager(),
 		sessionManager:    sessionMgr,
+		store:             store,
 		authManager:       authMgr,
+		csrfManager:       csrfMgr,
 		rateLimiter:       rateLimiter,
 		connectionTracker: connectionTracker,
 		wsSecurityConfig:  wsSecurityConfig,
@@ -233,24 +270,28 @@ func NewServer(config Config) (*Server, error) {
 	mux := http.NewServeMux()
 
 	// Auth routes (always register, they handle their own enabled/disabled state)
+	// These use the API prefix for security through obscurity
 	if authMgr != nil {
-		mux.HandleFunc("/api/login", authMgr.HandleLogin)
-		mux.HandleFunc("/api/logout", authMgr.HandleLogout)
+		mux.HandleFunc(apiPrefix+"/api/login", authMgr.HandleLogin)
+		mux.HandleFunc(apiPrefix+"/api/logout", authMgr.HandleLogout)
 	}
 
-	// API routes
-	mux.HandleFunc("/api/sessions", s.handleSessions)
-	mux.HandleFunc("/api/sessions/running", s.handleRunningSessions)
-	mux.HandleFunc("/api/sessions/", s.handleSessionDetail)
-	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
-	mux.HandleFunc("/api/workspace-prompts", s.handleWorkspacePrompts)
-	mux.HandleFunc("/api/config", s.handleConfig)
-	mux.HandleFunc("/api/external-status", s.handleExternalStatus)
-	mux.HandleFunc("/api/aux/improve-prompt", s.handleImprovePrompt)
+	// CSRF token endpoint (always available for getting tokens)
+	mux.HandleFunc(apiPrefix+"/api/csrf-token", csrfMgr.HandleCSRFToken)
 
-	// WebSocket endpoints
-	mux.HandleFunc("/api/events", s.handleGlobalEventsWS) // Global events (session lifecycle)
-	mux.HandleFunc("/ws", s.handleWebSocket)              // Legacy endpoint for backward compatibility
+	// API routes - all use the API prefix for security through obscurity
+	mux.HandleFunc(apiPrefix+"/api/sessions", s.handleSessions)
+	mux.HandleFunc(apiPrefix+"/api/sessions/running", s.handleRunningSessions)
+	mux.HandleFunc(apiPrefix+"/api/sessions/", s.handleSessionDetail)
+	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
+	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
+	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
+	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
+	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
+
+	// WebSocket endpoints - also use the API prefix
+	mux.HandleFunc(apiPrefix+"/api/events", s.handleGlobalEventsWS) // Global events (session lifecycle)
+	mux.HandleFunc(apiPrefix+"/ws", s.handleWebSocket)              // WebSocket endpoint
 
 	// Static files: use filesystem directory if specified, otherwise use embedded assets
 	var staticFS fs.FS
@@ -278,6 +319,10 @@ func NewServer(config Config) (*Server, error) {
 		handler = authMgr.AuthMiddleware(mux)
 	}
 
+	// Wrap with CSRF middleware (applies after auth, before request processing)
+	// This protects all state-changing API requests (POST, PUT, PATCH, DELETE)
+	handler = csrfMgr.CSRFMiddleware(handler)
+
 	// Wrap with security middlewares (applied in reverse order)
 	// 1. Request size limit (1MB max for request bodies)
 	handler = requestSizeLimitMiddleware(1 * 1024 * 1024)(handler)
@@ -288,11 +333,20 @@ func NewServer(config Config) (*Server, error) {
 	// 3. Request timeout (excludes WebSocket connections)
 	handler = requestTimeoutMiddleware(DefaultRequestTimeout)(handler)
 
-	// 4. Security headers
+	// 4. Security headers (non-CSP headers)
 	headerSecurityConfig := DefaultSecurityConfig()
 	handler = securityHeadersMiddleware(headerSecurityConfig)(handler)
 
-	// 5. Hide server info (outermost to catch all responses)
+	// 5. CSP nonce injection for HTML responses
+	// This must come after security headers but before hide server info
+	// so that CSP headers are properly set with nonces for HTML responses.
+	// Also injects the API prefix for frontend JavaScript to use.
+	handler = cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{
+		config:    headerSecurityConfig,
+		apiPrefix: apiPrefix,
+	})(handler)
+
+	// 6. Hide server info (outermost to catch all responses)
 	handler = hideServerInfoMiddleware(handler)
 
 	// Wrap with logging middleware
@@ -300,7 +354,7 @@ func NewServer(config Config) (*Server, error) {
 
 	s.httpServer = &http.Server{Handler: handler}
 
-	logger.Info("Web server initialized", "acp_server", config.ACPServer)
+	logger.Info("Web server initialized", "acp_server", config.ACPServer, "api_prefix", apiPrefix)
 
 	return s, nil
 }
@@ -311,6 +365,8 @@ func (s *Server) staticFileHandler(staticFS fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(staticFS))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger := logging.Web()
+
 		// Clean the path
 		path := r.URL.Path
 		if path == "/" {
@@ -323,24 +379,65 @@ func (s *Server) staticFileHandler(staticFS fs.FS) http.Handler {
 			fsPath = fsPath[1:]
 		}
 
+		// Always log at INFO level for auth-related files to debug login issues
+		isAuthFile := fsPath == "auth.html" || fsPath == "auth.js" || fsPath == "tailwind-config-auth.js"
+		if isAuthFile {
+			logger.Info("STATIC: Auth file request",
+				"url_path", r.URL.Path,
+				"fs_path", fsPath,
+				"remote_addr", r.RemoteAddr,
+			)
+		} else {
+			logger.Debug("Static file request",
+				"url_path", r.URL.Path,
+				"fs_path", fsPath,
+				"remote_addr", r.RemoteAddr,
+			)
+		}
+
 		// Check if file exists before serving
 		f, err := staticFS.Open(fsPath)
 		if err != nil {
+			if isAuthFile {
+				logger.Info("STATIC: Auth file NOT FOUND",
+					"fs_path", fsPath,
+					"error", err,
+				)
+			} else {
+				logger.Debug("Static file not found",
+					"fs_path", fsPath,
+					"error", err,
+				)
+			}
 			// Return minimal 404 - don't reveal application type
 			http.Error(w, "Not Found", http.StatusNotFound)
 			return
 		}
 		f.Close()
 
-		// Set cache headers for static assets
-		// When using StaticDir (development mode), disable caching to enable hot-reloading
-		if s.config.StaticDir != "" {
-			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-			w.Header().Set("Pragma", "no-cache")
-			w.Header().Set("Expires", "0")
-		} else if r.URL.Path != "/" && r.URL.Path != "/index.html" {
-			w.Header().Set("Cache-Control", "public, max-age=31536000")
+		if isAuthFile {
+			logger.Info("STATIC: Serving auth file",
+				"fs_path", fsPath,
+			)
+		} else {
+			logger.Debug("Serving static file",
+				"fs_path", fsPath,
+			)
 		}
+
+		// Set cache headers for static assets
+		// During active development, we disable caching for all our own assets
+		// to ensure users always get the latest version. Only external CDN
+		// resources (loaded via <script src="https://..."> in HTML) can be cached
+		// by the browser since we don't control those headers anyway.
+		//
+		// This is especially important because:
+		// - HTML pages contain injected values (API prefix, CSP nonces)
+		// - JS/CSS files change frequently during development
+		// - Cached stale assets cause hard-to-debug issues (like wrong API paths)
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 
 		fileServer.ServeHTTP(w, r)
 	})
@@ -375,6 +472,16 @@ func (s *Server) Shutdown() error {
 		s.authManager.Close()
 	}
 
+	// Close CSRF manager (stops token cleanup)
+	if s.csrfManager != nil {
+		s.csrfManager.Close()
+	}
+
+	// Close session store
+	if s.store != nil {
+		s.store.Close()
+	}
+
 	return s.httpServer.Shutdown(context.Background())
 }
 
@@ -390,6 +497,12 @@ func (s *Server) Logger() *slog.Logger {
 	return s.logger
 }
 
+// Store returns the server's session store.
+// This store is owned by the server and should not be closed by callers.
+func (s *Server) Store() *session.Store {
+	return s.store
+}
+
 // SetExternalPort sets the port to use for external access.
 // This should be called before starting the external listener.
 func (s *Server) SetExternalPort(port int) {
@@ -398,11 +511,25 @@ func (s *Server) SetExternalPort(port int) {
 	s.externalPort = port
 }
 
+// externalConnectionMiddleware wraps requests to mark them as coming from the external listener.
+// This ensures authentication is required for ALL external connections, even from localhost.
+func externalConnectionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Add context value indicating this is an external connection
+		ctx := context.WithValue(r.Context(), ContextKeyExternalConnection, true)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // StartExternalListener starts a listener on 0.0.0.0 for external access.
 // This allows external connections while keeping the main listener on 127.0.0.1.
 // If port is 0, a random available port is selected.
 // Returns the actual port used, or 0 and an error on failure.
 // Returns 0 without error if external listener is already running.
+//
+// SECURITY: All connections through this listener are marked as "external" and
+// require authentication even if they originate from localhost. This prevents
+// authentication bypass by connecting to the external port from the local machine.
 func (s *Server) StartExternalListener(port int) (int, error) {
 	s.externalMu.Lock()
 	defer s.externalMu.Unlock()
@@ -424,9 +551,17 @@ func (s *Server) StartExternalListener(port int) (int, error) {
 	s.externalListener = listener
 	s.externalPort = actualPort
 
+	// Create a separate HTTP server for external connections that marks all requests
+	// as external. This ensures auth is required even for localhost connections.
+	externalServer := &http.Server{
+		Handler: externalConnectionMiddleware(s.httpServer.Handler),
+	}
+	s.externalHTTPServer = externalServer
+
 	// Serve on the external listener in a goroutine
+	// Capture externalServer locally to avoid race with stopExternalListenerLocked
 	go func() {
-		if err := s.httpServer.Serve(listener); err != nil {
+		if err := externalServer.Serve(listener); err != nil {
 			// Ignore errors if we're shutting down or the listener was closed
 			s.externalMu.Lock()
 			isShuttingDown := s.externalListener == nil
@@ -457,6 +592,18 @@ func (s *Server) StopExternalListener() {
 // stopExternalListenerLocked stops the external listener (must hold externalMu).
 func (s *Server) stopExternalListenerLocked() {
 	if s.externalListener != nil {
+		// Shutdown the external HTTP server gracefully
+		if s.externalHTTPServer != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.externalHTTPServer.Shutdown(ctx); err != nil {
+				if s.logger != nil {
+					s.logger.Debug("Error shutting down external HTTP server", "error", err)
+				}
+			}
+			s.externalHTTPServer = nil
+		}
+		// Also close the listener (may already be closed by Shutdown)
 		if err := s.externalListener.Close(); err != nil {
 			if s.logger != nil {
 				s.logger.Debug("Error closing external listener", "error", err)
@@ -486,21 +633,26 @@ func (s *Server) GetExternalPort() int {
 // loggingMiddleware logs HTTP requests.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip logging for static assets to reduce noise
 		path := r.URL.Path
-		if isStaticAsset(path) {
-			next.ServeHTTP(w, r)
-			return
-		}
+		clientIP := getClientIPWithProxyCheck(r)
 
-		// Log the request
-		clientIP := getClientIP(r)
-		s.logger.Info("HTTP request",
-			"method", r.Method,
-			"path", path,
-			"client_ip", clientIP,
-			"user_agent", r.UserAgent(),
-		)
+		// Log static assets at debug level, others at info level
+		if isStaticAsset(path) {
+			s.logger.Debug("HTTP request (static)",
+				"method", r.Method,
+				"path", path,
+				"raw_uri", r.RequestURI,
+				"client_ip", clientIP,
+			)
+		} else {
+			s.logger.Info("HTTP request",
+				"method", r.Method,
+				"path", path,
+				"raw_uri", r.RequestURI,
+				"client_ip", clientIP,
+				"user_agent", r.UserAgent(),
+			)
+		}
 
 		next.ServeHTTP(w, r)
 	})
@@ -591,7 +743,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleGetConfig handles GET /api/config.
+// handleGetConfig handles GET {prefix}/api/config.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -601,6 +753,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"acp_servers":     []map[string]string{},
 		"web":             configPkg.WebConfig{},
 		"config_readonly": s.config.ConfigReadOnly,
+		"api_prefix":      s.apiPrefix, // Include API prefix for frontend to use
 	}
 
 	// Include RC file path if config is from an RC file

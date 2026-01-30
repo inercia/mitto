@@ -95,11 +95,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set the store on the session manager
-	store, err := session.DefaultStore()
-	if err == nil {
-		s.sessionManager.SetStore(store)
-	}
+	// Note: The session manager already has the store set by the server at startup.
+	// No need to create a new store here.
 
 	// Create the background session with workspace configuration
 	bs, err := s.sessionManager.CreateSessionWithWorkspace(req.Name, req.WorkingDir, workspace)
@@ -146,16 +143,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 // handleListSessions handles GET /api/sessions
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to access session store", "error", err)
-		}
-		http.Error(w, "Failed to access session store", http.StatusInternalServerError)
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
+	if store == nil {
+		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
 	}
-	defer store.Close()
 
 	sessions, err := store.List()
 	if err != nil {
@@ -179,10 +172,14 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSessionDetail handles GET, PATCH, DELETE /api/sessions/{id}, GET /api/sessions/{id}/events, WS /api/sessions/{id}/ws, and image operations
+// handleSessionDetail handles GET, PATCH, DELETE {prefix}/api/sessions/{id}, GET {prefix}/api/sessions/{id}/events,
+// WS {prefix}/api/sessions/{id}/ws, and image operations
 func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from path: /api/sessions/{id} or /api/sessions/{id}/events or /api/sessions/{id}/ws or /api/sessions/{id}/images/...
-	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	// Extract session ID from path: {prefix}/api/sessions/{id} or {prefix}/api/sessions/{id}/events etc.
+	// First strip the API prefix, then strip /api/sessions/
+	path := r.URL.Path
+	path = strings.TrimPrefix(path, s.apiPrefix)
+	path = strings.TrimPrefix(path, "/api/sessions/")
 	parts := strings.Split(path, "/")
 	if len(parts) == 0 || parts[0] == "" {
 		http.Error(w, "Session ID required", http.StatusBadRequest)
@@ -236,15 +233,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 //   - before: only return events with seq < before (for pagination)
 //   - order: "asc" (default, oldest first) or "desc" (newest first)
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessionID string, isEventsRequest bool) {
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to access session store", "error", err)
-		}
-		http.Error(w, "Failed to access session store", http.StatusInternalServerError)
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
+	if store == nil {
+		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
 	}
-	defer store.Close()
 
 	if isEventsRequest {
 		// Parse query parameters for pagination
@@ -265,6 +259,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessio
 		}
 
 		var events []session.Event
+		var err error
 		if limit > 0 {
 			if reverseOrder {
 				// Use reverse order read (newest first)
@@ -340,17 +335,14 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to access session store", "error", err)
-		}
-		http.Error(w, "Failed to access session store", http.StatusInternalServerError)
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
+	if store == nil {
+		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
 	}
-	defer store.Close()
 
-	err = store.UpdateMetadata(sessionID, func(meta *session.Metadata) {
+	err := store.UpdateMetadata(sessionID, func(meta *session.Metadata) {
 		if req.Name != nil {
 			meta.Name = *req.Name
 		}
@@ -410,15 +402,12 @@ func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to access session store", "error", err)
-		}
-		http.Error(w, "Failed to access session store", http.StatusInternalServerError)
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
+	if store == nil {
+		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
 	}
-	defer store.Close()
 
 	// Get list of running session IDs
 	runningIDs := s.sessionManager.ListRunningSessions()
@@ -466,15 +455,12 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		s.sessionManager.CloseSession(sessionID, "deleted")
 	}
 
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to access session store", "error", err)
-		}
-		http.Error(w, "Failed to access session store", http.StatusInternalServerError)
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
+	if store == nil {
+		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
 	}
-	defer store.Close()
 
 	if err := store.Delete(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
@@ -621,15 +607,12 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if there are conversations using this workspace
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to create session store", "error", err)
-		}
-		http.Error(w, "Failed to check workspace usage", http.StatusInternalServerError)
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
+	if store == nil {
+		http.Error(w, "Session store not available", http.StatusInternalServerError)
 		return
 	}
-	defer store.Close()
 
 	sessions, err := store.List()
 	if err != nil {

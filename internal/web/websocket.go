@@ -89,7 +89,24 @@ var defaultUpgrader = websocket.Upgrader{
 
 // getSecureUpgrader returns a WebSocket upgrader with security checks.
 func (s *Server) getSecureUpgrader() websocket.Upgrader {
-	return createSecureUpgrader(s.wsSecurityConfig)
+	var logger OriginCheckLogger
+	if s.logger != nil {
+		logger = func(origin, host string, allowed bool, reason string) {
+			s.logger.Info("WS: Origin check",
+				"origin", origin,
+				"host", host,
+				"allowed", allowed,
+				"reason", reason)
+		}
+	}
+
+	// Allow authenticated external connections (e.g., Tailscale funnel)
+	// These have already been authenticated by the auth middleware
+	externalChecker := func(r *http.Request) bool {
+		return IsExternalConnection(r)
+	}
+
+	return createSecureUpgraderFull(s.wsSecurityConfig, logger, externalChecker)
 }
 
 // WSMessage represents a WebSocket message between frontend and backend.
@@ -203,13 +220,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		"user_agent", r.UserAgent(),
 	)
 
-	// Initialize session store for persistence
-	store, err := session.DefaultStore()
-	if err != nil {
-		wsLogger.Error("Failed to create session store", "error", err)
-		// Continue without persistence - not fatal
-		store = nil
-	}
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &WSClient{
@@ -417,10 +429,8 @@ func (c *WSClient) handleNewSession(name string) {
 	cwd = SanitizeWorkingDir(cwd)
 	createdAt := time.Now()
 
-	// Set the store on the session manager if we have one
-	if c.store != nil {
-		c.server.sessionManager.SetStore(c.store)
-	}
+	// Note: The session manager already has the store set by the server at startup.
+	// No need to set it again here.
 
 	// Create a new background session via the session manager
 	bs, err := c.server.sessionManager.CreateSession(sessionName, cwd)
@@ -614,22 +624,11 @@ func (c *WSClient) handleLoadSession(sessionID string) {
 		return
 	}
 
-	// Load session events from store and send to frontend
-	var store *session.Store
-	var err error
-	if c.store != nil {
-		store = c.store
-	} else {
-		store, err = session.DefaultStore()
-		if err != nil {
-			if c.server.logger != nil {
-				c.server.logger.Error("Failed to access session store", "error", err)
-			}
-			c.sendError(GenericErrorMessages["session_store"])
-			return
-		}
-		// Assign to client for reuse
-		c.store = store
+	// Use the client's store (set from server's store at connection time)
+	store := c.store
+	if store == nil {
+		c.sendError(GenericErrorMessages["session_store"])
+		return
 	}
 
 	// Get session metadata
@@ -683,22 +682,11 @@ func (c *WSClient) handleSyncSession(sessionID string, afterSeq int64) {
 		}
 	}
 
-	// Use the client's store if available
-	var store *session.Store
-	var err error
-	if c.store != nil {
-		store = c.store
-	} else {
-		store, err = session.DefaultStore()
-		if err != nil {
-			if c.server.logger != nil {
-				c.server.logger.Error("Failed to access session store", "error", err)
-			}
-			c.sendError(GenericErrorMessages["session_store"])
-			return
-		}
-		// Assign to client for reuse - don't close it since active sessions may use it
-		c.store = store
+	// Use the client's store (set from server's store at connection time)
+	store := c.store
+	if store == nil {
+		c.sendError(GenericErrorMessages["session_store"])
+		return
 	}
 
 	// Get session metadata
@@ -774,21 +762,11 @@ func (c *WSClient) handleSwitchSession(sessionID string) {
 	c.closeCurrentSession("session_switch")
 
 	// Load session from store to get metadata and events
-	var store *session.Store
-	var err error
-	if c.store != nil {
-		store = c.store
-	} else {
-		store, err = session.DefaultStore()
-		if err != nil {
-			if c.server.logger != nil {
-				c.server.logger.Error("Failed to access session store", "error", err)
-			}
-			c.sendError(GenericErrorMessages["session_store"])
-			return
-		}
-		// Assign to client for reuse - don't close it since the resumed session will use it
-		c.store = store
+	// Use the client's store (set from server's store at connection time)
+	store := c.store
+	if store == nil {
+		c.sendError(GenericErrorMessages["session_store"])
+		return
 	}
 
 	// Get session metadata
@@ -815,10 +793,8 @@ func (c *WSClient) handleSwitchSession(sessionID string) {
 		return
 	}
 
-	// Set the store on the session manager if we have one
-	if c.store != nil {
-		c.server.sessionManager.SetStore(c.store)
-	}
+	// Note: The session manager already has the store set by the server at startup.
+	// No need to set it again here.
 
 	// Get working directory
 	cwd := meta.WorkingDir

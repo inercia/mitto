@@ -280,6 +280,9 @@ func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 		bs.observers = make(map[SessionObserver]struct{})
 	}
 	bs.observers[observer] = struct{}{}
+	if bs.logger != nil {
+		bs.logger.Debug("Observer added", "session_id", bs.persistedID, "observer_count", len(bs.observers))
+	}
 }
 
 // RemoveObserver removes an observer from the session.
@@ -287,6 +290,9 @@ func (bs *BackgroundSession) RemoveObserver(observer SessionObserver) {
 	bs.observersMu.Lock()
 	defer bs.observersMu.Unlock()
 	delete(bs.observers, observer)
+	if bs.logger != nil {
+		bs.logger.Debug("Observer removed", "session_id", bs.persistedID, "observer_count", len(bs.observers))
+	}
 }
 
 // ObserverCount returns the number of attached observers.
@@ -305,6 +311,10 @@ func (bs *BackgroundSession) HasObservers() bool {
 func (bs *BackgroundSession) notifyObservers(fn func(SessionObserver)) {
 	bs.observersMu.RLock()
 	defer bs.observersMu.RUnlock()
+	observerCount := len(bs.observers)
+	if observerCount > 1 && bs.logger != nil {
+		bs.logger.Debug("Notifying multiple observers", "count", observerCount, "session_id", bs.persistedID)
+	}
 	for observer := range bs.observers {
 		fn(observer)
 	}
@@ -735,6 +745,13 @@ func (bs *BackgroundSession) onAgentMessage(html string) {
 	}
 
 	// Notify all observers
+	observerCount := bs.ObserverCount()
+	if bs.logger != nil && observerCount > 1 {
+		bs.logger.Debug("Notifying multiple observers of agent message",
+			"session_id", bs.persistedID,
+			"observer_count", observerCount,
+			"html_len", len(html))
+	}
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnAgentMessage(html)
 	})

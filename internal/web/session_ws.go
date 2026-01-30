@@ -53,10 +53,13 @@ type SessionWSClient struct {
 }
 
 // handleSessionWS handles WebSocket connections for a specific session.
-// Route: /api/sessions/{id}/ws
+// Route: {prefix}/api/sessions/{id}/ws
 func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from URL path
-	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	// Extract session ID from URL path: {prefix}/api/sessions/{id}/ws
+	// First strip the API prefix, then strip /api/sessions/
+	path := r.URL.Path
+	path = strings.TrimPrefix(path, s.apiPrefix)
+	path = strings.TrimPrefix(path, "/api/sessions/")
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 || parts[0] == "" || parts[1] != "ws" {
 		http.Error(w, "Invalid session WebSocket path", http.StatusBadRequest)
@@ -91,14 +94,8 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// Apply security settings
 	configureWebSocketConn(conn, s.wsSecurityConfig)
 
-	// Get or create session store
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to create session store", "error", err)
-		}
-		store = nil
-	}
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	clientID := generateClientID()
@@ -124,7 +121,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		meta, err := store.GetMetadata(sessionID)
 		if err == nil {
 			// Session exists in store, resume it
-			s.sessionManager.SetStore(store)
 			cwd := meta.WorkingDir
 			if cwd == "" {
 				cwd, _ = os.Getwd()
@@ -147,6 +143,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	if bs != nil {
 		client.bgSession = bs
 		bs.AddObserver(client)
+		if s.logger != nil {
+			s.logger.Debug("SessionWSClient attached to session",
+				"session_id", sessionID,
+				"client_id", clientID,
+				"observer_count", bs.ObserverCount())
+		}
 	}
 
 	go client.writePump()
@@ -195,6 +197,16 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 
 func (c *SessionWSClient) readPump() {
 	defer func() {
+		if c.server.logger != nil {
+			observerCount := 0
+			if c.bgSession != nil {
+				observerCount = c.bgSession.ObserverCount()
+			}
+			c.server.logger.Debug("SessionWSClient readPump exiting",
+				"session_id", c.sessionID,
+				"client_id", c.clientID,
+				"observer_count_before", observerCount)
+		}
 		c.cancel()
 		if c.bgSession != nil {
 			c.bgSession.RemoveObserver(c)
@@ -203,10 +215,13 @@ func (c *SessionWSClient) readPump() {
 		if c.server.connectionTracker != nil && c.clientIP != "" {
 			c.server.connectionTracker.Remove(c.clientIP)
 		}
-		if c.store != nil {
-			c.store.Close()
-		}
+		// Note: Don't close c.store - it's owned by the server and shared across handlers
 		c.conn.Close()
+		if c.server.logger != nil {
+			c.server.logger.Debug("SessionWSClient readPump cleanup complete",
+				"session_id", c.sessionID,
+				"client_id", c.clientID)
+		}
 	}()
 
 	for {

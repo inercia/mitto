@@ -7,7 +7,6 @@ import (
 
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/secrets"
-	"github.com/inercia/mitto/internal/session"
 )
 
 // configValidationError represents a validation error with HTTP status code.
@@ -134,17 +133,14 @@ func (s *Server) checkWorkspaceConflicts(req *ConfigSaveRequest) *configValidati
 	}
 
 	// Check if any removed workspaces have conversations
-	store, err := session.DefaultStore()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to create session store", "error", err)
-		}
+	// Use the server's session store (owned by the server, not closed by this handler)
+	store := s.Store()
+	if store == nil {
 		return &configValidationError{
 			StatusCode: http.StatusInternalServerError,
-			Message:    "Failed to check workspace usage",
+			Message:    "Session store not available",
 		}
 	}
-	defer store.Close()
 
 	sessions, err := store.List()
 	if err != nil {

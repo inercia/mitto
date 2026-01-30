@@ -115,15 +115,41 @@ func (ct *ConnectionTracker) TotalConnections() int {
 
 // createSecureUpgrader creates a WebSocket upgrader with security checks.
 func createSecureUpgrader(config WebSocketSecurityConfig) websocket.Upgrader {
+	return createSecureUpgraderWithLogger(config, nil)
+}
+
+// createSecureUpgraderWithLogger creates a WebSocket upgrader with security checks and logging.
+func createSecureUpgraderWithLogger(config WebSocketSecurityConfig, logger OriginCheckLogger) websocket.Upgrader {
+	return createSecureUpgraderFull(config, logger, nil)
+}
+
+// createSecureUpgraderFull creates a WebSocket upgrader with all security options.
+func createSecureUpgraderFull(config WebSocketSecurityConfig, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) websocket.Upgrader {
 	return websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
-		CheckOrigin:     createOriginChecker(config.AllowedOrigins),
+		CheckOrigin:     createOriginCheckerFull(config.AllowedOrigins, logger, externalChecker),
 	}
 }
 
 // createOriginChecker returns a function that validates WebSocket origins.
 func createOriginChecker(allowedOrigins []string) func(*http.Request) bool {
+	return createOriginCheckerWithLogger(allowedOrigins, nil)
+}
+
+// OriginCheckLogger is a function that logs origin check details.
+type OriginCheckLogger func(origin, host string, allowed bool, reason string)
+
+// ExternalConnectionChecker is a function that checks if a request is from an authenticated external connection.
+type ExternalConnectionChecker func(r *http.Request) bool
+
+// createOriginCheckerWithLogger returns a function that validates WebSocket origins with logging.
+func createOriginCheckerWithLogger(allowedOrigins []string, logger OriginCheckLogger) func(*http.Request) bool {
+	return createOriginCheckerFull(allowedOrigins, logger, nil)
+}
+
+// createOriginCheckerFull returns a function that validates WebSocket origins with all options.
+func createOriginCheckerFull(allowedOrigins []string, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) func(*http.Request) bool {
 	// Build a set of allowed origins for fast lookup
 	allowedSet := make(map[string]bool)
 	allowAll := false
@@ -137,32 +163,55 @@ func createOriginChecker(allowedOrigins []string) func(*http.Request) bool {
 
 	return func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
+		host := r.Host
+
+		logResult := func(allowed bool, reason string) bool {
+			if logger != nil {
+				logger(origin, host, allowed, reason)
+			}
+			return allowed
+		}
 
 		// No origin header - likely a non-browser client (curl, etc.)
 		// Allow these as they can't perform CSWSH attacks
 		if origin == "" {
-			return true
+			return logResult(true, "no origin header (non-browser client)")
 		}
 
 		// Allow all origins if configured (not recommended)
 		if allowAll {
-			return true
+			return logResult(true, "allow all origins configured")
+		}
+
+		// Allow authenticated external connections (e.g., Tailscale funnel)
+		// These have already been authenticated by the auth middleware
+		if externalChecker != nil && externalChecker(r) {
+			return logResult(true, "authenticated external connection")
 		}
 
 		// Parse the origin URL
 		originURL, err := url.Parse(origin)
 		if err != nil {
-			return false
+			return logResult(false, "failed to parse origin URL")
 		}
 
 		// Check against explicit allowlist
 		if len(allowedSet) > 0 {
-			return allowedSet[strings.ToLower(origin)] ||
-				allowedSet[strings.ToLower(originURL.Host)]
+			if allowedSet[strings.ToLower(origin)] {
+				return logResult(true, "origin in allowlist")
+			}
+			if allowedSet[strings.ToLower(originURL.Host)] {
+				return logResult(true, "origin host in allowlist")
+			}
+			return logResult(false, "origin not in allowlist")
 		}
 
 		// Default: same-origin check
-		return isSameOrigin(r, originURL)
+		result := isSameOrigin(r, originURL)
+		if result {
+			return logResult(true, "same-origin check passed")
+		}
+		return logResult(false, "same-origin check failed")
 	}
 }
 
