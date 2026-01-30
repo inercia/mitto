@@ -29,6 +29,9 @@ const (
 
 	// SessionsDirName is the name of the sessions subdirectory.
 	SessionsDirName = "sessions"
+
+	// AuthSessionsFileName is the name of the auth sessions file.
+	AuthSessionsFileName = "auth_sessions.json"
 )
 
 var (
@@ -164,6 +167,16 @@ func SessionsDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, SessionsDirName), nil
+}
+
+// AuthSessionsPath returns the full path to the auth_sessions.json file.
+// This file stores authenticated user sessions so they persist across server restarts.
+func AuthSessionsPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, AuthSessionsFileName), nil
 }
 
 // ResetCache clears the cached directory path.

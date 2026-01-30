@@ -73,12 +73,13 @@ like auggie, claude-code, and others that implement ACP.`,
 		if err := appdir.EnsureDir(); err != nil {
 			return fmt.Errorf("failed to create Mitto directory: %w", err)
 		}
-
-		// Load configuration using the new hierarchy:
+		// Load configuration using the hierarchy:
 		// 1. --config flag (explicit path) takes highest priority
 		// 2. RC file (~/.mittorc) if it exists
-		// 3. For CLI/Web: error if no RC file found
-		// (macOS app has its own loading logic with fallback to settings.json)
+		// 3. settings.json (created from embedded defaults if needed)
+		//
+		// This matches the macOS app behavior, allowing the web interface
+		// to work without requiring an RC file.
 		var err error
 		if configPath != "" {
 			// Load from specified config file (YAML or JSON format)
@@ -92,12 +93,9 @@ like auggie, claude-code, and others that implement ACP.`,
 				SourcePath: configPath,
 			}
 		} else {
-			// Use RC file hierarchy - RC file is required for CLI/Web modes
-			configResult, err = config.LoadWithHierarchy()
-			if err == config.ErrNoRCFile {
-				// No RC file found - return helpful error message
-				return config.NewRCFileRequiredError()
-			}
+			// Use hierarchy with fallback to settings.json
+			// This allows the web interface to work without an RC file
+			configResult, err = config.LoadSettingsWithFallback()
 			if err != nil {
 				return fmt.Errorf("failed to load configuration: %w", err)
 			}
