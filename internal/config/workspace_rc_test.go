@@ -318,3 +318,153 @@ func TestWorkspaceRCCache_Clear(t *testing.T) {
 	}
 }
 
+func TestParseWorkspaceRC_Conversations(t *testing.T) {
+	yaml := `
+prompts:
+  - name: "Test"
+    prompt: "Test prompt"
+conversations:
+  processing:
+    override: false
+    processors:
+      - when: first
+        position: prepend
+        text: "System context\n\n"
+      - when: all
+        position: append
+        text: "\n\n[Be concise]"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+
+	// Check prompts are still parsed
+	if len(rc.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1", len(rc.Prompts))
+	}
+
+	// Check conversations config
+	if rc.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if rc.Conversations.Processing == nil {
+		t.Fatal("Conversations.Processing is nil")
+	}
+	if rc.Conversations.Processing.Override {
+		t.Error("Override should be false")
+	}
+	if len(rc.Conversations.Processing.Processors) != 2 {
+		t.Fatalf("Processors count = %d, want 2", len(rc.Conversations.Processing.Processors))
+	}
+
+	p0 := rc.Conversations.Processing.Processors[0]
+	if p0.When != ProcessorWhenFirst {
+		t.Errorf("Processor[0].When = %q, want %q", p0.When, ProcessorWhenFirst)
+	}
+	if p0.Position != ProcessorPositionPrepend {
+		t.Errorf("Processor[0].Position = %q, want %q", p0.Position, ProcessorPositionPrepend)
+	}
+	if p0.Text != "System context\n\n" {
+		t.Errorf("Processor[0].Text = %q, want %q", p0.Text, "System context\n\n")
+	}
+
+	p1 := rc.Conversations.Processing.Processors[1]
+	if p1.When != ProcessorWhenAll {
+		t.Errorf("Processor[1].When = %q, want %q", p1.When, ProcessorWhenAll)
+	}
+	if p1.Position != ProcessorPositionAppend {
+		t.Errorf("Processor[1].Position = %q, want %q", p1.Position, ProcessorPositionAppend)
+	}
+}
+
+func TestParseWorkspaceRC_ConversationsOverride(t *testing.T) {
+	yaml := `
+conversations:
+  processing:
+    override: true
+    processors:
+      - when: first
+        position: prepend
+        text: "Override only"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if rc.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if !rc.Conversations.Processing.Override {
+		t.Error("Override should be true")
+	}
+	if len(rc.Conversations.Processing.Processors) != 1 {
+		t.Fatalf("Processors count = %d, want 1", len(rc.Conversations.Processing.Processors))
+	}
+}
+
+func TestParseWorkspaceRC_NoConversations(t *testing.T) {
+	yaml := `
+prompts:
+  - name: "Test"
+    prompt: "Test prompt"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if rc.Conversations != nil {
+		t.Error("Conversations should be nil when not specified")
+	}
+}
+
+func TestLoadWorkspaceRC_WithConversations(t *testing.T) {
+	// Create a temp directory with a .mittorc file containing conversations
+	tmpDir, err := os.MkdirTemp("", "mitto-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	rcContent := `
+prompts:
+  - name: "Test Prompt"
+    prompt: "This is a test prompt"
+conversations:
+  processing:
+    processors:
+      - when: first
+        position: prepend
+        text: "Project context: This is a test project.\n\n"
+`
+	rcPath := filepath.Join(tmpDir, WorkspaceRCFileName)
+	if err := os.WriteFile(rcPath, []byte(rcContent), 0644); err != nil {
+		t.Fatalf("Failed to write .mittorc: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+
+	if rc == nil {
+		t.Fatal("LoadWorkspaceRC returned nil")
+	}
+
+	if len(rc.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1", len(rc.Prompts))
+	}
+
+	if rc.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if len(rc.Conversations.Processing.Processors) != 1 {
+		t.Fatalf("Processors count = %d, want 1", len(rc.Conversations.Processing.Processors))
+	}
+}

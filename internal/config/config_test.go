@@ -1104,3 +1104,238 @@ func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+// Tests for MessageProcessor
+
+func TestMessageProcessor_ShouldApply(t *testing.T) {
+	tests := []struct {
+		name           string
+		when           ProcessorWhen
+		isFirstMessage bool
+		expected       bool
+	}{
+		{"first on first message", ProcessorWhenFirst, true, true},
+		{"first on later message", ProcessorWhenFirst, false, false},
+		{"all on first message", ProcessorWhenAll, true, true},
+		{"all on later message", ProcessorWhenAll, false, true},
+		{"all-except-first on first message", ProcessorWhenAllExceptFirst, true, false},
+		{"all-except-first on later message", ProcessorWhenAllExceptFirst, false, true},
+		{"unknown when value", ProcessorWhen("unknown"), true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &MessageProcessor{When: tt.when}
+			got := p.ShouldApply(tt.isFirstMessage)
+			if got != tt.expected {
+				t.Errorf("ShouldApply(%v) = %v, want %v", tt.isFirstMessage, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMessageProcessor_Apply(t *testing.T) {
+	tests := []struct {
+		name     string
+		position ProcessorPosition
+		text     string
+		message  string
+		expected string
+	}{
+		{"prepend", ProcessorPositionPrepend, "PREFIX:", "hello", "PREFIX:hello"},
+		{"append", ProcessorPositionAppend, ":SUFFIX", "hello", "hello:SUFFIX"},
+		{"prepend empty text", ProcessorPositionPrepend, "", "hello", "hello"},
+		{"append empty text", ProcessorPositionAppend, "", "hello", "hello"},
+		{"unknown position", ProcessorPosition("unknown"), "text", "hello", "hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &MessageProcessor{Position: tt.position, Text: tt.text}
+			got := p.Apply(tt.message)
+			if got != tt.expected {
+				t.Errorf("Apply(%q) = %q, want %q", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestApplyProcessors(t *testing.T) {
+	processors := []MessageProcessor{
+		{When: ProcessorWhenFirst, Position: ProcessorPositionPrepend, Text: "FIRST:"},
+		{When: ProcessorWhenAll, Position: ProcessorPositionAppend, Text: ":ALL"},
+		{When: ProcessorWhenAllExceptFirst, Position: ProcessorPositionPrepend, Text: "LATER:"},
+	}
+
+	tests := []struct {
+		name           string
+		message        string
+		isFirstMessage bool
+		expected       string
+	}{
+		{"first message", "hello", true, "FIRST:hello:ALL"},
+		{"second message", "world", false, "LATER:world:ALL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ApplyProcessors(tt.message, processors, tt.isFirstMessage)
+			if got != tt.expected {
+				t.Errorf("ApplyProcessors(%q, %v) = %q, want %q", tt.message, tt.isFirstMessage, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestApplyProcessors_EmptyProcessors(t *testing.T) {
+	message := "hello"
+	got := ApplyProcessors(message, nil, true)
+	if got != message {
+		t.Errorf("ApplyProcessors with nil processors = %q, want %q", got, message)
+	}
+
+	got = ApplyProcessors(message, []MessageProcessor{}, true)
+	if got != message {
+		t.Errorf("ApplyProcessors with empty processors = %q, want %q", got, message)
+	}
+}
+
+func TestMergeProcessors(t *testing.T) {
+	globalProcessors := []MessageProcessor{
+		{When: ProcessorWhenAll, Position: ProcessorPositionAppend, Text: ":GLOBAL"},
+	}
+	workspaceProcessors := []MessageProcessor{
+		{When: ProcessorWhenFirst, Position: ProcessorPositionPrepend, Text: "WORKSPACE:"},
+	}
+
+	global := &ConversationsConfig{
+		Processing: &ConversationProcessing{Processors: globalProcessors},
+	}
+	workspace := &ConversationsConfig{
+		Processing: &ConversationProcessing{Processors: workspaceProcessors},
+	}
+
+	// Test merge (global first, then workspace)
+	merged := MergeProcessors(global, workspace)
+	if len(merged) != 2 {
+		t.Fatalf("MergeProcessors returned %d processors, want 2", len(merged))
+	}
+	if merged[0].Text != ":GLOBAL" {
+		t.Errorf("First processor text = %q, want %q", merged[0].Text, ":GLOBAL")
+	}
+	if merged[1].Text != "WORKSPACE:" {
+		t.Errorf("Second processor text = %q, want %q", merged[1].Text, "WORKSPACE:")
+	}
+}
+
+func TestMergeProcessors_Override(t *testing.T) {
+	globalProcessors := []MessageProcessor{
+		{When: ProcessorWhenAll, Position: ProcessorPositionAppend, Text: ":GLOBAL"},
+	}
+	workspaceProcessors := []MessageProcessor{
+		{When: ProcessorWhenFirst, Position: ProcessorPositionPrepend, Text: "WORKSPACE:"},
+	}
+
+	global := &ConversationsConfig{
+		Processing: &ConversationProcessing{Processors: globalProcessors},
+	}
+	workspace := &ConversationsConfig{
+		Processing: &ConversationProcessing{
+			Override:   true,
+			Processors: workspaceProcessors,
+		},
+	}
+
+	// Test override (only workspace processors)
+	merged := MergeProcessors(global, workspace)
+	if len(merged) != 1 {
+		t.Fatalf("MergeProcessors with override returned %d processors, want 1", len(merged))
+	}
+	if merged[0].Text != "WORKSPACE:" {
+		t.Errorf("Processor text = %q, want %q", merged[0].Text, "WORKSPACE:")
+	}
+}
+
+func TestMergeProcessors_NilConfigs(t *testing.T) {
+	// Both nil
+	merged := MergeProcessors(nil, nil)
+	if len(merged) != 0 {
+		t.Errorf("MergeProcessors(nil, nil) returned %d processors, want 0", len(merged))
+	}
+
+	// Only global
+	global := &ConversationsConfig{
+		Processing: &ConversationProcessing{
+			Processors: []MessageProcessor{{Text: "GLOBAL"}},
+		},
+	}
+	merged = MergeProcessors(global, nil)
+	if len(merged) != 1 {
+		t.Errorf("MergeProcessors(global, nil) returned %d processors, want 1", len(merged))
+	}
+
+	// Only workspace
+	workspace := &ConversationsConfig{
+		Processing: &ConversationProcessing{
+			Processors: []MessageProcessor{{Text: "WORKSPACE"}},
+		},
+	}
+	merged = MergeProcessors(nil, workspace)
+	if len(merged) != 1 {
+		t.Errorf("MergeProcessors(nil, workspace) returned %d processors, want 1", len(merged))
+	}
+}
+
+func TestParse_ConversationsConfig(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test --acp"
+conversations:
+  processing:
+    override: false
+    processors:
+      - when: first
+        position: prepend
+        text: "System prompt\n\n"
+      - when: all
+        position: append
+        text: "\n\n[Be concise]"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if cfg.Conversations.Processing == nil {
+		t.Fatal("Conversations.Processing is nil")
+	}
+	if cfg.Conversations.Processing.Override {
+		t.Error("Override should be false")
+	}
+	if len(cfg.Conversations.Processing.Processors) != 2 {
+		t.Fatalf("Processors count = %d, want 2", len(cfg.Conversations.Processing.Processors))
+	}
+
+	p0 := cfg.Conversations.Processing.Processors[0]
+	if p0.When != ProcessorWhenFirst {
+		t.Errorf("Processor[0].When = %q, want %q", p0.When, ProcessorWhenFirst)
+	}
+	if p0.Position != ProcessorPositionPrepend {
+		t.Errorf("Processor[0].Position = %q, want %q", p0.Position, ProcessorPositionPrepend)
+	}
+	if p0.Text != "System prompt\n\n" {
+		t.Errorf("Processor[0].Text = %q, want %q", p0.Text, "System prompt\n\n")
+	}
+
+	p1 := cfg.Conversations.Processing.Processors[1]
+	if p1.When != ProcessorWhenAll {
+		t.Errorf("Processor[1].When = %q, want %q", p1.When, ProcessorWhenAll)
+	}
+	if p1.Position != ProcessorPositionAppend {
+		t.Errorf("Processor[1].Position = %q, want %q", p1.Position, ProcessorPositionAppend)
+	}
+}
