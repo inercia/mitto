@@ -43,6 +43,8 @@ acp:
       command: auggie --acp
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
+  - copilot:
+      command: copilot --acp
 ```
 
 Each server has:
@@ -50,6 +52,8 @@ Each server has:
 - **command**: Shell command to start the ACP server
 
 The first server in the list is the default.
+
+See [ACP Servers Configuration](config-acp.md) for detailed setup instructions for each supported agent (Claude, Auggie, Copilot).
 
 ### Web Interface
 
@@ -97,17 +101,18 @@ acp:
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
 
+# Global Prompts (quick-action buttons in the chat interface)
+prompts:
+  - name: "Continue"
+    prompt: "Please continue with the current task."
+  - name: "Propose a plan"
+    prompt: "Please propose a plan for the current task."
+
 # Web Interface
 web:
   host: 127.0.0.1
   port: 8080
   theme: v2
-  
-  prompts:
-    - name: "Continue"
-      prompt: "Please continue with the current task."
-    - name: "Propose a plan"
-      prompt: "Please propose a plan for the current task."
 
 # UI Settings
 ui:
@@ -128,6 +133,7 @@ ui:
 
 ## Related Documentation
 
+- [ACP Servers](config-acp.md) - Setup instructions for Claude, Auggie, Copilot
 - [Web Configuration](config-web.md) - Web server, authentication, hooks, security
 - [macOS Configuration](config-mac.md) - Hotkeys, notifications, desktop app settings
 - [Architecture](architecture.md) - System design and internals

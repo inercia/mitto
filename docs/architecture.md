@@ -483,6 +483,7 @@ The `MarkdownBuffer` balances real-time streaming with correct Markdown renderin
 | `cancel` | `{}` | Cancel current operation |
 | `load_session` | `{"session_id": "string"}` | Load past session |
 | `permission_answer` | `{"option_id": "string", "cancel": bool}` | Respond to permission request |
+| `sync_session` | `{"session_id": "string", "after_seq": number}` | Request events after sequence number (for resync) |
 
 **Backend → Frontend:**
 
@@ -494,8 +495,97 @@ The `MarkdownBuffer` balances real-time streaming with correct Markdown renderin
 | `tool_call` | `{"id": "string", "title": "string", "status": "string"}` | Tool invoked |
 | `tool_update` | `{"id": "string", "status": "string"}` | Tool status update |
 | `permission` | `{"title": "string", "options": [...]}` | Permission request |
-| `prompt_complete` | `{}` | End of response signal |
+| `prompt_complete` | `{"event_count": number}` | End of response signal with current event count |
+| `session_sync` | `{"events": [...], "last_seq": number}` | Response to sync_session with missed events |
 | `error` | `{"message": "string"}` | Error notification |
+
+### Mobile Wake Resync
+
+Mobile browsers (iOS Safari, Android Chrome) suspend WebSocket connections when the device sleeps. When the user wakes their phone, the app may show stale data. The frontend implements a resync mechanism to catch up on missed events.
+
+**Problem Scenario:**
+1. User opens Mitto on phone, views a conversation
+2. Phone goes to sleep (screen off)
+3. WebSocket connection is terminated by the browser
+4. Agent continues processing in the background (server-side)
+5. User wakes phone - UI shows stale messages
+
+**Solution Architecture:**
+
+```mermaid
+sequenceDiagram
+    participant Phone as Mobile Browser
+    participant WS as WebSocket
+    participant Server as Mitto Server
+    participant Storage as localStorage
+
+    Note over Phone: Phone sleeps
+    WS-xServer: Connection closed/zombied
+
+    Note over Phone: Phone wakes
+    Phone->>Phone: visibilitychange event fires
+    Phone->>Server: fetchStoredSessions() (REST)
+    Server-->>Phone: Updated session list
+
+    Phone->>Phone: forceReconnectActiveSession()
+    Phone->>WS: Close existing (zombie) connection
+    Phone->>WS: Create fresh /api/sessions/{id}/ws
+    WS->>Server: Connection established
+
+    Note over Phone,Server: ws.onopen handler
+    Phone->>Storage: getLastSeenSeq(sessionId)
+    Storage-->>Phone: lastSeq = 42
+    Phone->>WS: sync_session {after_seq: 42}
+    Server-->>WS: session_sync {events: [...]}
+    WS-->>Phone: Events merged into UI
+
+    Phone->>Phone: retryPendingPrompts()
+```
+
+**The Zombie Connection Problem:**
+
+Mobile browsers (especially iOS Safari) may keep WebSocket connections in a "zombie" state after the phone sleeps. The connection appears open (`readyState === OPEN`) but is actually dead. Simply trying to send messages over this connection fails silently.
+
+**Solution: Force Reconnect**
+
+Rather than trying to detect if a connection is healthy, the safest approach is to force a fresh reconnection whenever the app becomes visible. This ensures a clean connection state.
+
+**Key Components:**
+
+| Component | Purpose |
+|-----------|---------|
+| `forceReconnectActiveSession` | Closes existing WebSocket and creates fresh connection |
+| `lastSeenSeq` | Sequence number of last received event (stored in localStorage) |
+| `sync_session` | WebSocket message type to request events after a given sequence |
+| `visibilitychange` | Browser event fired when app becomes visible |
+
+**Sync Triggers:**
+
+1. **WebSocket Connect** (`ws.onopen`):
+   - When per-session WebSocket connects, sends `sync_session` with `lastSeenSeq`
+   - Catches up on events missed during disconnection
+   - Retries pending prompts after 500ms
+
+2. **Visibility Change** (`document.visibilityState === 'visible'`):
+   - Refreshes session list via REST API
+   - Forces WebSocket reconnect (closes zombie, creates fresh connection)
+   - The fresh connection triggers sync via `ws.onopen`
+
+**Sequence Number Tracking:**
+
+The `lastSeenSeq` is updated in these scenarios:
+- **Session load**: Set to highest sequence number from loaded events
+- **Prompt complete**: Updated from `event_count` in server response
+- **Session sync**: Updated after receiving sync response
+
+**Backend Support:**
+
+The `handleSyncSession` function in `websocket.go` handles incremental sync:
+
+```go
+// Client sends: {"type": "sync_session", "data": {"session_id": "...", "after_seq": 42}}
+// Server responds with events where seq > 42
+```
 
 ### Frontend Technology
 

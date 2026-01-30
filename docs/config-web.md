@@ -43,21 +43,34 @@ mitto web --server claude-code
 
 ## Predefined Prompts
 
-Configure quick-access prompts that appear in the chat interface:
+Configure quick-access prompts that appear in the chat interface. Prompts are a
+**top-level** configuration section (not under `web`):
 
 ```yaml
-web:
-  prompts:
-    - name: "Continue"
-      prompt: "Please continue with the current task."
-    - name: "Propose a plan"
-      prompt: "Please propose a plan for the current task."
-    - name: "Write tests"
-      prompt: "Please write tests for the code you just created."
+prompts:
+  - name: "Continue"
+    prompt: "Please continue with the current task."
+  - name: "Propose a plan"
+    prompt: "Please propose a plan for the current task."
+    backgroundColor: "#E8F5E9"  # Optional: custom background color
+  - name: "Write tests"
+    prompt: "Please write tests for the code you just created."
+    backgroundColor: "#FFF3E0"
 ```
 
 These prompts appear as quick-action buttons, making it easy to send common
 instructions.
+
+### Prompt Options
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | **Required.** Display name for the button |
+| `prompt` | string | **Required.** The prompt text to insert |
+| `backgroundColor` | string | Optional. Hex color for button background (e.g., `"#E8F5E9"`) |
+
+When a `backgroundColor` is set, the prompt button will display with that color
+and automatically adjust text color for readability.
 
 ## Authentication
 
@@ -346,6 +359,18 @@ Caddy automatically handles WebSocket upgrades and HTTPS.
 ## Complete Example
 
 ```yaml
+# Global prompts (top-level section)
+prompts:
+  - name: "Continue"
+    prompt: "Please continue with the current task."
+  - name: "Propose a plan"
+    prompt: "Please propose a plan for the current task."
+    backgroundColor: "#E8F5E9"
+  - name: "Code Review"
+    prompt: "Please review this code for issues."
+    backgroundColor: "#FFF3E0"
+
+# Web interface configuration
 web:
   host: 0.0.0.0
   port: 8080
@@ -371,12 +396,6 @@ web:
     down:
       command: "pkill -f 'ngrok http'"
       name: "stop-ngrok"
-
-  prompts:
-    - name: "Continue"
-      prompt: "Please continue with the current task."
-    - name: "Propose a plan"
-      prompt: "Please propose a plan for the current task."
 ```
 
 ## Security Headers

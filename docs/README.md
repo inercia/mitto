@@ -8,6 +8,7 @@ This directory contains documentation for Mitto, a CLI client for the Agent Comm
 |----------|-------------|
 | [usage.md](usage.md) | Commands, flags, and usage examples |
 | [config.md](config.md) | Configuration overview and main settings |
+| [config-acp.md](config-acp.md) | ACP server setup (Claude, Auggie, Copilot) |
 | [config-web.md](config-web.md) | Web server, authentication, hooks, and security |
 | [config-mac.md](config-mac.md) | macOS desktop app (building, hotkeys, notifications) |
 | [development.md](development.md) | Building, testing, and contributing |
@@ -26,6 +27,14 @@ The [config.md](config.md) document provides an overview of all configuration op
 
 - ACP server configuration
 - Links to detailed configuration sections
+
+### ACP Servers
+
+The [config-acp.md](config-acp.md) document covers:
+
+- Claude Code setup and configuration
+- Auggie setup and features
+- GitHub Copilot ACP (public preview)
 
 ### Web Interface
 
