@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/config"
 )
 
 var (
@@ -112,17 +113,27 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Load workspace config and merge processors
+	var workspaceConv *config.ConversationsConfig
+	if workspaceRC, err := config.LoadWorkspaceRC(workDir); err == nil && workspaceRC != nil {
+		workspaceConv = workspaceRC.Conversations
+	}
+	processors := config.MergeProcessors(cfg.Conversations, workspaceConv)
+
 	// Run in once mode or interactive mode
 	if isOnceMode {
-		return runOnceMode(ctx, conn, oncePrompt)
+		return runOnceMode(ctx, conn, processors, oncePrompt)
 	}
-	return runInteractiveLoop(ctx, conn)
+	return runInteractiveLoop(ctx, conn, processors)
 }
 
 // runOnceMode sends a single prompt and exits after receiving the response.
-func runOnceMode(ctx context.Context, conn *acp.Connection, prompt string) error {
+func runOnceMode(ctx context.Context, conn *acp.Connection, processors []config.MessageProcessor, prompt string) error {
+	// Apply message processors (this is always the first message in once mode)
+	transformedPrompt := config.ApplyProcessors(prompt, processors, true)
+
 	// Send the prompt to the agent
-	if err := conn.Prompt(ctx, prompt); err != nil {
+	if err := conn.Prompt(ctx, transformedPrompt); err != nil {
 		return fmt.Errorf("prompt error: %w", err)
 	}
 
@@ -145,7 +156,7 @@ var slashCommands = []struct {
 	{"/cancel", "Cancel the current operation"},
 }
 
-func runInteractiveLoop(ctx context.Context, conn *acp.Connection) error {
+func runInteractiveLoop(ctx context.Context, conn *acp.Connection, processors []config.MessageProcessor) error {
 	// Create readline shell
 	rl := readline.NewShell()
 	rl.Prompt.Primary(func() string { return "mitto> " })
@@ -160,6 +171,9 @@ func runInteractiveLoop(ctx context.Context, conn *acp.Connection) error {
 	}
 
 	fmt.Println("\n📝 Type your message and press Enter. Use /help for commands. Tab completes commands.")
+
+	// Track if this is the first message (for processor conditions)
+	isFirstMessage := true
 
 	for {
 		select {
@@ -191,9 +205,13 @@ func runInteractiveLoop(ctx context.Context, conn *acp.Connection) error {
 			}
 		}
 
+		// Apply message processors
+		transformedLine := config.ApplyProcessors(line, processors, isFirstMessage)
+		isFirstMessage = false
+
 		// Send prompt to agent
 		fmt.Println() // Add spacing before response
-		if err := conn.Prompt(ctx, line); err != nil {
+		if err := conn.Prompt(ctx, transformedLine); err != nil {
 			fmt.Printf("\n❌ Error: %v\n", err)
 		}
 		fmt.Println() // Add spacing after response
