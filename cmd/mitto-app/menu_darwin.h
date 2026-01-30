@@ -31,5 +31,10 @@ void completeTermination(void);
 // with trackpad swipes: swipe left goes to next, swipe right goes to previous.
 void setupSwipeGestureRecognizer(void);
 
+// disableWindowFullscreen prevents the window from entering fullscreen mode.
+// This removes the fullscreen button from the window's title bar.
+// This must be called after the window is created.
+void disableWindowFullscreen(void);
+
 #endif // MENU_DARWIN_H
 

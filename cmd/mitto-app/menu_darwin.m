@@ -456,3 +456,122 @@ void setupSwipeGestureRecognizer(void) {
         }];
     }
 }
+
+// Window delegate to prevent fullscreen and handle zoom button clicks
+@interface MittoWindowDelegate : NSObject <NSWindowDelegate>
+@end
+
+@implementation MittoWindowDelegate
+
+// Allow normal zoom behavior
+- (BOOL)windowShouldZoom:(NSWindow *)window toFrame:(NSRect)newFrame {
+    return YES;
+}
+
+// Provide the standard frame for zoom
+- (NSRect)windowWillUseStandardFrame:(NSWindow *)window defaultFrame:(NSRect)newFrame {
+    return newFrame;
+}
+
+@end
+
+// Global window delegate instance (must be kept alive)
+static MittoWindowDelegate *gWindowDelegate = nil;
+// Observer for window notifications
+static id gWindowObserver = nil;
+
+// Helper function to configure a window to disallow fullscreen
+static void configureWindowNoFullscreen(NSWindow *window) {
+    if (!window) return;
+
+    // Set collection behavior to explicitly disallow fullscreen
+    NSWindowCollectionBehavior behavior = window.collectionBehavior;
+    // Clear any fullscreen-related behaviors
+    behavior &= ~(NSWindowCollectionBehaviorFullScreenPrimary |
+                 NSWindowCollectionBehaviorFullScreenAuxiliary |
+                 NSWindowCollectionBehaviorFullScreenAllowsTiling);
+    // Set to explicitly disallow fullscreen
+    behavior |= NSWindowCollectionBehaviorFullScreenNone;
+    window.collectionBehavior = behavior;
+
+    // Set our delegate if not already set
+    if (gWindowDelegate == nil) {
+        gWindowDelegate = [[MittoWindowDelegate alloc] init];
+    }
+    if (window.delegate != gWindowDelegate) {
+        window.delegate = gWindowDelegate;
+    }
+}
+
+// disableWindowFullscreen prevents the window from entering fullscreen mode.
+// This removes the fullscreen capability entirely from the window.
+void disableWindowFullscreen(void) {
+    @autoreleasepool {
+        NSApplication *app = [NSApplication sharedApplication];
+
+        // Register an observer to catch any window that becomes visible
+        // This ensures we catch windows created by webview libraries
+        if (gWindowObserver == nil) {
+            gWindowObserver = [[NSNotificationCenter defaultCenter]
+                addObserverForName:NSWindowDidBecomeKeyNotification
+                object:nil
+                queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *notification) {
+                    NSWindow *w = notification.object;
+                    if (w) {
+                        configureWindowNoFullscreen(w);
+                    }
+                }];
+        }
+
+        // Also observe window did become main
+        static id mainObserver = nil;
+        if (mainObserver == nil) {
+            mainObserver = [[NSNotificationCenter defaultCenter]
+                addObserverForName:NSWindowDidBecomeMainNotification
+                object:nil
+                queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *notification) {
+                    NSWindow *w = notification.object;
+                    if (w) {
+                        configureWindowNoFullscreen(w);
+                    }
+                }];
+        }
+
+        // Try to find and configure existing windows
+        NSArray *windows = [app windows];
+        for (NSWindow *window in windows) {
+            configureWindowNoFullscreen(window);
+        }
+
+        // Also configure main window if available
+        NSWindow *mainWindow = [app mainWindow];
+        if (mainWindow) {
+            configureWindowNoFullscreen(mainWindow);
+        }
+
+        // Apply again after delays to override any webview library settings
+        void (^applyToAllWindows)(void) = ^{
+            NSArray *ws = [[NSApplication sharedApplication] windows];
+            for (NSWindow *w in ws) {
+                configureWindowNoFullscreen(w);
+            }
+            NSWindow *main = [[NSApplication sharedApplication] mainWindow];
+            if (main) {
+                configureWindowNoFullscreen(main);
+            }
+        };
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), applyToAllWindows);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), applyToAllWindows);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), applyToAllWindows);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), applyToAllWindows);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), applyToAllWindows);
+    }
+}

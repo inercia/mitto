@@ -727,6 +727,12 @@ func run() error {
 		})
 	}
 
+	// Disable fullscreen mode for the window
+	// This removes the fullscreen button from the title bar
+	w.Dispatch(func() {
+		C.disableWindowFullscreen()
+	})
+
 	// Activate the app to bring it to the foreground on launch
 	// This is dispatched to run after the window is fully created
 	w.Dispatch(func() {
