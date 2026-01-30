@@ -8,12 +8,34 @@ import (
 	"sync"
 	"time"
 
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
 )
+
+// htmlSanitizer is a shared HTML sanitizer policy for agent messages.
+// It allows safe HTML elements while stripping potentially dangerous ones like <script>.
+var htmlSanitizer = createHTMLSanitizer()
+
+// createHTMLSanitizer creates a bluemonday policy that allows safe HTML for markdown rendering.
+// This policy is more permissive than StrictPolicy but still prevents XSS attacks.
+func createHTMLSanitizer() *bluemonday.Policy {
+	p := bluemonday.UGCPolicy()
+
+	// Allow code highlighting classes from goldmark-highlighting
+	p.AllowAttrs("class").Matching(bluemonday.SpaceSeparatedTokens).OnElements("code", "pre", "span", "div")
+
+	// Allow data attributes for code blocks (used by some highlighters)
+	p.AllowDataAttributes()
+
+	// Allow id attributes for heading anchors
+	p.AllowAttrs("id").Matching(bluemonday.Paragraph).OnElements("h1", "h2", "h3", "h4", "h5", "h6")
+
+	return p
+}
 
 const (
 	// defaultFlushTimeout is the default timeout for flushing buffered content.
@@ -55,7 +77,8 @@ func NewMarkdownBuffer(onFlush func(html string)) *MarkdownBuffer {
 		goldmark.WithRendererOptions(
 			html.WithHardWraps(),
 			html.WithXHTML(),
-			html.WithUnsafe(), // Allow raw HTML in markdown
+			// Note: html.WithUnsafe() was removed for security.
+			// Raw HTML in markdown is now sanitized via bluemonday before output.
 		),
 	)
 
@@ -249,7 +272,10 @@ func (mb *MarkdownBuffer) flushLocked() {
 
 	htmlStr := htmlBuf.String()
 	if htmlStr != "" && mb.onFlush != nil {
-		mb.onFlush(htmlStr)
+		// Sanitize HTML to prevent XSS attacks from malicious agent responses.
+		// This removes dangerous elements like <script> while preserving safe formatting.
+		sanitizedHTML := htmlSanitizer.Sanitize(htmlStr)
+		mb.onFlush(sanitizedHTML)
 	}
 }
 
