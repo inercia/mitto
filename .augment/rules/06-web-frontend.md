@@ -58,6 +58,8 @@ The library provides pure functions for state manipulation:
 | `updateLastMessageInSession()` | Immutably update last message |
 | `removeSessionFromState()` | Remove session and determine next active |
 | `limitMessages()` | Enforce MAX_MESSAGES limit |
+| `getMinSeq(events)` | Get minimum sequence number from events array |
+| `getMaxSeq(events)` | Get maximum sequence number from events array |
 
 ## Memory Management
 
@@ -304,4 +306,113 @@ useLayoutEffect(() => {
     }
 }, [activeSessionId, messages.length]);
 ```
+
+## Mobile Wake Resync
+
+Mobile browsers (iOS Safari, Android Chrome) suspend WebSocket connections when the device sleeps. The frontend must resync when the app becomes visible again.
+
+### Problem
+
+1. User opens Mitto on phone, views a conversation
+2. Phone goes to sleep (screen off)
+3. WebSocket connection is terminated by the browser
+4. Agent continues processing in the background (server-side)
+5. User wakes phone - UI shows stale messages
+
+### Solution: Sequence Number Tracking
+
+Track the last seen event sequence number in localStorage:
+
+```javascript
+import { getLastSeenSeq, setLastSeenSeq } from '../utils/storage.js';
+
+// Update lastSeenSeq when loading a session
+const lastSeq = events.length > 0 ? getMaxSeq(events) : 0;
+if (lastSeq > 0) {
+    setLastSeenSeq(sessionId, lastSeq);
+}
+
+// Update lastSeenSeq when prompt completes
+case 'prompt_complete': {
+    if (msg.data.event_count) {
+        setLastSeenSeq(sessionId, msg.data.event_count);
+    }
+    break;
+}
+```
+
+### Sync on WebSocket Reconnect
+
+When per-session WebSocket connects, request missed events:
+
+```javascript
+ws.onopen = () => {
+    // Sync events we may have missed while disconnected
+    const lastSeq = getLastSeenSeq(sessionId);
+    if (lastSeq > 0) {
+        ws.send(JSON.stringify({
+            type: 'sync_session',
+            data: { session_id: sessionId, after_seq: lastSeq }
+        }));
+    }
+};
+```
+
+### Force Reconnect on Visibility Change
+
+**The Zombie Connection Problem:** Mobile browsers (especially iOS Safari) may keep WebSocket connections in a "zombie" state after the phone sleeps. The connection appears open (`readyState === OPEN`) but is actually dead.
+
+**Solution:** Force a fresh reconnection whenever the app becomes visible:
+
+```javascript
+// Force reconnect - closes zombie connection and creates fresh one
+const forceReconnectActiveSession = useCallback(() => {
+    const currentSessionId = activeSessionIdRef.current;
+    if (!currentSessionId) return;
+
+    // Close existing WebSocket (may be zombie)
+    const existingWs = sessionWsRefs.current[currentSessionId];
+    if (existingWs) {
+        delete sessionWsRefs.current[currentSessionId];
+        existingWs.close();
+    }
+
+    // Create fresh connection - ws.onopen will sync events
+    connectToSession(currentSessionId);
+}, [connectToSession]);
+
+useEffect(() => {
+    const handleVisibilityChange = () => {
+        if (document.visibilityState === 'visible') {
+            // Refresh session list
+            fetchStoredSessions();
+
+            // Force reconnect to get a clean connection
+            // The ws.onopen handler will sync events and retry pending prompts
+            setTimeout(() => {
+                forceReconnectActiveSession();
+            }, 300);
+        }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+}, [fetchStoredSessions, forceReconnectActiveSession]);
+```
+
+### Key Storage Functions
+
+| Function | Purpose |
+|----------|---------|
+| `getLastSeenSeq(sessionId)` | Get last seen sequence number from localStorage |
+| `setLastSeenSeq(sessionId, seq)` | Store sequence number in localStorage |
+| `getLastActiveSessionId()` | Get last active session for page reload recovery |
+| `setLastActiveSessionId(id)` | Store active session ID |
+
+### WebSocket Message Types for Sync
+
+| Direction | Type | Data | Purpose |
+|-----------|------|------|---------|
+| Frontend → Backend | `sync_session` | `{session_id, after_seq}` | Request events after sequence |
+| Backend → Frontend | `session_sync` | `{events, last_seq}` | Response with missed events |
 

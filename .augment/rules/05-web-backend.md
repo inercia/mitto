@@ -67,6 +67,7 @@ buffer.Close()       // Flush and cleanup
 - `prompt` - Send user message
 - `cancel` - Cancel current operation
 - `permission_answer` - Respond to permission request
+- `sync_session` - Request events after a sequence number (for mobile wake resync)
 
 **Backend → Frontend:**
 - `connected` - Session established
@@ -74,8 +75,37 @@ buffer.Close()       // Flush and cleanup
 - `agent_thought` - Plain text thinking
 - `tool_call` / `tool_update` - Tool status
 - `permission` - Permission request
-- `prompt_complete` - Response finished
+- `prompt_complete` - Response finished (includes `event_count` for sync tracking)
+- `session_sync` - Response to sync_session with missed events
 - `error` - Error message
+
+## Session Sync Handler
+
+The `handleSyncSession` function in `websocket.go` handles incremental sync requests from mobile clients that may have missed events while sleeping:
+
+```go
+// Client sends: {"type": "sync_session", "data": {"session_id": "...", "after_seq": 42}}
+func (c *WSClient) handleSyncSession(data json.RawMessage) {
+    var req struct {
+        SessionID string `json:"session_id"`
+        AfterSeq  int    `json:"after_seq"`
+    }
+    json.Unmarshal(data, &req)
+
+    // Load events from store after the given sequence
+    events, err := c.store.GetEventsAfter(req.SessionID, req.AfterSeq)
+
+    // Send back to client
+    c.sendMessage("session_sync", map[string]interface{}{
+        "events":   events,
+        "last_seq": lastSeq,
+    })
+}
+```
+
+The frontend uses this to catch up on missed events when:
+1. WebSocket reconnects after phone sleep
+2. App becomes visible after being backgrounded
 
 ## Background Sessions
 
