@@ -48,6 +48,9 @@ type SessionManager struct {
 
 	// workspaceRCCache provides cached access to workspace-specific .mittorc files.
 	workspaceRCCache *config.WorkspaceRCCache
+
+	// globalConversations contains global conversation processing configuration.
+	globalConversations *config.ConversationsConfig
 }
 
 // NewSessionManager creates a new session manager with legacy single-workspace configuration.
@@ -102,6 +105,14 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	}
 
 	return sm
+}
+
+// SetGlobalConversations sets the global conversation processing configuration.
+// This is merged with workspace-specific configurations when creating sessions.
+func (sm *SessionManager) SetGlobalConversations(conv *config.ConversationsConfig) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.globalConversations = conv
 }
 
 // SetWorkspaces sets the available workspaces.
@@ -346,6 +357,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		return nil, ErrTooManySessions
 	}
 	store := sm.store
+	globalConv := sm.globalConversations
 
 	// Determine ACP command and server
 	acpCommand := sm.acpCommand
@@ -363,6 +375,15 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	}
 	sm.mu.Unlock()
 
+	// Load workspace-specific conversation config and merge with global
+	var workspaceConv *config.ConversationsConfig
+	if workingDir != "" && sm.workspaceRCCache != nil {
+		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
+			workspaceConv = rc.Conversations
+		}
+	}
+	processors := config.MergeProcessors(globalConv, workspaceConv)
+
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:  acpCommand,
 		ACPServer:   acpServer,
@@ -371,6 +392,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		Logger:      sm.logger,
 		Store:       store,
 		SessionName: name,
+		Processors:  processors,
 	})
 	if err != nil {
 		return nil, err
@@ -454,6 +476,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		return nil, ErrTooManySessions
 	}
 	store := sm.store
+	globalConv := sm.globalConversations
 
 	// Determine ACP command and server from workspace configuration
 	acpCommand := sm.acpCommand
@@ -488,6 +511,16 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	}
 	sm.mu.Unlock()
 
+	// Load workspace-specific conversation config and merge with global
+	// Note: For resumed sessions, isFirstPrompt is false, so "first" processors won't apply
+	var workspaceConv *config.ConversationsConfig
+	if workingDir != "" && sm.workspaceRCCache != nil {
+		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
+			workspaceConv = rc.Conversations
+		}
+	}
+	processors := config.MergeProcessors(globalConv, workspaceConv)
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
@@ -500,6 +533,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		Logger:       sm.logger,
 		Store:        store,
 		SessionName:  sessionName,
+		Processors:   processors,
 	})
 	if err != nil {
 		return nil, err

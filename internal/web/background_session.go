@@ -12,6 +12,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -63,6 +64,10 @@ type BackgroundSession struct {
 	isResumed       bool           // True if this session was resumed from storage
 	store           *session.Store // Store reference for reading history
 	historyInjected bool           // True after history has been injected
+
+	// Conversation processing
+	processors    []config.MessageProcessor // Merged processors from global and workspace config
+	isFirstPrompt bool                      // True until first prompt is sent (for processor conditions)
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -76,6 +81,7 @@ type BackgroundSessionConfig struct {
 	Logger       *slog.Logger
 	Store        *session.Store
 	SessionName  string
+	Processors   []config.MessageProcessor // Merged processors for message transformation
 }
 
 // NewBackgroundSession creates a new background session.
@@ -92,6 +98,8 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 		agentThoughtBuf: &agentMessageBuffer{},
 		permissionChan:  make(chan acp.RequestPermissionResponse, 1),
 		observers:       make(map[SessionObserver]struct{}),
+		processors:      config.Processors,
+		isFirstPrompt:   true, // New session starts with first prompt pending
 	}
 
 	// Create recorder for persistence
@@ -156,6 +164,8 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		observers:       make(map[SessionObserver]struct{}),
 		isResumed:       true, // Mark as resumed session
 		store:           config.Store,
+		processors:      config.Processors,
+		isFirstPrompt:   false, // Resumed session = first prompt already sent
 	}
 
 	// Resume recorder for the existing session
@@ -591,6 +601,12 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	if shouldInjectHistory {
 		bs.historyInjected = true
 	}
+
+	// Capture first prompt state for message processors
+	isFirst := bs.isFirstPrompt
+	if isFirst {
+		bs.isFirstPrompt = false
+	}
 	bs.promptMu.Unlock()
 
 	// Check if session needs auto-title generation (before any state changes)
@@ -652,9 +668,10 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	})
 
 	// Build the actual prompt to send to ACP
-	promptMessage := message
+	// Apply message processors (prepend/append based on config)
+	promptMessage := config.ApplyProcessors(message, bs.processors, isFirst)
 	if shouldInjectHistory {
-		promptMessage = bs.buildPromptWithHistory(message)
+		promptMessage = bs.buildPromptWithHistory(promptMessage)
 	}
 
 	// Build final content blocks: images first, then text

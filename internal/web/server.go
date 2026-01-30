@@ -183,6 +183,11 @@ func NewServer(config Config) (*Server, error) {
 	}
 	sessionMgr.SetStore(store)
 
+	// Set global conversations config for message processing
+	if config.MittoConfig != nil {
+		sessionMgr.SetGlobalConversations(config.MittoConfig.Conversations)
+	}
+
 	// Initialize auth manager if auth is configured
 	var authMgr *AuthManager
 	if config.MittoConfig != nil && config.MittoConfig.Web.Auth != nil {
