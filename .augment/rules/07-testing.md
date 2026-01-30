@@ -271,3 +271,109 @@ export const timeouts = {
 };
 ```
 
+## JavaScript Unit Tests (lib.js)
+
+Frontend utility functions in `lib.js` are tested with Jest. Tests run in Node.js without a browser.
+
+### Running JavaScript Tests
+
+```bash
+cd web/static && npm test
+```
+
+### Test File Structure
+
+```javascript
+// lib.test.js
+import {
+    hasMarkdownContent,
+    renderUserMarkdown,
+    MAX_MARKDOWN_LENGTH,
+    // ... other exports
+} from './lib.js';
+
+describe('hasMarkdownContent', () => {
+    test('returns false for plain text', () => {
+        expect(hasMarkdownContent('Hello world')).toBe(false);
+    });
+
+    test('detects headers', () => {
+        expect(hasMarkdownContent('# Header')).toBe(true);
+    });
+});
+```
+
+### Mocking Browser Globals
+
+Functions that depend on browser globals (like `window.marked`) should gracefully handle their absence:
+
+```javascript
+// In lib.js - check for browser environment
+export function renderUserMarkdown(text) {
+    // Check if marked and DOMPurify are available
+    if (typeof window === 'undefined' || !window.marked || !window.DOMPurify) {
+        return null;  // Graceful fallback
+    }
+    // ... render logic
+}
+
+// In lib.test.js - test the fallback
+test('returns null when window.marked is not available', () => {
+    // In Node.js, window is undefined, so this tests the fallback
+    expect(renderUserMarkdown('# Header')).toBeNull();
+});
+```
+
+### Mocking localStorage
+
+```javascript
+// Mock localStorage for testing
+const localStorageMock = (() => {
+    let store = {};
+    return {
+        getItem: (key) => store[key] || null,
+        setItem: (key, value) => { store[key] = value; },
+        removeItem: (key) => { delete store[key]; },
+        clear: () => { store = {}; }
+    };
+})();
+
+Object.defineProperty(global, 'localStorage', { value: localStorageMock });
+
+describe('savePendingPrompt', () => {
+    beforeEach(() => {
+        localStorageMock.clear();
+    });
+
+    test('saves and retrieves a pending prompt', () => {
+        savePendingPrompt('session1', 'prompt1', 'Hello', []);
+        const pending = getPendingPrompts();
+        expect(pending['prompt1']).toBeDefined();
+    });
+});
+```
+
+### Testing Pure Functions
+
+Keep functions in `lib.js` pure (no side effects, no DOM access) for easy testing:
+
+```javascript
+// Good: Pure function, easy to test
+export function hasMarkdownContent(text) {
+    if (!text || typeof text !== 'string') return false;
+    return /^#{1,6}\s+\S/m.test(text);  // Check for headers
+}
+
+// Avoid: Function with side effects
+export function renderAndInsert(text, element) {
+    element.innerHTML = marked.parse(text);  // Hard to test
+}
+```
+
+### Test Coverage for lib.js
+
+Key areas to test:
+- **Input validation**: null, undefined, empty string, wrong types
+- **Edge cases**: very long strings, special characters
+- **Regex patterns**: ensure patterns match expected inputs and reject non-matches
+- **Error handling**: graceful fallbacks when dependencies unavailable

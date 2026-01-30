@@ -14,6 +14,7 @@ globs:
 
 - **No build step**: Preact + HTM loaded from CDN
 - **Styling**: Tailwind CSS via Play CDN
+- **Markdown**: marked.js + DOMPurify for user message rendering
 - **Embedding**: `go:embed` directive in `web/embed.go`
 - **Single binary**: All assets embedded in Go binary
 
@@ -39,11 +40,13 @@ App
 
 | File | Purpose |
 |------|---------|
-| `app.js` | Main Preact application, components, state management |
+| `app.js` | Main Preact application, state management |
 | `lib.js` | Pure utility functions (testable without DOM) |
 | `lib.test.js` | Jest tests for lib.js |
+| `preact-loader.js` | CDN imports, library initialization |
 | `styles.css` | Custom CSS for Markdown rendering |
-| `index.html` | HTML shell, CDN imports, Tailwind config |
+| `index.html` | HTML shell, Tailwind config |
+| `components/Message.js` | Message rendering component |
 
 ## lib.js Functions
 
@@ -60,6 +63,8 @@ The library provides pure functions for state manipulation:
 | `limitMessages()` | Enforce MAX_MESSAGES limit |
 | `getMinSeq(events)` | Get minimum sequence number from events array |
 | `getMaxSeq(events)` | Get maximum sequence number from events array |
+| `hasMarkdownContent(text)` | Detect if text contains Markdown formatting |
+| `renderUserMarkdown(text)` | Render user message as Markdown HTML |
 
 ## Memory Management
 
@@ -124,11 +129,85 @@ const handleMessage = useCallback((msg) => {
 </script>
 ```
 
-**Note**: This project bundles hooks via `window.preact` in `index.html` to avoid separate imports:
+**Note**: This project bundles libraries via `window` globals in `preact-loader.js`:
 
 ```javascript
+// preact-loader.js - loads and exposes libraries
+import { marked } from 'https://cdn.skypack.dev/marked@12.0.0';
+import DOMPurify from 'https://cdn.skypack.dev/dompurify@3.0.8';
+
+window.preact = { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, html };
+window.marked = marked;
+window.DOMPurify = DOMPurify;
+
 // app.js - imports from window.preact bundle
 const { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, html } = window.preact;
+```
+
+## User Message Markdown Rendering
+
+User messages support Markdown rendering with performance safeguards:
+
+### Architecture
+
+```
+User Message Text
+       ↓
+hasMarkdownContent() → false → Plain text display (<pre>)
+       ↓ true
+Length > MAX_MARKDOWN_LENGTH → Plain text display
+       ↓ within limit
+window.marked.parse() → DOMPurify.sanitize() → HTML display
+```
+
+### Performance Safeguards
+
+1. **Heuristic detection**: `hasMarkdownContent()` checks for Markdown patterns before rendering
+2. **Length limit**: Messages > 10,000 chars skip Markdown processing
+3. **Memoization**: `useMemo()` prevents re-rendering on every component update
+4. **Graceful fallback**: Any error returns `null` → plain text display
+
+### Markdown Detection Patterns
+
+The `hasMarkdownContent()` function detects:
+- Headers (`#`, `##`, etc.)
+- Bold (`**text**`, `__text__`)
+- Italic (`*text*`, `_text_`)
+- Code (`` `code` ``, ``` ```blocks``` ```)
+- Links (`[text](url)`)
+- Lists (`- item`, `1. item`)
+- Blockquotes (`> text`)
+- Tables, horizontal rules, strikethrough
+
+### Usage in Message Component
+
+```javascript
+import { renderUserMarkdown } from '../lib.js';
+
+// In Message component
+const renderedHtml = useMemo(() => renderUserMarkdown(message.text), [message.text]);
+const useMarkdown = renderedHtml !== null;
+
+return useMarkdown
+    ? html`<div class="markdown-content markdown-content-user" dangerouslySetInnerHTML=${{ __html: renderedHtml }} />`
+    : html`<pre class="whitespace-pre-wrap font-sans text-sm m-0">${message.text}</pre>`;
+```
+
+### Styling User Message Markdown
+
+User messages use `.markdown-content-user` class for styling that works with the user message background:
+
+```css
+/* User message markdown - darker backgrounds for contrast */
+.markdown-content-user pre {
+    background: rgba(0, 0, 0, 0.15);
+}
+.markdown-content-user :not(pre) > code {
+    background: rgba(0, 0, 0, 0.15);
+}
+.markdown-content-user a {
+    color: #1d4ed8;
+}
 ```
 
 ## Dual Validation (Frontend + Backend)
@@ -415,4 +494,292 @@ useEffect(() => {
 |-----------|------|------|---------|
 | Frontend → Backend | `sync_session` | `{session_id, after_seq}` | Request events after sequence |
 | Backend → Frontend | `session_sync` | `{events, last_seq}` | Response with missed events |
+
+## Message Deduplication
+
+### The Duplicate Message Problem
+
+Duplicate messages can occur when:
+1. **Sync after streaming**: Messages received via WebSocket streaming don't have sequence numbers. When reconnecting, sync may return the same messages (now with seq numbers).
+2. **Multiple observers**: If multiple WebSocket connections exist for the same session, each receives the same message.
+3. **Reconnection race conditions**: Old WebSocket's `onclose` handler may interfere with new connection.
+
+### Deduplication in session_sync Handler
+
+When sync returns messages, deduplicate against existing messages by content hash:
+
+```javascript
+case 'session_sync': {
+    const events = msg.data.events || [];
+    const newMessages = convertEventsToMessages(events);
+
+    setSessions(prev => {
+        const session = prev[sessionId] || { messages: [], info: {} };
+        const existingMessages = session.messages;
+
+        // Create content hashes from existing messages
+        const existingHashes = new Set();
+        for (const m of existingMessages) {
+            const content = (m.text || m.html || '').substring(0, 200);
+            const hash = `${m.role}:${content}`;
+            existingHashes.add(hash);
+        }
+
+        // Filter out duplicates
+        const filteredNewMessages = newMessages.filter(m => {
+            const content = (m.text || m.html || '').substring(0, 200);
+            const hash = `${m.role}:${content}`;
+            return !existingHashes.has(hash);
+        });
+
+        return {
+            ...prev,
+            [sessionId]: {
+                ...session,
+                messages: limitMessages([...existingMessages, ...filteredNewMessages]),
+                // ...
+            }
+        };
+    });
+    break;
+}
+```
+
+### Deduplication in user_prompt Handler
+
+When receiving prompts from other clients, check if already exists:
+
+```javascript
+case 'user_prompt': {
+    const { is_mine, message } = msg.data;
+
+    if (!is_mine) {
+        setSessions(prev => {
+            const session = prev[sessionId];
+            if (!session) return prev;
+
+            // Check if message already exists
+            const messageContent = message?.substring(0, 200) || '';
+            const alreadyExists = session.messages.some(m =>
+                m.role === ROLE_USER &&
+                (m.text || '').substring(0, 200) === messageContent
+            );
+
+            if (alreadyExists) {
+                console.log('Skipping duplicate user_prompt');
+                return prev;
+            }
+
+            // Add the message...
+        });
+    }
+    break;
+}
+```
+
+## WebSocket Connection Management
+
+### Preventing Reference Leaks on Close
+
+When a WebSocket closes, only delete its reference if it's still the current one:
+
+```javascript
+ws.onclose = () => {
+    // Only delete ref if it still points to THIS WebSocket
+    // A newer WebSocket may have been created during reconnection
+    if (sessionWsRefs.current[sessionId] === ws) {
+        delete sessionWsRefs.current[sessionId];
+    } else {
+        console.log('WebSocket closed but ref points to different WebSocket');
+    }
+
+    // Only schedule reconnect if no newer connection exists
+    if (activeSessionIdRef.current === sessionId && !sessionWsRefs.current[sessionId]) {
+        // Schedule reconnect...
+    }
+};
+```
+
+### Force Reconnect Pattern
+
+When forcing a reconnection (e.g., on visibility change), delete the ref BEFORE closing:
+
+```javascript
+const forceReconnectActiveSession = useCallback(() => {
+    const currentSessionId = activeSessionIdRef.current;
+    if (!currentSessionId) return;
+
+    // Clear pending reconnect timer
+    if (sessionReconnectRefs.current[currentSessionId]) {
+        clearTimeout(sessionReconnectRefs.current[currentSessionId]);
+        delete sessionReconnectRefs.current[currentSessionId];
+    }
+
+    // Delete ref FIRST so onclose doesn't schedule another reconnect
+    const existingWs = sessionWsRefs.current[currentSessionId];
+    if (existingWs) {
+        delete sessionWsRefs.current[currentSessionId];
+        existingWs.close();
+    }
+
+    // Create fresh connection
+    connectToSession(currentSessionId);
+}, [connectToSession]);
+```
+
+### Debug Logging for WebSocket Issues
+
+Add unique IDs to WebSocket connections for debugging:
+
+```javascript
+const connectToSession = useCallback((sessionId) => {
+    const ws = new WebSocket(`${protocol}//${host}/api/sessions/${sessionId}/ws`);
+    const wsId = Math.random().toString(36).substring(2, 8);
+    ws._debugId = wsId;
+
+    ws.onopen = () => {
+        console.log(`WebSocket connected: ${sessionId} (ws: ${wsId})`);
+    };
+
+    ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        console.log(`[WS ${wsId}] Received:`, msg.type);
+    };
+
+    ws.onclose = () => {
+        console.log(`WebSocket closed: ${sessionId} (ws: ${wsId})`);
+    };
+}, []);
+```
+
+## API Prefix Handling
+
+### How It Works
+
+The API prefix is injected by the server into the HTML page and used by all API/WebSocket calls:
+
+```html
+<!-- In index.html - replaced by server -->
+<script>window.mittoApiPrefix = "{{API_PREFIX}}";</script>
+```
+
+```javascript
+// In utils/api.js
+export function getApiPrefix() {
+    return window.mittoApiPrefix || '';
+}
+
+export function apiUrl(path) {
+    return getApiPrefix() + path;  // e.g., "/mitto" + "/api/sessions"
+}
+
+export function wsUrl(path) {
+    const prefix = getApiPrefix();
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}${prefix}${path}`;
+}
+```
+
+### Debugging API Prefix Issues
+
+**Symptom**: "Connecting to server" forever, requests go to wrong path
+
+**Add temporary debug logging:**
+
+```javascript
+// In utils/api.js - add at module load
+console.log('[api.js] window.mittoApiPrefix:', window.mittoApiPrefix);
+
+// In wsUrl function
+export function wsUrl(path) {
+    const prefix = getApiPrefix();
+    const url = `${protocol}//${window.location.host}${prefix}${path}`;
+    console.log('[wsUrl] prefix:', prefix, 'path:', path, 'full URL:', url);
+    return url;
+}
+```
+
+**Check server logs for path mismatch:**
+```
+path=/api/events        ← WRONG (no prefix)
+path=/mitto/api/events  ← CORRECT (has prefix)
+```
+
+**Common causes:**
+1. Cached JavaScript with old/empty prefix
+2. HTML not being processed by CSP nonce middleware
+3. Script loading order issue (api.js loaded before prefix is set)
+
+### Script Loading Order
+
+The API prefix MUST be set before any scripts that use it:
+
+```html
+<!-- CORRECT ORDER -->
+<script>window.mittoApiPrefix = "{{API_PREFIX}}";</script>  <!-- 1. Set prefix -->
+<script src="./theme-loader.js"></script>                   <!-- 2. May use prefix -->
+<script type="module" src="./preact-loader.js"></script>    <!-- 3. Loads app -->
+```
+
+## Mobile Browser Debugging
+
+### iOS Safari Remote Debugging
+
+To see console logs from iPhone Safari:
+
+1. **On iPhone**: Settings → Safari → Advanced → Web Inspector (enable)
+2. **Connect iPhone to Mac via USB**
+3. **On Mac**: Safari → Develop menu → Your iPhone → The page
+
+### Common Mobile Issues
+
+| Issue | Symptom | Solution |
+|-------|---------|----------|
+| Cached assets | Works on simulator, fails on device | Clear Safari cache or use Private Browsing |
+| Zombie WebSocket | "Connecting" after phone wake | Force reconnect on visibility change |
+| Wrong API path | Requests without `/mitto` prefix | Clear cache, check `window.mittoApiPrefix` |
+
+### Testing External Access
+
+When testing via Tailscale Funnel or other external access:
+
+1. **Always clear cache first** - Mobile Safari aggressively caches
+2. **Use Private Browsing** - Ensures no cached assets
+3. **Check both network paths** - Internal Tailscale vs Funnel may behave differently
+4. **Monitor server logs** - Look for requests with/without API prefix
+
+### Force Cache Clear on iOS Safari
+
+1. Settings → Safari → Clear History and Website Data
+2. Or: Long-press refresh button → "Request Desktop Site" then back
+3. Or: Use Private Browsing mode for testing
+
+## Caching Considerations
+
+### Why Caching Matters
+
+During development, cached assets cause hard-to-debug issues:
+
+- **Cached HTML**: May have wrong `{{API_PREFIX}}` (not replaced)
+- **Cached JS**: May use old API paths or have stale logic
+- **Cached CSS**: May not reflect style changes
+
+### Server-Side Cache Headers
+
+The backend sets no-cache headers for all static assets:
+
+```
+Cache-Control: no-cache, no-store, must-revalidate
+Pragma: no-cache
+Expires: 0
+```
+
+### Client-Side Considerations
+
+Even with no-cache headers, browsers may still cache:
+- Service workers (if any)
+- Back-forward cache (bfcache)
+- Memory cache during session
+
+**Always test with hard refresh** (Cmd+Shift+R on Mac, Ctrl+Shift+R on Windows)
 

@@ -26,6 +26,13 @@ internal/session/   → Session persistence (Store/Recorder/Player/Lock)
 internal/web/       → Web interface server (HTTP, WebSocket, Markdown)
 platform/mac/       → macOS app resources (Info.plist, icons, scripts)
 web/                → Embedded frontend assets (HTML, JS, CSS)
+web/static/         → Frontend source files
+  ├── components/   → Preact components (Message.js, etc.)
+  ├── hooks/        → Custom Preact hooks
+  ├── utils/        → Utility modules (storage.js, etc.)
+  ├── app.js        → Main application
+  ├── lib.js        → Pure utility functions (testable)
+  └── lib.test.js   → Jest tests for lib.js
 tests/              → Test suite (integration, UI, mocks, fixtures)
 ```
 

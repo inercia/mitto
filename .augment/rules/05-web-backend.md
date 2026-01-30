@@ -210,6 +210,83 @@ graph TB
 | `GetSessionFromRequest(r)` | Extract session from cookie |
 | `AuthMiddleware(next)` | HTTP middleware for auth |
 
+## Observer Pattern for Multi-Client Sessions
+
+The `BackgroundSession` uses an observer pattern to notify multiple connected clients:
+
+```go
+// SessionObserver interface - implemented by SessionWSClient
+type SessionObserver interface {
+    OnAgentMessage(html string)
+    OnAgentThought(text string)
+    OnToolCall(id, title, status string)
+    OnToolUpdate(id string, status *string)
+    OnPromptComplete(eventCount int)
+    OnUserPrompt(senderID, promptID, message string, imageIDs []string)
+    OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+    OnError(message string)
+    GetClientID() string
+}
+
+// Adding/removing observers
+bs.AddObserver(client)    // Called when WebSocket connects
+bs.RemoveObserver(client) // Called when WebSocket disconnects (in readPump defer)
+```
+
+### Observer Cleanup on WebSocket Disconnect
+
+**Critical**: Always remove observers when WebSocket connections close to prevent:
+- Memory leaks from orphaned observers
+- Duplicate messages if old observers aren't cleaned up
+
+```go
+func (c *SessionWSClient) readPump() {
+    defer func() {
+        c.cancel()
+        if c.bgSession != nil {
+            c.bgSession.RemoveObserver(c)  // MUST remove observer
+        }
+        c.conn.Close()
+    }()
+    // ... read loop
+}
+```
+
+### Race Condition Prevention in SessionManager
+
+When creating or resuming sessions, check for duplicates after the lock is reacquired:
+
+```go
+func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
+    // First check without lock
+    if bs := sm.GetSession(sessionID); bs != nil {
+        return bs, nil
+    }
+
+    sm.mu.Lock()
+    // ... prepare session config
+    sm.mu.Unlock()
+
+    // Create session (expensive, done without lock)
+    bs, err := ResumeBackgroundSession(config)
+    if err != nil {
+        return nil, err
+    }
+
+    sm.mu.Lock()
+    // CRITICAL: Check again - another goroutine may have created it
+    if existing, ok := sm.sessions[bs.GetSessionID()]; ok {
+        sm.mu.Unlock()
+        bs.Close("duplicate_session")  // Close the duplicate
+        return existing, nil           // Return the existing one
+    }
+    sm.sessions[bs.GetSessionID()] = bs
+    sm.mu.Unlock()
+
+    return bs, nil
+}
+```
+
 ## API Validation Patterns
 
 ### Referential Integrity in Config Saves
@@ -245,5 +322,169 @@ json.NewEncoder(w).Encode(map[string]interface{}{
     "workspace":          workingDir,
     "conversation_count": count,
 })
+```
+
+## Debugging WebSocket Issues
+
+When debugging duplicate messages or WebSocket issues:
+
+1. **Check observer count**: Log how many observers are attached to a session
+2. **Track client IDs**: Each WebSocket connection has a unique `clientID`
+3. **Monitor attach/detach**: Log when clients attach and detach from sessions
+
+```go
+// Add debug logging for observer notifications
+func (bs *BackgroundSession) onAgentMessage(html string) {
+    observerCount := bs.ObserverCount()
+    if bs.logger != nil && observerCount > 1 {
+        bs.logger.Debug("Notifying multiple observers",
+            "session_id", bs.persistedID,
+            "observer_count", observerCount)
+    }
+    bs.notifyObservers(func(o SessionObserver) {
+        o.OnAgentMessage(html)
+    })
+}
+```
+
+## Caching Strategy
+
+### Development Mode: No Caching
+
+During active development, **disable caching for all static assets** to ensure users always get the latest version:
+
+```go
+// In staticFileHandler
+w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+w.Header().Set("Pragma", "no-cache")
+w.Header().Set("Expires", "0")
+```
+
+**Why this matters:**
+- HTML pages contain injected values (API prefix, CSP nonces) that change per-request
+- JS/CSS files change frequently during development
+- Cached stale assets cause hard-to-debug issues (like wrong API paths)
+- Mobile browsers (especially iOS Safari) aggressively cache assets
+
+### Common Caching Issues
+
+| Symptom | Likely Cause | Solution |
+|---------|--------------|----------|
+| Wrong API paths in requests | Cached JS with old `window.mittoApiPrefix` | Clear browser cache, add no-cache headers |
+| WebSocket connects to wrong URL | Cached HTML with wrong `{{API_PREFIX}}` | Force refresh, check CSP nonce middleware |
+| "Connecting to server" forever | Cached frontend, updated backend routes | Clear all browser data |
+
+### External CDN Resources
+
+Resources loaded via `<script src="https://cdn...">` are cached by those CDN servers. We don't control their caching, but this is fine since:
+- CDN resources (Tailwind, Preact) are versioned
+- They don't contain our injected values
+
+## API Prefix Architecture
+
+### How It Works
+
+The API prefix (`/mitto` by default) provides security through obscurity for external access:
+
+```
+1. Server starts with apiPrefix from config (default: "/mitto")
+2. All API routes registered at: apiPrefix + "/api/..."
+3. HTML served with {{API_PREFIX}} placeholder
+4. CSP nonce middleware replaces {{API_PREFIX}} with actual prefix
+5. Frontend reads window.mittoApiPrefix for all API/WebSocket URLs
+```
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `server.go` | Registers routes with `apiPrefix+"/api/..."` |
+| `csp_nonce.go` | Replaces `{{API_PREFIX}}` in HTML responses |
+| `web/static/utils/api.js` | `apiUrl()` and `wsUrl()` use `window.mittoApiPrefix` |
+| `web/static/index.html` | Contains `window.mittoApiPrefix = "{{API_PREFIX}}"` |
+
+### Debugging API Prefix Issues
+
+**Symptom**: Requests go to `/api/events` instead of `/mitto/api/events`
+
+**Diagnosis steps:**
+1. Check server logs for `api_prefix=/mitto` on startup
+2. Add debug logging to frontend `api.js`:
+   ```javascript
+   console.log('[api.js] window.mittoApiPrefix:', window.mittoApiPrefix);
+   ```
+3. Check if HTML is being served with replaced prefix (view page source)
+4. Clear browser cache (especially on mobile)
+
+**Common causes:**
+- Cached HTML/JS with empty or wrong prefix
+- CSP nonce middleware not running (check middleware order)
+- Tailscale funnel or reverse proxy stripping headers
+
+## Tailscale Funnel & External Access
+
+### Architecture
+
+```
+Internet → Tailscale Funnel → Your Machine:port → Mitto Web Server
+                                    ↓
+                            External Listener (0.0.0.0:port)
+```
+
+### Common Issues
+
+| Issue | Symptom | Solution |
+|-------|---------|----------|
+| Cached assets | Works on simulator, fails on real device | Clear Safari cache on device |
+| Different network paths | Requests from different IPs | Check session cookies are valid for both paths |
+| WebSocket upgrade fails | "Connecting to server" forever | Check Origin header validation |
+
+### Debugging External Access
+
+1. **Check client IP in logs**: Different IPs may indicate different network paths
+   ```
+   client_ip=207.188.187.48  → Funnel (public IP)
+   client_ip=100.125.125.40  → Internal Tailscale
+   ```
+
+2. **Verify all requests use correct prefix**: Look for requests without `/mitto` prefix
+
+3. **Check WebSocket Origin validation**:
+   ```go
+   logger.Info("WS: Origin check", "origin", origin, "host", host, "allowed", allowed)
+   ```
+
+### Mobile Safari Specifics
+
+- **Aggressive caching**: Always test with cache cleared or Private Browsing
+- **WebSocket zombie connections**: Connections may appear open but be dead after sleep
+- **Cookie handling**: Cookies may not be shared between different network paths
+
+## Security Headers
+
+### Content Security Policy (CSP)
+
+CSP headers are set by `cspNonceMiddleware` with per-request nonces:
+
+```go
+csp := "default-src 'self'; " +
+    "script-src 'self' 'nonce-" + nonce + "' https://cdn.tailwindcss.com; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "connect-src 'self' ws: wss:; " +  // Allow WebSocket connections
+    // ...
+```
+
+### Middleware Order
+
+The order of middleware wrapping is critical:
+
+```go
+// Inside out: request flows through these in reverse order
+handler = hideServerInfoMiddleware(handler)           // 6. Outermost
+handler = cspNonceMiddlewareWithOptions(...)(handler) // 5. CSP + API prefix injection
+handler = securityHeadersMiddleware(...)(handler)     // 4. Security headers
+handler = rateLimitMiddleware(...)(handler)           // 3. Rate limiting
+handler = csrfMgr.CSRFMiddleware(handler)             // 2. CSRF protection
+handler = authMgr.AuthMiddleware(mux)                 // 1. Authentication
 ```
 
