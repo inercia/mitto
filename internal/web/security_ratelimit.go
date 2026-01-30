@@ -87,7 +87,10 @@ func (rl *GeneralRateLimiter) Allow(ip string) bool {
 // Middleware returns an HTTP middleware that enforces rate limiting.
 func (rl *GeneralRateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientIP := getClientIP(r)
+		// Use getClientIPWithProxyCheck to only trust X-Forwarded-For headers
+		// from configured trusted proxies. This prevents IP spoofing attacks
+		// where attackers set fake X-Forwarded-For headers to bypass rate limiting.
+		clientIP := getClientIPWithProxyCheck(r)
 
 		if !rl.Allow(clientIP) {
 			w.Header().Set("Retry-After", "1")

@@ -239,9 +239,6 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		}
 	}
 
-	// Update prompts
-	newWebConfig.Prompts = req.Web.Prompts
-
 	// Update hooks
 	if req.Web.Hooks != nil {
 		newWebConfig.Hooks = *req.Web.Hooks
@@ -262,6 +259,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 
 	return &configPkg.Settings{
 		ACPServers: newACPServers,
+		Prompts:    req.Prompts,
 		Web:        newWebConfig,
 		UI:         newUIConfig,
 	}, nil
@@ -295,9 +293,10 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		}
 	}
 
-	// Update ACP servers, web config, and UI config
+	// Update ACP servers, prompts, web config, and UI config
 	if s.config.MittoConfig != nil {
 		s.config.MittoConfig.ACPServers = newACPServers
+		s.config.MittoConfig.Prompts = settings.Prompts
 		s.config.MittoConfig.Web = runtimeWebConfig
 		s.config.MittoConfig.UI = settings.UI
 	}

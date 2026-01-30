@@ -536,16 +536,31 @@ func (bs *BackgroundSession) NeedsTitle() bool {
 	return meta.Name == ""
 }
 
+// PromptMeta contains optional metadata about the prompt source.
+type PromptMeta struct {
+	SenderID string   // Unique identifier of the sending client (for broadcast deduplication)
+	PromptID string   // Client-generated prompt ID (for delivery confirmation)
+	ImageIDs []string // IDs of images attached to the prompt
+}
+
 // Prompt sends a message to the agent. This runs asynchronously.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) Prompt(message string) error {
-	return bs.PromptWithImages(message, nil)
+	return bs.PromptWithMeta(message, PromptMeta{})
 }
 
 // PromptWithImages sends a message with optional images to the agent. This runs asynchronously.
 // The imageIDs should be IDs of images previously uploaded to this session.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string) error {
+	return bs.PromptWithMeta(message, PromptMeta{ImageIDs: imageIDs})
+}
+
+// PromptWithMeta sends a message with optional metadata to the agent. This runs asynchronously.
+// The meta parameter contains sender information for multi-client broadcast.
+// The response is streamed via callbacks to the attached client (if any) and persisted.
+func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) error {
+	imageIDs := meta.ImageIDs
 	if bs.IsClosed() {
 		return &sessionError{"session is closed"}
 	}
@@ -619,6 +634,12 @@ func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string)
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 	}
+
+	// Notify all observers about the user prompt (for multi-client sync)
+	// This includes the message text so other connected clients can display it
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnUserPrompt(meta.SenderID, meta.PromptID, message, imageIDs)
+	})
 
 	// Build the actual prompt to send to ACP
 	promptMessage := message

@@ -300,6 +300,10 @@ func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 	m.completed = true
 }
 
+func (m *mockSessionObserver) OnUserPrompt(senderID, promptID, message string, imageIDs []string) {
+	// No-op for tests
+}
+
 func (m *mockSessionObserver) OnError(message string) {
 	m.errors = append(m.errors, message)
 }

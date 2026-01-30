@@ -668,3 +668,26 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// handleWorkspacePrompts handles GET /api/workspace-prompts?dir=...
+// Returns the prompts from the workspace's .mittorc file.
+func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	workingDir := r.URL.Query().Get("dir")
+	if workingDir == "" {
+		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	prompts := s.sessionManager.GetWorkspacePrompts(workingDir)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"prompts":     prompts,
+		"working_dir": workingDir,
+	})
+}

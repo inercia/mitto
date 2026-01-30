@@ -243,6 +243,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc("/api/sessions/running", s.handleRunningSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionDetail)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
+	mux.HandleFunc("/api/workspace-prompts", s.handleWorkspacePrompts)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc("/api/aux/improve-prompt", s.handleImprovePrompt)
@@ -610,6 +611,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if s.config.MittoConfig != nil {
 		response["web"] = s.config.MittoConfig.Web
 		response["ui"] = s.config.MittoConfig.UI
+		response["prompts"] = s.config.MittoConfig.Prompts
 
 		// Convert ACP servers to JSON-friendly format (including per-server prompts)
 		acpServers := make([]map[string]interface{}, len(s.config.MittoConfig.ACPServers))
@@ -637,7 +639,9 @@ type ConfigSaveRequest struct {
 		Command string                `json:"command"`
 		Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
 	} `json:"acp_servers"`
-	Web struct {
+	// Prompts is the top-level list of global prompts
+	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
+	Web     struct {
 		Host         string `json:"host,omitempty"`
 		ExternalPort int    `json:"external_port,omitempty"`
 		Auth         *struct {
@@ -646,8 +650,7 @@ type ConfigSaveRequest struct {
 				Password string `json:"password"`
 			} `json:"simple,omitempty"`
 		} `json:"auth,omitempty"`
-		Hooks   *configPkg.WebHooks   `json:"hooks,omitempty"`
-		Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
+		Hooks *configPkg.WebHooks `json:"hooks,omitempty"`
 	} `json:"web"`
 	UI *configPkg.UIConfig `json:"ui,omitempty"`
 }

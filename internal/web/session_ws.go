@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -16,12 +18,23 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
+// generateClientID creates a unique client identifier for sender tracking.
+func generateClientID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID
+		return time.Now().Format("20060102150405.000000000")
+	}
+	return hex.EncodeToString(b)
+}
+
 // SessionWSClient represents a WebSocket client connected to a specific session.
 type SessionWSClient struct {
 	server    *Server
 	conn      *websocket.Conn
 	send      chan []byte
 	sessionID string
+	clientID  string // Unique identifier for this client (for sender identification)
 	clientIP  string // For connection tracking cleanup
 
 	// The background session this client is observing
@@ -88,11 +101,13 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	clientID := generateClientID()
 	client := &SessionWSClient{
 		server:         s,
 		conn:           conn,
 		send:           make(chan []byte, 256),
 		sessionID:      sessionID,
+		clientID:       clientID,
 		ctx:            ctx,
 		cancel:         cancel,
 		store:          store,
@@ -144,6 +159,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 	data := map[string]interface{}{
 		"session_id":  c.sessionID,
+		"client_id":   c.clientID, // Unique ID for this client (for multi-browser sync identification)
 		"acp_server":  c.server.config.ACPServer,
 		"is_running":  bs != nil && !bs.IsClosed(),
 		"is_attached": bs != nil,
@@ -242,14 +258,15 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 	switch msg.Type {
 	case WSMsgTypePrompt:
 		var data struct {
-			Message  string `json:"message"`
-			PromptID string `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
+			Message  string   `json:"message"`
+			ImageIDs []string `json:"image_ids,omitempty"`
+			PromptID string   `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
 		}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handlePromptWithID(data.Message, data.PromptID)
+		c.handlePromptWithMeta(data.Message, data.PromptID, data.ImageIDs)
 
 	case WSMsgTypeCancel:
 		c.handleCancel()
@@ -289,10 +306,15 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 
 //nolint:unused // convenience wrapper for future use
 func (c *SessionWSClient) handlePrompt(message string) {
-	c.handlePromptWithID(message, "")
+	c.handlePromptWithMeta(message, "", nil)
 }
 
+//nolint:unused // convenience wrapper for future use
 func (c *SessionWSClient) handlePromptWithID(message string, promptID string) {
+	c.handlePromptWithMeta(message, promptID, nil)
+}
+
+func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, imageIDs []string) {
 	if c.bgSession == nil {
 		c.sendError("Session not running. Create or resume the session first.")
 		return
@@ -302,19 +324,20 @@ func (c *SessionWSClient) handlePromptWithID(message string, promptID string) {
 	// Only generate title if metadata.Name is empty
 	shouldGenerateTitle := c.sessionNeedsTitle()
 
-	if err := c.bgSession.Prompt(message); err != nil {
+	// Send prompt to background session with sender info for multi-client broadcast
+	meta := PromptMeta{
+		SenderID: c.clientID,
+		PromptID: promptID,
+		ImageIDs: imageIDs,
+	}
+	if err := c.bgSession.PromptWithMeta(message, meta); err != nil {
 		c.sendError("Failed to send prompt: " + err.Error())
 		return
 	}
 
-	// Send prompt_received ack after successful handoff to background session
-	// The background session persists the prompt before processing
-	if promptID != "" {
-		c.sendMessage(WSMsgTypePromptReceived, map[string]interface{}{
-			"prompt_id":  promptID,
-			"session_id": c.sessionID,
-		})
-	}
+	// Note: prompt_received ACK is now sent via the OnUserPrompt observer callback
+	// which is called by BackgroundSession.PromptWithMeta after persisting the prompt.
+	// This ensures all observers (including the sender) receive the same broadcast.
 
 	// Auto-generate title if session has no title yet
 	if shouldGenerateTitle {
@@ -552,6 +575,25 @@ func (c *SessionWSClient) OnPromptComplete(eventCount int) {
 		"session_id":  c.sessionID,
 		"event_count": eventCount,
 	})
+}
+
+// OnUserPrompt is called when any observer sends a prompt.
+// This allows all connected clients to see user messages from other clients.
+// senderID identifies which client sent the prompt (for deduplication).
+func (c *SessionWSClient) OnUserPrompt(senderID, promptID, message string, imageIDs []string) {
+	c.sendMessage(WSMsgTypeUserPrompt, map[string]interface{}{
+		"session_id": c.sessionID,
+		"sender_id":  senderID,
+		"prompt_id":  promptID,
+		"message":    message,
+		"image_ids":  imageIDs,
+		"is_mine":    senderID == c.clientID,
+	})
+}
+
+// GetClientID returns the unique identifier for this client.
+func (c *SessionWSClient) GetClientID() string {
+	return c.clientID
 }
 
 // OnError is called when an error occurs.

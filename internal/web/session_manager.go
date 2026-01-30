@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
@@ -44,17 +45,21 @@ type SessionManager struct {
 	acpServer   string
 	autoApprove bool
 	store       *session.Store
+
+	// workspaceRCCache provides cached access to workspace-specific .mittorc files.
+	workspaceRCCache *config.WorkspaceRCCache
 }
 
 // NewSessionManager creates a new session manager with legacy single-workspace configuration.
 func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *slog.Logger) *SessionManager {
 	return &SessionManager{
-		sessions:    make(map[string]*BackgroundSession),
-		workspaces:  make(map[string]*config.WorkspaceSettings),
-		logger:      logger,
-		acpCommand:  acpCommand,
-		acpServer:   acpServer,
-		autoApprove: autoApprove,
+		sessions:         make(map[string]*BackgroundSession),
+		workspaces:       make(map[string]*config.WorkspaceSettings),
+		logger:           logger,
+		acpCommand:       acpCommand,
+		acpServer:        acpServer,
+		autoApprove:      autoApprove,
+		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
 	}
 }
 
@@ -76,12 +81,13 @@ type SessionManagerOptions struct {
 // NewSessionManagerWithOptions creates a new session manager with the given options.
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
-		sessions:        make(map[string]*BackgroundSession),
-		workspaces:      make(map[string]*config.WorkspaceSettings),
-		logger:          opts.Logger,
-		autoApprove:     opts.AutoApprove,
-		fromCLI:         opts.FromCLI,
-		onWorkspaceSave: opts.OnWorkspaceSave,
+		sessions:         make(map[string]*BackgroundSession),
+		workspaces:       make(map[string]*config.WorkspaceSettings),
+		logger:           opts.Logger,
+		autoApprove:      opts.AutoApprove,
+		fromCLI:          opts.FromCLI,
+		onWorkspaceSave:  opts.OnWorkspaceSave,
+		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
 	}
 
 	for i := range opts.Workspaces {
@@ -180,6 +186,30 @@ func (sm *SessionManager) GetDefaultWorkspace() *config.WorkspaceSettings {
 		ACPCommand: sm.acpCommand,
 		WorkingDir: "",
 	}
+}
+
+// GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
+// Returns nil if no .mittorc exists or if it has no prompts section.
+func (sm *SessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return nil
+	}
+
+	rc, err := sm.workspaceRCCache.Get(workingDir)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Warn("Failed to load workspace .mittorc",
+				"working_dir", workingDir,
+				"error", err)
+		}
+		return nil
+	}
+
+	if rc == nil {
+		return nil
+	}
+
+	return rc.Prompts
 }
 
 // AddWorkspace adds a new workspace to the manager.

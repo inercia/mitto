@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/inercia/mitto/internal/session"
@@ -270,7 +271,7 @@ func (s *Server) handleServeImage(w http.ResponseWriter, r *http.Request, store 
 
 	// Set headers
 	w.Header().Set("Content-Type", mimeType)
-	w.Header().Set("Content-Length", string(rune(stat.Size())))
+	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
 	w.Header().Set("Cache-Control", "private, max-age=86400") // Cache for 1 day
 
 	// Serve the file
@@ -308,7 +309,23 @@ type UploadFromPathRequest struct {
 
 // handleUploadImageFromPath handles POST /api/sessions/{id}/images/from-path
 // This endpoint is used by the native macOS app to upload images from file paths.
+// SECURITY: This endpoint is restricted to localhost connections only to prevent
+// arbitrary file read attacks from remote clients.
 func (s *Server) handleUploadImageFromPath(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID string) {
+	// Security check: Only allow this endpoint from localhost (native macOS app).
+	// This prevents remote attackers from reading arbitrary files on the server.
+	clientIP := getClientIPWithProxyCheck(r)
+	if !isLoopbackIP(clientIP) {
+		if s.logger != nil {
+			s.logger.Warn("Rejected from-path request from non-localhost",
+				"client_ip", clientIP,
+				"session_id", sessionID,
+			)
+		}
+		http.Error(w, "This endpoint is only available from localhost", http.StatusForbidden)
+		return
+	}
+
 	// Parse JSON body
 	var req UploadFromPathRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

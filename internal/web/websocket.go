@@ -127,6 +127,7 @@ const (
 	WSMsgTypeError           = "error"
 	WSMsgTypeSessionLoaded   = "session_loaded"
 	WSMsgTypePromptReceived  = "prompt_received" // Ack that prompt was received and persisted
+	WSMsgTypeUserPrompt      = "user_prompt"     // Broadcast to all observers when a user sends a prompt
 	WSMsgTypePromptComplete  = "prompt_complete"
 	WSMsgTypeFileWrite       = "file_write"
 	WSMsgTypeFileRead        = "file_read"
@@ -594,7 +595,7 @@ func (c *WSClient) handleRenameSession(sessionID, name string) {
 		if c.server.logger != nil {
 			c.server.logger.Error("Failed to rename session", "error", err, "session_id", sessionID)
 		}
-		c.sendError("Failed to rename session: " + err.Error())
+		c.sendError(GenericErrorMessages["session_rename"])
 		return
 	}
 
@@ -690,7 +691,10 @@ func (c *WSClient) handleSyncSession(sessionID string, afterSeq int64) {
 	} else {
 		store, err = session.DefaultStore()
 		if err != nil {
-			c.sendError("Failed to access session store: " + err.Error())
+			if c.server.logger != nil {
+				c.server.logger.Error("Failed to access session store", "error", err)
+			}
+			c.sendError(GenericErrorMessages["session_store"])
 			return
 		}
 		// Assign to client for reuse - don't close it since active sessions may use it
@@ -704,14 +708,20 @@ func (c *WSClient) handleSyncSession(sessionID string, afterSeq int64) {
 			c.sendError("Session not found")
 			return
 		}
-		c.sendError("Failed to get session metadata: " + err.Error())
+		if c.server.logger != nil {
+			c.server.logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
+		}
+		c.sendError(GenericErrorMessages["metadata_read"])
 		return
 	}
 
 	// Get events after the specified sequence number
 	events, err := store.ReadEventsFrom(sessionID, afterSeq)
 	if err != nil {
-		c.sendError("Failed to read session events: " + err.Error())
+		if c.server.logger != nil {
+			c.server.logger.Error("Failed to read session events", "error", err, "session_id", sessionID)
+		}
+		c.sendError(GenericErrorMessages["events_read"])
 		return
 	}
 
@@ -771,7 +781,10 @@ func (c *WSClient) handleSwitchSession(sessionID string) {
 	} else {
 		store, err = session.DefaultStore()
 		if err != nil {
-			c.sendError("Failed to access session store: " + err.Error())
+			if c.server.logger != nil {
+				c.server.logger.Error("Failed to access session store", "error", err)
+			}
+			c.sendError(GenericErrorMessages["session_store"])
 			return
 		}
 		// Assign to client for reuse - don't close it since the resumed session will use it
@@ -785,14 +798,20 @@ func (c *WSClient) handleSwitchSession(sessionID string) {
 			c.sendError("Session not found")
 			return
 		}
-		c.sendError("Failed to get session metadata: " + err.Error())
+		if c.server.logger != nil {
+			c.server.logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
+		}
+		c.sendError(GenericErrorMessages["metadata_read"])
 		return
 	}
 
 	// Get session events for UI to display
 	events, err := store.ReadEvents(sessionID)
 	if err != nil {
-		c.sendError("Failed to read session events: " + err.Error())
+		if c.server.logger != nil {
+			c.server.logger.Error("Failed to read session events", "error", err, "session_id", sessionID)
+		}
+		c.sendError(GenericErrorMessages["events_read"])
 		return
 	}
 
@@ -810,7 +829,10 @@ func (c *WSClient) handleSwitchSession(sessionID string) {
 	// Resume or create a background session for this persisted session
 	bs, err := c.server.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
 	if err != nil {
-		c.sendError("Failed to resume session: " + err.Error())
+		if c.server.logger != nil {
+			c.server.logger.Error("Failed to resume session", "error", err, "session_id", sessionID)
+		}
+		c.sendError(GenericErrorMessages["session_resume"])
 		return
 	}
 

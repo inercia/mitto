@@ -38,6 +38,13 @@ type SessionObserver interface {
 	// eventCount is the current total event count for the session (for sync tracking).
 	OnPromptComplete(eventCount int)
 
+	// OnUserPrompt is called when a user sends a prompt.
+	// This is broadcast to all observers so they can update their UI.
+	// senderID identifies which observer sent the prompt (for deduplication).
+	// promptID is the client-generated ID for delivery confirmation.
+	// imageIDs contains IDs of any attached images.
+	OnUserPrompt(senderID, promptID, message string, imageIDs []string)
+
 	// OnError is called when an error occurs.
 	OnError(message string)
 }
