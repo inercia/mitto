@@ -6,6 +6,27 @@ const { useState, useEffect, useRef, useCallback, html } = window.preact;
 import { hasNativeImagePicker, pickImages } from '../utils/native.js';
 
 /**
+ * Calculate contrasting text color (black or white) for a given background color.
+ * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
+ * @returns {string} - Either "#000000" or "#FFFFFF" for best contrast
+ */
+function getContrastColor(hexColor) {
+    if (!hexColor || !hexColor.startsWith('#')) return '#E5E7EB'; // Default gray-200
+
+    // Remove # and parse hex
+    const hex = hexColor.replace('#', '');
+    const r = parseInt(hex.substr(0, 2), 16);
+    const g = parseInt(hex.substr(2, 2), 16);
+    const b = parseInt(hex.substr(4, 2), 16);
+
+    // Calculate relative luminance (WCAG formula)
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    // Return black for light backgrounds, white for dark backgrounds
+    return luminance > 0.5 ? '#000000' : '#FFFFFF';
+}
+
+/**
  * ChatInput component - message composition with image support
  * @param {Object} props
  * @param {Function} props.onSend - Callback when message is sent (text, images)
@@ -448,21 +469,56 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly,
                     class="flex-1 bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled || isReadOnly || isImproving ? 'opacity-50 cursor-not-allowed' : ''}"
                     disabled=${isFullyDisabled || isReadOnly || isImproving}
                 />
-                <div class="relative flex flex-col gap-1.5" ref=${dropupRef}>
+                <div class="relative flex flex-col gap-1.5 self-end" ref=${dropupRef}>
                     ${showDropup && hasPrompts && html`
-                        <div class="absolute bottom-full right-0 mb-2 w-56 bg-slate-800 border border-slate-600 rounded-xl shadow-lg overflow-hidden z-50">
+                        <div class="absolute bottom-full right-0 mb-2 w-64 bg-slate-800 border border-slate-600 rounded-xl shadow-lg overflow-hidden z-50 max-h-80 overflow-y-auto">
                             <div class="py-1">
-                                ${predefinedPrompts.map((prompt, idx) => html`
-                                    <button key=${idx} type="button" onClick=${() => handlePredefinedPrompt(prompt)} class="w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:bg-slate-700 transition-colors flex items-center gap-2">
-                                        <svg class="w-4 h-4 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                                        <span class="truncate">${prompt.name}</span>
-                                    </button>
-                                `)}
+                                ${(() => {
+                                    // Separate workspace prompts from other prompts
+                                    const wsPrompts = predefinedPrompts.filter(p => p.source === 'workspace');
+                                    const otherPrompts = predefinedPrompts.filter(p => p.source !== 'workspace');
+
+                                    return html`
+                                        ${wsPrompts.length > 0 && html`
+                                            <div class="px-3 py-1.5 text-xs text-green-400 font-medium border-b border-slate-700 flex items-center gap-1.5">
+                                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                                                Workspace
+                                            </div>
+                                            ${wsPrompts.map((prompt, idx) => html`
+                                                <button key=${'ws-' + idx} type="button" onClick=${() => handlePredefinedPrompt(prompt)}
+                                                    class="w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                                                    style=${prompt.backgroundColor ? { backgroundColor: prompt.backgroundColor, color: getContrastColor(prompt.backgroundColor) } : {}}>
+                                                    <svg class="w-4 h-4 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                                    <span class="truncate">${prompt.name}</span>
+                                                </button>
+                                            `)}
+                                        `}
+                                        ${wsPrompts.length > 0 && otherPrompts.length > 0 && html`
+                                            <div class="border-t border-slate-700 my-1"></div>
+                                        `}
+                                        ${otherPrompts.length > 0 && html`
+                                            ${wsPrompts.length > 0 && html`
+                                                <div class="px-3 py-1.5 text-xs text-blue-400 font-medium flex items-center gap-1.5">
+                                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><circle cx="12" cy="12" r="3" /></svg>
+                                                    Global
+                                                </div>
+                                            `}
+                                            ${otherPrompts.map((prompt, idx) => html`
+                                                <button key=${'other-' + idx} type="button" onClick=${() => handlePredefinedPrompt(prompt)}
+                                                    class="w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                                                    style=${prompt.backgroundColor ? { backgroundColor: prompt.backgroundColor, color: getContrastColor(prompt.backgroundColor) } : {}}>
+                                                    <svg class="w-4 h-4 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                                    <span class="truncate">${prompt.name}</span>
+                                                </button>
+                                            `)}
+                                        `}
+                                    `;
+                                })()}
                             </div>
                         </div>
                     `}
 
-                    <div class="flex rounded-xl overflow-hidden flex-1">
+                    <div class="flex rounded-xl overflow-hidden">
                         ${isStreaming ? html`
                             <button type="button" onClick=${onCancel} class="w-full bg-red-600 hover:bg-red-700 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2">
                                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
@@ -488,7 +544,7 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly,
                         `}
                     </div>
 
-                    <div class="flex gap-1.5 flex-1">
+                    <div class="flex gap-1.5">
                         <button type="button" onClick=${handleAttachClick} disabled=${isFullyDisabled || isReadOnly}
                             class="flex-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl transition-colors flex items-center justify-center" title="Attach image">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>

@@ -13,6 +13,7 @@ import {
     INITIAL_EVENTS_LIMIT,
     convertEventsToMessages,
     getMinSeq,
+    getMaxSeq,
     limitMessages,
     updateGlobalWorkingDir,
     getGlobalWorkingDir,
@@ -26,6 +27,7 @@ import {
 import {
     getLastActiveSessionId,
     setLastActiveSessionId,
+    getLastSeenSeq,
     setLastSeenSeq
 } from '../utils/storage.js';
 
@@ -344,6 +346,12 @@ export function useWebSocket() {
                     return { ...prev, [sessionId]: { ...session, messages, isStreaming: false } };
                 });
 
+                // Update lastSeenSeq from event_count so we can sync properly on reconnect
+                // The server sends event_count with prompt_complete to indicate the current position
+                if (msg.data.event_count) {
+                    setLastSeenSeq(sessionId, msg.data.event_count);
+                }
+
                 // Notify about background session completion
                 if (isBackgroundSession && wasStreaming) {
                     const sessionName = currentSession?.info?.name || 'Conversation';
@@ -394,7 +402,9 @@ export function useWebSocket() {
                 const events = msg.data.events || [];
                 const newMessages = convertEventsToMessages(events);
                 const lastSeq = events.length > 0 ? Math.max(...events.map(e => e.seq || 0)) : msg.data.after_seq;
-                const isRunning = msg.data.is_running || false;
+                // Use is_prompting (not is_running) to determine streaming state
+                // A session can be "running" (has ACP connection) but not "prompting" (waiting for response)
+                const isPrompting = msg.data.is_prompting || false;
 
                 setLastSeenSeq(sessionId, lastSeq);
 
@@ -406,7 +416,7 @@ export function useWebSocket() {
                             ...session,
                             messages: limitMessages([...session.messages, ...newMessages]),
                             lastSeq,
-                            isStreaming: isRunning,
+                            isStreaming: isPrompting,
                             info: {
                                 ...session.info,
                                 name: msg.data.name || session.info?.name,
@@ -426,6 +436,48 @@ export function useWebSocket() {
                     console.log('Prompt acknowledged:', msg.data.prompt_id);
                 }
                 break;
+
+            case 'user_prompt': {
+                // Broadcast notification that a user prompt was sent
+                // This is sent to ALL connected clients for multi-browser sync
+                const { is_mine, prompt_id, message, image_ids } = msg.data;
+
+                if (is_mine) {
+                    // This client sent the prompt - it's already in our UI
+                    // Just remove from pending queue (same as prompt_received)
+                    if (prompt_id) {
+                        removePendingPrompt(prompt_id);
+                        console.log('Own prompt confirmed:', prompt_id);
+                    }
+                } else {
+                    // Another client sent this prompt - add to our UI
+                    console.log('Prompt from another client:', prompt_id);
+                    setSessions(prev => {
+                        const session = prev[sessionId];
+                        if (!session) return prev;
+                        let messages = [...session.messages];
+                        // Mark any previous streaming message as complete
+                        const last = messages[messages.length - 1];
+                        if (last && !last.complete && (last.role === ROLE_AGENT || last.role === ROLE_THOUGHT)) {
+                            messages[messages.length - 1] = { ...last, complete: true };
+                        }
+                        // Add the user message from the other client
+                        const userMessage = {
+                            role: ROLE_USER,
+                            text: message,
+                            timestamp: Date.now(),
+                            fromOtherClient: true
+                        };
+                        // Add image references if present (we don't have the actual image data)
+                        if (image_ids && image_ids.length > 0) {
+                            userMessage.imageIds = image_ids;
+                        }
+                        messages = limitMessages([...messages, userMessage]);
+                        return { ...prev, [sessionId]: { ...session, messages } };
+                    });
+                }
+                break;
+            }
 
             case 'permission':
                 console.log('Permission requested:', msg.data);
@@ -451,6 +503,18 @@ export function useWebSocket() {
 
         ws.onopen = () => {
             console.log(`Session WebSocket connected: ${sessionId}`);
+
+            // Sync events we may have missed while disconnected (e.g., phone sleep)
+            // This uses the lastSeenSeq stored in localStorage to request only new events
+            const lastSeq = getLastSeenSeq(sessionId);
+            if (lastSeq > 0) {
+                console.log(`Syncing session ${sessionId} from seq ${lastSeq}`);
+                ws.send(JSON.stringify({
+                    type: 'sync_session',
+                    data: { session_id: sessionId, after_seq: lastSeq }
+                }));
+            }
+
             // Retry any pending prompts after a short delay to ensure connection is stable
             setTimeout(() => {
                 if (retryPendingPromptsRef.current) {
@@ -583,7 +647,13 @@ export function useWebSocket() {
             // Determine if there are more messages to load
             // With reverse order, the last event in the array has the lowest seq (oldest loaded)
             const firstSeq = events.length > 0 ? getMinSeq(events) : 0;
+            const lastSeq = events.length > 0 ? getMaxSeq(events) : 0;
             const hasMoreMessages = firstSeq > 1;
+
+            // Store lastSeenSeq for sync on reconnect (e.g., after phone sleep)
+            if (lastSeq > 0) {
+                setLastSeenSeq(sessionId, lastSeq);
+            }
 
             // Store working_dir in both ref and state
             if (meta.working_dir) {
@@ -1090,26 +1160,53 @@ export function useWebSocket() {
         };
     }, [connectToEvents]);
 
-    // Refresh session list and retry pending prompts when app becomes visible
+    // Force reconnect active session WebSocket - closes existing connection and creates new one
+    // This is more reliable than trying to sync over a potentially stale connection
+    const forceReconnectActiveSession = useCallback(() => {
+        const currentSessionId = activeSessionIdRef.current;
+        if (!currentSessionId) return;
+
+        console.log(`Force reconnecting session ${currentSessionId}`);
+
+        // Clear any pending reconnect timer
+        if (sessionReconnectRefs.current[currentSessionId]) {
+            clearTimeout(sessionReconnectRefs.current[currentSessionId]);
+            delete sessionReconnectRefs.current[currentSessionId];
+        }
+
+        // Close existing WebSocket if any (this will trigger a clean reconnect)
+        const existingWs = sessionWsRefs.current[currentSessionId];
+        if (existingWs) {
+            // Remove the ref first so onclose doesn't schedule another reconnect
+            delete sessionWsRefs.current[currentSessionId];
+            existingWs.close();
+        }
+
+        // Connect to session - this will sync events in the onopen handler
+        connectToSession(currentSessionId);
+    }, [connectToSession]);
+
+    // Refresh session list, force reconnect session WebSocket, and retry pending prompts when app becomes visible
+    // On mobile, when the phone sleeps, WebSocket connections can become "zombie" connections
+    // that appear open but are actually dead. The safest approach is to force a fresh reconnection.
     useEffect(() => {
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
-                console.log('App became visible, refreshing session list and checking pending prompts');
+                console.log('App became visible, forcing session reconnect');
 
                 // Clean up expired prompts first
                 cleanupExpiredPrompts();
 
-                // Fetch stored sessions
+                // Fetch stored sessions (updates the session list in sidebar)
                 fetchStoredSessions();
 
-                // Retry pending prompts for the active session after a short delay
-                // (to allow WebSocket to reconnect if needed)
-                const currentSessionId = activeSessionIdRef.current;
-                if (currentSessionId) {
-                    setTimeout(() => {
-                        retryPendingPrompts(currentSessionId);
-                    }, 1000);
-                }
+                // Force reconnect the active session WebSocket
+                // This is more reliable than trying to sync over a stale connection
+                // The reconnect will trigger sync in the ws.onopen handler
+                // Use a small delay to allow the network stack to stabilize after wake
+                setTimeout(() => {
+                    forceReconnectActiveSession();
+                }, 300);
             }
         };
 
@@ -1117,7 +1214,7 @@ export function useWebSocket() {
         return () => {
             document.removeEventListener('visibilitychange', handleVisibilityChange);
         };
-    }, [fetchStoredSessions, retryPendingPrompts]);
+    }, [fetchStoredSessions, forceReconnectActiveSession]);
 
     // Clear background completion notification
     const clearBackgroundCompletion = useCallback(() => {

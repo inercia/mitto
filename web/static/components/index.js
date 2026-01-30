@@ -3,6 +3,7 @@
 
 export { Message } from './Message.js';
 export { ChatInput } from './ChatInput.js';
+export { SettingsDialog } from './SettingsDialog.js';
 
 // Icon components
 export {
