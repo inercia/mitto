@@ -10,6 +10,7 @@ import {
     ROLE_ERROR,
     ROLE_SYSTEM,
     MAX_MESSAGES,
+    MAX_MARKDOWN_LENGTH,
     MIN_USERNAME_LENGTH,
     MAX_USERNAME_LENGTH,
     MIN_PASSWORD_LENGTH,
@@ -40,7 +41,9 @@ import {
     removePendingPrompt,
     getPendingPrompts,
     getPendingPromptsForSession,
-    cleanupExpiredPrompts
+    cleanupExpiredPrompts,
+    hasMarkdownContent,
+    renderUserMarkdown
 } from './lib.js';
 
 // =============================================================================
@@ -1088,5 +1091,168 @@ describe('cleanupExpiredPrompts', () => {
 
         const pending = getPendingPrompts();
         expect(Object.keys(pending).length).toBe(2);
+    });
+});
+
+// =============================================================================
+// User Message Markdown Tests
+// =============================================================================
+
+describe('hasMarkdownContent', () => {
+    // Invalid inputs
+    test('returns false for null', () => {
+        expect(hasMarkdownContent(null)).toBe(false);
+    });
+
+    test('returns false for undefined', () => {
+        expect(hasMarkdownContent(undefined)).toBe(false);
+    });
+
+    test('returns false for empty string', () => {
+        expect(hasMarkdownContent('')).toBe(false);
+    });
+
+    test('returns false for non-string input', () => {
+        expect(hasMarkdownContent(123)).toBe(false);
+        expect(hasMarkdownContent({})).toBe(false);
+        expect(hasMarkdownContent([])).toBe(false);
+    });
+
+    // Plain text (no markdown)
+    test('returns false for plain text', () => {
+        expect(hasMarkdownContent('Hello world')).toBe(false);
+        expect(hasMarkdownContent('Just a simple message')).toBe(false);
+        expect(hasMarkdownContent('This is a normal sentence.')).toBe(false);
+    });
+
+    test('returns false for text with standalone asterisks', () => {
+        // Single asterisks surrounded by spaces are not markdown
+        expect(hasMarkdownContent('I like * patterns * in text')).toBe(false);
+    });
+
+    // Headers
+    test('detects headers', () => {
+        expect(hasMarkdownContent('# Header')).toBe(true);
+        expect(hasMarkdownContent('## Second Level')).toBe(true);
+        expect(hasMarkdownContent('### Third Level')).toBe(true);
+        expect(hasMarkdownContent('#### Fourth Level')).toBe(true);
+        expect(hasMarkdownContent('Some text\n# Header')).toBe(true);
+    });
+
+    test('does not detect hash without space as header', () => {
+        expect(hasMarkdownContent('#hashtag')).toBe(false);
+        expect(hasMarkdownContent('Issue #123')).toBe(false);
+    });
+
+    // Bold
+    test('detects bold text', () => {
+        expect(hasMarkdownContent('This is **bold** text')).toBe(true);
+        expect(hasMarkdownContent('This is __bold__ text')).toBe(true);
+    });
+
+    // Italic
+    test('detects italic text', () => {
+        expect(hasMarkdownContent('This is *italic* text')).toBe(true);
+        expect(hasMarkdownContent('This is _italic_ text')).toBe(true);
+    });
+
+    // Code
+    test('detects inline code', () => {
+        expect(hasMarkdownContent('Use `code` here')).toBe(true);
+        expect(hasMarkdownContent('Run `npm install`')).toBe(true);
+    });
+
+    test('detects code blocks', () => {
+        expect(hasMarkdownContent('```javascript\nconst x = 1;\n```')).toBe(true);
+        expect(hasMarkdownContent('```\ncode block\n```')).toBe(true);
+    });
+
+    // Links
+    test('detects links', () => {
+        expect(hasMarkdownContent('Check [this link](https://example.com)')).toBe(true);
+        expect(hasMarkdownContent('See [reference][1]')).toBe(true);
+    });
+
+    // Lists
+    test('detects unordered lists', () => {
+        expect(hasMarkdownContent('- Item 1')).toBe(true);
+        expect(hasMarkdownContent('* Item 1')).toBe(true);
+        expect(hasMarkdownContent('+ Item 1')).toBe(true);
+        expect(hasMarkdownContent('Some text\n- Item')).toBe(true);
+    });
+
+    test('detects ordered lists', () => {
+        expect(hasMarkdownContent('1. First item')).toBe(true);
+        expect(hasMarkdownContent('2. Second item')).toBe(true);
+        expect(hasMarkdownContent('10. Tenth item')).toBe(true);
+    });
+
+    // Blockquotes
+    test('detects blockquotes', () => {
+        expect(hasMarkdownContent('> This is a quote')).toBe(true);
+        expect(hasMarkdownContent('Text before\n> Quote')).toBe(true);
+    });
+
+    // Horizontal rules
+    test('detects horizontal rules', () => {
+        expect(hasMarkdownContent('---')).toBe(true);
+        expect(hasMarkdownContent('***')).toBe(true);
+        expect(hasMarkdownContent('___')).toBe(true);
+    });
+
+    // Tables
+    test('detects tables', () => {
+        expect(hasMarkdownContent('| Header | Header |\n| --- | --- |')).toBe(true);
+    });
+
+    // Strikethrough
+    test('detects strikethrough', () => {
+        expect(hasMarkdownContent('This is ~~deleted~~ text')).toBe(true);
+    });
+
+    // Complex examples
+    test('detects markdown in complex messages', () => {
+        expect(hasMarkdownContent('Please run `npm install` and then:\n\n1. Start the server\n2. Open browser')).toBe(true);
+        expect(hasMarkdownContent('Here is the **important** part:\n\n- First\n- Second')).toBe(true);
+    });
+});
+
+describe('renderUserMarkdown', () => {
+    // Note: These tests run in Node.js where window.marked is not available,
+    // so renderUserMarkdown will return null. We test the logic that doesn't
+    // depend on the browser environment.
+
+    test('returns null for null input', () => {
+        expect(renderUserMarkdown(null)).toBeNull();
+    });
+
+    test('returns null for undefined input', () => {
+        expect(renderUserMarkdown(undefined)).toBeNull();
+    });
+
+    test('returns null for empty string', () => {
+        expect(renderUserMarkdown('')).toBeNull();
+    });
+
+    test('returns null for non-string input', () => {
+        expect(renderUserMarkdown(123)).toBeNull();
+        expect(renderUserMarkdown({})).toBeNull();
+    });
+
+    test('returns null for plain text without markdown', () => {
+        // Even if marked were available, plain text should return null
+        // because hasMarkdownContent returns false
+        expect(renderUserMarkdown('Hello world')).toBeNull();
+    });
+
+    test('returns null for text exceeding MAX_MARKDOWN_LENGTH', () => {
+        const longText = '# Header\n' + 'x'.repeat(MAX_MARKDOWN_LENGTH + 1);
+        expect(renderUserMarkdown(longText)).toBeNull();
+    });
+
+    test('returns null when window.marked is not available', () => {
+        // In Node.js test environment, window is not defined
+        // This tests the graceful fallback
+        expect(renderUserMarkdown('# Header')).toBeNull();
     });
 });

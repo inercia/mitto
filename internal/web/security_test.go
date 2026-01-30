@@ -38,14 +38,8 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 		})
 	}
 
-	// Check CSP contains key directives
-	csp := w.Header().Get("Content-Security-Policy")
-	if csp == "" {
-		t.Error("Content-Security-Policy header is missing")
-	}
-	if !strings.Contains(csp, "frame-ancestors 'none'") {
-		t.Error("CSP should contain frame-ancestors 'none'")
-	}
+	// Note: CSP is now handled by cspNonceMiddleware, not securityHeadersMiddleware.
+	// See TestCSPNonceMiddleware_* tests for CSP verification.
 
 	// HSTS should NOT be set by default
 	if w.Header().Get("Strict-Transport-Security") != "" {
