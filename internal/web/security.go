@@ -44,18 +44,9 @@ func securityHeadersMiddleware(config SecurityConfig) func(http.Handler) http.Ha
 			// Permissions policy - disable unnecessary browser features
 			w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 
-			// Content Security Policy
-			// Allow scripts from self and specific CDNs used by the frontend
-			csp := "default-src 'self'; " +
-				"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.skypack.dev; " +
-				"style-src 'self' 'unsafe-inline'; " +
-				"img-src 'self' data:; " +
-				"font-src 'self'; " +
-				"connect-src 'self' ws: wss:; " +
-				"frame-ancestors 'none'; " +
-				"base-uri 'self'; " +
-				"form-action 'self'"
-			w.Header().Set("Content-Security-Policy", csp)
+			// Note: Content-Security-Policy is set by cspNonceMiddleware for HTML responses
+			// to enable nonce-based script loading instead of 'unsafe-inline'.
+			// For non-HTML responses, cspNonceMiddleware sets a stricter CSP without inline scripts.
 
 			// HSTS - only if enabled (should only be used with HTTPS)
 			if config.EnableHSTS {
