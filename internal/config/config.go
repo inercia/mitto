@@ -28,6 +28,8 @@ type WebPrompt struct {
 	Name string `json:"name"`
 	// Prompt is the actual prompt text to send
 	Prompt string `json:"prompt"`
+	// BackgroundColor is an optional hex color string for the prompt button (e.g., "#E8F5E9")
+	BackgroundColor string `json:"backgroundColor,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -181,8 +183,6 @@ type WebConfig struct {
 	Theme string `json:"theme,omitempty"`
 	// Hooks contains lifecycle hooks for the web server
 	Hooks WebHooks `json:"hooks,omitempty"`
-	// Prompts is a list of predefined prompts for the dropup menu
-	Prompts []WebPrompt `json:"prompts,omitempty"`
 	// StaticDir is an optional directory to serve static files from instead of embedded assets.
 	// When set, files are served from this directory, enabling hot-reloading during development.
 	StaticDir string `json:"staticDir,omitempty"`
@@ -196,6 +196,8 @@ type WebConfig struct {
 type Config struct {
 	// ACPServers is the list of configured ACP servers (order matters - first is default)
 	ACPServers []ACPServer
+	// Prompts is a list of predefined prompts for the dropup menu (global prompts)
+	Prompts []WebPrompt
 	// Web contains web interface configuration
 	Web WebConfig
 	// UI contains desktop app UI configuration
@@ -208,14 +210,21 @@ type Config struct {
 type rawACPServerConfig struct {
 	Command string `yaml:"command"`
 	Prompts []struct {
-		Name   string `yaml:"name"`
-		Prompt string `yaml:"prompt"`
+		Name            string `yaml:"name"`
+		Prompt          string `yaml:"prompt"`
+		BackgroundColor string `yaml:"backgroundColor"`
 	} `yaml:"prompts"`
 }
 
 // rawConfig is used for YAML unmarshaling to handle the map-based format.
 type rawConfig struct {
 	ACP []map[string]rawACPServerConfig `yaml:"acp"`
+	// Prompts is the top-level prompts section for global prompts
+	Prompts []struct {
+		Name            string `yaml:"name"`
+		Prompt          string `yaml:"prompt"`
+		BackgroundColor string `yaml:"backgroundColor"`
+	} `yaml:"prompts"`
 	Web struct {
 		Host         string `yaml:"host"`
 		Port         int    `yaml:"port"`
@@ -232,10 +241,6 @@ type rawConfig struct {
 				Name    string `yaml:"name"`
 			} `yaml:"down"`
 		} `yaml:"hooks"`
-		Prompts []struct {
-			Name   string `yaml:"name"`
-			Prompt string `yaml:"prompt"`
-		} `yaml:"prompts"`
 		Auth *struct {
 			Simple *struct {
 				Username string `yaml:"username"`
@@ -362,8 +367,9 @@ func Parse(data []byte) (*Config, error) {
 			// Copy server-specific prompts
 			for _, p := range server.Prompts {
 				acpServer.Prompts = append(acpServer.Prompts, WebPrompt{
-					Name:   p.Name,
-					Prompt: p.Prompt,
+					Name:            p.Name,
+					Prompt:          p.Prompt,
+					BackgroundColor: p.BackgroundColor,
 				})
 			}
 			cfg.ACPServers = append(cfg.ACPServers, acpServer)
@@ -372,6 +378,15 @@ func Parse(data []byte) (*Config, error) {
 
 	if len(cfg.ACPServers) == 0 {
 		return nil, fmt.Errorf("no ACP servers configured")
+	}
+
+	// Populate global prompts (top-level)
+	for _, p := range raw.Prompts {
+		cfg.Prompts = append(cfg.Prompts, WebPrompt{
+			Name:            p.Name,
+			Prompt:          p.Prompt,
+			BackgroundColor: p.BackgroundColor,
+		})
 	}
 
 	// Populate web config
@@ -384,12 +399,6 @@ func Parse(data []byte) (*Config, error) {
 	cfg.Web.Hooks.Up.Name = raw.Web.Hooks.Up.Name
 	cfg.Web.Hooks.Down.Command = raw.Web.Hooks.Down.Command
 	cfg.Web.Hooks.Down.Name = raw.Web.Hooks.Down.Name
-	for _, p := range raw.Web.Prompts {
-		cfg.Web.Prompts = append(cfg.Web.Prompts, WebPrompt{
-			Name:   p.Name,
-			Prompt: p.Prompt,
-		})
-	}
 
 	// Populate auth config
 	if raw.Web.Auth != nil {

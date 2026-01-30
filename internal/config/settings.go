@@ -59,6 +59,8 @@ type LoadResult struct {
 type Settings struct {
 	// ACPServers is the list of configured ACP servers (order matters - first is default)
 	ACPServers []ACPServerSettings `json:"acp_servers"`
+	// Prompts is a list of predefined prompts for the dropup menu (global prompts)
+	Prompts []WebPrompt `json:"prompts,omitempty"`
 	// Web contains web interface configuration
 	Web WebConfig `json:"web"`
 	// UI contains desktop app UI configuration
@@ -92,6 +94,7 @@ type ACPServerSettings struct {
 func (s *Settings) ToConfig() *Config {
 	cfg := &Config{
 		ACPServers: make([]ACPServer, len(s.ACPServers)),
+		Prompts:    s.Prompts,
 		Web:        s.Web,
 		UI:         s.UI,
 		Session:    s.Session,
@@ -106,6 +109,7 @@ func (s *Settings) ToConfig() *Config {
 func ConfigToSettings(cfg *Config) *Settings {
 	s := &Settings{
 		ACPServers: make([]ACPServerSettings, len(cfg.ACPServers)),
+		Prompts:    cfg.Prompts,
 		Web:        cfg.Web,
 		UI:         cfg.UI,
 		Session:    cfg.Session,

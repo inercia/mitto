@@ -13,13 +13,13 @@ acp:
       command: "auggie --acp"
   - claude:
       command: "claude-code --acp"
+prompts:
+  - name: "Review"
+    prompt: "Review this code"
 web:
   host: "0.0.0.0"
   port: 9000
   theme: "v2"
-  prompts:
-    - name: "Review"
-      prompt: "Review this code"
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -50,8 +50,8 @@ web:
 		t.Errorf("Web.Theme = %q, want %q", cfg.Web.Theme, "v2")
 	}
 
-	if len(cfg.Web.Prompts) != 1 {
-		t.Errorf("Web.Prompts count = %d, want 1", len(cfg.Web.Prompts))
+	if len(cfg.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1", len(cfg.Prompts))
 	}
 }
 
@@ -247,11 +247,11 @@ acp:
           prompt: "Run all tests and fix failures"
   - claude:
       command: "claude-code --acp"
+prompts:
+  - name: "Continue"
+    prompt: "Continue with the task"
 web:
   host: "127.0.0.1"
-  prompts:
-    - name: "Continue"
-      prompt: "Continue with the task"
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -284,8 +284,49 @@ web:
 	}
 
 	// Check global prompts are still parsed
-	if len(cfg.Web.Prompts) != 1 {
-		t.Errorf("Web.Prompts count = %d, want 1", len(cfg.Web.Prompts))
+	if len(cfg.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1", len(cfg.Prompts))
+	}
+}
+
+func TestParse_PromptBackgroundColor(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Server Prompt"
+          prompt: "Server prompt text"
+          backgroundColor: "#FF5733"
+prompts:
+  - name: "Global Prompt"
+    prompt: "Global prompt text"
+    backgroundColor: "#E8F5E9"
+  - name: "No Color"
+    prompt: "Prompt without color"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Check server prompt has backgroundColor
+	if len(cfg.ACPServers[0].Prompts) != 1 {
+		t.Fatalf("server prompts count = %d, want 1", len(cfg.ACPServers[0].Prompts))
+	}
+	if cfg.ACPServers[0].Prompts[0].BackgroundColor != "#FF5733" {
+		t.Errorf("server prompt backgroundColor = %q, want %q", cfg.ACPServers[0].Prompts[0].BackgroundColor, "#FF5733")
+	}
+
+	// Check global prompts
+	if len(cfg.Prompts) != 2 {
+		t.Fatalf("global prompts count = %d, want 2", len(cfg.Prompts))
+	}
+	if cfg.Prompts[0].BackgroundColor != "#E8F5E9" {
+		t.Errorf("first global prompt backgroundColor = %q, want %q", cfg.Prompts[0].BackgroundColor, "#E8F5E9")
+	}
+	if cfg.Prompts[1].BackgroundColor != "" {
+		t.Errorf("second global prompt backgroundColor = %q, want empty", cfg.Prompts[1].BackgroundColor)
 	}
 }
 

@@ -27,6 +27,315 @@ acp:
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
 
+# Global prompts - available for all ACP servers
+# Grouped by scope with matching colors for visual organization
+prompts:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # WORKFLOW & PROGRESS (Blue) - Task management and planning
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: "Continue"
+    backgroundColor: "#BBDEFB"  # Light Blue
+    prompt: |
+      Continue with the current task from where we left off.
+
+      1. Review the current state and what has been completed
+      2. Identify the next immediate step
+      3. Execute that step
+      4. Report progress and what remains
+
+      If blocked or unclear, ask for clarification before proceeding.
+
+  - name: "Propose a plan"
+    backgroundColor: "#BBDEFB"  # Light Blue
+    prompt: |
+      Create a detailed plan for the current task.
+
+      ### Structure your plan as:
+
+      1. **Goal**: What we're trying to achieve
+      2. **Current state**: What exists now, what's missing
+      3. **Steps**: Numbered list of concrete actions
+         - Include file paths and function names where applicable
+         - Estimate complexity (simple/medium/complex) for each step
+         - Note dependencies between steps
+      4. **Risks**: Potential issues and how to mitigate them
+      5. **Verification**: How we'll know the task is complete
+
+      Present the plan and wait for approval before executing.
+
+  - name: "What's next?"
+    backgroundColor: "#BBDEFB"  # Light Blue
+    prompt: |
+      Analyze our progress and suggest next steps.
+
+      ### Review:
+
+      1. **Completed**: What we've accomplished so far
+      2. **Current state**: Where the code/project stands now
+      3. **Remaining work**: What's left to do for the original goal
+
+      ### Suggest next steps:
+
+      Present a prioritized list:
+
+      | Priority | Task | Reason | Effort |
+      |----------|------|--------|--------|
+      | 1 | ... | ... | Small/Medium/Large |
+
+      ### Consider:
+      - Dependencies (what must come before what)
+      - Risk (tackle risky items early)
+      - Value (high-impact items first)
+      - Blockers (anything preventing progress)
+
+      Ask if I want to proceed with the top priority item.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CODE QUALITY (Green) - Refactoring, simplification, and review
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: "Review"
+    backgroundColor: "#C8E6C9"  # Light Green
+    prompt: |
+      Review the changes we made for quality and correctness.
+
+      ### Check for:
+
+      1. **Bugs**: Logic errors, off-by-one, null/nil handling, race conditions
+      2. **Security**: Input validation, injection risks, auth/authz issues, secrets exposure
+      3. **Performance**: Unnecessary allocations, N+1 queries, blocking calls, memory leaks
+      4. **Error handling**: Missing error checks, unhelpful messages, swallowed errors
+      5. **Style**: Consistency with codebase, naming conventions, formatting
+      6. **Tests**: Adequate coverage, meaningful assertions, edge cases
+
+      ### Report format:
+
+      For each issue found:
+      - **Severity**: Critical / High / Medium / Low
+      - **Location**: File and line number
+      - **Issue**: What's wrong
+      - **Suggestion**: How to fix it
+
+      Summarize: total issues by severity, overall assessment, recommended actions.
+
+  - name: "Refactor"
+    backgroundColor: "#C8E6C9"  # Light Green
+    prompt: |
+      Refactor the current code for better quality.
+
+      ### Focus areas:
+
+      1. **Naming**: Use clear, descriptive names for variables, functions, types
+      2. **Structure**: Organize code logically, group related functionality
+      3. **Single responsibility**: Each function/class does one thing well
+      4. **DRY**: Extract repeated patterns into reusable components
+      5. **Error handling**: Consistent, informative error messages
+      6. **Idioms**: Follow language-specific best practices and conventions
+
+      ### Process:
+      - Make one type of change at a time
+      - Run tests after each change to catch regressions
+      - Preserve external behavior (this is refactoring, not rewriting)
+
+      ### Document:
+      - List each refactoring applied
+      - Explain the benefit of each change
+
+  - name: "Simplify"
+    backgroundColor: "#C8E6C9"  # Light Green
+    prompt: |
+      Simplify the current implementation while preserving functionality.
+
+      ### Look for:
+
+      1. **Redundant code**: Duplicate logic that can be consolidated
+      2. **Over-engineering**: Abstractions that add complexity without value
+      3. **Deep nesting**: Flatten conditionals using early returns or guard clauses
+      4. **Long functions**: Break into smaller, focused functions
+      5. **Complex conditionals**: Simplify boolean logic, use lookup tables
+      6. **Unnecessary state**: Remove variables that can be computed on demand
+
+      ### For each change:
+      - Explain what you're simplifying and why
+      - Show before/after comparison
+      - Verify behavior is preserved
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TESTING & DEBUGGING (Orange/Amber) - Tests and error fixing
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: "Add tests"
+    backgroundColor: "#FFE0B2"  # Light Orange
+    prompt: |
+      Write comprehensive tests for the code we created or modified.
+
+      ### Include tests for:
+
+      1. **Happy path**: Normal expected usage
+      2. **Edge cases**: Empty inputs, boundary values, maximum sizes
+      3. **Error cases**: Invalid inputs, missing data, permission errors
+      4. **Concurrency**: Race conditions, deadlocks (if applicable)
+      5. **Integration**: Interaction with dependencies
+
+      ### Test structure:
+      - Use descriptive test names that explain the scenario
+      - Follow Arrange-Act-Assert pattern
+      - One assertion per test when possible
+      - Use table-driven tests for multiple similar cases
+      - Mock external dependencies appropriately
+
+      ### After writing:
+      - Run the tests and verify they pass
+      - Check coverage of the new/modified code
+
+  - name: "Fix errors"
+    backgroundColor: "#FFE0B2"  # Light Orange
+    prompt: |
+      Analyze and fix the errors shown.
+
+      ### For each error:
+
+      1. **Identify**: Quote the exact error message
+      2. **Diagnose**: Explain the root cause
+         - What triggered this error?
+         - Why did the code fail?
+      3. **Fix**: Implement the correction
+         - Show the specific change made
+         - Explain why this fixes the issue
+      4. **Verify**: Confirm the fix works
+         - Run the code/tests again
+         - Check for related issues
+
+      ### If multiple errors:
+      - Fix in dependency order (fix causes before symptoms)
+      - Group related errors that share a root cause
+      - After fixing all, run a final verification
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DOCUMENTATION & EXPLANATION (Purple) - Docs and understanding
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: "Explain"
+    backgroundColor: "#E1BEE7"  # Light Purple
+    prompt: |
+      Explain the code or concept we just discussed.
+
+      ### Structure your explanation:
+
+      1. **Purpose**: What problem does this solve? Why does it exist?
+      2. **How it works**: Step-by-step walkthrough of the logic
+      3. **Key components**: Important functions, classes, or patterns used
+      4. **Data flow**: How data moves through the system
+      5. **Edge cases**: Special conditions or error handling
+      6. **Dependencies**: What this relies on, what relies on it
+
+      Use concrete examples from the code. Avoid jargon unless you define it.
+
+  - name: "Document"
+    backgroundColor: "#E1BEE7"  # Light Purple
+    prompt: |
+      Add documentation to the code we just wrote.
+
+      ### Add:
+
+      1. **Package/module docs**: Purpose, main types, usage examples
+      2. **Function/method docs**: What it does, parameters, return values, errors
+      3. **Complex logic comments**: Explain non-obvious algorithms or business rules
+      4. **TODO/FIXME**: Mark known limitations or future improvements
+      5. **Examples**: Usage examples for public APIs
+
+      ### Guidelines:
+      - Explain WHY, not just WHAT (the code shows what)
+      - Keep comments close to the code they describe
+      - Update existing comments if code changed
+      - Use the documentation style standard for this language/project
+      - Don't state the obvious (avoid `// increment i` for `i++`)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PERFORMANCE (Pink/Red) - Optimization
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: "Optimize"
+    backgroundColor: "#F8BBD9"  # Light Pink
+    prompt: |
+      Identify and fix performance issues in the code.
+
+      ### Analysis:
+
+      1. **Profile first**: Identify actual bottlenecks, don't guess
+      2. **Measure**: Establish baseline performance metrics
+
+      ### Common optimizations:
+
+      1. **Algorithmic**: Better data structures, reduced complexity (O(n²) → O(n log n))
+      2. **Memory**: Reduce allocations, reuse buffers, avoid copies
+      3. **I/O**: Batch operations, use buffering, async where appropriate
+      4. **Caching**: Cache expensive computations, use memoization
+      5. **Concurrency**: Parallelize independent work, reduce lock contention
+
+      ### For each optimization:
+      - Explain the bottleneck identified
+      - Show the optimization applied
+      - Quantify the improvement (or expected improvement)
+      - Note any tradeoffs (memory vs speed, complexity vs performance)
+
+      Avoid premature optimization. Focus on measurable improvements.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VERSION CONTROL (Teal/Cyan) - Git operations
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: "Create commits"
+    backgroundColor: "#B2DFDB"  # Light Teal
+    prompt: |
+      Follow this workflow to create Git commits for the changes that we have in this repository:
+
+      ### 1. Analyze Changes
+
+      - Run `git status --porcelain` to list all changes
+      - Verify the directory is a valid Git repository
+      - Group changes by scope:
+        - **Feature/component**: Related source files + their tests
+        - **Type**: Config files, documentation, dependencies
+        - **Path**: Files in the same module/directory
+      - Make sure there are no staged changes. If there are, check
+        how they relate to the changes you are seeing, if they should go first,
+        or if they should be unstaged in order to be included in the commits
+        you are going to propose.
+      - If you are not sure about anything, just ask me.
+
+      ### 2. Propose Commits
+
+      Present a table, formatted as Makefown, with a each proposed commit, with
+
+      SEQUENCE-NUMBER | COMMIT MESSAGE | FILES | REASON
+
+      Use conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
+      Files can be expressed with Unix shell-style wildcards (e.g. `*.md`, `docs/*`).
+
+      Order commits logically (e.g., implementation before documentation).
+
+      ### 3. Wait for Approval
+
+      Ask the user to:
+
+      - **Approve all** - proceed with commits
+      - **Modify** - specify changes (reorder, merge, split, edit messages)
+      - **Cancel** - abort without committing
+
+      **Do not commit until the user explicitly approves.**
+
+      ### 4. Execute Commits
+
+      For each approved commit:
+
+      1. `git add <files>`
+      2. `git commit -m "<message>"`
+
+      Report success or errors after execution.
+
+      ## Rules
+
+      - Respect `.gitignore`
+      - Skip empty commits
+      - Handle binary/large files appropriately
+
+# Web server configuration
 web:
   host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security
   port: 8080       # Local port (use 0 for random)
@@ -40,282 +349,6 @@ web:
   #   # down:
   #   #   command: echo "Shutting down server on port ${PORT}"
   #   #   name: "cleanup"
-
-  prompts:
-    - name: "Continue"
-      prompt: |
-        Continue with the current task from where we left off.
-
-        1. Review the current state and what has been completed
-        2. Identify the next immediate step
-        3. Execute that step
-        4. Report progress and what remains
-
-        If blocked or unclear, ask for clarification before proceeding.
-
-    - name: "Propose a plan"
-      prompt: |
-        Create a detailed plan for the current task.
-
-        ### Structure your plan as:
-
-        1. **Goal**: What we're trying to achieve
-        2. **Current state**: What exists now, what's missing
-        3. **Steps**: Numbered list of concrete actions
-           - Include file paths and function names where applicable
-           - Estimate complexity (simple/medium/complex) for each step
-           - Note dependencies between steps
-        4. **Risks**: Potential issues and how to mitigate them
-        5. **Verification**: How we'll know the task is complete
-
-        Present the plan and wait for approval before executing.
-
-    - name: "Explain"
-      prompt: |
-        Explain the code or concept we just discussed.
-
-        ### Structure your explanation:
-
-        1. **Purpose**: What problem does this solve? Why does it exist?
-        2. **How it works**: Step-by-step walkthrough of the logic
-        3. **Key components**: Important functions, classes, or patterns used
-        4. **Data flow**: How data moves through the system
-        5. **Edge cases**: Special conditions or error handling
-        6. **Dependencies**: What this relies on, what relies on it
-
-        Use concrete examples from the code. Avoid jargon unless you define it.
-
-    - name: "Simplify"
-      prompt: |
-        Simplify the current implementation while preserving functionality.
-
-        ### Look for:
-
-        1. **Redundant code**: Duplicate logic that can be consolidated
-        2. **Over-engineering**: Abstractions that add complexity without value
-        3. **Deep nesting**: Flatten conditionals using early returns or guard clauses
-        4. **Long functions**: Break into smaller, focused functions
-        5. **Complex conditionals**: Simplify boolean logic, use lookup tables
-        6. **Unnecessary state**: Remove variables that can be computed on demand
-
-        ### For each change:
-        - Explain what you're simplifying and why
-        - Show before/after comparison
-        - Verify behavior is preserved
-
-    - name: "Add tests"
-      prompt: |
-        Write comprehensive tests for the code we created or modified.
-
-        ### Include tests for:
-
-        1. **Happy path**: Normal expected usage
-        2. **Edge cases**: Empty inputs, boundary values, maximum sizes
-        3. **Error cases**: Invalid inputs, missing data, permission errors
-        4. **Concurrency**: Race conditions, deadlocks (if applicable)
-        5. **Integration**: Interaction with dependencies
-
-        ### Test structure:
-        - Use descriptive test names that explain the scenario
-        - Follow Arrange-Act-Assert pattern
-        - One assertion per test when possible
-        - Use table-driven tests for multiple similar cases
-        - Mock external dependencies appropriately
-
-        ### After writing:
-        - Run the tests and verify they pass
-        - Check coverage of the new/modified code
-
-    - name: "Fix errors"
-      prompt: |
-        Analyze and fix the errors shown.
-
-        ### For each error:
-
-        1. **Identify**: Quote the exact error message
-        2. **Diagnose**: Explain the root cause
-           - What triggered this error?
-           - Why did the code fail?
-        3. **Fix**: Implement the correction
-           - Show the specific change made
-           - Explain why this fixes the issue
-        4. **Verify**: Confirm the fix works
-           - Run the code/tests again
-           - Check for related issues
-
-        ### If multiple errors:
-        - Fix in dependency order (fix causes before symptoms)
-        - Group related errors that share a root cause
-        - After fixing all, run a final verification
-
-    - name: "Refactor"
-      prompt: |
-        Refactor the current code for better quality.
-
-        ### Focus areas:
-
-        1. **Naming**: Use clear, descriptive names for variables, functions, types
-        2. **Structure**: Organize code logically, group related functionality
-        3. **Single responsibility**: Each function/class does one thing well
-        4. **DRY**: Extract repeated patterns into reusable components
-        5. **Error handling**: Consistent, informative error messages
-        6. **Idioms**: Follow language-specific best practices and conventions
-
-        ### Process:
-        - Make one type of change at a time
-        - Run tests after each change to catch regressions
-        - Preserve external behavior (this is refactoring, not rewriting)
-
-        ### Document:
-        - List each refactoring applied
-        - Explain the benefit of each change
-
-    - name: "Review"
-      prompt: |
-        Review the changes we made for quality and correctness.
-
-        ### Check for:
-
-        1. **Bugs**: Logic errors, off-by-one, null/nil handling, race conditions
-        2. **Security**: Input validation, injection risks, auth/authz issues, secrets exposure
-        3. **Performance**: Unnecessary allocations, N+1 queries, blocking calls, memory leaks
-        4. **Error handling**: Missing error checks, unhelpful messages, swallowed errors
-        5. **Style**: Consistency with codebase, naming conventions, formatting
-        6. **Tests**: Adequate coverage, meaningful assertions, edge cases
-
-        ### Report format:
-
-        For each issue found:
-        - **Severity**: Critical / High / Medium / Low
-        - **Location**: File and line number
-        - **Issue**: What's wrong
-        - **Suggestion**: How to fix it
-
-        Summarize: total issues by severity, overall assessment, recommended actions.
-
-    - name: "Document"
-      prompt: |
-        Add documentation to the code we just wrote.
-
-        ### Add:
-
-        1. **Package/module docs**: Purpose, main types, usage examples
-        2. **Function/method docs**: What it does, parameters, return values, errors
-        3. **Complex logic comments**: Explain non-obvious algorithms or business rules
-        4. **TODO/FIXME**: Mark known limitations or future improvements
-        5. **Examples**: Usage examples for public APIs
-
-        ### Guidelines:
-        - Explain WHY, not just WHAT (the code shows what)
-        - Keep comments close to the code they describe
-        - Update existing comments if code changed
-        - Use the documentation style standard for this language/project
-        - Don't state the obvious (avoid `// increment i` for `i++`)
-
-    - name: "Optimize"
-      prompt: |
-        Identify and fix performance issues in the code.
-
-        ### Analysis:
-
-        1. **Profile first**: Identify actual bottlenecks, don't guess
-        2. **Measure**: Establish baseline performance metrics
-
-        ### Common optimizations:
-
-        1. **Algorithmic**: Better data structures, reduced complexity (O(n²) → O(n log n))
-        2. **Memory**: Reduce allocations, reuse buffers, avoid copies
-        3. **I/O**: Batch operations, use buffering, async where appropriate
-        4. **Caching**: Cache expensive computations, use memoization
-        5. **Concurrency**: Parallelize independent work, reduce lock contention
-
-        ### For each optimization:
-        - Explain the bottleneck identified
-        - Show the optimization applied
-        - Quantify the improvement (or expected improvement)
-        - Note any tradeoffs (memory vs speed, complexity vs performance)
-
-        Avoid premature optimization. Focus on measurable improvements.
-
-    - name: "What's next?"
-      prompt: |
-        Analyze our progress and suggest next steps.
-
-        ### Review:
-
-        1. **Completed**: What we've accomplished so far
-        2. **Current state**: Where the code/project stands now
-        3. **Remaining work**: What's left to do for the original goal
-
-        ### Suggest next steps:
-
-        Present a prioritized list:
-
-        | Priority | Task | Reason | Effort |
-        |----------|------|--------|--------|
-        | 1 | ... | ... | Small/Medium/Large |
-
-        ### Consider:
-        - Dependencies (what must come before what)
-        - Risk (tackle risky items early)
-        - Value (high-impact items first)
-        - Blockers (anything preventing progress)
-
-        Ask if I want to proceed with the top priority item.
-
-    - name: "Create commits"
-      prompt: |
-        Follow this workflow to create Git commits for the changes that we have in this repository:
-
-        ### 1. Analyze Changes
-
-        - Run `git status --porcelain` to list all changes
-        - Verify the directory is a valid Git repository
-        - Group changes by scope:
-          - **Feature/component**: Related source files + their tests
-          - **Type**: Config files, documentation, dependencies
-          - **Path**: Files in the same module/directory
-        - Make sure there are no staged changes. If there are, check
-          how they relate to the changes you are seeing, if they should go first,
-          or if they should be unstaged in order to be included in the commits
-          you are going to propose.
-        - If you are not sure about anything, just ask me.
-
-        ### 2. Propose Commits
-
-        Present a table, formatted as Makefown, with a each proposed commit, with
-
-        SEQUENCE-NUMBER | COMMIT MESSAGE | FILES | REASON
-
-        Use conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
-        Files can be expressed with Unix shell-style wildcards (e.g. `*.md`, `docs/*`).
-
-        Order commits logically (e.g., implementation before documentation).
-
-        ### 3. Wait for Approval
-
-        Ask the user to:
-
-        - **Approve all** - proceed with commits
-        - **Modify** - specify changes (reorder, merge, split, edit messages)
-        - **Cancel** - abort without committing
-
-        **Do not commit until the user explicitly approves.**
-
-        ### 4. Execute Commits
-
-        For each approved commit:
-
-        1. `git add <files>`
-        2. `git commit -m "<message>"`
-
-        Report success or errors after execution.
-
-        ## Rules
-
-        - Respect `.gitignore`
-        - Skip empty commits
-        - Handle binary/large files appropriately
 
   # auth:
   #   simple:

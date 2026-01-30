@@ -144,12 +144,12 @@ func TestConfigToSettings_RoundTripWithPrompts(t *testing.T) {
 			},
 			{Name: "server2", Command: "cmd2"}, // no prompts
 		},
+		Prompts: []WebPrompt{
+			{Name: "Global", Prompt: "Global prompt"},
+		},
 		Web: WebConfig{
 			Host: "127.0.0.1",
 			Port: 8080,
-			Prompts: []WebPrompt{
-				{Name: "Global", Prompt: "Global prompt"},
-			},
 		},
 	}
 
@@ -176,11 +176,11 @@ func TestConfigToSettings_RoundTripWithPrompts(t *testing.T) {
 	}
 
 	// Verify global prompts round-trip
-	if len(result.Web.Prompts) != 1 {
-		t.Fatalf("Web.Prompts count = %d, want 1", len(result.Web.Prompts))
+	if len(result.Prompts) != 1 {
+		t.Fatalf("Prompts count = %d, want 1", len(result.Prompts))
 	}
-	if result.Web.Prompts[0].Name != "Global" {
-		t.Errorf("Web.Prompts[0].Name = %q, want %q", result.Web.Prompts[0].Name, "Global")
+	if result.Prompts[0].Name != "Global" {
+		t.Errorf("Prompts[0].Name = %q, want %q", result.Prompts[0].Name, "Global")
 	}
 }
 
