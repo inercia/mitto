@@ -407,3 +407,34 @@ web:
 #         agent_completed: true  # Play a sound when the agent finishes
 #     # Window behavior
 #     show_in_all_spaces: false  # Show window in all macOS Spaces (requires restart)
+
+# Conversation processing - transformations applied to user messages
+# Processors are applied in order. Each processor specifies:
+#   - when: "first" (first message only), "all" (every message), "all-except-first"
+#   - position: "prepend" (before message) or "append" (after message)
+#   - text: the content to insert
+#
+# Global processors defined here apply to all workspaces.
+# Workspace-specific processors can be defined in <workspace>/.mittorc
+# and will be merged with global processors (or override them with override: true).
+#
+# conversations:
+#   processing:
+#     # Add system context to the first message
+#     - when: first
+#       position: prepend
+#       text: |
+#         You are a helpful AI coding assistant.
+#         Please follow best practices and be concise.
+#
+#         ---
+#
+#     # Add a reminder to all messages
+#     - when: all
+#       position: append
+#       text: "\n\n[Remember: Provide working code examples]"
+#
+#     # Add continuation context after the first message
+#     # - when: all-except-first
+#     #   position: prepend
+#     #   text: "[Continuing from previous context]\n\n"
