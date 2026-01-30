@@ -17,6 +17,135 @@ export const ROLE_TOOL = 'tool';
 export const ROLE_ERROR = 'error';
 export const ROLE_SYSTEM = 'system';
 
+// =============================================================================
+// User Message Markdown Rendering
+// =============================================================================
+
+/**
+ * Maximum message length for Markdown rendering.
+ * Messages longer than this will be displayed as plain text for performance.
+ */
+export const MAX_MARKDOWN_LENGTH = 10000;
+
+/**
+ * Checks if a text string likely contains Markdown formatting.
+ * This is a heuristic check to avoid unnecessary Markdown processing for plain text.
+ *
+ * @param {string} text - The text to check
+ * @returns {boolean} True if the text likely contains Markdown
+ */
+export function hasMarkdownContent(text) {
+    if (!text || typeof text !== 'string') {
+        return false;
+    }
+
+    // Check for common Markdown patterns
+    // Headers: # Header, ## Header, etc.
+    if (/^#{1,6}\s+\S/m.test(text)) {
+        return true;
+    }
+
+    // Bold: **text** or __text__
+    if (/\*\*[^*]+\*\*/.test(text) || /__[^_]+__/.test(text)) {
+        return true;
+    }
+
+    // Italic: *text* or _text_ (single word or short phrase without internal asterisks/underscores)
+    // Match patterns like *word* or *some text* but not * spaced * asterisks
+    if (/\*[^*\s][^*]*\*/.test(text) || /_[^_\s][^_]*_/.test(text)) {
+        return true;
+    }
+
+    // Code: `code` or ```code blocks```
+    if (/`[^`]+`/.test(text) || /```[\s\S]*?```/.test(text)) {
+        return true;
+    }
+
+    // Links: [text](url) or [text][ref]
+    if (/\[[^\]]+\]\([^)]+\)/.test(text) || /\[[^\]]+\]\[[^\]]*\]/.test(text)) {
+        return true;
+    }
+
+    // Lists: - item, * item, + item, or 1. item
+    if (/^[\s]*[-*+]\s+\S/m.test(text) || /^[\s]*\d+\.\s+\S/m.test(text)) {
+        return true;
+    }
+
+    // Blockquotes: > text
+    if (/^>\s+\S/m.test(text)) {
+        return true;
+    }
+
+    // Horizontal rules: --- or *** or ___
+    if (/^[-*_]{3,}\s*$/m.test(text)) {
+        return true;
+    }
+
+    // Tables: | header | header |
+    if (/\|[^|]+\|/.test(text) && /^[\s]*\|/.test(text)) {
+        return true;
+    }
+
+    // Strikethrough: ~~text~~
+    if (/~~[^~]+~~/.test(text)) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Renders user message text as Markdown HTML.
+ * Returns null if rendering should be skipped (plain text display).
+ *
+ * @param {string} text - The text to render
+ * @returns {string|null} The rendered HTML, or null if plain text should be used
+ */
+export function renderUserMarkdown(text) {
+    if (!text || typeof text !== 'string') {
+        return null;
+    }
+
+    // Skip rendering for very long messages (performance)
+    if (text.length > MAX_MARKDOWN_LENGTH) {
+        return null;
+    }
+
+    // Skip rendering if text doesn't appear to contain Markdown
+    if (!hasMarkdownContent(text)) {
+        return null;
+    }
+
+    // Check if marked and DOMPurify are available
+    if (typeof window === 'undefined' || !window.marked || !window.DOMPurify) {
+        return null;
+    }
+
+    try {
+        // Render Markdown to HTML
+        const rawHtml = window.marked.parse(text);
+
+        // Sanitize HTML to prevent XSS
+        const cleanHtml = window.DOMPurify.sanitize(rawHtml, {
+            USE_PROFILES: { html: true },
+            ALLOWED_TAGS: [
+                'p', 'br', 'strong', 'em', 'code', 'pre', 'blockquote',
+                'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+                'hr', 'del', 'span'
+            ],
+            ALLOWED_ATTR: ['href', 'title', 'target', 'rel', 'class'],
+            ALLOW_DATA_ATTR: false,
+        });
+
+        return cleanHtml;
+    } catch (error) {
+        // On any error, fall back to plain text
+        console.warn('Failed to render user message Markdown:', error);
+        return null;
+    }
+}
+
 /**
  * Combines active and stored sessions, avoiding duplicates, and sorts by creation time (most recent first).
  * @param {Array} activeSessions - Currently active sessions in memory

@@ -1,7 +1,7 @@
 // Mitto Web Interface - Message Component
 // Renders different types of messages (user, agent, thought, tool, error, system)
 
-const { html } = window.preact;
+const { html, useMemo } = window.preact;
 
 import {
     ROLE_USER,
@@ -9,7 +9,8 @@ import {
     ROLE_THOUGHT,
     ROLE_TOOL,
     ROLE_ERROR,
-    ROLE_SYSTEM
+    ROLE_SYSTEM,
+    renderUserMarkdown
 } from '../lib.js';
 
 /**
@@ -114,9 +115,14 @@ export function Message({ message, isLast, isStreaming }) {
         `;
     }
 
-    // User message (plain text with optional images)
+    // User message (Markdown or plain text with optional images)
     if (isUser) {
         const hasImages = message.images && message.images.length > 0;
+        // Try to render as Markdown, falling back to plain text if not applicable
+        // useMemo ensures we only re-render Markdown when the message text changes
+        const renderedHtml = useMemo(() => renderUserMarkdown(message.text), [message.text]);
+        const useMarkdown = renderedHtml !== null;
+
         return html`
             <div class="message-enter flex justify-end mb-3">
                 <div class="max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm">
@@ -134,7 +140,13 @@ export function Message({ message, isLast, isStreaming }) {
                             `)}
                         </div>
                     `}
-                    <pre class="whitespace-pre-wrap font-sans text-sm m-0">${message.text}</pre>
+                    ${useMarkdown
+                        ? html`<div
+                            class="markdown-content markdown-content-user text-sm"
+                            dangerouslySetInnerHTML=${{ __html: renderedHtml }}
+                          />`
+                        : html`<pre class="whitespace-pre-wrap font-sans text-sm m-0">${message.text}</pre>`
+                    }
                 </div>
             </div>
         `;

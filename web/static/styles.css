@@ -367,6 +367,89 @@
 }
 
 /* =============================================================================
+   User Message Markdown Styling
+   ============================================================================= */
+
+/* User message markdown inherits from markdown-content but with color adjustments
+   to work with the user message background (--mitto-user-bg) */
+.markdown-content-user {
+    /* Inherit base markdown styling */
+}
+
+/* Code blocks in user messages - use darker background for contrast */
+.markdown-content-user pre {
+    background: rgba(0, 0, 0, 0.15);
+    border-color: rgba(0, 0, 0, 0.2);
+}
+
+.markdown-content-user :not(pre) > code {
+    background: rgba(0, 0, 0, 0.15);
+    color: inherit;
+}
+
+/* Links in user messages */
+.markdown-content-user a {
+    color: #1d4ed8;
+    text-decoration: underline;
+}
+
+.markdown-content-user a:hover {
+    color: #1e40af;
+}
+
+/* Blockquotes in user messages */
+.markdown-content-user blockquote {
+    border-left-color: rgba(0, 0, 0, 0.3);
+    background: rgba(0, 0, 0, 0.08);
+    color: inherit;
+}
+
+/* Headers in user messages */
+.markdown-content-user h1 {
+    border-bottom-color: rgba(0, 0, 0, 0.2);
+}
+
+/* Tables in user messages */
+.markdown-content-user th,
+.markdown-content-user td {
+    border-color: rgba(0, 0, 0, 0.2);
+}
+
+.markdown-content-user th {
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.markdown-content-user tr:nth-child(even) {
+    background: rgba(0, 0, 0, 0.05);
+}
+
+/* Horizontal rule in user messages */
+.markdown-content-user hr {
+    border-top-color: rgba(0, 0, 0, 0.2);
+}
+
+/* Dark theme adjustments for user messages (if user bubble is light) */
+/* Note: User messages use --mitto-user-bg which is typically lighter */
+
+/* Light theme user message markdown */
+.light .markdown-content-user pre {
+    background: rgba(0, 0, 0, 0.08);
+    border-color: rgba(0, 0, 0, 0.15);
+}
+
+.light .markdown-content-user :not(pre) > code {
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.light .markdown-content-user a {
+    color: #2563eb;
+}
+
+.light .markdown-content-user a:hover {
+    color: #1d4ed8;
+}
+
+/* =============================================================================
    Font Size Toggle
    ============================================================================= */
 

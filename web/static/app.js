@@ -41,7 +41,11 @@ import {
     setLastSeenSeq,
     getLastActiveSessionId,
     setLastActiveSessionId,
-    playAgentCompletedSound
+    playAgentCompletedSound,
+    secureFetch,
+    initCSRF,
+    apiUrl,
+    authFetch
 } from './utils/index.js';
 
 // Import hooks
@@ -164,16 +168,19 @@ function WorkspaceBadge({ path, customColor, size = 'md', showPath = false, clas
 
 /**
  * A pill-shaped workspace badge for compact display.
- * Shows abbreviation and truncated workspace name.
+ * Shows abbreviation and ACP server name (or workspace name if no ACP server).
  *
  * @param {string} path - The workspace directory path
  * @param {string} customColor - Optional custom hex color (e.g., "#ff5500")
+ * @param {string} acpServer - The ACP server name (e.g., "auggie", "claude-code")
  * @param {string} className - Additional CSS classes
  */
-function WorkspacePill({ path, customColor, className = '' }) {
+function WorkspacePill({ path, customColor, acpServer, className = '' }) {
     if (!path) return null;
 
     const { abbreviation, color, basename } = getWorkspaceVisualInfo(path, customColor);
+    // Display ACP server name if available, otherwise fall back to workspace basename
+    const displayName = acpServer || basename;
 
     return html`
         <div
@@ -185,7 +192,7 @@ function WorkspacePill({ path, customColor, className = '' }) {
             title=${path}
         >
             <span class="font-bold">${abbreviation}</span>
-            <span class="truncate max-w-[80px]">${basename}</span>
+            <span class="truncate max-w-[80px]">${displayName}</span>
         </div>
     `;
 }
@@ -303,7 +310,7 @@ function DeleteDialog({ isOpen, sessionName, isActive, isStreaming, onConfirm, o
                     <button
                         type="button"
                         onClick=${onConfirm}
-                        class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                        class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
                     >
                         Delete
                     </button>
@@ -343,7 +350,7 @@ function CleanInactiveDialog({ isOpen, inactiveCount, onConfirm, onCancel }) {
                         <button
                             type="button"
                             onClick=${onConfirm}
-                            class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                            class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
                         >
                             Clean All
                         </button>
@@ -623,6 +630,8 @@ function SessionItem({ session, isActive, onSelect, onRename, onDelete, workspac
     const isStreaming = session.isStreaming || false;
     // Get working_dir from session, or fall back to global map
     const workingDir = session.working_dir || getGlobalWorkingDir(session.session_id) || '';
+    // Get acp_server from session
+    const acpServer = session.acp_server || '';
 
     const contextMenuItems = [
         {
@@ -701,7 +710,7 @@ function SessionItem({ session, isActive, onSelect, onRename, onDelete, workspac
                     `}
                 </div>
                 ${workingDir && html`
-                    <${WorkspacePill} path=${workingDir} customColor=${workspaceColor} />
+                    <${WorkspacePill} path=${workingDir} customColor=${workspaceColor} acpServer=${acpServer} />
                 `}
             </div>
         </div>
@@ -954,6 +963,12 @@ function App() {
         return result;
     }, [globalPrompts, sessionInfo?.acp_server, acpServersWithPrompts, workspacePrompts]);
 
+    // Initialize CSRF protection on mount
+    // This pre-fetches a CSRF token so subsequent state-changing requests are protected
+    useEffect(() => {
+        initCSRF();
+    }, []);
+
     // Clear swipe direction after animation completes
     useEffect(() => {
         if (swipeDirection) {
@@ -1180,7 +1195,7 @@ function App() {
 
     // Fetch config on mount to get predefined prompts, UI theme, and check for workspaces
     useEffect(() => {
-        fetch('/api/config')
+        authFetch(apiUrl('/api/config'))
             .then(res => res.json())
             .then(config => {
                 // Load global prompts from top-level prompts
@@ -1243,7 +1258,7 @@ function App() {
         }
 
         // Fetch workspace-specific prompts
-        fetch(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`)
+        authFetch(apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`))
             .then(res => res.json())
             .then(data => {
                 setWorkspacePrompts(data?.prompts || []);
@@ -1653,7 +1668,7 @@ function App() {
         // Delete all inactive sessions
         for (const session of inactiveSessions) {
             try {
-                await fetch(`/api/sessions/${session.session_id}`, { method: 'DELETE' });
+                await secureFetch(apiUrl(`/api/sessions/${session.session_id}`), { method: 'DELETE' });
             } catch (err) {
                 console.error('Failed to delete session:', session.session_id, err);
             }
@@ -1711,11 +1726,11 @@ function App() {
                     refreshWorkspaces();
                     // Reload config to update prompts and UI settings
                     try {
-                        const res = await fetch('/api/config');
+                        const res = await authFetch(apiUrl('/api/config'));
                         if (res.ok) {
                             const config = await res.json();
                             // Reload global prompts (use empty array if not present)
-                            setGlobalPrompts(config?.web?.prompts || []);
+                            setGlobalPrompts(config?.prompts || []);
                             // Reload ACP servers with their per-server prompts
                             setAcpServersWithPrompts(config?.acp_servers || []);
                             // Reload UI settings
@@ -1842,19 +1857,20 @@ function App() {
                     <div key=${activeSessionId} class="max-w-4xl mx-auto ${swipeDirection ? `swipe-slide-${swipeDirection}` : ''}">
                         ${hasMoreMessages && html`
                             <div class="flex justify-center mb-4">
-                                <button
-                                    onClick=${handleLoadMore}
-                                    disabled=${loadingMore}
-                                    class="px-4 py-2 text-sm text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-full transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    ${loadingMore ? html`
+                                ${loadingMore ? html`
+                                    <div class="px-4 py-2 text-sm text-gray-400 flex items-center gap-2">
                                         <${SpinnerIcon} className="w-4 h-4" />
-                                        <span>Loading...</span>
-                                    ` : html`
+                                        <span>Loading earlier messages...</span>
+                                    </div>
+                                ` : html`
+                                    <button
+                                        onClick=${handleLoadMore}
+                                        class="px-4 py-2 text-sm text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-full transition-colors flex items-center gap-2"
+                                    >
                                         <${ChevronUpIcon} className="w-4 h-4" />
                                         <span>Load earlier messages</span>
-                                    `}
-                                </button>
+                                    </button>
+                                `}
                             </div>
                         `}
                         ${messages.length === 0 && !hasMoreMessages && html`

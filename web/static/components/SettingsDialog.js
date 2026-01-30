@@ -4,7 +4,9 @@ const { useState, useEffect, html } = window.preact;
 // Import utilities
 import {
     hasNativeFolderPicker,
-    pickFolder
+    pickFolder,
+    secureFetch,
+    apiUrl
 } from '../utils/index.js';
 
 // Import shared library functions
@@ -329,7 +331,7 @@ export function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false, Wor
     // Load stored sessions to check workspace usage
     const loadStoredSessions = async () => {
         try {
-            const res = await fetch('/api/sessions');
+            const res = await fetch(apiUrl('/api/sessions'), { credentials: 'same-origin' });
             if (res.ok) {
                 const sessions = await res.json();
                 setStoredSessions(sessions || []);
@@ -350,8 +352,8 @@ export function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false, Wor
         try {
             // Fetch config and external status in parallel
             const [configRes, externalStatusRes] = await Promise.all([
-                fetch('/api/config'),
-                fetch('/api/external-status')
+                fetch(apiUrl('/api/config'), { credentials: 'same-origin' }),
+                fetch(apiUrl('/api/external-status'), { credentials: 'same-origin' })
             ]);
             const config = await configRes.json();
 
@@ -516,7 +518,7 @@ export function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false, Wor
                 ui: uiConfig
             };
 
-            const res = await fetch('/api/config', {
+            const res = await secureFetch(apiUrl('/api/config'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(config)
@@ -537,7 +539,7 @@ export function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false, Wor
             let actualExternalPort = null;
             let externalAccessActive = false;
             try {
-                const statusRes = await fetch('/api/external-status');
+                const statusRes = await fetch(apiUrl('/api/external-status'), { credentials: 'same-origin' });
                 if (statusRes.ok) {
                     const status = await statusRes.json();
                     externalAccessActive = status.enabled;
@@ -1295,8 +1297,6 @@ export function SettingsDialog({ isOpen, onClose, onSave, forceOpen = false, Wor
                         <!-- UI Tab -->
                         ${activeTab === 'ui' && html`
                             <div class="space-y-4">
-                                <p class="text-gray-400 text-sm">User interface preferences.</p>
-
                                 <!-- Confirmation Settings (all platforms) -->
                                 <div class="space-y-3">
                                     <h4 class="text-sm font-medium text-gray-300">Confirmations</h4>

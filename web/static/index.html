@@ -4,29 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Mitto - ACP Web Interface</title>
-    
+
     <!-- Tailwind CSS (Play CDN) -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        'mitto-bg': 'var(--mitto-bg)',
-                        'mitto-sidebar': 'var(--mitto-sidebar)',
-                        'mitto-chat': 'var(--mitto-chat)',
-                        'mitto-input': 'var(--mitto-input)',
-                        'mitto-input-box': 'var(--mitto-input-box)',
-                        'mitto-user': 'var(--mitto-user)',
-                        'mitto-user-text': 'var(--mitto-user-text)',
-                        'mitto-user-border': 'var(--mitto-user-border)',
-                        'mitto-agent': 'var(--mitto-agent)',
-                    }
-                }
-            }
-        }
-    </script>
+    <script nonce="{{CSP_NONCE}}" src="https://cdn.tailwindcss.com"></script>
+    <script nonce="{{CSP_NONCE}}" src="./tailwind-config.js"></script>
     <style>
         /* Dark theme (default) */
         :root {
@@ -69,30 +50,13 @@
     <!-- V2 theme stylesheet - always loaded, only applies when .v2-theme class is on body -->
     <link rel="stylesheet" href="./styles-v2.css">
 
+    <!-- API prefix for all API calls and WebSocket connections -->
+    <!-- This is injected by the server at runtime -->
+    <!-- IMPORTANT: This must be loaded BEFORE theme-loader.js and other scripts that use it -->
+    <script nonce="{{CSP_NONCE}}">window.mittoApiPrefix = "{{API_PREFIX}}";</script>
+
     <!-- Theme loader - adds v2-theme class to body if configured -->
-    <script>
-        (function() {
-            fetch('/api/config')
-                .then(function(res) { return res.json(); })
-                .then(function(config) {
-                    if (config && config.web && config.web.theme === 'v2') {
-                        // Add v2-theme class to html element immediately
-                        document.documentElement.classList.add('v2-theme');
-                        // Add v2-theme class to body when it's ready
-                        if (document.body) {
-                            document.body.classList.add('v2-theme');
-                        } else {
-                            document.addEventListener('DOMContentLoaded', function() {
-                                document.body.classList.add('v2-theme');
-                            });
-                        }
-                        // Store theme for app.js to use
-                        window.mittoTheme = 'v2';
-                    }
-                })
-                .catch(function(err) { console.error('Failed to load theme config:', err); });
-        })();
-    </script>
+    <script nonce="{{CSP_NONCE}}" src="./theme-loader.js"></script>
 </head>
 <body class="bg-mitto-bg text-white h-screen-safe overflow-hidden">
     <div id="app">
@@ -106,17 +70,7 @@
     </div>
 
     <!-- Preact + HTM (from Skypack CDN) -->
-    <script type="module">
-        import { h, render } from 'https://cdn.skypack.dev/preact@10.19.3';
-        import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'https://cdn.skypack.dev/preact@10.19.3/hooks';
-        import htm from 'https://cdn.skypack.dev/htm@3.1.1';
-
-        const html = htm.bind(h);
-        window.preact = { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, html };
-
-        // Load the app after preact is ready
-        import('./app.js');
-    </script>
+    <script nonce="{{CSP_NONCE}}" type="module" src="./preact-loader.js"></script>
 </body>
 </html>
 

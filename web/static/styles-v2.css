@@ -596,18 +596,35 @@ a:hover {
 .v2-theme.dark .text-red-500 { color: #ef4444 !important; }
 
 /* Ensure white text on accent-colored buttons (both themes) */
+/* Use high specificity to override .text-white color changes in light theme */
 .v2-theme button.bg-red-500,
 .v2-theme button.bg-red-600,
+.v2-theme button.bg-red-700,
 .v2-theme button.bg-blue-500,
-.v2-theme button.bg-blue-600 {
+.v2-theme button.bg-blue-600,
+.v2-theme button[class*="bg-red-"],
+.v2-theme button[class*="bg-blue-"] {
     color: #ffffff !important;
 }
 .v2-theme button.bg-red-500:hover,
 .v2-theme button.bg-red-600:hover,
+.v2-theme button.bg-red-700:hover,
 .v2-theme button.bg-blue-500:hover,
 .v2-theme button.bg-blue-600:hover,
 .v2-theme button[class*="hover:bg-red"]:hover,
 .v2-theme button[class*="hover:bg-blue"]:hover {
+    color: #ffffff !important;
+}
+/* Also ensure .text-white inside red/blue buttons stays white */
+.v2-theme button.bg-red-500 .text-white,
+.v2-theme button.bg-red-600 .text-white,
+.v2-theme button.bg-red-700 .text-white,
+.v2-theme button.bg-blue-500 .text-white,
+.v2-theme button.bg-blue-600 .text-white,
+.v2-theme button[class*="bg-red-"] .text-white,
+.v2-theme button[class*="bg-blue-"] .text-white,
+.v2-theme button[class*="bg-red-"].text-white,
+.v2-theme button[class*="bg-blue-"].text-white {
     color: #ffffff !important;
 }
 

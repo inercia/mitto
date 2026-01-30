@@ -4,6 +4,8 @@
 const { useState, useEffect, useRef, useCallback, html } = window.preact;
 
 import { hasNativeImagePicker, pickImages } from '../utils/native.js';
+import { secureFetch } from '../utils/csrf.js';
+import { apiUrl } from '../utils/api.js';
 
 /**
  * Calculate contrasting text color (black or white) for a given background color.
@@ -199,7 +201,7 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly,
         try {
             const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
 
-            const response = await fetch('/api/aux/improve-prompt', {
+            const response = await secureFetch(apiUrl('/api/aux/improve-prompt'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ prompt: text }),
@@ -275,7 +277,7 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly,
             const formData = new FormData();
             formData.append('image', file);
 
-            const response = await fetch(`/api/sessions/${sessionId}/images`, {
+            const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}/images`), {
                 method: 'POST',
                 body: formData,
             });
@@ -318,7 +320,7 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly,
         });
 
         try {
-            const response = await fetch(`/api/sessions/${sessionId}/images/from-path`, {
+            const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}/images/from-path`), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ paths }),
@@ -525,9 +527,9 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly,
                                 <span>Stop</span>
                             </button>
                         ` : html`
-                            <button type="submit" disabled=${isFullyDisabled || (!text.trim() && !hasPendingImages) || isReadOnly}
-                                class="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-1.5">
-                                <span>Send</span><span class="text-blue-300 text-xs hidden sm:inline">⌘↵</span>
+                            <button type="submit" disabled=${isFullyDisabled || (!text.trim() && !hasPendingImages) || isReadOnly || isImproving}
+                                class="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center">
+                                <span>Send</span>
                             </button>
                         `}
                         ${hasPrompts && !isStreaming && html`
@@ -545,7 +547,7 @@ export function ChatInput({ onSend, onCancel, disabled, isStreaming, isReadOnly,
                     </div>
 
                     <div class="flex gap-1.5">
-                        <button type="button" onClick=${handleAttachClick} disabled=${isFullyDisabled || isReadOnly}
+                        <button type="button" onClick=${handleAttachClick} disabled=${isFullyDisabled || isReadOnly || isImproving}
                             class="flex-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl transition-colors flex items-center justify-center" title="Attach image">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                         </button>

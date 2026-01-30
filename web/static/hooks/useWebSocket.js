@@ -33,6 +33,27 @@ import {
 
 import { playAgentCompletedSound } from '../utils/audio.js';
 
+import { secureFetch, authFetch, checkAuth } from '../utils/csrf.js';
+
+import { apiUrl, wsUrl } from '../utils/api.js';
+
+/**
+ * Check if the user is authenticated.
+ * If not authenticated, redirects to login page.
+ * @returns {Promise<boolean>} True if authenticated, never returns false (redirects instead)
+ */
+async function checkAuthOrRedirect() {
+    try {
+        // Quick auth check using the config endpoint
+        const response = await fetch(apiUrl('/api/config'), { credentials: 'same-origin' });
+        checkAuth(response); // This will redirect if 401
+        return response.ok;
+    } catch (err) {
+        console.error('Auth check failed:', err);
+        return false;
+    }
+}
+
 /**
  * WebSocket Hook with Per-Session WebSocket Support
  * Manages both global events WebSocket and per-session WebSockets
@@ -69,7 +90,7 @@ export function useWebSocket() {
     // Fetch workspaces and ACP servers
     const fetchWorkspaces = useCallback(async () => {
         try {
-            const response = await fetch('/api/workspaces');
+            const response = await authFetch(apiUrl('/api/workspaces'));
             if (response.ok) {
                 const data = await response.json();
                 setWorkspaces(data.workspaces || []);
@@ -88,7 +109,7 @@ export function useWebSocket() {
     // Add a new workspace
     const addWorkspace = useCallback(async (workingDir, acpServer) => {
         try {
-            const response = await fetch('/api/workspaces', {
+            const response = await secureFetch(apiUrl('/api/workspaces'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ working_dir: workingDir, acp_server: acpServer })
@@ -112,7 +133,7 @@ export function useWebSocket() {
     // Remove a workspace
     const removeWorkspace = useCallback(async (workingDir) => {
         try {
-            const response = await fetch(`/api/workspaces?dir=${encodeURIComponent(workingDir)}`, {
+            const response = await secureFetch(apiUrl(`/api/workspaces?dir=${encodeURIComponent(workingDir)}`), {
                 method: 'DELETE'
             });
 
@@ -268,6 +289,7 @@ export function useWebSocket() {
                 break;
 
             case 'agent_message':
+                console.log('agent_message received:', sessionId, msg.data.html?.substring(0, 50) + '...');
                 setSessions(prev => {
                     const session = prev[sessionId];
                     if (!session) return prev;
@@ -276,6 +298,7 @@ export function useWebSocket() {
                     if (last && last.role === ROLE_AGENT && !last.complete) {
                         messages[messages.length - 1] = { ...last, html: (last.html || '') + msg.data.html };
                     } else {
+                        console.log('Creating new agent message, total messages:', messages.length + 1);
                         messages.push({ role: ROLE_AGENT, html: msg.data.html, complete: false, timestamp: Date.now() });
                         messages = limitMessages(messages);
                     }
@@ -399,6 +422,8 @@ export function useWebSocket() {
 
             case 'session_sync': {
                 // Handle incremental sync response
+                // IMPORTANT: This can be called on reconnection after streaming messages were already
+                // added to the UI. We need to deduplicate to avoid showing the same messages twice.
                 const events = msg.data.events || [];
                 const newMessages = convertEventsToMessages(events);
                 const lastSeq = events.length > 0 ? Math.max(...events.map(e => e.seq || 0)) : msg.data.after_seq;
@@ -406,15 +431,53 @@ export function useWebSocket() {
                 // A session can be "running" (has ACP connection) but not "prompting" (waiting for response)
                 const isPrompting = msg.data.is_prompting || false;
 
+                console.log('session_sync received:', {
+                    sessionId,
+                    afterSeq: msg.data.after_seq,
+                    eventCount: events.length,
+                    newMessageCount: newMessages.length,
+                    lastSeq
+                });
+
                 setLastSeenSeq(sessionId, lastSeq);
 
                 setSessions(prev => {
                     const session = prev[sessionId] || { messages: [], info: {} };
+                    const existingMessages = session.messages;
+
+                    // Deduplicate: create a set of content hashes from existing messages
+                    // This handles the case where streaming messages (no seq) overlap with sync messages (with seq)
+                    const existingHashes = new Set();
+                    for (const m of existingMessages) {
+                        // Create a hash based on role and content (first 200 chars to handle long messages)
+                        const content = (m.text || m.html || '').substring(0, 200);
+                        const hash = `${m.role}:${content}`;
+                        existingHashes.add(hash);
+                    }
+
+                    // Filter out messages that already exist (by content hash)
+                    const filteredNewMessages = newMessages.filter(m => {
+                        const content = (m.text || m.html || '').substring(0, 200);
+                        const hash = `${m.role}:${content}`;
+                        if (existingHashes.has(hash)) {
+                            console.log('Skipping duplicate message:', m.role, content.substring(0, 50) + '...');
+                            return false;
+                        }
+                        return true;
+                    });
+
+                    console.log('session_sync applying:', {
+                        existingMessages: existingMessages.length,
+                        newMessages: newMessages.length,
+                        filteredNewMessages: filteredNewMessages.length,
+                        totalAfter: existingMessages.length + filteredNewMessages.length
+                    });
+
                     return {
                         ...prev,
                         [sessionId]: {
                             ...session,
-                            messages: limitMessages([...session.messages, ...newMessages]),
+                            messages: limitMessages([...existingMessages, ...filteredNewMessages]),
                             lastSeq,
                             isStreaming: isPrompting,
                             info: {
@@ -440,7 +503,8 @@ export function useWebSocket() {
             case 'user_prompt': {
                 // Broadcast notification that a user prompt was sent
                 // This is sent to ALL connected clients for multi-browser sync
-                const { is_mine, prompt_id, message, image_ids } = msg.data;
+                const { is_mine, prompt_id, message, image_ids, sender_id } = msg.data;
+                console.log('user_prompt received:', { is_mine, prompt_id, sender_id, message: message?.substring(0, 50) });
 
                 if (is_mine) {
                     // This client sent the prompt - it's already in our UI
@@ -451,10 +515,24 @@ export function useWebSocket() {
                     }
                 } else {
                     // Another client sent this prompt - add to our UI
-                    console.log('Prompt from another client:', prompt_id);
+                    // But first check if we already have this message (deduplication)
                     setSessions(prev => {
                         const session = prev[sessionId];
                         if (!session) return prev;
+
+                        // Check if this message already exists (by content)
+                        const messageContent = message?.substring(0, 200) || '';
+                        const alreadyExists = session.messages.some(m =>
+                            m.role === ROLE_USER &&
+                            (m.text || '').substring(0, 200) === messageContent
+                        );
+
+                        if (alreadyExists) {
+                            console.log('Skipping duplicate user_prompt:', prompt_id);
+                            return prev;
+                        }
+
+                        console.log('Prompt from another client:', prompt_id, 'adding to UI');
                         let messages = [...session.messages];
                         // Mark any previous streaming message as complete
                         const last = messages[messages.length - 1];
@@ -498,11 +576,12 @@ export function useWebSocket() {
             return sessionWsRefs.current[sessionId];
         }
 
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${window.location.host}/api/sessions/${sessionId}/ws`);
+        const ws = new WebSocket(wsUrl(`/api/sessions/${sessionId}/ws`));
+        const wsId = Math.random().toString(36).substring(2, 8); // Debug ID for this connection
+        ws._debugId = wsId;
 
         ws.onopen = () => {
-            console.log(`Session WebSocket connected: ${sessionId}`);
+            console.log(`Session WebSocket connected: ${sessionId} (ws: ${wsId})`);
 
             // Sync events we may have missed while disconnected (e.g., phone sleep)
             // This uses the lastSeenSeq stored in localStorage to request only new events
@@ -526,15 +605,21 @@ export function useWebSocket() {
         ws.onmessage = (event) => {
             try {
                 const msg = JSON.parse(event.data);
+                console.log(`[WS ${wsId}] Received:`, msg.type, msg.data?.html?.substring(0, 50) || msg.data?.message?.substring(0, 50) || '');
                 handleSessionMessage(sessionId, msg);
             } catch (err) {
                 console.error('Failed to parse session WebSocket message:', err, event.data);
             }
         };
 
-        ws.onclose = () => {
-            console.log(`Session WebSocket closed: ${sessionId}`);
-            delete sessionWsRefs.current[sessionId];
+        ws.onclose = async () => {
+            console.log(`Session WebSocket closed: ${sessionId} (ws: ${wsId})`);
+            // Only delete the ref if it still points to this WebSocket (not a newer one)
+            if (sessionWsRefs.current[sessionId] === ws) {
+                delete sessionWsRefs.current[sessionId];
+            } else {
+                console.log(`WebSocket ${wsId} closed but ref points to different WebSocket - not deleting`);
+            }
             // Clear streaming state for this session
             setSessions(prev => {
                 const session = prev[sessionId];
@@ -542,9 +627,18 @@ export function useWebSocket() {
                 return { ...prev, [sessionId]: { ...session, isStreaming: false } };
             });
 
+            // Before reconnecting, check if the close was due to auth failure
+            // WebSocket doesn't provide HTTP status codes, so we make a quick auth check
+            const isAuthenticated = await checkAuthOrRedirect();
+            if (!isAuthenticated) {
+                // checkAuthOrRedirect already redirected to login if 401
+                return;
+            }
+
             // Reconnect if this session is still active (user hasn't switched away)
+            // and no newer WebSocket has been created
             // This handles cases like mobile browser suspension when phone is locked
-            if (activeSessionIdRef.current === sessionId) {
+            if (activeSessionIdRef.current === sessionId && !sessionWsRefs.current[sessionId]) {
                 console.log(`Scheduling reconnect for active session: ${sessionId}`);
                 sessionReconnectRefs.current[sessionId] = setTimeout(() => {
                     delete sessionReconnectRefs.current[sessionId];
@@ -569,7 +663,7 @@ export function useWebSocket() {
     // Fetch stored sessions
     const fetchStoredSessions = useCallback(async () => {
         try {
-            const res = await fetch('/api/sessions');
+            const res = await authFetch(apiUrl('/api/sessions'));
             const data = await res.json();
             // Update global working_dir map for each session
             (data || []).forEach(s => {
@@ -605,7 +699,7 @@ export function useWebSocket() {
         // Load session events from API (with limit for faster initial load)
         try {
             // Get session metadata first to know total event count and working_dir
-            const metaResponse = await fetch(`/api/sessions/${sessionId}`);
+            const metaResponse = await authFetch(apiUrl(`/api/sessions/${sessionId}`));
             const meta = metaResponse.ok ? await metaResponse.json() : {};
 
             // If we already have messages, just update the info with working_dir
@@ -634,7 +728,7 @@ export function useWebSocket() {
 
             // Load only the last N events initially, in reverse order (newest first)
             // This allows the UI to render the most recent messages immediately
-            const eventsResponse = await fetch(`/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}&order=desc`);
+            const eventsResponse = await authFetch(apiUrl(`/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}&order=desc`));
             if (!eventsResponse.ok) {
                 console.error('Failed to load session events');
                 return;
@@ -775,8 +869,7 @@ export function useWebSocket() {
 
     // Connect to global events WebSocket
     const connectToEvents = useCallback(() => {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const socket = new WebSocket(`${protocol}//${window.location.host}/api/events`);
+        const socket = new WebSocket(wsUrl('/api/events'));
 
         socket.onopen = () => {
             setEventsConnected(true);
@@ -816,12 +909,21 @@ export function useWebSocket() {
             }
         };
 
-        socket.onclose = () => {
+        socket.onclose = async () => {
             if (eventsWsRef.current) {
                 wasConnectedRef.current = true;
             }
             setEventsConnected(false);
             eventsWsRef.current = null;
+
+            // Before reconnecting, check if the close was due to auth failure
+            // WebSocket doesn't provide HTTP status codes, so we make a quick auth check
+            const isAuthenticated = await checkAuthOrRedirect();
+            if (!isAuthenticated) {
+                // checkAuthOrRedirect already redirected to login if 401
+                return;
+            }
+
             // Reconnect after delay
             reconnectRef.current = setTimeout(connectToEvents, 2000);
         };
@@ -842,7 +944,7 @@ export function useWebSocket() {
             // Support both old (name string) and new (options object) signatures
             const opts = typeof options === 'string' ? { name: options } : options;
 
-            const response = await fetch('/api/sessions', {
+            const response = await secureFetch(apiUrl('/api/sessions'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1018,8 +1120,8 @@ export function useWebSocket() {
         try {
             // Load events before the first currently loaded sequence
             // Use chronological order (oldest first) since we're prepending to existing messages
-            const eventsResponse = await fetch(
-                `/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}&before=${session.firstLoadedSeq}`
+            const eventsResponse = await authFetch(
+                apiUrl(`/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}&before=${session.firstLoadedSeq}`)
             );
             if (!eventsResponse.ok) {
                 console.error('Failed to load more events');
@@ -1079,7 +1181,7 @@ export function useWebSocket() {
     // Rename a session via REST API
     const renameSession = useCallback(async (sessionId, name) => {
         try {
-            const response = await fetch(`/api/sessions/${sessionId}`, {
+            const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name })
@@ -1122,7 +1224,7 @@ export function useWebSocket() {
 
         // Delete from server first
         try {
-            await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+            await secureFetch(apiUrl(`/api/sessions/${sessionId}`), { method: 'DELETE' });
         } catch (err) {
             console.error('Failed to delete session:', err);
         }
