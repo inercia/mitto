@@ -224,3 +224,38 @@ func Session() *slog.Logger {
 func Shutdown() *slog.Logger {
 	return WithComponent("shutdown")
 }
+
+// WithSession returns a logger with session context attributes.
+// This creates a child logger that automatically includes session_id in all log messages.
+func WithSession(base *slog.Logger, sessionID string) *slog.Logger {
+	if base == nil {
+		return nil
+	}
+	return base.With("session_id", sessionID)
+}
+
+// WithSessionContext returns a logger with full session context.
+// This creates a child logger that automatically includes session_id, working_dir,
+// and acp_server in all log messages.
+func WithSessionContext(base *slog.Logger, sessionID, workingDir, acpServer string) *slog.Logger {
+	if base == nil {
+		return nil
+	}
+	return base.With(
+		"session_id", sessionID,
+		"working_dir", workingDir,
+		"acp_server", acpServer,
+	)
+}
+
+// WithClient returns a logger with WebSocket client context.
+// This creates a child logger that includes client_id and session_id.
+func WithClient(base *slog.Logger, clientID, sessionID string) *slog.Logger {
+	if base == nil {
+		return nil
+	}
+	return base.With(
+		"client_id", clientID,
+		"session_id", sessionID,
+	)
+}
