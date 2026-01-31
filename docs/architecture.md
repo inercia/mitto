@@ -198,22 +198,29 @@ Provides a browser-based UI for ACP communication via HTTP and WebSocket.
 
 | File | Purpose |
 |------|---------|
-| `server.go` | HTTP server setup, routing, static file serving |
-| `websocket.go` | WebSocket handler for real-time ACP communication |
+| `server.go` | HTTP server setup, routing, middleware, static file serving |
+| `session_ws.go` | Per-session WebSocket handler (`SessionWSClient`) |
+| `events_ws.go` | Global events WebSocket handler (`GlobalEventsClient`) |
+| `ws_conn.go` | Shared WebSocket connection wrapper (`WSConn`) |
+| `ws_types.go` | WebSocket message types and constants |
+| `background_session.go` | Session that runs independently of WebSocket connections |
 | `client.go` | Web-specific ACP client with streaming callbacks |
 | `markdown.go` | Smart Markdown-to-HTML streaming buffer |
 | `session_api.go` | REST API endpoints for session and workspace management |
 | `session_manager.go` | Registry of background sessions and workspace management |
-| `workspace.go` | WorkspaceConfig type definition |
+| `title.go` | Auto-title generation for sessions |
+| `websocket_security.go` | WebSocket security (origin checks, rate limiting) |
 
 **Key Components:**
 
 - **Server**: HTTP server serving embedded static files and API endpoints
-- **WSClient**: WebSocket client managing per-connection ACP sessions
+- **SessionWSClient**: Per-session WebSocket client implementing `SessionObserver`
+- **GlobalEventsClient**: WebSocket client for session lifecycle events
+- **WSConn**: Shared WebSocket wrapper for message sending and ping/pong
+- **BackgroundSession**: Manages ACP connection, notifies observers, persists events
 - **WebClient**: Implements `acp.Client` with callback-based output for web streaming
 - **MarkdownBuffer**: Accumulates streaming text and converts to HTML at semantic boundaries
 - **SessionManager**: Manages background sessions and workspace configurations
-- **WorkspaceConfig**: Pairs an ACP server with a working directory
 
 ### `web/` - Frontend Assets
 
@@ -417,6 +424,77 @@ flowchart TB
 | `file_write` | File write operation |
 | `error` | Error occurrence |
 
+### Session State Ownership Model
+
+Session state is distributed across multiple components with clear ownership boundaries:
+
+```mermaid
+graph TB
+    subgraph "Persistence Layer"
+        STORE[session.Store<br/>Owns: Metadata, Events]
+        FS[(File System<br/>events.jsonl, metadata.json)]
+        STORE --> FS
+    end
+
+    subgraph "Runtime Layer"
+        BS[BackgroundSession<br/>Owns: ACP Connection, Observers, Prompt State]
+        SM[SessionManager<br/>Owns: Running Sessions Registry, Workspaces]
+        SM --> BS
+    end
+
+    subgraph "Presentation Layer"
+        WSC[SessionWSClient<br/>Owns: WebSocket Connection, Permission Channel]
+        FE[Frontend<br/>Owns: UI State, Active Session]
+        WSC --> FE
+    end
+
+    BS --> STORE
+    WSC -.->|observes| BS
+```
+
+**Component Responsibilities:**
+
+| Component | Owns | Does NOT Own |
+|-----------|------|--------------|
+| `session.Store` | Persisted metadata, event log, file I/O | Runtime state, ACP connection |
+| `BackgroundSession` | ACP process, observers, prompt state, message buffers | Persistence (delegates to Store), UI state |
+| `SessionManager` | Running session registry, workspace config, session limits | Individual session state, persistence |
+| `SessionWSClient` | WebSocket connection, permission response channel | Session lifecycle, persistence |
+| Frontend | UI state, active session selection, message display | Backend state, persistence |
+
+**State Flow:**
+
+1. **Session Creation**: `SessionManager` creates `BackgroundSession`, which creates `session.Recorder` (wraps `Store`)
+2. **Runtime Updates**: `BackgroundSession` notifies observers via `SessionObserver` interface
+3. **Persistence**: `BackgroundSession` delegates to `Recorder` which writes to `Store`
+4. **UI Updates**: `SessionWSClient` (observer) forwards events to frontend via WebSocket
+
+**Observer Pattern:**
+
+`BackgroundSession` uses the observer pattern to decouple from WebSocket clients:
+
+```go
+// SessionObserver receives real-time updates from a BackgroundSession
+type SessionObserver interface {
+    OnAgentMessage(html string)
+    OnAgentThought(text string)
+    OnToolCall(id, title, status string)
+    OnToolUpdate(id string, status *string)
+    OnPlan()
+    OnFileWrite(path string, size int)
+    OnFileRead(path string, size int)
+    OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+    OnPromptComplete(eventCount int)
+    OnError(message string)
+    GetClientID() string
+}
+```
+
+Multiple `SessionWSClient` instances can observe the same `BackgroundSession`, enabling:
+- Multiple browser tabs viewing the same session
+- Session continues running when all clients disconnect
+- Clients can reconnect and sync via incremental updates
+
 ## Web Interface
 
 The web interface provides a browser-based UI for ACP communication, accessible via `mitto web`.
@@ -427,12 +505,15 @@ The web interface provides a browser-based UI for ACP communication, accessible 
 graph TB
     subgraph "Browser"
         UI[Preact UI]
-        WS_CLIENT[WebSocket Client]
+        EVENTS_WS[Events WebSocket<br/>/api/events]
+        SESSION_WS[Session WebSocket<br/>/api/sessions/{id}/ws]
     end
 
     subgraph "Mitto Web Server"
         HTTP[HTTP Server]
-        WS_HANDLER[WebSocket Handler]
+        EVENTS_MGR[GlobalEventsManager]
+        SESSION_WSC[SessionWSClient]
+        BG_SESSION[BackgroundSession]
         MD_BUF[Markdown Buffer]
         WEB_CLIENT[Web ACP Client]
     end
@@ -441,14 +522,31 @@ graph TB
         AGENT[AI Agent]
     end
 
-    UI <--> WS_CLIENT
-    WS_CLIENT <-->|WebSocket| WS_HANDLER
+    UI <--> EVENTS_WS
+    UI <--> SESSION_WS
+    EVENTS_WS <-->|lifecycle events| EVENTS_MGR
+    SESSION_WS <-->|session events| SESSION_WSC
     HTTP -->|Static Files| UI
-    WS_HANDLER --> WEB_CLIENT
+    SESSION_WSC -.->|observes| BG_SESSION
+    BG_SESSION --> WEB_CLIENT
     WEB_CLIENT <-->|stdin/stdout| AGENT
     WEB_CLIENT -->|chunks| MD_BUF
-    MD_BUF -->|HTML| WS_HANDLER
+    MD_BUF -->|HTML| BG_SESSION
 ```
+
+### WebSocket Endpoints
+
+The web interface uses two WebSocket endpoints:
+
+| Endpoint | Handler | Purpose |
+|----------|---------|---------|
+| `/api/events` | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed) |
+| `/api/sessions/{id}/ws` | `SessionWSClient` | Per-session communication (prompts, responses, tools) |
+
+This separation allows:
+- Global events to be broadcast to all connected clients
+- Per-session events to be scoped to interested clients only
+- Sessions to continue running when no clients are connected
 
 ### Streaming Response Handling
 
@@ -580,7 +678,7 @@ The `lastSeenSeq` is updated in these scenarios:
 
 **Backend Support:**
 
-The `handleSyncSession` function in `websocket.go` handles incremental sync:
+The `handleSyncSession` function in `session_ws.go` handles incremental sync:
 
 ```go
 // Client sends: {"type": "sync_session", "data": {"session_id": "...", "after_seq": 42}}
@@ -801,11 +899,16 @@ mitto/
 │   │   ├── config.go            # Default paths (uses appdir)
 │   │   └── *_test.go            # Unit tests
 │   └── web/
-│       ├── server.go            # HTTP server setup
-│       ├── websocket.go         # WebSocket handler
+│       ├── server.go            # HTTP server setup, routing
+│       ├── session_ws.go        # Per-session WebSocket handler
+│       ├── events_ws.go         # Global events WebSocket handler
+│       ├── ws_conn.go           # Shared WebSocket connection wrapper
+│       ├── ws_types.go          # WebSocket message types
+│       ├── background_session.go # Background session management
 │       ├── client.go            # Web ACP client
 │       ├── markdown.go          # Markdown streaming buffer
-│       └── session_api.go       # REST API for sessions
+│       ├── session_api.go       # REST API for sessions
+│       └── title.go             # Auto-title generation
 ├── web/
 │   ├── embed.go                 # Go embed directive for static files
 │   └── static/
