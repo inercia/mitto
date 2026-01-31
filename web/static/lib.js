@@ -10,12 +10,12 @@ export const MAX_MESSAGES = 100;
 export const INITIAL_EVENTS_LIMIT = 50;
 
 // Message roles
-export const ROLE_USER = 'user';
-export const ROLE_AGENT = 'agent';
-export const ROLE_THOUGHT = 'thought';
-export const ROLE_TOOL = 'tool';
-export const ROLE_ERROR = 'error';
-export const ROLE_SYSTEM = 'system';
+export const ROLE_USER = "user";
+export const ROLE_AGENT = "agent";
+export const ROLE_THOUGHT = "thought";
+export const ROLE_TOOL = "tool";
+export const ROLE_ERROR = "error";
+export const ROLE_SYSTEM = "system";
 
 // =============================================================================
 // User Message Markdown Rendering
@@ -35,63 +35,63 @@ export const MAX_MARKDOWN_LENGTH = 10000;
  * @returns {boolean} True if the text likely contains Markdown
  */
 export function hasMarkdownContent(text) {
-    if (!text || typeof text !== 'string') {
-        return false;
-    }
-
-    // Check for common Markdown patterns
-    // Headers: # Header, ## Header, etc.
-    if (/^#{1,6}\s+\S/m.test(text)) {
-        return true;
-    }
-
-    // Bold: **text** or __text__
-    if (/\*\*[^*]+\*\*/.test(text) || /__[^_]+__/.test(text)) {
-        return true;
-    }
-
-    // Italic: *text* or _text_ (single word or short phrase without internal asterisks/underscores)
-    // Match patterns like *word* or *some text* but not * spaced * asterisks
-    if (/\*[^*\s][^*]*\*/.test(text) || /_[^_\s][^_]*_/.test(text)) {
-        return true;
-    }
-
-    // Code: `code` or ```code blocks```
-    if (/`[^`]+`/.test(text) || /```[\s\S]*?```/.test(text)) {
-        return true;
-    }
-
-    // Links: [text](url) or [text][ref]
-    if (/\[[^\]]+\]\([^)]+\)/.test(text) || /\[[^\]]+\]\[[^\]]*\]/.test(text)) {
-        return true;
-    }
-
-    // Lists: - item, * item, + item, or 1. item
-    if (/^[\s]*[-*+]\s+\S/m.test(text) || /^[\s]*\d+\.\s+\S/m.test(text)) {
-        return true;
-    }
-
-    // Blockquotes: > text
-    if (/^>\s+\S/m.test(text)) {
-        return true;
-    }
-
-    // Horizontal rules: --- or *** or ___
-    if (/^[-*_]{3,}\s*$/m.test(text)) {
-        return true;
-    }
-
-    // Tables: | header | header |
-    if (/\|[^|]+\|/.test(text) && /^[\s]*\|/.test(text)) {
-        return true;
-    }
-
-    // Strikethrough: ~~text~~
-    if (/~~[^~]+~~/.test(text)) {
-        return true;
-    }
-
+  if (!text || typeof text !== "string") {
     return false;
+  }
+
+  // Check for common Markdown patterns
+  // Headers: # Header, ## Header, etc.
+  if (/^#{1,6}\s+\S/m.test(text)) {
+    return true;
+  }
+
+  // Bold: **text** or __text__
+  if (/\*\*[^*]+\*\*/.test(text) || /__[^_]+__/.test(text)) {
+    return true;
+  }
+
+  // Italic: *text* or _text_ (single word or short phrase without internal asterisks/underscores)
+  // Match patterns like *word* or *some text* but not * spaced * asterisks
+  if (/\*[^*\s][^*]*\*/.test(text) || /_[^_\s][^_]*_/.test(text)) {
+    return true;
+  }
+
+  // Code: `code` or ```code blocks```
+  if (/`[^`]+`/.test(text) || /```[\s\S]*?```/.test(text)) {
+    return true;
+  }
+
+  // Links: [text](url) or [text][ref]
+  if (/\[[^\]]+\]\([^)]+\)/.test(text) || /\[[^\]]+\]\[[^\]]*\]/.test(text)) {
+    return true;
+  }
+
+  // Lists: - item, * item, + item, or 1. item
+  if (/^[\s]*[-*+]\s+\S/m.test(text) || /^[\s]*\d+\.\s+\S/m.test(text)) {
+    return true;
+  }
+
+  // Blockquotes: > text
+  if (/^>\s+\S/m.test(text)) {
+    return true;
+  }
+
+  // Horizontal rules: --- or *** or ___
+  if (/^[-*_]{3,}\s*$/m.test(text)) {
+    return true;
+  }
+
+  // Tables: | header | header |
+  if (/\|[^|]+\|/.test(text) && /^[\s]*\|/.test(text)) {
+    return true;
+  }
+
+  // Strikethrough: ~~text~~
+  if (/~~[^~]+~~/.test(text)) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -102,48 +102,70 @@ export function hasMarkdownContent(text) {
  * @returns {string|null} The rendered HTML, or null if plain text should be used
  */
 export function renderUserMarkdown(text) {
-    if (!text || typeof text !== 'string') {
-        return null;
-    }
+  if (!text || typeof text !== "string") {
+    return null;
+  }
 
-    // Skip rendering for very long messages (performance)
-    if (text.length > MAX_MARKDOWN_LENGTH) {
-        return null;
-    }
+  // Skip rendering for very long messages (performance)
+  if (text.length > MAX_MARKDOWN_LENGTH) {
+    return null;
+  }
 
-    // Skip rendering if text doesn't appear to contain Markdown
-    if (!hasMarkdownContent(text)) {
-        return null;
-    }
+  // Skip rendering if text doesn't appear to contain Markdown
+  if (!hasMarkdownContent(text)) {
+    return null;
+  }
 
-    // Check if marked and DOMPurify are available
-    if (typeof window === 'undefined' || !window.marked || !window.DOMPurify) {
-        return null;
-    }
+  // Check if marked and DOMPurify are available
+  if (typeof window === "undefined" || !window.marked || !window.DOMPurify) {
+    return null;
+  }
 
-    try {
-        // Render Markdown to HTML
-        const rawHtml = window.marked.parse(text);
+  try {
+    // Render Markdown to HTML
+    const rawHtml = window.marked.parse(text);
 
-        // Sanitize HTML to prevent XSS
-        const cleanHtml = window.DOMPurify.sanitize(rawHtml, {
-            USE_PROFILES: { html: true },
-            ALLOWED_TAGS: [
-                'p', 'br', 'strong', 'em', 'code', 'pre', 'blockquote',
-                'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-                'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
-                'hr', 'del', 'span'
-            ],
-            ALLOWED_ATTR: ['href', 'title', 'target', 'rel', 'class'],
-            ALLOW_DATA_ATTR: false,
-        });
+    // Sanitize HTML to prevent XSS
+    const cleanHtml = window.DOMPurify.sanitize(rawHtml, {
+      USE_PROFILES: { html: true },
+      ALLOWED_TAGS: [
+        "p",
+        "br",
+        "strong",
+        "em",
+        "code",
+        "pre",
+        "blockquote",
+        "ul",
+        "ol",
+        "li",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "a",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "hr",
+        "del",
+        "span",
+      ],
+      ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
+      ALLOW_DATA_ATTR: false,
+    });
 
-        return cleanHtml;
-    } catch (error) {
-        // On any error, fall back to plain text
-        console.warn('Failed to render user message Markdown:', error);
-        return null;
-    }
+    return cleanHtml;
+  } catch (error) {
+    // On any error, fall back to plain text
+    console.warn("Failed to render user message Markdown:", error);
+    return null;
+  }
 }
 
 /**
@@ -158,47 +180,49 @@ const globalWorkingDirMap = new Map();
 
 // Function to update the global working_dir map
 export function updateGlobalWorkingDir(sessionId, workingDir) {
-    if (sessionId && workingDir) {
-        globalWorkingDirMap.set(sessionId, workingDir);
-    }
+  if (sessionId && workingDir) {
+    globalWorkingDirMap.set(sessionId, workingDir);
+  }
 }
 
 // Function to get working_dir from the global map
 export function getGlobalWorkingDir(sessionId) {
-    return globalWorkingDirMap.get(sessionId) || '';
+  return globalWorkingDirMap.get(sessionId) || "";
 }
 
 export function computeAllSessions(activeSessions, storedSessions) {
-    // Update global map from storedSessions
-    storedSessions.forEach(s => {
-        if (s.session_id && s.working_dir) {
-            globalWorkingDirMap.set(s.session_id, s.working_dir);
-        }
-    });
+  // Update global map from storedSessions
+  storedSessions.forEach((s) => {
+    if (s.session_id && s.working_dir) {
+      globalWorkingDirMap.set(s.session_id, s.working_dir);
+    }
+  });
 
-    // Create a map of stored sessions for quick lookup
-    const storedMap = new Map(storedSessions.map(s => [s.session_id, s]));
+  // Create a map of stored sessions for quick lookup
+  const storedMap = new Map(storedSessions.map((s) => [s.session_id, s]));
 
-    // Merge working_dir from storedSessions (or global map) into activeSessions
-    const mergedActive = activeSessions.map(s => {
-        const stored = storedMap.get(s.session_id);
-        const globalWd = globalWorkingDirMap.get(s.session_id);
-        // Get working_dir from: stored session, global map, or existing value
-        const workingDir = stored?.working_dir || globalWd || s.working_dir || '';
-        if (workingDir && workingDir !== s.working_dir) {
-            return { ...s, working_dir: workingDir };
-        }
-        return s;
-    });
+  // Merge working_dir from storedSessions (or global map) into activeSessions
+  const mergedActive = activeSessions.map((s) => {
+    const stored = storedMap.get(s.session_id);
+    const globalWd = globalWorkingDirMap.get(s.session_id);
+    // Get working_dir from: stored session, global map, or existing value
+    const workingDir = stored?.working_dir || globalWd || s.working_dir || "";
+    if (workingDir && workingDir !== s.working_dir) {
+      return { ...s, working_dir: workingDir };
+    }
+    return s;
+  });
 
-    const activeIds = new Set(mergedActive.map(s => s.session_id));
-    const filteredStored = storedSessions.filter(s => !activeIds.has(s.session_id));
-    const combined = [...mergedActive, ...filteredStored];
-    // Sort by creation time (most recent first)
-    combined.sort((a, b) => {
-        return new Date(b.created_at) - new Date(a.created_at);
-    });
-    return combined;
+  const activeIds = new Set(mergedActive.map((s) => s.session_id));
+  const filteredStored = storedSessions.filter(
+    (s) => !activeIds.has(s.session_id),
+  );
+  const combined = [...mergedActive, ...filteredStored];
+  // Sort by creation time (most recent first)
+  combined.sort((a, b) => {
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
+  return combined;
 }
 
 /**
@@ -209,63 +233,62 @@ export function computeAllSessions(activeSessions, storedSessions) {
  * @returns {Array} Array of message objects for rendering (always in chronological order, oldest first)
  */
 export function convertEventsToMessages(events, options = {}) {
-    const { reverseInput = false } = options;
+  const { reverseInput = false } = options;
 
-    // If events are in reverse order (newest first), reverse them to chronological order
-    const orderedEvents = reverseInput ? [...events].reverse() : events;
+  // If events are in reverse order (newest first), reverse them to chronological order
+  const orderedEvents = reverseInput ? [...events].reverse() : events;
 
-    const messages = [];
-    for (const event of orderedEvents) {
-        const seq = event.seq || 0; // Include sequence number for tracking
-        switch (event.type) {
-            case 'user_prompt':
-                messages.push({
-                    role: ROLE_USER,
-                    text: event.data?.message || event.data?.text || '',
-                    timestamp: new Date(event.timestamp).getTime(),
-                    seq
-                });
-                break;
-            case 'agent_message':
-                messages.push({
-                    role: ROLE_AGENT,
-                    html: event.data?.html || event.data?.text || '',
-                    complete: true,
-                    timestamp: new Date(event.timestamp).getTime(),
-                    seq
-                });
-                break;
-            case 'agent_thought':
-                messages.push({
-                    role: ROLE_THOUGHT,
-                    text: event.data?.text || '',
-                    complete: true,
-                    timestamp: new Date(event.timestamp).getTime(),
-                    seq
-                });
-                break;
-            case 'tool_call':
-                messages.push({
-                    role: ROLE_TOOL,
-                    id: event.data?.tool_call_id || event.data?.id,
-                    title: event.data?.title,
-                    status: event.data?.status || 'completed',
-                    timestamp: new Date(event.timestamp).getTime(),
-                    seq
-                });
-                break;
-            case 'error':
-                messages.push({
-                    role: ROLE_ERROR,
-                    text: event.data?.message || '',
-                    timestamp: new Date(event.timestamp).getTime(),
-                    seq
-                });
-                break;
-        }
+  const messages = [];
+  for (const event of orderedEvents) {
+    const seq = event.seq || 0; // Include sequence number for tracking
+    switch (event.type) {
+      case "user_prompt":
+        messages.push({
+          role: ROLE_USER,
+          text: event.data?.message || event.data?.text || "",
+          timestamp: new Date(event.timestamp).getTime(),
+          seq,
+        });
+        break;
+      case "agent_message":
+        messages.push({
+          role: ROLE_AGENT,
+          html: event.data?.html || event.data?.text || "",
+          complete: true,
+          timestamp: new Date(event.timestamp).getTime(),
+          seq,
+        });
+        break;
+      case "agent_thought":
+        messages.push({
+          role: ROLE_THOUGHT,
+          text: event.data?.text || "",
+          complete: true,
+          timestamp: new Date(event.timestamp).getTime(),
+          seq,
+        });
+        break;
+      case "tool_call":
+        messages.push({
+          role: ROLE_TOOL,
+          id: event.data?.tool_call_id || event.data?.id,
+          title: event.data?.title,
+          status: event.data?.status || "completed",
+          timestamp: new Date(event.timestamp).getTime(),
+          seq,
+        });
+        break;
+      case "error":
+        messages.push({
+          role: ROLE_ERROR,
+          text: event.data?.message || "",
+          timestamp: new Date(event.timestamp).getTime(),
+          seq,
+        });
+        break;
     }
-    return messages;
-
+  }
+  return messages;
 }
 
 /**
@@ -274,8 +297,8 @@ export function convertEventsToMessages(events, options = {}) {
  * @returns {number} The minimum sequence number, or 0 if no events
  */
 export function getMinSeq(events) {
-    if (!events || events.length === 0) return 0;
-    return Math.min(...events.map(e => e.seq || 0));
+  if (!events || events.length === 0) return 0;
+  return Math.min(...events.map((e) => e.seq || 0));
 }
 
 /**
@@ -284,8 +307,91 @@ export function getMinSeq(events) {
  * @returns {number} The maximum sequence number, or 0 if no events
  */
 export function getMaxSeq(events) {
-    if (!events || events.length === 0) return 0;
-    return Math.max(...events.map(e => e.seq || 0));
+  if (!events || events.length === 0) return 0;
+  return Math.max(...events.map((e) => e.seq || 0));
+}
+
+/**
+ * Create a content hash for a message for deduplication.
+ * Handles different message types appropriately:
+ * - user/agent/thought/error: use text or html content
+ * - tool: use id and title (since they don't have text/html)
+ *
+ * @param {Object} message - The message to hash
+ * @returns {string} A hash string for deduplication
+ */
+export function getMessageHash(message) {
+  const role = message.role || "unknown";
+
+  if (role === ROLE_TOOL) {
+    // Tool messages use id and title, not text/html
+    // Include both to handle multiple tool calls with the same title
+    const id = message.id || "";
+    const title = message.title || "";
+    return `${role}:${id}:${title}`;
+  }
+
+  // For other message types, use text or html content (first 200 chars)
+  const content = (message.text || message.html || "").substring(0, 200);
+  return `${role}:${content}`;
+}
+
+/**
+ * Merge new messages from sync into existing messages, maintaining chronological order.
+ * This handles the case where:
+ * 1. Existing messages may have been received via streaming (no seq, or client-side timestamp)
+ * 2. New messages come from sync (with seq and server timestamp)
+ *
+ * The merge strategy:
+ * 1. Create a hash set of existing messages for deduplication
+ * 2. Filter out duplicates from new messages
+ * 3. Merge both lists and sort by sequence number (for messages with seq)
+ *    or timestamp (for streaming messages without seq)
+ *
+ * @param {Array} existingMessages - Messages currently in UI
+ * @param {Array} newMessages - Messages from session_sync
+ * @returns {Array} Merged and ordered messages
+ */
+export function mergeMessagesWithSync(existingMessages, newMessages) {
+  if (!existingMessages || existingMessages.length === 0) {
+    return newMessages || [];
+  }
+  if (!newMessages || newMessages.length === 0) {
+    return existingMessages;
+  }
+
+  // Create hash set of existing messages for deduplication
+  const existingHashes = new Set();
+  for (const m of existingMessages) {
+    existingHashes.add(getMessageHash(m));
+  }
+
+  // Filter out duplicates from new messages
+  const filteredNewMessages = newMessages.filter((m) => {
+    const hash = getMessageHash(m);
+    return !existingHashes.has(hash);
+  });
+
+  if (filteredNewMessages.length === 0) {
+    return existingMessages;
+  }
+
+  // IMPORTANT: Do NOT re-sort the entire message list by seq or timestamp.
+  //
+  // Existing messages are in correct display order from real-time streaming.
+  // New messages from sync represent events that happened AFTER the lastSeenSeq,
+  // so they should be appended at the end.
+  //
+  // Re-sorting by seq can cause incorrect ordering because:
+  // 1. Tool calls are persisted immediately with early seq numbers
+  // 2. Agent messages are buffered and persisted later with later seq numbers
+  // 3. This makes tool calls appear to come before agent messages when sorted by seq,
+  //    even though they were interleaved during the actual conversation.
+  //
+  // Instead, we preserve the existing message order and append new sync messages.
+  // The sync messages themselves are already in chronological order from the backend.
+
+  return [...existingMessages, ...filteredNewMessages];
 }
 
 /**
@@ -294,11 +400,11 @@ export function getMaxSeq(events) {
  * @returns {{ data: any, error: Error|null }} Parsed data or error
  */
 export function safeJsonParse(jsonString) {
-    try {
-        return { data: JSON.parse(jsonString), error: null };
-    } catch (error) {
-        return { data: null, error };
-    }
+  try {
+    return { data: JSON.parse(jsonString), error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
 }
 
 /**
@@ -308,17 +414,23 @@ export function safeJsonParse(jsonString) {
  * @returns {Object} New session state
  */
 export function createSessionState(sessionId, options = {}) {
-    const { name, acpServer, createdAt, messages = [], status = 'active' } = options;
-    return {
-        messages,
-        info: {
-            session_id: sessionId,
-            name: name || 'New conversation',
-            acp_server: acpServer || '',
-            created_at: createdAt || new Date().toISOString(),
-            status
-        }
-    };
+  const {
+    name,
+    acpServer,
+    createdAt,
+    messages = [],
+    status = "active",
+  } = options;
+  return {
+    messages,
+    info: {
+      session_id: sessionId,
+      name: name || "New conversation",
+      acp_server: acpServer || "",
+      created_at: createdAt || new Date().toISOString(),
+      status,
+    },
+  };
 }
 
 /**
@@ -328,10 +440,10 @@ export function createSessionState(sessionId, options = {}) {
  * @returns {Array} Array with at most maxItems elements (the last ones)
  */
 export function limitMessages(arr, maxItems = MAX_MESSAGES) {
-    if (!arr || arr.length <= maxItems) {
-        return arr;
-    }
-    return arr.slice(-maxItems);
+  if (!arr || arr.length <= maxItems) {
+    return arr;
+  }
+  return arr.slice(-maxItems);
 }
 
 /**
@@ -342,14 +454,14 @@ export function limitMessages(arr, maxItems = MAX_MESSAGES) {
  * @returns {Object} New session state with message added
  */
 export function addMessageToSessionState(session, message) {
-    if (!session) {
-        session = { messages: [], info: {} };
-    }
-    const newMessages = limitMessages([...session.messages, message]);
-    return {
-        ...session,
-        messages: newMessages
-    };
+  if (!session) {
+    session = { messages: [], info: {} };
+  }
+  const newMessages = limitMessages([...session.messages, message]);
+  return {
+    ...session,
+    messages: newMessages,
+  };
 }
 
 /**
@@ -359,13 +471,13 @@ export function addMessageToSessionState(session, message) {
  * @returns {Object} New session state with updated last message
  */
 export function updateLastMessageInSession(session, updater) {
-    if (!session || session.messages.length === 0) {
-        return session;
-    }
-    const messages = [...session.messages];
-    const lastIdx = messages.length - 1;
-    messages[lastIdx] = updater(messages[lastIdx]);
-    return { ...session, messages };
+  if (!session || session.messages.length === 0) {
+    return session;
+  }
+  const messages = [...session.messages];
+  const lastIdx = messages.length - 1;
+  messages[lastIdx] = updater(messages[lastIdx]);
+  return { ...session, messages };
 }
 
 /**
@@ -375,23 +487,27 @@ export function updateLastMessageInSession(session, updater) {
  * @param {string} currentActiveSessionId - Currently active session ID
  * @returns {{ newSessions: Object, nextActiveSessionId: string|null, needsNewSession: boolean }}
  */
-export function removeSessionFromState(sessions, sessionIdToRemove, currentActiveSessionId) {
-    const { [sessionIdToRemove]: removed, ...rest } = sessions;
-    
-    let nextActiveSessionId = currentActiveSessionId;
-    let needsNewSession = false;
-    
-    if (sessionIdToRemove === currentActiveSessionId) {
-        const remainingIds = Object.keys(rest);
-        if (remainingIds.length > 0) {
-            nextActiveSessionId = remainingIds[0];
-        } else {
-            nextActiveSessionId = null;
-            needsNewSession = true;
-        }
+export function removeSessionFromState(
+  sessions,
+  sessionIdToRemove,
+  currentActiveSessionId,
+) {
+  const { [sessionIdToRemove]: removed, ...rest } = sessions;
+
+  let nextActiveSessionId = currentActiveSessionId;
+  let needsNewSession = false;
+
+  if (sessionIdToRemove === currentActiveSessionId) {
+    const remainingIds = Object.keys(rest);
+    if (remainingIds.length > 0) {
+      nextActiveSessionId = remainingIds[0];
+    } else {
+      nextActiveSessionId = null;
+      needsNewSession = true;
     }
-    
-    return { newSessions: rest, nextActiveSessionId, needsNewSession };
+  }
+
+  return { newSessions: rest, nextActiveSessionId, needsNewSession };
 }
 
 // =============================================================================
@@ -404,10 +520,13 @@ export function removeSessionFromState(sessions, sessionIdToRemove, currentActiv
  * @returns {string} The basename (last component) of the path
  */
 export function getBasename(path) {
-    if (!path) return '';
-    // Handle both Unix and Windows paths
-    const parts = path.replace(/\\/g, '/').split('/').filter(p => p);
-    return parts[parts.length - 1] || '';
+  if (!path) return "";
+  // Handle both Unix and Windows paths
+  const parts = path
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((p) => p);
+  return parts[parts.length - 1] || "";
 }
 
 /**
@@ -421,50 +540,54 @@ export function getBasename(path) {
  * @returns {string} Three-letter uppercase abbreviation
  */
 export function getWorkspaceAbbreviation(path) {
-    const basename = getBasename(path);
-    if (!basename) return '???';
+  const basename = getBasename(path);
+  if (!basename) return "???";
 
-    // Split by common separators (hyphen, underscore, space)
-    const separatorParts = basename.split(/[-_\s]+/).filter(p => p);
+  // Split by common separators (hyphen, underscore, space)
+  const separatorParts = basename.split(/[-_\s]+/).filter((p) => p);
 
-    if (separatorParts.length >= 2) {
-        // Take first letter of each part (up to 3)
-        const abbr = separatorParts
-            .slice(0, 3)
-            .map(p => p[0])
-            .join('')
-            .toUpperCase();
-        // Pad with last part's letters if needed
-        if (abbr.length < 3 && separatorParts.length > 0) {
-            const lastPart = separatorParts[separatorParts.length - 1];
-            return (abbr + lastPart.slice(1, 4 - abbr.length)).toUpperCase().slice(0, 3);
-        }
-        return abbr.slice(0, 3);
+  if (separatorParts.length >= 2) {
+    // Take first letter of each part (up to 3)
+    const abbr = separatorParts
+      .slice(0, 3)
+      .map((p) => p[0])
+      .join("")
+      .toUpperCase();
+    // Pad with last part's letters if needed
+    if (abbr.length < 3 && separatorParts.length > 0) {
+      const lastPart = separatorParts[separatorParts.length - 1];
+      return (abbr + lastPart.slice(1, 4 - abbr.length))
+        .toUpperCase()
+        .slice(0, 3);
     }
+    return abbr.slice(0, 3);
+  }
 
-    // Check for camelCase
-    const camelParts = basename.split(/(?=[A-Z])/).filter(p => p);
-    if (camelParts.length >= 2) {
-        const abbr = camelParts
-            .slice(0, 3)
-            .map(p => p[0])
-            .join('')
-            .toUpperCase();
-        if (abbr.length < 3 && camelParts.length > 0) {
-            const lastPart = camelParts[camelParts.length - 1];
-            return (abbr + lastPart.slice(1, 4 - abbr.length)).toUpperCase().slice(0, 3);
-        }
-        return abbr.slice(0, 3);
+  // Check for camelCase
+  const camelParts = basename.split(/(?=[A-Z])/).filter((p) => p);
+  if (camelParts.length >= 2) {
+    const abbr = camelParts
+      .slice(0, 3)
+      .map((p) => p[0])
+      .join("")
+      .toUpperCase();
+    if (abbr.length < 3 && camelParts.length > 0) {
+      const lastPart = camelParts[camelParts.length - 1];
+      return (abbr + lastPart.slice(1, 4 - abbr.length))
+        .toUpperCase()
+        .slice(0, 3);
     }
+    return abbr.slice(0, 3);
+  }
 
-    // Single word: take first 3 consonants, or first 3 characters
-    const consonants = basename.replace(/[aeiouAEIOU]/g, '');
-    if (consonants.length >= 3) {
-        return consonants.slice(0, 3).toUpperCase();
-    }
+  // Single word: take first 3 consonants, or first 3 characters
+  const consonants = basename.replace(/[aeiouAEIOU]/g, "");
+  if (consonants.length >= 3) {
+    return consonants.slice(0, 3).toUpperCase();
+  }
 
-    // Fall back to first 3 characters
-    return basename.slice(0, 3).toUpperCase();
+  // Fall back to first 3 characters
+  return basename.slice(0, 3).toUpperCase();
 }
 
 /**
@@ -473,13 +596,13 @@ export function getWorkspaceAbbreviation(path) {
  * @returns {number} Hash value (positive integer)
  */
 function hashString(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash; // Convert to 32-bit integer
-    }
-    return Math.abs(hash);
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return Math.abs(hash);
 }
 
 /**
@@ -488,14 +611,14 @@ function hashString(str) {
  * @returns {object|null} { r, g, b } or null if invalid
  */
 export function hexToRgb(hex) {
-    if (!hex) return null;
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    if (!result) return null;
-    return {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16)
-    };
+  if (!hex) return null;
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!result) return null;
+  return {
+    r: parseInt(result[1], 16),
+    g: parseInt(result[2], 16),
+    b: parseInt(result[3], 16),
+  };
 }
 
 /**
@@ -506,11 +629,11 @@ export function hexToRgb(hex) {
  * @returns {number} Relative luminance (0-1)
  */
 export function getLuminance(r, g, b) {
-    const [rs, gs, bs] = [r, g, b].map(c => {
-        c = c / 255;
-        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-    });
-    return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+  const [rs, gs, bs] = [r, g, b].map((c) => {
+    c = c / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
 }
 
 /**
@@ -519,25 +642,25 @@ export function getLuminance(r, g, b) {
  * @returns {object|null} Color object with { background, text, border } or null if invalid
  */
 export function getColorFromHex(hexColor) {
-    const rgb = hexToRgb(hexColor);
-    if (!rgb) return null;
+  const rgb = hexToRgb(hexColor);
+  if (!rgb) return null;
 
-    const luminance = getLuminance(rgb.r, rgb.g, rgb.b);
-    // Use white text for dark backgrounds (luminance < 0.4), dark text otherwise
-    const text = luminance < 0.4 ? 'white' : 'rgb(30, 30, 30)';
+  const luminance = getLuminance(rgb.r, rgb.g, rgb.b);
+  // Use white text for dark backgrounds (luminance < 0.4), dark text otherwise
+  const text = luminance < 0.4 ? "white" : "rgb(30, 30, 30)";
 
-    // Border is a darker version of the background
-    const darkenFactor = 0.7;
-    const borderR = Math.round(rgb.r * darkenFactor);
-    const borderG = Math.round(rgb.g * darkenFactor);
-    const borderB = Math.round(rgb.b * darkenFactor);
-    const border = `rgb(${borderR}, ${borderG}, ${borderB})`;
+  // Border is a darker version of the background
+  const darkenFactor = 0.7;
+  const borderR = Math.round(rgb.r * darkenFactor);
+  const borderG = Math.round(rgb.g * darkenFactor);
+  const borderB = Math.round(rgb.b * darkenFactor);
+  const border = `rgb(${borderR}, ${borderG}, ${borderB})`;
 
-    return {
-        background: hexColor,
-        text,
-        border
-    };
+  return {
+    background: hexColor,
+    text,
+    border,
+  };
 }
 
 /**
@@ -548,15 +671,17 @@ export function getColorFromHex(hexColor) {
  * @returns {string} Hex color (e.g., "#ff5500")
  */
 export function hslToHex(h, s, l) {
-    s /= 100;
-    l /= 100;
-    const a = s * Math.min(l, 1 - l);
-    const f = n => {
-        const k = (n + h / 30) % 12;
-        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
-        return Math.round(255 * color).toString(16).padStart(2, '0');
-    };
-    return `#${f(0)}${f(8)}${f(4)}`;
+  s /= 100;
+  l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
 }
 
 /**
@@ -567,39 +692,39 @@ export function hslToHex(h, s, l) {
  * @returns {object} Color object with { hue, background, backgroundHex, text, border }
  */
 export function getWorkspaceColor(path) {
-    const basename = getBasename(path);
-    if (!basename) {
-        return {
-            hue: 0,
-            background: 'rgb(100, 100, 100)',
-            backgroundHex: '#646464',
-            text: 'white',
-            border: 'rgb(120, 120, 120)'
-        };
-    }
+  const basename = getBasename(path);
+  if (!basename) {
+    return {
+      hue: 0,
+      background: "rgb(100, 100, 100)",
+      backgroundHex: "#646464",
+      text: "white",
+      border: "rgb(120, 120, 120)",
+    };
+  }
 
-    // Generate hue from hash (0-360)
-    const hash = hashString(basename);
-    const hue = hash % 360;
+  // Generate hue from hash (0-360)
+  const hash = hashString(basename);
+  const hue = hash % 360;
 
-    // Use fixed saturation and lightness for consistent appearance
-    // Saturation: 65% for vibrant but not overwhelming colors
-    // Lightness: 45% for good contrast with white text
-    const saturation = 65;
-    const lightness = 45;
+  // Use fixed saturation and lightness for consistent appearance
+  // Saturation: 65% for vibrant but not overwhelming colors
+  // Lightness: 45% for good contrast with white text
+  const saturation = 65;
+  const lightness = 45;
 
-    // Generate the background color
-    const background = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
-    const backgroundHex = hslToHex(hue, saturation, lightness);
+  // Generate the background color
+  const background = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  const backgroundHex = hslToHex(hue, saturation, lightness);
 
-    // For text, use white for dark backgrounds (lightness < 55%)
-    // and dark for light backgrounds
-    const text = lightness < 55 ? 'white' : 'rgb(30, 30, 30)';
+  // For text, use white for dark backgrounds (lightness < 55%)
+  // and dark for light backgrounds
+  const text = lightness < 55 ? "white" : "rgb(30, 30, 30)";
 
-    // Border is slightly darker version
-    const border = `hsl(${hue}, ${saturation}%, ${Math.max(lightness - 10, 20)}%)`;
+  // Border is slightly darker version
+  const border = `hsl(${hue}, ${saturation}%, ${Math.max(lightness - 10, 20)}%)`;
 
-    return { hue, background, backgroundHex, text, border };
+  return { hue, background, backgroundHex, text, border };
 }
 
 /**
@@ -609,14 +734,14 @@ export function getWorkspaceColor(path) {
  * @returns {object} { abbreviation, color: { background, text, border }, basename }
  */
 export function getWorkspaceVisualInfo(path, customColor = null) {
-    // If a custom color is provided and valid, use it
-    const color = customColor ? getColorFromHex(customColor) : null;
+  // If a custom color is provided and valid, use it
+  const color = customColor ? getColorFromHex(customColor) : null;
 
-    return {
-        abbreviation: getWorkspaceAbbreviation(path),
-        color: color || getWorkspaceColor(path),
-        basename: getBasename(path)
-    };
+  return {
+    abbreviation: getWorkspaceAbbreviation(path),
+    color: color || getWorkspaceColor(path),
+    basename: getBasename(path),
+  };
 }
 
 // Credential validation constants
@@ -627,9 +752,19 @@ export const MAX_PASSWORD_LENGTH = 128;
 
 // Common weak passwords that should be rejected
 const COMMON_WEAK_PASSWORDS = new Set([
-    'password', 'password1', 'password12', '12345678', '123456789',
-    'qwerty123', 'admin123', 'letmein', 'welcome', 'monkey123',
-    'dragon123', 'master123', 'changeme'
+  "password",
+  "password1",
+  "password12",
+  "12345678",
+  "123456789",
+  "qwerty123",
+  "admin123",
+  "letmein",
+  "welcome",
+  "monkey123",
+  "dragon123",
+  "master123",
+  "changeme",
 ]);
 
 /**
@@ -638,31 +773,31 @@ const COMMON_WEAK_PASSWORDS = new Set([
  * @returns {string} Error message if invalid, empty string if valid
  */
 export function validateUsername(username) {
-    const trimmed = (username || '').trim();
+  const trimmed = (username || "").trim();
 
-    if (!trimmed) {
-        return 'Username is required';
-    }
+  if (!trimmed) {
+    return "Username is required";
+  }
 
-    if (trimmed.length < MIN_USERNAME_LENGTH) {
-        return 'Username must be at least 3 characters';
-    }
+  if (trimmed.length < MIN_USERNAME_LENGTH) {
+    return "Username must be at least 3 characters";
+  }
 
-    if (trimmed.length > MAX_USERNAME_LENGTH) {
-        return 'Username must be at most 64 characters';
-    }
+  if (trimmed.length > MAX_USERNAME_LENGTH) {
+    return "Username must be at most 64 characters";
+  }
 
-    // Username should start with a letter or number
-    if (!/^[a-zA-Z0-9]/.test(trimmed)) {
-        return 'Username must start with a letter or number';
-    }
+  // Username should start with a letter or number
+  if (!/^[a-zA-Z0-9]/.test(trimmed)) {
+    return "Username must start with a letter or number";
+  }
 
-    // Check for valid characters (alphanumeric, underscore, hyphen, dot)
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(trimmed)) {
-        return 'Username can only contain letters, numbers, underscore, hyphen, and dot';
-    }
+  // Check for valid characters (alphanumeric, underscore, hyphen, dot)
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(trimmed)) {
+    return "Username can only contain letters, numbers, underscore, hyphen, and dot";
+  }
 
-    return '';
+  return "";
 }
 
 /**
@@ -671,32 +806,32 @@ export function validateUsername(username) {
  * @returns {string} Error message if invalid, empty string if valid
  */
 export function validatePassword(password) {
-    if (!password) {
-        return 'Password is required';
-    }
+  if (!password) {
+    return "Password is required";
+  }
 
-    if (password.length < MIN_PASSWORD_LENGTH) {
-        return 'Password must be at least 8 characters';
-    }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return "Password must be at least 8 characters";
+  }
 
-    if (password.length > MAX_PASSWORD_LENGTH) {
-        return 'Password must be at most 128 characters';
-    }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    return "Password must be at most 128 characters";
+  }
 
-    // Check against common weak passwords (case-insensitive)
-    if (COMMON_WEAK_PASSWORDS.has(password.toLowerCase())) {
-        return 'Password is too common. Please choose a stronger password';
-    }
+  // Check against common weak passwords (case-insensitive)
+  if (COMMON_WEAK_PASSWORDS.has(password.toLowerCase())) {
+    return "Password is too common. Please choose a stronger password";
+  }
 
-    // Check for minimum complexity: at least one letter and one number or special char
-    const hasLetter = /[a-zA-Z]/.test(password);
-    const hasNonLetter = /[^a-zA-Z\s]/.test(password);
+  // Check for minimum complexity: at least one letter and one number or special char
+  const hasLetter = /[a-zA-Z]/.test(password);
+  const hasNonLetter = /[^a-zA-Z\s]/.test(password);
 
-    if (!hasLetter || !hasNonLetter) {
-        return 'Password must contain at least one letter and one number or special character';
-    }
+  if (!hasLetter || !hasNonLetter) {
+    return "Password must contain at least one letter and one number or special character";
+  }
 
-    return '';
+  return "";
 }
 
 /**
@@ -706,16 +841,16 @@ export function validatePassword(password) {
  * @returns {string} First error message found, or empty string if both valid
  */
 export function validateCredentials(username, password) {
-    const usernameError = validateUsername(username);
-    if (usernameError) return usernameError;
-    return validatePassword(password);
+  const usernameError = validateUsername(username);
+  if (usernameError) return usernameError;
+  return validatePassword(password);
 }
 
 // =============================================================================
 // Pending Prompts Queue (for reliable message delivery on mobile)
 // =============================================================================
 
-const PENDING_PROMPTS_KEY = 'mitto_pending_prompts';
+const PENDING_PROMPTS_KEY = "mitto_pending_prompts";
 const PROMPT_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes - prompts older than this are considered stale
 
 /**
@@ -723,7 +858,7 @@ const PROMPT_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes - prompts older than this a
  * @returns {string} A unique prompt ID
  */
 export function generatePromptId() {
-    return `prompt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  return `prompt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
 /**
@@ -734,18 +869,18 @@ export function generatePromptId() {
  * @param {Array} imageIds - Optional array of image IDs
  */
 export function savePendingPrompt(sessionId, promptId, message, imageIds = []) {
-    try {
-        const pending = getPendingPrompts();
-        pending[promptId] = {
-            sessionId,
-            message,
-            imageIds,
-            timestamp: Date.now()
-        };
-        localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
-    } catch (err) {
-        console.warn('Failed to save pending prompt:', err);
-    }
+  try {
+    const pending = getPendingPrompts();
+    pending[promptId] = {
+      sessionId,
+      message,
+      imageIds,
+      timestamp: Date.now(),
+    };
+    localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+  } catch (err) {
+    console.warn("Failed to save pending prompt:", err);
+  }
 }
 
 /**
@@ -753,13 +888,13 @@ export function savePendingPrompt(sessionId, promptId, message, imageIds = []) {
  * @param {string} promptId - The prompt ID to remove
  */
 export function removePendingPrompt(promptId) {
-    try {
-        const pending = getPendingPrompts();
-        delete pending[promptId];
-        localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
-    } catch (err) {
-        console.warn('Failed to remove pending prompt:', err);
-    }
+  try {
+    const pending = getPendingPrompts();
+    delete pending[promptId];
+    localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+  } catch (err) {
+    console.warn("Failed to remove pending prompt:", err);
+  }
 }
 
 /**
@@ -767,14 +902,14 @@ export function removePendingPrompt(promptId) {
  * @returns {Object} Map of promptId -> { sessionId, message, imageIds, timestamp }
  */
 export function getPendingPrompts() {
-    try {
-        const data = localStorage.getItem(PENDING_PROMPTS_KEY);
-        if (!data) return {};
-        return JSON.parse(data) || {};
-    } catch (err) {
-        console.warn('Failed to get pending prompts:', err);
-        return {};
-    }
+  try {
+    const data = localStorage.getItem(PENDING_PROMPTS_KEY);
+    if (!data) return {};
+    return JSON.parse(data) || {};
+  } catch (err) {
+    console.warn("Failed to get pending prompts:", err);
+    return {};
+  }
 }
 
 /**
@@ -783,41 +918,44 @@ export function getPendingPrompts() {
  * @returns {Array} Array of { promptId, message, imageIds, timestamp }
  */
 export function getPendingPromptsForSession(sessionId) {
-    const pending = getPendingPrompts();
-    const now = Date.now();
-    const results = [];
+  const pending = getPendingPrompts();
+  const now = Date.now();
+  const results = [];
 
-    for (const [promptId, data] of Object.entries(pending)) {
-        if (data.sessionId === sessionId && (now - data.timestamp) < PROMPT_EXPIRY_MS) {
-            results.push({ promptId, ...data });
-        }
+  for (const [promptId, data] of Object.entries(pending)) {
+    if (
+      data.sessionId === sessionId &&
+      now - data.timestamp < PROMPT_EXPIRY_MS
+    ) {
+      results.push({ promptId, ...data });
     }
+  }
 
-    // Sort by timestamp (oldest first for retry order)
-    results.sort((a, b) => a.timestamp - b.timestamp);
-    return results;
+  // Sort by timestamp (oldest first for retry order)
+  results.sort((a, b) => a.timestamp - b.timestamp);
+  return results;
 }
 
 /**
  * Cleans up expired pending prompts.
  */
 export function cleanupExpiredPrompts() {
-    try {
-        const pending = getPendingPrompts();
-        const now = Date.now();
-        let changed = false;
+  try {
+    const pending = getPendingPrompts();
+    const now = Date.now();
+    let changed = false;
 
-        for (const [promptId, data] of Object.entries(pending)) {
-            if ((now - data.timestamp) >= PROMPT_EXPIRY_MS) {
-                delete pending[promptId];
-                changed = true;
-            }
-        }
-
-        if (changed) {
-            localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
-        }
-    } catch (err) {
-        console.warn('Failed to cleanup expired prompts:', err);
+    for (const [promptId, data] of Object.entries(pending)) {
+      if (now - data.timestamp >= PROMPT_EXPIRY_MS) {
+        delete pending[promptId];
+        changed = true;
+      }
     }
+
+    if (changed) {
+      localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+    }
+  } catch (err) {
+    console.warn("Failed to cleanup expired prompts:", err);
+  }
 }
