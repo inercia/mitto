@@ -1,0 +1,35 @@
+# Attach Image Hook
+# Attaches images when the message contains @image:path/to/image
+#
+# Usage: Include @image:path/to/image anywhere in your message to attach
+# an image file to your prompt. The image is sent as an ACP attachment,
+# allowing the AI to see and analyze it.
+#
+# Examples:
+#   "What's in this image? @image:screenshot.png"
+#   "Compare these @image:before.png @image:after.png"
+#
+# Supported formats: PNG, JPEG, GIF, WebP
+#
+# Installation:
+#   1. Copy this file and attach-image.sh to your hooks directory
+#   2. Make the script executable: chmod +x attach-image.sh
+#   3. Restart Mitto
+
+name: attach-image
+description: "Attaches images when message contains @image:path"
+enabled: true
+
+when: all
+position: prepend
+priority: 80  # Run early to process image attachments
+
+command: ./attach-image.sh
+
+input: message
+output: transform
+
+timeout: 10s
+working_dir: session
+on_error: skip
+

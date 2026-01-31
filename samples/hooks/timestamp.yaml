@@ -1,0 +1,29 @@
+# Timestamp Hook
+# Adds current date/time to the first message of each conversation
+#
+# This is a simple example that demonstrates:
+# - Using "when: first" to only run on the first message
+# - Using "output: prepend" to add context before the message
+# - A minimal hook that doesn't need the input message
+#
+# Installation:
+#   1. Copy this file and timestamp.sh to your hooks directory
+#   2. Make the script executable: chmod +x timestamp.sh
+#   3. Restart Mitto
+
+name: timestamp
+description: "Adds current timestamp to first message"
+enabled: true
+
+when: first       # Only on first message of conversation
+position: prepend
+priority: 200     # Run after other hooks
+
+command: ./timestamp.sh
+
+input: none       # Don't need the message content
+output: prepend   # Add timestamp before the message
+
+timeout: 2s
+on_error: skip
+

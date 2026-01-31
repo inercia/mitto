@@ -1,0 +1,31 @@
+# Git Diff Hook
+# Attaches git diff when the message contains @git:diff
+#
+# Usage: Include @git:diff anywhere in your message to attach the current
+# uncommitted changes (diff) to your prompt.
+#
+# Example:
+#   "Can you review these changes? @git:diff"
+#
+# Installation:
+#   1. Copy this file and git-diff.sh to your hooks directory
+#   2. Make the script executable: chmod +x git-diff.sh
+#   3. Restart Mitto
+
+name: git-diff
+description: "Attaches git diff when message contains @git:diff"
+enabled: true
+
+when: all
+position: prepend
+priority: 100
+
+command: ./git-diff.sh
+
+input: message
+output: transform
+
+timeout: 15s        # Diff can take longer for large repos
+working_dir: session
+on_error: skip
+

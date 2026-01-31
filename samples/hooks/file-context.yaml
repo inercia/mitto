@@ -1,0 +1,34 @@
+# File Context Hook
+# Attaches file contents when the message contains @file:path/to/file
+#
+# Usage: Include @file:path/to/file anywhere in your message to attach
+# the contents of that file to your prompt. Paths are relative to the
+# working directory.
+#
+# Examples:
+#   "Explain this code @file:main.go"
+#   "What does this config do? @file:config/settings.yaml"
+#   "Review these files @file:src/app.js @file:src/utils.js"
+#
+# Installation:
+#   1. Copy this file and file-context.sh to your hooks directory
+#   2. Make the script executable: chmod +x file-context.sh
+#   3. Restart Mitto
+
+name: file-context
+description: "Attaches file contents when message contains @file:path"
+enabled: true
+
+when: all
+position: prepend
+priority: 90  # Run before git hooks
+
+command: ./file-context.sh
+
+input: message
+output: transform
+
+timeout: 10s
+working_dir: session
+on_error: skip
+

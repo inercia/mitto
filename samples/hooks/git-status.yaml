@@ -1,0 +1,37 @@
+# Git Status Hook
+# Attaches git status when the message contains @git:status
+#
+# Usage: Include @git:status anywhere in your message to attach the current
+# git status (modified files, staged changes, branch info) to your prompt.
+#
+# Example:
+#   "Please review my changes @git:status"
+#
+# Installation:
+#   1. Copy this file and git-status.sh to your hooks directory:
+#      - macOS: ~/Library/Application Support/Mitto/hooks/
+#      - Linux: ~/.local/share/mitto/hooks/
+#   2. Make the script executable: chmod +x git-status.sh
+#   3. Restart Mitto
+
+name: git-status
+description: "Attaches git status when message contains @git:status"
+enabled: true
+
+# Apply to all messages (we filter by @git-status in the script)
+when: all
+position: prepend
+priority: 100
+
+# Use companion script in the same directory
+command: ./git-status.sh
+
+# Input/Output configuration
+input: message      # Receive message JSON on stdin
+output: transform   # Replace message with transformed version
+
+# Execution settings
+timeout: 10s
+working_dir: session  # Run in the session's working directory
+on_error: skip        # Continue without git status if script fails
+
