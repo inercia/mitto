@@ -1,0 +1,85 @@
+# Mitto workspace-specific configuration
+# These prompts are available only when working in this project
+
+prompts:
+  - name: "Architecture Cleanup"
+    backgroundColor: "#E8F5E9"  # Light Green - improvement/quality
+    prompt: |
+      Please perform an architectural review and cleanup of the codebase:
+
+      1. **Identify Architectural Issues**:
+         - Look for circular dependencies between packages
+         - Find code that violates separation of concerns
+         - Detect tightly coupled components that should be decoupled
+         - Identify packages with too many responsibilities
+
+      2. **Refactor for Modularity**:
+         - Extract interfaces where concrete types are used directly
+         - Move shared utilities to appropriate packages
+         - Ensure each package has a clear, single responsibility
+         - Apply dependency injection where appropriate
+
+      3. **Add Valuable Tests**:
+         - Identify critical paths lacking test coverage
+         - Add unit tests for core business logic
+         - Add integration tests for component interactions
+         - Focus on tests that prevent regressions and document behavior
+
+      4. **Follow Project Conventions**:
+         - Review .augment/rules for project-specific patterns
+         - Maintain existing code style and naming conventions
+         - Update architecture documentation if needed
+
+      Please start by analyzing the current state and proposing a prioritized plan
+      before making any changes. Focus on high-impact, low-risk improvements first.
+
+  - name: "Run All Tests"
+    backgroundColor: "#BBDEFB"  # Light Blue - testing/verification
+    prompt: |
+      Please run the complete test suite for this project and fix any failures:
+
+      ## Test Execution Order
+
+      1. **Go Unit Tests**:
+         ```bash
+         make test-go
+         ```
+
+      2. **JavaScript Unit Tests**:
+         ```bash
+         make test-js
+         ```
+
+      3. **Integration Tests** (requires mock ACP server):
+         ```bash
+         make test-integration
+         ```
+
+      4. **Playwright UI Tests**:
+         ```bash
+         make test-ui
+         ```
+
+      Or run everything at once:
+      ```bash
+      make test-all
+      ```
+
+      ## On Failure
+
+      If any test fails:
+      1. Analyze the failure output carefully
+      2. Identify the root cause (code bug, test bug, or environment issue)
+      3. Fix the issue in the appropriate location
+      4. Re-run the specific failing test to verify the fix
+      5. Run the full test suite again to ensure no regressions
+
+      ## Important Notes
+
+      - Build the mock ACP server first if needed: `make build-mock-acp`
+      - For first-time setup: `make test-setup` (installs Playwright browsers)
+      - Check `tests/README.md` and `.augment/rules/07-testing.md` for conventions
+      - Ensure fixes follow existing code patterns and test conventions
+
+      Please start by running the tests and report the results.
+
