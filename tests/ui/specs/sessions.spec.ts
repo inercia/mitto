@@ -12,8 +12,8 @@ test.describe('Session Management', () => {
   });
 
   test('should display sessions sidebar', async ({ page, timeouts }) => {
-    const sessionsHeader = page.getByRole('heading', { name: 'Sessions' });
-    await expect(sessionsHeader).toBeVisible({ timeout: timeouts.appReady });
+    const conversationsHeader = page.getByRole('heading', { name: 'Conversations' });
+    await expect(conversationsHeader).toBeVisible({ timeout: timeouts.appReady });
   });
 
   test('should have at least one session on load', async ({
@@ -80,16 +80,16 @@ test.describe('Session Management', () => {
 });
 
 test.describe('Session API', () => {
-  test('should list sessions via API', async ({ request }) => {
-    const response = await request.get('/api/sessions');
+  test('should list sessions via API', async ({ request, apiUrl }) => {
+    const response = await request.get(apiUrl('/api/sessions'));
     expect(response.ok()).toBeTruthy();
 
     const sessions = await response.json();
     expect(Array.isArray(sessions)).toBeTruthy();
   });
 
-  test('should create session via API', async ({ request }) => {
-    const response = await request.post('/api/sessions', {
+  test('should create session via API', async ({ request, apiUrl }) => {
+    const response = await request.post(apiUrl('/api/sessions'), {
       data: {
         name: `API Test Session ${Date.now()}`,
       },

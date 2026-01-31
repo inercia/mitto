@@ -21,8 +21,8 @@ const WORKSPACE_BETA = path.join(projectRoot, 'tests/fixtures/workspaces/project
 const AGENT_RESPONSE_TIMEOUT = 60000;
 
 test.describe('Workspace API', () => {
-  test('should list workspaces via API', async ({ request }) => {
-    const response = await request.get('/api/workspaces');
+  test('should list workspaces via API', async ({ request, apiUrl }) => {
+    const response = await request.get(apiUrl('/api/workspaces'));
     expect(response.ok()).toBeTruthy();
 
     const data = await response.json();
@@ -30,8 +30,8 @@ test.describe('Workspace API', () => {
     expect(Array.isArray(data.workspaces)).toBeTruthy();
   });
 
-  test('should add workspace via API', async ({ request }) => {
-    const response = await request.post('/api/workspaces', {
+  test('should add workspace via API', async ({ request, apiUrl }) => {
+    const response = await request.post(apiUrl('/api/workspaces'), {
       data: {
         acp_server: 'mock-acp',
         working_dir: WORKSPACE_BETA,
@@ -41,8 +41,8 @@ test.describe('Workspace API', () => {
     expect([201, 409]).toContain(response.status());
   });
 
-  test('should list available ACP servers', async ({ request }) => {
-    const response = await request.get('/api/workspaces');
+  test('should list available ACP servers', async ({ request, apiUrl }) => {
+    const response = await request.get(apiUrl('/api/workspaces'));
     expect(response.ok()).toBeTruthy();
 
     const data = await response.json();
@@ -56,14 +56,14 @@ test.describe('Multi-Workspace Sessions', () => {
     await helpers.navigateAndWait(page);
   });
 
-  test('should create session with workspace', async ({ request }) => {
+  test('should create session with workspace', async ({ request, apiUrl }) => {
     // Ensure workspace is configured
-    await request.post('/api/workspaces', {
+    await request.post(apiUrl('/api/workspaces'), {
       data: { acp_server: 'mock-acp', working_dir: WORKSPACE_ALPHA },
     });
 
     // Create a session for the workspace
-    const response = await request.post('/api/sessions', {
+    const response = await request.post(apiUrl('/api/sessions'), {
       data: {
         name: `Workspace Test ${Date.now()}`,
         working_dir: WORKSPACE_ALPHA,
@@ -81,11 +81,12 @@ test.describe('Multi-Workspace Sessions', () => {
     request,
     selectors,
     timeouts,
+    apiUrl,
   }) => {
     const sessionName = `UI Workspace Test ${Date.now()}`;
 
     // Create session via API
-    await request.post('/api/sessions', {
+    await request.post(apiUrl('/api/sessions'), {
       data: {
         name: sessionName,
         working_dir: WORKSPACE_ALPHA,
@@ -109,16 +110,17 @@ test.describe('Multi-Workspace Sessions', () => {
 test.describe('Workspace Session Isolation', () => {
   test('should maintain separate sessions per workspace', async ({
     request,
+    apiUrl,
   }) => {
     // Create sessions for different workspaces
-    const session1 = await request.post('/api/sessions', {
+    const session1 = await request.post(apiUrl('/api/sessions'), {
       data: {
         name: `Isolation Test Alpha ${Date.now()}`,
         working_dir: WORKSPACE_ALPHA,
       },
     });
 
-    const session2 = await request.post('/api/sessions', {
+    const session2 = await request.post(apiUrl('/api/sessions'), {
       data: {
         name: `Isolation Test Beta ${Date.now()}`,
         working_dir: WORKSPACE_BETA,
@@ -139,9 +141,9 @@ test.describe('Workspace Session Isolation', () => {
     expect(data2.working_dir).toBe(WORKSPACE_BETA);
   });
 
-  test('should verify session working directory via API', async ({ request }) => {
+  test('should verify session working directory via API', async ({ request, apiUrl }) => {
     // Create a session
-    const createResponse = await request.post('/api/sessions', {
+    const createResponse = await request.post(apiUrl('/api/sessions'), {
       data: {
         name: `API Verify ${Date.now()}`,
         working_dir: WORKSPACE_ALPHA,
@@ -152,7 +154,7 @@ test.describe('Workspace Session Isolation', () => {
     const session = await createResponse.json();
 
     // Fetch session details
-    const detailsResponse = await request.get(`/api/sessions/${session.session_id}`);
+    const detailsResponse = await request.get(apiUrl(`/api/sessions/${session.session_id}`));
     expect(detailsResponse.ok()).toBeTruthy();
 
     const details = await detailsResponse.json();

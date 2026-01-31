@@ -61,9 +61,9 @@ test.describe('WebSocket Connection', () => {
     selectors,
     timeouts,
   }) => {
-    // Get the sessions sidebar
-    const sessionsHeader = page.getByRole('heading', { name: 'Sessions' });
-    await expect(sessionsHeader).toBeVisible({ timeout: timeouts.appReady });
+    // Get the conversations sidebar
+    const conversationsHeader = page.getByRole('heading', { name: 'Conversations' });
+    await expect(conversationsHeader).toBeVisible({ timeout: timeouts.appReady });
 
     // Refresh the page
     await page.reload();
@@ -71,8 +71,8 @@ test.describe('WebSocket Connection', () => {
       timeout: timeouts.appReady,
     });
 
-    // Sessions sidebar should still be visible
-    await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible({
+    // Conversations sidebar should still be visible
+    await expect(page.getByRole('heading', { name: 'Conversations' })).toBeVisible({
       timeout: timeouts.appReady,
     });
   });

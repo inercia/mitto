@@ -1,5 +1,5 @@
 import { test as base, expect } from '@playwright/test';
-import { selectors, timeouts } from '../utils/selectors';
+import { selectors, timeouts, apiUrl } from '../utils/selectors';
 import * as helpers from '../utils/helpers';
 
 /**
@@ -15,6 +15,8 @@ type MittoFixtures = {
   selectors: typeof selectors;
   /** Common timeouts */
   timeouts: typeof timeouts;
+  /** API URL builder with prefix */
+  apiUrl: typeof apiUrl;
 };
 
 /**
@@ -29,6 +31,9 @@ export const test = base.extend<MittoFixtures>({
   },
   timeouts: async ({}, use) => {
     await use(timeouts);
+  },
+  apiUrl: async ({}, use) => {
+    await use(apiUrl);
   },
 });
 

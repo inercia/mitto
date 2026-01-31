@@ -10,36 +10,30 @@ import { test, expect } from '../fixtures/test-fixtures';
 test.describe('Markdown Rendering', () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
+    await helpers.ensureActiveSession(page);
   });
 
   test('should render agent responses', async ({
     page,
-    selectors,
-    timeouts,
     helpers,
   }) => {
     // Send a message that will trigger a response
     await helpers.sendMessage(page, 'Hello');
 
-    // Wait for agent response
-    await expect(page.locator(selectors.agentMessage)).toBeVisible({
-      timeout: timeouts.agentResponse,
-    });
+    // Wait for agent response (uses .first() to handle multiple messages)
+    await helpers.waitForAgentResponse(page);
   });
 
   test('should display code blocks with syntax highlighting', async ({
     page,
     selectors,
-    timeouts,
     helpers,
   }) => {
     // Send a message asking for code
     await helpers.sendMessage(page, 'Show me some code');
 
-    // Wait for response
-    await expect(page.locator(selectors.agentMessage)).toBeVisible({
-      timeout: timeouts.agentResponse,
-    });
+    // Wait for response (uses .first() to handle multiple messages)
+    await helpers.waitForAgentResponse(page);
 
     // If the response contains code, it should be in a code block
     // The mock server may or may not return code, so we just verify no errors
@@ -73,6 +67,7 @@ test.describe('Markdown Rendering', () => {
 test.describe('Message Styling', () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
+    await helpers.ensureActiveSession(page);
   });
 
   test('should differentiate user and agent messages', async ({
@@ -94,10 +89,8 @@ test.describe('Message Styling', () => {
     });
     await expect(userMessage).toBeVisible({ timeout: timeouts.shortAction });
 
-    // Wait for agent response
-    await expect(page.locator(selectors.agentMessage)).toBeVisible({
-      timeout: timeouts.agentResponse,
-    });
+    // Wait for agent response (uses .first() to handle multiple messages)
+    await helpers.waitForAgentResponse(page);
   });
 
   test('should display timestamps or metadata', async ({

@@ -126,6 +126,10 @@ test.describe('UI Resilience', () => {
 });
 
 test.describe('Network Error Handling', () => {
+  test.beforeEach(async ({ page, helpers }) => {
+    await helpers.navigateAndWait(page);
+  });
+
   test('should show error state when API fails', async ({ page, selectors }) => {
     // This test would require mocking network failures
     // For now, we just verify the app loads correctly

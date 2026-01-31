@@ -5,12 +5,8 @@ import { selectors, timeouts } from './selectors';
  * Wait for the Mitto app to be fully loaded and ready
  */
 export async function waitForAppReady(page: Page): Promise<void> {
-  // Wait for loading spinner to disappear
-  await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
-    timeout: timeouts.appReady,
-  });
-
   // Wait for chat input to be visible (may be disabled if no session)
+  // This is a more reliable indicator that the app is ready than checking for spinner
   await expect(page.locator(selectors.chatInput)).toBeVisible({
     timeout: timeouts.appReady,
   });
@@ -69,9 +65,10 @@ export async function waitForUserMessage(
 
 /**
  * Wait for an agent response to appear
+ * Uses .first() to handle cases where multiple agent messages exist
  */
 export async function waitForAgentResponse(page: Page): Promise<void> {
-  await expect(page.locator(selectors.agentMessage)).toBeVisible({
+  await expect(page.locator(selectors.agentMessage).first()).toBeVisible({
     timeout: timeouts.agentResponse,
   });
 }
