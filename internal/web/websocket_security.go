@@ -113,16 +113,6 @@ func (ct *ConnectionTracker) TotalConnections() int {
 	return total
 }
 
-// createSecureUpgrader creates a WebSocket upgrader with security checks.
-func createSecureUpgrader(config WebSocketSecurityConfig) websocket.Upgrader {
-	return createSecureUpgraderWithLogger(config, nil)
-}
-
-// createSecureUpgraderWithLogger creates a WebSocket upgrader with security checks and logging.
-func createSecureUpgraderWithLogger(config WebSocketSecurityConfig, logger OriginCheckLogger) websocket.Upgrader {
-	return createSecureUpgraderFull(config, logger, nil)
-}
-
 // createSecureUpgraderFull creates a WebSocket upgrader with all security options.
 func createSecureUpgraderFull(config WebSocketSecurityConfig, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) websocket.Upgrader {
 	return websocket.Upgrader{

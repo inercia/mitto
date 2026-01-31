@@ -349,7 +349,7 @@ func TestAuthRateLimiter_Cleanup(t *testing.T) {
 	rl.cleanup()
 
 	// Record should be cleaned up
-	total, blocked = rl.Stats()
+	total, _ = rl.Stats()
 	if total != 0 {
 		t.Errorf("Stats() total = %d, want 0 after cleanup", total)
 	}
