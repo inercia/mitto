@@ -1,0 +1,56 @@
+{
+  "scenario": "tool-calls-interleaved",
+  "description": "Interleaved tool calls and agent messages to test message ordering",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)(fix|edit|update).*file"
+      },
+      "actions": [
+        {
+          "type": "agent_thought",
+          "text": "Let me analyze the file first...",
+          "delay_ms": 50
+        },
+        {
+          "type": "tool_call",
+          "id": "tool-read-1",
+          "title": "Read src/main.js",
+          "status": "running",
+          "delay_ms": 50
+        },
+        {
+          "type": "tool_update",
+          "id": "tool-read-1",
+          "status": "completed",
+          "delay_ms": 100
+        },
+        {
+          "type": "agent_message",
+          "chunks": ["I found the issue in the file. ", "Let me fix it now."],
+          "delay_ms": 50
+        },
+        {
+          "type": "tool_call",
+          "id": "tool-edit-1",
+          "title": "Edit src/main.js",
+          "status": "running",
+          "delay_ms": 50
+        },
+        {
+          "type": "tool_update",
+          "id": "tool-edit-1",
+          "status": "completed",
+          "delay_ms": 100
+        },
+        {
+          "type": "agent_message",
+          "chunks": ["Done! ", "I have fixed the issue in the file."],
+          "delay_ms": 50
+        }
+      ]
+    }
+  ]
+}
+
