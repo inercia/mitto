@@ -62,21 +62,25 @@ jobs:
             goarch: amd64
             binary: mitto
             artifact: mitto-linux-amd64
+            cgo: 0
           - os: ubuntu-latest
             goos: linux
             goarch: arm64
             binary: mitto
             artifact: mitto-linux-arm64
+            cgo: 0
           - os: macos-latest
             goos: darwin
             goarch: amd64
             binary: mitto
             artifact: mitto-darwin-amd64
+            cgo: 1  # Required for keychain support
           - os: macos-latest
             goos: darwin
             goarch: arm64
             binary: mitto
             artifact: mitto-darwin-arm64
+            cgo: 1  # Required for keychain support
           # Windows is not supported - hooks package uses Unix-specific syscalls
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +95,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+          CGO_ENABLED: ${{ matrix.cgo }}
         run: |
           go build -ldflags "-s -w" -o ${{ matrix.binary }} ./cmd/mitto
 
