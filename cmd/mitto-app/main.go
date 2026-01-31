@@ -216,7 +216,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -628,11 +627,14 @@ func run() error {
 	}
 
 	// Start server on random port (macOS app always uses random for local access)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// SECURITY: Use CreateLocalhostListener which:
+	// 1. Binds exclusively to 127.0.0.1 (never 0.0.0.0)
+	// 2. Validates each connection originates from localhost at the socket level
+	// 3. Uses port 0 for random port allocation (ignores any configured port)
+	listener, port, err := web.CreateLocalhostListener(0)
 	if err != nil {
-		return fmt.Errorf("failed to create listener: %w", err)
+		return fmt.Errorf("failed to create localhost listener: %w", err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	// Start web server in background
