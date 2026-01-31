@@ -832,7 +832,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			"retry_after_sec", retryAfter,
 		)
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
-		sendJSON(w, http.StatusTooManyRequests, LoginResponse{
+		writeJSON(w, http.StatusTooManyRequests, LoginResponse{
 			Success:       false,
 			Error:         "Too many failed attempts. Please try again later.",
 			RetryAfterSec: retryAfter,
@@ -843,7 +843,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := decodeJSON(r, &req); err != nil {
 		logger.Warn("Login request rejected - invalid JSON body", "error", err)
-		sendJSON(w, http.StatusBadRequest, LoginResponse{
+		writeJSON(w, http.StatusBadRequest, LoginResponse{
 			Success: false,
 			Error:   "Invalid request body",
 		})
@@ -860,7 +860,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			"username_empty", req.Username == "",
 			"password_empty", req.Password == "",
 		)
-		sendJSON(w, http.StatusBadRequest, LoginResponse{
+		writeJSON(w, http.StatusBadRequest, LoginResponse{
 			Success: false,
 			Error:   "Username and password are required",
 		})
@@ -885,7 +885,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 				"lockout_duration_sec", int(lockoutDuration.Seconds()),
 			)
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
-			sendJSON(w, http.StatusTooManyRequests, LoginResponse{
+			writeJSON(w, http.StatusTooManyRequests, LoginResponse{
 				Success:       false,
 				Error:         "Too many failed attempts. Please try again later.",
 				RetryAfterSec: retryAfter,
@@ -898,7 +898,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 				"remaining_attempts", remaining,
 			)
 			// Use a generic error message to prevent username enumeration
-			sendJSON(w, http.StatusUnauthorized, LoginResponse{
+			writeJSON(w, http.StatusUnauthorized, LoginResponse{
 				Success: false,
 				Error:   "Invalid username or password",
 			})
@@ -916,7 +916,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			"username", req.Username,
 			"error", err,
 		)
-		sendJSON(w, http.StatusInternalServerError, LoginResponse{
+		writeJSON(w, http.StatusInternalServerError, LoginResponse{
 			Success: false,
 			Error:   "Failed to create session",
 		})
@@ -929,7 +929,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	)
 
 	a.SetSessionCookie(w, session)
-	sendJSON(w, http.StatusOK, LoginResponse{Success: true})
+	writeJSON(w, http.StatusOK, LoginResponse{Success: true})
 }
 
 // HandleLogout handles POST /api/logout.
@@ -945,16 +945,12 @@ func (a *AuthManager) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.ClearSessionCookie(w)
-	sendJSON(w, http.StatusOK, map[string]bool{"success": true})
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
-// Helper functions for JSON encoding/decoding
+// decodeJSON decodes the request body as JSON.
+// Unlike parseJSONBody from http_helpers.go, this returns an error
+// instead of writing the response, allowing custom error handling.
 func decodeJSON(r *http.Request, v interface{}) error {
 	return json.NewDecoder(r.Body).Decode(v)
-}
-
-func sendJSON(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
 }

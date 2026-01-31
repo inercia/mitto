@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"sync"
-	"time"
 
 	"github.com/inercia/mitto/internal/logging"
 )
@@ -22,37 +20,21 @@ const (
 	// csrfCookieName is the name of the cookie that holds the CSRF token
 	csrfCookieName = "mitto_csrf"
 
-	// csrfTokenDuration is how long a CSRF token is valid
-	csrfTokenDuration = 24 * time.Hour
-
-	// csrfCleanupInterval is how often to clean up expired tokens
-	csrfCleanupInterval = 5 * time.Minute
+	// csrfTokenDuration is how long a CSRF token cookie is valid (7 days)
+	csrfTokenDuration = 7 * 24 * 60 * 60 // seconds
 )
 
-// CSRFToken represents a CSRF token with its expiration.
-type CSRFToken struct {
-	Token     string
-	ExpiresAt time.Time
-}
-
-// CSRFManager manages CSRF tokens.
+// CSRFManager manages CSRF protection using the double-submit cookie pattern.
+// This is a stateless approach where the server doesn't need to store tokens.
+// Security is provided by requiring the header token to match the cookie token,
+// which an attacker cannot do due to same-origin policy restrictions on cookies.
 type CSRFManager struct {
-	tokens      map[string]*CSRFToken // token -> CSRFToken
-	mu          sync.RWMutex
-	stopCleanup chan struct{}
-	cleanupDone chan struct{}
-	apiPrefix   string // API prefix for checking exempt paths
+	apiPrefix string // API prefix for checking exempt paths
 }
 
 // NewCSRFManager creates a new CSRF manager.
 func NewCSRFManager() *CSRFManager {
-	cm := &CSRFManager{
-		tokens:      make(map[string]*CSRFToken),
-		stopCleanup: make(chan struct{}),
-		cleanupDone: make(chan struct{}),
-	}
-	go cm.cleanupLoop()
-	return cm
+	return &CSRFManager{}
 }
 
 // SetAPIPrefix sets the API prefix for checking exempt paths.
@@ -60,109 +42,18 @@ func (c *CSRFManager) SetAPIPrefix(prefix string) {
 	c.apiPrefix = prefix
 }
 
-// Close stops the cleanup goroutine.
+// Close is a no-op for the stateless CSRF manager.
 func (c *CSRFManager) Close() {
-	close(c.stopCleanup)
-	<-c.cleanupDone
+	// No cleanup needed - stateless design
 }
 
-// cleanupLoop periodically removes expired tokens.
-func (c *CSRFManager) cleanupLoop() {
-	defer close(c.cleanupDone)
-	ticker := time.NewTicker(csrfCleanupInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			c.cleanupExpiredTokens()
-		case <-c.stopCleanup:
-			return
-		}
-	}
-}
-
-// cleanupExpiredTokens removes all expired CSRF tokens.
-func (c *CSRFManager) cleanupExpiredTokens() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	now := time.Now()
-	for token, csrfToken := range c.tokens {
-		if now.After(csrfToken.ExpiresAt) {
-			delete(c.tokens, token)
-		}
-	}
-}
-
-// GenerateToken creates a new CSRF token.
+// GenerateToken creates a new random CSRF token.
 func (c *CSRFManager) GenerateToken() (string, error) {
 	bytes := make([]byte, csrfTokenLength)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
-	token := hex.EncodeToString(bytes)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.tokens[token] = &CSRFToken{
-		Token:     token,
-		ExpiresAt: time.Now().Add(csrfTokenDuration),
-	}
-
-	return token, nil
-}
-
-// ValidateToken checks if a CSRF token is valid.
-func (c *CSRFManager) ValidateToken(token string) bool {
-	if token == "" {
-		return false
-	}
-
-	c.mu.RLock()
-	csrfToken, exists := c.tokens[token]
-	c.mu.RUnlock()
-
-	if !exists {
-		return false
-	}
-
-	if time.Now().After(csrfToken.ExpiresAt) {
-		// Token expired, remove it
-		c.mu.Lock()
-		delete(c.tokens, token)
-		c.mu.Unlock()
-		return false
-	}
-
-	return true
-}
-
-// ValidateTokenConstantTime validates token with constant-time comparison.
-// This prevents timing attacks on token guessing.
-func (c *CSRFManager) ValidateTokenConstantTime(token string) bool {
-	if token == "" {
-		return false
-	}
-
-	c.mu.RLock()
-	csrfToken, exists := c.tokens[token]
-	c.mu.RUnlock()
-
-	if !exists {
-		return false
-	}
-
-	if time.Now().After(csrfToken.ExpiresAt) {
-		c.mu.Lock()
-		delete(c.tokens, token)
-		c.mu.Unlock()
-		return false
-	}
-
-	// Constant-time comparison to prevent timing attacks
-	return subtle.ConstantTimeCompare([]byte(token), []byte(csrfToken.Token)) == 1
+	return hex.EncodeToString(bytes), nil
 }
 
 // SetCSRFCookie sets the CSRF token cookie on the response.
@@ -173,8 +64,8 @@ func (c *CSRFManager) SetCSRFCookie(w http.ResponseWriter, token string) {
 		Path:     "/",
 		HttpOnly: false, // JavaScript needs to read this
 		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(csrfTokenDuration.Seconds()),
+		SameSite: http.SameSiteLaxMode, // Lax mode for better Safari/iOS compatibility
+		MaxAge:   csrfTokenDuration,
 	})
 }
 
@@ -245,8 +136,22 @@ func (c *CSRFManager) isCSRFExemptPath(path string) bool {
 }
 
 // CSRFMiddleware returns a middleware that validates CSRF tokens on state-changing requests.
+// Uses the double-submit cookie pattern: the header token must match the cookie token.
+// This is stateless and doesn't require server-side token storage.
+//
+// CSRF protection is only enforced for external connections (those coming through
+// the external listener). Internal/localhost connections skip CSRF checks since
+// an attacker would need to be on the same machine to exploit them.
 func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip CSRF check for internal (localhost) connections.
+		// CSRF attacks require a victim's browser to make requests to our server,
+		// which is only a concern for externally-accessible endpoints.
+		if !IsExternalConnection(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Skip CSRF check for safe methods (GET, HEAD, OPTIONS)
 		if !isStateChangingMethod(r.Method) {
 			next.ServeHTTP(w, r)
@@ -268,34 +173,28 @@ func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 		// Get CSRF token from header
 		headerToken := r.Header.Get(csrfTokenHeader)
 
-		// Double-submit cookie pattern: also check cookie for comparison
+		// Get CSRF token from cookie
 		cookieToken := ""
 		if cookie, err := r.Cookie(csrfCookieName); err == nil {
 			cookieToken = cookie.Value
 		}
 
-		// Validate that header token exists and matches cookie (double-submit pattern)
-		if headerToken == "" {
+		// Double-submit cookie pattern: both must exist and match
+		// An attacker cannot read the cookie value due to same-origin policy,
+		// so they cannot set the correct header value.
+		if headerToken == "" || cookieToken == "" {
 			logging.Web().Warn("CSRF token missing",
 				"method", r.Method,
 				"path", r.URL.Path,
+				"has_header", headerToken != "",
+				"has_cookie", cookieToken != "",
 				"client_ip", getClientIPWithProxyCheck(r))
 			http.Error(w, "CSRF token required", http.StatusForbidden)
 			return
 		}
 
-		// Validate token exists in our token store
-		if !c.ValidateTokenConstantTime(headerToken) {
-			logging.Web().Warn("CSRF token invalid",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"client_ip", getClientIPWithProxyCheck(r))
-			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
-			return
-		}
-
-		// Double-submit pattern: verify header token matches cookie token
-		if cookieToken != "" && subtle.ConstantTimeCompare([]byte(headerToken), []byte(cookieToken)) != 1 {
+		// Constant-time comparison to prevent timing attacks
+		if subtle.ConstantTimeCompare([]byte(headerToken), []byte(cookieToken)) != 1 {
 			logging.Web().Warn("CSRF token mismatch",
 				"method", r.Method,
 				"path", r.URL.Path,

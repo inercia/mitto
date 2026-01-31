@@ -1,10 +1,18 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+// makeExternalRequest marks a request as coming from the external listener.
+// This is needed because CSRF protection only applies to external connections.
+func makeExternalRequest(r *http.Request) *http.Request {
+	ctx := context.WithValue(r.Context(), ContextKeyExternalConnection, true)
+	return r.WithContext(ctx)
+}
 
 func TestCSRFManager_GenerateToken(t *testing.T) {
 	cm := NewCSRFManager()
@@ -23,46 +31,11 @@ func TestCSRFManager_GenerateToken(t *testing.T) {
 	if len(token) != 64 {
 		t.Errorf("Token length = %d, want 64", len(token))
 	}
-}
 
-func TestCSRFManager_ValidateToken(t *testing.T) {
-	cm := NewCSRFManager()
-	defer cm.Close()
-
-	// Generate a valid token
-	token, err := cm.GenerateToken()
-	if err != nil {
-		t.Fatalf("GenerateToken failed: %v", err)
-	}
-
-	// Should validate successfully
-	if !cm.ValidateToken(token) {
-		t.Error("ValidateToken returned false for valid token")
-	}
-
-	// Should fail for invalid token
-	if cm.ValidateToken("invalid-token") {
-		t.Error("ValidateToken returned true for invalid token")
-	}
-
-	// Should fail for empty token
-	if cm.ValidateToken("") {
-		t.Error("ValidateToken returned true for empty token")
-	}
-}
-
-func TestCSRFManager_ValidateTokenConstantTime(t *testing.T) {
-	cm := NewCSRFManager()
-	defer cm.Close()
-
-	token, _ := cm.GenerateToken()
-
-	if !cm.ValidateTokenConstantTime(token) {
-		t.Error("ValidateTokenConstantTime returned false for valid token")
-	}
-
-	if cm.ValidateTokenConstantTime("wrong-token") {
-		t.Error("ValidateTokenConstantTime returned true for invalid token")
+	// Each generated token should be unique
+	token2, _ := cm.GenerateToken()
+	if token == token2 {
+		t.Error("GenerateToken returned duplicate tokens")
 	}
 }
 
@@ -102,6 +75,27 @@ func TestCSRFManager_HandleCSRFToken(t *testing.T) {
 	}
 }
 
+func TestCSRFMiddleware_InternalConnectionsBypass(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+
+	handler := cm.CSRFMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Internal connections (not marked as external) should bypass CSRF entirely
+	stateChangingMethods := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
+	for _, method := range stateChangingMethods {
+		req := httptest.NewRequest(method, "/api/test", nil)
+		// NOT marked as external - should pass without CSRF token
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("Internal %s without token: status = %d, want %d", method, w.Code, http.StatusOK)
+		}
+	}
+}
+
 func TestCSRFMiddleware_SafeMethods(t *testing.T) {
 	cm := NewCSRFManager()
 	defer cm.Close()
@@ -110,14 +104,14 @@ func TestCSRFMiddleware_SafeMethods(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Safe methods should pass without CSRF token
+	// Safe methods should pass without CSRF token even for external connections
 	safeMethods := []string{http.MethodGet, http.MethodHead, http.MethodOptions}
 	for _, method := range safeMethods {
-		req := httptest.NewRequest(method, "/api/test", nil)
+		req := makeExternalRequest(httptest.NewRequest(method, "/api/test", nil))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
-			t.Errorf("%s request without token: status = %d, want %d", method, w.Code, http.StatusOK)
+			t.Errorf("External %s request without token: status = %d, want %d", method, w.Code, http.StatusOK)
 		}
 	}
 }
@@ -130,15 +124,15 @@ func TestCSRFMiddleware_StateChangingMethods(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// State-changing methods should require CSRF token
+	// State-changing methods on external connections should require CSRF token
 	stateChangingMethods := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
 	for _, method := range stateChangingMethods {
-		// Without token - should fail
-		req := httptest.NewRequest(method, "/api/test", nil)
+		// External connection without token - should fail
+		req := makeExternalRequest(httptest.NewRequest(method, "/api/test", nil))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusForbidden {
-			t.Errorf("%s without token: status = %d, want %d", method, w.Code, http.StatusForbidden)
+			t.Errorf("External %s without token: status = %d, want %d", method, w.Code, http.StatusForbidden)
 		}
 	}
 }
@@ -151,20 +145,22 @@ func TestCSRFMiddleware_ValidToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Generate a valid token
+	// Generate a token
 	token, _ := cm.GenerateToken()
 
-	// POST with valid token in header should succeed
+	// External POST with matching header and cookie should succeed (double-submit pattern)
 	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
 	req.Header.Set(csrfTokenHeader, token)
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: token})
+	req = makeExternalRequest(req)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Errorf("POST with valid token: status = %d, want %d", w.Code, http.StatusOK)
+		t.Errorf("External POST with matching header and cookie: status = %d, want %d", w.Code, http.StatusOK)
 	}
 }
 
-func TestCSRFMiddleware_InvalidToken(t *testing.T) {
+func TestCSRFMiddleware_MissingCookie(t *testing.T) {
 	cm := NewCSRFManager()
 	defer cm.Close()
 
@@ -172,13 +168,33 @@ func TestCSRFMiddleware_InvalidToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// POST with invalid token should fail
+	// External POST with header but no cookie should fail
 	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
-	req.Header.Set(csrfTokenHeader, "invalid-token-12345")
+	req.Header.Set(csrfTokenHeader, "some-token")
+	req = makeExternalRequest(req)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
-		t.Errorf("POST with invalid token: status = %d, want %d", w.Code, http.StatusForbidden)
+		t.Errorf("External POST with header but no cookie: status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestCSRFMiddleware_MissingHeader(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+
+	handler := cm.CSRFMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// External POST with cookie but no header should fail
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "some-token"})
+	req = makeExternalRequest(req)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("External POST with cookie but no header: status = %d, want %d", w.Code, http.StatusForbidden)
 	}
 }
 
@@ -193,20 +209,20 @@ func TestCSRFMiddleware_ExemptPaths(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Login is exempt - should pass without token (with API prefix)
-	req := httptest.NewRequest(http.MethodPost, "/mitto/api/login", nil)
+	// Login is exempt - should pass without token even for external connections
+	req := makeExternalRequest(httptest.NewRequest(http.MethodPost, "/mitto/api/login", nil))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("POST /mitto/api/login without token: status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	// Login without prefix should NOT be exempt when API prefix is set
-	req = httptest.NewRequest(http.MethodPost, "/api/login", nil)
+	// External request to login without prefix should NOT be exempt when API prefix is set
+	req = makeExternalRequest(httptest.NewRequest(http.MethodPost, "/api/login", nil))
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
-		t.Errorf("POST /api/login without token (missing prefix): status = %d, want %d", w.Code, http.StatusForbidden)
+		t.Errorf("External POST /api/login without token (missing prefix): status = %d, want %d", w.Code, http.StatusForbidden)
 	}
 }
 
@@ -218,13 +234,13 @@ func TestCSRFMiddleware_WebSocketUpgrade(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// WebSocket upgrade requests should be exempt
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	// WebSocket upgrade requests should be exempt even for external connections
+	req := makeExternalRequest(httptest.NewRequest(http.MethodGet, "/ws", nil))
 	req.Header.Set("Upgrade", "websocket")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Errorf("WebSocket upgrade: status = %d, want %d", w.Code, http.StatusOK)
+		t.Errorf("External WebSocket upgrade: status = %d, want %d", w.Code, http.StatusOK)
 	}
 }
 
@@ -239,23 +255,25 @@ func TestCSRFMiddleware_DoubleSubmitPattern(t *testing.T) {
 	// Generate a valid token
 	token, _ := cm.GenerateToken()
 
-	// With matching header and cookie should succeed
+	// External request with matching header and cookie should succeed
 	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
 	req.Header.Set(csrfTokenHeader, token)
 	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: token})
+	req = makeExternalRequest(req)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Errorf("Double-submit with matching tokens: status = %d, want %d", w.Code, http.StatusOK)
+		t.Errorf("External double-submit with matching tokens: status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	// With mismatching cookie should fail
+	// External request with mismatching cookie should fail
 	req2 := httptest.NewRequest(http.MethodPost, "/api/test", nil)
 	req2.Header.Set(csrfTokenHeader, token)
 	req2.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "different-token"})
+	req2 = makeExternalRequest(req2)
 	w2 := httptest.NewRecorder()
 	handler.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusForbidden {
-		t.Errorf("Double-submit with mismatching tokens: status = %d, want %d", w2.Code, http.StatusForbidden)
+		t.Errorf("External double-submit with mismatching tokens: status = %d, want %d", w2.Code, http.StatusForbidden)
 	}
 }
