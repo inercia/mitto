@@ -14,7 +14,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/msghooks"
 )
 
 var (
@@ -120,21 +122,73 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	}
 	processors := config.MergeProcessors(cfg.Conversations, workspaceConv)
 
+	// Load hooks from hooks directory
+	hooksDir, err := appdir.HooksDir()
+	if err != nil {
+		return fmt.Errorf("failed to get hooks directory: %w", err)
+	}
+	hookManager := msghooks.NewManager(hooksDir, logger)
+	if err := hookManager.Load(); err != nil {
+		// Log warning but continue - hooks are optional
+		if logger != nil {
+			logger.Warn("failed to load hooks", "error", err)
+		}
+	}
+
 	// Run in once mode or interactive mode
 	if isOnceMode {
-		return runOnceMode(ctx, conn, processors, oncePrompt)
+		return runOnceMode(ctx, conn, processors, hookManager, workDir, oncePrompt)
 	}
-	return runInteractiveLoop(ctx, conn, processors)
+	return runInteractiveLoop(ctx, conn, processors, hookManager, workDir)
 }
 
 // runOnceMode sends a single prompt and exits after receiving the response.
-func runOnceMode(ctx context.Context, conn *acp.Connection, processors []config.MessageProcessor, prompt string) error {
+func runOnceMode(ctx context.Context, conn *acp.Connection, processors []config.MessageProcessor, hookManager *msghooks.Manager, workDir, prompt string) error {
 	// Apply message processors (this is always the first message in once mode)
 	transformedPrompt := config.ApplyProcessors(prompt, processors, true)
 
+	// Apply hooks
+	var attachments []acp.Attachment
+	if hookManager != nil && len(hookManager.Hooks()) > 0 {
+		hookInput := &msghooks.HookInput{
+			Message:        transformedPrompt,
+			IsFirstMessage: true,
+			SessionID:      "", // No session ID in CLI mode
+			WorkingDir:     workDir,
+		}
+		result, err := hookManager.Apply(ctx, hookInput)
+		if err != nil {
+			return fmt.Errorf("hook error: %w", err)
+		}
+		transformedPrompt = result.Message
+
+		// Convert hook attachments to ACP attachments
+		if len(result.Attachments) > 0 {
+			acpAttachments, err := result.ToACPAttachments(workDir)
+			if err != nil {
+				return fmt.Errorf("attachment error: %w", err)
+			}
+			for _, att := range acpAttachments {
+				attachments = append(attachments, acp.Attachment{
+					Type:     att.Type,
+					Data:     att.Data,
+					MimeType: att.MimeType,
+					Name:     att.Name,
+				})
+			}
+		}
+	}
+
 	// Send the prompt to the agent
-	if err := conn.Prompt(ctx, transformedPrompt); err != nil {
-		return fmt.Errorf("prompt error: %w", err)
+	if len(attachments) > 0 {
+		blocks := acp.BuildContentBlocks(transformedPrompt, attachments)
+		if err := conn.PromptWithContent(ctx, blocks); err != nil {
+			return fmt.Errorf("prompt error: %w", err)
+		}
+	} else {
+		if err := conn.Prompt(ctx, transformedPrompt); err != nil {
+			return fmt.Errorf("prompt error: %w", err)
+		}
 	}
 
 	// Add a newline after the response for clean output
@@ -156,7 +210,7 @@ var slashCommands = []struct {
 	{"/cancel", "Cancel the current operation"},
 }
 
-func runInteractiveLoop(ctx context.Context, conn *acp.Connection, processors []config.MessageProcessor) error {
+func runInteractiveLoop(ctx context.Context, conn *acp.Connection, processors []config.MessageProcessor, hookManager *msghooks.Manager, workDir string) error {
 	// Create readline shell
 	rl := readline.NewShell()
 	rl.Prompt.Primary(func() string { return "mitto> " })
@@ -207,12 +261,54 @@ func runInteractiveLoop(ctx context.Context, conn *acp.Connection, processors []
 
 		// Apply message processors
 		transformedLine := config.ApplyProcessors(line, processors, isFirstMessage)
+
+		// Apply hooks
+		var attachments []acp.Attachment
+		if hookManager != nil && len(hookManager.Hooks()) > 0 {
+			hookInput := &msghooks.HookInput{
+				Message:        transformedLine,
+				IsFirstMessage: isFirstMessage,
+				SessionID:      "", // No session ID in CLI mode
+				WorkingDir:     workDir,
+			}
+			result, err := hookManager.Apply(ctx, hookInput)
+			if err != nil {
+				fmt.Printf("\n❌ Hook error: %v\n", err)
+				continue
+			}
+			transformedLine = result.Message
+
+			// Convert hook attachments to ACP attachments
+			if len(result.Attachments) > 0 {
+				acpAttachments, err := result.ToACPAttachments(workDir)
+				if err != nil {
+					fmt.Printf("\n❌ Attachment error: %v\n", err)
+					continue
+				}
+				for _, att := range acpAttachments {
+					attachments = append(attachments, acp.Attachment{
+						Type:     att.Type,
+						Data:     att.Data,
+						MimeType: att.MimeType,
+						Name:     att.Name,
+					})
+				}
+			}
+		}
+
 		isFirstMessage = false
 
 		// Send prompt to agent
 		fmt.Println() // Add spacing before response
-		if err := conn.Prompt(ctx, transformedLine); err != nil {
-			fmt.Printf("\n❌ Error: %v\n", err)
+		if len(attachments) > 0 {
+			blocks := acp.BuildContentBlocks(transformedLine, attachments)
+			if err := conn.PromptWithContent(ctx, blocks); err != nil {
+				fmt.Printf("\n❌ Error: %v\n", err)
+			}
+		} else {
+			if err := conn.Prompt(ctx, transformedLine); err != nil {
+				fmt.Printf("\n❌ Error: %v\n", err)
+			}
 		}
 		fmt.Println() // Add spacing after response
 	}
