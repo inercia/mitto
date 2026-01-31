@@ -12,13 +12,13 @@
  * @param {string} url - The URL to open
  */
 export function openExternalURL(url) {
-    if (typeof window.mittoOpenExternalURL === 'function') {
-        // Native macOS app - use bound function
-        window.mittoOpenExternalURL(url);
-    } else {
-        // Web browser - open in new tab
-        window.open(url, '_blank', 'noopener,noreferrer');
-    }
+  if (typeof window.mittoOpenExternalURL === "function") {
+    // Native macOS app - use bound function
+    window.mittoOpenExternalURL(url);
+  } else {
+    // Web browser - open in new tab
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 }
 
 // =============================================================================
@@ -30,7 +30,7 @@ export function openExternalURL(url) {
  * @returns {boolean}
  */
 export function hasNativeFolderPicker() {
-    return typeof window.mittoPickFolder === 'function';
+  return typeof window.mittoPickFolder === "function";
 }
 
 /**
@@ -40,15 +40,15 @@ export function hasNativeFolderPicker() {
  * @returns {Promise<string>}
  */
 export async function pickFolder() {
-    if (typeof window.mittoPickFolder === 'function') {
-        // Native macOS app - use bound function
-        // The webview binding returns a Promise
-        const result = await window.mittoPickFolder();
-        return result || '';
-    }
-    // Web browser - no native folder picker available
-    // The caller should use a file input with webkitdirectory as fallback
-    return '';
+  if (typeof window.mittoPickFolder === "function") {
+    // Native macOS app - use bound function
+    // The webview binding returns a Promise
+    const result = await window.mittoPickFolder();
+    return result || "";
+  }
+  // Web browser - no native folder picker available
+  // The caller should use a file input with webkitdirectory as fallback
+  return "";
 }
 
 // =============================================================================
@@ -62,15 +62,15 @@ export async function pickFolder() {
  * @returns {Promise<string[]|null>} Array of paths, or null if native picker unavailable
  */
 export async function pickImages() {
-    if (typeof window.mittoPickImages === 'function') {
-        // Native macOS app - use bound function
-        // The webview binding returns a Promise
-        const result = await window.mittoPickImages();
-        return result || [];
-    }
-    // Web browser - no native image picker available
-    // The caller should use a file input as fallback
-    return null; // null indicates native picker is not available
+  if (typeof window.mittoPickImages === "function") {
+    // Native macOS app - use bound function
+    // The webview binding returns a Promise
+    const result = await window.mittoPickImages();
+    return result || [];
+  }
+  // Web browser - no native image picker available
+  // The caller should use a file input as fallback
+  return null; // null indicates native picker is not available
 }
 
 /**
@@ -78,7 +78,7 @@ export async function pickImages() {
  * @returns {boolean}
  */
 export function hasNativeImagePicker() {
-    return typeof window.mittoPickImages === 'function';
+  return typeof window.mittoPickImages === "function";
 }
 
 // =============================================================================
@@ -90,6 +90,5 @@ export function hasNativeImagePicker() {
  * @returns {boolean}
  */
 export function isNativeApp() {
-    return typeof window.mittoPickFolder === 'function';
+  return typeof window.mittoPickFolder === "function";
 }
-

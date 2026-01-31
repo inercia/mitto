@@ -11,14 +11,14 @@
  * @returns {number} The last seen sequence number, or 0 if not found
  */
 export function getLastSeenSeq(sessionId) {
-    try {
-        const key = `mitto_session_seq_${sessionId}`;
-        const value = localStorage.getItem(key);
-        return value ? parseInt(value, 10) : 0;
-    } catch (e) {
-        console.warn('Failed to read last seen seq from localStorage:', e);
-        return 0;
-    }
+  try {
+    const key = `mitto_session_seq_${sessionId}`;
+    const value = localStorage.getItem(key);
+    return value ? parseInt(value, 10) : 0;
+  } catch (e) {
+    console.warn("Failed to read last seen seq from localStorage:", e);
+    return 0;
+  }
 }
 
 /**
@@ -27,12 +27,12 @@ export function getLastSeenSeq(sessionId) {
  * @param {number} seq - The sequence number to save
  */
 export function setLastSeenSeq(sessionId, seq) {
-    try {
-        const key = `mitto_session_seq_${sessionId}`;
-        localStorage.setItem(key, String(seq));
-    } catch (e) {
-        console.warn('Failed to save last seen seq to localStorage:', e);
-    }
+  try {
+    const key = `mitto_session_seq_${sessionId}`;
+    localStorage.setItem(key, String(seq));
+  } catch (e) {
+    console.warn("Failed to save last seen seq to localStorage:", e);
+  }
 }
 
 /**
@@ -40,11 +40,11 @@ export function setLastSeenSeq(sessionId, seq) {
  * @returns {string|null} The last active session ID, or null if not found
  */
 export function getLastActiveSessionId() {
-    try {
-        return localStorage.getItem('mitto_last_session_id') || null;
-    } catch (e) {
-        return null;
-    }
+  try {
+    return localStorage.getItem("mitto_last_session_id") || null;
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -52,14 +52,13 @@ export function getLastActiveSessionId() {
  * @param {string|null} sessionId - The session ID to save, or null to clear
  */
 export function setLastActiveSessionId(sessionId) {
-    try {
-        if (sessionId) {
-            localStorage.setItem('mitto_last_session_id', sessionId);
-        } else {
-            localStorage.removeItem('mitto_last_session_id');
-        }
-    } catch (e) {
-        console.warn('Failed to save last session ID to localStorage:', e);
+  try {
+    if (sessionId) {
+      localStorage.setItem("mitto_last_session_id", sessionId);
+    } else {
+      localStorage.removeItem("mitto_last_session_id");
     }
+  } catch (e) {
+    console.warn("Failed to save last session ID to localStorage:", e);
+  }
 }
-

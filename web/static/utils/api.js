@@ -7,7 +7,7 @@
  * @returns {string} The API prefix (e.g., "/mitto")
  */
 export function getApiPrefix() {
-    return window.mittoApiPrefix || '';
+  return window.mittoApiPrefix || "";
 }
 
 /**
@@ -16,12 +16,12 @@ export function getApiPrefix() {
  * @returns {string} The full URL with prefix (e.g., "/mitto/api/sessions")
  */
 export function apiUrl(path) {
-    const prefix = getApiPrefix();
-    // Ensure path starts with /
-    if (!path.startsWith('/')) {
-        path = '/' + path;
-    }
-    return prefix + path;
+  const prefix = getApiPrefix();
+  // Ensure path starts with /
+  if (!path.startsWith("/")) {
+    path = "/" + path;
+  }
+  return prefix + path;
 }
 
 /**
@@ -30,12 +30,11 @@ export function apiUrl(path) {
  * @returns {string} The full WebSocket URL
  */
 export function wsUrl(path) {
-    const prefix = getApiPrefix();
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Ensure path starts with /
-    if (!path.startsWith('/')) {
-        path = '/' + path;
-    }
-    return `${protocol}//${window.location.host}${prefix}${path}`;
+  const prefix = getApiPrefix();
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  // Ensure path starts with /
+  if (!path.startsWith("/")) {
+    path = "/" + path;
+  }
+  return `${protocol}//${window.location.host}${prefix}${path}`;
 }
-
