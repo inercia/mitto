@@ -704,3 +704,296 @@ func TestRecorder_ResumeWithInterleavedEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestRecorder_RecordPlan(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	entries := []PlanEntry{
+		{ID: "1", Title: "Task 1", Status: "completed"},
+		{ID: "2", Title: "Task 2", Status: "in_progress"},
+		{ID: "3", Title: "Task 3", Status: "pending"},
+	}
+
+	if err := recorder.RecordPlan(entries); err != nil {
+		t.Fatalf("RecordPlan failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Should have: session_start + plan = 2 events
+	if len(events) != 2 {
+		t.Errorf("got %d events, want 2", len(events))
+	}
+
+	// Verify the plan event
+	planEvent := events[1]
+	if planEvent.Type != EventTypePlan {
+		t.Errorf("event type = %q, want %q", planEvent.Type, EventTypePlan)
+	}
+
+	// After JSON round-trip, data comes back as map[string]interface{}
+	planDataMap, ok := planEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("event data is not map[string]interface{}, got %T", planEvent.Data)
+	}
+
+	entriesRaw, ok := planDataMap["entries"].([]interface{})
+	if !ok {
+		t.Fatalf("entries is not []interface{}, got %T", planDataMap["entries"])
+	}
+
+	if len(entriesRaw) != 3 {
+		t.Errorf("got %d plan entries, want 3", len(entriesRaw))
+	}
+}
+
+func TestRecorder_RecordPermission(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	if err := recorder.RecordPermission("Allow file access?", "yes", "approved"); err != nil {
+		t.Fatalf("RecordPermission failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Errorf("got %d events, want 2", len(events))
+	}
+
+	permEvent := events[1]
+	if permEvent.Type != EventTypePermission {
+		t.Errorf("event type = %q, want %q", permEvent.Type, EventTypePermission)
+	}
+
+	// After JSON round-trip, data comes back as map[string]interface{}
+	permDataMap, ok := permEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("event data is not map[string]interface{}, got %T", permEvent.Data)
+	}
+
+	if title, ok := permDataMap["title"].(string); !ok || title != "Allow file access?" {
+		t.Errorf("title = %v, want %q", permDataMap["title"], "Allow file access?")
+	}
+	if selectedOption, ok := permDataMap["selected_option"].(string); !ok || selectedOption != "yes" {
+		t.Errorf("selected_option = %v, want %q", permDataMap["selected_option"], "yes")
+	}
+	if outcome, ok := permDataMap["outcome"].(string); !ok || outcome != "approved" {
+		t.Errorf("outcome = %v, want %q", permDataMap["outcome"], "approved")
+	}
+}
+
+func TestRecorder_RecordFileOperations(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Test RecordFileRead
+	if err := recorder.RecordFileRead("/path/to/file.txt", 1024); err != nil {
+		t.Fatalf("RecordFileRead failed: %v", err)
+	}
+
+	// Test RecordFileWrite
+	if err := recorder.RecordFileWrite("/path/to/output.txt", 2048); err != nil {
+		t.Fatalf("RecordFileWrite failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Should have: session_start + file_read + file_write = 3 events
+	if len(events) != 3 {
+		t.Errorf("got %d events, want 3", len(events))
+	}
+
+	// Verify file read event
+	readEvent := events[1]
+	if readEvent.Type != EventTypeFileRead {
+		t.Errorf("event[1] type = %q, want %q", readEvent.Type, EventTypeFileRead)
+	}
+
+	// After JSON round-trip, data comes back as map[string]interface{}
+	readDataMap, ok := readEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("event[1] data is not map[string]interface{}, got %T", readEvent.Data)
+	}
+
+	if path, ok := readDataMap["path"].(string); !ok || path != "/path/to/file.txt" {
+		t.Errorf("readData.path = %v, want %q", readDataMap["path"], "/path/to/file.txt")
+	}
+	// JSON unmarshals numbers as float64
+	if size, ok := readDataMap["size"].(float64); !ok || int(size) != 1024 {
+		t.Errorf("readData.size = %v, want 1024", readDataMap["size"])
+	}
+
+	// Verify file write event
+	writeEvent := events[2]
+	if writeEvent.Type != EventTypeFileWrite {
+		t.Errorf("event[2] type = %q, want %q", writeEvent.Type, EventTypeFileWrite)
+	}
+
+	writeDataMap, ok := writeEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("event[2] data is not map[string]interface{}, got %T", writeEvent.Data)
+	}
+
+	if path, ok := writeDataMap["path"].(string); !ok || path != "/path/to/output.txt" {
+		t.Errorf("writeData.path = %v, want %q", writeDataMap["path"], "/path/to/output.txt")
+	}
+	if size, ok := writeDataMap["size"].(float64); !ok || int(size) != 2048 {
+		t.Errorf("writeData.size = %v, want 2048", writeDataMap["size"])
+	}
+}
+
+func TestRecorder_Suspend(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record an event
+	if err := recorder.RecordUserPrompt("Hello"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	if !recorder.IsStarted() {
+		t.Error("Session should be started before Suspend()")
+	}
+
+	// Suspend the session
+	if err := recorder.Suspend(); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
+
+	// Session should no longer be started
+	if recorder.IsStarted() {
+		t.Error("Session should not be started after Suspend()")
+	}
+
+	// Recording should fail after suspend
+	err = recorder.RecordUserPrompt("This should fail")
+	if err == nil {
+		t.Error("RecordUserPrompt should fail after Suspend()")
+	}
+
+	// Verify metadata status is still active (not ended)
+	meta, err := store.GetMetadata(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+
+	// Status should still be active (Suspend doesn't change status)
+	if meta.Status != SessionStatusActive {
+		t.Errorf("Status after Suspend = %q, want %q", meta.Status, SessionStatusActive)
+	}
+}
+
+func TestRecorder_SuspendBeforeStart(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+
+	// Suspend before starting should be a no-op (not an error)
+	if err := recorder.Suspend(); err != nil {
+		t.Errorf("Suspend before Start should not error, got: %v", err)
+	}
+}
+
+func TestRecorder_RecordUserPromptWithImages(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	images := []ImageRef{
+		{ID: "img-1", Name: "screenshot.png", MimeType: "image/png"},
+		{ID: "img-2", Name: "photo.jpeg", MimeType: "image/jpeg"},
+	}
+
+	if err := recorder.RecordUserPromptWithImages("Here's a screenshot", images); err != nil {
+		t.Fatalf("RecordUserPromptWithImages failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Errorf("got %d events, want 2", len(events))
+	}
+
+	promptEvent := events[1]
+	if promptEvent.Type != EventTypeUserPrompt {
+		t.Errorf("event type = %q, want %q", promptEvent.Type, EventTypeUserPrompt)
+	}
+
+	// After JSON round-trip, data comes back as map[string]interface{}
+	promptDataMap, ok := promptEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("event data is not map[string]interface{}, got %T", promptEvent.Data)
+	}
+
+	imagesRaw, ok := promptDataMap["images"].([]interface{})
+	if !ok {
+		t.Fatalf("images is not []interface{}, got %T", promptDataMap["images"])
+	}
+
+	if len(imagesRaw) != 2 {
+		t.Errorf("got %d images, want 2", len(imagesRaw))
+	}
+}

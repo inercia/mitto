@@ -410,3 +410,173 @@ func TestSessionManager_ResumeSession_UsesMetadataACPCommand(t *testing.T) {
 		// Other errors (like "failed to start ACP server") are expected since "echo hello" is not a valid ACP server
 	}
 }
+
+func TestSessionManager_GetWorkspacePrompts_NilCache(t *testing.T) {
+	sm := &SessionManager{
+		workspaceRCCache: nil,
+	}
+
+	prompts := sm.GetWorkspacePrompts("/test")
+	if prompts != nil {
+		t.Error("GetWorkspacePrompts should return nil when cache is nil")
+	}
+}
+
+func TestSessionManager_GetWorkspacePrompts_EmptyDir(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	prompts := sm.GetWorkspacePrompts("")
+	if prompts != nil {
+		t.Error("GetWorkspacePrompts should return nil for empty dir")
+	}
+}
+
+func TestSessionManager_HasWorkspaces(t *testing.T) {
+	// No workspaces
+	sm := NewSessionManager("", "", false, nil)
+	if sm.HasWorkspaces() {
+		t.Error("HasWorkspaces should return false when no workspaces")
+	}
+
+	// With workspaces
+	sm.AddWorkspace(config.WorkspaceSettings{
+		WorkingDir: "/test",
+		ACPServer:  "server",
+	})
+	if !sm.HasWorkspaces() {
+		t.Error("HasWorkspaces should return true when workspaces exist")
+	}
+}
+
+func TestSessionManager_SessionCount(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	if sm.SessionCount() != 0 {
+		t.Errorf("SessionCount = %d, want 0", sm.SessionCount())
+	}
+
+	// Add a mock session
+	sm.mu.Lock()
+	sm.sessions["test-1"] = &BackgroundSession{persistedID: "test-1"}
+	sm.mu.Unlock()
+
+	if sm.SessionCount() != 1 {
+		t.Errorf("SessionCount = %d, want 1", sm.SessionCount())
+	}
+}
+
+func TestSessionManager_ListRunningSessions(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	// Initially empty
+	sessions := sm.ListRunningSessions()
+	if len(sessions) != 0 {
+		t.Errorf("ListRunningSessions = %d, want 0", len(sessions))
+	}
+
+	// Add mock sessions
+	sm.mu.Lock()
+	sm.sessions["test-1"] = &BackgroundSession{persistedID: "test-1"}
+	sm.sessions["test-2"] = &BackgroundSession{persistedID: "test-2"}
+	sm.mu.Unlock()
+
+	sessions = sm.ListRunningSessions()
+	if len(sessions) != 2 {
+		t.Errorf("ListRunningSessions = %d, want 2", len(sessions))
+	}
+}
+
+func TestSessionManager_GetSession(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	// Add a mock session
+	bs := &BackgroundSession{persistedID: "test-1"}
+	sm.mu.Lock()
+	sm.sessions["test-1"] = bs
+	sm.mu.Unlock()
+
+	// Get existing session
+	result := sm.GetSession("test-1")
+	if result != bs {
+		t.Error("GetSession should return the session")
+	}
+
+	// Get non-existent session
+	result = sm.GetSession("nonexistent")
+	if result != nil {
+		t.Error("GetSession should return nil for non-existent session")
+	}
+}
+
+func TestSessionManager_SetWorkspaces(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	workspaces := []config.WorkspaceSettings{
+		{WorkingDir: "/workspace1", ACPServer: "server1"},
+		{WorkingDir: "/workspace2", ACPServer: "server2"},
+	}
+
+	sm.SetWorkspaces(workspaces)
+
+	result := sm.GetWorkspaces()
+	if len(result) != 2 {
+		t.Errorf("GetWorkspaces() = %d, want 2", len(result))
+	}
+}
+
+func TestSessionManager_IsFromCLI(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	// Default should be false
+	if sm.IsFromCLI() {
+		t.Error("IsFromCLI should return false by default")
+	}
+
+	// Create with FromCLI option
+	sm2 := NewSessionManagerWithOptions(SessionManagerOptions{
+		FromCLI: true,
+	})
+
+	if !sm2.IsFromCLI() {
+		t.Error("IsFromCLI should return true when FromCLI option is set")
+	}
+}
+
+func TestSessionManager_SetHookManager(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	// Should not panic with nil
+	sm.SetHookManager(nil)
+}
+
+func TestSessionManager_SetGlobalConversations(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	// Should not panic with nil
+	sm.SetGlobalConversations(nil)
+}
+
+func TestSessionManager_RemoveWorkspace_NilWorkspaces(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	// Remove from nil workspaces (should not panic)
+	sm.RemoveWorkspace("/nonexistent")
+}
+
+func TestSessionManager_AddWorkspace_Duplicate(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/workspace1", ACPServer: "server1"},
+	})
+
+	// Add duplicate workspace (should update)
+	sm.AddWorkspace(config.WorkspaceSettings{
+		WorkingDir: "/workspace1",
+		ACPServer:  "server2",
+	})
+
+	workspaces := sm.GetWorkspaces()
+	if len(workspaces) != 1 {
+		t.Errorf("GetWorkspaces() = %d, want 1", len(workspaces))
+	}
+}

@@ -277,3 +277,83 @@ func TestCSRFMiddleware_DoubleSubmitPattern(t *testing.T) {
 		t.Errorf("External double-submit with mismatching tokens: status = %d, want %d", w2.Code, http.StatusForbidden)
 	}
 }
+
+func TestCSRFManager_Close(t *testing.T) {
+	cm := NewCSRFManager()
+
+	// Close should not panic
+	cm.Close()
+
+	// Close again should not panic (idempotent)
+	cm.Close()
+}
+
+func TestCSRFManager_GetTokenFromRequest(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+
+	// Test with header
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req.Header.Set(csrfTokenHeader, "header-token")
+
+	token := cm.GetTokenFromRequest(req)
+	if token != "header-token" {
+		t.Errorf("GetTokenFromRequest = %q, want %q", token, "header-token")
+	}
+
+	// Test with cookie (no header)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req2.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "cookie-token"})
+
+	token2 := cm.GetTokenFromRequest(req2)
+	if token2 != "cookie-token" {
+		t.Errorf("GetTokenFromRequest = %q, want %q", token2, "cookie-token")
+	}
+
+	// Test with neither header nor cookie
+	req3 := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+
+	token3 := cm.GetTokenFromRequest(req3)
+	if token3 != "" {
+		t.Errorf("GetTokenFromRequest = %q, want empty", token3)
+	}
+
+	// Test header takes precedence over cookie
+	req4 := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req4.Header.Set(csrfTokenHeader, "header-token")
+	req4.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "cookie-token"})
+
+	token4 := cm.GetTokenFromRequest(req4)
+	if token4 != "header-token" {
+		t.Errorf("GetTokenFromRequest = %q, want %q (header takes precedence)", token4, "header-token")
+	}
+}
+
+func TestCSRFManager_SetAPIPrefix(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+
+	cm.SetAPIPrefix("/api/v1")
+
+	if cm.apiPrefix != "/api/v1" {
+		t.Errorf("apiPrefix = %q, want %q", cm.apiPrefix, "/api/v1")
+	}
+}
+
+func TestCSRFManager_CloseIsNoOp(t *testing.T) {
+	cm := NewCSRFManager()
+
+	// Close should not panic and should be idempotent
+	cm.Close()
+	cm.Close()
+	cm.Close()
+
+	// Manager should still work after close (stateless)
+	token, err := cm.GenerateToken()
+	if err != nil {
+		t.Errorf("GenerateToken after Close failed: %v", err)
+	}
+	if token == "" {
+		t.Error("GenerateToken after Close returned empty token")
+	}
+}

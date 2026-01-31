@@ -1215,31 +1215,133 @@ export function useWebSocket() {
   // Default timeout for waiting on message ACK (in milliseconds)
   const SEND_ACK_TIMEOUT = 15000;
 
+  // Timeout for waiting for WebSocket to connect (in milliseconds)
+  const WS_CONNECT_TIMEOUT = 5000;
+
+  /**
+   * Wait for the session WebSocket to be connected.
+   * If not connected, triggers a reconnection and waits.
+   * @param {string} sessionId - The session ID
+   * @param {number} timeout - Timeout in milliseconds
+   * @returns {Promise<WebSocket>} The connected WebSocket
+   */
+  const waitForSessionConnection = useCallback(
+    (sessionId, timeout = WS_CONNECT_TIMEOUT) => {
+      return new Promise((resolve, reject) => {
+        // Check if already connected
+        const existingWs = sessionWsRefs.current[sessionId];
+        if (existingWs && existingWs.readyState === WebSocket.OPEN) {
+          resolve(existingWs);
+          return;
+        }
+
+        console.log(
+          `WebSocket not connected for session ${sessionId}, triggering reconnect`,
+        );
+
+        // Clear any pending reconnect timer
+        if (sessionReconnectRefs.current[sessionId]) {
+          clearTimeout(sessionReconnectRefs.current[sessionId]);
+          delete sessionReconnectRefs.current[sessionId];
+        }
+
+        // Close existing zombie WebSocket if any
+        if (existingWs) {
+          delete sessionWsRefs.current[sessionId];
+          existingWs.close();
+        }
+
+        // Set up timeout
+        const timeoutId = setTimeout(() => {
+          reject(
+            new Error(
+              "Connection timed out. Please check your network and try again.",
+            ),
+          );
+        }, timeout);
+
+        // Create new WebSocket connection
+        const ws = new WebSocket(wsUrl(`/api/sessions/${sessionId}/ws`));
+        const wsId = Math.random().toString(36).substring(2, 8);
+        ws._debugId = wsId;
+
+        ws.onopen = () => {
+          clearTimeout(timeoutId);
+          console.log(
+            `Session WebSocket connected (reconnect): ${sessionId} (ws: ${wsId})`,
+          );
+
+          // Store the WebSocket reference
+          sessionWsRefs.current[sessionId] = ws;
+
+          // Sync events we may have missed while disconnected
+          const lastSeq = getLastSeenSeq(sessionId);
+          if (lastSeq > 0) {
+            console.log(`Syncing session ${sessionId} from seq ${lastSeq}`);
+            ws.send(
+              JSON.stringify({
+                type: "sync_session",
+                data: { session_id: sessionId, after_seq: lastSeq },
+              }),
+            );
+          }
+
+          resolve(ws);
+        };
+
+        ws.onerror = (err) => {
+          clearTimeout(timeoutId);
+          console.error(`Session WebSocket error during reconnect:`, err);
+          reject(new Error("Failed to connect. Please try again."));
+        };
+
+        ws.onclose = () => {
+          // If we haven't resolved yet, this is an early close
+          clearTimeout(timeoutId);
+          if (sessionWsRefs.current[sessionId] === ws) {
+            delete sessionWsRefs.current[sessionId];
+          }
+        };
+
+        // Set up message handler (reuse existing logic)
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            handleSessionMessage(sessionId, msg);
+          } catch (err) {
+            console.error("Failed to parse session message:", err);
+          }
+        };
+      });
+    },
+    [handleSessionMessage],
+  );
+
   /**
    * Send a prompt to the active session.
    * Returns a Promise that resolves on ACK or rejects on timeout/failure.
+   * If WebSocket is not connected, automatically triggers reconnection and waits.
    * @param {string} message - The message text
    * @param {Array} images - Optional array of images
    * @param {Object} options - Optional settings: { timeout: number, skipMessageAdd: boolean }
    * @returns {Promise<{success: boolean, promptId: string}>}
    */
   const sendPrompt = useCallback(
-    (message, images = [], options = {}) => {
+    async (message, images = [], options = {}) => {
       const timeout = options.timeout || SEND_ACK_TIMEOUT;
 
+      if (!activeSessionId) {
+        throw new Error("No active session");
+      }
+
+      // Check if WebSocket is connected, if not wait for reconnection
+      let ws = sessionWsRefs.current[activeSessionId];
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        // Wait for connection (this will trigger reconnect if needed)
+        ws = await waitForSessionConnection(activeSessionId);
+      }
+
       return new Promise((resolve, reject) => {
-        if (!activeSessionId) {
-          reject(new Error("No active session"));
-          return;
-        }
-
-        // Check if WebSocket is connected
-        const ws = sessionWsRefs.current[activeSessionId];
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          reject(new Error("WebSocket not connected"));
-          return;
-        }
-
         // Add user message with optional images (unless skipped for retry)
         if (!options.skipMessageAdd) {
           const userMessage = {
@@ -1292,7 +1394,13 @@ export function useWebSocket() {
         }
       });
     },
-    [activeSessionId, addMessageToSession, updateLastMessage, sendToSession],
+    [
+      activeSessionId,
+      addMessageToSession,
+      updateLastMessage,
+      sendToSession,
+      waitForSessionConnection,
+    ],
   );
 
   const cancelPrompt = useCallback(() => {

@@ -614,3 +614,29 @@ func TestMarkdownBuffer_InlineCodeNoSplit(t *testing.T) {
 		t.Errorf("expected backticks to be converted to HTML, but found literal backticks in: %s", html)
 	}
 }
+
+func TestHasUnmatchedInlineFormatting(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"empty", "", false},
+		{"no formatting", "hello world", false},
+		{"matched bold", "**bold**", false},
+		{"unmatched bold", "**bold", true},
+		{"matched code", "`code`", false},
+		{"unmatched code", "`code", true},
+		{"multiple matched", "**bold** and `code`", false},
+		{"one unmatched bold", "**bold** and **more", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasUnmatchedInlineFormatting(tt.input)
+			if result != tt.expected {
+				t.Errorf("hasUnmatchedInlineFormatting(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}

@@ -19,6 +19,7 @@ import (
 
 var (
 	testServerURL  string
+	testAPIPrefix  = "/mitto" // API prefix used by the server
 	testServerCmd  *exec.Cmd
 	testServerPort = "8099"
 )
@@ -157,8 +158,8 @@ func TestHealthEndpoint(t *testing.T) {
 
 // TestSessionsAPI tests the sessions API endpoints
 func TestSessionsAPI(t *testing.T) {
-	// GET /api/sessions
-	resp, err := http.Get(testServerURL + "/api/sessions")
+	// GET /mitto/api/sessions
+	resp, err := http.Get(testServerURL + testAPIPrefix + "/api/sessions")
 	if err != nil {
 		t.Fatalf("Failed to get sessions: %v", err)
 	}
@@ -180,8 +181,8 @@ func TestSessionsAPI(t *testing.T) {
 
 // TestWorkspacesAPI tests the workspaces API endpoints
 func TestWorkspacesAPI(t *testing.T) {
-	// GET /api/workspaces
-	resp, err := http.Get(testServerURL + "/api/workspaces")
+	// GET /mitto/api/workspaces
+	resp, err := http.Get(testServerURL + testAPIPrefix + "/api/workspaces")
 	if err != nil {
 		t.Fatalf("Failed to get workspaces: %v", err)
 	}
@@ -208,9 +209,9 @@ func TestWorkspacesAPI(t *testing.T) {
 
 // TestCreateSession tests session creation
 func TestCreateSession(t *testing.T) {
-	// POST /api/sessions
+	// POST /mitto/api/sessions
 	body := strings.NewReader(`{"name": "API Test Session"}`)
-	resp, err := http.Post(testServerURL+"/api/sessions", "application/json", body)
+	resp, err := http.Post(testServerURL+testAPIPrefix+"/api/sessions", "application/json", body)
 	if err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}

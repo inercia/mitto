@@ -139,3 +139,58 @@ func TestItoa(t *testing.T) {
 		})
 	}
 }
+
+func TestHideServerInfoResponseWriter_Write(t *testing.T) {
+	handler := hideServerInfoMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Write without calling WriteHeader first
+		w.Write([]byte("Hello, World!"))
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	// Should have written the body
+	if w.Body.String() != "Hello, World!" {
+		t.Errorf("Body = %q, want %q", w.Body.String(), "Hello, World!")
+	}
+
+	// Should have set status to 200 OK
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestRequestTimeoutMiddleware(t *testing.T) {
+	handler := requestTimeoutMiddleware(DefaultRequestTimeout)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestRequestTimeoutMiddleware_WebSocketExcluded(t *testing.T) {
+	handler := requestTimeoutMiddleware(DefaultRequestTimeout)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// WebSocket upgrade request should bypass timeout
+	req := httptest.NewRequest("GET", "/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+}

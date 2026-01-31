@@ -321,3 +321,36 @@ func TestAuthRateLimiter_CustomTimeFunc(t *testing.T) {
 		t.Error("Should not be blocked after time advance")
 	}
 }
+
+func TestAuthRateLimiter_Cleanup(t *testing.T) {
+	rl := NewAuthRateLimiterWithConfig(3, 10*time.Millisecond, 10*time.Millisecond)
+	defer rl.Close()
+
+	ip := "192.168.1.1"
+
+	// Record failures to create a record
+	rl.RecordFailure(ip)
+	rl.RecordFailure(ip)
+	rl.RecordFailure(ip)
+
+	// Verify record exists
+	total, blocked := rl.Stats()
+	if total != 1 {
+		t.Errorf("Stats() total = %d, want 1", total)
+	}
+	if blocked != 1 {
+		t.Errorf("Stats() blocked = %d, want 1", blocked)
+	}
+
+	// Wait for lockout to expire
+	time.Sleep(20 * time.Millisecond)
+
+	// Manually trigger cleanup
+	rl.cleanup()
+
+	// Record should be cleaned up
+	total, blocked = rl.Stats()
+	if total != 0 {
+		t.Errorf("Stats() total = %d, want 0 after cleanup", total)
+	}
+}

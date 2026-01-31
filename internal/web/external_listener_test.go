@@ -225,3 +225,44 @@ func TestExternalPortSemantics(t *testing.T) {
 		})
 	}
 }
+
+func TestExternalConnectionMiddleware(t *testing.T) {
+	var contextValue interface{}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contextValue = r.Context().Value(ContextKeyExternalConnection)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := externalConnectionMiddleware(handler)
+
+	req, _ := http.NewRequest("GET", "/api/test", nil)
+	w := &mockResponseWriter{}
+
+	middleware.ServeHTTP(w, req)
+
+	if contextValue != true {
+		t.Errorf("ContextKeyExternalConnection = %v, want true", contextValue)
+	}
+}
+
+// mockResponseWriter is a simple mock for http.ResponseWriter
+type mockResponseWriter struct {
+	statusCode int
+	headers    http.Header
+}
+
+func (m *mockResponseWriter) Header() http.Header {
+	if m.headers == nil {
+		m.headers = make(http.Header)
+	}
+	return m.headers
+}
+
+func (m *mockResponseWriter) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (m *mockResponseWriter) WriteHeader(statusCode int) {
+	m.statusCode = statusCode
+}

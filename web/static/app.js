@@ -1572,9 +1572,15 @@ function App() {
     if (theme === "light") {
       root.classList.add("light");
       root.classList.remove("dark");
+      // Also apply to body for v2-theme CSS selectors (which use .v2-theme.dark)
+      document.body.classList.add("light");
+      document.body.classList.remove("dark");
     } else {
       root.classList.add("dark");
       root.classList.remove("light");
+      // Also apply to body for v2-theme CSS selectors (which use .v2-theme.dark)
+      document.body.classList.add("dark");
+      document.body.classList.remove("light");
     }
     localStorage.setItem("mitto-theme", theme);
   }, [theme]);

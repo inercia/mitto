@@ -317,3 +317,47 @@ func TestCSPNonceMiddleware_ContentLengthUpdated(t *testing.T) {
 		}
 	}
 }
+
+func TestCSPNonceMiddleware_WriteHeaderHTML(t *testing.T) {
+	// Create a handler that explicitly calls WriteHeader for HTML
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><body>Test</body></html>`))
+	})
+
+	wrapped := cspNonceMiddleware(DefaultSecurityConfig())(handler)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Should have CSP header
+	csp := rec.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Error("Expected Content-Security-Policy header")
+	}
+}
+
+func TestCSPNonceMiddleware_WriteHeaderNonHTML(t *testing.T) {
+	// Create a handler that explicitly calls WriteHeader for non-HTML
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ok"}`))
+	})
+
+	wrapped := cspNonceMiddleware(DefaultSecurityConfig())(handler)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}

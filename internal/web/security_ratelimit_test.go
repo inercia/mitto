@@ -145,3 +145,34 @@ func TestDefaultRateLimitConfig(t *testing.T) {
 		t.Error("EntryTTL should be positive")
 	}
 }
+
+func TestGeneralRateLimiter_Cleanup(t *testing.T) {
+	config := RateLimitConfig{
+		RequestsPerSecond: 10,
+		BurstSize:         10,
+		CleanupInterval:   time.Hour, // Don't auto-cleanup
+		EntryTTL:          10 * time.Millisecond,
+	}
+	rl := NewGeneralRateLimiter(config)
+	defer rl.Close()
+
+	// Add some entries
+	rl.Allow("192.168.1.1")
+	rl.Allow("192.168.1.2")
+
+	// Verify entries exist
+	if rl.Stats() != 2 {
+		t.Errorf("Stats() = %d, want 2", rl.Stats())
+	}
+
+	// Wait for entries to expire
+	time.Sleep(20 * time.Millisecond)
+
+	// Manually trigger cleanup
+	rl.cleanup()
+
+	// Entries should be cleaned up
+	if rl.Stats() != 0 {
+		t.Errorf("Stats() = %d, want 0 after cleanup", rl.Stats())
+	}
+}

@@ -162,3 +162,64 @@ func TestWSConnConfig_Fields(t *testing.T) {
 		t.Error("Tracker not set correctly")
 	}
 }
+
+func TestWSConn_SendMessage_NonBlocking(t *testing.T) {
+	// Create a WSConn with a small buffer to test non-blocking behavior
+	w := &WSConn{
+		send: make(chan []byte, 1),
+	}
+
+	// First send should succeed
+	w.SendMessage("test", map[string]string{"key": "value"})
+
+	// Second send should not block (buffer full, message dropped)
+	done := make(chan bool)
+	go func() {
+		w.SendMessage("test2", nil)
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// Good - SendMessage returned without blocking
+	case <-time.After(100 * time.Millisecond):
+		t.Error("SendMessage blocked when buffer was full")
+	}
+
+	// Verify first message is in buffer
+	msg := <-w.send
+	var wsMsg WSMessage
+	if err := json.Unmarshal(msg, &wsMsg); err != nil {
+		t.Fatalf("Failed to unmarshal message: %v", err)
+	}
+	if wsMsg.Type != "test" {
+		t.Errorf("Expected type 'test', got %s", wsMsg.Type)
+	}
+}
+
+func TestWSConn_SendError(t *testing.T) {
+	w := &WSConn{
+		send: make(chan []byte, 1),
+	}
+
+	w.SendError("test error message")
+
+	msg := <-w.send
+	var wsMsg WSMessage
+	if err := json.Unmarshal(msg, &wsMsg); err != nil {
+		t.Fatalf("Failed to unmarshal message: %v", err)
+	}
+
+	if wsMsg.Type != WSMsgTypeError {
+		t.Errorf("Expected type %q, got %q", WSMsgTypeError, wsMsg.Type)
+	}
+
+	var data map[string]string
+	if err := json.Unmarshal(wsMsg.Data, &data); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if data["message"] != "test error message" {
+		t.Errorf("Expected message 'test error message', got %q", data["message"])
+	}
+}

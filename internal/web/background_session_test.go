@@ -516,3 +516,79 @@ func TestSessionWSClient_SessionNeedsTitle_HasName(t *testing.T) {
 		t.Error("sessionNeedsTitle should return false when session already has a name")
 	}
 }
+
+func TestBackgroundSession_GetEventCount_NilRecorder(t *testing.T) {
+	bs := &BackgroundSession{
+		recorder: nil,
+	}
+
+	count := bs.GetEventCount()
+	if count != 0 {
+		t.Errorf("GetEventCount = %d, want 0 for nil recorder", count)
+	}
+}
+
+func TestBackgroundSession_CreatedAt_NilRecorder(t *testing.T) {
+	bs := &BackgroundSession{
+		recorder: nil,
+	}
+
+	createdAt := bs.CreatedAt()
+	if !createdAt.IsZero() {
+		t.Errorf("CreatedAt = %v, want zero time for nil recorder", createdAt)
+	}
+}
+
+func TestBackgroundSession_NeedsTitle_NoRecorder(t *testing.T) {
+	bs := &BackgroundSession{
+		recorder: nil,
+	}
+
+	// Should not panic with nil recorder
+	result := bs.NeedsTitle()
+	if result {
+		t.Error("NeedsTitle should return false when recorder is nil")
+	}
+}
+
+func TestBackgroundSession_PersistedID(t *testing.T) {
+	bs := &BackgroundSession{
+		persistedID: "test-session-123",
+	}
+
+	if bs.persistedID != "test-session-123" {
+		t.Errorf("persistedID = %q, want %q", bs.persistedID, "test-session-123")
+	}
+}
+
+func TestBackgroundSession_WorkingDirField(t *testing.T) {
+	bs := &BackgroundSession{
+		workingDir: "/test/workspace",
+	}
+
+	if bs.workingDir != "/test/workspace" {
+		t.Errorf("workingDir = %q, want %q", bs.workingDir, "/test/workspace")
+	}
+}
+
+func TestBackgroundSession_GetEventCount(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	// Without recorder, should return 0
+	count := bs.GetEventCount()
+	if count != 0 {
+		t.Errorf("GetEventCount = %d, want 0", count)
+	}
+}
+
+func TestBackgroundSession_CreatedAt(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	// Without recorder, should return zero time
+	createdAt := bs.CreatedAt()
+	if !createdAt.IsZero() {
+		t.Errorf("CreatedAt should return zero time when recorder is nil")
+	}
+}
+
+

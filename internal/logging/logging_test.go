@@ -3,6 +3,8 @@ package logging
 import (
 	"bytes"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -124,5 +126,274 @@ func TestWithSessionContext_AdditionalAttributes(t *testing.T) {
 	}
 	if !strings.Contains(output, "extra_key=extra_value") {
 		t.Errorf("Expected extra_key in output, got: %s", output)
+	}
+}
+
+// resetGlobalState resets global logging state for testing.
+// This should be called at the start of tests that modify global state.
+func resetGlobalState() {
+	globalMu.Lock()
+	globalLogger = nil
+	globalMu.Unlock()
+
+	logFileMu.Lock()
+	if logFile != nil {
+		logFile.Close()
+		logFile = nil
+	}
+	logFileMu.Unlock()
+
+	componentsMu.Lock()
+	allowedComponents = nil
+	componentsMu.Unlock()
+}
+
+func TestInitialize_BasicConfig(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	err := Initialize(Config{Level: "debug"})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	logger := Get()
+	if logger == nil {
+		t.Fatal("Get returned nil logger")
+	}
+}
+
+func TestInitialize_WithLogFile(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	err := Initialize(Config{
+		Level:   "info",
+		LogFile: logPath,
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Log something
+	logger := Get()
+	logger.Info("test log message")
+
+	// Verify file was created
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("Log file was not created")
+	}
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "test log message") {
+		t.Errorf("Log file should contain 'test log message', got: %s", content)
+	}
+}
+
+func TestInitialize_InvalidLogFilePath(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	err := Initialize(Config{
+		Level:   "info",
+		LogFile: "/nonexistent/directory/that/does/not/exist/log.txt",
+	})
+	if err == nil {
+		t.Error("Initialize should fail with invalid log file path")
+	}
+}
+
+func TestInitialize_JSONFormat(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.json.log")
+
+	err := Initialize(Config{
+		Level:   "info",
+		LogFile: logPath,
+		JSON:    true,
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	logger := Get()
+	logger.Info("json test", "key", "value")
+
+	Close()
+
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	// JSON format should contain JSON structures
+	if !strings.Contains(string(content), `"msg"`) {
+		t.Errorf("JSON log should contain 'msg' field, got: %s", content)
+	}
+}
+
+func TestGet_BeforeInitialize(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	logger := Get()
+	if logger == nil {
+		t.Error("Get should return non-nil logger even before Initialize")
+	}
+}
+
+func TestClose_NotInitialized(t *testing.T) {
+	resetGlobalState()
+
+	// Close without Initialize should not error
+	err := Close()
+	if err != nil {
+		t.Errorf("Close without Initialize should not error, got: %v", err)
+	}
+}
+
+func TestClose_Multiple(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	err := Initialize(Config{LogFile: logPath})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// First close
+	if err := Close(); err != nil {
+		t.Errorf("First Close failed: %v", err)
+	}
+
+	// Second close should not error
+	if err := Close(); err != nil {
+		t.Errorf("Second Close should not error, got: %v", err)
+	}
+}
+
+func TestParseLevel(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"info", slog.LevelInfo},
+		{"warn", slog.LevelWarn},
+		{"warning", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"", slog.LevelInfo},        // default
+		{"invalid", slog.LevelInfo}, // default
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parseLevel(tt.input)
+			if got != tt.expected {
+				t.Errorf("parseLevel(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestWithComponent(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	Initialize(Config{Level: "debug"})
+
+	logger := WithComponent("test-component")
+	if logger == nil {
+		t.Fatal("WithComponent returned nil")
+	}
+}
+
+func TestComponentFiltering(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Initialize with component filtering
+	err := Initialize(Config{
+		Level:      "debug",
+		LogFile:    logPath,
+		Components: []string{"allowed"},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Log from allowed component
+	allowedLogger := WithComponent("allowed")
+	allowedLogger.Info("allowed message")
+
+	// Log from filtered component
+	filteredLogger := WithComponent("filtered")
+	filteredLogger.Info("filtered message")
+
+	Close()
+
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	contentStr := string(content)
+	if !strings.Contains(contentStr, "allowed message") {
+		t.Error("Log should contain message from allowed component")
+	}
+	if strings.Contains(contentStr, "filtered message") {
+		t.Error("Log should NOT contain message from filtered component")
+	}
+}
+
+func TestComponentShortcuts(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	Initialize(Config{Level: "debug"})
+
+	// Test all component shortcut functions
+	shortcuts := []struct {
+		name   string
+		logger *slog.Logger
+	}{
+		{"web", Web()},
+		{"auth", Auth()},
+		{"hook", Hook()},
+		{"websocket", WebSocket()},
+		{"session", Session()},
+		{"shutdown", Shutdown()},
+	}
+
+	for _, s := range shortcuts {
+		t.Run(s.name, func(t *testing.T) {
+			if s.logger == nil {
+				t.Errorf("%s() returned nil", s.name)
+			}
+		})
 	}
 }

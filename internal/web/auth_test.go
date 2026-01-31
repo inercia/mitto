@@ -911,3 +911,178 @@ func TestAuthMiddleware_DisabledPassesThrough(t *testing.T) {
 		t.Error("AuthMiddleware should pass through when auth is disabled")
 	}
 }
+
+func TestAuthManager_HasValidCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *config.WebAuth
+		want   bool
+	}{
+		{
+			name:   "nil config",
+			config: nil,
+			want:   false,
+		},
+		{
+			name:   "nil simple",
+			config: &config.WebAuth{Simple: nil},
+			want:   false,
+		},
+		{
+			name: "empty username",
+			config: &config.WebAuth{
+				Simple: &config.SimpleAuth{Username: "", Password: "pass"},
+			},
+			want: false,
+		},
+		{
+			name: "empty password",
+			config: &config.WebAuth{
+				Simple: &config.SimpleAuth{Username: "user", Password: ""},
+			},
+			want: false,
+		},
+		{
+			name: "valid credentials",
+			config: &config.WebAuth{
+				Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			am := NewAuthManager(tt.config)
+			if got := am.HasValidCredentials(); got != tt.want {
+				t.Errorf("HasValidCredentials() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthManager_CredentialError(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    *config.WebAuth
+		wantError error
+	}{
+		{
+			name:      "nil config",
+			config:    nil,
+			wantError: ErrNoCredentials,
+		},
+		{
+			name:      "nil simple",
+			config:    &config.WebAuth{Simple: nil},
+			wantError: ErrNoCredentials,
+		},
+		{
+			name: "empty username",
+			config: &config.WebAuth{
+				Simple: &config.SimpleAuth{Username: "", Password: "pass"},
+			},
+			wantError: ErrEmptyUsername,
+		},
+		{
+			name: "empty password",
+			config: &config.WebAuth{
+				Simple: &config.SimpleAuth{Username: "user", Password: ""},
+			},
+			wantError: ErrEmptyPassword,
+		},
+		{
+			name: "valid credentials",
+			config: &config.WebAuth{
+				Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
+			},
+			wantError: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			am := NewAuthManager(tt.config)
+			got := am.CredentialError()
+			if got != tt.wantError {
+				t.Errorf("CredentialError() = %v, want %v", got, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestAuthManager_UpdateConfig(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "user",
+			Password: "pass",
+		},
+	})
+	defer am.Close()
+
+	// Update with new config
+	newConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "newuser",
+			Password: "newpass",
+		},
+		Allow: &config.AuthAllow{
+			IPs: []string{"192.168.1.0/24", "10.0.0.1"},
+		},
+	}
+	am.UpdateConfig(newConfig)
+
+	// Verify the config was updated
+	if !am.IsEnabled() {
+		t.Error("Auth should still be enabled after update")
+	}
+}
+
+func TestAuthManager_UpdateConfig_Nil(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "user",
+			Password: "pass",
+		},
+	})
+	defer am.Close()
+
+	// Update with nil config
+	am.UpdateConfig(nil)
+
+	// Auth should be disabled
+	if am.IsEnabled() {
+		t.Error("Auth should be disabled after nil config update")
+	}
+}
+
+func TestAuthManager_CleanupExpiredSessions(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "user",
+			Password: "pass",
+		},
+	})
+	defer am.Close()
+
+	// Create a session
+	session, err := am.CreateSession("user")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	// Verify session exists
+	_, valid := am.ValidateSession(session.Token)
+	if !valid {
+		t.Error("Session should be valid after creation")
+	}
+
+	// Manually trigger cleanup (sessions should not be cleaned up yet)
+	am.cleanupExpiredSessions()
+
+	// Session should still exist (not expired)
+	_, valid = am.ValidateSession(session.Token)
+	if !valid {
+		t.Error("Session should still be valid after cleanup")
+	}
+}

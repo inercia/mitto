@@ -408,3 +408,382 @@ test.describe('Keepalive', () => {
   });
 });
 
+/**
+ * Client Disconnect/Reconnect Tests
+ *
+ * These tests verify that when a client disconnects and reconnects:
+ * 1. All messages are received after reconnection
+ * 2. Messages are in the correct order
+ * 3. No messages are duplicated
+ * 4. The sync mechanism properly retrieves missed events
+ */
+test.describe('Client Disconnect and Reconnect', () => {
+  test('should receive all messages after page reload', async ({
+    page,
+    helpers,
+    selectors,
+    timeouts,
+  }) => {
+    await helpers.navigateAndWait(page);
+
+    // Create a fresh session for this test
+    await page.locator(selectors.newSessionButton).click();
+    await expect(page.locator(selectors.chatInput)).toBeEnabled({
+      timeout: timeouts.appReady,
+    });
+    await page.waitForTimeout(500);
+
+    // Send multiple messages to create a conversation history
+    const messages = [
+      helpers.uniqueMessage('Reload-1'),
+      helpers.uniqueMessage('Reload-2'),
+      helpers.uniqueMessage('Reload-3'),
+    ];
+
+    for (const msg of messages) {
+      await helpers.sendMessage(page, msg);
+      await helpers.waitForUserMessage(page, msg);
+      // Wait for agent response
+      await helpers.waitForAgentResponse(page);
+      await page.waitForTimeout(500);
+    }
+
+    // Count user messages before reload (more reliable than all messages)
+    const userMessageCountBefore = await page.locator(selectors.userMessage).count();
+    expect(userMessageCountBefore).toBe(messages.length);
+
+    // Reload the page (simulates disconnect/reconnect)
+    await page.reload();
+    await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
+      timeout: timeouts.appReady,
+    });
+
+    // Wait for session to load and messages to appear
+    await page.waitForTimeout(1000);
+
+    // Verify all user messages are still visible
+    for (const msg of messages) {
+      await expect(page.locator(selectors.userMessage).filter({ hasText: msg })).toBeVisible({
+        timeout: timeouts.shortAction,
+      });
+    }
+
+    // Count user messages after reload - should be the same
+    const userMessageCountAfter = await page.locator(selectors.userMessage).count();
+    expect(userMessageCountAfter).toBe(userMessageCountBefore);
+  });
+
+  test('should maintain message order after reconnect', async ({
+    page,
+    helpers,
+    selectors,
+    timeouts,
+  }) => {
+    await helpers.navigateAndWait(page);
+
+    // Create a fresh session
+    await page.locator(selectors.newSessionButton).click();
+    await expect(page.locator(selectors.chatInput)).toBeEnabled({
+      timeout: timeouts.appReady,
+    });
+    await page.waitForTimeout(500);
+
+    // Send messages in a specific order
+    const orderedMessages = [
+      helpers.uniqueMessage('Order-1'),
+      helpers.uniqueMessage('Order-2'),
+      helpers.uniqueMessage('Order-3'),
+    ];
+
+    for (const msg of orderedMessages) {
+      await helpers.sendMessage(page, msg);
+      await helpers.waitForUserMessage(page, msg);
+      await helpers.waitForAgentResponse(page);
+      await page.waitForTimeout(300);
+    }
+
+    // Get message order before reload
+    const getMessageOrder = async () => {
+      const elements = await page.locator(selectors.userMessage).all();
+      const texts: string[] = [];
+      for (const el of elements) {
+        const text = await el.textContent();
+        if (text) texts.push(text.trim());
+      }
+      return texts;
+    };
+
+    const orderBefore = await getMessageOrder();
+
+    // Reload the page
+    await page.reload();
+    await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
+      timeout: timeouts.appReady,
+    });
+    await page.waitForTimeout(1000);
+
+    // Get message order after reload
+    const orderAfter = await getMessageOrder();
+
+    // Verify order is preserved
+    expect(orderAfter.length).toBe(orderBefore.length);
+    for (let i = 0; i < orderBefore.length; i++) {
+      expect(orderAfter[i]).toBe(orderBefore[i]);
+    }
+  });
+
+  test('should not duplicate messages after multiple reconnects', async ({
+    page,
+    helpers,
+    selectors,
+    timeouts,
+  }) => {
+    await helpers.navigateAndWait(page);
+
+    // Create a fresh session
+    await page.locator(selectors.newSessionButton).click();
+    await expect(page.locator(selectors.chatInput)).toBeEnabled({
+      timeout: timeouts.appReady,
+    });
+    await page.waitForTimeout(500);
+
+    // Send a unique message
+    const uniqueMsg = helpers.uniqueMessage('NoDupe');
+    await helpers.sendMessage(page, uniqueMsg);
+    await helpers.waitForUserMessage(page, uniqueMsg);
+    await helpers.waitForAgentResponse(page);
+
+    // Count user messages with this specific text (not all text matches)
+    const countUserMessages = async () => {
+      return await page.locator(selectors.userMessage).filter({ hasText: uniqueMsg }).count();
+    };
+
+    const countBefore = await countUserMessages();
+    expect(countBefore).toBe(1); // Should appear exactly once as a user message
+
+    // Reload multiple times
+    for (let i = 0; i < 3; i++) {
+      await page.reload();
+      await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
+        timeout: timeouts.appReady,
+      });
+      await page.waitForTimeout(500);
+    }
+
+    // Count after multiple reloads - should still be exactly 1 user message
+    const countAfter = await countUserMessages();
+    expect(countAfter).toBe(1); // Should still appear exactly once
+  });
+
+  test('should sync missed events after visibility change', async ({
+    page,
+    helpers,
+    selectors,
+    timeouts,
+  }) => {
+    await helpers.navigateAndWait(page);
+
+    // Create a fresh session
+    await page.locator(selectors.newSessionButton).click();
+    await expect(page.locator(selectors.chatInput)).toBeEnabled({
+      timeout: timeouts.appReady,
+    });
+    await page.waitForTimeout(500);
+
+    // Send initial message
+    const initialMsg = helpers.uniqueMessage('Visibility');
+    await helpers.sendMessage(page, initialMsg);
+    await helpers.waitForUserMessage(page, initialMsg);
+    await helpers.waitForAgentResponse(page);
+
+    // Verify message is visible before visibility change
+    await expect(page.locator(selectors.userMessage).filter({ hasText: initialMsg })).toBeVisible();
+
+    // Simulate going to sleep (hidden)
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'hidden',
+        writable: true,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    await page.waitForTimeout(500);
+
+    // Simulate waking up (visible)
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'visible',
+        writable: true,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    // Wait for sync to complete
+    await page.waitForTimeout(2000);
+
+    // Verify the initial message is still visible after visibility change
+    await expect(page.locator(selectors.userMessage).filter({ hasText: initialMsg })).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+
+    // Verify the app is still functional
+    await expect(page.locator(selectors.chatInput)).toBeEnabled();
+  });
+
+  test('should handle rapid connect/disconnect cycles', async ({
+    page,
+    helpers,
+    selectors,
+    timeouts,
+  }) => {
+    await helpers.navigateAndWait(page);
+
+    // Create a fresh session
+    await page.locator(selectors.newSessionButton).click();
+    await expect(page.locator(selectors.chatInput)).toBeEnabled({
+      timeout: timeouts.appReady,
+    });
+    await page.waitForTimeout(500);
+
+    // Send a message
+    const testMsg = helpers.uniqueMessage('Rapid');
+    await helpers.sendMessage(page, testMsg);
+    await helpers.waitForUserMessage(page, testMsg);
+    await helpers.waitForAgentResponse(page);
+
+    // Count user messages before rapid cycles
+    const countBefore = await page.locator(selectors.userMessage).filter({ hasText: testMsg }).count();
+    expect(countBefore).toBe(1);
+
+    // Simulate rapid visibility changes (like quickly switching apps)
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'visibilityState', {
+          value: 'hidden',
+          writable: true,
+        });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await page.waitForTimeout(100);
+
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'visibilityState', {
+          value: 'visible',
+          writable: true,
+        });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await page.waitForTimeout(100);
+    }
+
+    // Wait for any pending syncs to complete
+    await page.waitForTimeout(2000);
+
+    // User message should still be visible and not duplicated
+    const countAfter = await page.locator(selectors.userMessage).filter({ hasText: testMsg }).count();
+    expect(countAfter).toBe(1);
+
+    // App should still be functional
+    await expect(page.locator(selectors.chatInput)).toBeEnabled();
+  });
+});
+
+/**
+ * Event Sync API Tests
+ *
+ * These tests verify the sync API returns events correctly.
+ */
+test.describe('Event Sync API', () => {
+  test('should return events for a session', async ({
+    request,
+    apiUrl,
+  }) => {
+    // Create a session
+    const createResponse = await request.post(apiUrl('/api/sessions'), {
+      data: { name: `Sync API Test ${Date.now()}` },
+    });
+    expect(createResponse.ok()).toBeTruthy();
+    const { session_id } = await createResponse.json();
+
+    // Get all events
+    const eventsResponse = await request.get(
+      apiUrl(`/api/sessions/${session_id}/events`)
+    );
+    expect(eventsResponse.ok()).toBeTruthy();
+    const events = await eventsResponse.json();
+
+    // Should return an array of events
+    expect(Array.isArray(events)).toBeTruthy();
+  });
+
+  test('should return events in correct order', async ({
+    request,
+    apiUrl,
+  }) => {
+    // Create a session
+    const createResponse = await request.post(apiUrl('/api/sessions'), {
+      data: { name: `Order API Test ${Date.now()}` },
+    });
+    expect(createResponse.ok()).toBeTruthy();
+    const { session_id } = await createResponse.json();
+
+    // Get events in ascending order (default)
+    const ascResponse = await request.get(
+      apiUrl(`/api/sessions/${session_id}/events?order=asc`)
+    );
+    expect(ascResponse.ok()).toBeTruthy();
+    const ascEvents = await ascResponse.json();
+
+    // Get events in descending order
+    const descResponse = await request.get(
+      apiUrl(`/api/sessions/${session_id}/events?order=desc`)
+    );
+    expect(descResponse.ok()).toBeTruthy();
+    const descEvents = await descResponse.json();
+
+    // Both should have the same number of events
+    expect(ascEvents.length).toBe(descEvents.length);
+
+    // If there are multiple events, verify order is reversed
+    if (ascEvents.length > 1) {
+      expect(ascEvents[0].seq).toBeLessThan(ascEvents[ascEvents.length - 1].seq);
+      expect(descEvents[0].seq).toBeGreaterThan(descEvents[descEvents.length - 1].seq);
+    }
+  });
+
+  test('should limit number of returned events', async ({
+    request,
+    apiUrl,
+    helpers,
+  }) => {
+    // Create a session via API
+    const createResponse = await request.post(apiUrl('/api/sessions'), {
+      data: { name: `Limit Test ${Date.now()}` },
+    });
+    expect(createResponse.ok()).toBeTruthy();
+    const { session_id } = await createResponse.json();
+
+    // Get limited events
+    const limitedResponse = await request.get(
+      apiUrl(`/api/sessions/${session_id}/events?limit=2`)
+    );
+    expect(limitedResponse.ok()).toBeTruthy();
+    const limitedEvents = await limitedResponse.json();
+
+    // Should return at most 2 events
+    expect(limitedEvents.length).toBeLessThanOrEqual(2);
+
+    // Get all events
+    const allResponse = await request.get(
+      apiUrl(`/api/sessions/${session_id}/events`)
+    );
+    expect(allResponse.ok()).toBeTruthy();
+    const allEvents = await allResponse.json();
+
+    // Both should return arrays
+    expect(Array.isArray(limitedEvents)).toBeTruthy();
+    expect(Array.isArray(allEvents)).toBeTruthy();
+  });
+});
+
