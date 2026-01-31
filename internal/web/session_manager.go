@@ -40,11 +40,11 @@ type SessionManager struct {
 	// onWorkspaceSave is called when workspaces are modified (only if fromCLI is false).
 	onWorkspaceSave WorkspaceSaveFunc
 
-	// Legacy single-workspace fields (used if no workspaces configured)
-	acpCommand  string
-	acpServer   string
+	// autoApprove enables automatic approval of permission requests.
 	autoApprove bool
-	store       *session.Store
+
+	// store is the session store for persistence.
+	store *session.Store
 
 	// workspaceRCCache provides cached access to workspace-specific .mittorc files.
 	workspaceRCCache *config.WorkspaceRCCache
@@ -53,14 +53,20 @@ type SessionManager struct {
 	globalConversations *config.ConversationsConfig
 }
 
-// NewSessionManager creates a new session manager with legacy single-workspace configuration.
+// NewSessionManager creates a new session manager with a single workspace configuration.
+// This is used when running from CLI with explicit --acp-command and --acp-server flags.
 func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *slog.Logger) *SessionManager {
+	// Create a default workspace from the provided configuration
+	defaultWS := &config.WorkspaceSettings{
+		ACPCommand: acpCommand,
+		ACPServer:  acpServer,
+		WorkingDir: "", // Will be set at session creation time
+	}
 	return &SessionManager{
 		sessions:         make(map[string]*BackgroundSession),
 		workspaces:       make(map[string]*config.WorkspaceSettings),
 		logger:           logger,
-		acpCommand:       acpCommand,
-		acpServer:        acpServer,
+		defaultWorkspace: defaultWS,
 		autoApprove:      autoApprove,
 		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
 	}
@@ -98,9 +104,6 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		sm.workspaces[ws.WorkingDir] = ws
 		if sm.defaultWorkspace == nil {
 			sm.defaultWorkspace = ws
-			// Also set legacy fields for backward compatibility
-			sm.acpCommand = ws.ACPCommand
-			sm.acpServer = ws.ACPServer
 		}
 	}
 
@@ -127,8 +130,6 @@ func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
 		sm.workspaces[ws.WorkingDir] = ws
 		if sm.defaultWorkspace == nil {
 			sm.defaultWorkspace = ws
-			sm.acpCommand = ws.ACPCommand
-			sm.acpServer = ws.ACPServer
 		}
 	}
 
@@ -153,13 +154,9 @@ func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 	defer sm.mu.RUnlock()
 
 	if len(sm.workspaces) == 0 {
-		// Only return legacy single workspace if it has valid configuration
-		if sm.acpCommand != "" {
-			return []config.WorkspaceSettings{{
-				ACPServer:  sm.acpServer,
-				ACPCommand: sm.acpCommand,
-				WorkingDir: "", // Will be set at session creation time
-			}}
+		// Return default workspace if it has valid configuration
+		if sm.defaultWorkspace != nil && sm.defaultWorkspace.ACPCommand != "" {
+			return []config.WorkspaceSettings{*sm.defaultWorkspace}
 		}
 		// No valid workspace configuration - return empty slice
 		return []config.WorkspaceSettings{}
@@ -184,19 +181,11 @@ func (sm *SessionManager) GetWorkspace(workingDir string) *config.WorkspaceSetti
 }
 
 // GetDefaultWorkspace returns the default workspace.
+// Returns nil if no default workspace is configured.
 func (sm *SessionManager) GetDefaultWorkspace() *config.WorkspaceSettings {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-
-	if sm.defaultWorkspace != nil {
-		return sm.defaultWorkspace
-	}
-	// Return legacy config as workspace
-	return &config.WorkspaceSettings{
-		ACPServer:  sm.acpServer,
-		ACPCommand: sm.acpCommand,
-		WorkingDir: "",
-	}
+	return sm.defaultWorkspace
 }
 
 // GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
@@ -237,11 +226,10 @@ func (sm *SessionManager) AddWorkspace(ws config.WorkspaceSettings) {
 	// Add the workspace
 	sm.workspaces[ws.WorkingDir] = &ws
 
-	// Set as default if it's the first one
-	if sm.defaultWorkspace == nil {
+	// Set as default if there's no default or if the current default has no WorkingDir
+	// (which indicates it was created from CLI flags without a specific directory)
+	if sm.defaultWorkspace == nil || sm.defaultWorkspace.WorkingDir == "" {
 		sm.defaultWorkspace = &ws
-		sm.acpCommand = ws.ACPCommand
-		sm.acpServer = ws.ACPServer
 	}
 
 	if sm.logger != nil {
@@ -293,8 +281,6 @@ func (sm *SessionManager) RemoveWorkspace(workingDir string) {
 		sm.defaultWorkspace = nil
 		for _, ws := range sm.workspaces {
 			sm.defaultWorkspace = ws
-			sm.acpCommand = ws.ACPCommand
-			sm.acpServer = ws.ACPServer
 			break
 		}
 	}
@@ -359,9 +345,8 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	store := sm.store
 	globalConv := sm.globalConversations
 
-	// Determine ACP command and server
-	acpCommand := sm.acpCommand
-	acpServer := sm.acpServer
+	// Determine ACP command and server from workspace configuration
+	var acpCommand, acpServer string
 
 	if workspace != nil {
 		acpCommand = workspace.ACPCommand
@@ -372,6 +357,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	} else if ws, ok := sm.workspaces[workingDir]; ok {
 		acpCommand = ws.ACPCommand
 		acpServer = ws.ACPServer
+	} else if sm.defaultWorkspace != nil {
+		acpCommand = sm.defaultWorkspace.ACPCommand
+		acpServer = sm.defaultWorkspace.ACPServer
 	}
 	sm.mu.Unlock()
 
@@ -479,11 +467,13 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	globalConv := sm.globalConversations
 
 	// Determine ACP command and server from workspace configuration
-	acpCommand := sm.acpCommand
-	acpServer := sm.acpServer
+	var acpCommand, acpServer string
 	if ws, ok := sm.workspaces[workingDir]; ok {
 		acpCommand = ws.ACPCommand
 		acpServer = ws.ACPServer
+	} else if sm.defaultWorkspace != nil {
+		acpCommand = sm.defaultWorkspace.ACPCommand
+		acpServer = sm.defaultWorkspace.ACPServer
 	}
 
 	// Get session metadata for ACP command and ACP session ID

@@ -14,12 +14,16 @@ func TestSessionManager_NewSessionManager(t *testing.T) {
 		t.Fatal("NewSessionManager returned nil")
 	}
 
-	if sm.acpCommand != "echo test" {
-		t.Errorf("acpCommand = %q, want %q", sm.acpCommand, "echo test")
+	// Check default workspace is set correctly
+	ws := sm.GetDefaultWorkspace()
+	if ws == nil {
+		t.Fatal("GetDefaultWorkspace returned nil")
 	}
-
-	if sm.acpServer != "test-server" {
-		t.Errorf("acpServer = %q, want %q", sm.acpServer, "test-server")
+	if ws.ACPCommand != "echo test" {
+		t.Errorf("defaultWorkspace.ACPCommand = %q, want %q", ws.ACPCommand, "echo test")
+	}
+	if ws.ACPServer != "test-server" {
+		t.Errorf("defaultWorkspace.ACPServer = %q, want %q", ws.ACPServer, "test-server")
 	}
 
 	if !sm.autoApprove {
@@ -184,13 +188,8 @@ func TestNewSessionManagerWithOptions(t *testing.T) {
 	if sm.defaultWorkspace.ACPServer != "server1" {
 		t.Errorf("defaultWorkspace.ACPServer = %q, want %q", sm.defaultWorkspace.ACPServer, "server1")
 	}
-
-	// Legacy fields should be set from first workspace
-	if sm.acpCommand != "echo server1" {
-		t.Errorf("acpCommand = %q, want %q", sm.acpCommand, "echo server1")
-	}
-	if sm.acpServer != "server1" {
-		t.Errorf("acpServer = %q, want %q", sm.acpServer, "server1")
+	if sm.defaultWorkspace.ACPCommand != "echo server1" {
+		t.Errorf("defaultWorkspace.ACPCommand = %q, want %q", sm.defaultWorkspace.ACPCommand, "echo server1")
 	}
 }
 

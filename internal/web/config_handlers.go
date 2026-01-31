@@ -1,181 +1,194 @@
 package web
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/secrets"
 )
 
-// configValidationError represents a validation error with HTTP status code.
-type configValidationError struct {
-	StatusCode int
-	Message    string
-	Details    map[string]interface{}
+// ConfigSaveRequest represents the request body for saving configuration.
+type ConfigSaveRequest struct {
+	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
+	ACPServers []struct {
+		Name    string                `json:"name"`
+		Command string                `json:"command"`
+		Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
+	} `json:"acp_servers"`
+	// Prompts is the top-level list of global prompts
+	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
+	Web     struct {
+		Host         string `json:"host,omitempty"`
+		ExternalPort int    `json:"external_port,omitempty"`
+		Auth         *struct {
+			Simple *struct {
+				Username string `json:"username"`
+				Password string `json:"password"`
+			} `json:"simple,omitempty"`
+		} `json:"auth,omitempty"`
+		Hooks *configPkg.WebHooks `json:"hooks,omitempty"`
+	} `json:"web"`
+	UI *configPkg.UIConfig `json:"ui,omitempty"`
 }
 
-func (e *configValidationError) Error() string {
-	return e.Message
-}
-
-// writeConfigError writes a JSON error response for config validation errors.
-func (s *Server) writeConfigError(w http.ResponseWriter, err *configValidationError) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(err.StatusCode)
-	if err.Details != nil {
-		json.NewEncoder(w).Encode(err.Details)
-	} else {
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Message})
+// handleConfig handles GET and POST /api/config.
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetConfig(w, r)
+	case http.MethodPost:
+		s.handleSaveConfig(w, r)
+	default:
+		methodNotAllowed(w)
 	}
 }
 
-// validateConfigRequest validates the basic structure of a ConfigSaveRequest.
-// Returns nil if valid, or a configValidationError if invalid.
-func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidationError {
-	// Validate: at least one workspace
-	if len(req.Workspaces) == 0 {
-		return &configValidationError{
-			StatusCode: http.StatusBadRequest,
-			Message:    "At least one workspace is required",
-		}
+// handleGetConfig handles GET {prefix}/api/config.
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	// Build complete config response including workspaces and ACP servers
+	response := map[string]interface{}{
+		"workspaces":      s.sessionManager.GetWorkspaces(),
+		"acp_servers":     []map[string]string{},
+		"web":             configPkg.WebConfig{},
+		"config_readonly": s.config.ConfigReadOnly,
+		"api_prefix":      s.apiPrefix, // Include API prefix for frontend to use
 	}
 
-	// Validate: at least one ACP server
-	if len(req.ACPServers) == 0 {
-		return &configValidationError{
-			StatusCode: http.StatusBadRequest,
-			Message:    "At least one ACP server is required",
-		}
+	// Include RC file path if config is from an RC file
+	if s.config.RCFilePath != "" {
+		response["rc_file_path"] = s.config.RCFilePath
 	}
 
-	// Validate ACP servers
-	acpServerNames := make(map[string]bool)
-	for _, srv := range req.ACPServers {
-		if srv.Name == "" {
-			return &configValidationError{
-				StatusCode: http.StatusBadRequest,
-				Message:    "ACP server name cannot be empty",
+	if s.config.MittoConfig != nil {
+		response["web"] = s.config.MittoConfig.Web
+		response["ui"] = s.config.MittoConfig.UI
+		response["prompts"] = s.config.MittoConfig.Prompts
+
+		// Convert ACP servers to JSON-friendly format (including per-server prompts)
+		acpServers := make([]map[string]interface{}, len(s.config.MittoConfig.ACPServers))
+		for i, srv := range s.config.MittoConfig.ACPServers {
+			acpServers[i] = map[string]interface{}{
+				"name":    srv.Name,
+				"command": srv.Command,
+			}
+			// Include prompts if present
+			if len(srv.Prompts) > 0 {
+				acpServers[i]["prompts"] = srv.Prompts
 			}
 		}
-		if srv.Command == "" {
-			return &configValidationError{
-				StatusCode: http.StatusBadRequest,
-				Message:    fmt.Sprintf("ACP server '%s' command cannot be empty", srv.Name),
-			}
-		}
-		if acpServerNames[srv.Name] {
-			return &configValidationError{
-				StatusCode: http.StatusBadRequest,
-				Message:    fmt.Sprintf("Duplicate ACP server name: %s", srv.Name),
-			}
-		}
-		acpServerNames[srv.Name] = true
+		response["acp_servers"] = acpServers
 	}
 
-	// Validate workspaces reference valid ACP servers
-	for _, ws := range req.Workspaces {
-		if ws.WorkingDir == "" {
-			return &configValidationError{
-				StatusCode: http.StatusBadRequest,
-				Message:    "Workspace path cannot be empty",
-			}
-		}
-		if !acpServerNames[ws.ACPServer] {
-			return &configValidationError{
-				StatusCode: http.StatusBadRequest,
-				Message:    fmt.Sprintf("Workspace '%s' references unknown ACP server: %s", ws.WorkingDir, ws.ACPServer),
-			}
-		}
-	}
-
-	// Validate auth settings
-	if req.Web.Auth != nil && req.Web.Auth.Simple != nil {
-		if errMsg := ValidateUsername(req.Web.Auth.Simple.Username); errMsg != "" {
-			return &configValidationError{
-				StatusCode: http.StatusBadRequest,
-				Message:    errMsg,
-			}
-		}
-		if errMsg := ValidatePassword(req.Web.Auth.Simple.Password); errMsg != "" {
-			return &configValidationError{
-				StatusCode: http.StatusBadRequest,
-				Message:    errMsg,
-			}
-		}
-	}
-
-	return nil
+	writeJSONOK(w, response)
 }
 
-// checkWorkspaceConflicts checks if any workspaces being removed have conversations.
-// Returns nil if no conflicts, or a configValidationError if a workspace is in use.
-func (s *Server) checkWorkspaceConflicts(req *ConfigSaveRequest) *configValidationError {
-	currentWorkspaces := s.sessionManager.GetWorkspaces()
-
-	// Build set of new workspace directories
-	newWorkspaceDirs := make(map[string]bool)
-	for _, ws := range req.Workspaces {
-		newWorkspaceDirs[ws.WorkingDir] = true
+// handleSaveConfig handles POST /api/config.
+func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
+	// Reject saves when config is read-only (loaded from --config file)
+	if s.config.ConfigReadOnly {
+		http.Error(w, "Configuration is read-only (loaded from config file)", http.StatusForbidden)
+		return
 	}
 
-	// Find workspaces being removed
-	var removedWorkspaces []string
-	for _, ws := range currentWorkspaces {
-		if !newWorkspaceDirs[ws.WorkingDir] {
-			removedWorkspaces = append(removedWorkspaces, ws.WorkingDir)
-		}
+	var req ConfigSaveRequest
+	if !parseJSONBody(w, r, &req) {
+		return
 	}
 
-	if len(removedWorkspaces) == 0 {
-		return nil
+	// Validate request structure
+	if validationErr := s.validateConfigRequest(&req); validationErr != nil {
+		s.writeConfigError(w, validationErr)
+		return
 	}
 
-	// Check if any removed workspaces have conversations
-	// Use the server's session store (owned by the server, not closed by this handler)
-	store := s.Store()
-	if store == nil {
-		return &configValidationError{
-			StatusCode: http.StatusInternalServerError,
-			Message:    "Session store not available",
-		}
+	// Check for workspace conflicts (workspaces being removed that have conversations)
+	if conflictErr := s.checkWorkspaceConflicts(&req); conflictErr != nil {
+		s.writeConfigError(w, conflictErr)
+		return
 	}
 
-	sessions, err := store.List()
+	// Build new settings (also stores password in Keychain on macOS)
+	settings, err := s.buildNewSettings(&req)
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Error("Failed to list sessions", "error", err)
+			s.logger.Error("Failed to build settings", "error", err)
 		}
-		return &configValidationError{
-			StatusCode: http.StatusInternalServerError,
-			Message:    "Failed to check workspace usage",
-		}
+		http.Error(w, "Failed to build settings: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	// Check each removed workspace for conversations
-	for _, removedDir := range removedWorkspaces {
-		var conversationCount int
-		for _, sess := range sessions {
-			if sess.WorkingDir == removedDir {
-				conversationCount++
-			}
+	// Save settings to disk
+	if err := configPkg.SaveSettings(settings); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to save settings", "error", err)
 		}
-		if conversationCount > 0 {
-			return &configValidationError{
-				StatusCode: http.StatusConflict,
-				Message:    fmt.Sprintf("Cannot remove workspace '%s': %d conversation(s) are using it", removedDir, conversationCount),
-				Details: map[string]interface{}{
-					"error":              "workspace_in_use",
-					"message":            fmt.Sprintf("Cannot remove workspace '%s': %d conversation(s) are using it", removedDir, conversationCount),
-					"workspace":          removedDir,
-					"conversation_count": conversationCount,
-				},
-			}
-		}
+		http.Error(w, "Failed to save settings: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	return nil
+	// Apply changes to running server
+	s.applyConfigChanges(&req, settings)
+
+	// Build response with applied changes info
+	writeJSONOK(w, map[string]interface{}{
+		"success": true,
+		"message": "Configuration saved successfully",
+		"applied": map[string]interface{}{
+			"external_access_enabled": s.IsExternalListenerRunning(),
+			"external_port":           s.GetExternalPort(),
+			"auth_enabled":            s.authManager != nil && s.authManager.IsEnabled(),
+		},
+	})
+}
+
+// handleImprovePrompt handles POST /api/aux/improve-prompt.
+// It uses the auxiliary ACP session to improve a user's prompt.
+func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		Prompt string `json:"prompt"`
+	}
+	if !parseJSONBody(w, r, &req) {
+		return
+	}
+
+	if req.Prompt == "" {
+		http.Error(w, "Prompt is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if auxiliary manager is initialized
+	if auxiliary.GetManager() == nil {
+		s.logger.Error("Auxiliary manager not initialized")
+		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Create a context with timeout for the auxiliary request
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	// Call the auxiliary package to improve the prompt
+	improved, err := auxiliary.ImprovePrompt(ctx, req.Prompt)
+	if err != nil {
+		s.logger.Error("Failed to improve prompt", "error", err)
+		http.Error(w, "Failed to improve prompt", http.StatusInternalServerError)
+		return
+	}
+
+	// Return the improved prompt
+	writeJSONOK(w, map[string]string{
+		"improved_prompt": improved,
+	})
 }
 
 // buildNewSettings builds the new settings from a ConfigSaveRequest.
@@ -450,25 +463,4 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 	}
 
 	// Case 4: Auth was disabled and still disabled -> nothing to do
-}
-
-// ExternalStatusResponse represents the response from GET /api/external-status.
-type ExternalStatusResponse struct {
-	Enabled bool `json:"enabled"`
-	Port    int  `json:"port"`
-}
-
-// handleExternalStatus handles GET /api/external-status.
-// Returns the current status of the external listener.
-func (s *Server) handleExternalStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ExternalStatusResponse{
-		Enabled: s.IsExternalListenerRunning(),
-		Port:    s.GetExternalPort(),
-	})
 }

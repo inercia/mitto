@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -12,9 +13,8 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
-	"github.com/gorilla/websocket"
 
-	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -31,11 +31,10 @@ func generateClientID() string {
 // SessionWSClient represents a WebSocket client connected to a specific session.
 type SessionWSClient struct {
 	server    *Server
-	conn      *websocket.Conn
-	send      chan []byte
+	wsConn    *WSConn // Shared WebSocket connection wrapper
 	sessionID string
-	clientID  string // Unique identifier for this client (for sender identification)
-	clientIP  string // For connection tracking cleanup
+	clientID  string       // Unique identifier for this client (for sender identification)
+	logger    *slog.Logger // Client-scoped logger with session_id and client_id context
 
 	// The background session this client is observing
 	bgSession *BackgroundSession
@@ -99,17 +98,29 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	clientID := generateClientID()
+
+	// Create client-scoped logger with session and client context
+	clientLogger := logging.WithClient(s.logger, clientID, sessionID)
+
+	// Create shared WebSocket connection wrapper
+	wsConn := NewWSConn(WSConnConfig{
+		Conn:     conn,
+		Config:   s.wsSecurityConfig,
+		Logger:   clientLogger,
+		ClientIP: clientIP,
+		Tracker:  s.connectionTracker,
+	})
+
 	client := &SessionWSClient{
 		server:         s,
-		conn:           conn,
-		send:           make(chan []byte, 256),
+		wsConn:         wsConn,
 		sessionID:      sessionID,
 		clientID:       clientID,
+		logger:         clientLogger,
 		ctx:            ctx,
 		cancel:         cancel,
 		store:          store,
 		permissionChan: make(chan acp.RequestPermissionResponse, 1),
-		clientIP:       clientIP,
 	}
 
 	// Try to get existing background session first
@@ -127,13 +138,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 			}
 			bs, err = s.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
 			if err != nil {
-				if s.logger != nil {
-					s.logger.Error("Failed to resume session", "error", err, "session_id", sessionID)
+				if clientLogger != nil {
+					clientLogger.Error("Failed to resume session", "error", err)
 				}
 				// Continue without a running session - client can still view history
-			} else if s.logger != nil {
-				s.logger.Info("Resumed session for WebSocket client",
-					"session_id", sessionID,
+			} else if clientLogger != nil {
+				clientLogger.Info("Resumed session for WebSocket client",
 					"acp_id", bs.GetACPID())
 			}
 		}
@@ -143,10 +153,8 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	if bs != nil {
 		client.bgSession = bs
 		bs.AddObserver(client)
-		if s.logger != nil {
-			s.logger.Debug("SessionWSClient attached to session",
-				"session_id", sessionID,
-				"client_id", clientID,
+		if clientLogger != nil {
+			clientLogger.Debug("SessionWSClient attached to session",
 				"observer_count", bs.ObserverCount())
 		}
 	}
@@ -179,17 +187,14 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			data["working_dir"] = meta.WorkingDir
 			data["created_at"] = meta.CreatedAt.Format(time.RFC3339)
 			data["status"] = meta.Status
-			c.server.logger.Info("Sending connected message with working_dir",
-				"session_id", c.sessionID,
-				"working_dir", meta.WorkingDir)
-		} else {
-			c.server.logger.Warn("Failed to get metadata for connected message",
-				"session_id", c.sessionID,
-				"error", err)
+			if c.logger != nil {
+				c.logger.Info("Sending connected message", "working_dir", meta.WorkingDir)
+			}
+		} else if c.logger != nil {
+			c.logger.Warn("Failed to get metadata for connected message", "error", err)
 		}
-	} else {
-		c.server.logger.Warn("No store for connected message",
-			"session_id", c.sessionID)
+	} else if c.logger != nil {
+		c.logger.Warn("No store for connected message")
 	}
 
 	c.sendMessage(WSMsgTypeConnected, data)
@@ -197,41 +202,35 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 
 func (c *SessionWSClient) readPump() {
 	defer func() {
-		if c.server.logger != nil {
+		if c.logger != nil {
 			observerCount := 0
 			if c.bgSession != nil {
 				observerCount = c.bgSession.ObserverCount()
 			}
-			c.server.logger.Debug("SessionWSClient readPump exiting",
-				"session_id", c.sessionID,
-				"client_id", c.clientID,
+			c.logger.Debug("SessionWSClient readPump exiting",
 				"observer_count_before", observerCount)
 		}
 		c.cancel()
 		if c.bgSession != nil {
 			c.bgSession.RemoveObserver(c)
 		}
-		// Release connection slot
-		if c.server.connectionTracker != nil && c.clientIP != "" {
-			c.server.connectionTracker.Remove(c.clientIP)
-		}
+		// Release connection slot via WSConn
+		c.wsConn.ReleaseConnectionSlot()
 		// Note: Don't close c.store - it's owned by the server and shared across handlers
-		c.conn.Close()
-		if c.server.logger != nil {
-			c.server.logger.Debug("SessionWSClient readPump cleanup complete",
-				"session_id", c.sessionID,
-				"client_id", c.clientID)
+		c.wsConn.Close()
+		if c.logger != nil {
+			c.logger.Debug("SessionWSClient readPump cleanup complete")
 		}
 	}()
 
 	for {
-		_, message, err := c.conn.ReadMessage()
+		message, err := c.wsConn.ReadMessage()
 		if err != nil {
 			return
 		}
 
-		var msg WSMessage
-		if err := json.Unmarshal(message, &msg); err != nil {
+		msg, err := ParseMessage(message)
+		if err != nil {
 			c.sendError("Invalid message format")
 			continue
 		}
@@ -241,32 +240,8 @@ func (c *SessionWSClient) readPump() {
 }
 
 func (c *SessionWSClient) writePump() {
-	// Create ping ticker using server's WebSocket security config
-	pingPeriod := c.server.wsSecurityConfig.PingPeriod
-	ticker := time.NewTicker(pingPeriod)
-	defer func() {
-		ticker.Stop()
-		c.conn.Close()
-	}()
-
-	for {
-		select {
-		case message, ok := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(c.server.wsSecurityConfig.WriteWait))
-			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-			c.conn.WriteMessage(websocket.TextMessage, message)
-		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(c.server.wsSecurityConfig.WriteWait))
-			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return
-			}
-		case <-c.ctx.Done():
-			return
-		}
-	}
+	// Use WSConn's WritePump with our context
+	c.wsConn.WritePump(c.ctx, nil)
 }
 
 func (c *SessionWSClient) handleMessage(msg WSMessage) {
@@ -319,16 +294,6 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 	}
 }
 
-//nolint:unused // convenience wrapper for future use
-func (c *SessionWSClient) handlePrompt(message string) {
-	c.handlePromptWithMeta(message, "", nil)
-}
-
-//nolint:unused // convenience wrapper for future use
-func (c *SessionWSClient) handlePromptWithID(message string, promptID string) {
-	c.handlePromptWithMeta(message, promptID, nil)
-}
-
 func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, imageIDs []string) {
 	if c.bgSession == nil {
 		c.sendError("Session not running. Create or resume the session first.")
@@ -367,8 +332,19 @@ func (c *SessionWSClient) handleCancel() {
 }
 
 func (c *SessionWSClient) handlePermissionAnswer(optionID string, cancel bool) {
-	if c.bgSession != nil {
-		c.bgSession.AnswerPermission(optionID, cancel)
+	var resp acp.RequestPermissionResponse
+	if cancel {
+		resp.Outcome.Cancelled = &acp.RequestPermissionOutcomeCancelled{}
+	} else {
+		resp.Outcome.Selected = &acp.RequestPermissionOutcomeSelected{
+			OptionId: acp.PermissionOptionId(optionID),
+		}
+	}
+
+	// Send to our own permission channel (non-blocking)
+	select {
+	case c.permissionChan <- resp:
+	default:
 	}
 }
 
@@ -416,62 +392,37 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64) {
 // sessionNeedsTitle returns true if the session has no title yet and needs auto-title generation.
 // Returns false if the session already has a title (either auto-generated or user-set).
 func (c *SessionWSClient) sessionNeedsTitle() bool {
-	if c.store == nil || c.sessionID == "" {
-		return false
-	}
-	meta, err := c.store.GetMetadata(c.sessionID)
-	if err != nil {
-		return false
-	}
-	return meta.Name == ""
+	return SessionNeedsTitle(c.store, c.sessionID)
 }
 
 func (c *SessionWSClient) generateAndSetTitle(initialMessage string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	GenerateAndSetTitle(TitleGenerationConfig{
+		Store:     c.store,
+		SessionID: c.sessionID,
+		Message:   initialMessage,
+		Logger:    c.server.logger,
+		OnTitleGenerated: func(sessionID, title string) {
+			// Notify this client
+			c.sendMessage(WSMsgTypeSessionRenamed, map[string]string{
+				"session_id": sessionID,
+				"name":       title,
+			})
 
-	title, err := auxiliary.GenerateTitle(ctx, initialMessage)
-	if err != nil || title == "" {
-		return
-	}
-
-	if c.store != nil {
-		if err := c.store.UpdateMetadata(c.sessionID, func(m *session.Metadata) {
-			m.Name = title
-		}); err != nil {
-			return
-		}
-	}
-
-	// Notify this client
-	c.sendMessage(WSMsgTypeSessionRenamed, map[string]string{
-		"session_id": c.sessionID,
-		"name":       title,
-	})
-
-	// Broadcast to global events
-	c.server.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
-		"session_id": c.sessionID,
-		"name":       title,
+			// Broadcast to global events
+			c.server.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
+				"session_id": sessionID,
+				"name":       title,
+			})
+		},
 	})
 }
 
 func (c *SessionWSClient) sendMessage(msgType string, data interface{}) {
-	var dataJSON json.RawMessage
-	if data != nil {
-		dataJSON, _ = json.Marshal(data)
-	}
-	msg := WSMessage{Type: msgType, Data: dataJSON}
-	msgBytes, _ := json.Marshal(msg)
-
-	select {
-	case c.send <- msgBytes:
-	default:
-	}
+	c.wsConn.SendMessage(msgType, data)
 }
 
 func (c *SessionWSClient) sendError(message string) {
-	c.sendMessage(WSMsgTypeError, map[string]interface{}{
+	c.wsConn.SendMessage(WSMsgTypeError, map[string]interface{}{
 		"message":    message,
 		"session_id": c.sessionID,
 	})

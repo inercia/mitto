@@ -13,6 +13,7 @@ import (
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -43,18 +44,10 @@ type BackgroundSession struct {
 	observersMu sync.RWMutex
 	observers   map[SessionObserver]struct{}
 
-	// Legacy client support (for backward compatibility during migration)
-	clientMu sync.RWMutex
-	client   *WSClient
-
 	// Prompt state
 	promptMu    sync.Mutex
 	isPrompting bool
 	promptCount int
-
-	// Permission handling when no client is attached
-	permissionMu   sync.Mutex
-	permissionChan chan acp.RequestPermissionResponse
 
 	// Configuration
 	autoApprove bool
@@ -96,7 +89,6 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 		logger:          config.Logger,
 		agentMsgBuffer:  &agentMessageBuffer{},
 		agentThoughtBuf: &agentMessageBuffer{},
-		permissionChan:  make(chan acp.RequestPermissionResponse, 1),
 		observers:       make(map[SessionObserver]struct{}),
 		processors:      config.Processors,
 		isFirstPrompt:   true, // New session starts with first prompt pending
@@ -116,6 +108,11 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 			config.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
 				meta.Name = config.SessionName
 			})
+		}
+
+		// Create session-scoped logger with context
+		if bs.logger != nil {
+			bs.logger = logging.WithSessionContext(bs.logger, bs.persistedID, config.WorkingDir, config.ACPServer)
 		}
 	}
 
@@ -152,15 +149,20 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Create session-scoped logger with context
+	sessionLogger := config.Logger
+	if sessionLogger != nil {
+		sessionLogger = logging.WithSessionContext(sessionLogger, config.PersistedID, config.WorkingDir, config.ACPServer)
+	}
+
 	bs := &BackgroundSession{
 		persistedID:     config.PersistedID,
 		ctx:             ctx,
 		cancel:          cancel,
 		autoApprove:     config.AutoApprove,
-		logger:          config.Logger,
+		logger:          sessionLogger,
 		agentMsgBuffer:  &agentMessageBuffer{},
 		agentThoughtBuf: &agentMessageBuffer{},
-		permissionChan:  make(chan acp.RequestPermissionResponse, 1),
 		observers:       make(map[SessionObserver]struct{}),
 		isResumed:       true, // Mark as resumed session
 		store:           config.Store,
@@ -252,34 +254,7 @@ func (bs *BackgroundSession) CreatedAt() time.Time {
 	return time.Time{}
 }
 
-// AttachClient attaches a WebSocket client to receive real-time updates.
-// Only one client can be attached at a time.
-func (bs *BackgroundSession) AttachClient(client *WSClient) {
-	bs.clientMu.Lock()
-	defer bs.clientMu.Unlock()
-	bs.client = client
-}
-
-// DetachClient detaches the current client.
-func (bs *BackgroundSession) DetachClient() {
-	bs.clientMu.Lock()
-	defer bs.clientMu.Unlock()
-	bs.client = nil
-}
-
-// GetAttachedClient returns the currently attached client, or nil.
-func (bs *BackgroundSession) GetAttachedClient() *WSClient {
-	bs.clientMu.RLock()
-	defer bs.clientMu.RUnlock()
-	return bs.client
-}
-
-// HasAttachedClient returns true if a client is currently attached.
-func (bs *BackgroundSession) HasAttachedClient() bool {
-	return bs.GetAttachedClient() != nil
-}
-
-// --- Observer Management (new architecture) ---
+// --- Observer Management ---
 
 // AddObserver adds an observer to receive session events.
 // Multiple observers can be added to the same session.
@@ -291,7 +266,7 @@ func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 	}
 	bs.observers[observer] = struct{}{}
 	if bs.logger != nil {
-		bs.logger.Debug("Observer added", "session_id", bs.persistedID, "observer_count", len(bs.observers))
+		bs.logger.Debug("Observer added", "observer_count", len(bs.observers))
 	}
 }
 
@@ -301,7 +276,7 @@ func (bs *BackgroundSession) RemoveObserver(observer SessionObserver) {
 	defer bs.observersMu.Unlock()
 	delete(bs.observers, observer)
 	if bs.logger != nil {
-		bs.logger.Debug("Observer removed", "session_id", bs.persistedID, "observer_count", len(bs.observers))
+		bs.logger.Debug("Observer removed", "observer_count", len(bs.observers))
 	}
 }
 
@@ -323,7 +298,7 @@ func (bs *BackgroundSession) notifyObservers(fn func(SessionObserver)) {
 	defer bs.observersMu.RUnlock()
 	observerCount := len(bs.observers)
 	if observerCount > 1 && bs.logger != nil {
-		bs.logger.Debug("Notifying multiple observers", "count", observerCount, "session_id", bs.persistedID)
+		bs.logger.Debug("Notifying multiple observers", "count", observerCount)
 	}
 	for observer := range bs.observers {
 		fn(observer)
@@ -394,7 +369,6 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 
 	if bs.logger != nil {
 		bs.logger.Info("Injecting conversation history into resumed session",
-			"session_id", bs.persistedID,
 			"history_length", len(history))
 	}
 
@@ -609,10 +583,6 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	}
 	bs.promptMu.Unlock()
 
-	// Check if session needs auto-title generation (before any state changes)
-	// Only generate title if metadata.Name is empty
-	shouldGenerateTitle := bs.NeedsTitle()
-
 	// Load images and build content blocks
 	var imageRefs []session.ImageRef
 	var contentBlocks []acp.ContentBlock
@@ -715,25 +685,6 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				o.OnPromptComplete(eventCount)
 			})
 		}
-
-		// Notify legacy attached client
-		client := bs.GetAttachedClient()
-		if client != nil {
-			if err != nil {
-				client.sendError("Prompt failed: " + err.Error())
-			} else {
-				// Include event_count so frontend can update lastSeq for sync
-				client.sendMessage(WSMsgTypePromptComplete, map[string]interface{}{
-					"session_id":  bs.persistedID,
-					"event_count": bs.GetEventCount(),
-				})
-
-				// Auto-generate title if session has no title yet
-				if shouldGenerateTitle && bs.persistedID != "" {
-					client.generateAndSetTitle(message, bs.persistedID)
-				}
-			}
-		}
 	}()
 
 	return nil
@@ -765,22 +716,12 @@ func (bs *BackgroundSession) onAgentMessage(html string) {
 	observerCount := bs.ObserverCount()
 	if bs.logger != nil && observerCount > 1 {
 		bs.logger.Debug("Notifying multiple observers of agent message",
-			"session_id", bs.persistedID,
 			"observer_count", observerCount,
 			"html_len", len(html))
 	}
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnAgentMessage(html)
 	})
-
-	// Forward to legacy attached client
-	if client := bs.GetAttachedClient(); client != nil {
-		client.sendMessage(WSMsgTypeAgentMessage, map[string]interface{}{
-			"html":       html,
-			"format":     "html",
-			"session_id": bs.persistedID,
-		})
-	}
 }
 
 func (bs *BackgroundSession) onAgentThought(text string) {
@@ -797,14 +738,6 @@ func (bs *BackgroundSession) onAgentThought(text string) {
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnAgentThought(text)
 	})
-
-	// Forward to legacy attached client
-	if client := bs.GetAttachedClient(); client != nil {
-		client.sendMessage(WSMsgTypeAgentThought, map[string]interface{}{
-			"text":       text,
-			"session_id": bs.persistedID,
-		})
-	}
 }
 
 func (bs *BackgroundSession) onToolCall(id, title, status string) {
@@ -821,16 +754,6 @@ func (bs *BackgroundSession) onToolCall(id, title, status string) {
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnToolCall(id, title, status)
 	})
-
-	// Forward to legacy attached client
-	if client := bs.GetAttachedClient(); client != nil {
-		client.sendMessage(WSMsgTypeToolCall, map[string]interface{}{
-			"id":         id,
-			"title":      title,
-			"status":     status,
-			"session_id": bs.persistedID,
-		})
-	}
 }
 
 func (bs *BackgroundSession) onToolUpdate(id string, status *string) {
@@ -847,18 +770,6 @@ func (bs *BackgroundSession) onToolUpdate(id string, status *string) {
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnToolUpdate(id, status)
 	})
-
-	// Forward to legacy attached client
-	if client := bs.GetAttachedClient(); client != nil {
-		data := map[string]interface{}{
-			"id":         id,
-			"session_id": bs.persistedID,
-		}
-		if status != nil {
-			data["status"] = *status
-		}
-		client.sendMessage(WSMsgTypeToolUpdate, data)
-	}
 }
 
 func (bs *BackgroundSession) onPlan() {
@@ -870,13 +781,6 @@ func (bs *BackgroundSession) onPlan() {
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnPlan()
 	})
-
-	// Forward to legacy attached client
-	if client := bs.GetAttachedClient(); client != nil {
-		client.sendMessage(WSMsgTypePlan, map[string]interface{}{
-			"session_id": bs.persistedID,
-		})
-	}
 }
 
 func (bs *BackgroundSession) onFileWrite(path string, size int) {
@@ -888,15 +792,6 @@ func (bs *BackgroundSession) onFileWrite(path string, size int) {
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnFileWrite(path, size)
 	})
-
-	// Forward to legacy attached client
-	if client := bs.GetAttachedClient(); client != nil {
-		client.sendMessage(WSMsgTypeFileWrite, map[string]interface{}{
-			"path":       path,
-			"size":       size,
-			"session_id": bs.persistedID,
-		})
-	}
 }
 
 func (bs *BackgroundSession) onFileRead(path string, size int) {
@@ -908,15 +803,6 @@ func (bs *BackgroundSession) onFileRead(path string, size int) {
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnFileRead(path, size)
 	})
-
-	// Forward to legacy attached client
-	if client := bs.GetAttachedClient(); client != nil {
-		client.sendMessage(WSMsgTypeFileRead, map[string]interface{}{
-			"path":       path,
-			"size":       size,
-			"session_id": bs.persistedID,
-		})
-	}
 }
 
 func (bs *BackgroundSession) onPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
@@ -930,12 +816,11 @@ func (bs *BackgroundSession) onPermission(ctx context.Context, params acp.Reques
 		title = *params.ToolCall.Title
 	}
 
-	// Check if we have any observers or legacy clients
+	// Check if we have any observers
 	hasObservers := bs.HasObservers()
-	client := bs.GetAttachedClient()
 
-	// If no observers and no client, auto-approve if configured
-	if !hasObservers && client == nil {
+	// If no observers, auto-approve if configured
+	if !hasObservers {
 		if bs.autoApprove {
 			resp := mittoAcp.AutoApprovePermission(params.Options)
 			// Record the permission decision
@@ -948,67 +833,18 @@ func (bs *BackgroundSession) onPermission(ctx context.Context, params acp.Reques
 		return mittoAcp.CancelledPermissionResponse(), nil
 	}
 
-	// Try to get response from observers first
-	// The first observer to respond wins
-	if hasObservers {
-		// Get a snapshot of observers
-		bs.observersMu.RLock()
-		observers := make([]SessionObserver, 0, len(bs.observers))
-		for o := range bs.observers {
-			observers = append(observers, o)
-		}
-		bs.observersMu.RUnlock()
-
-		// Ask first observer for permission (others just observe)
-		if len(observers) > 0 {
-			resp, err := observers[0].OnPermission(ctx, params)
-			if err == nil {
-				// Persist the permission decision
-				if bs.recorder != nil {
-					if resp.Outcome.Selected != nil {
-						bs.recorder.RecordPermission(title, string(resp.Outcome.Selected.OptionId), "user_selected")
-					} else {
-						bs.recorder.RecordPermission(title, "", "cancelled")
-					}
-				}
-				return resp, nil
-			}
-		}
+	// Get a snapshot of observers
+	bs.observersMu.RLock()
+	observers := make([]SessionObserver, 0, len(bs.observers))
+	for o := range bs.observers {
+		observers = append(observers, o)
 	}
+	bs.observersMu.RUnlock()
 
-	// Fallback to legacy client if no observers handled it
-	if client != nil {
-		// Format options for frontend
-		options := make([]map[string]string, len(params.Options))
-		for i, opt := range params.Options {
-			options[i] = map[string]string{
-				"id":   string(opt.OptionId),
-				"name": opt.Name,
-				"kind": string(opt.Kind),
-			}
-		}
-
-		client.sendMessage(WSMsgTypePermission, map[string]interface{}{
-			"title":      title,
-			"options":    options,
-			"session_id": bs.persistedID,
-		})
-
-		// Wait for response from client
-		bs.permissionMu.Lock()
-		// Clear any stale response
-		select {
-		case <-bs.permissionChan:
-		default:
-		}
-		bs.permissionMu.Unlock()
-
-		select {
-		case <-ctx.Done():
-			return acp.RequestPermissionResponse{}, ctx.Err()
-		case <-bs.ctx.Done():
-			return acp.RequestPermissionResponse{}, bs.ctx.Err()
-		case resp := <-bs.permissionChan:
+	// Ask first observer for permission (others just observe)
+	if len(observers) > 0 {
+		resp, err := observers[0].OnPermission(ctx, params)
+		if err == nil {
 			// Persist the permission decision
 			if bs.recorder != nil {
 				if resp.Outcome.Selected != nil {
@@ -1021,25 +857,8 @@ func (bs *BackgroundSession) onPermission(ctx context.Context, params acp.Reques
 		}
 	}
 
-	// Shouldn't reach here, but cancel if we do
+	// No observer handled it - cancel
 	return acp.RequestPermissionResponse{
 		Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
 	}, nil
-}
-
-// AnswerPermission provides a response to a pending permission request.
-func (bs *BackgroundSession) AnswerPermission(optionID string, cancel bool) {
-	var resp acp.RequestPermissionResponse
-	if cancel {
-		resp.Outcome.Cancelled = &acp.RequestPermissionOutcomeCancelled{}
-	} else {
-		resp.Outcome.Selected = &acp.RequestPermissionOutcomeSelected{
-			OptionId: acp.PermissionOptionId(optionID),
-		}
-	}
-
-	select {
-	case bs.permissionChan <- resp:
-	default:
-	}
 }

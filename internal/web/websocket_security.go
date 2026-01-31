@@ -276,3 +276,25 @@ func configureWebSocketConn(conn *websocket.Conn, config WebSocketSecurityConfig
 		return nil
 	})
 }
+
+// getSecureUpgrader returns a WebSocket upgrader with security checks.
+func (s *Server) getSecureUpgrader() websocket.Upgrader {
+	var logger OriginCheckLogger
+	if s.logger != nil {
+		logger = func(origin, host string, allowed bool, reason string) {
+			s.logger.Info("WS: Origin check",
+				"origin", origin,
+				"host", host,
+				"allowed", allowed,
+				"reason", reason)
+		}
+	}
+
+	// Allow authenticated external connections (e.g., Tailscale funnel)
+	// These have already been authenticated by the auth middleware
+	externalChecker := func(r *http.Request) bool {
+		return IsExternalConnection(r)
+	}
+
+	return createSecureUpgraderFull(s.wsSecurityConfig, logger, externalChecker)
+}

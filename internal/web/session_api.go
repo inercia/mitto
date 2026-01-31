@@ -21,7 +21,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.handleCreateSession(w, r)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 	}
 }
 
@@ -86,12 +86,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Validate that we have a valid ACP configuration
 	if workspace == nil || workspace.ACPCommand == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "no_workspace_configured",
-			"message": "No workspace configured. Please configure a workspace in Settings first.",
-		})
+		writeErrorJSON(w, http.StatusBadRequest, "no_workspace_configured",
+			"No workspace configured. Please configure a workspace in Settings first.")
 		return
 	}
 
@@ -119,26 +115,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Broadcast session creation to all global events clients
-	s.eventsManager.Broadcast(WSMsgTypeSessionCreated, map[string]interface{}{
+	sessionData := map[string]interface{}{
 		"session_id":     bs.GetSessionID(),
 		"acp_session_id": bs.GetACPID(),
 		"name":           req.Name,
 		"acp_server":     acpServerName,
 		"working_dir":    req.WorkingDir,
 		"status":         "active",
-	})
+	}
+	s.eventsManager.Broadcast(WSMsgTypeSessionCreated, sessionData)
 
 	// Return session info
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"session_id":     bs.GetSessionID(),
-		"acp_session_id": bs.GetACPID(),
-		"name":           req.Name,
-		"acp_server":     acpServerName,
-		"working_dir":    req.WorkingDir,
-		"status":         "active",
-	})
+	writeJSONCreated(w, sessionData)
 }
 
 // handleListSessions handles GET /api/sessions
@@ -164,12 +152,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(sessions); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to encode sessions", "error", err)
-		}
-	}
+	writeJSONOK(w, sessions)
 }
 
 // handleSessionDetail handles GET, PATCH, DELETE {prefix}/api/sessions/{id}, GET {prefix}/api/sessions/{id}/events,
@@ -223,7 +206,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleDeleteSession(w, sessionID)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 	}
 }
 
@@ -291,12 +274,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessio
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(events); err != nil {
-			if s.logger != nil {
-				s.logger.Error("Failed to encode events", "error", err)
-			}
-		}
+		writeJSONOK(w, events)
 	} else {
 		// Return session metadata
 		meta, err := store.GetMetadata(sessionID)
@@ -312,12 +290,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessio
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(meta); err != nil {
-			if s.logger != nil {
-				s.logger.Error("Failed to encode metadata", "error", err)
-			}
-		}
+		writeJSONOK(w, meta)
 	}
 }
 
@@ -330,8 +303,7 @@ type SessionUpdateRequest struct {
 // handleUpdateSession handles PATCH /api/sessions/{id}
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, sessionID string) {
 	var req SessionUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !parseJSONBody(w, r, &req) {
 		return
 	}
 
@@ -374,8 +346,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		s.BroadcastSessionRenamed(sessionID, *req.Name)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(meta)
+	writeJSONOK(w, meta)
 }
 
 // RunningSessionInfo contains information about a running session.
@@ -398,7 +369,7 @@ type RunningSessionsResponse struct {
 // Returns information about all running sessions, including which ones are actively prompting.
 func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 		return
 	}
 
@@ -443,8 +414,7 @@ func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
 		response.Sessions = append(response.Sessions, info)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSONOK(w, response)
 }
 
 // handleDeleteSession handles DELETE /api/sessions/{id}
@@ -477,7 +447,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 	// Broadcast the deletion to all connected WebSocket clients
 	s.BroadcastSessionDeleted(sessionID)
 
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }
 
 // handleWorkspaces handles /api/workspaces
@@ -493,7 +463,7 @@ func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleRemoveWorkspace(w, r)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 	}
 }
 
@@ -512,8 +482,7 @@ func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSONOK(w, map[string]interface{}{
 		"workspaces":  workspaces,
 		"acp_servers": acpServers,
 	})
@@ -529,8 +498,7 @@ type WorkspaceAddRequest struct {
 // handleAddWorkspace adds a new workspace
 func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 	var req WorkspaceAddRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !parseJSONBody(w, r, &req) {
 		return
 	}
 
@@ -587,9 +555,7 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Also update the server config
 	s.config.Workspaces = s.sessionManager.GetWorkspaces()
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newWorkspace)
+	writeJSONCreated(w, newWorkspace)
 }
 
 // handleRemoveWorkspace removes a workspace
@@ -633,9 +599,7 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	if conversationCount > 0 {
 		// Return error with count - don't allow deletion
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusConflict, map[string]interface{}{
 			"error":              "workspace_in_use",
 			"message":            fmt.Sprintf("Cannot delete workspace: %d conversation(s) are using it", conversationCount),
 			"conversation_count": conversationCount,
@@ -649,14 +613,14 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Also update the server config
 	s.config.Workspaces = s.sessionManager.GetWorkspaces()
 
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }
 
 // handleWorkspacePrompts handles GET /api/workspace-prompts?dir=...
 // Returns the prompts from the workspace's .mittorc file.
 func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		methodNotAllowed(w)
 		return
 	}
 
@@ -668,8 +632,7 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 
 	prompts := s.sessionManager.GetWorkspacePrompts(workingDir)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSONOK(w, map[string]interface{}{
 		"prompts":     prompts,
 		"working_dir": workingDir,
 	})

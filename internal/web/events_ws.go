@@ -1,21 +1,19 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
-	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // GlobalEventsClient represents a connected client listening for global events.
 type GlobalEventsClient struct {
-	server   *Server
-	conn     *websocket.Conn
-	send     chan []byte
-	done     chan struct{}
-	clientIP string // For connection tracking cleanup
+	server *Server
+	wsConn *WSConn
+	done   chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // GlobalEventsManager manages clients subscribed to global events.
@@ -57,11 +55,7 @@ func (m *GlobalEventsManager) Broadcast(msgType string, data interface{}) {
 	defer m.mu.RUnlock()
 
 	for client := range m.clients {
-		select {
-		case client.send <- msgBytes:
-		default:
-			// Client too slow, skip
-		}
+		client.wsConn.SendRaw(msgBytes)
 	}
 }
 
@@ -99,15 +93,24 @@ func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply security settings
-	configureWebSocketConn(conn, s.wsSecurityConfig)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create shared WebSocket connection wrapper
+	wsConn := NewWSConn(WSConnConfig{
+		Conn:     conn,
+		Config:   s.wsSecurityConfig,
+		Logger:   s.logger,
+		ClientIP: clientIP,
+		Tracker:  s.connectionTracker,
+		SendSize: 64,
+	})
 
 	client := &GlobalEventsClient{
-		server:   s,
-		conn:     conn,
-		send:     make(chan []byte, 64),
-		done:     make(chan struct{}),
-		clientIP: clientIP,
+		server: s,
+		wsConn: wsConn,
+		done:   make(chan struct{}),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 
 	s.eventsManager.Register(client)
@@ -116,7 +119,7 @@ func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 	go client.readPump()
 
 	// Send initial connected message
-	client.sendMessage(WSMsgTypeConnected, map[string]string{
+	client.wsConn.SendMessage(WSMsgTypeConnected, map[string]string{
 		"acp_server": s.config.ACPServer,
 	})
 }
@@ -124,18 +127,15 @@ func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 func (c *GlobalEventsClient) readPump() {
 	defer func() {
 		c.server.eventsManager.Unregister(c)
-		// Release connection slot
-		if c.server.connectionTracker != nil && c.clientIP != "" {
-			c.server.connectionTracker.Remove(c.clientIP)
-		}
-		close(c.done)
-		c.conn.Close()
+		c.cancel()
+		c.wsConn.ReleaseConnectionSlot()
+		c.wsConn.Close()
 	}()
 
 	// We don't expect any messages from clients on this WebSocket,
 	// but we need to read to detect disconnection
 	for {
-		_, _, err := c.conn.ReadMessage()
+		_, err := c.wsConn.ReadMessage()
 		if err != nil {
 			return
 		}
@@ -143,43 +143,7 @@ func (c *GlobalEventsClient) readPump() {
 }
 
 func (c *GlobalEventsClient) writePump() {
-	// Create ping ticker using server's WebSocket security config
-	pingPeriod := c.server.wsSecurityConfig.PingPeriod
-	ticker := time.NewTicker(pingPeriod)
-	defer func() {
-		ticker.Stop()
-		c.conn.Close()
-	}()
-
-	for {
-		select {
-		case message, ok := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(c.server.wsSecurityConfig.WriteWait))
-			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-			c.conn.WriteMessage(websocket.TextMessage, message)
-		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(c.server.wsSecurityConfig.WriteWait))
-			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return
-			}
-		case <-c.done:
-			return
-		}
-	}
-}
-
-func (c *GlobalEventsClient) sendMessage(msgType string, data interface{}) {
-	msg := WSMessage{Type: msgType}
-	if data != nil {
-		msg.Data, _ = json.Marshal(data)
-	}
-	msgBytes, _ := json.Marshal(msg)
-
-	select {
-	case c.send <- msgBytes:
-	default:
-	}
+	// Use WSConn's WritePump - it handles ping/pong and message sending
+	// Pass done channel so it closes when pump exits
+	c.wsConn.WritePump(c.ctx, c.done)
 }
