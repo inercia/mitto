@@ -14,6 +14,7 @@ import (
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
+	"github.com/inercia/mitto/internal/msghooks"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -60,6 +61,8 @@ type BackgroundSession struct {
 
 	// Conversation processing
 	processors    []config.MessageProcessor // Merged processors from global and workspace config
+	hookManager   *msghooks.Manager         // External command hooks for message transformation
+	workingDir    string                    // Working directory for hook execution
 	isFirstPrompt bool                      // True until first prompt is sent (for processor conditions)
 }
 
@@ -75,6 +78,7 @@ type BackgroundSessionConfig struct {
 	Store        *session.Store
 	SessionName  string
 	Processors   []config.MessageProcessor // Merged processors for message transformation
+	HookManager  *msghooks.Manager         // External command hooks for message transformation
 }
 
 // NewBackgroundSession creates a new background session.
@@ -91,6 +95,8 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 		agentThoughtBuf: &agentMessageBuffer{},
 		observers:       make(map[SessionObserver]struct{}),
 		processors:      config.Processors,
+		hookManager:     config.HookManager,
+		workingDir:      config.WorkingDir,
 		isFirstPrompt:   true, // New session starts with first prompt pending
 	}
 
@@ -167,6 +173,8 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		isResumed:       true, // Mark as resumed session
 		store:           config.Store,
 		processors:      config.Processors,
+		hookManager:     config.HookManager,
+		workingDir:      config.WorkingDir,
 		isFirstPrompt:   false, // Resumed session = first prompt already sent
 	}
 
@@ -640,13 +648,52 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	// Build the actual prompt to send to ACP
 	// Apply message processors (prepend/append based on config)
 	promptMessage := config.ApplyProcessors(message, bs.processors, isFirst)
+
+	// Apply external command hooks
+	var hookAttachmentBlocks []acp.ContentBlock
+	if bs.hookManager != nil && len(bs.hookManager.Hooks()) > 0 {
+		hookInput := &msghooks.HookInput{
+			Message:        promptMessage,
+			IsFirstMessage: isFirst,
+			SessionID:      bs.persistedID,
+			WorkingDir:     bs.workingDir,
+		}
+		hookResult, hookErr := bs.hookManager.Apply(bs.ctx, hookInput)
+		if hookErr != nil {
+			if bs.logger != nil {
+				bs.logger.Error("Hook execution failed", "error", hookErr)
+			}
+			// Continue with original message on hook failure
+		} else if hookResult != nil {
+			promptMessage = hookResult.Message
+
+			// Convert hook attachments to content blocks
+			if len(hookResult.Attachments) > 0 {
+				acpAttachments, err := hookResult.ToACPAttachments(bs.workingDir)
+				if err != nil {
+					if bs.logger != nil {
+						bs.logger.Error("Failed to resolve hook attachments", "error", err)
+					}
+				} else {
+					for _, att := range acpAttachments {
+						if att.Type == "image" {
+							hookAttachmentBlocks = append(hookAttachmentBlocks, acp.ImageBlock(att.Data, att.MimeType))
+						}
+						// Note: Non-image attachments could be handled differently in the future
+					}
+				}
+			}
+		}
+	}
+
 	if shouldInjectHistory {
 		promptMessage = bs.buildPromptWithHistory(promptMessage)
 	}
 
-	// Build final content blocks: images first, then text
-	finalBlocks := make([]acp.ContentBlock, 0, len(contentBlocks)+1)
+	// Build final content blocks: images first (from uploads and hooks), then text
+	finalBlocks := make([]acp.ContentBlock, 0, len(contentBlocks)+len(hookAttachmentBlocks)+1)
 	finalBlocks = append(finalBlocks, contentBlocks...)
+	finalBlocks = append(finalBlocks, hookAttachmentBlocks...)
 	finalBlocks = append(finalBlocks, acp.TextBlock(promptMessage))
 
 	// Run prompt in background

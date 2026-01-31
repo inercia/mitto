@@ -10,8 +10,10 @@ import (
 	"os"
 	"sync"
 
+	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
+	"github.com/inercia/mitto/internal/msghooks"
 	"github.com/inercia/mitto/internal/session"
 	mittoWeb "github.com/inercia/mitto/web"
 )
@@ -179,6 +181,17 @@ func NewServer(config Config) (*Server, error) {
 	// Set global conversations config for message processing
 	if config.MittoConfig != nil {
 		sessionMgr.SetGlobalConversations(config.MittoConfig.Conversations)
+	}
+
+	// Load and set hooks from hooks directory
+	if hooksDir, err := appdir.HooksDir(); err == nil {
+		hookMgr := msghooks.NewManager(hooksDir, logger)
+		if err := hookMgr.Load(); err != nil {
+			logger.Warn("Failed to load hooks", "error", err)
+		} else if len(hookMgr.Hooks()) > 0 {
+			sessionMgr.SetHookManager(hookMgr)
+			logger.Info("Loaded hooks", "count", len(hookMgr.Hooks()))
+		}
 	}
 
 	// Initialize auth manager if auth is configured

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/msghooks"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -51,6 +52,9 @@ type SessionManager struct {
 
 	// globalConversations contains global conversation processing configuration.
 	globalConversations *config.ConversationsConfig
+
+	// hookManager manages external command hooks for message transformation.
+	hookManager *msghooks.Manager
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -116,6 +120,13 @@ func (sm *SessionManager) SetGlobalConversations(conv *config.ConversationsConfi
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.globalConversations = conv
+}
+
+// SetHookManager sets the hook manager for external command msghooks.
+func (sm *SessionManager) SetHookManager(hm *msghooks.Manager) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.hookManager = hm
 }
 
 // SetWorkspaces sets the available workspaces.
@@ -344,6 +355,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	}
 	store := sm.store
 	globalConv := sm.globalConversations
+	hookMgr := sm.hookManager
 
 	// Determine ACP command and server from workspace configuration
 	var acpCommand, acpServer string
@@ -381,6 +393,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		Store:       store,
 		SessionName: name,
 		Processors:  processors,
+		HookManager: hookMgr,
 	})
 	if err != nil {
 		return nil, err
@@ -465,6 +478,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	}
 	store := sm.store
 	globalConv := sm.globalConversations
+	hookMgr := sm.hookManager
 
 	// Determine ACP command and server from workspace configuration
 	var acpCommand, acpServer string
@@ -524,6 +538,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		Store:        store,
 		SessionName:  sessionName,
 		Processors:   processors,
+		HookManager:  hookMgr,
 	})
 	if err != nil {
 		return nil, err
