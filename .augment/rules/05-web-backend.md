@@ -20,12 +20,45 @@ Browser ←→ WebSocket ←→ internal/web ←→ ACP Server (stdin/stdout)
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| `Server` | `server.go` | HTTP server, routing, static files |
-| `WSClient` | `websocket.go` | Per-connection WebSocket handler |
+| `Server` | `server.go` | HTTP server, routing, lifecycle, middleware |
+| `SessionWSClient` | `session_ws.go` | Per-session WebSocket handler (implements `SessionObserver`) |
+| `GlobalEventsClient` | `events_ws.go` | Global events WebSocket handler (session lifecycle) |
+| `WSConn` | `ws_conn.go` | Shared WebSocket connection wrapper (ping/pong, message sending) |
 | `WebClient` | `client.go` | Implements `acp.Client` with callbacks |
 | `MarkdownBuffer` | `markdown.go` | Streaming Markdown→HTML conversion |
-| `BackgroundSession` | `background_session.go` | Long-lived ACP session with client attach/detach |
+| `BackgroundSession` | `background_session.go` | Long-lived ACP session with observer pattern |
 | `SessionManager` | `session_manager.go` | Registry of running background sessions + workspace management |
+| Config handlers | `config_handlers.go` | Config API endpoints and validation |
+| HTTP helpers | `http_helpers.go` | JSON response helpers (`writeJSON`, `parseJSONBody`, etc.) |
+| Title generation | `title.go` | Auto-title generation for sessions |
+| External listener | `server_external.go` | External access (0.0.0.0) listener management |
+| Static files | `server_static.go` | Static file serving with security headers |
+| WS messages | `ws_messages.go` | WebSocket message types and constants |
+
+## File Organization
+
+The `internal/web` package is organized by responsibility:
+
+```
+internal/web/
+├── server.go              # Core server: struct, NewServer, routes, lifecycle
+├── server_external.go     # External listener: Start/Stop, middleware
+├── server_static.go       # Static file handler, cache headers
+├── session_ws.go          # Per-session WebSocket client
+├── events_ws.go           # Global events WebSocket + manager
+├── ws_conn.go             # Shared WebSocket connection wrapper
+├── ws_messages.go         # Message types, constants, ParseMessage
+├── background_session.go  # ACP session with observer pattern
+├── session_manager.go     # Session registry + workspace management
+├── session_api.go         # REST API for sessions
+├── config_handlers.go     # Config API handlers
+├── http_helpers.go        # JSON response utilities
+├── title.go               # Auto-title generation
+├── markdown.go            # Markdown→HTML streaming buffer
+├── client.go              # WebClient (acp.Client implementation)
+├── auth.go                # Authentication manager
+└── csp_nonce.go           # CSP nonce middleware
+```
 
 ## WebClient Pattern
 
@@ -60,17 +93,27 @@ buffer.Flush()       // Force flush
 buffer.Close()       // Flush and cleanup
 ```
 
+## WebSocket Endpoints
+
+The web interface uses two WebSocket endpoints:
+
+| Endpoint | Handler | Purpose |
+|----------|---------|---------|
+| `/api/events` | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed) |
+| `/api/sessions/{id}/ws` | `SessionWSClient` | Per-session communication (prompts, responses, tools) |
+
 ## WebSocket Message Types
 
-**Frontend → Backend:**
-- `new_session` - Create ACP session
-- `prompt` - Send user message
+**Frontend → Backend (Session WebSocket):**
+- `prompt` - Send user message (includes `prompt_id` for ACK tracking)
 - `cancel` - Cancel current operation
 - `permission_answer` - Respond to permission request
 - `sync_session` - Request events after a sequence number (for mobile wake resync)
 
-**Backend → Frontend:**
+**Backend → Frontend (Session WebSocket):**
 - `connected` - Session established
+- `prompt_received` - ACK that prompt was received and persisted (includes `prompt_id`)
+- `user_prompt` - Echo of user's message (for multi-client sync)
 - `agent_message` - HTML content (streaming)
 - `agent_thought` - Plain text thinking
 - `tool_call` / `tool_update` - Tool status
@@ -79,9 +122,37 @@ buffer.Close()       // Flush and cleanup
 - `session_sync` - Response to sync_session with missed events
 - `error` - Error message
 
+**Backend → Frontend (Events WebSocket):**
+- `connected` - Connection established
+- `session_created` - New session created
+- `session_deleted` - Session deleted
+- `session_renamed` - Session renamed
+
+## Prompt ACK Flow
+
+When the frontend sends a prompt, the backend sends back a `prompt_received` ACK:
+
+```
+Frontend                        Backend
+    |                               |
+    |-- prompt (prompt_id=abc123) ->|
+    |                               |-- Persist to session store
+    |                               |-- Start ACP processing
+    |<-- prompt_received (abc123) --|
+    |   [Frontend resolves Promise] |
+    |                               |
+    |<-- agent_message (streaming) -|
+    |<-- prompt_complete -----------|
+```
+
+**Benefits:**
+1. Frontend knows message was received before connection loss
+2. Enables timeout-based retry for mobile reliability
+3. Supports multi-client sync (other clients see `user_prompt`)
+
 ## Session Sync Handler
 
-The `handleSyncSession` function in `websocket.go` handles incremental sync requests from mobile clients that may have missed events while sleeping:
+The `handleSyncSession` function in `session_ws.go` handles incremental sync requests from mobile clients that may have missed events while sleeping:
 
 ```go
 // Client sends: {"type": "sync_session", "data": {"session_id": "...", "after_seq": 42}}
@@ -112,7 +183,7 @@ The frontend uses this to catch up on missed events when:
 The web interface uses `BackgroundSession` to manage ACP sessions that run independently of WebSocket connections:
 - Sessions continue running when browser tabs are closed
 - Reconnecting to running sessions
-- Multiple clients can observe the same session (one active at a time)
+- Multiple clients can observe the same session via the observer pattern
 
 ### BackgroundSession Lifecycle
 
@@ -122,25 +193,33 @@ stateDiagram-v2
     Created --> Running: ACP initialized
     Running --> Prompting: Prompt()
     Prompting --> Running: Response complete
-    Running --> Suspended: Suspend()
-    Suspended --> Running: Resume (via attach)
     Running --> Closed: Close()
-    Suspended --> Closed: Close()
     Closed --> [*]
 ```
 
-### Client Attach/Detach Pattern
+### Observer Pattern
+
+`BackgroundSession` uses the observer pattern to notify connected clients:
 
 ```go
-// When WebSocket client switches to a session
-session.AttachClient(wsClient)
+// SessionWSClient implements SessionObserver
+type SessionObserver interface {
+    OnAgentMessage(html string)
+    OnAgentThought(text string)
+    OnToolCall(id, title, status string)
+    OnToolUpdate(id string, status *string)
+    OnPlan()
+    OnFileWrite(path string, size int)
+    OnFileRead(path string, size int)
+    OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+    OnPromptComplete(eventCount int)
+    OnError(message string)
+    GetClientID() string
+}
 
-// Client receives real-time updates via callbacks
-// session.onAgentMessage -> wsClient.sendMessage()
-
-// When client disconnects or switches sessions
-session.DetachClient()
-// Session continues running, events still persisted
+// Adding/removing observers
+bs.AddObserver(client)    // Called when WebSocket connects
+bs.RemoveObserver(client) // Called when WebSocket disconnects
 ```
 
 ### agentMessageBuffer Pattern
@@ -210,30 +289,7 @@ graph TB
 | `GetSessionFromRequest(r)` | Extract session from cookie |
 | `AuthMiddleware(next)` | HTTP middleware for auth |
 
-## Observer Pattern for Multi-Client Sessions
-
-The `BackgroundSession` uses an observer pattern to notify multiple connected clients:
-
-```go
-// SessionObserver interface - implemented by SessionWSClient
-type SessionObserver interface {
-    OnAgentMessage(html string)
-    OnAgentThought(text string)
-    OnToolCall(id, title, status string)
-    OnToolUpdate(id string, status *string)
-    OnPromptComplete(eventCount int)
-    OnUserPrompt(senderID, promptID, message string, imageIDs []string)
-    OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
-    OnError(message string)
-    GetClientID() string
-}
-
-// Adding/removing observers
-bs.AddObserver(client)    // Called when WebSocket connects
-bs.RemoveObserver(client) // Called when WebSocket disconnects (in readPump defer)
-```
-
-### Observer Cleanup on WebSocket Disconnect
+## Observer Cleanup on WebSocket Disconnect
 
 **Critical**: Always remove observers when WebSocket connections close to prevent:
 - Memory leaks from orphaned observers
@@ -246,7 +302,8 @@ func (c *SessionWSClient) readPump() {
         if c.bgSession != nil {
             c.bgSession.RemoveObserver(c)  // MUST remove observer
         }
-        c.conn.Close()
+        c.wsConn.ReleaseConnectionSlot()
+        c.wsConn.Close()
     }()
     // ... read loop
 }
@@ -312,17 +369,56 @@ for _, ws := range currentWorkspaces {
 
 ### Error Response Format for Conflicts
 
+Use the HTTP helpers from `http_helpers.go`:
+
 ```go
-// Return structured error for client handling
-w.Header().Set("Content-Type", "application/json")
-w.WriteHeader(http.StatusConflict)
-json.NewEncoder(w).Encode(map[string]interface{}{
+// Use writeJSON for structured responses
+writeJSON(w, http.StatusConflict, map[string]interface{}{
     "error":              "workspace_in_use",
     "message":            "Cannot remove workspace: N conversation(s) are using it",
     "workspace":          workingDir,
     "conversation_count": count,
 })
 ```
+
+## HTTP Response Helpers
+
+Use the helpers in `http_helpers.go` for consistent JSON responses:
+
+```go
+// Success responses
+writeJSONOK(w, data)           // 200 OK with JSON body
+writeJSONCreated(w, data)      // 201 Created with JSON body
+writeNoContent(w)              // 204 No Content
+
+// Error responses
+writeErrorJSON(w, status, errorCode, message)  // JSON error with code
+methodNotAllowed(w)            // 405 Method Not Allowed
+
+// Request parsing
+if !parseJSONBody(w, r, &req) {
+    return  // Error response already sent
+}
+```
+
+## Structured Logging
+
+Use session-scoped and client-scoped loggers to automatically include context in all log messages:
+
+```go
+// In BackgroundSession - logger includes session_id, working_dir, acp_server
+bs.logger = logging.WithSessionContext(config.Logger, sessionID, workingDir, acpServer)
+bs.logger.Info("Processing prompt")  // Automatically includes all context
+
+// In SessionWSClient - logger includes client_id, session_id
+clientLogger := logging.WithClient(s.logger, clientID, sessionID)
+clientLogger.Debug("Message received")  // Automatically includes client context
+```
+
+**Benefits:**
+- No need to manually add `session_id` to every log call
+- Consistent context across all log messages for a session
+- Easier to filter logs by session or client
 
 ## Debugging WebSocket Issues
 
@@ -333,13 +429,12 @@ When debugging duplicate messages or WebSocket issues:
 3. **Monitor attach/detach**: Log when clients attach and detach from sessions
 
 ```go
-// Add debug logging for observer notifications
+// With session-scoped logger, context is automatic
 func (bs *BackgroundSession) onAgentMessage(html string) {
     observerCount := bs.ObserverCount()
     if bs.logger != nil && observerCount > 1 {
-        bs.logger.Debug("Notifying multiple observers",
-            "session_id", bs.persistedID,
-            "observer_count", observerCount)
+        // session_id, working_dir, acp_server automatically included
+        bs.logger.Debug("Notifying multiple observers", "observer_count", observerCount)
     }
     bs.notifyObservers(func(o SessionObserver) {
         o.OnAgentMessage(html)

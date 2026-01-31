@@ -130,3 +130,30 @@ func isPIDRunning(pid int) bool {
 }
 ```
 
+## Structured Logging
+
+Use the `internal/logging` package for consistent logging with context:
+
+```go
+import "github.com/inercia/mitto/internal/logging"
+
+// Get component-specific logger
+logger := logging.Web()
+logger.Info("Server started", "port", port)
+
+// Create session-scoped logger (includes session_id in all logs)
+sessionLogger := logging.WithSession(logger, sessionID)
+sessionLogger.Info("Processing prompt")  // Automatically includes session_id
+
+// Create full context logger (includes session_id, working_dir, acp_server)
+contextLogger := logging.WithSessionContext(logger, sessionID, workingDir, acpServer)
+
+// Create client-scoped logger for WebSocket handlers
+clientLogger := logging.WithClient(logger, clientID, sessionID)
+```
+
+**Best practices:**
+- Use `logging.WithSession*` to avoid repeating `session_id` in every log call
+- Pass loggers down through constructors, not as method parameters
+- Use `Debug` for high-frequency events, `Info` for significant state changes
+

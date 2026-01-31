@@ -167,6 +167,40 @@ func TestConnection_WithMockACP(t *testing.T) {
 }
 ```
 
+## Testing HTTP Handlers
+
+Use `httptest.NewRecorder()` to test HTTP handlers:
+
+```go
+func TestWriteJSON(t *testing.T) {
+    w := httptest.NewRecorder()
+    writeJSON(w, http.StatusOK, map[string]string{"key": "value"})
+
+    if w.Code != http.StatusOK {
+        t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+    }
+    if w.Header().Get("Content-Type") != "application/json" {
+        t.Error("Content-Type should be application/json")
+    }
+}
+
+func TestParseJSONBody(t *testing.T) {
+    body := `{"name": "test"}`
+    r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+    w := httptest.NewRecorder()
+
+    var data struct{ Name string }
+    ok := parseJSONBody(w, r, &data)
+
+    if !ok {
+        t.Error("parseJSONBody should return true for valid JSON")
+    }
+    if data.Name != "test" {
+        t.Errorf("Name = %q, want %q", data.Name, "test")
+    }
+}
+```
+
 ## Testing Error Paths
 
 Always test error conditions, not just happy paths:
@@ -202,16 +236,74 @@ Current coverage by package (run `go test -cover ./internal/...`):
 | `internal/config` | 82.4% | 80%+ | ✅ Good |
 | `internal/fileutil` | 84.6% | 80%+ | ✅ Good |
 | `internal/auxiliary` | 71.9% | 70%+ | ✅ Good |
+| `internal/logging` | 80%+ | 80%+ | ✅ Good (new tests added) |
 | `internal/session` | 64.5% | 70%+ | ⚠️ Needs improvement |
 | `internal/acp` | 61.4% | 70%+ | ⚠️ Needs improvement |
 | `internal/appdir` | 56.7% | 60%+ | ⚠️ Close to target |
-| `internal/web` | 28.2% | 50%+ | ❌ Needs significant work |
+| `internal/web` | 35%+ | 50%+ | ⚠️ Improved with new tests |
 | `internal/cmd` | 8.7% | 30%+ | ❌ CLI logic hard to unit test |
 
 **Priority areas for test improvement:**
-1. `internal/web` - Add tests for HTTP handlers and WebSocket message routing
-2. `internal/session` - Add concurrency tests and error path coverage
-3. `internal/acp` - Add more connection lifecycle tests
+1. `internal/session` - Add concurrency tests and error path coverage
+2. `internal/acp` - Add more connection lifecycle tests
+
+## Web Package Test Files
+
+The `internal/web` package has comprehensive test coverage:
+
+| Test File | Coverage |
+|-----------|----------|
+| `http_helpers_test.go` | JSON response helpers, request parsing |
+| `websocket_integration_test.go` | WebSocket message flow, reconnection |
+| `ws_conn_test.go` | WebSocket connection wrapper |
+| `title_test.go` | Session title generation |
+| `background_session_test.go` | ACP session lifecycle |
+| `external_listener_test.go` | External access listener |
+| `websocket_security_test.go` | WebSocket security (rate limiting, etc.) |
+
+## WebSocket Integration Testing
+
+Test WebSocket message flows using `httptest.Server` and `gorilla/websocket`:
+
+```go
+func TestWebSocketMessageFlow(t *testing.T) {
+    // Create test server with WebSocket endpoint
+    mux := http.NewServeMux()
+    upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+    mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+        conn, _ := upgrader.Upgrade(w, r, nil)
+        defer conn.Close()
+        // Handle messages...
+    })
+
+    server := httptest.NewServer(mux)
+    defer server.Close()
+
+    // Connect WebSocket client
+    wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+    conn, _, _ := websocket.DefaultDialer.Dial(wsURL, nil)
+    defer conn.Close()
+
+    // Send and receive messages
+    conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"prompt"}`))
+    _, msg, _ := conn.ReadMessage()
+    // Assert on msg...
+}
+```
+
+### Test Helper Functions
+
+```go
+// Connect to test WebSocket server
+func connectTestWS(t *testing.T, server *httptest.Server, path string) *websocket.Conn
+
+// Read WebSocket message with timeout
+func readWSMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) WSMessage
+
+// Send typed WebSocket message
+func sendWSMessage(t *testing.T, conn *websocket.Conn, msgType string, data interface{})
+```
 
 ## Integration Test Conventions
 
@@ -270,6 +362,85 @@ export const timeouts = {
   agentResponse: 60000,
 };
 ```
+
+## Running Playwright with Mitto Web
+
+When running Playwright tests interactively (not using the test harness), **always** create a dummy `.mittorc` configuration file and start Mitto in web mode with the `--config` flag. This configuration approach:
+
+1. **Disables the Settings Dialog** - When `--config` is used, the config is read-only and the Settings dialog is never shown
+2. **Provides stable test conditions** - Known ACP server and workspace configuration
+3. **Allows testing all other UI elements** - Everything except Settings dialog can be tested
+
+### Setup Steps
+
+1. **Create a dummy `.mittorc` file** in a temporary directory:
+
+```yaml
+# /tmp/mitto-test/.mittorc
+acp:
+  - mock-acp:
+      command: /path/to/mock-acp-server  # Use the mock ACP server
+
+web:
+  host: 127.0.0.1
+  port: 8089  # Use a test port
+  theme: v2
+```
+
+2. **Create a test workspace directory**:
+
+```bash
+mkdir -p /tmp/mitto-test/workspace
+```
+
+3. **Start Mitto web server** pointing to the RC file:
+
+```bash
+mitto web --config /tmp/mitto-test/.mittorc --dir /tmp/mitto-test/workspace
+```
+
+4. **Run Playwright** against `http://127.0.0.1:8089`
+
+### Example Interactive Playwright Session
+
+```bash
+# 1. Build the mock ACP server
+make build-mock-acp
+
+# 2. Create test configuration
+mkdir -p /tmp/mitto-test/workspace
+cat > /tmp/mitto-test/.mittorc << 'EOF'
+acp:
+  - mock-acp:
+      command: ./tests/mocks/acp-server/mock-acp-server
+
+web:
+  port: 8089
+  theme: v2
+EOF
+
+# 3. Start Mitto (in background or separate terminal)
+mitto web --config /tmp/mitto-test/.mittorc --dir /tmp/mitto-test/workspace &
+
+# 4. Run Playwright tests or use Playwright's interactive mode
+npx playwright test --headed
+# or
+npx playwright codegen http://127.0.0.1:8089
+```
+
+### Why This Works
+
+The frontend checks `config.config_readonly` from `/api/config`:
+- When `--config` flag is used → `config_readonly: true`
+- When `config_readonly: true` → Settings dialog is never auto-opened
+- All other UI features work normally (chat, sessions, prompts, themes, etc.)
+
+### Important Notes
+
+- **Always use `--config`** - Without it, the Settings dialog may appear
+- **Always use `--dir`** - Ensures a workspace is configured
+- **Use mock ACP server** - For deterministic testing without real AI
+- **Port 8089** - Recommended test port to avoid conflicts with development server on 8080
 
 ## JavaScript Unit Tests (lib.js)
 
@@ -377,3 +548,51 @@ Key areas to test:
 - **Edge cases**: very long strings, special characters
 - **Regex patterns**: ensure patterns match expected inputs and reject non-matches
 - **Error handling**: graceful fallbacks when dependencies unavailable
+
+### Testing Pending Prompt Functions
+
+The pending prompt system requires localStorage mocking:
+
+```javascript
+describe('Pending Prompts', () => {
+    beforeEach(() => {
+        localStorageMock.clear();
+    });
+
+    describe('generatePromptId', () => {
+        test('generates unique IDs', () => {
+            const id1 = generatePromptId();
+            const id2 = generatePromptId();
+            expect(id1).not.toBe(id2);
+        });
+
+        test('includes timestamp prefix', () => {
+            const id = generatePromptId();
+            expect(id).toMatch(/^prompt_\d+_/);
+        });
+    });
+
+    describe('savePendingPrompt', () => {
+        test('saves prompt with all fields', () => {
+            savePendingPrompt('session1', 'prompt1', 'Hello', ['img1']);
+            const pending = getPendingPrompts();
+            expect(pending['prompt1']).toEqual({
+                sessionId: 'session1',
+                message: 'Hello',
+                imageIds: ['img1'],
+                timestamp: expect.any(Number)
+            });
+        });
+    });
+
+    describe('cleanupExpiredPrompts', () => {
+        test('removes prompts older than 5 minutes', () => {
+            // Create expired prompt
+            const pending = { 'old': { timestamp: Date.now() - 6 * 60 * 1000 } };
+            localStorage.setItem('mitto_pending_prompts', JSON.stringify(pending));
+            cleanupExpiredPrompts();
+            expect(getPendingPrompts()).toEqual({});
+        });
+    });
+});
+```

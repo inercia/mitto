@@ -22,16 +22,17 @@ internal/appdir/    → Platform-native directory management (MITTO_DIR)
 internal/auxiliary/ → Hidden auxiliary ACP session for utility tasks (title generation)
 internal/config/    → Configuration loading (YAML/JSON) and settings persistence
 internal/fileutil/  → Shared JSON file I/O utilities
+internal/logging/   → Structured logging with context helpers
 internal/session/   → Session persistence (Store/Recorder/Player/Lock)
 internal/web/       → Web interface server (HTTP, WebSocket, Markdown)
 platform/mac/       → macOS app resources (Info.plist, icons, scripts)
 web/                → Embedded frontend assets (HTML, JS, CSS)
 web/static/         → Frontend source files
-  ├── components/   → Preact components (Message.js, etc.)
-  ├── hooks/        → Custom Preact hooks
-  ├── utils/        → Utility modules (storage.js, etc.)
+  ├── components/   → Preact components (Message.js, ChatInput.js, etc.)
+  ├── hooks/        → Custom Preact hooks (useWebSocket.js, useSwipeNavigation.js)
+  ├── utils/        → Utility modules (storage.js, api.js, csrf.js, etc.)
   ├── app.js        → Main application
-  ├── lib.js        → Pure utility functions (testable)
+  ├── lib.js        → Pure utility functions (testable, no DOM deps)
   └── lib.test.js   → Jest tests for lib.js
 tests/              → Test suite (integration, UI, mocks, fixtures)
 ```
@@ -119,4 +120,25 @@ When adding new features:
 1. Update `docs/architecture.md` with new components
 2. Add Mermaid diagrams for complex flows
 3. Document design decisions and rationale
+
+## Logging Package
+
+The `internal/logging` package provides structured logging with context helpers:
+
+| Function | Purpose |
+|----------|---------|
+| `WithComponent(name)` | Returns logger for a specific component |
+| `WithSession(base, sessionID)` | Returns logger with `session_id` context |
+| `WithSessionContext(base, sessionID, workingDir, acpServer)` | Returns logger with full session context |
+| `WithClient(base, clientID, sessionID)` | Returns logger with WebSocket client context |
+
+```go
+// Create session-scoped logger (automatically includes session_id in all logs)
+sessionLogger := logging.WithSessionContext(logger, sessionID, workingDir, acpServer)
+sessionLogger.Info("Processing prompt")  // Includes session_id, working_dir, acp_server
+
+// Create client-scoped logger for WebSocket handlers
+clientLogger := logging.WithClient(logger, clientID, sessionID)
+clientLogger.Debug("Message received")  // Includes client_id, session_id
+```
 

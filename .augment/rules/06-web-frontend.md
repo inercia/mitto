@@ -65,6 +65,24 @@ The library provides pure functions for state manipulation:
 | `getMaxSeq(events)` | Get maximum sequence number from events array |
 | `hasMarkdownContent(text)` | Detect if text contains Markdown formatting |
 | `renderUserMarkdown(text)` | Render user message as Markdown HTML |
+| `generatePromptId()` | Generate unique prompt ID for delivery tracking |
+| `savePendingPrompt()` | Save prompt to localStorage before sending |
+| `removePendingPrompt()` | Remove prompt after ACK received |
+| `getPendingPrompts()` | Get all pending prompts from localStorage |
+| `getPendingPromptsForSession()` | Get pending prompts for a specific session |
+| `cleanupExpiredPrompts()` | Remove prompts older than 5 minutes |
+| `mergeMessagesWithSync()` | Deduplicate messages when syncing after reconnect |
+| `getMessageHash()` | Create content hash for message deduplication |
+
+## Hooks Directory Structure
+
+The `hooks/` directory contains reusable Preact hooks:
+
+| File | Purpose |
+|------|---------|
+| `useWebSocket.js` | WebSocket connections, session management, message handling |
+| `useSwipeNavigation.js` | Mobile swipe gestures for navigation |
+| `index.js` | Re-exports for clean imports |
 
 ## Memory Management
 
@@ -74,6 +92,154 @@ export const MAX_MESSAGES = 100;
 
 // Messages auto-trimmed when added
 const newMessages = limitMessages([...session.messages, message]);
+```
+
+## Promise-Based Message Sending with ACK
+
+Messages are sent with delivery confirmation and retry capability:
+
+### Architecture
+
+```
+User clicks Send → onSend() returns Promise → Wait for ACK → Resolve/Reject
+
+ChatInput                       useWebSocket                    Backend
+    |                               |                              |
+    |-- onSend(text, images) ------>|                              |
+    |   (returns Promise)           |-- sendPrompt() ------------->|
+    |                               |   (saves to pending queue)   |
+    |   [Show spinner]              |                              |
+    |                               |<-- prompt_received (ACK) ----|
+    |<-- Promise resolves --------- |                              |
+    |   [Clear spinner, clear text] |                              |
+    |                               |                              |
+    |   OR on timeout/error:        |                              |
+    |<-- Promise rejects -----------|                              |
+    |   [Show error, keep text]     |                              |
+```
+
+### Send Button States
+
+The ChatInput component shows different states during message sending:
+
+| State | Button Appearance | Text Area |
+|-------|-------------------|-----------|
+| Normal | "Send" button enabled | Editable |
+| Sending | Spinner + "Sending..." | Disabled |
+| Error | "Send" enabled | Editable (text preserved) |
+| Streaming | "Stop" button | Disabled |
+
+```javascript
+// In ChatInput component
+const [isSending, setIsSending] = useState(false);
+const [sendError, setSendError] = useState(null);
+
+const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!hasContent || isSending) return;
+
+    setIsSending(true);
+    setSendError(null);
+
+    try {
+        await onSend(text, images);  // Returns Promise that resolves on ACK
+        setText('');  // Only clear on success
+    } catch (err) {
+        setSendError(err.message);
+        // Text is preserved for retry
+    } finally {
+        setIsSending(false);
+    }
+};
+```
+
+### Pending Prompt Persistence
+
+For mobile reliability (phone sleep, network loss), prompts are saved to localStorage before sending:
+
+```javascript
+// In lib.js
+export function generatePromptId() {
+    return `prompt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+export function savePendingPrompt(sessionId, promptId, message, imageIds = []) {
+    const pending = getPendingPrompts();
+    pending[promptId] = { sessionId, message, imageIds, timestamp: Date.now() };
+    localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+}
+
+export function removePendingPrompt(promptId) {
+    const pending = getPendingPrompts();
+    delete pending[promptId];
+    localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+}
+```
+
+### ACK Handling in useWebSocket
+
+The `sendPrompt` function returns a Promise that resolves when ACK is received:
+
+```javascript
+const sendPrompt = useCallback((message, images = [], options = {}) => {
+    const timeout = options.timeout || SEND_ACK_TIMEOUT;
+
+    return new Promise((resolve, reject) => {
+        // Validate WebSocket connection
+        const ws = sessionWsRefs.current[activeSessionId];
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            reject(new Error('WebSocket not connected'));
+            return;
+        }
+
+        // Generate unique prompt ID
+        const promptId = generatePromptId();
+
+        // Save to pending queue BEFORE sending
+        savePendingPrompt(activeSessionId, promptId, message, imageIds);
+
+        // Set up timeout
+        const timeoutId = setTimeout(() => {
+            delete pendingSendsRef.current[promptId];
+            reject(new Error('Message send timed out'));
+        }, timeout);
+
+        // Track pending send
+        pendingSendsRef.current[promptId] = { resolve, reject, timeoutId };
+
+        // Send with prompt_id for acknowledgment
+        ws.send(JSON.stringify({
+            type: 'prompt',
+            data: { message, image_ids: imageIds, prompt_id: promptId }
+        }));
+    });
+}, [activeSessionId]);
+
+// Handle ACK from server
+case 'prompt_received':
+    if (msg.data.prompt_id) {
+        removePendingPrompt(msg.data.prompt_id);
+        const pending = pendingSendsRef.current[msg.data.prompt_id];
+        if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve({ success: true });
+            delete pendingSendsRef.current[msg.data.prompt_id];
+        }
+    }
+    break;
+```
+
+### Error Display and Retry
+
+When sending fails, the error is shown with the message preserved:
+
+```javascript
+${sendError && html`
+    <div class="bg-orange-900/50 border border-orange-700 text-orange-200 px-4 py-2 rounded-lg">
+        <span>${sendError}</span>
+        <span class="text-xs ml-1">(Your message is preserved - click Send to retry)</span>
+    </div>
+`}
 ```
 
 ## State Management Patterns
