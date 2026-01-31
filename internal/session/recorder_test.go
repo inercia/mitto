@@ -284,3 +284,423 @@ func TestRecorder_ResumeNonExistent(t *testing.T) {
 		t.Error("Resume should fail for non-existent session")
 	}
 }
+
+// TestRecorder_EventOrdering verifies that events maintain correct chronological order
+// with proper sequence numbers regardless of event type.
+func TestRecorder_EventOrdering(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record a realistic sequence of events with different types
+	// This simulates: user prompt -> agent thinks -> tool call -> agent message -> tool call -> agent message
+	if err := recorder.RecordUserPrompt("Fix the bug in main.go"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+	if err := recorder.RecordAgentThought("Let me analyze the file first..."); err != nil {
+		t.Fatalf("RecordAgentThought failed: %v", err)
+	}
+	if err := recorder.RecordToolCall("tc-1", "Read main.go", "running", "file_read", nil, nil); err != nil {
+		t.Fatalf("RecordToolCall failed: %v", err)
+	}
+	status := "completed"
+	if err := recorder.RecordToolCallUpdate("tc-1", &status, nil); err != nil {
+		t.Fatalf("RecordToolCallUpdate failed: %v", err)
+	}
+	if err := recorder.RecordAgentMessage("I found the issue. Let me fix it."); err != nil {
+		t.Fatalf("RecordAgentMessage failed: %v", err)
+	}
+	if err := recorder.RecordToolCall("tc-2", "Edit main.go", "running", "file_write", nil, nil); err != nil {
+		t.Fatalf("RecordToolCall failed: %v", err)
+	}
+	if err := recorder.RecordToolCallUpdate("tc-2", &status, nil); err != nil {
+		t.Fatalf("RecordToolCallUpdate failed: %v", err)
+	}
+	if err := recorder.RecordAgentMessage("Done! I fixed the bug."); err != nil {
+		t.Fatalf("RecordAgentMessage failed: %v", err)
+	}
+
+	// Read events and verify ordering
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Verify sequence numbers are monotonically increasing
+	for i := 0; i < len(events); i++ {
+		expectedSeq := int64(i + 1)
+		if events[i].Seq != expectedSeq {
+			t.Errorf("Event %d: seq = %d, want %d", i, events[i].Seq, expectedSeq)
+		}
+	}
+
+	// Verify timestamps are non-decreasing
+	for i := 1; i < len(events); i++ {
+		if events[i].Timestamp.Before(events[i-1].Timestamp) {
+			t.Errorf("Event %d timestamp (%v) is before event %d timestamp (%v)",
+				i, events[i].Timestamp, i-1, events[i-1].Timestamp)
+		}
+	}
+
+	// Verify the expected event type order
+	expectedTypes := []EventType{
+		EventTypeSessionStart,
+		EventTypeUserPrompt,
+		EventTypeAgentThought,
+		EventTypeToolCall,
+		EventTypeToolCallUpdate,
+		EventTypeAgentMessage,
+		EventTypeToolCall,
+		EventTypeToolCallUpdate,
+		EventTypeAgentMessage,
+	}
+
+	if len(events) != len(expectedTypes) {
+		t.Fatalf("got %d events, want %d", len(events), len(expectedTypes))
+	}
+
+	for i, expected := range expectedTypes {
+		if events[i].Type != expected {
+			t.Errorf("Event %d: type = %q, want %q", i, events[i].Type, expected)
+		}
+	}
+}
+
+// TestRecorder_InterleavedToolCallsAndMessages tests the specific bug scenario where
+// tool calls and agent messages are interleaved.
+func TestRecorder_InterleavedToolCallsAndMessages(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record interleaved tool calls and messages
+	recorder.RecordUserPrompt("Do something")
+	recorder.RecordToolCall("tool-1", "First tool", "running", "test", nil, nil)
+	recorder.RecordAgentMessage("First message")
+	recorder.RecordToolCall("tool-2", "Second tool", "running", "test", nil, nil)
+	recorder.RecordAgentMessage("Second message")
+	recorder.RecordToolCall("tool-3", "Third tool", "running", "test", nil, nil)
+	recorder.RecordAgentMessage("Third message")
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Extract just the tool calls and agent messages (skip session_start and user_prompt)
+	var relevantEvents []Event
+	for _, e := range events {
+		if e.Type == EventTypeToolCall || e.Type == EventTypeAgentMessage {
+			relevantEvents = append(relevantEvents, e)
+		}
+	}
+
+	// Verify the interleaved order is preserved
+	expectedOrder := []EventType{
+		EventTypeToolCall,     // tool-1
+		EventTypeAgentMessage, // First message
+		EventTypeToolCall,     // tool-2
+		EventTypeAgentMessage, // Second message
+		EventTypeToolCall,     // tool-3
+		EventTypeAgentMessage, // Third message
+	}
+
+	if len(relevantEvents) != len(expectedOrder) {
+		t.Fatalf("got %d relevant events, want %d", len(relevantEvents), len(expectedOrder))
+	}
+
+	for i, expected := range expectedOrder {
+		if relevantEvents[i].Type != expected {
+			t.Errorf("Relevant event %d: type = %q, want %q", i, relevantEvents[i].Type, expected)
+		}
+	}
+
+	// Verify sequence numbers are correct for the interleaved events
+	for i := 1; i < len(relevantEvents); i++ {
+		if relevantEvents[i].Seq <= relevantEvents[i-1].Seq {
+			t.Errorf("Event %d seq (%d) should be greater than event %d seq (%d)",
+				i, relevantEvents[i].Seq, i-1, relevantEvents[i-1].Seq)
+		}
+	}
+}
+
+// TestRecorder_RapidEventRecording tests that events recorded in rapid succession
+// maintain correct ordering and unique sequence numbers.
+func TestRecorder_RapidEventRecording(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record many events as fast as possible
+	const numEvents = 100
+	for i := 0; i < numEvents; i++ {
+		switch i % 4 {
+		case 0:
+			recorder.RecordUserPrompt("Message " + string(rune('A'+i%26)))
+		case 1:
+			recorder.RecordAgentMessage("Response " + string(rune('A'+i%26)))
+		case 2:
+			recorder.RecordToolCall("tool-"+string(rune('0'+i%10)), "Tool", "running", "test", nil, nil)
+		case 3:
+			recorder.RecordAgentThought("Thinking...")
+		}
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Should have session_start + numEvents
+	expectedCount := 1 + numEvents
+	if len(events) != expectedCount {
+		t.Fatalf("got %d events, want %d", len(events), expectedCount)
+	}
+
+	// Verify all sequence numbers are unique and monotonically increasing
+	seenSeqs := make(map[int64]bool)
+	for i, e := range events {
+		if seenSeqs[e.Seq] {
+			t.Errorf("Duplicate sequence number %d at event %d", e.Seq, i)
+		}
+		seenSeqs[e.Seq] = true
+
+		expectedSeq := int64(i + 1)
+		if e.Seq != expectedSeq {
+			t.Errorf("Event %d: seq = %d, want %d", i, e.Seq, expectedSeq)
+		}
+	}
+
+	// Verify timestamps are non-decreasing (some may be equal due to rapid recording)
+	for i := 1; i < len(events); i++ {
+		if events[i].Timestamp.Before(events[i-1].Timestamp) {
+			t.Errorf("Event %d timestamp (%v) is before event %d timestamp (%v)",
+				i, events[i].Timestamp, i-1, events[i-1].Timestamp)
+		}
+	}
+}
+
+// TestRecorder_ConcurrentRecording tests that concurrent recording attempts
+// are properly serialized (the recorder uses a mutex).
+func TestRecorder_ConcurrentRecording(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record events from multiple goroutines
+	const numGoroutines = 10
+	const eventsPerGoroutine = 10
+	done := make(chan bool, numGoroutines)
+
+	for g := 0; g < numGoroutines; g++ {
+		go func(goroutineID int) {
+			for i := 0; i < eventsPerGoroutine; i++ {
+				recorder.RecordAgentMessage("Message from goroutine")
+			}
+			done <- true
+		}(g)
+	}
+
+	// Wait for all goroutines to complete
+	for i := 0; i < numGoroutines; i++ {
+		<-done
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Should have session_start + (numGoroutines * eventsPerGoroutine)
+	expectedCount := 1 + (numGoroutines * eventsPerGoroutine)
+	if len(events) != expectedCount {
+		t.Fatalf("got %d events, want %d", len(events), expectedCount)
+	}
+
+	// Verify all sequence numbers are unique
+	seenSeqs := make(map[int64]bool)
+	for i, e := range events {
+		if seenSeqs[e.Seq] {
+			t.Errorf("Duplicate sequence number %d at event %d", e.Seq, i)
+		}
+		seenSeqs[e.Seq] = true
+	}
+
+	// Verify sequence numbers are contiguous (1 to expectedCount)
+	for i := 1; i <= expectedCount; i++ {
+		if !seenSeqs[int64(i)] {
+			t.Errorf("Missing sequence number %d", i)
+		}
+	}
+}
+
+// TestRecorder_ResumePreservesOrdering tests that resuming a session preserves
+// the ordering of existing events and continues with correct sequence numbers.
+func TestRecorder_ResumePreservesOrdering(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create and record initial events
+	recorder1 := NewRecorder(store)
+	if err := recorder1.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder1.SessionID()
+
+	recorder1.RecordUserPrompt("First prompt")
+	recorder1.RecordAgentMessage("First response")
+	recorder1.RecordToolCall("tool-1", "First tool", "completed", "test", nil, nil)
+
+	// Read events before resume
+	eventsBefore, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	lastSeqBefore := eventsBefore[len(eventsBefore)-1].Seq
+
+	// Resume the session with a new recorder
+	recorder2 := NewRecorderWithID(store, sessionID)
+	if err := recorder2.Resume(); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	// Record more events after resume
+	recorder2.RecordUserPrompt("Second prompt")
+	recorder2.RecordAgentMessage("Second response")
+	recorder2.RecordToolCall("tool-2", "Second tool", "completed", "test", nil, nil)
+
+	// Read all events
+	eventsAfter, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Verify the original events are unchanged
+	for i := 0; i < len(eventsBefore); i++ {
+		if eventsAfter[i].Seq != eventsBefore[i].Seq {
+			t.Errorf("Event %d seq changed: was %d, now %d", i, eventsBefore[i].Seq, eventsAfter[i].Seq)
+		}
+		if eventsAfter[i].Type != eventsBefore[i].Type {
+			t.Errorf("Event %d type changed: was %q, now %q", i, eventsBefore[i].Type, eventsAfter[i].Type)
+		}
+	}
+
+	// Verify new events have correct sequence numbers (continuing from last)
+	for i := len(eventsBefore); i < len(eventsAfter); i++ {
+		expectedSeq := lastSeqBefore + int64(i-len(eventsBefore)+1)
+		if eventsAfter[i].Seq != expectedSeq {
+			t.Errorf("New event %d: seq = %d, want %d", i, eventsAfter[i].Seq, expectedSeq)
+		}
+	}
+
+	// Verify all sequence numbers are unique and monotonically increasing
+	for i := 1; i < len(eventsAfter); i++ {
+		if eventsAfter[i].Seq <= eventsAfter[i-1].Seq {
+			t.Errorf("Event %d seq (%d) should be greater than event %d seq (%d)",
+				i, eventsAfter[i].Seq, i-1, eventsAfter[i-1].Seq)
+		}
+	}
+}
+
+// TestRecorder_ResumeWithInterleavedEvents tests that resuming a session with
+// interleaved tool calls and messages preserves the correct order.
+func TestRecorder_ResumeWithInterleavedEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create session with interleaved events
+	recorder1 := NewRecorder(store)
+	if err := recorder1.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder1.SessionID()
+
+	recorder1.RecordUserPrompt("Do something")
+	recorder1.RecordToolCall("tool-1", "First tool", "running", "test", nil, nil)
+	recorder1.RecordAgentMessage("First message")
+	recorder1.RecordToolCall("tool-2", "Second tool", "running", "test", nil, nil)
+
+	// Resume and add more interleaved events
+	recorder2 := NewRecorderWithID(store, sessionID)
+	if err := recorder2.Resume(); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	recorder2.RecordAgentMessage("Second message")
+	recorder2.RecordToolCall("tool-3", "Third tool", "running", "test", nil, nil)
+	recorder2.RecordAgentMessage("Third message")
+
+	// Read all events
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Extract tool calls and agent messages
+	var relevantEvents []Event
+	for _, e := range events {
+		if e.Type == EventTypeToolCall || e.Type == EventTypeAgentMessage {
+			relevantEvents = append(relevantEvents, e)
+		}
+	}
+
+	// Verify the interleaved order is preserved across resume
+	expectedOrder := []EventType{
+		EventTypeToolCall,     // tool-1 (before resume)
+		EventTypeAgentMessage, // First message (before resume)
+		EventTypeToolCall,     // tool-2 (before resume)
+		EventTypeAgentMessage, // Second message (after resume)
+		EventTypeToolCall,     // tool-3 (after resume)
+		EventTypeAgentMessage, // Third message (after resume)
+	}
+
+	if len(relevantEvents) != len(expectedOrder) {
+		t.Fatalf("got %d relevant events, want %d", len(relevantEvents), len(expectedOrder))
+	}
+
+	for i, expected := range expectedOrder {
+		if relevantEvents[i].Type != expected {
+			t.Errorf("Relevant event %d: type = %q, want %q", i, relevantEvents[i].Type, expected)
+		}
+	}
+}
