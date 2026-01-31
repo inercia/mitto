@@ -30,6 +30,9 @@ const (
 	// SessionsDirName is the name of the sessions subdirectory.
 	SessionsDirName = "sessions"
 
+	// HooksDirName is the name of the hooks subdirectory.
+	HooksDirName = "hooks"
+
 	// AuthSessionsFileName is the name of the auth sessions file.
 	AuthSessionsFileName = "auth_sessions.json"
 )
@@ -121,7 +124,7 @@ func resolveDir() (string, error) {
 }
 
 // EnsureDir creates the Mitto data directory if it doesn't exist.
-// It also creates the sessions subdirectory.
+// It also creates the sessions and hooks subdirectories.
 func EnsureDir() error {
 	dir, err := Dir()
 	if err != nil {
@@ -137,6 +140,12 @@ func EnsureDir() error {
 	sessionsDir := filepath.Join(dir, SessionsDirName)
 	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create sessions directory %s: %w", sessionsDir, err)
+	}
+
+	// Create hooks subdirectory
+	hooksDir := filepath.Join(dir, HooksDirName)
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		return fmt.Errorf("failed to create hooks directory %s: %w", hooksDir, err)
 	}
 
 	return nil
@@ -167,6 +176,15 @@ func SessionsDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, SessionsDirName), nil
+}
+
+// HooksDir returns the full path to the hooks directory.
+func HooksDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, HooksDirName), nil
 }
 
 // AuthSessionsPath returns the full path to the auth_sessions.json file.
