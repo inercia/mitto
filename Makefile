@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci
 
 # Binary name
 BINARY_NAME=mitto
@@ -144,7 +144,41 @@ fmt-check:
 
 # Lint code (requires golangci-lint)
 lint:
-	golangci-lint run
+	golangci-lint run --timeout=5m
+
+# =============================================================================
+# CI Target
+# =============================================================================
+# Run all the same checks that run in GitHub Actions CI.
+# This includes: formatting check, linting, unit tests, and integration tests.
+# UI tests are excluded as they require a browser.
+#
+# Usage: make ci
+# =============================================================================
+
+ci: deps build-mock-acp build
+	@echo "=============================================="
+	@echo "Running CI checks locally..."
+	@echo "=============================================="
+	@echo ""
+	@echo "Step 1/5: Checking Go formatting..."
+	@$(MAKE) fmt-check
+	@echo ""
+	@echo "Step 2/5: Running golangci-lint..."
+	@$(MAKE) lint
+	@echo ""
+	@echo "Step 3/5: Running Go unit tests..."
+	@$(MAKE) test-go
+	@echo ""
+	@echo "Step 4/5: Running JavaScript unit tests..."
+	@$(MAKE) test-js
+	@echo ""
+	@echo "Step 5/5: Running integration tests..."
+	@MITTO_TEST_MODE=1 $(MAKE) test-integration
+	@echo ""
+	@echo "=============================================="
+	@echo "✅ All CI checks passed!"
+	@echo "=============================================="
 
 # Download Go dependencies
 deps-go:
