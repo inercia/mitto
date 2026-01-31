@@ -590,5 +590,3 @@ func TestBackgroundSession_CreatedAt(t *testing.T) {
 		t.Errorf("CreatedAt should return zero time when recorder is nil")
 	}
 }
-
-

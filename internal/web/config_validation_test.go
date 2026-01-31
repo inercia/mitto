@@ -71,8 +71,8 @@ func TestValidateConfigRequest_NoWorkspaces(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{},
 		ACPServers: []struct {
-			Name    string              `json:"name"`
-			Command string              `json:"command"`
+			Name    string             `json:"name"`
+			Command string             `json:"command"`
 			Prompts []config.WebPrompt `json:"prompts,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
 	}
@@ -92,8 +92,8 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string              `json:"name"`
-			Command string              `json:"command"`
+			Name    string             `json:"name"`
+			Command string             `json:"command"`
 			Prompts []config.WebPrompt `json:"prompts,omitempty"`
 		}{},
 	}
@@ -113,8 +113,8 @@ func TestValidateConfigRequest_EmptyServerName(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string              `json:"name"`
-			Command string              `json:"command"`
+			Name    string             `json:"name"`
+			Command string             `json:"command"`
 			Prompts []config.WebPrompt `json:"prompts,omitempty"`
 		}{{Name: "", Command: "cmd"}},
 	}
@@ -131,8 +131,8 @@ func TestValidateConfigRequest_EmptyServerCommand(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string              `json:"name"`
-			Command string              `json:"command"`
+			Name    string             `json:"name"`
+			Command string             `json:"command"`
 			Prompts []config.WebPrompt `json:"prompts,omitempty"`
 		}{{Name: "test", Command: ""}},
 	}
@@ -149,8 +149,8 @@ func TestValidateConfigRequest_DuplicateServerName(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string              `json:"name"`
-			Command string              `json:"command"`
+			Name    string             `json:"name"`
+			Command string             `json:"command"`
 			Prompts []config.WebPrompt `json:"prompts,omitempty"`
 		}{
 			{Name: "test", Command: "cmd1"},
@@ -170,8 +170,8 @@ func TestValidateConfigRequest_Valid(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string              `json:"name"`
-			Command string              `json:"command"`
+			Name    string             `json:"name"`
+			Command string             `json:"command"`
 			Prompts []config.WebPrompt `json:"prompts,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
 	}
