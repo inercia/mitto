@@ -134,6 +134,8 @@ ui:
 ## Related Documentation
 
 - [ACP Servers](config-acp.md) - Setup instructions for Claude, Auggie, Copilot
+- [Workspace Configuration](config-workspace.md) - Project-specific `.mittorc` files
+- [Conversation Processing](config-conversations.md) - Message processing rules
 - [Web Configuration](config-web.md) - Web server, authentication, hooks, security
 - [macOS Configuration](config-mac.md) - Hotkeys, notifications, desktop app settings
 - [Architecture](architecture.md) - System design and internals
