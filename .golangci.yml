@@ -6,8 +6,7 @@ run:
 linters:
   disable:
     - errcheck  # TODO: fix unchecked error returns
-
-issues:
-  exclude-dirs:
-    - cmd/mitto-app  # macOS-specific, requires cgo and webview
+  exclusions:
+    paths:
+      - cmd/mitto-app  # macOS-specific, requires cgo and webview
 
