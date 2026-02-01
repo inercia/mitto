@@ -7,31 +7,50 @@ prompts:
     prompt: |
       Please perform an architectural review and cleanup of the codebase:
 
-      1. **Identify Architectural Issues**:
+      1. **Find and Remove Dead Code**:
+         - Identify unused functions, methods, types, and constants
+         - Find unreachable code paths and obsolete implementations
+         - Detect unused imports, variables, and parameters
+         - Remove commented-out code that is no longer needed
+         - Delete deprecated code that has been superseded
+         - Clean up unused test helpers and fixtures
+
+      2. **Identify Architectural Issues**:
          - Look for circular dependencies between packages
          - Find code that violates separation of concerns
          - Detect tightly coupled components that should be decoupled
          - Identify packages with too many responsibilities
 
-      2. **Refactor for Modularity**:
+      3. **Improve Code Elegance and Clarity**:
+         - Simplify overly complex functions and reduce nesting
+         - Replace confusing logic with clearer, more readable alternatives
+         - Consolidate duplicate or near-duplicate code
+         - Rename poorly named variables, functions, and types for clarity
+         - Break down large functions into smaller, focused units
+         - Remove unnecessary abstractions that add complexity without value
+
+      4. **Refactor for Modularity**:
          - Extract interfaces where concrete types are used directly
          - Move shared utilities to appropriate packages
          - Ensure each package has a clear, single responsibility
          - Apply dependency injection where appropriate
+         - Reduce coupling between components
+         - Make dependencies explicit rather than implicit
 
-      3. **Add Valuable Tests**:
+      5. **Add Valuable Tests**:
          - Identify critical paths lacking test coverage
          - Add unit tests for core business logic
          - Add integration tests for component interactions
          - Focus on tests that prevent regressions and document behavior
 
-      4. **Follow Project Conventions**:
+      6. **Follow Project Conventions**:
          - Review .augment/rules for project-specific patterns
          - Maintain existing code style and naming conventions
          - Update architecture documentation if needed
 
       Please start by analyzing the current state and proposing a prioritized plan
       before making any changes. Focus on high-impact, low-risk improvements first.
+      Prioritize removing dead code and simplifying confusing code early in the process.
 
   - name: "Run All Tests"
     backgroundColor: "#BBDEFB"  # Light Blue - testing/verification
@@ -214,3 +233,70 @@ prompts:
 
       Report success or any errors after each step.
 
+  - name: "Prepare for CI"
+    backgroundColor: "#E3F2FD"  # Light Blue - preparation/validation
+    prompt: |
+      Please prepare the codebase for CI by performing the following steps:
+
+      ## Step 1: Format All Code and Documentation
+
+      Run formatters to ensure consistent style across the codebase:
+      ```bash
+      make fmt
+      ```
+
+      This will format:
+      - Go code (gofmt, goimports)
+      - JavaScript/TypeScript files
+      - Markdown documentation
+
+      Report any files that were modified by formatting.
+
+      ## Step 2: Build the Project
+
+      Build all binaries to verify compilation:
+      ```bash
+      make build
+      ```
+
+      Report any build errors and fix them before proceeding.
+
+      ## Step 3: Run the Test Suite
+
+      Execute all tests to ensure nothing is broken:
+      ```bash
+      make test-all
+      ```
+
+      Or run tests individually if needed:
+      - Go tests: `make test-go`
+      - JavaScript tests: `make test-js`
+      - Integration tests: `make test-integration`
+
+      ## Step 4: Run CI Checks
+
+      Run the full CI validation:
+      ```bash
+      make ci
+      ```
+
+      This includes linting, formatting verification, and other checks.
+
+      ## On Failure
+
+      If any step fails:
+      1. Analyze the error output carefully
+      2. Fix the issue in the appropriate location
+      3. Re-run the failing step to verify the fix
+      4. Continue with remaining steps
+
+      ## Summary
+
+      After completing all steps, provide a summary:
+      - Files formatted (if any)
+      - Build status
+      - Test results (pass/fail counts)
+      - CI check status
+      - Any issues found and fixed
+
+      The codebase should be ready for CI after this process completes successfully.
