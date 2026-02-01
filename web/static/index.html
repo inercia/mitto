@@ -1,76 +1,87 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <title>Mitto - ACP Web Interface</title>
 
     <!-- Tailwind CSS (Play CDN) -->
     <script nonce="{{CSP_NONCE}}" src="https://cdn.tailwindcss.com"></script>
     <script nonce="{{CSP_NONCE}}" src="./tailwind-config.js"></script>
     <style>
-        /* Dark theme (default) */
-        :root {
-            --mitto-bg: #0f172a;
-            --mitto-sidebar: #1e293b;
-            --mitto-chat: #0f172a;
-            --mitto-input: #1e293b;
-            --mitto-input-box: #1e3a5f;
-            --mitto-user: #1e293b;
-            --mitto-user-text: #f1f5f9;
-            --mitto-user-border: #334155;
-            --mitto-agent: #1e293b;
-            --mitto-text: #f1f5f9;
-            --mitto-text-secondary: #94a3b8;
-            --mitto-border: #334155;
-        }
-        /* Light theme */
-        .light {
-            --mitto-bg: #f8fafc;
-            --mitto-sidebar: #e2e8f0;
-            --mitto-chat: #f8fafc;
-            --mitto-input: #e2e8f0;
-            --mitto-input-box: #cbd5e1;
-            --mitto-user: #e5e7eb;
-            --mitto-user-text: #1e293b;
-            --mitto-user-border: #f97316;
-            --mitto-agent: #e2e8f0;
-            --mitto-text: #1e293b;
-            --mitto-text-secondary: #64748b;
-            --mitto-border: #cbd5e1;
-        }
-        .light body, .light #app {
-            color: var(--mitto-text);
-        }
+      /* Dark theme (default) */
+      :root {
+        --mitto-bg: #0f172a;
+        --mitto-sidebar: #1e293b;
+        --mitto-chat: #0f172a;
+        --mitto-input: #1e293b;
+        --mitto-input-box: #1e3a5f;
+        --mitto-user: #1e293b;
+        --mitto-user-text: #f1f5f9;
+        --mitto-user-border: #334155;
+        --mitto-agent: #1e293b;
+        --mitto-text: #f1f5f9;
+        --mitto-text-secondary: #94a3b8;
+        --mitto-border: #334155;
+      }
+      /* Light theme */
+      .light {
+        --mitto-bg: #f8fafc;
+        --mitto-sidebar: #e2e8f0;
+        --mitto-chat: #f8fafc;
+        --mitto-input: #e2e8f0;
+        --mitto-input-box: #cbd5e1;
+        --mitto-user: #e5e7eb;
+        --mitto-user-text: #1e293b;
+        --mitto-user-border: #f97316;
+        --mitto-agent: #e2e8f0;
+        --mitto-text: #1e293b;
+        --mitto-text-secondary: #64748b;
+        --mitto-border: #cbd5e1;
+      }
+      .light body,
+      .light #app {
+        color: var(--mitto-text);
+      }
     </style>
-    
+
     <!-- Custom styles -->
-    <link rel="stylesheet" href="./styles.css">
+    <link rel="stylesheet" href="./styles.css" />
 
     <!-- V2 theme stylesheet - always loaded, only applies when .v2-theme class is on body -->
-    <link rel="stylesheet" href="./styles-v2.css">
+    <link rel="stylesheet" href="./styles-v2.css" />
 
     <!-- API prefix for all API calls and WebSocket connections -->
     <!-- This is injected by the server at runtime -->
     <!-- IMPORTANT: This must be loaded BEFORE theme-loader.js and other scripts that use it -->
-    <script nonce="{{CSP_NONCE}}">window.mittoApiPrefix = "{{API_PREFIX}}";</script>
+    <script nonce="{{CSP_NONCE}}">
+      window.mittoApiPrefix = "{{API_PREFIX}}";
+    </script>
 
     <!-- Theme loader - adds v2-theme class to body if configured -->
     <script nonce="{{CSP_NONCE}}" src="./theme-loader.js"></script>
-</head>
-<body class="bg-mitto-bg text-white h-screen-safe overflow-hidden">
+  </head>
+  <body class="bg-mitto-bg text-white h-screen-safe overflow-hidden">
     <div id="app">
-        <!-- Loading state -->
-        <div class="h-screen flex items-center justify-center">
-            <div class="text-center">
-                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-                <p class="text-gray-400">Loading Mitto...</p>
-            </div>
+      <!-- Loading state -->
+      <div class="h-screen flex items-center justify-center">
+        <div class="text-center">
+          <div
+            class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"
+          ></div>
+          <p class="text-gray-400">Loading Mitto...</p>
         </div>
+      </div>
     </div>
 
     <!-- Preact + HTM (from Skypack CDN) -->
-    <script nonce="{{CSP_NONCE}}" type="module" src="./preact-loader.js"></script>
-</body>
+    <script
+      nonce="{{CSP_NONCE}}"
+      type="module"
+      src="./preact-loader.js"
+    ></script>
+  </body>
 </html>
-

@@ -4,366 +4,453 @@
    Uses dvh (dynamic viewport height) for Safari iOS/macOS with 100vh fallback.
    This fixes issues where 100vh doesn't account for Safari's dynamic toolbar. */
 .h-screen-safe {
-    height: 100vh;
-    height: 100dvh;
-    /* Ensure flex children can shrink properly in Safari */
-    min-height: 0;
+  height: 100vh;
+  height: 100dvh;
+  /* Ensure flex children can shrink properly in Safari */
+  min-height: 0;
 }
 
 /* Safari flexbox fix: ensure flex containers allow children to shrink */
 .flex-col {
-    min-height: 0;
+  min-height: 0;
 }
 
 /* Safe area padding for iOS devices with notch/home indicator */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
-    .bg-mitto-input {
-        padding-bottom: max(1rem, env(safe-area-inset-bottom));
-    }
+  .bg-mitto-input {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
 }
 
 /* Theme toggle switch */
 .theme-toggle {
-    position: relative;
-    width: 48px;
-    height: 24px;
-    background: #334155;
-    border-radius: 12px;
-    cursor: pointer;
-    transition: background 0.3s;
+  position: relative;
+  width: 48px;
+  height: 24px;
+  background: #334155;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.3s;
 }
 .theme-toggle.light {
-    background: #cbd5e1;
+  background: #cbd5e1;
 }
 .theme-toggle::after {
-    content: '';
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 20px;
-    height: 20px;
-    background: #f1f5f9;
-    border-radius: 50%;
-    transition: transform 0.3s;
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: #f1f5f9;
+  border-radius: 50%;
+  transition: transform 0.3s;
 }
 .theme-toggle.light::after {
-    transform: translateX(24px);
-    background: #1e293b;
+  transform: translateX(24px);
+  background: #1e293b;
 }
 
 /* Scrollbar styling */
-.scrollbar-hide::-webkit-scrollbar { display: none; }
-.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-.scroll-smooth { scroll-behavior: smooth; }
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scroll-smooth {
+  scroll-behavior: smooth;
+}
 
 /* Prevent horizontal scrolling in conversation area on mobile */
-.overflow-y-auto { overflow-x: hidden; }
+.overflow-y-auto {
+  overflow-x: hidden;
+}
 
 /* Message animation */
 @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.message-enter { animation: fadeIn 0.2s ease-out; }
+.message-enter {
+  animation: fadeIn 0.2s ease-out;
+}
 
 /* Session swipe transition animations */
 @keyframes slideInFromRight {
-    from { opacity: 0; transform: translateX(30%); }
-    to { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(30%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 @keyframes slideInFromLeft {
-    from { opacity: 0; transform: translateX(-30%); }
-    to { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(-30%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 .swipe-slide-left {
-    animation: slideInFromRight 0.25s ease-out;
+  animation: slideInFromRight 0.25s ease-out;
 }
 .swipe-slide-right {
-    animation: slideInFromLeft 0.25s ease-out;
+  animation: slideInFromLeft 0.25s ease-out;
 }
 
 /* Swipe flash overlay effect */
 @keyframes swipeFlash {
-    0% { opacity: 0.15; }
-    100% { opacity: 0; }
+  0% {
+    opacity: 0.15;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 .swipe-flash {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 10;
-    animation: swipeFlash 0.3s ease-out forwards;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  animation: swipeFlash 0.3s ease-out forwards;
 }
 .swipe-flash-left {
-    background: linear-gradient(to left, rgba(59, 130, 246, 0.3), transparent 50%);
+  background: linear-gradient(
+    to left,
+    rgba(59, 130, 246, 0.3),
+    transparent 50%
+  );
 }
 .swipe-flash-right {
-    background: linear-gradient(to right, rgba(59, 130, 246, 0.3), transparent 50%);
+  background: linear-gradient(
+    to right,
+    rgba(59, 130, 246, 0.3),
+    transparent 50%
+  );
 }
 
 /* Swipe arrow indicator */
 @keyframes swipeArrowFadeInOut {
-    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
-    15% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-    75% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-    100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+  }
+  15% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  75% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.9);
+  }
 }
 .swipe-arrow-indicator {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 100;
-    pointer-events: none;
-    animation: swipeArrowFadeInOut 1s ease-in-out forwards;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 100;
+  pointer-events: none;
+  animation: swipeArrowFadeInOut 1s ease-in-out forwards;
 }
 .swipe-arrow-indicator__content {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100px;
-    height: 100px;
-    border-radius: 20px;
-    background: linear-gradient(135deg, rgba(59, 130, 246, 0.9), rgba(99, 102, 241, 0.85));
-    box-shadow: 0 8px 32px rgba(59, 130, 246, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3);
-    backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100px;
+  height: 100px;
+  border-radius: 20px;
+  background: linear-gradient(
+    135deg,
+    rgba(59, 130, 246, 0.9),
+    rgba(99, 102, 241, 0.85)
+  );
+  box-shadow:
+    0 8px 32px rgba(59, 130, 246, 0.4),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(8px);
 }
 .swipe-arrow-indicator__arrow {
-    font-size: 48px;
-    font-weight: 300;
-    color: white;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    line-height: 1;
+  font-size: 48px;
+  font-weight: 300;
+  color: white;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  line-height: 1;
 }
 
 /* Toast notification for background session completion */
 @keyframes toastSlideIn {
-    from { opacity: 0; transform: translateY(-100%); }
-    to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 @keyframes toastSlideOut {
-    from { opacity: 1; transform: translateY(0); }
-    to { opacity: 0; transform: translateY(-100%); }
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
 }
 .toast-enter {
-    animation: toastSlideIn 0.2s ease-out forwards;
+  animation: toastSlideIn 0.2s ease-out forwards;
 }
 .toast-exit {
-    animation: toastSlideOut 0.2s ease-in forwards;
+  animation: toastSlideOut 0.2s ease-in forwards;
 }
 
 /* Session streaming indicator */
 @keyframes pulse-streaming {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(0.85); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.85);
+  }
 }
 .streaming-indicator {
-    animation: pulse-streaming 1.2s ease-in-out infinite;
+  animation: pulse-streaming 1.2s ease-in-out infinite;
 }
 
 /* Streaming cursor */
 .streaming-cursor::after {
-    content: '▋';
-    animation: blink 1s infinite;
-    color: #60a5fa;
-    margin-left: 2px;
+  content: "▋";
+  animation: blink 1s infinite;
+  color: #60a5fa;
+  margin-left: 2px;
 }
 @keyframes blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0; }
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
 }
 
 /* Markdown content styling */
 .markdown-content {
-    line-height: 1.7;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
+  line-height: 1.7;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .markdown-content h1 {
-    font-size: 1.5em;
-    font-weight: bold;
-    margin: 1em 0 0.5em;
-    padding-bottom: 0.3em;
-    border-bottom: 1px solid #475569;
+  font-size: 1.5em;
+  font-weight: bold;
+  margin: 1em 0 0.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid #475569;
 }
 
 .markdown-content h2 {
-    font-size: 1.3em;
-    font-weight: bold;
-    margin: 1em 0 0.5em;
+  font-size: 1.3em;
+  font-weight: bold;
+  margin: 1em 0 0.5em;
 }
 
 .markdown-content h3 {
-    font-size: 1.1em;
-    font-weight: bold;
-    margin: 1em 0 0.5em;
+  font-size: 1.1em;
+  font-weight: bold;
+  margin: 1em 0 0.5em;
 }
 
 .markdown-content p {
-    margin: 0.5em 0;
+  margin: 0.5em 0;
 }
 
-.markdown-content ul, .markdown-content ol {
-    margin: 0.5em 0;
-    padding-left: 1.5em;
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
 }
 
 .markdown-content li {
-    margin: 0.25em 0;
+  margin: 0.25em 0;
 }
 
 .markdown-content ul {
-    list-style-type: disc;
+  list-style-type: disc;
 }
 
 .markdown-content ol {
-    list-style-type: decimal;
+  list-style-type: decimal;
 }
 
 .markdown-content li > ul,
 .markdown-content li > ol {
-    margin: 0.25em 0;
+  margin: 0.25em 0;
 }
 
 /* Code blocks */
 .markdown-content pre {
-    background: #1e293b;
-    border-radius: 0.5rem;
-    padding: 1rem;
-    overflow-x: auto;
-    margin: 0.75em 0;
-    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
-    font-size: 0.875em;
-    line-height: 1.5;
-    border: 1px solid #334155;
+  background: #1e293b;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  overflow-x: auto;
+  margin: 0.75em 0;
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", "Consolas", monospace;
+  font-size: 0.875em;
+  line-height: 1.5;
+  border: 1px solid #334155;
 }
 
 .markdown-content code {
-    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
-    font-size: 0.875em;
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", "Consolas", monospace;
+  font-size: 0.875em;
 }
 
 .markdown-content :not(pre) > code {
-    background: #334155;
-    padding: 0.125em 0.375em;
-    border-radius: 0.25rem;
-    color: #f472b6;
+  background: #334155;
+  padding: 0.125em 0.375em;
+  border-radius: 0.25rem;
+  color: #f472b6;
 }
 
 /* Links */
 .markdown-content a {
-    color: #60a5fa;
-    text-decoration: underline;
-    text-underline-offset: 2px;
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .markdown-content a:hover {
-    color: #93c5fd;
+  color: #93c5fd;
 }
 
 /* Blockquotes */
 .markdown-content blockquote {
-    border-left: 4px solid #3b82f6;
-    padding-left: 1em;
-    margin: 0.75em 0;
-    color: #94a3b8;
-    background: rgba(59, 130, 246, 0.1);
-    padding: 0.5em 1em;
-    border-radius: 0 0.25rem 0.25rem 0;
+  border-left: 4px solid #3b82f6;
+  padding-left: 1em;
+  margin: 0.75em 0;
+  color: #94a3b8;
+  background: rgba(59, 130, 246, 0.1);
+  padding: 0.5em 1em;
+  border-radius: 0 0.25rem 0.25rem 0;
 }
 
 /* Tables */
 .markdown-content table {
-    border-collapse: collapse;
-    margin: 0.75em 0;
-    width: 100%;
-    font-size: 0.9em;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  width: 100%;
+  font-size: 0.9em;
 }
 
-.markdown-content th, .markdown-content td {
-    border: 1px solid #475569;
-    padding: 0.5em 0.75em;
-    text-align: left;
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid #475569;
+  padding: 0.5em 0.75em;
+  text-align: left;
 }
 
 .markdown-content th {
-    background: #334155;
-    font-weight: 600;
+  background: #334155;
+  font-weight: 600;
 }
 
 .markdown-content tr:nth-child(even) {
-    background: rgba(51, 65, 85, 0.3);
+  background: rgba(51, 65, 85, 0.3);
 }
 
 /* Horizontal rule */
 .markdown-content hr {
-    border: none;
-    border-top: 1px solid #475569;
-    margin: 1.5em 0;
+  border: none;
+  border-top: 1px solid #475569;
+  margin: 1.5em 0;
 }
 
 /* Strong and emphasis */
 .markdown-content strong {
-    font-weight: 600;
-    color: #f1f5f9;
+  font-weight: 600;
+  color: #f1f5f9;
 }
 
 .markdown-content em {
-    font-style: italic;
-    color: #cbd5e1;
+  font-style: italic;
+  color: #cbd5e1;
 }
 
 /* Light theme overrides for markdown */
 .light .markdown-content h1 {
-    border-bottom-color: #cbd5e1;
+  border-bottom-color: #cbd5e1;
 }
 
 .light .markdown-content pre {
-    background: #e2e8f0;
-    border-color: #cbd5e1;
+  background: #e2e8f0;
+  border-color: #cbd5e1;
 }
 
 .light .markdown-content :not(pre) > code {
-    background: #cbd5e1;
-    color: #be185d;
+  background: #cbd5e1;
+  color: #be185d;
 }
 
 .light .markdown-content a {
-    color: #2563eb;
+  color: #2563eb;
 }
 
 .light .markdown-content a:hover {
-    color: #1d4ed8;
+  color: #1d4ed8;
 }
 
 .light .markdown-content blockquote {
-    color: #64748b;
-    background: rgba(59, 130, 246, 0.1);
+  color: #64748b;
+  background: rgba(59, 130, 246, 0.1);
 }
 
-.light .markdown-content th, .light .markdown-content td {
-    border-color: #cbd5e1;
+.light .markdown-content th,
+.light .markdown-content td {
+  border-color: #cbd5e1;
 }
 
 .light .markdown-content th {
-    background: #e2e8f0;
+  background: #e2e8f0;
 }
 
 .light .markdown-content tr:nth-child(even) {
-    background: rgba(226, 232, 240, 0.5);
+  background: rgba(226, 232, 240, 0.5);
 }
 
 .light .markdown-content hr {
-    border-top-color: #cbd5e1;
+  border-top-color: #cbd5e1;
 }
 
 .light .markdown-content strong {
-    color: #1e293b;
+  color: #1e293b;
 }
 
 .light .markdown-content em {
-    color: #475569;
+  color: #475569;
 }
 
 /* =============================================================================
@@ -373,59 +460,59 @@
 /* User message markdown inherits from markdown-content but with color adjustments
    to work with the user message background (--mitto-user-bg) */
 .markdown-content-user {
-    /* Inherit base markdown styling */
+  /* Inherit base markdown styling */
 }
 
 /* Code blocks in user messages - use darker background for contrast */
 .markdown-content-user pre {
-    background: rgba(0, 0, 0, 0.15);
-    border-color: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.15);
+  border-color: rgba(0, 0, 0, 0.2);
 }
 
 .markdown-content-user :not(pre) > code {
-    background: rgba(0, 0, 0, 0.15);
-    color: inherit;
+  background: rgba(0, 0, 0, 0.15);
+  color: inherit;
 }
 
 /* Links in user messages */
 .markdown-content-user a {
-    color: #1d4ed8;
-    text-decoration: underline;
+  color: #1d4ed8;
+  text-decoration: underline;
 }
 
 .markdown-content-user a:hover {
-    color: #1e40af;
+  color: #1e40af;
 }
 
 /* Blockquotes in user messages */
 .markdown-content-user blockquote {
-    border-left-color: rgba(0, 0, 0, 0.3);
-    background: rgba(0, 0, 0, 0.08);
-    color: inherit;
+  border-left-color: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.08);
+  color: inherit;
 }
 
 /* Headers in user messages */
 .markdown-content-user h1 {
-    border-bottom-color: rgba(0, 0, 0, 0.2);
+  border-bottom-color: rgba(0, 0, 0, 0.2);
 }
 
 /* Tables in user messages */
 .markdown-content-user th,
 .markdown-content-user td {
-    border-color: rgba(0, 0, 0, 0.2);
+  border-color: rgba(0, 0, 0, 0.2);
 }
 
 .markdown-content-user th {
-    background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.1);
 }
 
 .markdown-content-user tr:nth-child(even) {
-    background: rgba(0, 0, 0, 0.05);
+  background: rgba(0, 0, 0, 0.05);
 }
 
 /* Horizontal rule in user messages */
 .markdown-content-user hr {
-    border-top-color: rgba(0, 0, 0, 0.2);
+  border-top-color: rgba(0, 0, 0, 0.2);
 }
 
 /* Dark theme adjustments for user messages (if user bubble is light) */
@@ -433,20 +520,20 @@
 
 /* Light theme user message markdown */
 .light .markdown-content-user pre {
-    background: rgba(0, 0, 0, 0.08);
-    border-color: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.15);
 }
 
 .light .markdown-content-user :not(pre) > code {
-    background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.1);
 }
 
 .light .markdown-content-user a {
-    color: #2563eb;
+  color: #2563eb;
 }
 
 .light .markdown-content-user a:hover {
-    color: #1d4ed8;
+  color: #1d4ed8;
 }
 
 /* =============================================================================
@@ -454,77 +541,80 @@
    ============================================================================= */
 
 .font-size-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 4px 6px;
-    background: #334155;
-    border: 1px solid #475569;
-    border-radius: 9999px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    user-select: none;
-    /* Explicit height for consistency with theme toggle */
-    height: 32px;
-    box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: #334155;
+  border: 1px solid #475569;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  /* Explicit height for consistency with theme toggle */
+  height: 32px;
+  box-sizing: border-box;
 }
 
 .font-size-toggle:hover {
-    background: #3f4f63;
-    border-color: #52617a;
+  background: #3f4f63;
+  border-color: #52617a;
 }
 
 .font-size-toggle__option {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    transition: all 0.2s ease;
-    color: #94a3b8;
-    font-weight: 600;
-    font-size: 11px;
-    font-family: system-ui, -apple-system, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+  color: #94a3b8;
+  font-weight: 600;
+  font-size: 11px;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
 }
 
 .font-size-toggle__option--large {
-    font-size: 15px;
+  font-size: 15px;
 }
 
 .font-size-toggle__option.active {
-    background: #475569;
-    color: #f1f5f9;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  background: #475569;
+  color: #f1f5f9;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .font-size-toggle__option:not(.active):hover {
-    color: #cbd5e1;
+  color: #cbd5e1;
 }
 
 /* Light theme for font size toggle */
 .light .font-size-toggle {
-    background: #e2e8f0;
-    border-color: #cbd5e1;
+  background: #e2e8f0;
+  border-color: #cbd5e1;
 }
 
 .light .font-size-toggle:hover {
-    background: #d4dae5;
-    border-color: #b4c0d0;
+  background: #d4dae5;
+  border-color: #b4c0d0;
 }
 
 .light .font-size-toggle__option {
-    color: #a1a1aa;
+  color: #a1a1aa;
 }
 
 .light .font-size-toggle__option.active {
-    background: #ffffff;
-    color: #18181b;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: #ffffff;
+  color: #18181b;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .light .font-size-toggle__option:not(.active):hover {
-    color: #71717a;
+  color: #71717a;
 }
 
 /* =============================================================================
@@ -533,34 +623,34 @@
 
 /* Small font (default) */
 .font-small .markdown-content {
-    font-size: 0.875rem; /* 14px */
+  font-size: 0.875rem; /* 14px */
 }
 
 .font-small .markdown-content pre,
 .font-small .markdown-content code {
-    font-size: 0.8125rem; /* 13px */
+  font-size: 0.8125rem; /* 13px */
 }
 
 /* Large font */
 .font-large .markdown-content {
-    font-size: 1rem; /* 16px */
+  font-size: 1rem; /* 16px */
 }
 
 .font-large .markdown-content pre,
 .font-large .markdown-content code {
-    font-size: 0.9375rem; /* 15px */
+  font-size: 0.9375rem; /* 15px */
 }
 
 .font-large .markdown-content h1 {
-    font-size: 1.625em;
+  font-size: 1.625em;
 }
 
 .font-large .markdown-content h2 {
-    font-size: 1.375em;
+  font-size: 1.375em;
 }
 
 .font-large .markdown-content h3 {
-    font-size: 1.15em;
+  font-size: 1.15em;
 }
 
 /* =============================================================================
@@ -568,109 +658,121 @@
    ============================================================================= */
 
 .scroll-to-bottom-btn {
-    position: fixed;
-    bottom: 100px;
-    right: 24px;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background: #334155;
-    border: 1px solid #475569;
-    color: #94a3b8;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    z-index: 50;
+  position: fixed;
+  bottom: 100px;
+  right: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #334155;
+  border: 1px solid #475569;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 50;
 }
 
 .scroll-to-bottom-btn:hover {
-    background: #475569;
-    color: #f1f5f9;
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  background: #475569;
+  color: #f1f5f9;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
 }
 
 .scroll-to-bottom-btn:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 /* New messages indicator (pulsing dot) */
 .scroll-to-bottom-btn.has-new {
-    background: #3b82f6;
-    border-color: #60a5fa;
-    color: white;
+  background: #3b82f6;
+  border-color: #60a5fa;
+  color: white;
 }
 
 .scroll-to-bottom-btn.has-new:hover {
-    background: #2563eb;
+  background: #2563eb;
 }
 
 .new-messages-indicator {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    width: 12px;
-    height: 12px;
-    background: #f97316;
-    border-radius: 50%;
-    border: 2px solid #1e293b;
-    animation: pulse-indicator 1.5s ease-in-out infinite;
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 12px;
+  height: 12px;
+  background: #f97316;
+  border-radius: 50%;
+  border: 2px solid #1e293b;
+  animation: pulse-indicator 1.5s ease-in-out infinite;
 }
 
 @keyframes pulse-indicator {
-    0%, 100% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.2); opacity: 0.8; }
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.8;
+  }
 }
 
 /* Entrance animation for the button */
 @keyframes slideUp {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .scroll-to-bottom-btn {
-    animation: slideUp 0.2s ease-out;
+  animation: slideUp 0.2s ease-out;
 }
 
 /* Light theme */
 .light .scroll-to-bottom-btn {
-    background: #e2e8f0;
-    border-color: #cbd5e1;
-    color: #64748b;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+  color: #64748b;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 .light .scroll-to-bottom-btn:hover {
-    background: #cbd5e1;
-    color: #1e293b;
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+  background: #cbd5e1;
+  color: #1e293b;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
 }
 
 .light .scroll-to-bottom-btn.has-new {
-    background: #3b82f6;
-    border-color: #60a5fa;
-    color: white;
+  background: #3b82f6;
+  border-color: #60a5fa;
+  color: white;
 }
 
 .light .scroll-to-bottom-btn.has-new:hover {
-    background: #2563eb;
+  background: #2563eb;
 }
 
 .light .new-messages-indicator {
-    border-color: #ffffff;
+  border-color: #ffffff;
 }
 
 /* Mobile adjustments */
 @media (max-width: 640px) {
-    .scroll-to-bottom-btn {
-        bottom: 90px;
-        right: 16px;
-        width: 40px;
-        height: 40px;
-    }
+  .scroll-to-bottom-btn {
+    bottom: 90px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+  }
 }
-
