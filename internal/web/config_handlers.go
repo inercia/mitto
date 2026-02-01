@@ -266,11 +266,21 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		newUIConfig = *req.UI
 	}
 
+	// Preserve Session and Conversations config (not exposed in web UI)
+	var sessionConfig *configPkg.SessionConfig
+	var conversationsConfig *configPkg.ConversationsConfig
+	if s.config.MittoConfig != nil {
+		sessionConfig = s.config.MittoConfig.Session
+		conversationsConfig = s.config.MittoConfig.Conversations
+	}
+
 	return &configPkg.Settings{
-		ACPServers: newACPServers,
-		Prompts:    req.Prompts,
-		Web:        newWebConfig,
-		UI:         newUIConfig,
+		ACPServers:    newACPServers,
+		Prompts:       req.Prompts,
+		Web:           newWebConfig,
+		UI:            newUIConfig,
+		Session:       sessionConfig,
+		Conversations: conversationsConfig,
 	}, nil
 }
 

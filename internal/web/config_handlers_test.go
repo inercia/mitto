@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -177,6 +178,12 @@ func TestHandleImprovePrompt_InvalidJSON(t *testing.T) {
 }
 
 func TestHandleSaveConfig_ValidRequest(t *testing.T) {
+	// Use temp dir to avoid writing to real settings file
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
 	sm := NewSessionManager("test-cmd", "test-server", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "test-server"},
@@ -203,14 +210,19 @@ func TestHandleSaveConfig_ValidRequest(t *testing.T) {
 
 	server.handleSaveConfig(w, req)
 
-	// Should return 500 because we don't have a real config file
-	// But this tests the validation path
-	if w.Code == http.StatusBadRequest {
-		t.Errorf("Status = %d, should not be 400 for valid request", w.Code)
+	// With proper temp dir setup, this should now succeed
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 }
 
 func TestHandleSaveConfig_EmptyWorkspaces(t *testing.T) {
+	// Use temp dir to avoid writing to real settings file
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
 	sm := NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
@@ -234,6 +246,12 @@ func TestHandleSaveConfig_EmptyWorkspaces(t *testing.T) {
 }
 
 func TestHandleSaveConfig_EmptyACPServers(t *testing.T) {
+	// Use temp dir to avoid writing to real settings file
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
 	sm := NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
