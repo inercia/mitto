@@ -80,7 +80,7 @@ These hooks require:
 
 ## Creating Your Own Hooks
 
-See [docs/config-hooks.md](../../docs/config-hooks.md) for the full hook configuration reference.
+See [docs/config/hooks.md](../../docs/config/hooks.md) for the full hook configuration reference.
 
 Basic structure:
 1. Create a YAML file defining the hook configuration

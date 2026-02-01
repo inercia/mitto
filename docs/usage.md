@@ -138,8 +138,7 @@ mitto cli --acp auggie
 
 ## Related Documentation
 
-- [Configuration](config.md) - ACP servers and settings
-- [Web Interface](config-web.md) - Authentication, hooks, themes
-- [macOS App](config-mac.md) - Hotkeys, notifications
+- [Configuration](config/README.md) - ACP servers and settings
+- [Web Interface](config/web.md) - Authentication, hooks, themes
+- [macOS App](config/mac.md) - Hotkeys, notifications
 - [Development](development.md) - Building and testing
-

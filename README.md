@@ -84,11 +84,11 @@ acp:
 | | |
 |---|---|
 | 📖 [Usage Guide](docs/usage.md) | Commands, flags, examples |
-| ⚙️ [Configuration](docs/config.md) | ACP servers, settings |
-| 🌐 [Web Interface](docs/config-web.md) | Auth, hooks, themes |
-| 🍎 [macOS App](docs/config-mac.md) | Hotkeys, notifications |
+| ⚙️ [Configuration](docs/config/README.md) | ACP servers, settings |
+| 🌐 [Web Interface](docs/config/web.md) | Auth, hooks, themes |
+| 🍎 [macOS App](docs/config/mac.md) | Hotkeys, notifications |
 | 🔧 [Development](docs/development.md) | Building, testing |
-| 🏗️ [Architecture](docs/architecture.md) | Design internals |
+| 🏗️ [Architecture](docs/devel/README.md) | Design internals |
 
 ## Requirements
 

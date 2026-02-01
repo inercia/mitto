@@ -8,7 +8,7 @@ alwaysApply: true
 
 Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables terminal-based interaction with AI coding agents like Auggie and Claude Code.
 
-**Key documentation**: See `docs/architecture.md` for comprehensive architecture details.
+**Key documentation**: See `docs/devel/` for comprehensive architecture details.
 
 ## Package Structure
 
@@ -117,7 +117,7 @@ func (s *Store) TryAcquireLock(...) (*Lock, error) { ... }
 ### Architecture Updates
 
 When adding new features:
-1. Update `docs/architecture.md` with new components
+1. Update `docs/devel/` with new components (see [README](../docs/devel/README.md) for which file)
 2. Add Mermaid diagrams for complex flows
 3. Document design decisions and rationale
 

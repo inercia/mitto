@@ -7,14 +7,9 @@ This directory contains documentation for Mitto, a CLI client for the Agent Comm
 | Document | Description |
 |----------|-------------|
 | [usage.md](usage.md) | Commands, flags, and usage examples |
-| [config.md](config.md) | Configuration overview and main settings |
-| [config-acp.md](config-acp.md) | ACP server setup (Claude, Auggie, Copilot) |
-| [config-workspace.md](config-workspace.md) | Workspace-specific `.mittorc` files |
-| [config-web.md](config-web.md) | Web server, authentication, hooks, and security |
-| [config-mac.md](config-mac.md) | macOS desktop app (building, hotkeys, notifications) |
-| [config-conversations.md](config-conversations.md) | Message processing and conversation rules |
+| [config/](config/README.md) | Configuration documentation |
 | [development.md](development.md) | Building, testing, and contributing |
-| [architecture.md](architecture.md) | System architecture, component design, and internal structure |
+| [devel/](devel/README.md) | Architecture and developer documentation |
 
 ## Quick Links
 
@@ -25,62 +20,25 @@ This directory contains documentation for Mitto, a CLI client for the Agent Comm
 
 ### Configuration
 
-The [config.md](config.md) document provides an overview of all configuration options:
+The [config/](config/README.md) directory contains all configuration documentation:
 
-- ACP server configuration
-- Links to detailed configuration sections
-
-### ACP Servers
-
-The [config-acp.md](config-acp.md) document covers:
-
-- Claude Code setup and configuration
-- Auggie setup and features
-- GitHub Copilot ACP (public preview)
-
-### Workspace Configuration
-
-The [config-workspace.md](config-workspace.md) document covers:
-
-- Workspace-specific `.mittorc` files
-- Project-specific prompts
-- Conversation processing rules
-- Merging with global configuration
-
-### Web Interface
-
-The [config-web.md](config-web.md) document covers:
-
-- Starting and configuring the web server
-- Authentication (username/password, IP allowlist, rate limiting)
-- Lifecycle hooks with examples for:
-  - [ngrok](config-web.md#using-ngrok)
-  - [Tailscale Funnel](config-web.md#using-tailscale-funnel)
-  - [Cloudflare Tunnel](config-web.md#using-cloudflare-tunnel)
-- Security settings (trusted proxies, origin validation, rate limiting)
-- Themes and predefined prompts
-- Reverse proxy setup (nginx, Caddy)
-- Multi-workspace support
-
-### macOS Desktop App
-
-The [config-mac.md](config-mac.md) document covers:
-
-- Building and running the app
-- Environment variable overrides
-- Global hotkeys (show/hide app)
-- Notification sounds (agent completed)
-- Settings dialog UI tab
+- [Overview](config/overview.md) - Configuration file locations and formats
+- [ACP Servers](config/acp.md) - Claude Code, Auggie, GitHub Copilot setup
+- [Web Interface](config/web.md) - Authentication, hooks, security, themes
+- [macOS App](config/mac.md) - Hotkeys, notifications, desktop app
+- [Workspaces](config/workspace.md) - Project-specific `.mittorc` files
+- [Conversations](config/conversations.md) - Message processing rules
+- [Hooks](config/hooks.md) - External command-based message hooks
 
 ### Architecture
 
-The [architecture.md](architecture.md) document covers:
+The [devel/](devel/README.md) directory contains developer documentation:
 
-- Package structure and responsibilities
-- Session management and persistence
-- ACP protocol integration
-- Background sessions and WebSocket handling
-- Frontend component structure
+- [Architecture](devel/architecture.md) - System design and components
+- [Session Management](devel/session-management.md) - Recording, playback, queues
+- [Web Interface](devel/web-interface.md) - Streaming, mobile support
+- [WebSocket Messaging](devel/websocket-messaging.md) - Protocol, sync, reconnection
+- [Workspaces](devel/workspaces.md) - Multi-workspace architecture
 
 ### Development
 
@@ -98,4 +56,3 @@ When adding new features, please update the relevant documentation:
 1. Update existing docs if modifying a feature
 2. Add new docs for major new features
 3. Update this README.md to include new documents
-
