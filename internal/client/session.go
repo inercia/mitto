@@ -51,6 +51,19 @@ type SessionCallbacks struct {
 	// events contains the missed events, eventCount is the total event count.
 	OnSessionSync func(events []SyncEvent, eventCount int)
 
+	// OnQueueUpdated is called when the message queue state changes.
+	// action is one of: "added", "removed", "cleared"
+	OnQueueUpdated func(queueLength int, action, messageID string)
+
+	// OnQueueMessageSending is called when a queued message is about to be sent.
+	OnQueueMessageSending func(messageID string)
+
+	// OnQueueMessageSent is called after a queued message was delivered.
+	OnQueueMessageSent func(messageID string)
+
+	// OnQueueMessageTitled is called when a queued message receives an auto-generated title.
+	OnQueueMessageTitled func(messageID, title string)
+
 	// OnError is called when an error occurs.
 	OnError func(message string)
 
@@ -363,6 +376,41 @@ func (s *Session) handleMessage(msg wsMessage) {
 		}
 		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnSessionSync != nil {
 			s.callbacks.OnSessionSync(data.Events, data.EventCount)
+		}
+
+	case "queue_updated":
+		var data struct {
+			QueueLength int    `json:"queue_length"`
+			Action      string `json:"action"`
+			MessageID   string `json:"message_id"`
+		}
+		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnQueueUpdated != nil {
+			s.callbacks.OnQueueUpdated(data.QueueLength, data.Action, data.MessageID)
+		}
+
+	case "queue_message_sending":
+		var data struct {
+			MessageID string `json:"message_id"`
+		}
+		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnQueueMessageSending != nil {
+			s.callbacks.OnQueueMessageSending(data.MessageID)
+		}
+
+	case "queue_message_sent":
+		var data struct {
+			MessageID string `json:"message_id"`
+		}
+		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnQueueMessageSent != nil {
+			s.callbacks.OnQueueMessageSent(data.MessageID)
+		}
+
+	case "queue_message_titled":
+		var data struct {
+			MessageID string `json:"message_id"`
+			Title     string `json:"title"`
+		}
+		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnQueueMessageTitled != nil {
+			s.callbacks.OnQueueMessageTitled(data.MessageID, data.Title)
 		}
 
 	case "error":

@@ -178,3 +178,161 @@ func (c *Client) DeleteSession(sessionID string) error {
 	}
 	return nil
 }
+
+// --- Queue API ---
+
+// QueuedMessage represents a message waiting to be sent to the agent.
+type QueuedMessage struct {
+	ID       string   `json:"id"`
+	Message  string   `json:"message"`
+	ImageIDs []string `json:"image_ids,omitempty"`
+	QueuedAt string   `json:"queued_at"`
+	ClientID string   `json:"client_id,omitempty"`
+	Title    string   `json:"title,omitempty"`
+}
+
+// QueueListResponse represents the response for listing queued messages.
+type QueueListResponse struct {
+	Messages []QueuedMessage `json:"messages"`
+	Count    int             `json:"count"`
+}
+
+// QueueAddRequest represents a request to add a message to the queue.
+type QueueAddRequest struct {
+	Message  string   `json:"message"`
+	ImageIDs []string `json:"image_ids,omitempty"`
+}
+
+// ListQueue returns all queued messages for a session.
+func (c *Client) ListQueue(sessionID string) (*QueueListResponse, error) {
+	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID) + "/queue"))
+	if err != nil {
+		return nil, fmt.Errorf("list queue: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list queue: status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result QueueListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("list queue: decode: %w", err)
+	}
+	return &result, nil
+}
+
+// AddToQueue adds a message to the session's queue.
+func (c *Client) AddToQueue(sessionID, message string) (*QueuedMessage, error) {
+	return c.AddToQueueWithImages(sessionID, message, nil)
+}
+
+// AddToQueueWithImages adds a message with images to the session's queue.
+func (c *Client) AddToQueueWithImages(sessionID, message string, imageIDs []string) (*QueuedMessage, error) {
+	reqBody := QueueAddRequest{
+		Message:  message,
+		ImageIDs: imageIDs,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("add to queue: marshal: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"),
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("add to queue: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("queue full: %s", string(respBody))
+	}
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("add to queue: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var msg QueuedMessage
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		return nil, fmt.Errorf("add to queue: decode: %w", err)
+	}
+	return &msg, nil
+}
+
+// GetQueueMessage returns a specific queued message.
+func (c *Client) GetQueueMessage(sessionID, messageID string) (*QueuedMessage, error) {
+	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID) + "/queue/" + url.PathEscape(messageID)))
+	if err != nil {
+		return nil, fmt.Errorf("get queue message: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("message not found: %s", messageID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get queue message: status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var msg QueuedMessage
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		return nil, fmt.Errorf("get queue message: decode: %w", err)
+	}
+	return &msg, nil
+}
+
+// RemoveFromQueue removes a message from the session's queue.
+func (c *Client) RemoveFromQueue(sessionID, messageID string) error {
+	req, err := http.NewRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue/"+url.PathEscape(messageID)), nil)
+	if err != nil {
+		return fmt.Errorf("remove from queue: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("remove from queue: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("message not found: %s", messageID)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("remove from queue: status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// ClearQueue removes all messages from the session's queue.
+func (c *Client) ClearQueue(sessionID string) error {
+	req, err := http.NewRequest(http.MethodDelete, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"), nil)
+	if err != nil {
+		return fmt.Errorf("clear queue: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("clear queue: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("clear queue: status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
