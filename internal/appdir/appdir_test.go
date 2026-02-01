@@ -8,18 +8,11 @@ import (
 )
 
 func TestDir_EnvOverride(t *testing.T) {
-	// Save original value
-	original := os.Getenv(MittoDirEnv)
-	defer func() {
-		os.Setenv(MittoDirEnv, original)
-		ResetCache()
-	}()
-
-	ResetCache()
-
-	// Set custom path via env var
+	// Use t.Setenv which automatically restores the original value
 	customDir := t.TempDir()
-	os.Setenv(MittoDirEnv, customDir)
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
 
 	dir, err := Dir()
 	if err != nil {
@@ -32,15 +25,12 @@ func TestDir_EnvOverride(t *testing.T) {
 }
 
 func TestDir_DefaultPath(t *testing.T) {
-	// Save original value
-	original := os.Getenv(MittoDirEnv)
-	defer func() {
-		os.Setenv(MittoDirEnv, original)
-		ResetCache()
-	}()
-
-	ResetCache()
+	// Unset the env var to test default path resolution
+	// Use t.Setenv with empty string, then unset - t.Setenv will restore original
+	t.Setenv(MittoDirEnv, "")
 	os.Unsetenv(MittoDirEnv)
+	ResetCache()
+	t.Cleanup(ResetCache)
 
 	dir, err := Dir()
 	if err != nil {
@@ -54,18 +44,11 @@ func TestDir_DefaultPath(t *testing.T) {
 }
 
 func TestEnsureDir(t *testing.T) {
-	// Save original value
-	original := os.Getenv(MittoDirEnv)
-	defer func() {
-		os.Setenv(MittoDirEnv, original)
-		ResetCache()
-	}()
-
-	ResetCache()
-
 	// Use temp dir
 	tmpDir := filepath.Join(t.TempDir(), "mitto-test")
-	os.Setenv(MittoDirEnv, tmpDir)
+	t.Setenv(MittoDirEnv, tmpDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
 
 	// Ensure the directory doesn't exist yet
 	if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
@@ -98,17 +81,10 @@ func TestEnsureDir(t *testing.T) {
 }
 
 func TestSettingsPath(t *testing.T) {
-	// Save original value
-	original := os.Getenv(MittoDirEnv)
-	defer func() {
-		os.Setenv(MittoDirEnv, original)
-		ResetCache()
-	}()
-
-	ResetCache()
-
 	customDir := t.TempDir()
-	os.Setenv(MittoDirEnv, customDir)
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
 
 	settingsPath, err := SettingsPath()
 	if err != nil {
@@ -122,17 +98,10 @@ func TestSettingsPath(t *testing.T) {
 }
 
 func TestSessionsDir(t *testing.T) {
-	// Save original value
-	original := os.Getenv(MittoDirEnv)
-	defer func() {
-		os.Setenv(MittoDirEnv, original)
-		ResetCache()
-	}()
-
-	ResetCache()
-
 	customDir := t.TempDir()
-	os.Setenv(MittoDirEnv, customDir)
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
 
 	sessionsDir, err := SessionsDir()
 	if err != nil {
@@ -146,17 +115,10 @@ func TestSessionsDir(t *testing.T) {
 }
 
 func TestWorkspacesPath(t *testing.T) {
-	// Save original value
-	original := os.Getenv(MittoDirEnv)
-	defer func() {
-		os.Setenv(MittoDirEnv, original)
-		ResetCache()
-	}()
-
-	ResetCache()
-
 	customDir := t.TempDir()
-	os.Setenv(MittoDirEnv, customDir)
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
 
 	workspacesPath, err := WorkspacesPath()
 	if err != nil {

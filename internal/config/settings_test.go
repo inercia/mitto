@@ -9,17 +9,11 @@ import (
 )
 
 func TestLoadSettings_CreatesDefaultSettings(t *testing.T) {
-	// Save original env
-	originalDir := os.Getenv(appdir.MittoDirEnv)
-	defer func() {
-		os.Setenv(appdir.MittoDirEnv, originalDir)
-		appdir.ResetCache()
-	}()
-
-	// Use temp dir
+	// Use temp dir - t.Setenv automatically restores original value
 	tmpDir := t.TempDir()
-	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
 	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
 
 	// Verify settings.json doesn't exist
 	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
@@ -45,17 +39,11 @@ func TestLoadSettings_CreatesDefaultSettings(t *testing.T) {
 }
 
 func TestLoadSettings_ReadsExistingSettings(t *testing.T) {
-	// Save original env
-	originalDir := os.Getenv(appdir.MittoDirEnv)
-	defer func() {
-		os.Setenv(appdir.MittoDirEnv, originalDir)
-		appdir.ResetCache()
-	}()
-
-	// Use temp dir
+	// Use temp dir - t.Setenv automatically restores original value
 	tmpDir := t.TempDir()
-	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
 	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
 
 	// Create a custom settings.json
 	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
@@ -231,17 +219,11 @@ func TestConfigToSettings_RoundTripWithSession(t *testing.T) {
 }
 
 func TestLoadSettings_WithSessionConfig(t *testing.T) {
-	// Save original env
-	originalDir := os.Getenv(appdir.MittoDirEnv)
-	defer func() {
-		os.Setenv(appdir.MittoDirEnv, originalDir)
-		appdir.ResetCache()
-	}()
-
-	// Use temp dir
+	// Use temp dir - t.Setenv automatically restores original value
 	tmpDir := t.TempDir()
-	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
 	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
 
 	// Create a settings.json with session config
 	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
@@ -277,17 +259,11 @@ func TestLoadSettings_WithSessionConfig(t *testing.T) {
 }
 
 func TestLoadSettings_NoSessionConfig(t *testing.T) {
-	// Save original env
-	originalDir := os.Getenv(appdir.MittoDirEnv)
-	defer func() {
-		os.Setenv(appdir.MittoDirEnv, originalDir)
-		appdir.ResetCache()
-	}()
-
-	// Use temp dir
+	// Use temp dir - t.Setenv automatically restores original value
 	tmpDir := t.TempDir()
-	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
 	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
 
 	// Create a settings.json without session config
 	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)

@@ -9,17 +9,11 @@ import (
 )
 
 func TestLoadWorkspaces_NoFile(t *testing.T) {
-	// Save original env
-	originalDir := os.Getenv(appdir.MittoDirEnv)
-	defer func() {
-		os.Setenv(appdir.MittoDirEnv, originalDir)
-		appdir.ResetCache()
-	}()
-
-	// Use temp dir
+	// Use temp dir - t.Setenv automatically restores original value
 	tmpDir := t.TempDir()
-	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
 	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
 
 	// Load workspaces - should return nil (not error) when file doesn't exist
 	workspaces, err := LoadWorkspaces()
@@ -32,17 +26,11 @@ func TestLoadWorkspaces_NoFile(t *testing.T) {
 }
 
 func TestLoadWorkspaces_ExistingFile(t *testing.T) {
-	// Save original env
-	originalDir := os.Getenv(appdir.MittoDirEnv)
-	defer func() {
-		os.Setenv(appdir.MittoDirEnv, originalDir)
-		appdir.ResetCache()
-	}()
-
-	// Use temp dir
+	// Use temp dir - t.Setenv automatically restores original value
 	tmpDir := t.TempDir()
-	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
 	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
 
 	// Create a workspaces.json file
 	workspacesPath := filepath.Join(tmpDir, appdir.WorkspacesFileName)
@@ -81,17 +69,11 @@ func TestLoadWorkspaces_ExistingFile(t *testing.T) {
 }
 
 func TestSaveWorkspaces(t *testing.T) {
-	// Save original env
-	originalDir := os.Getenv(appdir.MittoDirEnv)
-	defer func() {
-		os.Setenv(appdir.MittoDirEnv, originalDir)
-		appdir.ResetCache()
-	}()
-
-	// Use temp dir
+	// Use temp dir - t.Setenv automatically restores original value
 	tmpDir := t.TempDir()
-	os.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
 	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
 
 	// Save workspaces
 	workspaces := []WorkspaceSettings{
@@ -124,16 +106,11 @@ func TestSaveWorkspaces(t *testing.T) {
 }
 
 func TestWorkspacesPath(t *testing.T) {
-	// Save original env
-	originalDir := os.Getenv(appdir.MittoDirEnv)
-	defer func() {
-		os.Setenv(appdir.MittoDirEnv, originalDir)
-		appdir.ResetCache()
-	}()
-
+	// Use temp dir - t.Setenv automatically restores original value
 	customDir := t.TempDir()
-	os.Setenv(appdir.MittoDirEnv, customDir)
+	t.Setenv(appdir.MittoDirEnv, customDir)
 	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
 
 	path, err := WorkspacesPath()
 	if err != nil {

@@ -565,6 +565,123 @@ func TestEventOrder_InterleavedToolCalls(t *testing.T) {
 	t.Logf("Event order: %v", eventOrder)
 }
 
+// TestEventOrder_MessageBeforeSecondToolCall verifies agent messages appear BEFORE subsequent tool calls.
+// This is the key ordering test: the mock server sends interleaved events, and we verify
+// that a message appears between the first and second tool calls.
+//
+// Expected order from mock: thought → tool_call:read → tool_update:read → MESSAGE → tool_call:edit → tool_update:edit → MESSAGE
+// The test fails if all messages appear at the end (which happens if MarkdownBuffer isn't flushed before tool calls).
+func TestEventOrder_MessageBeforeSecondToolCall(t *testing.T) {
+	c := client.New(testServerURL)
+
+	session, err := c.CreateSession(client.CreateSessionRequest{
+		Name:       "order-verification-test",
+		WorkingDir: testWorkspace,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	defer c.DeleteSession(session.SessionID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Track all events in order with detailed info
+	var mu sync.Mutex
+	var eventOrder []string
+	done := make(chan struct{})
+
+	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+		OnAgentThought: func(text string) {
+			mu.Lock()
+			eventOrder = append(eventOrder, "thought")
+			mu.Unlock()
+		},
+		OnAgentMessage: func(html string) {
+			mu.Lock()
+			eventOrder = append(eventOrder, "message")
+			mu.Unlock()
+		},
+		OnToolCall: func(id, title, status string) {
+			mu.Lock()
+			eventOrder = append(eventOrder, fmt.Sprintf("tool_call:%s", id))
+			mu.Unlock()
+		},
+		OnToolUpdate: func(id, status string) {
+			mu.Lock()
+			eventOrder = append(eventOrder, fmt.Sprintf("tool_update:%s:%s", id, status))
+			mu.Unlock()
+		},
+		OnPromptComplete: func(eventCount int) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer sess.Close()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Trigger the interleaved scenario
+	if err := sess.SendPrompt("fix the file"); err != nil {
+		t.Fatalf("SendPrompt failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("Timeout waiting for prompt completion")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	t.Logf("Event order: %v", eventOrder)
+
+	// Find the positions of key events
+	firstToolCallIdx := -1
+	secondToolCallIdx := -1
+	messageIndices := []int{}
+
+	for i, e := range eventOrder {
+		switch {
+		case e == "tool_call:tool-read-1" && firstToolCallIdx == -1:
+			firstToolCallIdx = i
+		case e == "tool_call:tool-edit-1" && secondToolCallIdx == -1:
+			secondToolCallIdx = i
+		case e == "message":
+			messageIndices = append(messageIndices, i)
+		}
+	}
+
+	// Verify we found the expected events
+	if firstToolCallIdx == -1 {
+		t.Fatal("Did not find first tool call (tool-read-1)")
+	}
+	if secondToolCallIdx == -1 {
+		t.Fatal("Did not find second tool call (tool-edit-1)")
+	}
+	if len(messageIndices) == 0 {
+		t.Fatal("Did not find any message events")
+	}
+
+	// KEY TEST: At least one message must appear BETWEEN the first tool call and second tool call
+	// This verifies that messages are not batched to the end
+	messageBeforeSecondTool := false
+	for _, msgIdx := range messageIndices {
+		if msgIdx > firstToolCallIdx && msgIdx < secondToolCallIdx {
+			messageBeforeSecondTool = true
+			break
+		}
+	}
+
+	if !messageBeforeSecondTool {
+		t.Errorf("No message appeared between first tool call (idx %d) and second tool call (idx %d). Messages at indices: %v. This indicates messages are being batched to the end instead of interleaved.",
+			firstToolCallIdx, secondToolCallIdx, messageIndices)
+	}
+}
+
 // TestEventCompleteness_AllEventTypes verifies all expected event types are received
 func TestEventCompleteness_AllEventTypes(t *testing.T) {
 	c := client.New(testServerURL)
