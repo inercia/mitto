@@ -134,6 +134,9 @@ type Server struct {
 	externalHTTPServer *http.Server // Separate server for external connections (marks them as external)
 	externalMu         sync.Mutex
 	externalPort       int // Port for external listener (same as main port by default)
+
+	// Queue title worker for generating titles for queued messages
+	queueTitleWorker *QueueTitleWorker
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -276,6 +279,17 @@ func NewServer(config Config) (*Server, error) {
 		proxyChecker:      proxyChecker,
 	}
 
+	// Initialize queue title worker
+	s.queueTitleWorker = NewQueueTitleWorker(store, logger)
+	s.queueTitleWorker.OnTitleGenerated = func(sessionID, messageID, title string) {
+		// Broadcast title update to all connected clients
+		s.eventsManager.Broadcast(WSMsgTypeQueueMessageTitled, map[string]string{
+			"session_id": sessionID,
+			"message_id": messageID,
+			"title":      title,
+		})
+	}
+
 	// Set up routes
 	mux := http.NewServeMux()
 
@@ -405,6 +419,11 @@ func (s *Server) Shutdown() error {
 	// Close session store
 	if s.store != nil {
 		s.store.Close()
+	}
+
+	// Close queue title worker
+	if s.queueTitleWorker != nil {
+		s.queueTitleWorker.Close()
 	}
 
 	return s.httpServer.Shutdown(context.Background())

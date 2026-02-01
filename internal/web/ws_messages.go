@@ -190,6 +190,11 @@ const (
 	// Sent after the message has been removed from the queue and sent.
 	// Data: { "message_id": string }
 	WSMsgTypeQueueMessageSent = "queue_message_sent"
+
+	// WSMsgTypeQueueMessageTitled notifies that a queued message received an auto-generated title.
+	// Sent after the auxiliary conversation generates a title for the message.
+	// Data: { "session_id": string, "message_id": string, "title": string }
+	WSMsgTypeQueueMessageTitled = "queue_message_titled"
 )
 
 // =============================================================================

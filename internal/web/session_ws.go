@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -193,9 +194,23 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 		} else if c.logger != nil {
 			c.logger.Warn("Failed to get metadata for connected message", "error", err)
 		}
+
+		// Get queue length for the session
+		queue := c.store.Queue(c.sessionID)
+		if queueLen, err := queue.Len(); err == nil {
+			data["queue_length"] = queueLen
+		}
 	} else if c.logger != nil {
 		c.logger.Warn("No store for connected message")
 	}
+
+	// Get queue configuration for the session
+	// Use the background session's config if available, otherwise use defaults
+	var queueConfig *config.QueueConfig
+	if bs != nil {
+		queueConfig = bs.GetQueueConfig()
+	}
+	data["queue_config"] = NewQueueConfigResponse(queueConfig)
 
 	c.sendMessage(WSMsgTypeConnected, data)
 }

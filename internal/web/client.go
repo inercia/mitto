@@ -80,6 +80,8 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		}
 
 	case u.AgentThoughtChunk != nil:
+		// Flush any buffered message before thought to maintain event order
+		c.mdBuffer.Flush()
 		// Thoughts are sent as-is (not markdown)
 		thought := u.AgentThoughtChunk.Content
 		if thought.Text != nil && c.onAgentThought != nil {
@@ -87,6 +89,10 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		}
 
 	case u.ToolCall != nil:
+		// Flush any buffered message before tool call to maintain event order.
+		// Without this, all messages would be batched and sent at the end,
+		// appearing after all tool calls instead of interleaved.
+		c.mdBuffer.Flush()
 		if c.onToolCall != nil {
 			c.onToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, string(u.ToolCall.Status))
 		}

@@ -2,9 +2,11 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -18,6 +20,32 @@ type QueueAddRequest struct {
 type QueueListResponse struct {
 	Messages []session.QueuedMessage `json:"messages"`
 	Count    int                     `json:"count"`
+}
+
+// QueueConfigResponse represents the queue configuration for API responses.
+// This is sent to clients so they can enforce limits client-side and display queue status.
+type QueueConfigResponse struct {
+	// Enabled indicates whether automatic queue processing is active.
+	// When false, messages remain in queue until manually sent.
+	Enabled bool `json:"enabled"`
+
+	// MaxSize is the maximum number of messages allowed in the queue.
+	// When the queue is full, new messages are rejected.
+	MaxSize int `json:"max_size"`
+
+	// DelaySeconds is the delay before sending the next queued message
+	// after the agent finishes responding.
+	DelaySeconds int `json:"delay_seconds"`
+}
+
+// NewQueueConfigResponse creates a QueueConfigResponse from a config.QueueConfig.
+// If qc is nil, default values are used.
+func NewQueueConfigResponse(qc *config.QueueConfig) QueueConfigResponse {
+	return QueueConfigResponse{
+		Enabled:      qc.IsEnabled(),
+		MaxSize:      qc.GetMaxSize(),
+		DelaySeconds: qc.GetDelaySeconds(),
+	}
 }
 
 // handleSessionQueue handles queue operations for a session.
@@ -95,8 +123,27 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 	// Get client ID from request context if available (e.g., from auth)
 	clientID := ""
 
-	msg, err := queue.Add(req.Message, req.ImageIDs, clientID)
+	// Get queue config from session (for max size and auto-generate titles)
+	var queueConfig *config.QueueConfig
+	if s.sessionManager != nil {
+		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+			queueConfig = bs.GetQueueConfig()
+		}
+	}
+
+	// Get queue max size from config (or use default)
+	maxSize := config.DefaultQueueMaxSize
+	if queueConfig != nil {
+		maxSize = queueConfig.GetMaxSize()
+	}
+
+	msg, err := queue.Add(req.Message, req.ImageIDs, clientID, maxSize)
 	if err != nil {
+		if errors.Is(err, session.ErrQueueFull) {
+			writeErrorJSON(w, http.StatusConflict, "queue_full",
+				fmt.Sprintf("Queue is full. Maximum %d messages allowed.", maxSize))
+			return
+		}
 		if s.logger != nil {
 			s.logger.Error("Failed to add message to queue", "error", err, "session_id", sessionID)
 		}
@@ -106,6 +153,15 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 
 	// Notify observers about queue update
 	s.notifyQueueUpdate(sessionID, "added", msg.ID)
+
+	// Enqueue title generation if enabled
+	if s.queueTitleWorker != nil && queueConfig.ShouldAutoGenerateTitles() {
+		s.queueTitleWorker.Enqueue(QueueTitleRequest{
+			SessionID: sessionID,
+			MessageID: msg.ID,
+			Message:   req.Message,
+		})
+	}
 
 	writeJSONCreated(w, msg)
 }

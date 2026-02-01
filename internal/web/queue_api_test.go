@@ -124,8 +124,8 @@ func TestHandleSessionQueue_Delete_Message(t *testing.T) {
 	server, sessionID := setupQueueTestServer(t)
 	queue := server.store.Queue(sessionID)
 
-	// Add a message first
-	msg, _ := queue.Add("Test", nil, "")
+	// Add a message first (0 = no limit)
+	msg, _ := queue.Add("Test", nil, "", 0)
 
 	req := httptest.NewRequest(http.MethodDelete, "/mitto/api/sessions/"+sessionID+"/queue/"+msg.ID, nil)
 	w := httptest.NewRecorder()
@@ -167,10 +167,10 @@ func TestHandleSessionQueue_Clear(t *testing.T) {
 	server, sessionID := setupQueueTestServer(t)
 	queue := server.store.Queue(sessionID)
 
-	// Add some messages
-	queue.Add("First", nil, "")
-	queue.Add("Second", nil, "")
-	queue.Add("Third", nil, "")
+	// Add some messages (0 = no limit)
+	queue.Add("First", nil, "", 0)
+	queue.Add("Second", nil, "", 0)
+	queue.Add("Third", nil, "", 0)
 
 	req := httptest.NewRequest(http.MethodDelete, "/mitto/api/sessions/"+sessionID+"/queue", nil)
 	w := httptest.NewRecorder()
@@ -195,8 +195,8 @@ func TestHandleSessionQueue_Get_Message(t *testing.T) {
 	server, sessionID := setupQueueTestServer(t)
 	queue := server.store.Queue(sessionID)
 
-	// Add a message
-	msg, _ := queue.Add("Test message", []string{"img1"}, "client1")
+	// Add a message (0 = no limit)
+	msg, _ := queue.Add("Test message", []string{"img1"}, "client1", 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/mitto/api/sessions/"+sessionID+"/queue/"+msg.ID, nil)
 	w := httptest.NewRecorder()

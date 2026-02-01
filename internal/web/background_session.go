@@ -267,6 +267,12 @@ func (bs *BackgroundSession) CreatedAt() time.Time {
 	return time.Time{}
 }
 
+// GetQueueConfig returns the queue configuration for this session.
+// May return nil if no queue config is set (use defaults in that case).
+func (bs *BackgroundSession) GetQueueConfig() *config.QueueConfig {
+	return bs.queueConfig
+}
+
 // --- Observer Management ---
 
 // AddObserver adds an observer to receive session events.
