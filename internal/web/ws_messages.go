@@ -47,21 +47,6 @@ const (
 	// Data: none
 	WSMsgTypeCancel = "cancel"
 
-	// WSMsgTypeNewSession requests creation of a new session.
-	// Data: { "working_dir": string, "acp_server": string (optional) }
-	// Note: Deprecated - use POST /api/sessions instead
-	WSMsgTypeNewSession = "new_session"
-
-	// WSMsgTypeLoadSession requests loading an existing session.
-	// Data: { "session_id": string }
-	// Note: Deprecated - connect to /api/sessions/{id}/ws instead
-	WSMsgTypeLoadSession = "load_session"
-
-	// WSMsgTypeSwitchSession requests switching to a different session.
-	// Data: { "session_id": string }
-	// Note: Deprecated - connect to /api/sessions/{id}/ws instead
-	WSMsgTypeSwitchSession = "switch_session"
-
 	// WSMsgTypePermissionAnswer responds to a permission request from the agent.
 	// Data: { "request_id": string, "approved": bool }
 	WSMsgTypePermissionAnswer = "permission_answer"
