@@ -23,6 +23,8 @@ var (
 	ErrQueueEmpty = errors.New("queue is empty")
 	// ErrMessageNotFound is returned when a message ID is not found in the queue.
 	ErrMessageNotFound = errors.New("message not found in queue")
+	// ErrQueueFull is returned when trying to add to a queue that has reached its maximum size.
+	ErrQueueFull = errors.New("queue is full")
 )
 
 // QueuedMessage represents a message waiting to be sent to the agent.
@@ -37,6 +39,8 @@ type QueuedMessage struct {
 	QueuedAt time.Time `json:"queued_at"`
 	// ClientID identifies the client that queued this message (for UI tracking).
 	ClientID string `json:"client_id,omitempty"`
+	// Title is an optional short title for the message (auto-generated asynchronously).
+	Title string `json:"title,omitempty"`
 }
 
 // QueueFile represents the persisted queue state.
@@ -105,13 +109,20 @@ func (q *Queue) writeQueue(qf *QueueFile) error {
 }
 
 // Add adds a message to the queue and returns the assigned message.
-func (q *Queue) Add(message string, imageIDs []string, clientID string) (QueuedMessage, error) {
+// If maxSize > 0 and the queue already has maxSize messages, ErrQueueFull is returned.
+// If maxSize <= 0, no size limit is enforced.
+func (q *Queue) Add(message string, imageIDs []string, clientID string, maxSize int) (QueuedMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	qf, err := q.readQueue()
 	if err != nil {
 		return QueuedMessage{}, err
+	}
+
+	// Check queue size limit
+	if maxSize > 0 && len(qf.Messages) >= maxSize {
+		return QueuedMessage{}, ErrQueueFull
 	}
 
 	msg := QueuedMessage{
@@ -191,6 +202,33 @@ func (q *Queue) Remove(id string) error {
 	}
 
 	qf.Messages = newMessages
+	return q.writeQueue(qf)
+}
+
+// UpdateTitle updates the title of a specific message by ID.
+// Returns ErrMessageNotFound if the message doesn't exist.
+func (q *Queue) UpdateTitle(id, title string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	qf, err := q.readQueue()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	for i := range qf.Messages {
+		if qf.Messages[i].ID == id {
+			qf.Messages[i].Title = title
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return ErrMessageNotFound
+	}
+
 	return q.writeQueue(qf)
 }
 
