@@ -62,6 +62,18 @@ func (m *mockObserver) OnError(message string) {
 	m.errorMessages = append(m.errorMessages, message)
 }
 
+func (m *mockObserver) OnQueueUpdated(queueLength int, action string, messageID string) {
+	// no-op for testing
+}
+
+func (m *mockObserver) OnQueueMessageSending(messageID string) {
+	// no-op for testing
+}
+
+func (m *mockObserver) OnQueueMessageSent(messageID string) {
+	// no-op for testing
+}
+
 func TestSessionObserver_Interface(t *testing.T) {
 	// Verify mockObserver implements SessionObserver
 	var _ SessionObserver = (*mockObserver)(nil)

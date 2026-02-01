@@ -277,6 +277,18 @@ func (m *mockSessionObserver) OnError(message string) {
 	m.errors = append(m.errors, message)
 }
 
+func (m *mockSessionObserver) OnQueueUpdated(queueLength int, action string, messageID string) {
+	// No-op for tests
+}
+
+func (m *mockSessionObserver) OnQueueMessageSending(messageID string) {
+	// No-op for tests
+}
+
+func (m *mockSessionObserver) OnQueueMessageSent(messageID string) {
+	// No-op for tests
+}
+
 // Tests for NeedsTitle
 
 func TestBackgroundSession_NeedsTitle_NoStore(t *testing.T) {

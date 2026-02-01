@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
@@ -180,6 +181,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isEventsRequest := len(parts) > 1 && parts[1] == "events"
 	isWSRequest := len(parts) > 1 && parts[1] == "ws"
 	isImagesRequest := len(parts) > 1 && parts[1] == "images"
+	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
@@ -195,6 +197,17 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			imagePath = parts[2]
 		}
 		s.handleSessionImages(w, r, sessionID, imagePath)
+		return
+	}
+
+	// Handle queue operations
+	if isQueueRequest {
+		// Extract message ID if present: /api/sessions/{id}/queue/{msgId}
+		queuePath := ""
+		if len(parts) > 2 {
+			queuePath = "/" + parts[2]
+		}
+		s.handleSessionQueue(w, r, sessionID, queuePath)
 		return
 	}
 
@@ -618,6 +631,7 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 
 // handleWorkspacePrompts handles GET /api/workspace-prompts?dir=...
 // Returns the prompts from the workspace's .mittorc file.
+// Supports conditional requests via If-Modified-Since header.
 func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -630,7 +644,34 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Get the file's last modification time for conditional requests
+	lastModified := s.sessionManager.GetWorkspaceRCLastModified(workingDir)
+
+	// Check If-Modified-Since header for conditional request
+	if !lastModified.IsZero() {
+		// Set Last-Modified header
+		w.Header().Set("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
+
+		// Check if client has fresh data
+		if ifModifiedSince := r.Header.Get("If-Modified-Since"); ifModifiedSince != "" {
+			if t, err := time.Parse(http.TimeFormat, ifModifiedSince); err == nil {
+				// HTTP time has second precision, so truncate for comparison
+				if !lastModified.Truncate(time.Second).After(t) {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+			}
+		}
+	}
+
 	prompts := s.sessionManager.GetWorkspacePrompts(workingDir)
+
+	if s.logger != nil {
+		s.logger.Debug("Returning workspace prompts",
+			"working_dir", workingDir,
+			"prompt_count", len(prompts),
+			"last_modified", lastModified)
+	}
 
 	writeJSONOK(w, map[string]interface{}{
 		"prompts":     prompts,

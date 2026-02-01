@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -417,6 +418,97 @@ func TestHandleWorkspacePrompts_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleWorkspacePrompts_ConditionalRequest(t *testing.T) {
+	// Create a temp directory with a .mittorc file
+	tmpDir := t.TempDir()
+	rcPath := tmpDir + "/.mittorc"
+
+	// Create a .mittorc file with prompts
+	rcContent := `prompts:
+  - name: "Test Prompt"
+    prompt: "Test prompt text"
+`
+	if err := os.WriteFile(rcPath, []byte(rcContent), 0644); err != nil {
+		t.Fatalf("Failed to create .mittorc: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+	}
+
+	// First request - should return prompts with Last-Modified header
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	w1 := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Errorf("First request: Status = %d, want %d", w1.Code, http.StatusOK)
+	}
+
+	lastModified := w1.Header().Get("Last-Modified")
+	if lastModified == "" {
+		t.Errorf("Expected Last-Modified header to be set")
+	}
+
+	// Second request with If-Modified-Since - should return 304
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req2.Header.Set("If-Modified-Since", lastModified)
+	w2 := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w2, req2)
+
+	if w2.Code != http.StatusNotModified {
+		t.Errorf("Conditional request: Status = %d, want %d", w2.Code, http.StatusNotModified)
+	}
+}
+
+func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
+	// Create a temp directory with a .mittorc file
+	tmpDir := t.TempDir()
+	rcPath := tmpDir + "/.mittorc"
+
+	// Create a .mittorc file with prompts
+	rcContent := `prompts:
+  - name: "Test Prompt"
+    prompt: "Test prompt text"
+`
+	if err := os.WriteFile(rcPath, []byte(rcContent), 0644); err != nil {
+		t.Fatalf("Failed to create .mittorc: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+	}
+
+	// First request - should return prompts
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	w1 := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Errorf("First request: Status = %d, want %d", w1.Code, http.StatusOK)
+	}
+
+	// Delete the .mittorc file
+	if err := os.Remove(rcPath); err != nil {
+		t.Fatalf("Failed to delete .mittorc: %v", err)
+	}
+
+	// Request after file deletion - should return OK with empty prompts
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	w2 := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Errorf("Request after deletion: Status = %d, want %d", w2.Code, http.StatusOK)
+	}
+
+	// Should not have Last-Modified header since file doesn't exist
+	lastModified := w2.Header().Get("Last-Modified")
+	if lastModified != "" {
+		t.Errorf("Expected no Last-Modified header after file deletion, got %q", lastModified)
 	}
 }
 

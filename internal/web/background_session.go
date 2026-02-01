@@ -32,9 +32,9 @@ type BackgroundSession struct {
 	acpClient *WebClient
 
 	// Session persistence
-	recorder        *session.Recorder
-	agentMsgBuffer  *agentMessageBuffer
-	agentThoughtBuf *agentMessageBuffer
+	recorder    *session.Recorder
+	eventBuffer *EventBuffer // Unified buffer for all streaming events
+	bufferMu    sync.Mutex   // Protects eventBuffer
 
 	// Session lifecycle
 	ctx    context.Context
@@ -64,6 +64,9 @@ type BackgroundSession struct {
 	hookManager   *msghooks.Manager         // External command hooks for message transformation
 	workingDir    string                    // Working directory for hook execution
 	isFirstPrompt bool                      // True until first prompt is sent (for processor conditions)
+
+	// Queue processing
+	queueConfig *config.QueueConfig // Queue configuration (nil means use defaults)
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -79,51 +82,53 @@ type BackgroundSessionConfig struct {
 	SessionName  string
 	Processors   []config.MessageProcessor // Merged processors for message transformation
 	HookManager  *msghooks.Manager         // External command hooks for message transformation
+	QueueConfig  *config.QueueConfig       // Queue processing configuration
 }
 
 // NewBackgroundSession creates a new background session.
 // The session starts the ACP process and is ready to accept prompts.
-func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, error) {
+func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bs := &BackgroundSession{
-		ctx:             ctx,
-		cancel:          cancel,
-		autoApprove:     config.AutoApprove,
-		logger:          config.Logger,
-		agentMsgBuffer:  &agentMessageBuffer{},
-		agentThoughtBuf: &agentMessageBuffer{},
-		observers:       make(map[SessionObserver]struct{}),
-		processors:      config.Processors,
-		hookManager:     config.HookManager,
-		workingDir:      config.WorkingDir,
-		isFirstPrompt:   true, // New session starts with first prompt pending
+		ctx:           ctx,
+		cancel:        cancel,
+		autoApprove:   cfg.AutoApprove,
+		logger:        cfg.Logger,
+		eventBuffer:   NewEventBuffer(),
+		observers:     make(map[SessionObserver]struct{}),
+		processors:    cfg.Processors,
+		hookManager:   cfg.HookManager,
+		workingDir:    cfg.WorkingDir,
+		isFirstPrompt: true, // New session starts with first prompt pending
+		queueConfig:   cfg.QueueConfig,
 	}
 
 	// Create recorder for persistence
-	if config.Store != nil {
-		bs.recorder = session.NewRecorder(config.Store)
+	if cfg.Store != nil {
+		bs.recorder = session.NewRecorder(cfg.Store)
 		bs.persistedID = bs.recorder.SessionID()
+		bs.store = cfg.Store
 		// Use StartWithCommand to store the ACP command for session resume
-		if err := bs.recorder.StartWithCommand(config.ACPServer, config.ACPCommand, config.WorkingDir); err != nil {
+		if err := bs.recorder.StartWithCommand(cfg.ACPServer, cfg.ACPCommand, cfg.WorkingDir); err != nil {
 			cancel()
 			return nil, err
 		}
 		// Update session name
-		if config.SessionName != "" {
-			config.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
-				meta.Name = config.SessionName
+		if cfg.SessionName != "" {
+			cfg.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
+				meta.Name = cfg.SessionName
 			})
 		}
 
 		// Create session-scoped logger with context
 		if bs.logger != nil {
-			bs.logger = logging.WithSessionContext(bs.logger, bs.persistedID, config.WorkingDir, config.ACPServer)
+			bs.logger = logging.WithSessionContext(bs.logger, bs.persistedID, cfg.WorkingDir, cfg.ACPServer)
 		}
 	}
 
 	// Start ACP process (no ACP session ID for new sessions)
-	if err := bs.startACPProcess(config.ACPCommand, config.WorkingDir, ""); err != nil {
+	if err := bs.startACPProcess(cfg.ACPCommand, cfg.WorkingDir, ""); err != nil {
 		cancel()
 		if bs.recorder != nil {
 			bs.recorder.End("failed_to_start")
@@ -132,8 +137,8 @@ func NewBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession, e
 	}
 
 	// Store the ACP session ID in metadata for future resumption
-	if config.Store != nil && bs.acpID != "" {
-		if err := config.Store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+	if cfg.Store != nil && bs.acpID != "" {
+		if err := cfg.Store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
 			m.ACPSessionID = bs.acpID
 		}); err != nil && bs.logger != nil {
 			bs.logger.Warn("Failed to store ACP session ID in metadata", "error", err)
@@ -162,20 +167,20 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	bs := &BackgroundSession{
-		persistedID:     config.PersistedID,
-		ctx:             ctx,
-		cancel:          cancel,
-		autoApprove:     config.AutoApprove,
-		logger:          sessionLogger,
-		agentMsgBuffer:  &agentMessageBuffer{},
-		agentThoughtBuf: &agentMessageBuffer{},
-		observers:       make(map[SessionObserver]struct{}),
-		isResumed:       true, // Mark as resumed session
-		store:           config.Store,
-		processors:      config.Processors,
-		hookManager:     config.HookManager,
-		workingDir:      config.WorkingDir,
-		isFirstPrompt:   false, // Resumed session = first prompt already sent
+		persistedID:   config.PersistedID,
+		ctx:           ctx,
+		cancel:        cancel,
+		autoApprove:   config.AutoApprove,
+		logger:        sessionLogger,
+		eventBuffer:   NewEventBuffer(),
+		observers:     make(map[SessionObserver]struct{}),
+		isResumed:     true, // Mark as resumed session
+		store:         config.Store,
+		processors:    config.Processors,
+		hookManager:   config.HookManager,
+		workingDir:    config.WorkingDir,
+		isFirstPrompt: false, // Resumed session = first prompt already sent
+		queueConfig:   config.QueueConfig,
 	}
 
 	// Resume recorder for the existing session
@@ -266,15 +271,79 @@ func (bs *BackgroundSession) CreatedAt() time.Time {
 
 // AddObserver adds an observer to receive session events.
 // Multiple observers can be added to the same session.
+// If the session is currently streaming, the observer will receive all buffered
+// events (thoughts, messages, tool calls, file operations) in the order they occurred.
 func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 	bs.observersMu.Lock()
-	defer bs.observersMu.Unlock()
 	if bs.observers == nil {
 		bs.observers = make(map[SessionObserver]struct{})
 	}
 	bs.observers[observer] = struct{}{}
+	observerCount := len(bs.observers)
+	bs.observersMu.Unlock()
+
 	if bs.logger != nil {
-		bs.logger.Debug("Observer added", "observer_count", len(bs.observers))
+		bs.logger.Debug("Observer added", "observer_count", observerCount)
+	}
+
+	// If the session is currently prompting, replay all buffered events to the new observer
+	// so they can catch up with what's been streamed since the last persisted event.
+	bs.promptMu.Lock()
+	isPrompting := bs.isPrompting
+	bs.promptMu.Unlock()
+
+	if isPrompting {
+		bs.replayBufferedEventsTo(observer)
+	}
+}
+
+// replayBufferedEventsTo sends all buffered events to a single observer in order.
+// This is used to catch up newly connected observers on in-progress streaming.
+func (bs *BackgroundSession) replayBufferedEventsTo(observer SessionObserver) {
+	bs.bufferMu.Lock()
+	var events []BufferedEvent
+	if bs.eventBuffer != nil {
+		events = bs.eventBuffer.Events() // Get a copy, don't flush
+	}
+	bs.bufferMu.Unlock()
+
+	if len(events) == 0 {
+		return
+	}
+
+	if bs.logger != nil {
+		bs.logger.Debug("Replaying buffered events to new observer", "event_count", len(events))
+	}
+
+	for _, event := range events {
+		switch event.Type {
+		case BufferedEventAgentThought:
+			if data, ok := event.Data.(*AgentThoughtData); ok && data.Text != "" {
+				observer.OnAgentThought(data.Text)
+			}
+		case BufferedEventAgentMessage:
+			if data, ok := event.Data.(*AgentMessageData); ok && data.HTML != "" {
+				observer.OnAgentMessage(data.HTML)
+			}
+		case BufferedEventToolCall:
+			if data, ok := event.Data.(*ToolCallData); ok {
+				observer.OnToolCall(data.ID, data.Title, data.Status)
+			}
+		case BufferedEventToolCallUpdate:
+			if data, ok := event.Data.(*ToolCallUpdateData); ok {
+				observer.OnToolUpdate(data.ID, data.Status)
+			}
+		case BufferedEventPlan:
+			observer.OnPlan()
+		case BufferedEventFileRead:
+			if data, ok := event.Data.(*FileOperationData); ok {
+				observer.OnFileRead(data.Path, data.Size)
+			}
+		case BufferedEventFileWrite:
+			if data, ok := event.Data.(*FileOperationData); ok {
+				observer.OnFileWrite(data.Path, data.Size)
+			}
+		}
 	}
 }
 
@@ -383,30 +452,67 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 	return history + message
 }
 
-// flushAndPersistMessages persists any buffered agent messages.
-// Note: Thoughts are persisted BEFORE messages to maintain correct display order
-// (the agent thinks before responding).
+// flushAndPersistMessages persists all buffered events in streaming order.
+// Events are persisted in the order they were received, ensuring correct
+// interleaving of agent messages, thoughts, and tool calls.
 func (bs *BackgroundSession) flushAndPersistMessages() {
 	if bs.recorder == nil {
 		return
 	}
 
-	// Persist thoughts FIRST (agent thinks before responding)
-	if bs.agentThoughtBuf != nil {
-		text := bs.agentThoughtBuf.Flush()
-		if text != "" {
-			if err := bs.recorder.RecordAgentThought(text); err != nil && bs.logger != nil {
-				bs.logger.Error("Failed to persist agent thought", "error", err)
-			}
-		}
+	// Lock buffer access and flush all events
+	bs.bufferMu.Lock()
+	var events []BufferedEvent
+	if bs.eventBuffer != nil {
+		events = bs.eventBuffer.Flush()
 	}
+	bs.bufferMu.Unlock()
 
-	// Then persist the agent message
-	if bs.agentMsgBuffer != nil {
-		text := bs.agentMsgBuffer.Flush()
-		if text != "" {
-			if err := bs.recorder.RecordAgentMessage(text); err != nil && bs.logger != nil {
-				bs.logger.Error("Failed to persist agent message", "error", err)
+	// Persist each event in order
+	for _, event := range events {
+		switch event.Type {
+		case BufferedEventAgentThought:
+			if data, ok := event.Data.(*AgentThoughtData); ok && data.Text != "" {
+				if err := bs.recorder.RecordAgentThought(data.Text); err != nil && bs.logger != nil {
+					bs.logger.Error("Failed to persist agent thought", "error", err)
+				}
+			}
+		case BufferedEventAgentMessage:
+			if data, ok := event.Data.(*AgentMessageData); ok && data.HTML != "" {
+				if err := bs.recorder.RecordAgentMessage(data.HTML); err != nil && bs.logger != nil {
+					bs.logger.Error("Failed to persist agent message", "error", err)
+				}
+			}
+		case BufferedEventToolCall:
+			if data, ok := event.Data.(*ToolCallData); ok {
+				// RecordToolCall signature: (toolCallID, title, status, kind string, rawInput, rawOutput any)
+				if err := bs.recorder.RecordToolCall(data.ID, data.Title, data.Status, "", nil, nil); err != nil && bs.logger != nil {
+					bs.logger.Error("Failed to persist tool call", "error", err)
+				}
+			}
+		case BufferedEventToolCallUpdate:
+			if data, ok := event.Data.(*ToolCallUpdateData); ok {
+				// RecordToolCallUpdate signature: (toolCallID string, status, title *string)
+				if err := bs.recorder.RecordToolCallUpdate(data.ID, data.Status, nil); err != nil && bs.logger != nil {
+					bs.logger.Error("Failed to persist tool call update", "error", err)
+				}
+			}
+		case BufferedEventPlan:
+			// RecordPlan signature: (entries []PlanEntry)
+			if err := bs.recorder.RecordPlan(nil); err != nil && bs.logger != nil {
+				bs.logger.Error("Failed to persist plan", "error", err)
+			}
+		case BufferedEventFileRead:
+			if data, ok := event.Data.(*FileOperationData); ok {
+				if err := bs.recorder.RecordFileRead(data.Path, data.Size); err != nil && bs.logger != nil {
+					bs.logger.Error("Failed to persist file read", "error", err)
+				}
+			}
+		case BufferedEventFileWrite:
+			if data, ok := event.Data.(*FileOperationData); ok {
+				if err := bs.recorder.RecordFileWrite(data.Path, data.Size); err != nil && bs.logger != nil {
+					bs.logger.Error("Failed to persist file write", "error", err)
+				}
 			}
 		}
 	}
@@ -731,6 +837,9 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			bs.notifyObservers(func(o SessionObserver) {
 				o.OnPromptComplete(eventCount)
 			})
+
+			// Process next queued message if queue processing is enabled
+			bs.processNextQueuedMessage()
 		}
 	}()
 
@@ -747,6 +856,76 @@ func (bs *BackgroundSession) Cancel() error {
 	})
 }
 
+// --- Queue processing methods ---
+
+// processNextQueuedMessage checks the queue and sends the next message if queue processing is enabled.
+func (bs *BackgroundSession) processNextQueuedMessage() {
+	// Check if queue processing is enabled
+	if bs.queueConfig != nil && !bs.queueConfig.IsEnabled() {
+		return
+	}
+
+	// Get the queue for this session
+	if bs.store == nil {
+		return
+	}
+	queue := bs.store.Queue(bs.persistedID)
+
+	// Pop the next message from the queue
+	msg, err := queue.Pop()
+	if err != nil {
+		// Queue is empty or error - nothing to do
+		return
+	}
+
+	// Notify observers that we're sending a queued message
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnQueueMessageSending(msg.ID)
+	})
+
+	// Apply delay if configured
+	if bs.queueConfig != nil && bs.queueConfig.GetDelaySeconds() > 0 {
+		time.Sleep(time.Duration(bs.queueConfig.GetDelaySeconds()) * time.Second)
+	}
+
+	// Get updated queue length for notification
+	queueLen, _ := queue.Len()
+
+	// Notify observers about queue update (message removed)
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnQueueUpdated(queueLen, "removed", msg.ID)
+	})
+
+	// Send the queued message
+	meta := PromptMeta{
+		SenderID: "queue",
+		PromptID: msg.ID,
+		ImageIDs: msg.ImageIDs,
+	}
+	if err := bs.PromptWithMeta(msg.Message, meta); err != nil {
+		if bs.logger != nil {
+			bs.logger.Error("Failed to send queued message", "error", err, "message_id", msg.ID)
+		}
+		bs.notifyObservers(func(o SessionObserver) {
+			o.OnError("Failed to send queued message: " + err.Error())
+		})
+		return
+	}
+
+	// Notify observers that the message was sent
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnQueueMessageSent(msg.ID)
+	})
+}
+
+// NotifyQueueUpdated notifies all observers about a queue state change.
+// This is called by the queue API handlers when the queue is modified externally.
+func (bs *BackgroundSession) NotifyQueueUpdated(queueLength int, action string, messageID string) {
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnQueueUpdated(queueLength, action, messageID)
+	})
+}
+
 // --- Callback methods for WebClient ---
 
 func (bs *BackgroundSession) onAgentMessage(html string) {
@@ -754,10 +933,12 @@ func (bs *BackgroundSession) onAgentMessage(html string) {
 		return
 	}
 
-	// Buffer for persistence
-	if bs.agentMsgBuffer != nil {
-		bs.agentMsgBuffer.Write(html)
+	// Buffer for persistence (protected by mutex)
+	bs.bufferMu.Lock()
+	if bs.eventBuffer != nil {
+		bs.eventBuffer.AppendAgentMessage(html)
 	}
+	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	observerCount := bs.ObserverCount()
@@ -776,10 +957,12 @@ func (bs *BackgroundSession) onAgentThought(text string) {
 		return
 	}
 
-	// Buffer for persistence
-	if bs.agentThoughtBuf != nil {
-		bs.agentThoughtBuf.Write(text)
+	// Buffer for persistence (protected by mutex)
+	bs.bufferMu.Lock()
+	if bs.eventBuffer != nil {
+		bs.eventBuffer.AppendAgentThought(text)
 	}
+	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -792,10 +975,12 @@ func (bs *BackgroundSession) onToolCall(id, title, status string) {
 		return
 	}
 
-	// Persist
-	if bs.recorder != nil {
-		bs.recorder.RecordToolCall(id, title, status, "", nil, nil)
+	// Buffer for persistence (protected by mutex)
+	bs.bufferMu.Lock()
+	if bs.eventBuffer != nil {
+		bs.eventBuffer.AppendToolCall(id, title, status)
 	}
+	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -808,10 +993,12 @@ func (bs *BackgroundSession) onToolUpdate(id string, status *string) {
 		return
 	}
 
-	// Persist
-	if bs.recorder != nil {
-		bs.recorder.RecordToolCallUpdate(id, status, nil)
+	// Buffer for persistence (protected by mutex)
+	bs.bufferMu.Lock()
+	if bs.eventBuffer != nil {
+		bs.eventBuffer.AppendToolCallUpdate(id, status)
 	}
+	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -824,6 +1011,13 @@ func (bs *BackgroundSession) onPlan() {
 		return
 	}
 
+	// Buffer for persistence (protected by mutex)
+	bs.bufferMu.Lock()
+	if bs.eventBuffer != nil {
+		bs.eventBuffer.AppendPlan()
+	}
+	bs.bufferMu.Unlock()
+
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnPlan()
@@ -835,6 +1029,13 @@ func (bs *BackgroundSession) onFileWrite(path string, size int) {
 		return
 	}
 
+	// Buffer for persistence (protected by mutex)
+	bs.bufferMu.Lock()
+	if bs.eventBuffer != nil {
+		bs.eventBuffer.AppendFileWrite(path, size)
+	}
+	bs.bufferMu.Unlock()
+
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnFileWrite(path, size)
@@ -845,6 +1046,13 @@ func (bs *BackgroundSession) onFileRead(path string, size int) {
 	if bs.IsClosed() {
 		return
 	}
+
+	// Buffer for persistence (protected by mutex)
+	bs.bufferMu.Lock()
+	if bs.eventBuffer != nil {
+		bs.eventBuffer.AppendFileRead(path, size)
+	}
+	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {

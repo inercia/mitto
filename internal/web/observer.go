@@ -47,4 +47,14 @@ type SessionObserver interface {
 
 	// OnError is called when an error occurs.
 	OnError(message string)
+
+	// OnQueueUpdated is called when the message queue state changes.
+	// action is one of: "added", "removed", "cleared"
+	OnQueueUpdated(queueLength int, action string, messageID string)
+
+	// OnQueueMessageSending is called when a queued message is about to be sent.
+	OnQueueMessageSending(messageID string)
+
+	// OnQueueMessageSent is called after a queued message was delivered.
+	OnQueueMessageSent(messageID string)
 }

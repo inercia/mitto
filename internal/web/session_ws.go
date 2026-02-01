@@ -143,7 +143,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 				}
 				// Continue without a running session - client can still view history
 			} else if clientLogger != nil {
-				clientLogger.Info("Resumed session for WebSocket client",
+				clientLogger.Debug("Resumed session for WebSocket client",
 					"acp_id", bs.GetACPID())
 			}
 		}
@@ -188,7 +188,7 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			data["created_at"] = meta.CreatedAt.Format(time.RFC3339)
 			data["status"] = meta.Status
 			if c.logger != nil {
-				c.logger.Info("Sending connected message", "working_dir", meta.WorkingDir)
+				c.logger.Debug("Sending connected message", "working_dir", meta.WorkingDir)
 			}
 		} else if c.logger != nil {
 			c.logger.Warn("Failed to get metadata for connected message", "error", err)
@@ -565,4 +565,30 @@ func (c *SessionWSClient) GetClientID() string {
 // OnError is called when an error occurs.
 func (c *SessionWSClient) OnError(message string) {
 	c.sendError(message)
+}
+
+// OnQueueUpdated is called when the message queue state changes.
+func (c *SessionWSClient) OnQueueUpdated(queueLength int, action string, messageID string) {
+	c.sendMessage(WSMsgTypeQueueUpdated, map[string]interface{}{
+		"session_id":   c.sessionID,
+		"queue_length": queueLength,
+		"action":       action,
+		"message_id":   messageID,
+	})
+}
+
+// OnQueueMessageSending is called when a queued message is about to be sent.
+func (c *SessionWSClient) OnQueueMessageSending(messageID string) {
+	c.sendMessage(WSMsgTypeQueueMessageSending, map[string]interface{}{
+		"session_id": c.sessionID,
+		"message_id": messageID,
+	})
+}
+
+// OnQueueMessageSent is called after a queued message was delivered.
+func (c *SessionWSClient) OnQueueMessageSent(messageID string) {
+	c.sendMessage(WSMsgTypeQueueMessageSent, map[string]interface{}{
+		"session_id": c.sessionID,
+		"message_id": messageID,
+	})
 }

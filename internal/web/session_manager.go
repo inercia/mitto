@@ -223,6 +223,15 @@ func (sm *SessionManager) GetWorkspacePrompts(workingDir string) []config.WebPro
 	return rc.Prompts
 }
 
+// GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
+// Returns zero time if the file doesn't exist or the cache is not initialized.
+func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return time.Time{}
+	}
+	return sm.workspaceRCCache.GetLastModified(workingDir)
+}
+
 // AddWorkspace adds a new workspace to the manager.
 // If workspaces were not loaded from CLI flags and a save callback is set,
 // the workspaces will be persisted to disk.
@@ -384,6 +393,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	}
 	processors := config.MergeProcessors(globalConv, workspaceConv)
 
+	// Get queue config (prefer workspace config, fall back to global)
+	var queueConfig *config.QueueConfig
+	if workspaceConv != nil && workspaceConv.Queue != nil {
+		queueConfig = workspaceConv.Queue
+	} else if globalConv != nil {
+		queueConfig = globalConv.Queue
+	}
+
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:  acpCommand,
 		ACPServer:   acpServer,
@@ -394,6 +411,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		SessionName: name,
 		Processors:  processors,
 		HookManager: hookMgr,
+		QueueConfig: queueConfig,
 	})
 	if err != nil {
 		return nil, err
@@ -525,6 +543,14 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	}
 	processors := config.MergeProcessors(globalConv, workspaceConv)
 
+	// Get queue config (prefer workspace config, fall back to global)
+	var queueConfig *config.QueueConfig
+	if workspaceConv != nil && workspaceConv.Queue != nil {
+		queueConfig = workspaceConv.Queue
+	} else if globalConv != nil {
+		queueConfig = globalConv.Queue
+	}
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
@@ -539,6 +565,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		SessionName:  sessionName,
 		Processors:   processors,
 		HookManager:  hookMgr,
+		QueueConfig:  queueConfig,
 	})
 	if err != nil {
 		return nil, err
@@ -561,7 +588,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	sm.mu.Unlock()
 
 	if sm.logger != nil {
-		sm.logger.Info("Resumed background session",
+		sm.logger.Debug("Resumed background session",
 			"session_id", bs.GetSessionID(),
 			"acp_id", bs.GetACPID(),
 			"acp_server", acpServer,
