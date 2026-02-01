@@ -288,6 +288,67 @@ func (q *Queue) IsEmpty() (bool, error) {
 	return length == 0, nil
 }
 
+// Move moves a message up or down in the queue.
+// direction should be "up" (towards front, lower index) or "down" (towards back, higher index).
+// Returns the new list of messages after the move.
+func (q *Queue) Move(id, direction string) ([]QueuedMessage, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	qf, err := q.readQueue()
+	if err != nil {
+		return nil, err
+	}
+
+	// Find the message index
+	idx := -1
+	for i, msg := range qf.Messages {
+		if msg.ID == id {
+			idx = i
+			break
+		}
+	}
+
+	if idx == -1 {
+		return nil, ErrMessageNotFound
+	}
+
+	// Calculate new index based on direction
+	var newIdx int
+	switch direction {
+	case "up":
+		if idx == 0 {
+			// Already at the top, return current list
+			result := make([]QueuedMessage, len(qf.Messages))
+			copy(result, qf.Messages)
+			return result, nil
+		}
+		newIdx = idx - 1
+	case "down":
+		if idx == len(qf.Messages)-1 {
+			// Already at the bottom, return current list
+			result := make([]QueuedMessage, len(qf.Messages))
+			copy(result, qf.Messages)
+			return result, nil
+		}
+		newIdx = idx + 1
+	default:
+		return nil, fmt.Errorf("invalid direction: %s (must be 'up' or 'down')", direction)
+	}
+
+	// Swap the messages
+	qf.Messages[idx], qf.Messages[newIdx] = qf.Messages[newIdx], qf.Messages[idx]
+
+	if err := q.writeQueue(qf); err != nil {
+		return nil, err
+	}
+
+	// Return a copy of the updated list
+	result := make([]QueuedMessage, len(qf.Messages))
+	copy(result, qf.Messages)
+	return result, nil
+}
+
 // Delete removes the queue file from disk.
 // This is typically called when deleting a session.
 func (q *Queue) Delete() error {

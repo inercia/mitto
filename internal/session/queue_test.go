@@ -431,3 +431,128 @@ func TestQueue_MaxSize_Negative_NoLimit(t *testing.T) {
 		t.Errorf("Len() = %d, want 10", length)
 	}
 }
+
+func TestQueue_Move(t *testing.T) {
+	dir := t.TempDir()
+	q := NewQueue(dir)
+
+	msg1, _ := q.Add("First", nil, "", 0)
+	msg2, _ := q.Add("Second", nil, "", 0)
+	msg3, _ := q.Add("Third", nil, "", 0)
+
+	// Move second message up (should swap with first)
+	messages, err := q.Move(msg2.ID, "up")
+	if err != nil {
+		t.Fatalf("Move(up) error = %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("Move() returned %d messages, want 3", len(messages))
+	}
+	if messages[0].ID != msg2.ID {
+		t.Errorf("After Move(up), messages[0].ID = %q, want %q", messages[0].ID, msg2.ID)
+	}
+	if messages[1].ID != msg1.ID {
+		t.Errorf("After Move(up), messages[1].ID = %q, want %q", messages[1].ID, msg1.ID)
+	}
+	if messages[2].ID != msg3.ID {
+		t.Errorf("After Move(up), messages[2].ID = %q, want %q", messages[2].ID, msg3.ID)
+	}
+
+	// Move first message down (should swap with second)
+	messages, err = q.Move(msg2.ID, "down")
+	if err != nil {
+		t.Fatalf("Move(down) error = %v", err)
+	}
+	if messages[0].ID != msg1.ID {
+		t.Errorf("After Move(down), messages[0].ID = %q, want %q", messages[0].ID, msg1.ID)
+	}
+	if messages[1].ID != msg2.ID {
+		t.Errorf("After Move(down), messages[1].ID = %q, want %q", messages[1].ID, msg2.ID)
+	}
+}
+
+func TestQueue_Move_AtBoundary(t *testing.T) {
+	dir := t.TempDir()
+	q := NewQueue(dir)
+
+	msg1, _ := q.Add("First", nil, "", 0)
+	_, _ = q.Add("Second", nil, "", 0) // msg2 not used in this test
+	msg3, _ := q.Add("Third", nil, "", 0)
+
+	// Move first message up (already at top, should be no-op)
+	messages, err := q.Move(msg1.ID, "up")
+	if err != nil {
+		t.Fatalf("Move(up) at top error = %v", err)
+	}
+	if messages[0].ID != msg1.ID {
+		t.Errorf("Move(up) at top changed order unexpectedly")
+	}
+
+	// Move last message down (already at bottom, should be no-op)
+	messages, err = q.Move(msg3.ID, "down")
+	if err != nil {
+		t.Fatalf("Move(down) at bottom error = %v", err)
+	}
+	if messages[2].ID != msg3.ID {
+		t.Errorf("Move(down) at bottom changed order unexpectedly")
+	}
+}
+
+func TestQueue_Move_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	q := NewQueue(dir)
+
+	q.Add("First", nil, "", 0)
+
+	// Move non-existent message
+	_, err := q.Move("nonexistent", "up")
+	if err != ErrMessageNotFound {
+		t.Errorf("Move(nonexistent) error = %v, want ErrMessageNotFound", err)
+	}
+}
+
+func TestQueue_Move_InvalidDirection(t *testing.T) {
+	dir := t.TempDir()
+	q := NewQueue(dir)
+
+	msg, _ := q.Add("First", nil, "", 0)
+
+	// Move with invalid direction
+	_, err := q.Move(msg.ID, "invalid")
+	if err == nil {
+		t.Error("Move(invalid direction) should return error")
+	}
+}
+
+func TestQueue_Move_Persistence(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create queue and add messages
+	q1 := NewQueue(dir)
+	msg1, _ := q1.Add("First", nil, "", 0)
+	msg2, _ := q1.Add("Second", nil, "", 0)
+
+	// Move second message up
+	_, err := q1.Move(msg2.ID, "up")
+	if err != nil {
+		t.Fatalf("Move() error = %v", err)
+	}
+
+	// Create new queue instance pointing to same directory
+	q2 := NewQueue(dir)
+
+	// Should see the reordered messages
+	messages, err := q2.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("List() = %d messages, want 2", len(messages))
+	}
+	if messages[0].ID != msg2.ID {
+		t.Errorf("Persisted message[0].ID = %q, want %q (msg2)", messages[0].ID, msg2.ID)
+	}
+	if messages[1].ID != msg1.ID {
+		t.Errorf("Persisted message[1].ID = %q, want %q (msg1)", messages[1].ID, msg1.ID)
+	}
+}
