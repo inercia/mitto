@@ -379,6 +379,12 @@ func NewServer(config Config) (*Server, error) {
 
 	logger.Info("Web server initialized", "acp_server", config.ACPServer, "api_prefix", apiPrefix)
 
+	// Process pending queues from previous server run
+	// Run in goroutine to not block server startup
+	go func() {
+		s.sessionManager.ProcessPendingQueues()
+	}()
+
 	return s, nil
 }
 

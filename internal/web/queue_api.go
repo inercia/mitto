@@ -16,6 +16,11 @@ type QueueAddRequest struct {
 	ImageIDs []string `json:"image_ids,omitempty"`
 }
 
+// QueueMoveRequest represents a request to move a message in the queue.
+type QueueMoveRequest struct {
+	Direction string `json:"direction"` // "up" or "down"
+}
+
 // QueueListResponse represents the response for listing queued messages.
 type QueueListResponse struct {
 	Messages []session.QueuedMessage `json:"messages"`
@@ -68,13 +73,21 @@ func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request, sess
 
 	queue := store.Queue(sessionID)
 
-	// Parse message ID from path if present
-	// queuePath is everything after "queue", e.g., "" or "/{msg_id}"
-	messageID := strings.TrimPrefix(queuePath, "/")
+	// Parse message ID and sub-action from path if present
+	// queuePath is everything after "queue", e.g., "", "/{msg_id}", or "/{msg_id}/move"
+	pathPart := strings.TrimPrefix(queuePath, "/")
 
-	if messageID != "" {
+	if pathPart != "" {
+		// Check if there's a sub-action (e.g., /move)
+		parts := strings.SplitN(pathPart, "/", 2)
+		messageID := parts[0]
+		subAction := ""
+		if len(parts) > 1 {
+			subAction = parts[1]
+		}
+
 		// Operations on a specific message
-		s.handleQueueMessage(w, r, queue, sessionID, messageID)
+		s.handleQueueMessage(w, r, queue, sessionID, messageID, subAction)
 		return
 	}
 
@@ -163,6 +176,13 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 		})
 	}
 
+	// Try to process the queued message immediately if agent is idle
+	if s.sessionManager != nil {
+		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+			go bs.TryProcessQueuedMessage()
+		}
+	}
+
 	writeJSONCreated(w, msg)
 }
 
@@ -184,7 +204,25 @@ func (s *Server) handleClearQueue(w http.ResponseWriter, queue *session.Queue, s
 
 // handleQueueMessage handles operations on a specific queued message.
 // Routes: GET/DELETE {prefix}/api/sessions/{id}/queue/{msg_id}
-func (s *Server) handleQueueMessage(w http.ResponseWriter, r *http.Request, queue *session.Queue, sessionID, messageID string) {
+//
+//	POST {prefix}/api/sessions/{id}/queue/{msg_id}/move
+func (s *Server) handleQueueMessage(w http.ResponseWriter, r *http.Request, queue *session.Queue, sessionID, messageID, subAction string) {
+	// Handle sub-actions first
+	if subAction == "move" {
+		if r.Method == http.MethodPost {
+			s.handleMoveQueueMessage(w, r, queue, sessionID, messageID)
+			return
+		}
+		methodNotAllowed(w)
+		return
+	}
+
+	// Handle direct message operations (no sub-action)
+	if subAction != "" {
+		http.Error(w, "Unknown action", http.StatusNotFound)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		s.handleGetQueueMessage(w, queue, messageID)
@@ -233,6 +271,41 @@ func (s *Server) handleDeleteQueueMessage(w http.ResponseWriter, queue *session.
 	writeNoContent(w)
 }
 
+// handleMoveQueueMessage handles POST {prefix}/api/sessions/{id}/queue/{msg_id}/move
+func (s *Server) handleMoveQueueMessage(w http.ResponseWriter, r *http.Request, queue *session.Queue, sessionID, messageID string) {
+	var req QueueMoveRequest
+	if !parseJSONBody(w, r, &req) {
+		return
+	}
+
+	if req.Direction != "up" && req.Direction != "down" {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_direction", "Direction must be 'up' or 'down'")
+		return
+	}
+
+	messages, err := queue.Move(messageID, req.Direction)
+	if err != nil {
+		if errors.Is(err, session.ErrMessageNotFound) {
+			http.Error(w, "Message not found", http.StatusNotFound)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Error("Failed to move queue message", "error", err, "session_id", sessionID, "message_id", messageID, "direction", req.Direction)
+		}
+		http.Error(w, "Failed to move queue message", http.StatusInternalServerError)
+		return
+	}
+
+	// Notify observers about queue reorder
+	s.notifyQueueReorder(sessionID, messages)
+
+	// Return the updated queue
+	writeJSONOK(w, QueueListResponse{
+		Messages: messages,
+		Count:    len(messages),
+	})
+}
+
 // notifyQueueUpdate broadcasts a queue update to all WebSocket clients for a session.
 func (s *Server) notifyQueueUpdate(sessionID, action, messageID string) {
 	// Get the background session to notify its observers
@@ -254,4 +327,19 @@ func (s *Server) notifyQueueUpdate(sessionID, action, messageID string) {
 
 	// Notify all observers
 	bs.NotifyQueueUpdated(length, action, messageID)
+}
+
+// notifyQueueReorder broadcasts a queue reorder to all WebSocket clients for a session.
+func (s *Server) notifyQueueReorder(sessionID string, messages []session.QueuedMessage) {
+	// Get the background session to notify its observers
+	if s.sessionManager == nil {
+		return
+	}
+	bs := s.sessionManager.GetSession(sessionID)
+	if bs == nil {
+		return
+	}
+
+	// Notify all observers
+	bs.NotifyQueueReordered(messages)
 }
