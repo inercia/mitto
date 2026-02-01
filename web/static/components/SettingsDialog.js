@@ -360,8 +360,29 @@ export function SettingsDialog({
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
 
+  // Follow system theme setting (client-side, stored in localStorage)
+  const [followSystemTheme, setFollowSystemTheme] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      const saved = localStorage.getItem("mitto-follow-system-theme");
+      return saved === null ? true : saved === "true";
+    }
+    return true;
+  });
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
+
+  // Handle follow system theme toggle
+  const handleFollowSystemThemeChange = (enabled) => {
+    setFollowSystemTheme(enabled);
+    localStorage.setItem("mitto-follow-system-theme", String(enabled));
+    // Dispatch a custom event so app.js can react to the change
+    window.dispatchEvent(
+      new CustomEvent("mitto-follow-system-theme-changed", {
+        detail: { enabled },
+      }),
+    );
+  };
 
   // Load configuration when dialog opens
   useEffect(() => {
@@ -1012,10 +1033,10 @@ export function SettingsDialog({
                       <p class="text-gray-300 text-sm leading-relaxed">
                         A${" "}
                         <span class="text-blue-400 font-medium">Workspace</span>
-                        ${" "}pairs a directory with an ACP server. Each workspace
-                        allows you to work on a specific project with a chosen
-                        AI agent. You can configure multiple workspaces to work
-                        on different projects simultaneously.
+                        ${" "}pairs a directory with an ACP server. Each
+                        workspace allows you to work on a specific project with
+                        a chosen AI agent. You can configure multiple workspaces
+                        to work on different projects simultaneously.
                       </p>
                     </div>
 
@@ -1745,6 +1766,33 @@ export function SettingsDialog({
                 ${activeTab === "ui" &&
                 html`
                   <div class="space-y-4">
+                    <!-- Appearance Settings (all platforms) -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-gray-300">
+                        Appearance
+                      </h4>
+                      <label
+                        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${followSystemTheme}
+                          onChange=${(e) =>
+                            handleFollowSystemThemeChange(e.target.checked)}
+                          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                        />
+                        <div>
+                          <div class="font-medium text-sm">
+                            Follow system theme
+                          </div>
+                          <div class="text-xs text-gray-500">
+                            Automatically switch between light and dark mode
+                            based on your system preferences
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+
                     <!-- Confirmation Settings (all platforms) -->
                     <div class="space-y-3">
                       <h4 class="text-sm font-medium text-gray-300">
