@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // SessionObserver defines the interface for receiving session events.
@@ -51,6 +52,10 @@ type SessionObserver interface {
 	// OnQueueUpdated is called when the message queue state changes.
 	// action is one of: "added", "removed", "cleared"
 	OnQueueUpdated(queueLength int, action string, messageID string)
+
+	// OnQueueReordered is called when the queue order changes.
+	// messages contains the full updated list of queued messages in their new order.
+	OnQueueReordered(messages []session.QueuedMessage)
 
 	// OnQueueMessageSending is called when a queued message is about to be sent.
 	OnQueueMessageSending(messageID string)

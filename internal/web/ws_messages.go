@@ -195,6 +195,11 @@ const (
 	// Sent after the auxiliary conversation generates a title for the message.
 	// Data: { "session_id": string, "message_id": string, "title": string }
 	WSMsgTypeQueueMessageTitled = "queue_message_titled"
+
+	// WSMsgTypeQueueReordered notifies that the queue order has changed.
+	// Sent when a message is moved up or down in the queue.
+	// Data: { "session_id": string, "messages": []QueuedMessage }
+	WSMsgTypeQueueReordered = "queue_reordered"
 )
 
 // =============================================================================

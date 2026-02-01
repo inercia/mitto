@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // mockObserver implements SessionObserver for testing.
@@ -71,6 +72,10 @@ func (m *mockObserver) OnQueueMessageSending(messageID string) {
 }
 
 func (m *mockObserver) OnQueueMessageSent(messageID string) {
+	// no-op for testing
+}
+
+func (m *mockObserver) OnQueueReordered(messages []session.QueuedMessage) {
 	// no-op for testing
 }
 

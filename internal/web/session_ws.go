@@ -592,6 +592,14 @@ func (c *SessionWSClient) OnQueueUpdated(queueLength int, action string, message
 	})
 }
 
+// OnQueueReordered is called when the queue order changes.
+func (c *SessionWSClient) OnQueueReordered(messages []session.QueuedMessage) {
+	c.sendMessage(WSMsgTypeQueueReordered, map[string]interface{}{
+		"session_id": c.sessionID,
+		"messages":   messages,
+	})
+}
+
 // OnQueueMessageSending is called when a queued message is about to be sent.
 func (c *SessionWSClient) OnQueueMessageSending(messageID string) {
 	c.sendMessage(WSMsgTypeQueueMessageSending, map[string]interface{}{
