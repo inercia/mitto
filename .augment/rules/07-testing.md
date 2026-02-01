@@ -256,10 +256,61 @@ The `internal/web` package has comprehensive test coverage:
 | `http_helpers_test.go` | JSON response helpers, request parsing |
 | `websocket_integration_test.go` | WebSocket message flow, reconnection |
 | `ws_conn_test.go` | WebSocket connection wrapper |
+| `ws_messages_test.go` | Message buffer (Write, Peek, Flush) |
 | `title_test.go` | Session title generation |
 | `background_session_test.go` | ACP session lifecycle |
 | `external_listener_test.go` | External access listener |
 | `websocket_security_test.go` | WebSocket security (rate limiting, etc.) |
+
+### Testing EventBuffer
+
+The `EventBuffer` stores all streaming events in order. Key test scenarios:
+
+```go
+func TestEventBuffer_InterleavedEvents(t *testing.T) {
+    buf := NewEventBuffer()
+
+    // Simulate interleaved streaming: message, tool, message, tool, message
+    buf.AppendAgentMessage("Let me help... ")
+    buf.AppendToolCall("tool-1", "Read file", "running")
+    buf.AppendAgentMessage("I found... ")
+    buf.AppendToolCall("tool-2", "Edit file", "running")
+    buf.AppendAgentMessage("Done!")
+
+    // Should have 5 separate events (not concatenated because interleaved)
+    if buf.Len() != 5 {
+        t.Errorf("Len = %d, want 5", buf.Len())
+    }
+
+    events := buf.Events()
+
+    // Verify order is preserved
+    if events[0].Type != BufferedEventAgentMessage {
+        t.Errorf("events[0].Type = %v, want AgentMessage", events[0].Type)
+    }
+    if events[1].Type != BufferedEventToolCall {
+        t.Errorf("events[1].Type = %v, want ToolCall", events[1].Type)
+    }
+    // ... verify remaining events
+}
+
+func TestEventBuffer_ConsecutiveMessagesConcatenated(t *testing.T) {
+    buf := NewEventBuffer()
+
+    buf.AppendAgentMessage("Hello, ")
+    buf.AppendAgentMessage("World!")
+
+    // Consecutive agent messages should be concatenated
+    if buf.Len() != 1 {
+        t.Errorf("Len = %d, want 1 (messages should be concatenated)", buf.Len())
+    }
+
+    result := buf.GetAgentMessage()
+    if result != "Hello, World!" {
+        t.Errorf("GetAgentMessage = %q, want %q", result, "Hello, World!")
+    }
+}
+```
 
 ## WebSocket Integration Testing
 
@@ -548,6 +599,46 @@ Key areas to test:
 - **Edge cases**: very long strings, special characters
 - **Regex patterns**: ensure patterns match expected inputs and reject non-matches
 - **Error handling**: graceful fallbacks when dependencies unavailable
+
+### Testing Message Merge Functions
+
+The `mergeMessagesWithSync` function handles deduplication and appending (NOT sorting):
+
+```javascript
+describe('mergeMessagesWithSync', () => {
+  test('preserves existing order and appends new messages', () => {
+    // Existing messages are in display order - we should NOT re-sort them
+    // New messages from sync are appended at the end
+    const existing = [
+      { role: ROLE_AGENT, html: 'Third', seq: 3, timestamp: 3000 },
+    ];
+    const newMessages = [
+      { role: ROLE_USER, text: 'First', seq: 1, timestamp: 1000 },
+      { role: ROLE_AGENT, html: 'Second', seq: 2, timestamp: 2000 },
+    ];
+    const result = mergeMessagesWithSync(existing, newMessages);
+    expect(result).toHaveLength(3);
+    // Existing message stays first, new messages are appended
+    expect(result[0].seq).toBe(3); // existing stays in place
+    expect(result[1].seq).toBe(1); // new messages appended
+    expect(result[2].seq).toBe(2);
+  });
+
+  test('deduplicates by content hash', () => {
+    const existing = [{ role: ROLE_USER, text: 'Hello', timestamp: 1000 }];
+    const newMessages = [
+      { role: ROLE_USER, text: 'Hello', seq: 1, timestamp: 500 }, // duplicate
+      { role: ROLE_AGENT, html: 'Response', seq: 2, timestamp: 1500 },
+    ];
+    const result = mergeMessagesWithSync(existing, newMessages);
+    expect(result).toHaveLength(2);
+    expect(result.find((m) => m.role === ROLE_USER).text).toBe('Hello');
+    expect(result.find((m) => m.role === ROLE_AGENT).html).toBe('Response');
+  });
+});
+```
+
+**IMPORTANT**: Do NOT sort by `seq` because tool calls are persisted immediately (early seq) while agent messages are buffered (late seq). Sorting would put all tool calls before agent messages.
 
 ### Testing Pending Prompt Functions
 

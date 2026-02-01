@@ -222,20 +222,123 @@ bs.AddObserver(client)    // Called when WebSocket connects
 bs.RemoveObserver(client) // Called when WebSocket disconnects
 ```
 
-### agentMessageBuffer Pattern
+### Unified Event Buffer Pattern
+
+All streaming events are buffered in a single `EventBuffer` to preserve streaming order:
 
 ```go
-// Accumulates streaming chunks for persistence
-type agentMessageBuffer struct {
-    text strings.Builder
+// EventBuffer accumulates all streaming events in order
+type EventBuffer struct {
+    events []BufferedEvent
 }
 
-// Write during streaming
-buffer.Write(chunk)
+// Supported event types
+const (
+    BufferedEventAgentMessage   BufferedEventType = "agent_message"
+    BufferedEventAgentThought   BufferedEventType = "agent_thought"
+    BufferedEventToolCall       BufferedEventType = "tool_call"
+    BufferedEventToolCallUpdate BufferedEventType = "tool_call_update"
+    BufferedEventPlan           BufferedEventType = "plan"
+    BufferedEventFileRead       BufferedEventType = "file_read"
+    BufferedEventFileWrite      BufferedEventType = "file_write"
+)
 
-// Flush when prompt completes to persist full message
-fullText := buffer.Flush()
-recorder.RecordAgentMessage(fullText)
+// Appending events (consecutive same-type events are concatenated)
+buffer.AppendAgentMessage(html)   // Concatenates with previous if same type
+buffer.AppendAgentThought(text)   // Concatenates with previous if same type
+buffer.AppendToolCall(id, title, status)
+buffer.AppendToolCallUpdate(id, status)
+
+// Reading buffered content (for new observers)
+thoughtText := buffer.GetAgentThought()  // All thoughts concatenated
+msgText := buffer.GetAgentMessage()      // All messages concatenated
+
+// Flushing (when prompt completes)
+events := buffer.Flush()  // Returns all events in order, clears buffer
+for _, event := range events {
+    // Persist each event in streaming order
+}
+```
+
+**Why unified buffering matters:**
+- Events are persisted in the correct streaming order
+- Tool calls are interleaved with agent messages correctly
+- Loading past sessions shows the correct conversation flow
+
+### Sending Buffered Content to New Observers
+
+When a new client connects mid-stream, they need to catch up on content that has been streamed but not yet persisted. The `AddObserver` method handles this:
+
+```go
+func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
+    bs.observersMu.Lock()
+    bs.observers[observer] = struct{}{}
+    bs.observersMu.Unlock()
+
+    // If currently prompting, send buffered content to new observer
+    bs.promptMu.Lock()
+    isPrompting := bs.isPrompting
+    bs.promptMu.Unlock()
+
+    if isPrompting {
+        bs.bufferMu.Lock()
+        thoughtText := bs.eventBuffer.GetAgentThought()
+        msgText := bs.eventBuffer.GetAgentMessage()
+        bs.bufferMu.Unlock()
+
+        // Send buffered thought first (thoughts come before messages)
+        if thoughtText != "" {
+            observer.OnAgentThought(thoughtText)
+        }
+        if msgText != "" {
+            observer.OnAgentMessage(msgText)
+        }
+    }
+}
+```
+
+### Buffer Thread Safety
+
+The `bufferMu` mutex protects buffer access from concurrent goroutines:
+
+```go
+// In BackgroundSession struct
+eventBuffer *EventBuffer   // Unified buffer for all streaming events
+bufferMu    sync.Mutex     // Protects eventBuffer
+
+// Writing to buffer (from ACP callback goroutine)
+func (bs *BackgroundSession) onAgentMessage(html string) {
+    bs.bufferMu.Lock()
+    if bs.eventBuffer != nil {
+        bs.eventBuffer.AppendAgentMessage(html)
+    }
+    bs.bufferMu.Unlock()
+
+    // Notify observers (outside lock)
+    bs.notifyObservers(func(o SessionObserver) {
+        o.OnAgentMessage(html)
+    })
+}
+
+// Flushing buffer (when prompt completes)
+func (bs *BackgroundSession) flushAndPersistMessages() {
+    bs.bufferMu.Lock()
+    events := bs.eventBuffer.Flush()
+    bs.bufferMu.Unlock()
+
+    // Persist each event in streaming order
+    for _, event := range events {
+        switch event.Type {
+        case BufferedEventAgentThought:
+            bs.recorder.RecordAgentThought(data.Text)
+        case BufferedEventAgentMessage:
+            bs.recorder.RecordAgentMessage(data.HTML)
+        case BufferedEventToolCall:
+            bs.recorder.RecordToolCall(data.ID, data.Title, data.Status, "", nil, nil)
+        // ... other event types
+        }
+    }
+}
 ```
 
 ## External Access & Authentication

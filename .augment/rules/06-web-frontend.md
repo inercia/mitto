@@ -71,7 +71,7 @@ The library provides pure functions for state manipulation:
 | `getPendingPrompts()` | Get all pending prompts from localStorage |
 | `getPendingPromptsForSession()` | Get pending prompts for a specific session |
 | `cleanupExpiredPrompts()` | Remove prompts older than 5 minutes |
-| `mergeMessagesWithSync()` | Deduplicate messages when syncing after reconnect |
+| `mergeMessagesWithSync()` | Deduplicate and append messages when syncing after reconnect |
 | `getMessageHash()` | Create content hash for message deduplication |
 
 ## Hooks Directory Structure
@@ -661,6 +661,47 @@ useEffect(() => {
 | Frontend → Backend | `sync_session` | `{session_id, after_seq}` | Request events after sequence |
 | Backend → Frontend | `session_sync` | `{events, last_seq}` | Response with missed events |
 
+### Buffered Content for New Observers
+
+When a client connects mid-stream, the backend sends any buffered content that hasn't been persisted yet. This ensures thoughts and agent messages are visible even before the prompt completes.
+
+**How it works:**
+1. Client connects to session WebSocket
+2. Backend's `AddObserver` checks if session is currently prompting
+3. If prompting, backend sends buffered thought and message content
+4. Client receives this as regular `agent_thought` and `agent_message` events
+
+**Why this matters:**
+- Thoughts are buffered and only persisted when prompt completes
+- Without this, clients connecting mid-stream would miss thoughts
+- This caused the issue where thoughts were visible on macOS but not iOS
+
+## Message Ordering
+
+### Why NOT to Sort by Sequence Number
+
+**IMPORTANT**: Do NOT re-sort messages by `seq` or timestamp. This causes incorrect ordering.
+
+The problem is that different event types are persisted at different times:
+1. **Tool calls** are persisted **immediately** when they occur (get early `seq` numbers)
+2. **Agent messages** are **buffered** during streaming and persisted when the prompt completes (get later `seq` numbers)
+
+If we sorted by `seq`, all tool calls would appear before the agent message, even though they were interleaved during the actual conversation:
+
+```
+Actual streaming order:    "Let me help..." → tool_call → "I found..." → tool_call → "Done!"
+Persisted seq order:       tool_call(seq=2) → tool_call(seq=3) → agent_message(seq=4)
+```
+
+### Correct Ordering Strategy
+
+The frontend preserves message order using these principles:
+
+1. **Streaming messages** are displayed in the order they arrive via WebSocket
+2. **Loaded sessions** use the order from `events.jsonl` (which is append-only)
+3. **Sync messages** are appended at the end (they represent events that happened AFTER the last seen event)
+4. **Deduplication** prevents the same message from appearing twice
+
 ## Message Deduplication
 
 ### The Duplicate Message Problem
@@ -670,9 +711,41 @@ Duplicate messages can occur when:
 2. **Multiple observers**: If multiple WebSocket connections exist for the same session, each receives the same message.
 3. **Reconnection race conditions**: Old WebSocket's `onclose` handler may interfere with new connection.
 
-### Deduplication in session_sync Handler
+### Deduplication in mergeMessagesWithSync
 
-When sync returns messages, deduplicate against existing messages by content hash:
+The `mergeMessagesWithSync` function handles deduplication and appending (NOT sorting):
+
+```javascript
+export function mergeMessagesWithSync(existingMessages, newMessages) {
+  if (!existingMessages || existingMessages.length === 0) {
+    return newMessages || [];
+  }
+  if (!newMessages || newMessages.length === 0) {
+    return existingMessages;
+  }
+
+  // Create hash set of existing messages for deduplication
+  const existingHashes = new Set();
+  for (const m of existingMessages) {
+    existingHashes.add(getMessageHash(m));
+  }
+
+  // Filter out duplicates from new messages
+  const filteredNewMessages = newMessages.filter((m) => {
+    const hash = getMessageHash(m);
+    return !existingHashes.has(hash);
+  });
+
+  if (filteredNewMessages.length === 0) {
+    return existingMessages;
+  }
+
+  // Append new messages at the end - they happened after existing messages
+  return [...existingMessages, ...filteredNewMessages];
+}
+```
+
+### Using mergeMessagesWithSync in session_sync Handler
 
 ```javascript
 case 'session_sync': {
@@ -683,26 +756,14 @@ case 'session_sync': {
         const session = prev[sessionId] || { messages: [], info: {} };
         const existingMessages = session.messages;
 
-        // Create content hashes from existing messages
-        const existingHashes = new Set();
-        for (const m of existingMessages) {
-            const content = (m.text || m.html || '').substring(0, 200);
-            const hash = `${m.role}:${content}`;
-            existingHashes.add(hash);
-        }
-
-        // Filter out duplicates
-        const filteredNewMessages = newMessages.filter(m => {
-            const content = (m.text || m.html || '').substring(0, 200);
-            const hash = `${m.role}:${content}`;
-            return !existingHashes.has(hash);
-        });
+        // mergeMessagesWithSync handles deduplication and appending
+        const mergedMessages = mergeMessagesWithSync(existingMessages, newMessages);
 
         return {
             ...prev,
             [sessionId]: {
                 ...session,
-                messages: limitMessages([...existingMessages, ...filteredNewMessages]),
+                messages: limitMessages(mergedMessages),
                 // ...
             }
         };

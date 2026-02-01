@@ -11,90 +11,34 @@ The project is written in Go and follows idiomatic Go project structure with cle
 ```mermaid
 graph TB
     subgraph "Entry Points"
-        MITTO[cmd/mitto/<br/>CLI Binary]
-        MITTOAPP[cmd/mitto-app/<br/>macOS App]
+        CLI[CLI / macOS App]
     end
 
-    subgraph "CLI Layer"
-        CMD[internal/cmd/<br/>Cobra Commands]
-    end
-
-    subgraph "Core Services"
-        ACP[internal/acp/<br/>ACP Client]
-        WEBPKG[internal/web/<br/>Web Server]
-        SES[internal/session/<br/>Session Management]
-        AUX[internal/auxiliary/<br/>Auxiliary ACP Session]
-    end
-
-    subgraph "Infrastructure"
-        CFG[internal/config/<br/>Configuration]
-        APPDIR[internal/appdir/<br/>Directory Management]
-        FILEUTIL[internal/fileutil/<br/>File I/O Utilities]
-        LOG[internal/logging/<br/>Logging]
+    subgraph "Core"
+        CMD[Commands]
+        ACP[ACP Client]
+        WEB[Web Server]
+        SES[Sessions]
     end
 
     subgraph "External"
-        AGENT[ACP Server Process<br/>auggie, claude-code, etc.]
-        FS[(File System<br/>Config & Sessions)]
-        BROWSER[Web Browser]
+        AGENT[ACP Server]
+        BROWSER[Browser]
     end
 
-    %% Entry point dependencies
-    MITTO --> CMD
-    MITTOAPP --> WEBPKG
-    MITTOAPP --> CFG
-    MITTOAPP --> APPDIR
-
-    %% CMD dependencies
+    CLI --> CMD
     CMD --> ACP
-    CMD --> WEBPKG
-    CMD --> CFG
-    CMD --> AUX
-    CMD --> LOG
-
-    %% Core service dependencies
-    WEBPKG --> SES
-    WEBPKG --> CFG
-    WEBPKG --> AUX
-    WEBPKG --> APPDIR
-    WEBPKG --> LOG
-    SES --> FILEUTIL
-    SES --> APPDIR
-    SES --> LOG
-    CFG --> APPDIR
-    CFG --> FILEUTIL
-
-    %% External connections
-    ACP <-->|stdin/stdout| AGENT
-    AUX <-->|stdin/stdout| AGENT
-    WEBPKG <-->|WebSocket| BROWSER
-    APPDIR --> FS
-    FILEUTIL --> FS
+    CMD --> WEB
+    WEB --> SES
+    ACP <--> AGENT
+    WEB <--> BROWSER
 ```
 
 ## Component Breakdown
 
-### `cmd/mitto` - Entry Point
-
-The main entry point for the application. It simply invokes the root command from the `internal/cmd` package.
-
-```go
-func main() {
-    if err := cmd.Execute(); err != nil {
-        os.Exit(1)
-    }
-}
-```
-
 ### `internal/cmd` - CLI Commands
 
 Implements the command-line interface using [Cobra](https://github.com/spf13/cobra).
-
-| File | Purpose |
-|------|---------|
-| `root.go` | Root command, global flags, configuration loading |
-| `cli.go` | Interactive CLI command with readline support |
-| `web.go` | Web interface command, starts HTTP/WebSocket server |
 
 **Key Responsibilities:**
 - Parse command-line arguments and flags
@@ -158,12 +102,6 @@ JSON format (for `settings.json` or `--config` flag):
 
 Implements the ACP client protocol for communicating with AI agents.
 
-| File | Purpose |
-|------|---------|
-| `connection.go` | Process management and connection lifecycle |
-| `client.go` | ACP protocol handlers (messages, permissions, files) |
-| `terminal.go` | Terminal-related ACP operations |
-
 **Key Components:**
 
 - **Connection**: Manages the ACP server subprocess, stdin/stdout pipes, and protocol initialization
@@ -178,38 +116,16 @@ Implements the ACP client protocol for communicating with AI agents.
 
 Provides session persistence for recording, storing, and replaying ACP interactions.
 
-| File | Purpose |
-|------|---------|
-| `types.go` | Event types and data structures |
-| `store.go` | File-based session storage operations |
-| `recorder.go` | High-level API for recording sessions |
-| `player.go` | Session playback and navigation |
-| `config.go` | Default paths and store creation |
-
 **Key Components:**
 
 - **Store**: Thread-safe file operations for session persistence
 - **Recorder**: Records events during an active session
 - **Player**: Loads and navigates through recorded sessions
+- **Queue**: Thread-safe FIFO message queue with atomic file persistence
 
 ### `internal/web` - Web Interface Server
 
 Provides a browser-based UI for ACP communication via HTTP and WebSocket.
-
-| File | Purpose |
-|------|---------|
-| `server.go` | HTTP server setup, routing, middleware, static file serving |
-| `session_ws.go` | Per-session WebSocket handler (`SessionWSClient`) |
-| `events_ws.go` | Global events WebSocket handler (`GlobalEventsClient`) |
-| `ws_conn.go` | Shared WebSocket connection wrapper (`WSConn`) |
-| `ws_types.go` | WebSocket message types and constants |
-| `background_session.go` | Session that runs independently of WebSocket connections |
-| `client.go` | Web-specific ACP client with streaming callbacks |
-| `markdown.go` | Smart Markdown-to-HTML streaming buffer |
-| `session_api.go` | REST API endpoints for session and workspace management |
-| `session_manager.go` | Registry of background sessions and workspace management |
-| `title.go` | Auto-title generation for sessions |
-| `websocket_security.go` | WebSocket security (origin checks, rate limiting) |
 
 **Key Components:**
 
@@ -225,13 +141,6 @@ Provides a browser-based UI for ACP communication via HTTP and WebSocket.
 ### `web/` - Frontend Assets
 
 Contains embedded static files for the web interface.
-
-| File | Purpose |
-|------|---------|
-| `embed.go` | Go embed directive for static files |
-| `static/index.html` | Main HTML page with Tailwind CSS |
-| `static/app.js` | Preact application (components, WebSocket client) |
-| `static/styles.css` | Custom CSS for Markdown rendering |
 
 **Technology Stack:**
 - **Preact + HTM**: Lightweight React-like framework loaded from CDN (no build step)
@@ -495,6 +404,284 @@ Multiple `SessionWSClient` instances can observe the same `BackgroundSession`, e
 - Session continues running when all clients disconnect
 - Clients can reconnect and sync via incremental updates
 
+### Message Queue System
+
+Each session has an optional message queue that allows users to queue messages while the agent is processing. Queued messages are automatically delivered when the agent becomes idle.
+
+#### Overview
+
+The queue system enables a "fire-and-forget" workflow where users can queue multiple messages without waiting for each response. This is useful when:
+- Providing follow-up context while the agent is still working
+- Queuing multiple tasks for sequential processing
+- Building automated workflows that submit work to the agent
+
+#### Queue Package (`internal/session/queue.go`)
+
+The `Queue` type manages the message queue for a single session. It provides thread-safe FIFO operations with atomic file persistence.
+
+**Key Types:**
+
+| Type | Purpose |
+|------|---------|
+| `Queue` | Thread-safe queue manager for a session |
+| `QueuedMessage` | A message waiting to be sent to the agent |
+| `QueueFile` | The persisted queue state on disk |
+
+**Queue Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `NewQueue(sessionDir)` | Creates a queue for the given session directory |
+| `Add(message, imageIDs, clientID)` | Adds a message to the queue, returns assigned ID |
+| `List()` | Returns all queued messages in FIFO order |
+| `Get(id)` | Returns a specific message by ID |
+| `Remove(id)` | Removes a specific message by ID |
+| `Pop()` | Removes and returns the first message (FIFO) |
+| `Clear()` | Removes all queued messages |
+| `Len()` | Returns the number of queued messages |
+| `IsEmpty()` | Returns true if the queue has no messages |
+| `Delete()` | Deletes the queue file (for session cleanup) |
+
+**Error Values:**
+
+| Error | Condition |
+|-------|-----------|
+| `ErrQueueEmpty` | Returned by `Pop()` when queue is empty |
+| `ErrMessageNotFound` | Returned by `Get()` or `Remove()` when ID not found |
+
+**Usage Example:**
+
+```go
+// Get queue for a session
+queue := store.Queue(sessionID)
+
+// Add a message
+msg, err := queue.Add("What's the status?", nil, "client-123")
+if err != nil {
+    return err
+}
+fmt.Printf("Queued message %s\n", msg.ID)
+
+// Process next message when agent is idle
+msg, err := queue.Pop()
+if errors.Is(err, session.ErrQueueEmpty) {
+    // Nothing to process
+    return nil
+}
+// Send msg.Message to agent...
+```
+
+#### Message ID Format
+
+Message IDs use the format `q-{unix_timestamp}-{random_hex}`:
+```
+q-1738396800-abc12345
+```
+
+This format provides:
+- **Uniqueness**: Timestamp + random hex ensures no collisions
+- **Sortability**: IDs sort chronologically by queue time
+- **Debuggability**: Human-readable timestamp for troubleshooting
+
+#### Thread Safety
+
+The `Queue` type uses a mutex to ensure thread-safe operations:
+- Multiple goroutines can safely call queue methods concurrently
+- File I/O is atomic (write to temp file → sync → rename)
+- The mutex is held only during the read-modify-write cycle
+
+#### Queue Storage
+
+**File Location:**
+
+```
+sessions/
+└── {session_id}/
+    ├── events.jsonl      # Event log
+    ├── metadata.json     # Session metadata
+    └── queue.json        # Message queue
+```
+
+**Queue File Format (`queue.json`):**
+
+```json
+{
+  "messages": [
+    {
+      "id": "q-1738396800-abc12345",
+      "message": "What's the status?",
+      "image_ids": [],
+      "queued_at": "2026-02-01T12:00:00Z",
+      "client_id": "a1b2c3d4"
+    }
+  ],
+  "updated_at": "2026-02-01T12:00:00Z"
+}
+```
+
+**Design Decisions:**
+
+1. **Separate file**: Queue state is stored in `queue.json` rather than `events.jsonl` because:
+   - Queue is transient (messages are removed when processed)
+   - Events are append-only (queue requires modification)
+   - Easier to clear queue without touching event history
+
+2. **Atomic writes**: Uses `fileutil.WriteJSONAtomic()` to prevent corruption during crashes
+
+3. **No max size limit**: Queues are expected to be small; users manually add messages
+
+#### REST API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/sessions/{id}/queue` | List all queued messages |
+| `POST` | `/api/sessions/{id}/queue` | Add a message to the queue |
+| `GET` | `/api/sessions/{id}/queue/{msg_id}` | Get a specific message |
+| `DELETE` | `/api/sessions/{id}/queue/{msg_id}` | Delete a specific message |
+| `DELETE` | `/api/sessions/{id}/queue` | Clear entire queue |
+
+**Request/Response Examples:**
+
+*POST /api/sessions/{id}/queue*
+```json
+// Request
+{"message": "What's the status?", "image_ids": []}
+
+// Response (201 Created)
+{
+  "id": "q-1738396800-abc12345",
+  "message": "What's the status?",
+  "queued_at": "2026-02-01T12:00:00Z"
+}
+```
+
+*GET /api/sessions/{id}/queue*
+```json
+// Response (200 OK)
+{
+  "messages": [...],
+  "count": 3
+}
+```
+
+#### Queue Processing Flow
+
+When the agent finishes processing a prompt, the `BackgroundSession` automatically checks for queued messages and sends the next one:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant API as REST API
+    participant Queue as session.Queue
+    participant BS as BackgroundSession
+    participant WS as WebSocket Clients
+    participant Agent
+
+    User->>API: POST /queue (message)
+    API->>Queue: Add(message)
+    Queue-->>API: QueuedMessage{id}
+    API-->>User: 201 Created
+    API->>BS: NotifyQueueUpdated()
+    BS->>WS: queue_updated {action: "added"}
+
+    Note over Agent: Agent finishes current prompt
+
+    BS->>BS: processNextQueuedMessage()
+    BS->>Queue: Pop()
+    Queue-->>BS: QueuedMessage
+    BS->>WS: queue_message_sending {id}
+    opt delay_seconds > 0
+        BS->>BS: Sleep(delay)
+    end
+    BS->>WS: queue_updated {action: "removed"}
+    BS->>Agent: Prompt(message)
+    BS->>WS: queue_message_sent {id}
+```
+
+**Key Implementation Details:**
+
+1. **Automatic processing**: `processNextQueuedMessage()` is called in `onPromptComplete()` callback
+2. **Configurable delay**: `delay_seconds` allows pacing between queued messages
+3. **Observer notifications**: All connected WebSocket clients are notified of queue changes
+4. **Sender ID**: Queued messages use `"queue"` as the sender ID for UI differentiation
+
+#### Queue Configuration
+
+Queue processing is configured in the `conversations` section of the config file:
+
+```yaml
+conversations:
+  queue:
+    enabled: true        # Enable/disable auto-processing (default: true)
+    delay_seconds: 0     # Delay before sending next message (default: 0)
+```
+
+**Configuration Types (in `internal/config/config.go`):**
+
+```go
+// QueueConfig represents message queue processing configuration.
+type QueueConfig struct {
+    // Enabled controls whether queued messages are automatically sent.
+    // When false, messages remain in queue until manually sent or deleted.
+    // Default: true (enabled)
+    Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+    // DelaySeconds is the delay before sending the next queued message.
+    // Default: 0 (no delay)
+    DelaySeconds int `json:"delay_seconds,omitempty" yaml:"delay_seconds,omitempty"`
+}
+
+// IsEnabled returns whether queue processing is enabled.
+// Returns true if Enabled is nil (default) or explicitly true.
+func (q *QueueConfig) IsEnabled() bool
+
+// GetDelaySeconds returns the delay in seconds, or 0 if not configured.
+func (q *QueueConfig) GetDelaySeconds() int
+```
+
+**Configuration Precedence:**
+1. If `enabled` is not set, queue processing is **enabled** by default
+2. If `delay_seconds` is not set, defaults to **0** (no delay)
+
+#### WebSocket Notifications
+
+The queue system sends real-time notifications to connected WebSocket clients via the `SessionObserver` interface:
+
+| Notification | When | Data |
+|--------------|------|------|
+| `queue_updated` | Message added/removed/cleared | `{queue_length, action, message_id}` |
+| `queue_message_sending` | Queued message about to be sent | `{message_id}` |
+| `queue_message_sent` | Queued message was delivered | `{message_id}` |
+
+**SessionObserver Interface (in `internal/web/observer.go`):**
+
+```go
+// Queue-related observer methods
+OnQueueUpdated(queueLength int, action string, messageID string)
+OnQueueMessageSending(messageID string)
+OnQueueMessageSent(messageID string)
+```
+
+**Action Values for `queue_updated`:**
+
+| Action | Trigger |
+|--------|---------|
+| `added` | Message added via REST API |
+| `removed` | Message removed (via API or after sending) |
+| `cleared` | Queue cleared via DELETE endpoint |
+
+#### Store Integration
+
+The `session.Store` provides access to queues via the `Queue()` method:
+
+```go
+// Queue returns a Queue instance for managing the message queue of a session.
+// The returned Queue is safe for concurrent use.
+func (s *Store) Queue(sessionID string) *Queue
+```
+
+This method creates a new `Queue` instance pointing to the session's directory. Multiple calls return independent instances that share the same underlying file.
+
 ## Web Interface
 
 The web interface provides a browser-based UI for ACP communication, accessible via `mitto web`.
@@ -685,6 +872,309 @@ The `handleSyncSession` function in `session_ws.go` handles incremental sync:
 // Server responds with events where seq > 42
 ```
 
+## WebSocket Message Handling Architecture
+
+This section documents the WebSocket message handling system, including how message order is guaranteed, how clients resync after disconnection, and how reconnections are managed.
+
+### Message Ordering
+
+Message ordering is critical for ensuring all clients display conversations correctly. The system uses a **unified event buffer** to preserve streaming order and **sequence numbers** for tracking.
+
+#### Unified Event Buffer
+
+All streaming events (agent messages, thoughts, tool calls, file operations) are buffered in a single `EventBuffer` during a prompt. Events are stored in the order they arrive and persisted together when the prompt completes.
+
+```mermaid
+sequenceDiagram
+    participant Agent as ACP Agent
+    participant BS as BackgroundSession
+    participant Buffer as EventBuffer
+    participant Store as Session Store
+
+    Agent->>BS: AgentMessage("Let me help...")
+    BS->>Buffer: AppendAgentMessage()
+
+    Agent->>BS: ToolCall(read file)
+    BS->>Buffer: AppendToolCall()
+
+    Agent->>BS: AgentMessage("I found...")
+    BS->>Buffer: AppendAgentMessage()
+
+    Agent->>BS: ToolCall(edit file)
+    BS->>Buffer: AppendToolCall()
+
+    Agent->>BS: AgentMessage("Done!")
+    BS->>Buffer: AppendAgentMessage()
+
+    Agent->>BS: PromptComplete
+    BS->>Buffer: Flush()
+    Buffer-->>BS: [msg, tool, msg, tool, msg]
+    BS->>Store: Persist events in order
+```
+
+This ensures events are persisted in the correct streaming order, preserving the interleaving of agent messages and tool calls.
+
+#### Sequence Number Assignment
+
+Every event persisted to the session store is assigned a monotonically increasing sequence number (`seq`). The sequence number is assigned at persistence time by `session.Store.AppendEvent()`.
+
+**Key properties:**
+- `seq` starts at 1 for each session
+- `seq` is assigned at persistence time, not at event creation
+- `seq` is never reused or reassigned
+- Events are stored in `seq` order in `events.jsonl`
+
+#### Frontend Ordering Strategy
+
+The frontend preserves message order using these principles:
+
+1. **Streaming messages** are displayed in the order they arrive via WebSocket
+2. **Loaded sessions** use the order from `events.jsonl` (which preserves streaming order)
+3. **Sync messages** are appended at the end (they represent events that happened AFTER the last seen event)
+4. **Deduplication** prevents the same message from appearing twice
+
+### Message Format
+
+All WebSocket messages use a JSON envelope format with `type` and optional `data` fields.
+
+#### Frontend → Backend Messages
+
+| Type | Data | Description |
+|------|------|-------------|
+| `prompt` | `{message, image_ids?, prompt_id}` | Send user message to agent |
+| `cancel` | `{}` | Cancel current agent operation |
+| `permission_answer` | `{request_id, approved}` | Respond to permission request |
+| `sync_session` | `{after_seq}` | Request events after sequence number |
+| `keepalive` | `{client_time}` | Application-level keepalive |
+| `rename_session` | `{name}` | Rename the current session |
+
+#### Backend → Frontend Messages
+
+| Type | Data | Description |
+|------|------|-------------|
+| `connected` | `{session_id, client_id, acp_server, is_running}` | Connection established |
+| `prompt_received` | `{prompt_id}` | ACK that prompt was received and persisted |
+| `user_prompt` | `{sender_id, prompt_id, message, is_mine}` | Broadcast of user prompt to all clients |
+| `agent_message` | `{html}` | HTML-rendered agent response chunk |
+| `agent_thought` | `{text}` | Agent thinking/reasoning (plain text) |
+| `tool_call` | `{id, title, status}` | Tool invocation notification |
+| `tool_update` | `{id, status}` | Tool status update |
+| `permission` | `{request_id, title, description, options}` | Permission request |
+| `prompt_complete` | `{event_count}` | Agent finished responding |
+| `session_sync` | `{events, event_count, is_running, is_prompting}` | Response to sync request |
+| `error` | `{message, code?}` | Error notification |
+
+### Replay of Missing Content
+
+When a client connects mid-stream (while the agent is actively responding), it needs to catch up on content that has been streamed but not yet persisted.
+
+#### The Problem
+
+Agent messages and thoughts are **buffered** during streaming and only **persisted** when the prompt completes. A client connecting mid-stream would miss buffered content.
+
+```mermaid
+sequenceDiagram
+    participant Agent as ACP Agent
+    participant BS as BackgroundSession
+    participant Buffer as Message Buffer
+    participant Store as Session Store
+    participant Client1 as Client 1 (connected)
+    participant Client2 as Client 2 (connects later)
+
+    Note over Agent,Client1: Agent starts responding
+    Agent->>BS: AgentMessage chunk 1
+    BS->>Buffer: Write(chunk1)
+    BS->>Client1: OnAgentMessage(chunk1)
+
+    Agent->>BS: AgentMessage chunk 2
+    BS->>Buffer: Write(chunk2)
+    BS->>Client1: OnAgentMessage(chunk2)
+
+    Note over Client2: Client 2 connects mid-stream
+    Client2->>BS: AddObserver(client2)
+    BS->>Buffer: Peek() - read without clearing
+    Buffer-->>BS: "chunk1 + chunk2"
+    BS->>Client2: OnAgentMessage(buffered content)
+
+    Agent->>BS: AgentMessage chunk 3
+    BS->>Buffer: Write(chunk3)
+    BS->>Client1: OnAgentMessage(chunk3)
+    BS->>Client2: OnAgentMessage(chunk3)
+
+    Note over Agent: Agent completes
+    Agent->>BS: PromptComplete
+    BS->>Buffer: Flush()
+    Buffer-->>BS: Full message
+    BS->>Store: RecordAgentMessage(full)
+```
+
+#### The Solution
+
+When a new observer connects to a `BackgroundSession`, the session checks if it's currently prompting. If so, it sends any buffered thought and message content to the new observer using `Peek()` (which reads without clearing the buffer).
+
+**Key methods in `agentMessageBuffer`:**
+- `Peek()`: Returns buffer content without clearing it
+- `Flush()`: Returns buffer content and clears it (used at prompt completion)
+
+This ensures all clients see the same content, regardless of when they connect.
+
+### Resync Mechanism
+
+The resync mechanism allows clients to catch up on events they missed while disconnected (e.g., phone sleep, network loss).
+
+#### Sequence Number Tracking
+
+The frontend tracks the last seen sequence number in localStorage. This is updated when:
+- Loading a session (set to highest `seq` from loaded events)
+- Receiving `prompt_complete` (updated from `event_count` field)
+- Receiving `session_sync` (updated after merge)
+
+#### Sync Request Flow
+
+```mermaid
+sequenceDiagram
+    participant Client as Frontend
+    participant WS as Session WebSocket
+    participant Handler as SessionWSClient
+    participant Store as Session Store
+
+    Note over Client: WebSocket connects
+    Client->>Client: Read lastSeenSeq from localStorage
+    Client->>WS: sync_session {after_seq: 42}
+    WS->>Handler: handleSync(afterSeq=42)
+    Handler->>Store: ReadEventsFrom(sessionID, 42)
+    Store-->>Handler: Events where seq > 42
+    Handler->>Handler: Get session metadata & status
+    Handler-->>WS: session_sync {events, event_count, is_running, is_prompting}
+    WS-->>Client: Receive sync response
+    Client->>Client: mergeMessagesWithSync(existing, new)
+    Client->>Client: sortMessagesBySeq(merged)
+    Client->>Client: Update lastSeenSeq in localStorage
+```
+
+#### Merge and Deduplication
+
+When sync events arrive, they're merged with existing messages using `mergeMessagesWithSync()` which:
+1. Creates a hash set of existing messages for deduplication
+2. Filters out duplicates from new messages
+3. Merges both lists and sorts by `seq`
+
+This handles the case where some messages were received via streaming (no `seq`) and the same messages arrive via sync (with `seq`).
+
+### Reconnection Handling
+
+The reconnection system handles WebSocket disconnections gracefully, including the "zombie connection" problem on mobile devices.
+
+#### The Zombie Connection Problem
+
+Mobile browsers (especially iOS Safari) may keep WebSocket connections in a "zombie" state after the phone sleeps:
+- `readyState === OPEN` (appears connected)
+- Actually dead (messages fail silently)
+- No `onclose` event fired
+
+#### Force Reconnect Strategy
+
+Rather than detecting zombie connections, the frontend forces a fresh reconnection when the app becomes visible. This is more reliable than trying to detect stale connections.
+
+```mermaid
+sequenceDiagram
+    participant Phone as Mobile Browser
+    participant WS as WebSocket
+    participant Server as Backend
+    participant Storage as localStorage
+
+    Note over Phone: Phone sleeps
+    WS-xServer: Connection closed/zombied
+
+    Note over Phone: Phone wakes
+    Phone->>Phone: visibilitychange event fires
+    Phone->>Server: fetchStoredSessions() via REST
+    Server-->>Phone: Updated session list
+
+    Phone->>Phone: forceReconnectActiveSession()
+    Phone->>WS: Close existing zombie connection
+    Phone->>WS: Create fresh WebSocket connection
+
+    WS->>Server: Connection established
+    Server-->>WS: connected {session_id, is_running}
+
+    Note over Phone,Server: Sync in ws.onopen handler
+    Phone->>Storage: getLastSeenSeq(sessionId)
+    Storage-->>Phone: lastSeq = 42
+    Phone->>WS: sync_session {after_seq: 42}
+    Server->>Server: ReadEventsFrom(sessionID, 42)
+    Server-->>WS: session_sync {events: [...]}
+    WS-->>Phone: Events merged into UI
+
+    Phone->>Phone: retryPendingPrompts()
+```
+
+#### Automatic Reconnection on Close
+
+When a WebSocket closes unexpectedly, the frontend schedules a reconnection after a 2-second delay. The reconnection only occurs if:
+- The session is still the active session
+- No newer WebSocket has been created for that session
+
+#### Pending Prompt Retry
+
+Prompts are saved to localStorage before sending (with a unique `prompt_id`). After reconnection, any prompts that weren't acknowledged are automatically retried. Prompts older than 5 minutes are cleaned up to prevent stale retries.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant Storage as localStorage
+    participant WS as WebSocket
+    participant Server as Backend
+
+    User->>Frontend: Send message
+    Frontend->>Frontend: Generate prompt_id
+    Frontend->>Storage: savePendingPrompt(sessionId, promptId, message)
+    Frontend->>WS: prompt {message, prompt_id}
+
+    alt Connection Lost Before ACK
+        WS-xServer: Connection fails
+        Note over Frontend: Prompt still in localStorage
+
+        Note over Frontend: Later: Reconnection
+        Frontend->>WS: New WebSocket connection
+        WS->>Server: Connection established
+        Frontend->>Storage: getPendingPromptsForSession(sessionId)
+        Storage-->>Frontend: [{promptId, message}]
+        Frontend->>WS: prompt {message, prompt_id} (retry)
+        Server-->>WS: prompt_received {prompt_id}
+        WS-->>Frontend: ACK received
+        Frontend->>Storage: removePendingPrompt(promptId)
+    else ACK Received
+        Server-->>WS: prompt_received {prompt_id}
+        WS-->>Frontend: ACK received
+        Frontend->>Storage: removePendingPrompt(promptId)
+    end
+```
+
+#### Multi-Client Prompt Broadcast
+
+When multiple clients are connected to the same session, prompts are broadcast to all clients:
+
+```mermaid
+sequenceDiagram
+    participant Client1 as Client 1 (sender)
+    participant Server as Backend
+    participant Client2 as Client 2 (observer)
+    participant Client3 as Client 3 (observer)
+
+    Client1->>Server: prompt {message, prompt_id}
+    Server->>Server: Persist to session store
+    Server-->>Client1: prompt_received {prompt_id}
+    Server-->>Client1: user_prompt {is_mine: true, message}
+    Server-->>Client2: user_prompt {is_mine: false, message, sender_id}
+    Server-->>Client3: user_prompt {is_mine: false, message, sender_id}
+
+    Note over Client2,Client3: Other clients add message to UI
+    Client2->>Client2: Check for duplicate (by content hash)
+    Client2->>Client2: Add message if not duplicate
+```
+
 ### Frontend Technology
 
 The frontend uses a CDN-first approach for zero build complexity:
@@ -865,104 +1355,13 @@ type WorkspaceConfig struct {
 
 ## File Structure
 
-### Project Layout
-
-```
-mitto/
-├── cmd/
-│   ├── mitto/
-│   │   └── main.go              # CLI entry point
-│   └── mitto-app/
-│       └── main.go              # macOS native app entry point
-├── config/
-│   ├── config.default.yaml      # Embedded default configuration
-│   └── embed.go                 # Go embed directive for defaults
-├── internal/
-│   ├── acp/
-│   │   ├── client.go            # ACP protocol handlers
-│   │   ├── connection.go        # Process & connection management
-│   │   └── terminal.go          # Terminal operations
-│   ├── appdir/
-│   │   └── appdir.go            # Platform-native directory management
-│   ├── cmd/
-│   │   ├── root.go              # Root command & global flags
-│   │   ├── cli.go               # Interactive CLI command
-│   │   └── web.go               # Web interface command
-│   ├── config/
-│   │   ├── config.go            # Configuration loading & parsing (YAML)
-│   │   └── settings.go          # Settings persistence (JSON)
-│   ├── session/
-│   │   ├── types.go             # Event & metadata types
-│   │   ├── store.go             # File-based storage
-│   │   ├── recorder.go          # Session recording
-│   │   ├── player.go            # Session playback
-│   │   ├── config.go            # Default paths (uses appdir)
-│   │   └── *_test.go            # Unit tests
-│   └── web/
-│       ├── server.go            # HTTP server setup, routing
-│       ├── session_ws.go        # Per-session WebSocket handler
-│       ├── events_ws.go         # Global events WebSocket handler
-│       ├── ws_conn.go           # Shared WebSocket connection wrapper
-│       ├── ws_types.go          # WebSocket message types
-│       ├── background_session.go # Background session management
-│       ├── client.go            # Web ACP client
-│       ├── markdown.go          # Markdown streaming buffer
-│       ├── session_api.go       # REST API for sessions
-│       └── title.go             # Auto-title generation
-├── web/
-│   ├── embed.go                 # Go embed directive for static files
-│   └── static/
-│       ├── index.html           # Main HTML page
-│       ├── app.js               # Preact application
-│       └── styles.css           # Custom CSS
-├── docs/
-│   └── architecture.md          # This document
-├── go.mod                       # Go module definition
-├── go.sum                       # Dependency checksums
-├── Makefile                     # Build automation
-└── README.md                    # User documentation
-```
-
-### Mitto Data Directory Layout
-
-The Mitto data directory (`MITTO_DIR`) contains configuration and session data:
-
-```mermaid
-flowchart TB
-    subgraph "MITTO_DIR (platform-specific)"
-        SETTINGS[settings.json]
-        subgraph "sessions/"
-            subgraph "20260125-143052-a1b2c3d4/"
-                E1[events.jsonl]
-                M1[metadata.json]
-            end
-            subgraph "20260125-150000-b2c3d4e5/"
-                E2[events.jsonl]
-                M2[metadata.json]
-            end
-        end
-    end
-```
+### Mitto Data Directory
 
 **Platform-specific locations:**
 - **macOS**: `~/Library/Application Support/Mitto/`
 - **Linux**: `~/.local/share/mitto/`
 - **Windows**: `%APPDATA%\Mitto\`
 - **Override**: Set `MITTO_DIR` environment variable
-
-**Directory Structure:**
-```
-~/Library/Application Support/Mitto/    # (or platform equivalent)
-├── settings.json                        # User configuration (JSON)
-├── workspaces.json                      # Workspace configuration (JSON, optional)
-└── sessions/
-    ├── 20260125-143052-a1b2c3d4/
-    │   ├── events.jsonl                 # Event log (append-only)
-    │   └── metadata.json                # Session metadata
-    └── 20260125-150000-b2c3d4e5/
-        ├── events.jsonl
-        └── metadata.json
-```
 
 ### Workspace Persistence
 
@@ -1045,5 +1444,3 @@ Workspaces are NOT persisted when:
 5. **Multiple Storage Backends**: Support for database or cloud storage
 6. **Session Sharing**: Share sessions between users or machines
 7. **Touch Gestures**: Swipe navigation for mobile web interface
-
-
