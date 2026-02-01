@@ -337,7 +337,7 @@ export function getMessageHash(message) {
 }
 
 /**
- * Merge new messages from sync into existing messages, maintaining chronological order.
+ * Merge new messages from sync into existing messages, maintaining display order.
  * This handles the case where:
  * 1. Existing messages may have been received via streaming (no seq, or client-side timestamp)
  * 2. New messages come from sync (with seq and server timestamp)
@@ -345,8 +345,22 @@ export function getMessageHash(message) {
  * The merge strategy:
  * 1. Create a hash set of existing messages for deduplication
  * 2. Filter out duplicates from new messages
- * 3. Merge both lists and sort by sequence number (for messages with seq)
- *    or timestamp (for streaming messages without seq)
+ * 3. Append new messages at the end (they happened AFTER the existing messages)
+ *
+ * IMPORTANT: Do NOT re-sort the entire message list by seq or timestamp.
+ *
+ * Existing messages are in correct display order from real-time streaming.
+ * New messages from sync represent events that happened AFTER the lastSeenSeq,
+ * so they should be appended at the end.
+ *
+ * Re-sorting by seq causes incorrect ordering because:
+ * 1. Tool calls are persisted immediately with early seq numbers
+ * 2. Agent messages are buffered and persisted later with later seq numbers
+ * 3. This makes tool calls appear to come before agent messages when sorted by seq,
+ *    even though they were interleaved during the actual conversation.
+ *
+ * The sync messages themselves are already in chronological order from the backend
+ * (they're read from events.jsonl which is append-only).
  *
  * @param {Array} existingMessages - Messages currently in UI
  * @param {Array} newMessages - Messages from session_sync
@@ -376,21 +390,7 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     return existingMessages;
   }
 
-  // IMPORTANT: Do NOT re-sort the entire message list by seq or timestamp.
-  //
-  // Existing messages are in correct display order from real-time streaming.
-  // New messages from sync represent events that happened AFTER the lastSeenSeq,
-  // so they should be appended at the end.
-  //
-  // Re-sorting by seq can cause incorrect ordering because:
-  // 1. Tool calls are persisted immediately with early seq numbers
-  // 2. Agent messages are buffered and persisted later with later seq numbers
-  // 3. This makes tool calls appear to come before agent messages when sorted by seq,
-  //    even though they were interleaved during the actual conversation.
-  //
-  // Instead, we preserve the existing message order and append new sync messages.
-  // The sync messages themselves are already in chronological order from the backend.
-
+  // Append new messages at the end - they happened after existing messages
   return [...existingMessages, ...filteredNewMessages];
 }
 

@@ -906,13 +906,26 @@ export function useWebSocket() {
         }
 
         // Initialize session state (merge with any existing state from WebSocket)
+        // IMPORTANT: We merge REST API messages with any existing streaming messages
+        // to handle the case where WebSocket messages arrived during the async REST call.
+        // Then we sort by seq to ensure consistent ordering across all clients.
         setSessions((prev) => {
           const existing = prev[sessionId] || {};
+          const existingMessages = existing.messages || [];
+
+          // Merge REST API messages with any existing streaming messages
+          // This handles the race condition where WebSocket messages arrive
+          // during the async REST API call
+          const mergedMessages = mergeMessagesWithSync(
+            messages,
+            existingMessages,
+          );
+
           return {
             ...prev,
             [sessionId]: {
               ...existing,
-              messages,
+              messages: mergedMessages,
               info: {
                 ...existing.info,
                 session_id: sessionId,

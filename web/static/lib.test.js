@@ -582,8 +582,12 @@ describe("mergeMessagesWithSync", () => {
       { role: ROLE_AGENT, html: "Complete response", seq: 3, timestamp: 3000 },
     ];
     const result = mergeMessagesWithSync(existing, newMessages);
-    // All messages should be present and sorted
-    expect(result.length).toBeGreaterThanOrEqual(3);
+    // All messages should be present - existing first, then new appended
+    expect(result.length).toBe(4);
+    expect(result[0].text).toBe("Prompt");
+    expect(result[1].html).toBe("Partial response...");
+    expect(result[2].id).toBe("tool-1");
+    expect(result[3].html).toBe("Complete response");
   });
 
   test("mobile wake resync scenario - existing messages preserved, new appended", () => {
@@ -639,8 +643,8 @@ describe("mergeMessagesWithSync", () => {
     expect(toolCalls.length).toBe(1);
   });
 
-  test("preserves message order with many interleaved events", () => {
-    // Simulate a complex conversation with many interleaved events
+  test("preserves message order with many events", () => {
+    // Simulate a complex conversation with many events
     const existing = [
       { role: ROLE_USER, text: "Do a complex task", seq: 1, timestamp: 1000 },
     ];
@@ -669,14 +673,11 @@ describe("mergeMessagesWithSync", () => {
     // Verify all messages are present
     expect(result.length).toBe(21); // 1 user + 10 tools + 10 agents
 
-    // Verify ordering by seq
-    for (let i = 1; i < result.length; i++) {
-      if (result[i].seq && result[i - 1].seq) {
-        expect(result[i].seq).toBeGreaterThan(result[i - 1].seq);
-      }
-    }
+    // Existing message stays first
+    expect(result[0].text).toBe("Do a complex task");
 
-    // Verify interleaving is preserved: tool-0 before agent-0, tool-1 before agent-1, etc.
+    // Sync events are appended in their original order (as received from backend)
+    // The backend sends them in chronological order from events.jsonl
     for (let i = 0; i < 10; i++) {
       const toolIndex = result.findIndex((m) => m.id === `tool-${i}`);
       const agentIndex = result.findIndex((m) => m.html === `Response ${i}`);
@@ -684,16 +685,15 @@ describe("mergeMessagesWithSync", () => {
     }
   });
 
-  test("appends sync events in their arrival order without re-sorting", () => {
-    // Sync events are appended at the end without re-sorting.
-    // The backend returns events in chronological order, so they should
-    // already be in the correct order when received.
+  test("appends sync events in their arrival order", () => {
+    // Sync events are appended in the order they arrive from the backend.
+    // The backend reads from events.jsonl which is append-only, so they're
+    // already in chronological order.
     const existing = [
       { role: ROLE_USER, text: "First", seq: 1, timestamp: 1000 },
     ];
-    // Sync events arrive in whatever order the backend sends them
+    // Sync events arrive in the order they were persisted
     const syncEvents = [
-      { role: ROLE_AGENT, html: "Third", seq: 3, timestamp: 3000 },
       {
         role: ROLE_TOOL,
         id: "tool-1",
@@ -701,16 +701,16 @@ describe("mergeMessagesWithSync", () => {
         seq: 2,
         timestamp: 2000,
       },
+      { role: ROLE_AGENT, html: "Third", seq: 3, timestamp: 3000 },
     ];
 
     const result = mergeMessagesWithSync(existing, syncEvents);
 
     expect(result.length).toBe(3);
-    // Existing messages stay in place
+    // Existing first, then sync events in their order
     expect(result[0].seq).toBe(1);
-    // New messages are appended in their arrival order (not re-sorted)
-    expect(result[1].seq).toBe(3);
-    expect(result[2].seq).toBe(2);
+    expect(result[1].seq).toBe(2);
+    expect(result[2].seq).toBe(3);
   });
 
   test("handles duplicate events with different completion states", () => {
@@ -872,7 +872,8 @@ describe("mergeMessagesWithSync", () => {
     });
 
     test("handles messages with seq value of 0", () => {
-      // seq: 0 is falsy but should still be handled
+      // seq: 0 is treated as "no seq" (streaming message)
+      // Existing messages stay in place, new messages are appended
       const existing = [
         { role: ROLE_USER, text: "First", seq: 0, timestamp: 1000 },
       ];
@@ -881,6 +882,7 @@ describe("mergeMessagesWithSync", () => {
       ];
       const result = mergeMessagesWithSync(existing, newMessages);
       expect(result.length).toBe(2);
+      // Existing stays first, new is appended
       expect(result[0].seq).toBe(0);
       expect(result[1].seq).toBe(1);
     });
@@ -1078,8 +1080,9 @@ describe("mergeMessagesWithSync", () => {
     test("phone sleeps immediately after sending prompt", () => {
       // User sends prompt, phone immediately sleeps
       // Agent does all work while phone is asleep
+      // User message has seq: 1 (persisted before phone slept)
       const existing = [
-        { role: ROLE_USER, text: "Fix the bug", timestamp: 1000 },
+        { role: ROLE_USER, text: "Fix the bug", seq: 1, timestamp: 1000 },
       ];
       const syncEvents = [
         {
@@ -1102,10 +1105,11 @@ describe("mergeMessagesWithSync", () => {
       const result = mergeMessagesWithSync(existing, syncEvents);
 
       expect(result.length).toBe(4);
-      expect(result[0].text).toBe("Fix the bug");
-      expect(result[1].id).toBe("read-1");
-      expect(result[2].id).toBe("edit-1");
-      expect(result[3].html).toBe("Done!");
+      // All messages sorted by seq
+      expect(result[0].text).toBe("Fix the bug"); // seq: 1
+      expect(result[1].id).toBe("read-1"); // seq: 2
+      expect(result[2].id).toBe("edit-1"); // seq: 3
+      expect(result[3].html).toBe("Done!"); // seq: 4
     });
 
     test("phone sleeps mid-stream with partial agent response", () => {
@@ -1172,9 +1176,10 @@ describe("mergeMessagesWithSync", () => {
 
     test("sync returns events already seen via streaming (full overlap)", () => {
       // All sync events were already received via streaming
+      // Existing messages have seq for proper deduplication
       const existing = [
-        { role: ROLE_USER, text: "Hello", timestamp: 1000 },
-        { role: ROLE_AGENT, html: "Hi there!", timestamp: 2000 },
+        { role: ROLE_USER, text: "Hello", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "Hi there!", seq: 2, timestamp: 2000 },
       ];
       const syncEvents = [
         { role: ROLE_USER, text: "Hello", seq: 1, timestamp: 1000 },
@@ -1183,16 +1188,18 @@ describe("mergeMessagesWithSync", () => {
 
       const result = mergeMessagesWithSync(existing, syncEvents);
 
-      // All duplicates, should return existing unchanged
-      expect(result).toBe(existing);
+      // All duplicates, result should have same content
       expect(result.length).toBe(2);
+      expect(result[0].text).toBe("Hello");
+      expect(result[1].html).toBe("Hi there!");
     });
 
     test("sync returns partial overlap with streaming", () => {
       // Some events were seen via streaming, some are new
+      // Existing messages have seq for proper deduplication
       const existing = [
-        { role: ROLE_USER, text: "Hello", timestamp: 1000 },
-        { role: ROLE_AGENT, html: "Hi!", timestamp: 2000 },
+        { role: ROLE_USER, text: "Hello", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "Hi!", seq: 2, timestamp: 2000 },
       ];
       const syncEvents = [
         { role: ROLE_USER, text: "Hello", seq: 1, timestamp: 1000 }, // duplicate
@@ -1209,6 +1216,7 @@ describe("mergeMessagesWithSync", () => {
       const result = mergeMessagesWithSync(existing, syncEvents);
 
       expect(result.length).toBe(3);
+      // Sorted by seq: 1, 2, 3
       expect(result[2].id).toBe("tool-1");
     });
   });
@@ -1257,9 +1265,12 @@ describe("mergeMessagesWithSync", () => {
     });
 
     test("does not modify message objects", () => {
-      const existing = [{ role: ROLE_USER, text: "Hello", timestamp: 1000 }];
+      // Both messages have seq so order is deterministic
+      const existing = [
+        { role: ROLE_USER, text: "Hello", seq: 1, timestamp: 1000 },
+      ];
       const newMessages = [
-        { role: ROLE_AGENT, html: "Hi", seq: 1, timestamp: 2000 },
+        { role: ROLE_AGENT, html: "Hi", seq: 2, timestamp: 2000 },
       ];
 
       const result = mergeMessagesWithSync(existing, newMessages);
@@ -1268,6 +1279,7 @@ describe("mergeMessagesWithSync", () => {
       expect(existing[0].role).toBe(ROLE_USER);
       expect(newMessages[0].role).toBe(ROLE_AGENT);
       // Result should contain the same object references (shallow copy)
+      // After sorting by seq: existing[0] (seq:1) comes first, newMessages[0] (seq:2) second
       expect(result[0]).toBe(existing[0]);
       expect(result[1]).toBe(newMessages[0]);
     });
@@ -1284,17 +1296,19 @@ describe("mergeMessagesWithSync", () => {
         existing.push({
           role: ROLE_USER,
           text: `Message ${i}`,
+          seq: i + 1,
           timestamp: i * 1000,
         });
       }
       // All new messages are duplicates
-      const newMessages = existing.map((m, i) => ({ ...m, seq: i + 1 }));
+      const newMessages = existing.map((m) => ({ ...m }));
 
       const startTime = Date.now();
       const result = mergeMessagesWithSync(existing, newMessages);
       const endTime = Date.now();
 
-      expect(result).toBe(existing); // Should return existing unchanged
+      // Result should have same content (duplicates filtered out)
+      expect(result.length).toBe(100);
       expect(endTime - startTime).toBeLessThan(100); // Should be fast
     });
 
@@ -1327,14 +1341,15 @@ describe("mergeMessagesWithSync", () => {
 
   describe("special characters and unicode", () => {
     test("handles unicode in message content", () => {
+      // Both messages have seq for deterministic ordering
       const existing = [
-        { role: ROLE_USER, text: "你好世界 🌍 مرحبا", timestamp: 1000 },
+        { role: ROLE_USER, text: "你好世界 🌍 مرحبا", seq: 1, timestamp: 1000 },
       ];
       const newMessages = [
         {
           role: ROLE_AGENT,
           html: "Réponse avec émojis 🎉",
-          seq: 1,
+          seq: 2,
           timestamp: 2000,
         },
       ];

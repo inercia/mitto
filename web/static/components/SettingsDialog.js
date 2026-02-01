@@ -1010,9 +1010,9 @@ export function SettingsDialog({
                       class="p-3 bg-slate-800/50 rounded-lg border border-slate-700"
                     >
                       <p class="text-gray-300 text-sm leading-relaxed">
-                        A
+                        A${" "}
                         <span class="text-blue-400 font-medium">Workspace</span>
-                        pairs a directory with an ACP server. Each workspace
+                        ${" "}pairs a directory with an ACP server. Each workspace
                         allows you to work on a specific project with a chosen
                         AI agent. You can configure multiple workspaces to work
                         on different projects simultaneously.
@@ -1695,7 +1695,7 @@ export function SettingsDialog({
                           currentExternalPort &&
                           html`
                             <div class="text-xs text-green-400">
-                              ✓ External access active on port
+                              ✓ External access active on port${" "}
                               ${currentExternalPort}
                             </div>
                           `}

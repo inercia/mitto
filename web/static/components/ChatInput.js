@@ -42,6 +42,7 @@ function getContrastColor(hexColor) {
  * @param {string} props.sessionId - Current session ID
  * @param {string} props.draft - Current draft text
  * @param {Function} props.onDraftChange - Callback when draft changes
+ * @param {Function} props.onPromptsOpen - Callback when prompts dropdown is opened (for refresh)
  */
 export function ChatInput({
   onSend,
@@ -55,6 +56,7 @@ export function ChatInput({
   sessionId,
   draft = "",
   onDraftChange,
+  onPromptsOpen,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -68,6 +70,17 @@ export function ChatInput({
   );
 
   const [showDropup, setShowDropup] = useState(false);
+
+  // Handler for toggling the prompts dropdown
+  // Calls onPromptsOpen callback when opening to trigger prompt refresh
+  const handleTogglePrompts = useCallback(() => {
+    const willOpen = !showDropup;
+    setShowDropup(willOpen);
+    if (willOpen && onPromptsOpen) {
+      onPromptsOpen();
+    }
+  }, [showDropup, onPromptsOpen]);
+
   // Track ongoing prompt improvements: { targetSessionId, abortController }
   const [improvingState, setImprovingState] = useState(null);
   const [improveError, setImproveError] = useState(null);
@@ -548,13 +561,31 @@ export function ChatInput({
             ${pendingImages.map(
               (img) => html`
                 <div key=${img.id} class="relative group">
-                  <img
-                    src=${img.url}
-                    alt=${img.name || "Pending image"}
-                    class="w-16 h-16 rounded-lg object-cover border border-slate-600 ${img.uploading
-                      ? "opacity-50"
-                      : ""}"
-                  />
+                  ${img.url
+                    ? html`<img
+                        src=${img.url}
+                        alt=${img.name || "Pending image"}
+                        class="w-16 h-16 rounded-lg object-cover border border-slate-600 ${img.uploading
+                          ? "opacity-50"
+                          : ""}"
+                      />`
+                    : html`<div
+                        class="w-16 h-16 rounded-lg bg-slate-700 border border-slate-600 flex items-center justify-center"
+                      >
+                        <svg
+                          class="w-6 h-6 text-slate-500"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                          />
+                        </svg>
+                      </div>`}
                   ${img.uploading
                     ? html`
                         <div
@@ -670,7 +701,7 @@ export function ChatInput({
                             key=${"ws-" + idx}
                             type="button"
                             onClick=${() => handlePredefinedPrompt(prompt)}
-                            class="w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                            class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
                             style=${prompt.backgroundColor
                               ? {
                                   backgroundColor: prompt.backgroundColor,
@@ -731,7 +762,7 @@ export function ChatInput({
                             key=${"other-" + idx}
                             type="button"
                             onClick=${() => handlePredefinedPrompt(prompt)}
-                            class="w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                            class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
                             style=${prompt.backgroundColor
                               ? {
                                   backgroundColor: prompt.backgroundColor,
@@ -771,7 +802,7 @@ export function ChatInput({
                   <button
                     type="button"
                     onClick=${onCancel}
-                    class="w-full bg-red-600 hover:bg-red-700 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
+                    class="min-w-[5.5rem] bg-red-600 hover:bg-red-700 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
                   >
                     <svg
                       class="w-4 h-4"
@@ -788,7 +819,7 @@ export function ChatInput({
                     <button
                       type="button"
                       disabled
-                      class="flex-1 bg-slate-600 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2 cursor-not-allowed"
+                      class="min-w-[5.5rem] bg-slate-600 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2 cursor-not-allowed"
                     >
                       <svg
                         class="w-4 h-4 animate-spin"
@@ -809,7 +840,6 @@ export function ChatInput({
                           d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                         ></path>
                       </svg>
-                      <span>Sending...</span>
                     </button>
                   `
                 : html`
@@ -819,7 +849,7 @@ export function ChatInput({
                       (!text.trim() && !hasPendingImages) ||
                       isReadOnly ||
                       isImproving}
-                      class="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center"
+                      class="min-w-[5.5rem] bg-red-600 hover:bg-red-700 disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
                     >
                       <span>Send</span>
                     </button>
@@ -829,7 +859,7 @@ export function ChatInput({
             html`
               <button
                 type="button"
-                onClick=${() => setShowDropup(!showDropup)}
+                onClick=${handleTogglePrompts}
                 disabled=${isFullyDisabled || isReadOnly}
                 class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white px-2 py-2 border-l border-blue-500 transition-colors"
                 title="Insert predefined prompt"
@@ -856,7 +886,7 @@ export function ChatInput({
             html`
               <button
                 type="button"
-                onClick=${() => setShowDropup(!showDropup)}
+                onClick=${handleTogglePrompts}
                 disabled=${isFullyDisabled || isReadOnly}
                 class="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-2 py-2 border-l border-slate-600 transition-colors"
                 title="Insert predefined prompt"

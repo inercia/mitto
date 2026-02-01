@@ -1136,6 +1136,8 @@ function App() {
   const [acpServersWithPrompts, setAcpServersWithPrompts] = useState([]); // ACP servers with their per-server prompts
   const [workspacePrompts, setWorkspacePrompts] = useState([]); // Workspace-specific prompts from .mittorc
   const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
+  const [workspacePromptsLastModified, setWorkspacePromptsLastModified] =
+    useState(null); // Last-Modified header for conditional requests
   const [configReadonly, setConfigReadonly] = useState(false); // True when --config flag was used or using RC file
   const [rcFilePath, setRcFilePath] = useState(null); // Path to RC file when config is read-only due to RC file
   const [swipeDirection, setSwipeDirection] = useState(null); // 'left' or 'right' for animation
@@ -1527,28 +1529,98 @@ function App() {
       .catch((err) => console.error("Failed to fetch config:", err));
   }, []);
 
+  // Fetch workspace prompts with conditional request support (If-Modified-Since)
+  // This enables efficient periodic refresh without transferring data if unchanged
+  const fetchWorkspacePrompts = useCallback(
+    async (workingDir, forceRefresh = false) => {
+      if (!workingDir) return;
+
+      const headers = {};
+      // Use If-Modified-Since for conditional requests (unless forcing refresh)
+      if (
+        !forceRefresh &&
+        workspacePromptsLastModified &&
+        workingDir === workspacePromptsDir
+      ) {
+        headers["If-Modified-Since"] = workspacePromptsLastModified;
+      }
+
+      try {
+        const res = await authFetch(
+          apiUrl(
+            `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`,
+          ),
+          { headers },
+        );
+
+        // 304 Not Modified - prompts haven't changed
+        if (res.status === 304) {
+          return;
+        }
+
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        setWorkspacePrompts(data?.prompts || []);
+        setWorkspacePromptsDir(workingDir);
+
+        // Store Last-Modified header for future conditional requests
+        const lastModified = res.headers.get("Last-Modified");
+        setWorkspacePromptsLastModified(lastModified);
+      } catch (err) {
+        console.error("Failed to fetch workspace prompts:", err);
+        // Only clear prompts on error if this is a new workspace
+        if (workingDir !== workspacePromptsDir) {
+          setWorkspacePrompts([]);
+          setWorkspacePromptsDir(workingDir);
+          setWorkspacePromptsLastModified(null);
+        }
+      }
+    },
+    [workspacePromptsDir, workspacePromptsLastModified],
+  );
+
   // Fetch workspace prompts when the active session's working_dir changes
   useEffect(() => {
     const workingDir = sessionInfo?.working_dir;
-    if (!workingDir || workingDir === workspacePromptsDir) {
-      return;
-    }
+    if (!workingDir) return;
 
-    // Fetch workspace-specific prompts
-    authFetch(
-      apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`),
-    )
-      .then((res) => res.json())
-      .then((data) => {
-        setWorkspacePrompts(data?.prompts || []);
-        setWorkspacePromptsDir(workingDir);
-      })
-      .catch((err) => {
-        console.error("Failed to fetch workspace prompts:", err);
-        setWorkspacePrompts([]);
-        setWorkspacePromptsDir(workingDir);
-      });
-  }, [sessionInfo?.working_dir, workspacePromptsDir]);
+    // Always fetch if workspace changed
+    if (workingDir !== workspacePromptsDir) {
+      fetchWorkspacePrompts(workingDir, true); // Force refresh for new workspace
+    }
+  }, [sessionInfo?.working_dir, workspacePromptsDir, fetchWorkspacePrompts]);
+
+  // Periodic refresh of workspace prompts (every 30 seconds)
+  // Uses conditional requests to avoid unnecessary data transfer
+  useEffect(() => {
+    const workingDir = sessionInfo?.working_dir;
+    if (!workingDir) return;
+
+    const intervalId = setInterval(() => {
+      fetchWorkspacePrompts(workingDir, false); // Conditional request
+    }, 30000); // 30 seconds
+
+    return () => clearInterval(intervalId);
+  }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
+
+  // Refresh workspace prompts when app becomes visible (tab switch, phone wake)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && sessionInfo?.working_dir) {
+        // Small delay to avoid racing with other visibility handlers
+        setTimeout(() => {
+          fetchWorkspacePrompts(sessionInfo.working_dir, false);
+        }, 500);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
 
   // Theme state - default depends on UI theme (v2 defaults to light, default theme defaults to dark)
   const [theme, setTheme] = useState(() => {
@@ -1922,6 +1994,13 @@ function App() {
   const handleShowKeyboardShortcuts = () => {
     setKeyboardShortcutsDialog({ isOpen: true });
   };
+
+  // Handler for prompts dropdown open - refreshes workspace prompts
+  const handlePromptsOpen = useCallback(() => {
+    if (sessionInfo?.working_dir) {
+      fetchWorkspacePrompts(sessionInfo.working_dir, false);
+    }
+  }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
 
   const handleSelectSession = (sessionId) => {
     switchSession(sessionId);
@@ -2352,6 +2431,7 @@ function App() {
           draft=${currentDraft}
           onDraftChange=${updateDraft}
           sessionDraftsRef=${sessionDraftsRef}
+          onPromptsOpen=${handlePromptsOpen}
         />
       </div>
     </div>
