@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci
 
 # Binary name
 BINARY_NAME=mitto
@@ -75,6 +75,11 @@ test-integration-cli: build build-mock-acp
 test-integration-api: build build-mock-acp
 	@echo "Running API integration tests..."
 	$(GOTEST) -v -tags=integration ./tests/integration/api/...
+
+# Run client integration tests only
+test-integration-client: build build-mock-acp
+	@echo "Running client integration tests..."
+	$(GOTEST) -v -tags=integration ./tests/integration/client/...
 
 # Run all integration tests (Go-based, uses mock ACP)
 test-integration: test-integration-go
