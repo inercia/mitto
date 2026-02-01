@@ -1,0 +1,201 @@
+package web
+
+import (
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/inercia/mitto/internal/session"
+)
+
+// QueueAddRequest represents a request to add a message to the queue.
+type QueueAddRequest struct {
+	Message  string   `json:"message"`
+	ImageIDs []string `json:"image_ids,omitempty"`
+}
+
+// QueueListResponse represents the response for listing queued messages.
+type QueueListResponse struct {
+	Messages []session.QueuedMessage `json:"messages"`
+	Count    int                     `json:"count"`
+}
+
+// handleSessionQueue handles queue operations for a session.
+// Routes: GET/POST/DELETE {prefix}/api/sessions/{id}/queue
+//
+//	DELETE {prefix}/api/sessions/{id}/queue/{msg_id}
+//	GET {prefix}/api/sessions/{id}/queue/{msg_id}
+func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request, sessionID, queuePath string) {
+	store := s.Store()
+	if store == nil {
+		http.Error(w, "Session store not available", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if session exists
+	if !store.Exists(sessionID) {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	queue := store.Queue(sessionID)
+
+	// Parse message ID from path if present
+	// queuePath is everything after "queue", e.g., "" or "/{msg_id}"
+	messageID := strings.TrimPrefix(queuePath, "/")
+
+	if messageID != "" {
+		// Operations on a specific message
+		s.handleQueueMessage(w, r, queue, sessionID, messageID)
+		return
+	}
+
+	// Operations on the queue itself
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListQueue(w, queue)
+	case http.MethodPost:
+		s.handleAddToQueue(w, r, queue, sessionID)
+	case http.MethodDelete:
+		s.handleClearQueue(w, queue, sessionID)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+// handleListQueue handles GET {prefix}/api/sessions/{id}/queue
+func (s *Server) handleListQueue(w http.ResponseWriter, queue *session.Queue) {
+	messages, err := queue.List()
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to list queue", "error", err)
+		}
+		http.Error(w, "Failed to list queue", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSONOK(w, QueueListResponse{
+		Messages: messages,
+		Count:    len(messages),
+	})
+}
+
+// handleAddToQueue handles POST {prefix}/api/sessions/{id}/queue
+func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue *session.Queue, sessionID string) {
+	var req QueueAddRequest
+	if !parseJSONBody(w, r, &req) {
+		return
+	}
+
+	if strings.TrimSpace(req.Message) == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "empty_message", "Message cannot be empty")
+		return
+	}
+
+	// Get client ID from request context if available (e.g., from auth)
+	clientID := ""
+
+	msg, err := queue.Add(req.Message, req.ImageIDs, clientID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to add message to queue", "error", err, "session_id", sessionID)
+		}
+		http.Error(w, "Failed to add message to queue", http.StatusInternalServerError)
+		return
+	}
+
+	// Notify observers about queue update
+	s.notifyQueueUpdate(sessionID, "added", msg.ID)
+
+	writeJSONCreated(w, msg)
+}
+
+// handleClearQueue handles DELETE {prefix}/api/sessions/{id}/queue
+func (s *Server) handleClearQueue(w http.ResponseWriter, queue *session.Queue, sessionID string) {
+	if err := queue.Clear(); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to clear queue", "error", err, "session_id", sessionID)
+		}
+		http.Error(w, "Failed to clear queue", http.StatusInternalServerError)
+		return
+	}
+
+	// Notify observers about queue update
+	s.notifyQueueUpdate(sessionID, "cleared", "")
+
+	writeNoContent(w)
+}
+
+// handleQueueMessage handles operations on a specific queued message.
+// Routes: GET/DELETE {prefix}/api/sessions/{id}/queue/{msg_id}
+func (s *Server) handleQueueMessage(w http.ResponseWriter, r *http.Request, queue *session.Queue, sessionID, messageID string) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetQueueMessage(w, queue, messageID)
+	case http.MethodDelete:
+		s.handleDeleteQueueMessage(w, queue, sessionID, messageID)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+// handleGetQueueMessage handles GET {prefix}/api/sessions/{id}/queue/{msg_id}
+func (s *Server) handleGetQueueMessage(w http.ResponseWriter, queue *session.Queue, messageID string) {
+	msg, err := queue.Get(messageID)
+	if err != nil {
+		if errors.Is(err, session.ErrMessageNotFound) {
+			http.Error(w, "Message not found", http.StatusNotFound)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Error("Failed to get queue message", "error", err, "message_id", messageID)
+		}
+		http.Error(w, "Failed to get queue message", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSONOK(w, msg)
+}
+
+// handleDeleteQueueMessage handles DELETE {prefix}/api/sessions/{id}/queue/{msg_id}
+func (s *Server) handleDeleteQueueMessage(w http.ResponseWriter, queue *session.Queue, sessionID, messageID string) {
+	if err := queue.Remove(messageID); err != nil {
+		if errors.Is(err, session.ErrMessageNotFound) {
+			http.Error(w, "Message not found", http.StatusNotFound)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Error("Failed to delete queue message", "error", err, "session_id", sessionID, "message_id", messageID)
+		}
+		http.Error(w, "Failed to delete queue message", http.StatusInternalServerError)
+		return
+	}
+
+	// Notify observers about queue update
+	s.notifyQueueUpdate(sessionID, "removed", messageID)
+
+	writeNoContent(w)
+}
+
+// notifyQueueUpdate broadcasts a queue update to all WebSocket clients for a session.
+func (s *Server) notifyQueueUpdate(sessionID, action, messageID string) {
+	// Get the background session to notify its observers
+	if s.sessionManager == nil {
+		return
+	}
+	bs := s.sessionManager.GetSession(sessionID)
+	if bs == nil {
+		return
+	}
+
+	// Get current queue length
+	store := s.Store()
+	if store == nil {
+		return
+	}
+	queue := store.Queue(sessionID)
+	length, _ := queue.Len()
+
+	// Notify all observers
+	bs.NotifyQueueUpdated(length, action, messageID)
+}

@@ -17,7 +17,6 @@ package web
 import (
 	"encoding/json"
 	"strings"
-	"time"
 )
 
 // WSMessage represents a WebSocket message between frontend and backend.
@@ -175,28 +174,227 @@ const (
 	// WSMsgTypeKeepaliveAck responds to a keepalive with server timestamp.
 	// Data: { "client_timestamp": int64, "server_timestamp": int64 }
 	WSMsgTypeKeepaliveAck = "keepalive_ack"
+
+	// WSMsgTypeQueueUpdated notifies that the message queue state changed.
+	// Sent when messages are added, removed, or the queue is cleared.
+	// Data: { "queue_length": int, "action": string, "message_id": string }
+	// action is one of: "added", "removed", "cleared"
+	WSMsgTypeQueueUpdated = "queue_updated"
+
+	// WSMsgTypeQueueMessageSending notifies that a queued message is being sent to the agent.
+	// Sent just before the message is delivered.
+	// Data: { "message_id": string }
+	WSMsgTypeQueueMessageSending = "queue_message_sending"
+
+	// WSMsgTypeQueueMessageSent notifies that a queued message was delivered to the agent.
+	// Sent after the message has been removed from the queue and sent.
+	// Data: { "message_id": string }
+	WSMsgTypeQueueMessageSent = "queue_message_sent"
 )
 
 // =============================================================================
-// Message Buffer for Agent Output
+// Unified Event Buffer for Streaming Events
 // =============================================================================
 
-// agentMessageBuffer accumulates agent message chunks for persistence.
-// We buffer chunks and persist complete messages to avoid excessive disk writes.
-type agentMessageBuffer struct {
-	text      strings.Builder
-	lastFlush time.Time
+// BufferedEventType represents the type of buffered event.
+type BufferedEventType string
+
+const (
+	BufferedEventAgentMessage   BufferedEventType = "agent_message"
+	BufferedEventAgentThought   BufferedEventType = "agent_thought"
+	BufferedEventToolCall       BufferedEventType = "tool_call"
+	BufferedEventToolCallUpdate BufferedEventType = "tool_call_update"
+	BufferedEventPlan           BufferedEventType = "plan"
+	BufferedEventFileRead       BufferedEventType = "file_read"
+	BufferedEventFileWrite      BufferedEventType = "file_write"
+)
+
+// BufferedEvent represents a single event in the streaming buffer.
+// Events are stored in the order they arrive and persisted together when the prompt completes.
+type BufferedEvent struct {
+	Type BufferedEventType
+	Data interface{}
 }
 
-// Write appends text to the buffer.
-func (b *agentMessageBuffer) Write(text string) {
-	b.text.WriteString(text)
+// AgentMessageData holds data for an agent message event.
+type AgentMessageData struct {
+	HTML string
 }
 
-// Flush returns the accumulated text and resets the buffer.
-func (b *agentMessageBuffer) Flush() string {
-	text := b.text.String()
-	b.text.Reset()
-	b.lastFlush = time.Now()
-	return text
+// AgentThoughtData holds data for an agent thought event.
+type AgentThoughtData struct {
+	Text string
+}
+
+// ToolCallData holds data for a tool call event.
+type ToolCallData struct {
+	ID     string
+	Title  string
+	Status string
+}
+
+// ToolCallUpdateData holds data for a tool call update event.
+type ToolCallUpdateData struct {
+	ID     string
+	Status *string
+}
+
+// PlanData holds data for a plan event.
+type PlanData struct {
+	// Plan data is not persisted in detail, just the event occurrence
+}
+
+// FileOperationData holds data for file read/write events.
+type FileOperationData struct {
+	Path string
+	Size int
+}
+
+// EventBuffer accumulates streaming events in order for later persistence.
+// Events are buffered during a prompt and persisted together when the prompt completes.
+// This ensures events are persisted in the correct streaming order, not the order
+// they would be persisted if done immediately (which would put tool calls before
+// agent messages due to buffering of agent message chunks).
+type EventBuffer struct {
+	events []BufferedEvent
+}
+
+// NewEventBuffer creates a new empty event buffer.
+func NewEventBuffer() *EventBuffer {
+	return &EventBuffer{
+		events: make([]BufferedEvent, 0, 16),
+	}
+}
+
+// Append adds an event to the buffer.
+func (b *EventBuffer) Append(event BufferedEvent) {
+	b.events = append(b.events, event)
+}
+
+// AppendAgentMessage appends an agent message chunk to the buffer.
+// If the last event is also an agent message, the text is concatenated.
+func (b *EventBuffer) AppendAgentMessage(html string) {
+	if len(b.events) > 0 {
+		last := &b.events[len(b.events)-1]
+		if last.Type == BufferedEventAgentMessage {
+			if data, ok := last.Data.(*AgentMessageData); ok {
+				data.HTML += html
+				return
+			}
+		}
+	}
+	b.events = append(b.events, BufferedEvent{
+		Type: BufferedEventAgentMessage,
+		Data: &AgentMessageData{HTML: html},
+	})
+}
+
+// AppendAgentThought appends an agent thought chunk to the buffer.
+// If the last event is also an agent thought, the text is concatenated.
+func (b *EventBuffer) AppendAgentThought(text string) {
+	if len(b.events) > 0 {
+		last := &b.events[len(b.events)-1]
+		if last.Type == BufferedEventAgentThought {
+			if data, ok := last.Data.(*AgentThoughtData); ok {
+				data.Text += text
+				return
+			}
+		}
+	}
+	b.events = append(b.events, BufferedEvent{
+		Type: BufferedEventAgentThought,
+		Data: &AgentThoughtData{Text: text},
+	})
+}
+
+// AppendToolCall appends a tool call event to the buffer.
+func (b *EventBuffer) AppendToolCall(id, title, status string) {
+	b.events = append(b.events, BufferedEvent{
+		Type: BufferedEventToolCall,
+		Data: &ToolCallData{ID: id, Title: title, Status: status},
+	})
+}
+
+// AppendToolCallUpdate appends a tool call update event to the buffer.
+func (b *EventBuffer) AppendToolCallUpdate(id string, status *string) {
+	b.events = append(b.events, BufferedEvent{
+		Type: BufferedEventToolCallUpdate,
+		Data: &ToolCallUpdateData{ID: id, Status: status},
+	})
+}
+
+// AppendPlan appends a plan event to the buffer.
+func (b *EventBuffer) AppendPlan() {
+	b.events = append(b.events, BufferedEvent{
+		Type: BufferedEventPlan,
+		Data: &PlanData{},
+	})
+}
+
+// AppendFileRead appends a file read event to the buffer.
+func (b *EventBuffer) AppendFileRead(path string, size int) {
+	b.events = append(b.events, BufferedEvent{
+		Type: BufferedEventFileRead,
+		Data: &FileOperationData{Path: path, Size: size},
+	})
+}
+
+// AppendFileWrite appends a file write event to the buffer.
+func (b *EventBuffer) AppendFileWrite(path string, size int) {
+	b.events = append(b.events, BufferedEvent{
+		Type: BufferedEventFileWrite,
+		Data: &FileOperationData{Path: path, Size: size},
+	})
+}
+
+// Events returns a copy of all buffered events.
+func (b *EventBuffer) Events() []BufferedEvent {
+	result := make([]BufferedEvent, len(b.events))
+	copy(result, b.events)
+	return result
+}
+
+// Flush returns all buffered events and clears the buffer.
+func (b *EventBuffer) Flush() []BufferedEvent {
+	events := b.events
+	b.events = make([]BufferedEvent, 0, 16)
+	return events
+}
+
+// Len returns the number of buffered events.
+func (b *EventBuffer) Len() int {
+	return len(b.events)
+}
+
+// IsEmpty returns true if the buffer has no events.
+func (b *EventBuffer) IsEmpty() bool {
+	return len(b.events) == 0
+}
+
+// GetAgentMessage returns the accumulated agent message HTML from all buffered events.
+// This is used to send buffered content to newly connected observers.
+func (b *EventBuffer) GetAgentMessage() string {
+	var result strings.Builder
+	for _, e := range b.events {
+		if e.Type == BufferedEventAgentMessage {
+			if data, ok := e.Data.(*AgentMessageData); ok {
+				result.WriteString(data.HTML)
+			}
+		}
+	}
+	return result.String()
+}
+
+// GetAgentThought returns the accumulated agent thought text from all buffered events.
+// This is used to send buffered content to newly connected observers.
+func (b *EventBuffer) GetAgentThought() string {
+	var result strings.Builder
+	for _, e := range b.events {
+		if e.Type == BufferedEventAgentThought {
+			if data, ok := e.Data.(*AgentThoughtData); ok {
+				result.WriteString(data.Text)
+			}
+		}
+	}
+	return result.String()
 }
