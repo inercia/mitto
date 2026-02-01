@@ -10,7 +10,9 @@ This directory contains technical documentation for developers working on Mitto.
 
 ### Component Documentation
 
-- **[Session Management](session-management.md)** - Session recording, playback, state ownership model, and the message queue system
+- **[Session Management](session-management.md)** - Session recording, playback, state ownership model, and observer pattern
+
+- **[Message Queue](message-queue.md)** - Queue architecture, automatic title generation, REST API, and WebSocket notifications
 
 - **[Web Interface](web-interface.md)** - Browser-based UI architecture, streaming response handling, mobile wake resync
 
@@ -26,7 +28,8 @@ This directory contains technical documentation for developers working on Mitto.
 | Configuration | [Architecture](architecture.md) | `internal/config` |
 | ACP client | [Architecture](architecture.md) | `internal/acp` |
 | Event types | [Session Management](session-management.md) | Event Types |
-| Queue API | [Session Management](session-management.md) | Queue REST API Endpoints |
+| Queue API | [Message Queue](message-queue.md) | REST API |
+| Queue titles | [Message Queue](message-queue.md) | Title Generation |
 | WebSocket protocol | [WebSocket Messaging](websocket-messaging.md) | Message Format |
 | Resync mechanism | [WebSocket Messaging](websocket-messaging.md) | Resync Mechanism |
 | Workspace API | [Workspaces](workspaces.md) | Workspace REST API |

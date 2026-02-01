@@ -1,26 +1,25 @@
 # Mitto Documentation
 
-This directory contains documentation for Mitto, a CLI client for the Agent Communication Protocol (ACP).
+This directory contains documentation for Mitto, a CLI client for the Agent
+Communication Protocol (ACP).
 
 ## Documentation Index
 
-| Document | Description |
-|----------|-------------|
-| [usage.md](usage.md) | Commands, flags, and usage examples |
-| [config/](config/README.md) | Configuration documentation |
-| [development.md](development.md) | Building, testing, and contributing |
-| [devel/](devel/README.md) | Architecture and developer documentation |
+- [Commands, flags, and usage examples](usage.md)
+- [Configuration documentation](config/README.md)
+- [Building, testing, and contributing](development.md)
+- [Architecture and developer documentation](devel/README.md)
 
 ## Quick Links
 
 ### Getting Started
 
 - See the main [README.md](../README.md) for installation and basic usage
-- See [sample.mittorc](../sample.mittorc) for a complete configuration example
+- See [sample.mittorc](../config/config.default.yaml) for a complete configuration example
 
 ### Configuration
 
-The [config/](config/README.md) directory contains all configuration documentation:
+[This directory](config/README.md) contains all configuration documentation:
 
 - [Overview](config/overview.md) - Configuration file locations and formats
 - [ACP Servers](config/acp.md) - Claude Code, Auggie, GitHub Copilot setup
@@ -32,7 +31,7 @@ The [config/](config/README.md) directory contains all configuration documentati
 
 ### Architecture
 
-The [devel/](devel/README.md) directory contains developer documentation:
+[This directory](devel/README.md) contains developer documentation:
 
 - [Architecture](devel/architecture.md) - System design and components
 - [Session Management](devel/session-management.md) - Recording, playback, queues
@@ -42,7 +41,7 @@ The [devel/](devel/README.md) directory contains developer documentation:
 
 ### Development
 
-The [development.md](development.md) document covers:
+The [development document](development.md) covers:
 
 - Building CLI, web server, and macOS app
 - Running tests
