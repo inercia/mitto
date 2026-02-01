@@ -2,9 +2,12 @@ package web
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -234,22 +237,38 @@ func TestBackgroundSession_ObserverManagement(t *testing.T) {
 
 // mockSessionObserver is a mock implementation of SessionObserver for testing.
 type mockSessionObserver struct {
-	agentMessages []string
-	agentThoughts []string
-	toolCalls     []string
-	errors        []string
-	completed     bool
+	mu                   sync.Mutex
+	agentMessages        []string
+	agentThoughts        []string
+	toolCalls            []string
+	errors               []string
+	completed            bool
+	queueUpdates         []queueUpdate
+	queueMessagesSending []string
+	queueMessagesSent    []string
+}
+
+type queueUpdate struct {
+	queueLength int
+	action      string
+	messageID   string
 }
 
 func (m *mockSessionObserver) OnAgentMessage(html string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.agentMessages = append(m.agentMessages, html)
 }
 
 func (m *mockSessionObserver) OnAgentThought(text string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.agentThoughts = append(m.agentThoughts, text)
 }
 
 func (m *mockSessionObserver) OnToolCall(id, title, status string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.toolCalls = append(m.toolCalls, id)
 }
 
@@ -266,6 +285,8 @@ func (m *mockSessionObserver) OnPermission(ctx context.Context, params acp.Reque
 }
 
 func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.completed = true
 }
 
@@ -274,19 +295,47 @@ func (m *mockSessionObserver) OnUserPrompt(senderID, promptID, message string, i
 }
 
 func (m *mockSessionObserver) OnError(message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.errors = append(m.errors, message)
 }
 
 func (m *mockSessionObserver) OnQueueUpdated(queueLength int, action string, messageID string) {
-	// No-op for tests
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.queueUpdates = append(m.queueUpdates, queueUpdate{queueLength, action, messageID})
 }
 
 func (m *mockSessionObserver) OnQueueMessageSending(messageID string) {
-	// No-op for tests
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.queueMessagesSending = append(m.queueMessagesSending, messageID)
 }
 
 func (m *mockSessionObserver) OnQueueMessageSent(messageID string) {
-	// No-op for tests
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.queueMessagesSent = append(m.queueMessagesSent, messageID)
+}
+
+func (m *mockSessionObserver) OnQueueReordered(messages []session.QueuedMessage) {
+	// no-op for testing
+}
+
+func (m *mockSessionObserver) getQueueUpdates() []queueUpdate {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]queueUpdate, len(m.queueUpdates))
+	copy(result, m.queueUpdates)
+	return result
+}
+
+func (m *mockSessionObserver) getQueueMessagesSending() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]string, len(m.queueMessagesSending))
+	copy(result, m.queueMessagesSending)
+	return result
 }
 
 // Tests for NeedsTitle
@@ -600,5 +649,489 @@ func TestBackgroundSession_CreatedAt(t *testing.T) {
 	createdAt := bs.CreatedAt()
 	if !createdAt.IsZero() {
 		t.Errorf("CreatedAt should return zero time when recorder is nil")
+	}
+}
+
+// --- Queue Processing Tests ---
+
+func TestBackgroundSession_ProcessNextQueuedMessage_NoStore(t *testing.T) {
+	bs := &BackgroundSession{
+		persistedID: "test-session",
+		store:       nil, // No store
+		observers:   make(map[SessionObserver]struct{}),
+	}
+
+	// Should not panic and should return early
+	bs.processNextQueuedMessage()
+}
+
+func TestBackgroundSession_ProcessNextQueuedMessage_EmptyQueue(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-empty-queue",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	observer := &mockSessionObserver{}
+	bs := &BackgroundSession{
+		persistedID: "test-session-empty-queue",
+		store:       store,
+		observers:   make(map[SessionObserver]struct{}),
+	}
+	bs.AddObserver(observer)
+
+	// Should not panic and should not notify observers (queue is empty)
+	bs.processNextQueuedMessage()
+
+	if len(observer.getQueueMessagesSending()) != 0 {
+		t.Error("Should not notify OnQueueMessageSending for empty queue")
+	}
+}
+
+func TestBackgroundSession_ProcessNextQueuedMessage_Disabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-disabled-queue",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("test-session-disabled-queue")
+	_, err = queue.Add("Test message", nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Create session with queue disabled
+	enabled := false
+	queueConfig := &config.QueueConfig{Enabled: &enabled}
+
+	observer := &mockSessionObserver{}
+	bs := &BackgroundSession{
+		persistedID: "test-session-disabled-queue",
+		store:       store,
+		queueConfig: queueConfig,
+		observers:   make(map[SessionObserver]struct{}),
+	}
+	bs.AddObserver(observer)
+
+	// Should not process queue when disabled
+	bs.processNextQueuedMessage()
+
+	if len(observer.getQueueMessagesSending()) != 0 {
+		t.Error("Should not notify OnQueueMessageSending when queue is disabled")
+	}
+
+	// Queue should still have the message
+	queueLen, _ := queue.Len()
+	if queueLen != 1 {
+		t.Errorf("Queue length = %d, want 1 (message should not be popped)", queueLen)
+	}
+}
+
+func TestBackgroundSession_TryProcessQueuedMessage_IsPrompting(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-prompting",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("test-session-prompting")
+	_, err = queue.Add("Test message", nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: "test-session-prompting",
+		store:       store,
+		observers:   make(map[SessionObserver]struct{}),
+	}
+
+	// Set isPrompting to true
+	bs.promptMu.Lock()
+	bs.isPrompting = true
+	bs.promptMu.Unlock()
+
+	// Should return false when prompting
+	result := bs.TryProcessQueuedMessage()
+	if result {
+		t.Error("TryProcessQueuedMessage should return false when isPrompting is true")
+	}
+
+	// Queue should still have the message
+	queueLen, _ := queue.Len()
+	if queueLen != 1 {
+		t.Errorf("Queue length = %d, want 1 (message should not be popped)", queueLen)
+	}
+}
+
+func TestBackgroundSession_TryProcessQueuedMessage_IsClosed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-closed",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("test-session-closed")
+	_, err = queue.Add("Test message", nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: "test-session-closed",
+		store:       store,
+		observers:   make(map[SessionObserver]struct{}),
+	}
+
+	// Set closed flag
+	bs.closed.Store(1)
+
+	// Should return false when closed
+	result := bs.TryProcessQueuedMessage()
+	if result {
+		t.Error("TryProcessQueuedMessage should return false when session is closed")
+	}
+
+	// Queue should still have the message
+	queueLen, _ := queue.Len()
+	if queueLen != 1 {
+		t.Errorf("Queue length = %d, want 1 (message should not be popped)", queueLen)
+	}
+}
+
+func TestBackgroundSession_TryProcessQueuedMessage_DelayNotElapsed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-delay",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("test-session-delay")
+	_, err = queue.Add("Test message", nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Create session with 10 second delay
+	queueConfig := &config.QueueConfig{DelaySeconds: 10}
+
+	bs := &BackgroundSession{
+		persistedID: "test-session-delay",
+		store:       store,
+		queueConfig: queueConfig,
+		observers:   make(map[SessionObserver]struct{}),
+	}
+
+	// Set lastResponseComplete to now (delay not elapsed)
+	bs.promptMu.Lock()
+	bs.lastResponseComplete = time.Now()
+	bs.promptMu.Unlock()
+
+	// Should return false when delay not elapsed
+	result := bs.TryProcessQueuedMessage()
+	if result {
+		t.Error("TryProcessQueuedMessage should return false when delay has not elapsed")
+	}
+
+	// Queue should still have the message
+	queueLen, _ := queue.Len()
+	if queueLen != 1 {
+		t.Errorf("Queue length = %d, want 1 (message should not be popped)", queueLen)
+	}
+}
+
+func TestBackgroundSession_TryProcessQueuedMessage_DelayElapsed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-delay-elapsed",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("test-session-delay-elapsed")
+	_, err = queue.Add("Test message", nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Create session with 1 second delay
+	queueConfig := &config.QueueConfig{DelaySeconds: 1}
+
+	observer := &mockSessionObserver{}
+	bs := &BackgroundSession{
+		persistedID: "test-session-delay-elapsed",
+		store:       store,
+		queueConfig: queueConfig,
+		observers:   make(map[SessionObserver]struct{}),
+	}
+	bs.AddObserver(observer)
+
+	// Set lastResponseComplete to 2 seconds ago (delay elapsed)
+	bs.promptMu.Lock()
+	bs.lastResponseComplete = time.Now().Add(-2 * time.Second)
+	bs.promptMu.Unlock()
+
+	// Should pop the message (but fail to send since no ACP connection)
+	// The message will be popped and observer notified, but PromptWithMeta will fail
+	result := bs.TryProcessQueuedMessage()
+
+	// Result depends on whether PromptWithMeta succeeds - it won't without ACP
+	// But the message should be popped and OnQueueMessageSending should be called
+	_ = result // We don't check result since PromptWithMeta will fail
+
+	// Check that OnQueueMessageSending was called
+	sending := observer.getQueueMessagesSending()
+	if len(sending) != 1 {
+		t.Errorf("OnQueueMessageSending called %d times, want 1", len(sending))
+	}
+
+	// Queue should be empty (message was popped)
+	queueLen, _ := queue.Len()
+	if queueLen != 0 {
+		t.Errorf("Queue length = %d, want 0 (message should be popped)", queueLen)
+	}
+}
+
+func TestBackgroundSession_TryProcessQueuedMessage_ZeroDelayNoLastResponse(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-zero-delay",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("test-session-zero-delay")
+	_, err = queue.Add("Test message", nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	observer := &mockSessionObserver{}
+	bs := &BackgroundSession{
+		persistedID: "test-session-zero-delay",
+		store:       store,
+		observers:   make(map[SessionObserver]struct{}),
+		// No queueConfig = default (no delay)
+		// lastResponseComplete is zero (no previous response)
+	}
+	bs.AddObserver(observer)
+
+	// Should pop the message immediately
+	bs.TryProcessQueuedMessage()
+
+	// Check that OnQueueMessageSending was called
+	sending := observer.getQueueMessagesSending()
+	if len(sending) != 1 {
+		t.Errorf("OnQueueMessageSending called %d times, want 1", len(sending))
+	}
+
+	// Queue should be empty
+	queueLen, _ := queue.Len()
+	if queueLen != 0 {
+		t.Errorf("Queue length = %d, want 0", queueLen)
+	}
+}
+
+func TestBackgroundSession_GetLastResponseCompleteTime(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	// Initially zero
+	if !bs.GetLastResponseCompleteTime().IsZero() {
+		t.Error("GetLastResponseCompleteTime should return zero time initially")
+	}
+
+	// Set a time
+	now := time.Now()
+	bs.promptMu.Lock()
+	bs.lastResponseComplete = now
+	bs.promptMu.Unlock()
+
+	got := bs.GetLastResponseCompleteTime()
+	if !got.Equal(now) {
+		t.Errorf("GetLastResponseCompleteTime = %v, want %v", got, now)
+	}
+}
+
+func TestBackgroundSession_GetQueueConfig(t *testing.T) {
+	// Nil config
+	bs := &BackgroundSession{}
+	if bs.GetQueueConfig() != nil {
+		t.Error("GetQueueConfig should return nil when not set")
+	}
+
+	// With config
+	queueConfig := &config.QueueConfig{DelaySeconds: 5}
+	bs.queueConfig = queueConfig
+	if bs.GetQueueConfig() != queueConfig {
+		t.Error("GetQueueConfig should return the configured queue config")
+	}
+}
+
+// --- Queue Title Worker Tests ---
+
+func TestQueueTitleWorker_MessageRemovedBeforeTitleGenerated(t *testing.T) {
+	// This tests the corner case where a message is removed from the queue
+	// (e.g., sent to the agent) before the title generation completes.
+	// The worker should handle this gracefully without logging an error.
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-title-race",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("test-session-title-race")
+	msg, err := queue.Add("Test message for title", nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Now remove the message (simulating it being sent to the agent)
+	if err := queue.Remove(msg.ID); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+
+	// Try to update the title - this should return ErrMessageNotFound
+	err = queue.UpdateTitle(msg.ID, "Generated Title")
+	if err == nil {
+		t.Error("UpdateTitle should return error when message not found")
+	}
+	if err != session.ErrMessageNotFound {
+		t.Errorf("UpdateTitle error = %v, want ErrMessageNotFound", err)
+	}
+}
+
+func TestQueueTitleWorker_UpdateTitleSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-title-success",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("test-session-title-success")
+	msg, err := queue.Add("Test message for title", nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Update the title while message is still in queue
+	err = queue.UpdateTitle(msg.ID, "Generated Title")
+	if err != nil {
+		t.Errorf("UpdateTitle failed: %v", err)
+	}
+
+	// Verify the title was updated
+	updatedMsg, err := queue.Get(msg.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if updatedMsg.Title != "Generated Title" {
+		t.Errorf("Title = %q, want %q", updatedMsg.Title, "Generated Title")
 	}
 }

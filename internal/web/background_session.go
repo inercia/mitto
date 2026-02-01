@@ -46,9 +46,10 @@ type BackgroundSession struct {
 	observers   map[SessionObserver]struct{}
 
 	// Prompt state
-	promptMu    sync.Mutex
-	isPrompting bool
-	promptCount int
+	promptMu             sync.Mutex
+	isPrompting          bool
+	promptCount          int
+	lastResponseComplete time.Time // When the agent last completed a response (for queue delay)
 
 	// Configuration
 	autoApprove bool
@@ -247,6 +248,14 @@ func (bs *BackgroundSession) GetPromptCount() int {
 	bs.promptMu.Lock()
 	defer bs.promptMu.Unlock()
 	return bs.promptCount
+}
+
+// GetLastResponseCompleteTime returns when the agent last completed a response.
+// Returns zero time if no response has completed yet.
+func (bs *BackgroundSession) GetLastResponseCompleteTime() time.Time {
+	bs.promptMu.Lock()
+	defer bs.promptMu.Unlock()
+	return bs.lastResponseComplete
 }
 
 // GetEventCount returns the current event count for the session.
@@ -810,16 +819,17 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	// Run prompt in background
 	go func() {
-		defer func() {
-			bs.promptMu.Lock()
-			bs.isPrompting = false
-			bs.promptMu.Unlock()
-		}()
-
 		_, err := bs.acpConn.Prompt(bs.ctx, acp.PromptRequest{
 			SessionId: acp.SessionId(bs.acpID),
 			Prompt:    finalBlocks,
 		})
+
+		// Mark prompt as complete BEFORE any further processing
+		// This must happen before processNextQueuedMessage so the next message can be sent
+		bs.promptMu.Lock()
+		bs.isPrompting = false
+		bs.lastResponseComplete = time.Now()
+		bs.promptMu.Unlock()
 
 		if bs.IsClosed() {
 			return
@@ -865,6 +875,7 @@ func (bs *BackgroundSession) Cancel() error {
 // --- Queue processing methods ---
 
 // processNextQueuedMessage checks the queue and sends the next message if queue processing is enabled.
+// This is called after a prompt completes and applies the configured delay before sending.
 func (bs *BackgroundSession) processNextQueuedMessage() {
 	// Check if queue processing is enabled
 	if bs.queueConfig != nil && !bs.queueConfig.IsEnabled() {
@@ -894,6 +905,79 @@ func (bs *BackgroundSession) processNextQueuedMessage() {
 		time.Sleep(time.Duration(bs.queueConfig.GetDelaySeconds()) * time.Second)
 	}
 
+	bs.sendQueuedMessage(queue, msg)
+}
+
+// TryProcessQueuedMessage checks if the session is idle and enough time has passed since the last
+// response, then processes the next queued message. This is used for startup initialization
+// and periodic queue checking. Returns true if a message was sent.
+func (bs *BackgroundSession) TryProcessQueuedMessage() bool {
+	// Check if queue processing is enabled
+	if bs.queueConfig != nil && !bs.queueConfig.IsEnabled() {
+		return false
+	}
+
+	// Check if session is currently prompting
+	if bs.IsPrompting() {
+		return false
+	}
+
+	// Check if session is closed
+	if bs.IsClosed() {
+		return false
+	}
+
+	// Get the queue for this session
+	if bs.store == nil {
+		return false
+	}
+	queue := bs.store.Queue(bs.persistedID)
+
+	// Check if queue has messages
+	queueLen, err := queue.Len()
+	if err != nil || queueLen == 0 {
+		return false
+	}
+
+	// Check if delay has elapsed since last response
+	delaySeconds := 0
+	if bs.queueConfig != nil {
+		delaySeconds = bs.queueConfig.GetDelaySeconds()
+	}
+
+	if delaySeconds > 0 {
+		lastResponse := bs.GetLastResponseCompleteTime()
+		// If lastResponse is zero, we can proceed (no previous response means agent is idle)
+		if !lastResponse.IsZero() {
+			elapsed := time.Since(lastResponse)
+			if elapsed < time.Duration(delaySeconds)*time.Second {
+				// Not enough time has passed
+				return false
+			}
+		}
+	}
+
+	// Pop and send the next message
+	msg, err := queue.Pop()
+	if err != nil {
+		// Queue is empty or error
+		return false
+	}
+
+	// Notify observers that we're sending a queued message
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnQueueMessageSending(msg.ID)
+	})
+
+	bs.sendQueuedMessage(queue, msg)
+	return true
+}
+
+// sendQueuedMessage sends a message that was popped from the queue.
+func (bs *BackgroundSession) sendQueuedMessage(queue *session.Queue, msg session.QueuedMessage) {
+	if bs.logger != nil {
+		bs.logger.Info("Sending queued message", "session_id", bs.persistedID, "message_id", msg.ID, "message", msg.Message)
+	}
 	// Get updated queue length for notification
 	queueLen, _ := queue.Len()
 
@@ -929,6 +1013,14 @@ func (bs *BackgroundSession) processNextQueuedMessage() {
 func (bs *BackgroundSession) NotifyQueueUpdated(queueLength int, action string, messageID string) {
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnQueueUpdated(queueLength, action, messageID)
+	})
+}
+
+// NotifyQueueReordered notifies all observers about a queue reorder.
+// This is called by the queue API handlers when the queue order changes.
+func (bs *BackgroundSession) NotifyQueueReordered(messages []session.QueuedMessage) {
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnQueueReordered(messages)
 	})
 }
 

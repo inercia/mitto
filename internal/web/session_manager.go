@@ -655,3 +655,93 @@ func (sm *SessionManager) CloseAll(reason string) {
 			"reason", reason)
 	}
 }
+
+// ProcessPendingQueues checks all persisted sessions for queued messages and
+// auto-resumes sessions that have pending queue items and meet the criteria
+// for dequeuing (agent idle, delay elapsed). This is called on server startup.
+func (sm *SessionManager) ProcessPendingQueues() {
+	sm.mu.RLock()
+	store := sm.store
+	globalConv := sm.globalConversations
+	sm.mu.RUnlock()
+
+	if store == nil {
+		return
+	}
+
+	// List all persisted sessions
+	sessions, err := store.List()
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Warn("Failed to list sessions for queue processing", "error", err)
+		}
+		return
+	}
+
+	// Check each session for pending queue items
+	for _, meta := range sessions {
+		// Skip non-active sessions
+		if meta.Status != session.SessionStatusActive && meta.Status != "" {
+			continue
+		}
+
+		// Check if this session has items in its queue
+		queue := store.Queue(meta.SessionID)
+		queueLen, err := queue.Len()
+		if err != nil || queueLen == 0 {
+			continue
+		}
+
+		// Session has queued messages - check if it's already running
+		if sm.GetSession(meta.SessionID) != nil {
+			// Session is already running, it will handle its own queue
+			continue
+		}
+
+		// Get queue config to check delay
+		var queueConfig *config.QueueConfig
+		if meta.WorkingDir != "" && sm.workspaceRCCache != nil {
+			if rc, err := sm.workspaceRCCache.Get(meta.WorkingDir); err == nil && rc != nil && rc.Conversations != nil {
+				queueConfig = rc.Conversations.Queue
+			}
+		}
+		if queueConfig == nil && globalConv != nil {
+			queueConfig = globalConv.Queue
+		}
+
+		// Check if queue processing is enabled
+		if queueConfig != nil && !queueConfig.IsEnabled() {
+			continue
+		}
+
+		if sm.logger != nil {
+			sm.logger.Info("Found session with pending queue items",
+				"session_id", meta.SessionID,
+				"queue_length", queueLen,
+				"working_dir", meta.WorkingDir)
+		}
+
+		// Resume the session to process its queue
+		// The session will check the delay before actually sending
+		bs, err := sm.ResumeSession(meta.SessionID, meta.Name, meta.WorkingDir)
+		if err != nil {
+			if sm.logger != nil {
+				sm.logger.Warn("Failed to resume session for queue processing",
+					"session_id", meta.SessionID,
+					"error", err)
+			}
+			continue
+		}
+
+		// Try to process the queued message (this respects the delay)
+		// Run in a goroutine so we don't block startup
+		go func(session *BackgroundSession, sessionID string) {
+			if session.TryProcessQueuedMessage() {
+				if sm.logger != nil {
+					sm.logger.Info("Auto-dequeued message on startup",
+						"session_id", sessionID)
+				}
+			}
+		}(bs, meta.SessionID)
+	}
+}
