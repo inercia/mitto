@@ -63,6 +63,7 @@ import { useWebSocket, useSwipeNavigation } from "./hooks/index.js";
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
 import { SettingsDialog } from "./components/SettingsDialog.js";
+import { QueueDropdown } from "./components/QueueDropdown.js";
 import {
   SpinnerIcon,
   CloseIcon,
@@ -857,7 +858,7 @@ function SessionItem({
           </button>
         </div>
       </div>
-      <!-- Bottom row: message count, stored badge, and workspace pill -->
+      <!-- Bottom row: message count, saved/stored badge, and workspace pill -->
       <div class="flex items-center justify-between mt-2">
         <div class="flex items-center gap-2">
           ${session.messageCount !== undefined
@@ -873,13 +874,18 @@ function SessionItem({
                   >
                 `
               : null}
-          ${!session.isActive &&
-          html`
-            <span
-              class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
-              >stored</span
-            >
-          `}
+          ${session.isActive
+            ? html`
+                <span class="text-gray-500" title="Session is auto-saved">
+                  <${SaveIcon} className="w-3 h-3" />
+                </span>
+              `
+            : html`
+                <span
+                  class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
+                  >stored</span
+                >
+              `}
         </div>
         ${workingDir &&
         html`
@@ -1107,7 +1113,12 @@ function App() {
     backgroundCompletion,
     clearBackgroundCompletion,
     queueLength,
+    queueMessages,
     queueConfig,
+    fetchQueueMessages,
+    deleteQueueMessage,
+    addToQueue,
+    moveQueueMessage,
     workspaces,
     acpServers,
     addWorkspace,
@@ -1116,6 +1127,10 @@ function App() {
   } = useWebSocket();
 
   const [showSidebar, setShowSidebar] = useState(false);
+  const [showQueueDropdown, setShowQueueDropdown] = useState(false);
+  const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
+  const [isMovingQueueMessage, setIsMovingQueueMessage] = useState(false);
+  const [isAddingToQueue, setIsAddingToQueue] = useState(false);
   const [renameDialog, setRenameDialog] = useState({
     isOpen: false,
     session: null,
@@ -1625,13 +1640,41 @@ function App() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
 
-  // Theme state - default depends on UI theme (v2 defaults to light, default theme defaults to dark)
+  // Follow system theme state - persisted to localStorage
+  const [followSystemTheme, setFollowSystemTheme] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      const saved = localStorage.getItem("mitto-follow-system-theme");
+      // Default to true for new users (follow system theme by default)
+      return saved === null ? true : saved === "true";
+    }
+    return true;
+  });
+
+  // Theme state - respects OS preference when followSystemTheme is enabled
   const [theme, setTheme] = useState(() => {
     if (typeof localStorage !== "undefined") {
+      const followSystem = localStorage.getItem("mitto-follow-system-theme");
+      // If following system theme (default for new users)
+      if (followSystem === null || followSystem === "true") {
+        if (typeof window !== "undefined" && window.matchMedia) {
+          const prefersDark = window.matchMedia(
+            "(prefers-color-scheme: dark)",
+          ).matches;
+          return prefersDark ? "dark" : "light";
+        }
+      }
+      // Otherwise use saved theme preference
       const saved = localStorage.getItem("mitto-theme");
       if (saved) return saved;
     }
-    // If v2 theme is active (set by index.html script), default to light
+    // Check OS preference for dark/light mode
+    if (typeof window !== "undefined" && window.matchMedia) {
+      const prefersDark = window.matchMedia(
+        "(prefers-color-scheme: dark)",
+      ).matches;
+      return prefersDark ? "dark" : "light";
+    }
+    // Fallback: If v2 theme is active (set by index.html script), default to light
     if (
       window.mittoTheme === "v2" ||
       document.documentElement.classList.contains("v2-theme")
@@ -1640,6 +1683,34 @@ function App() {
     }
     return "dark";
   });
+
+  // Listen for OS theme changes when followSystemTheme is enabled
+  useEffect(() => {
+    if (
+      !followSystemTheme ||
+      typeof window === "undefined" ||
+      !window.matchMedia
+    ) {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = (e) => {
+      setTheme(e.matches ? "dark" : "light");
+    };
+
+    // Add listener for theme changes
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, [followSystemTheme]);
+
+  // Persist followSystemTheme to localStorage
+  useEffect(() => {
+    localStorage.setItem(
+      "mitto-follow-system-theme",
+      String(followSystemTheme),
+    );
+  }, [followSystemTheme]);
 
   // Apply theme class to document
   useEffect(() => {
@@ -1661,8 +1732,37 @@ function App() {
   }, [theme]);
 
   const toggleTheme = useCallback(() => {
+    // When user manually toggles theme, disable follow system theme
+    setFollowSystemTheme(false);
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   }, []);
+
+  const handleSetFollowSystemTheme = useCallback((value) => {
+    setFollowSystemTheme(value);
+    // When enabling follow system theme, immediately sync with OS preference
+    if (value && typeof window !== "undefined" && window.matchMedia) {
+      const prefersDark = window.matchMedia(
+        "(prefers-color-scheme: dark)",
+      ).matches;
+      setTheme(prefersDark ? "dark" : "light");
+    }
+  }, []);
+
+  // Listen for follow system theme changes from SettingsDialog
+  useEffect(() => {
+    const handleFollowSystemThemeChanged = (e) => {
+      handleSetFollowSystemTheme(e.detail.enabled);
+    };
+    window.addEventListener(
+      "mitto-follow-system-theme-changed",
+      handleFollowSystemThemeChanged,
+    );
+    return () =>
+      window.removeEventListener(
+        "mitto-follow-system-theme-changed",
+        handleFollowSystemThemeChanged,
+      );
+  }, [handleSetFollowSystemTheme]);
 
   // Font size state - persisted to localStorage
   const [fontSize, setFontSize] = useState(() => {
@@ -1998,6 +2098,90 @@ function App() {
     setKeyboardShortcutsDialog({ isOpen: true });
   };
 
+  // Queue dropdown handlers
+  const handleToggleQueueDropdown = useCallback(() => {
+    if (!showQueueDropdown) {
+      // Opening - fetch latest queue messages
+      fetchQueueMessages();
+    }
+    setShowQueueDropdown((prev) => !prev);
+  }, [showQueueDropdown, fetchQueueMessages]);
+
+  const handleCloseQueueDropdown = useCallback(() => {
+    setShowQueueDropdown(false);
+  }, []);
+
+  const handleDeleteQueueMessage = useCallback(
+    async (messageId) => {
+      setIsDeletingQueueMessage(true);
+      try {
+        await deleteQueueMessage(messageId);
+      } finally {
+        setIsDeletingQueueMessage(false);
+      }
+    },
+    [deleteQueueMessage],
+  );
+
+  const handleMoveQueueMessage = useCallback(
+    async (messageId, direction) => {
+      setIsMovingQueueMessage(true);
+      try {
+        await moveQueueMessage(messageId, direction);
+      } finally {
+        setIsMovingQueueMessage(false);
+      }
+    },
+    [moveQueueMessage],
+  );
+
+  // Handle adding current draft to queue
+  const handleAddToQueue = useCallback(async () => {
+    if (!currentDraft?.trim() || isAddingToQueue) return;
+
+    setIsAddingToQueue(true);
+    try {
+      const result = await addToQueue(currentDraft);
+      if (result.success) {
+        // Clear the draft after successful addition
+        updateDraft(activeSessionId, "");
+        // Keep dropdown open to show the new item
+      }
+    } finally {
+      setIsAddingToQueue(false);
+    }
+  }, [currentDraft, isAddingToQueue, addToQueue, updateDraft, activeSessionId]);
+
+  // Auto-hide queue dropdown when certain events occur
+  useEffect(() => {
+    if (!showQueueDropdown) return;
+
+    // Close when settings dialog opens
+    if (settingsDialog.isOpen) {
+      setShowQueueDropdown(false);
+    }
+  }, [showQueueDropdown, settingsDialog.isOpen]);
+
+  // Close queue dropdown when sidebar expands (on mobile)
+  useEffect(() => {
+    if (showQueueDropdown && showSidebar) {
+      setShowQueueDropdown(false);
+    }
+  }, [showQueueDropdown, showSidebar]);
+
+  // Listen for queue updates from WebSocket to refresh the dropdown
+  useEffect(() => {
+    const handleQueueUpdate = () => {
+      if (showQueueDropdown) {
+        fetchQueueMessages();
+      }
+    };
+    window.addEventListener("mitto:queue_updated", handleQueueUpdate);
+    return () => {
+      window.removeEventListener("mitto:queue_updated", handleQueueUpdate);
+    };
+  }, [showQueueDropdown, fetchQueueMessages]);
+
   // Handler for prompts dropdown open - refreshes workspace prompts
   const handlePromptsOpen = useCallback(() => {
     if (sessionInfo?.working_dir) {
@@ -2242,7 +2426,7 @@ function App() {
       >
         <!-- Header -->
         <div
-          class="p-4 bg-mitto-sidebar border-b border-slate-700 flex items-center gap-3 flex-shrink-0"
+          class="relative p-4 bg-mitto-sidebar border-b border-slate-700 flex items-center gap-3 flex-shrink-0"
         >
           <button
             class="md:hidden p-2 hover:bg-slate-700 rounded-lg transition-colors"
@@ -2275,25 +2459,46 @@ function App() {
             ></span>
             ${activeSessionId &&
             html`
-              <span class="text-gray-500" title="Session is auto-saved">
-                <${SaveIcon} className="w-4 h-4" />
-              </span>
-            `}
-            ${queueLength > 0 &&
-            html`
-              <span
-                class="relative text-gray-500"
-                title="${queueLength}/${queueConfig.max_size} queued${queueLength >= queueConfig.max_size ? " (full)" : ""}"
+              <button
+                type="button"
+                onClick=${handleToggleQueueDropdown}
+                data-queue-toggle
+                class="relative text-gray-500 hover:text-gray-300 transition-colors p-1 -m-1 rounded"
+                title="${queueLength}/${queueConfig.max_size} queued${queueLength >=
+                queueConfig.max_size
+                  ? " (full)"
+                  : ""} - Click to manage"
               >
                 <${QueueIcon} className="w-4 h-4" />
-                <span
-                  class="absolute -top-1.5 -right-1.5 ${queueLength >= queueConfig.max_size ? "bg-red-500" : "bg-blue-500"} text-white text-[10px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5"
-                >
-                  ${queueLength}
-                </span>
-              </span>
+                ${queueLength > 0 &&
+                html`
+                  <span
+                    class="absolute -top-1.5 -right-1.5 ${queueLength >=
+                    queueConfig.max_size
+                      ? "bg-red-500"
+                      : "bg-blue-500"} text-white text-[10px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5"
+                  >
+                    ${queueLength}
+                  </span>
+                `}
+              </button>
             `}
           </div>
+          <!-- Queue Dropdown -->
+          <${QueueDropdown}
+            isOpen=${showQueueDropdown}
+            onClose=${handleCloseQueueDropdown}
+            messages=${queueMessages}
+            onDelete=${handleDeleteQueueMessage}
+            onMove=${handleMoveQueueMessage}
+            isDeleting=${isDeletingQueueMessage}
+            isMoving=${isMovingQueueMessage}
+            queueLength=${queueLength}
+            maxSize=${queueConfig.max_size}
+            draftMessage=${currentDraft}
+            onAddToQueue=${handleAddToQueue}
+            isAdding=${isAddingToQueue}
+          />
         </div>
 
         <!-- Messages -->
@@ -2323,7 +2528,7 @@ function App() {
           `}
           <div
             key=${activeSessionId}
-            class="max-w-4xl mx-auto ${swipeDirection
+            class="max-w-2xl mx-auto ${swipeDirection
               ? `swipe-slide-${swipeDirection}`
               : ""}"
           >

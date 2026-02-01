@@ -82,6 +82,10 @@ export function useWebSocket() {
   // Queue length for the active session
   const [queueLength, setQueueLength] = useState(0);
 
+  // Queue messages for the active session
+  // Array of { id, message, title, queued_at }
+  const [queueMessages, setQueueMessages] = useState([]);
+
   // Queue configuration for the active session
   // { enabled: bool, max_size: int, delay_seconds: int }
   const [queueConfig, setQueueConfig] = useState({
@@ -189,6 +193,121 @@ export function useWebSocket() {
       }
     },
     [fetchWorkspaces],
+  );
+
+  // Fetch queue messages for the active session
+  const fetchQueueMessages = useCallback(async () => {
+    if (!activeSessionId) {
+      setQueueMessages([]);
+      return;
+    }
+    try {
+      const response = await authFetch(
+        apiUrl(`/api/sessions/${activeSessionId}/queue`),
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setQueueMessages(data.messages || []);
+        setQueueLength(data.count || 0);
+      }
+    } catch (err) {
+      console.error("Failed to fetch queue messages:", err);
+    }
+  }, [activeSessionId]);
+
+  // Delete a message from the queue
+  const deleteQueueMessage = useCallback(
+    async (messageId) => {
+      if (!activeSessionId || !messageId) return false;
+      try {
+        const response = await secureFetch(
+          apiUrl(`/api/sessions/${activeSessionId}/queue/${messageId}`),
+          { method: "DELETE" },
+        );
+        if (response.ok || response.status === 204) {
+          // Refresh queue messages after deletion
+          await fetchQueueMessages();
+          return true;
+        }
+        console.error("Failed to delete queue message:", response.status);
+        return false;
+      } catch (err) {
+        console.error("Failed to delete queue message:", err);
+        return false;
+      }
+    },
+    [activeSessionId, fetchQueueMessages],
+  );
+
+  // Add a message to the queue
+  const addToQueue = useCallback(
+    async (message, imageIds = []) => {
+      if (!activeSessionId || !message?.trim()) return { success: false };
+      try {
+        const response = await secureFetch(
+          apiUrl(`/api/sessions/${activeSessionId}/queue`),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: message.trim(),
+              image_ids: imageIds,
+            }),
+          },
+        );
+        if (response.ok || response.status === 201) {
+          // Refresh queue messages after addition
+          await fetchQueueMessages();
+          return { success: true };
+        }
+        // Handle queue full error
+        if (response.status === 409) {
+          const data = await response.json().catch(() => ({}));
+          return {
+            success: false,
+            error: data.error || "queue_full",
+            message: data.message,
+          };
+        }
+        console.error("Failed to add to queue:", response.status);
+        return { success: false, error: "request_failed" };
+      } catch (err) {
+        console.error("Failed to add to queue:", err);
+        return { success: false, error: "request_failed" };
+      }
+    },
+    [activeSessionId, fetchQueueMessages],
+  );
+
+  // Move a message up or down in the queue
+  const moveQueueMessage = useCallback(
+    async (messageId, direction) => {
+      if (!activeSessionId || !messageId) return false;
+      if (direction !== "up" && direction !== "down") return false;
+      try {
+        const response = await secureFetch(
+          apiUrl(`/api/sessions/${activeSessionId}/queue/${messageId}/move`),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ direction }),
+          },
+        );
+        if (response.ok) {
+          // The response contains the updated queue, update local state
+          const data = await response.json();
+          setQueueMessages(data.messages || []);
+          setQueueLength(data.count || 0);
+          return true;
+        }
+        console.error("Failed to move queue message:", response.status);
+        return false;
+      } catch (err) {
+        console.error("Failed to move queue message:", err);
+        return false;
+      }
+    },
+    [activeSessionId],
   );
 
   // Keep refs in sync with state
@@ -701,16 +820,35 @@ export function useWebSocket() {
           console.log(
             `Queue updated: ${msg.data.action || "unknown"}, length: ${msg.data.queue_length}`,
           );
+          // Dispatch event for queue dropdown to refresh
+          window.dispatchEvent(new CustomEvent("mitto:queue_updated"));
         }
         break;
 
       case "queue_message_titled":
         // Server notifies us that a queued message received an auto-generated title
-        // This can be used by queue management UI to update displayed titles
-        console.log(
-          `Queue message titled: ${msg.data?.message_id} -> "${msg.data?.title}"`,
-        );
-        // Future: dispatch event or update state for queue management UI
+        if (msg.data?.message_id && msg.data?.title) {
+          console.log(
+            `Queue message titled: ${msg.data.message_id} -> "${msg.data.title}"`,
+          );
+          // Update the title in the local queue messages state
+          setQueueMessages((prev) =>
+            prev.map((m) =>
+              m.id === msg.data.message_id
+                ? { ...m, title: msg.data.title }
+                : m,
+            ),
+          );
+        }
+        break;
+
+      case "queue_reordered":
+        // Server notifies us that the queue order has changed
+        if (msg.data?.messages) {
+          console.log(`Queue reordered: ${msg.data.messages.length} messages`);
+          setQueueMessages(msg.data.messages);
+          setQueueLength(msg.data.messages.length);
+        }
         break;
     }
   }, []);
@@ -1767,7 +1905,12 @@ export function useWebSocket() {
     backgroundCompletion,
     clearBackgroundCompletion,
     queueLength,
+    queueMessages,
     queueConfig,
+    fetchQueueMessages,
+    deleteQueueMessage,
+    addToQueue,
+    moveQueueMessage,
     workspaces,
     acpServers,
     addWorkspace,
