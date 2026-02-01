@@ -519,7 +519,7 @@ export function DragHandleIcon({ className = "w-4 h-4" }) {
 }
 
 /**
- * Queue/list icon (stacked horizontal lines with slight curve)
+ * Queue/list icon (4 stacked horizontal lines)
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
 export function QueueIcon({ className = "w-4 h-4" }) {
@@ -534,7 +534,7 @@ export function QueueIcon({ className = "w-4 h-4" }) {
         stroke-linecap="round"
         stroke-linejoin="round"
         stroke-width="2"
-        d="M4 8h16M4 12h16M4 16h16"
+        d="M4 6h16M4 10h16M4 14h16M4 18h16"
       />
     </svg>
   `;
