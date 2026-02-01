@@ -322,14 +322,6 @@ func (m *mockSessionObserver) OnQueueReordered(messages []session.QueuedMessage)
 	// no-op for testing
 }
 
-func (m *mockSessionObserver) getQueueUpdates() []queueUpdate {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	result := make([]queueUpdate, len(m.queueUpdates))
-	copy(result, m.queueUpdates)
-	return result
-}
-
 func (m *mockSessionObserver) getQueueMessagesSending() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
