@@ -95,7 +95,7 @@ func ApplyHooks(ctx context.Context, hooks []*Hook, input *HookInput, hooksDir s
 			}
 		case OutputAppend:
 			if output.Text != "" {
-				result.Message = result.Message + output.Text
+				result.Message += output.Text
 			}
 		case OutputDiscard:
 			// Do nothing with output

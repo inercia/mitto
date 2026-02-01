@@ -78,7 +78,7 @@ func (c *Client) RequestPermission(ctx context.Context, params acp.RequestPermis
 			}
 			idx := -1
 			_, _ = fmt.Sscanf(line, "%d", &idx)
-			idx = idx - 1
+			idx--
 			if idx >= 0 && idx < len(params.Options) {
 				return acp.RequestPermissionResponse{
 					Outcome: acp.RequestPermissionOutcome{

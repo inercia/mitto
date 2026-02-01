@@ -104,15 +104,14 @@ func (s *Store) acquireLock(sessionID, clientType string, force, interrupt bool)
 	existingLock, err := s.readLockFile(lockPath)
 	if err == nil {
 		// Lock file exists, check if we can acquire
-
-		// First, check if the owning process is dead (crashed without cleanup)
-		if existingLock.IsProcessDead(currentHostname) {
+		switch {
+		case existingLock.IsProcessDead(currentHostname):
 			// Process is dead, we can safely take over
 			log.Debug("taking over lock from dead process",
 				"session_id", sessionID,
 				"dead_pid", existingLock.PID,
 				"dead_hostname", existingLock.Hostname)
-		} else if !force {
+		case !force:
 			// Not forcing, check if lock is stale
 			if !existingLock.IsStale(DefaultStaleTimeout) {
 				return nil, ErrSessionLocked
@@ -121,7 +120,7 @@ func (s *Store) acquireLock(sessionID, clientType string, force, interrupt bool)
 				"session_id", sessionID,
 				"stale_pid", existingLock.PID,
 				"last_heartbeat", existingLock.Heartbeat)
-		} else {
+		default:
 			// Forcing, but check if safe to steal
 			if !interrupt && !existingLock.IsSafeToSteal(DefaultStaleTimeout) {
 				switch existingLock.Status {

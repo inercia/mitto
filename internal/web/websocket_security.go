@@ -282,9 +282,5 @@ func (s *Server) getSecureUpgrader() websocket.Upgrader {
 
 	// Allow authenticated external connections (e.g., Tailscale funnel)
 	// These have already been authenticated by the auth middleware
-	externalChecker := func(r *http.Request) bool {
-		return IsExternalConnection(r)
-	}
-
-	return createSecureUpgraderFull(s.wsSecurityConfig, logger, externalChecker)
+	return createSecureUpgraderFull(s.wsSecurityConfig, logger, IsExternalConnection)
 }
