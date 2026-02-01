@@ -66,6 +66,12 @@ func (s *Store) lockPath(sessionID string) string {
 	return filepath.Join(s.sessionDir(sessionID), lockFileName)
 }
 
+// Queue returns a Queue instance for managing the message queue of a session.
+// The returned Queue is safe for concurrent use.
+func (s *Store) Queue(sessionID string) *Queue {
+	return NewQueue(s.sessionDir(sessionID))
+}
+
 // Create creates a new session with the given metadata.
 func (s *Store) Create(meta Metadata) error {
 	log := logging.Session()
