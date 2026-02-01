@@ -337,4 +337,3 @@ func TestMultiClient_DisconnectOneOtherContinues(t *testing.T) {
 
 	t.Logf("Client 2 events after client 1 disconnect: %v", client2Events)
 }
-

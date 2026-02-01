@@ -136,4 +136,3 @@ func (w *QueueTitleWorker) processRequest(req QueueTitleRequest) {
 		w.OnTitleGenerated(req.SessionID, req.MessageID, title)
 	}
 }
-

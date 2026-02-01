@@ -925,4 +925,3 @@ func TestCreateDeleteSession(t *testing.T) {
 		t.Error("GetSession should fail for deleted session")
 	}
 }
-
