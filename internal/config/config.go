@@ -336,6 +336,9 @@ type ConversationsConfig struct {
 	Queue *QueueConfig `json:"queue,omitempty" yaml:"queue,omitempty"`
 }
 
+// DefaultQueueMaxSize is the default maximum number of messages allowed in a queue.
+const DefaultQueueMaxSize = 10
+
 // QueueConfig configures message queue behavior when the agent is busy.
 // When a user sends a message while the agent is processing, the message
 // is queued and automatically delivered when the agent becomes idle.
@@ -349,6 +352,16 @@ type QueueConfig struct {
 	// after the agent finishes responding. Useful for rate-limiting.
 	// Default: 0 (immediate)
 	DelaySeconds int `json:"delay_seconds,omitempty" yaml:"delay_seconds,omitempty"`
+
+	// MaxSize is the maximum number of messages allowed in the queue.
+	// When the queue is full, new messages are rejected with an error.
+	// Default: 10 (use pointer to distinguish "not set" from "0")
+	MaxSize *int `json:"max_size,omitempty" yaml:"max_size,omitempty"`
+
+	// AutoGenerateTitles controls whether short titles are automatically generated
+	// for queued messages using the auxiliary conversation.
+	// Default: true (use pointer to distinguish "not set" from "false")
+	AutoGenerateTitles *bool `json:"auto_generate_titles,omitempty" yaml:"auto_generate_titles,omitempty"`
 }
 
 // IsEnabled returns whether queue processing is enabled.
@@ -367,6 +380,24 @@ func (q *QueueConfig) GetDelaySeconds() int {
 		return 0
 	}
 	return q.DelaySeconds
+}
+
+// GetMaxSize returns the maximum queue size.
+// Safe to call on nil receiver - returns DefaultQueueMaxSize if not configured.
+func (q *QueueConfig) GetMaxSize() int {
+	if q == nil || q.MaxSize == nil {
+		return DefaultQueueMaxSize
+	}
+	return *q.MaxSize
+}
+
+// ShouldAutoGenerateTitles returns whether titles should be auto-generated for queued messages.
+// Safe to call on nil receiver - returns true (the default) if not configured.
+func (q *QueueConfig) ShouldAutoGenerateTitles() bool {
+	if q == nil || q.AutoGenerateTitles == nil {
+		return true // Default: enabled
+	}
+	return *q.AutoGenerateTitles
 }
 
 // GetProcessors returns the list of message processors.
@@ -546,8 +577,10 @@ type rawConfig struct {
 			} `yaml:"processors"`
 		} `yaml:"processing"`
 		Queue *struct {
-			Enabled      *bool `yaml:"enabled"`
-			DelaySeconds int   `yaml:"delay_seconds"`
+			Enabled            *bool `yaml:"enabled"`
+			DelaySeconds       int   `yaml:"delay_seconds"`
+			MaxSize            *int  `yaml:"max_size"`
+			AutoGenerateTitles *bool `yaml:"auto_generate_titles"`
 		} `yaml:"queue"`
 	} `yaml:"conversations"`
 }
@@ -765,8 +798,10 @@ func Parse(data []byte) (*Config, error) {
 		// Parse queue config
 		if raw.Conversations.Queue != nil {
 			cfg.Conversations.Queue = &QueueConfig{
-				Enabled:      raw.Conversations.Queue.Enabled,
-				DelaySeconds: raw.Conversations.Queue.DelaySeconds,
+				Enabled:            raw.Conversations.Queue.Enabled,
+				DelaySeconds:       raw.Conversations.Queue.DelaySeconds,
+				MaxSize:            raw.Conversations.Queue.MaxSize,
+				AutoGenerateTitles: raw.Conversations.Queue.AutoGenerateTitles,
 			}
 		}
 

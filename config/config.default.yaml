@@ -531,3 +531,11 @@ web:
 #   #   # Delay in seconds before sending the next queued message (default: 0)
 #   #   # Useful to give users time to review agent responses before next message
 #   #   delay_seconds: 0
+#   #
+#   #   # Maximum number of messages allowed in the queue (default: 10)
+#   #   # When the queue is full, new messages are rejected with an error
+#   #   max_size: 10
+#   #
+#   #   # Automatically generate short titles for queued messages (default: true)
+#   #   # Uses the auxiliary conversation to create 2-3 word titles
+#   #   auto_generate_titles: true
