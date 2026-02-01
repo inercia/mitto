@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -114,7 +115,16 @@ func (w *QueueTitleWorker) processRequest(req QueueTitleRequest) {
 	if w.store != nil {
 		queue := w.store.Queue(req.SessionID)
 		if err := queue.UpdateTitle(req.MessageID, title); err != nil {
-			if w.logger != nil {
+			// Message may have been sent/removed while we were generating the title.
+			// This is a normal race condition, not an error.
+			if errors.Is(err, session.ErrMessageNotFound) {
+				if w.logger != nil {
+					w.logger.Debug("Queue message no longer exists, skipping title update",
+						"session_id", req.SessionID,
+						"message_id", req.MessageID,
+						"title", title)
+				}
+			} else if w.logger != nil {
 				w.logger.Error("Failed to update queue message title",
 					"error", err,
 					"session_id", req.SessionID,
