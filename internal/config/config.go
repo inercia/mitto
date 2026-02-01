@@ -210,40 +210,76 @@ func (c *WebConfig) GetAPIPrefix() string {
 	return c.APIPrefix
 }
 
+// ============================================================================
+// Message Processor Types
+//
+// Message processors transform user messages before they are sent to the ACP
+// server. Processors are defined in configuration and applied in order.
+//
+// Example YAML configuration:
+//
+//	conversations:
+//	  processing:
+//	    processors:
+//	      - when: first
+//	        position: prepend
+//	        text: "You are a helpful assistant.\n\n"
+//	      - when: all
+//	        position: append
+//	        text: "\n\n[Be concise]"
+//
+// Example usage in code:
+//
+//	processors := config.MergeProcessors(globalConfig.Conversations, workspaceConfig.Conversations)
+//	processedMsg := config.ApplyProcessors(userMessage, processors, isFirst)
+// ============================================================================
+
 // ProcessorWhen defines when a message processor should be applied.
+// Valid values: "first", "all", "all-except-first"
 type ProcessorWhen string
 
 const (
 	// ProcessorWhenFirst applies only to the first message in a conversation.
+	// Use this for initial context or system prompts.
 	ProcessorWhenFirst ProcessorWhen = "first"
-	// ProcessorWhenAll applies to all messages.
+	// ProcessorWhenAll applies to all messages in the conversation.
+	// Use this for reminders or constraints that should always be present.
 	ProcessorWhenAll ProcessorWhen = "all"
 	// ProcessorWhenAllExceptFirst applies to all messages except the first.
+	// Use this for continuation markers or follow-up context.
 	ProcessorWhenAllExceptFirst ProcessorWhen = "all-except-first"
 )
 
-// ProcessorPosition defines where the processor text is inserted.
+// ProcessorPosition defines where the processor text is inserted relative to the message.
+// Valid values: "prepend", "append"
 type ProcessorPosition string
 
 const (
-	// ProcessorPositionPrepend inserts text before the message.
+	// ProcessorPositionPrepend inserts text before the user's message.
 	ProcessorPositionPrepend ProcessorPosition = "prepend"
-	// ProcessorPositionAppend inserts text after the message.
+	// ProcessorPositionAppend inserts text after the user's message.
 	ProcessorPositionAppend ProcessorPosition = "append"
 )
 
-// MessageProcessor defines a single message transformation.
-// Processors are applied in order to transform user messages before sending to ACP.
+// MessageProcessor defines a single message transformation rule.
+// Processors are applied in order to transform user messages before sending to the ACP server.
+// Each processor specifies when it applies, where to insert text, and what text to insert.
 type MessageProcessor struct {
-	// When specifies when this processor applies: "first", "all", "all-except-first"
+	// When specifies when this processor applies: "first", "all", or "all-except-first"
 	When ProcessorWhen `json:"when" yaml:"when"`
-	// Position specifies where to insert: "prepend" or "append"
+	// Position specifies where to insert the text: "prepend" (before) or "append" (after)
 	Position ProcessorPosition `json:"position" yaml:"position"`
-	// Text is the content to insert
+	// Text is the content to insert at the specified position
 	Text string `json:"text" yaml:"text"`
 }
 
-// ShouldApply returns true if the processor should apply given the message context.
+// ShouldApply determines if this processor should be applied to a message.
+//
+// Parameters:
+//   - isFirstMessage: true if this is the first message in the conversation
+//
+// Returns true if the processor's When condition matches the message context.
+// Returns false for unknown When values (fail-safe behavior).
 func (p *MessageProcessor) ShouldApply(isFirstMessage bool) bool {
 	switch p.When {
 	case ProcessorWhenFirst:
@@ -253,11 +289,18 @@ func (p *MessageProcessor) ShouldApply(isFirstMessage bool) bool {
 	case ProcessorWhenAllExceptFirst:
 		return !isFirstMessage
 	default:
+		// Unknown When value - don't apply (fail-safe)
 		return false
 	}
 }
 
-// Apply applies this processor to the message and returns the result.
+// Apply transforms the message by inserting the processor's text at the configured position.
+//
+// Parameters:
+//   - message: the original user message
+//
+// Returns the transformed message with text prepended or appended.
+// Returns the original message unchanged for unknown Position values.
 func (p *MessageProcessor) Apply(message string) string {
 	switch p.Position {
 	case ProcessorPositionPrepend:
@@ -265,26 +308,69 @@ func (p *MessageProcessor) Apply(message string) string {
 	case ProcessorPositionAppend:
 		return message + p.Text
 	default:
+		// Unknown Position value - return unchanged (fail-safe)
 		return message
 	}
 }
 
-// ConversationProcessing contains the list of message processors.
+// ConversationProcessing contains configuration for message processing.
+// This is the inner structure that holds the actual processor list and merge behavior.
 type ConversationProcessing struct {
-	// Override if true, workspace processors replace global processors entirely.
-	// If false (default), workspace processors are appended to global processors.
+	// Override controls merge behavior with parent (global) configuration.
+	// If true, these processors completely replace parent processors.
+	// If false (default), these processors are appended after parent processors.
 	Override bool `json:"override,omitempty" yaml:"override,omitempty"`
-	// Processors is the ordered list of message transformations
+	// Processors is the ordered list of message transformations.
+	// Processors are applied sequentially in the order defined.
 	Processors []MessageProcessor `json:"processors,omitempty" yaml:"processors,omitempty"`
 }
 
-// ConversationsConfig represents conversation processing configuration.
+// ConversationsConfig is the top-level configuration for conversation handling.
+// It contains both message processing rules and queue behavior settings.
 type ConversationsConfig struct {
-	// Processing contains message transformation processors
+	// Processing contains message transformation processors.
+	// May be nil if no processors are configured.
 	Processing *ConversationProcessing `json:"processing,omitempty" yaml:"processing,omitempty"`
+	// Queue contains message queue configuration for handling messages while agent is busy.
+	// May be nil to use default queue behavior.
+	Queue *QueueConfig `json:"queue,omitempty" yaml:"queue,omitempty"`
 }
 
-// GetProcessors returns the list of processors, or nil if none configured.
+// QueueConfig configures message queue behavior when the agent is busy.
+// When a user sends a message while the agent is processing, the message
+// is queued and automatically delivered when the agent becomes idle.
+type QueueConfig struct {
+	// Enabled controls whether queued messages are automatically sent to the agent.
+	// When false, messages remain in the queue until manually sent or deleted.
+	// Default: true (use pointer to distinguish "not set" from "false")
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// DelaySeconds is the delay in seconds before sending the next queued message
+	// after the agent finishes responding. Useful for rate-limiting.
+	// Default: 0 (immediate)
+	DelaySeconds int `json:"delay_seconds,omitempty" yaml:"delay_seconds,omitempty"`
+}
+
+// IsEnabled returns whether queue processing is enabled.
+// Safe to call on nil receiver - returns true (the default) if not configured.
+func (q *QueueConfig) IsEnabled() bool {
+	if q == nil || q.Enabled == nil {
+		return true // Default: enabled
+	}
+	return *q.Enabled
+}
+
+// GetDelaySeconds returns the configured delay in seconds.
+// Safe to call on nil receiver - returns 0 if not configured.
+func (q *QueueConfig) GetDelaySeconds() int {
+	if q == nil {
+		return 0
+	}
+	return q.DelaySeconds
+}
+
+// GetProcessors returns the list of message processors.
+// Safe to call on nil receiver - returns nil if no processors are configured.
 func (c *ConversationsConfig) GetProcessors() []MessageProcessor {
 	if c == nil || c.Processing == nil {
 		return nil
@@ -292,7 +378,8 @@ func (c *ConversationsConfig) GetProcessors() []MessageProcessor {
 	return c.Processing.Processors
 }
 
-// ShouldOverride returns true if workspace config should override global config.
+// ShouldOverride returns whether workspace processors should replace global processors.
+// Safe to call on nil receiver - returns false (merge behavior) if not configured.
 func (c *ConversationsConfig) ShouldOverride() bool {
 	if c == nil || c.Processing == nil {
 		return false
@@ -300,9 +387,27 @@ func (c *ConversationsConfig) ShouldOverride() bool {
 	return c.Processing.Override
 }
 
-// MergeProcessors merges global and workspace processors according to precedence rules.
-// If workspace has override=true, only workspace processors are returned.
-// Otherwise, global processors are applied first, then workspace processors.
+// GetQueueConfig returns the queue configuration.
+// Safe to call on nil receiver - returns nil if not configured.
+func (c *ConversationsConfig) GetQueueConfig() *QueueConfig {
+	if c == nil {
+		return nil
+	}
+	return c.Queue
+}
+
+// MergeProcessors combines global and workspace processors according to precedence rules.
+//
+// Merge behavior:
+//   - If workspace has override=true: only workspace processors are used
+//   - Otherwise: global processors run first, then workspace processors
+//
+// Parameters:
+//   - global: the global (default) configuration from ~/.config/mitto/config.yaml
+//   - workspace: the workspace-specific configuration from <workspace>/.mittorc
+//
+// Returns a combined list of processors in execution order.
+// Returns nil if both configs are nil or have no processors.
 func MergeProcessors(global, workspace *ConversationsConfig) []MessageProcessor {
 	// If workspace wants to override, use only workspace processors
 	if workspace != nil && workspace.ShouldOverride() {
@@ -322,7 +427,15 @@ func MergeProcessors(global, workspace *ConversationsConfig) []MessageProcessor 
 	return result
 }
 
-// ApplyProcessors applies a list of processors to a message.
+// ApplyProcessors transforms a message by running it through a list of processors.
+//
+// Parameters:
+//   - message: the original user message
+//   - processors: the list of processors to apply (typically from MergeProcessors)
+//   - isFirstMessage: true if this is the first message in the conversation
+//
+// Returns the transformed message after all applicable processors have run.
+// Each processor's ShouldApply is checked before applying.
 func ApplyProcessors(message string, processors []MessageProcessor, isFirstMessage bool) string {
 	result := message
 	for _, processor := range processors {
@@ -432,6 +545,10 @@ type rawConfig struct {
 				Text     string `yaml:"text"`
 			} `yaml:"processors"`
 		} `yaml:"processing"`
+		Queue *struct {
+			Enabled      *bool `yaml:"enabled"`
+			DelaySeconds int   `yaml:"delay_seconds"`
+		} `yaml:"queue"`
 	} `yaml:"conversations"`
 }
 
@@ -624,22 +741,38 @@ func Parse(data []byte) (*Config, error) {
 	}
 
 	// Populate conversations config
-	if raw.Conversations != nil && raw.Conversations.Processing != nil {
-		processors := make([]MessageProcessor, 0, len(raw.Conversations.Processing.Processors))
-		for _, p := range raw.Conversations.Processing.Processors {
-			processors = append(processors, MessageProcessor{
-				When:     ProcessorWhen(p.When),
-				Position: ProcessorPosition(p.Position),
-				Text:     p.Text,
-			})
-		}
-		if len(processors) > 0 || raw.Conversations.Processing.Override {
-			cfg.Conversations = &ConversationsConfig{
-				Processing: &ConversationProcessing{
+	if raw.Conversations != nil {
+		cfg.Conversations = &ConversationsConfig{}
+
+		// Parse processing config
+		if raw.Conversations.Processing != nil {
+			processors := make([]MessageProcessor, 0, len(raw.Conversations.Processing.Processors))
+			for _, p := range raw.Conversations.Processing.Processors {
+				processors = append(processors, MessageProcessor{
+					When:     ProcessorWhen(p.When),
+					Position: ProcessorPosition(p.Position),
+					Text:     p.Text,
+				})
+			}
+			if len(processors) > 0 || raw.Conversations.Processing.Override {
+				cfg.Conversations.Processing = &ConversationProcessing{
 					Override:   raw.Conversations.Processing.Override,
 					Processors: processors,
-				},
+				}
 			}
+		}
+
+		// Parse queue config
+		if raw.Conversations.Queue != nil {
+			cfg.Conversations.Queue = &QueueConfig{
+				Enabled:      raw.Conversations.Queue.Enabled,
+				DelaySeconds: raw.Conversations.Queue.DelaySeconds,
+			}
+		}
+
+		// If no config was actually set, nil out the conversations config
+		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil {
+			cfg.Conversations = nil
 		}
 	}
 

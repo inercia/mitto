@@ -228,10 +228,25 @@ func createDefaultSettings(settingsPath string) error {
 }
 
 // SaveSettings saves settings to the Mitto data directory.
+// Before writing, it creates a backup of the existing settings file (if it exists)
+// at settings.json.bak. Only one backup is maintained at a time.
 func SaveSettings(settings *Settings) error {
 	settingsPath, err := appdir.SettingsPath()
 	if err != nil {
 		return err
+	}
+
+	// Create backup if settings.json already exists
+	if _, err := os.Stat(settingsPath); err == nil {
+		backupPath := settingsPath + ".bak"
+		// Read existing settings and write to backup (overwrites any existing backup)
+		data, err := os.ReadFile(settingsPath)
+		if err != nil {
+			return fmt.Errorf("failed to read settings for backup: %w", err)
+		}
+		if err := os.WriteFile(backupPath, data, 0644); err != nil {
+			return fmt.Errorf("failed to create settings backup: %w", err)
+		}
 	}
 
 	// Use atomic write for safety

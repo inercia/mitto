@@ -335,6 +335,85 @@ prompts:
       - Skip empty commits
       - Handle binary/large files appropriately
 
+  - name: "Create PR"
+    backgroundColor: "#B2DFDB"  # Light Teal
+    prompt: |
+      Guide me through creating a pull request for the current changes.
+
+      ### 1. Prepare the Code
+
+      **Format code:**
+      - Identify and run the project's code formatters (e.g., `go fmt`, `prettier`, `black`, `rustfmt`)
+      - Fix any formatting issues
+
+      **Run tests:**
+      - Identify and run the project's test suite
+      - If tests fail, report the failures and ask how to proceed
+
+      ### 2. Analyze Changes
+
+      - Run `git diff --stat` to see all modified files
+      - Run `git diff` to review the actual changes
+      - Group changes into logical, cohesive units:
+        - **Feature code**: New functionality or feature changes
+        - **Bug fixes**: Corrections to existing behavior
+        - **Refactoring**: Code improvements without behavior changes
+        - **Tests**: New or updated tests
+        - **Documentation**: README, comments, docs updates
+        - **Dependencies**: Package updates, go.mod, package.json, etc.
+
+      ### 3. Propose Commit Structure
+
+      For each logical group, present a table:
+
+      | # | Type | Commit Message | Files | Description |
+      |---|------|----------------|-------|-------------|
+      | 1 | feat | feat: add user authentication | auth/*.go | New auth module |
+
+      For each commit, propose **3 message options** using conventional commits:
+      - Option A: Concise (50 chars max)
+      - Option B: Descriptive (with scope)
+      - Option C: Detailed (with body if needed)
+
+      ### 4. Review with User
+
+      Ask the user to:
+      - **Approve** the proposed structure
+      - **Modify** (reorder, merge, split, change messages)
+      - **Cancel** to abort
+
+      **Wait for explicit approval before proceeding.**
+
+      ### 5. Create Commits
+
+      For each approved commit:
+      1. Stage only the relevant files: `git add <files>`
+      2. Create the commit: `git commit -m "<message>"`
+      3. Report success or failure
+
+      ### 6. Create Pull Request
+
+      Once all commits are created:
+
+      1. Check if there's an upstream branch: `git rev-parse --abbrev-ref --symbolic-full-name @{u}`
+      2. Push the branch if needed: `git push -u origin HEAD`
+      3. Generate a PR title and description:
+         - Title: Summarize the overall change
+         - Description: List all commits with brief explanations
+         - Include any related issues (look for issue references in commits/branch name)
+      4. Present the PR details for approval
+      5. Create the PR: `gh pr create --title "<title>" --body "<body>"`
+
+      Report the PR URL when complete.
+
+      ## Rules
+
+      - Always run formatters and tests before committing
+      - Respect `.gitignore`
+      - Use conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
+      - Keep commits atomic (one logical change per commit)
+      - Never force push without explicit permission
+
 # Web server configuration
 web:
   host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security
@@ -420,21 +499,35 @@ web:
 #
 # conversations:
 #   processing:
-#     # Add system context to the first message
-#     - when: first
-#       position: prepend
-#       text: |
-#         You are a helpful AI coding assistant.
-#         Please follow best practices and be concise.
+#     processors:
+#       # Add system context to the first message
+#       - when: first
+#         position: prepend
+#         text: |
+#           You are a helpful AI coding assistant.
+#           Please follow best practices and be concise.
 #
-#         ---
+#           ---
 #
-#     # Add a reminder to all messages
-#     - when: all
-#       position: append
-#       text: "\n\n[Remember: Provide working code examples]"
+#       # Add a reminder to all messages
+#       - when: all
+#         position: append
+#         text: "\n\n[Remember: Provide working code examples]"
 #
-#     # Add continuation context after the first message
-#     # - when: all-except-first
-#     #   position: prepend
-#     #   text: "[Continuing from previous context]\n\n"
+#       # Add continuation context after the first message
+#       # - when: all-except-first
+#       #   position: prepend
+#       #   text: "[Continuing from previous context]\n\n"
+#
+#   # Message queue configuration
+#   # When enabled, messages sent while the agent is busy are queued and
+#   # automatically delivered when the agent becomes idle.
+#   #
+#   # queue:
+#   #   # Enable/disable automatic queue processing (default: true)
+#   #   # When false, messages remain in queue until manually sent or deleted
+#   #   enabled: true
+#   #
+#   #   # Delay in seconds before sending the next queued message (default: 0)
+#   #   # Useful to give users time to review agent responses before next message
+#   #   delay_seconds: 0

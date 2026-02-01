@@ -22,6 +22,9 @@ type WorkspaceRC struct {
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 	// LoadedAt is the time when this config was loaded.
 	LoadedAt time.Time `json:"-"`
+	// FileModTime is the modification time of the .mittorc file when loaded.
+	// Used to detect file changes efficiently.
+	FileModTime time.Time `json:"-"`
 }
 
 // rawWorkspaceRC is used for YAML unmarshaling of workspace .mittorc files.
@@ -75,7 +78,28 @@ func LoadWorkspaceRC(workspaceDir string) (*WorkspaceRC, error) {
 		return nil, err
 	}
 
-	return parseWorkspaceRC(data)
+	rc, err := parseWorkspaceRC(data)
+	if err != nil {
+		return nil, err
+	}
+	if rc != nil {
+		rc.FileModTime = info.ModTime()
+	}
+	return rc, nil
+}
+
+// GetWorkspaceRCModTime returns the modification time of the .mittorc file.
+// Returns zero time if the file doesn't exist.
+func GetWorkspaceRCModTime(workspaceDir string) time.Time {
+	if workspaceDir == "" {
+		return time.Time{}
+	}
+	rcPath := filepath.Join(workspaceDir, WorkspaceRCFileName)
+	info, err := os.Stat(rcPath)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }
 
 // parseWorkspaceRC parses the YAML data from a workspace .mittorc file.
@@ -147,6 +171,7 @@ func NewWorkspaceRCCache(reloadAfter time.Duration) *WorkspaceRCCache {
 
 // Get returns the cached workspace RC or loads it if not cached or stale.
 // Returns nil if no .mittorc exists for the workspace.
+// The cache is invalidated if the file's modification time has changed.
 func (c *WorkspaceRCCache) Get(workspaceDir string) (*WorkspaceRC, error) {
 	if workspaceDir == "" {
 		return nil, nil
@@ -156,9 +181,34 @@ func (c *WorkspaceRCCache) Get(workspaceDir string) (*WorkspaceRC, error) {
 	cached, exists := c.cache[workspaceDir]
 	c.mu.RUnlock()
 
-	// Return cached if exists and not stale
+	// Check if cache is fresh (cached can be nil if we previously marked it as "no file")
 	if exists && cached != nil && time.Since(cached.LoadedAt) < c.reloadAfter {
-		return cached, nil
+		// Within reload interval, check if file has actually changed
+		currentModTime := GetWorkspaceRCModTime(workspaceDir)
+
+		// Handle file deletion: if file is gone and we have cached data, clear it
+		if currentModTime.IsZero() {
+			c.mu.Lock()
+			c.cache[workspaceDir] = nil // Mark as "no file"
+			c.mu.Unlock()
+			return nil, nil
+		}
+
+		// If mod time matches, use cached value
+		if cached.FileModTime.Equal(currentModTime) {
+			return cached, nil
+		}
+		// File has changed, fall through to reload
+	}
+
+	// Handle case where we cached nil (no file) - check if file appeared
+	if exists && cached == nil {
+		currentModTime := GetWorkspaceRCModTime(workspaceDir)
+		if currentModTime.IsZero() {
+			// File still doesn't exist
+			return nil, nil
+		}
+		// File now exists, fall through to load
 	}
 
 	// Load or reload
@@ -172,6 +222,30 @@ func (c *WorkspaceRCCache) Get(workspaceDir string) (*WorkspaceRC, error) {
 	c.mu.Unlock()
 
 	return rc, nil
+}
+
+// GetLastModified returns the file modification time of the .mittorc file.
+// Always checks the current file state to handle file deletion correctly.
+// Returns zero time if the file doesn't exist.
+func (c *WorkspaceRCCache) GetLastModified(workspaceDir string) time.Time {
+	if workspaceDir == "" {
+		return time.Time{}
+	}
+
+	// Always check the current file state to handle file deletion
+	currentModTime := GetWorkspaceRCModTime(workspaceDir)
+
+	// If file is deleted, ensure cache is invalidated
+	if currentModTime.IsZero() {
+		c.mu.Lock()
+		if cached, exists := c.cache[workspaceDir]; exists && cached != nil {
+			c.cache[workspaceDir] = nil // Mark as "no file"
+		}
+		c.mu.Unlock()
+		return time.Time{}
+	}
+
+	return currentModTime
 }
 
 // Invalidate removes the cached entry for a workspace directory.
