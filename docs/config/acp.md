@@ -166,6 +166,6 @@ The web interface shows a dropdown to select from configured ACP servers. You ca
 ## Related Documentation
 
 - [Configuration Overview](config.md) - Main configuration documentation
-- [Web Configuration](config-web.md) - Web server settings
+- [Web Configuration](web.md) - Web server settings
 - [Architecture](architecture.md) - System design and internals
 

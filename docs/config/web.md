@@ -414,5 +414,5 @@ HSTS is enabled when using HTTPS.
 
 ## Related Documentation
 
-- [Configuration Overview](config.md) - Main configuration documentation
-- [macOS Configuration](config-mac.md) - Desktop app settings
+- [Configuration Overview](overview.md) - Main configuration documentation
+- [macOS Configuration](mac.md) - Desktop app settings

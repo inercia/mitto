@@ -164,7 +164,6 @@ conversations:
 
 ## Related Documentation
 
-- [Configuration Overview](config.md) - Global configuration options
-- [Conversation Processing](config-conversations.md) - Detailed processor documentation
-- [Web Configuration](config-web.md) - Global prompts and web settings
-
+- [Configuration Overview](overview.md) - Global configuration options
+- [Conversation Processing](conversations.md) - Detailed processor documentation
+- [Web Configuration](web.md) - Global prompts and web settings

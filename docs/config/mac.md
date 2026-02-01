@@ -276,4 +276,4 @@ When using `settings.json`:
 ## Related Documentation
 
 - [Configuration Overview](config.md) - Main configuration documentation
-- [Web Configuration](config-web.md) - Web server settings
+- [Web Configuration](web.md) - Web server settings

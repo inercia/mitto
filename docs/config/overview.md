@@ -53,18 +53,18 @@ Each server has:
 
 The first server in the list is the default.
 
-See [ACP Servers Configuration](config-acp.md) for detailed setup instructions for each supported agent (Claude, Auggie, Copilot).
+See [ACP Servers Configuration](acp.md) for detailed setup instructions for each supported agent (Claude, Auggie, Copilot).
 
 ### Web Interface
 
-Configure the web server, authentication, hooks, and more. See [Web Configuration](config-web.md) for details.
+Configure the web server, authentication, hooks, and more. See [Web Configuration](web.md) for details.
 
 ```yaml
 web:
   host: 127.0.0.1
   port: 8080
   theme: v2
-  # ... see config-web.md for full options
+  # ... see web.md for full options
 ```
 
 ### UI Settings
@@ -77,7 +77,7 @@ ui:
   confirmations:
     delete_session: true  # Show confirmation when deleting conversations (default: true)
 
-  # macOS desktop app settings (see config-mac.md for details)
+  # macOS desktop app settings (see mac.md for details)
   mac:
     hotkeys:
       show_hide:
@@ -87,7 +87,7 @@ ui:
         agent_completed: true
 ```
 
-See [macOS Configuration](config-mac.md) for macOS-specific settings like hotkeys and notifications.
+See [macOS Configuration](mac.md) for macOS-specific settings like hotkeys and notifications.
 
 ## Complete Example
 
@@ -133,12 +133,12 @@ ui:
 
 ## Related Documentation
 
-- [ACP Servers](config-acp.md) - Setup instructions for Claude, Auggie, Copilot
-- [Workspace Configuration](config-workspace.md) - Project-specific `.mittorc` files
-- [Conversation Processing](config-conversations.md) - Message processing rules
-- [Web Configuration](config-web.md) - Web server, authentication, hooks, security
-- [macOS Configuration](config-mac.md) - Hotkeys, notifications, desktop app settings
-- [Architecture](architecture.md) - System design and internals
+- [ACP Servers](acp.md) - Setup instructions for Claude, Auggie, Copilot
+- [Workspace Configuration](workspace.md) - Project-specific `.mittorc` files
+- [Conversation Processing](conversations.md) - Message processing rules
+- [Web Configuration](web.md) - Web server, authentication, hooks, security
+- [macOS Configuration](mac.md) - Hotkeys, notifications, desktop app settings
+- [Architecture](../devel/README.md) - System design and internals
 
 ## JSON Format
 
