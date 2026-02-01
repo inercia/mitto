@@ -146,7 +146,7 @@ func LoadSettings() (*Config, error) {
 	// Check if settings.json exists
 	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
 		// Create settings.json from embedded default config
-		if err := createDefaultSettings(settingsPath); err != nil {
+		if err := createDefaultSettings(); err != nil {
 			return nil, fmt.Errorf("failed to create default settings: %w", err)
 		}
 	}
@@ -211,7 +211,7 @@ func migratePasswordToKeychain(settings *Settings, cfg *Config) error {
 }
 
 // createDefaultSettings parses the embedded YAML config and saves it as JSON.
-func createDefaultSettings(settingsPath string) error {
+func createDefaultSettings() error {
 	// Parse the embedded default YAML config
 	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
 	if err != nil {
