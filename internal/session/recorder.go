@@ -130,7 +130,7 @@ func (r *Recorder) Resume() error {
 	}
 
 	r.started = true
-	log.Info("session recording resumed", "session_id", r.sessionID)
+	log.Debug("session recording resumed", "session_id", r.sessionID)
 	return nil
 }
 

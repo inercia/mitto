@@ -272,7 +272,7 @@ func (s *Server) getSecureUpgrader() websocket.Upgrader {
 	var logger OriginCheckLogger
 	if s.logger != nil {
 		logger = func(origin, host string, allowed bool, reason string) {
-			s.logger.Info("WS: Origin check",
+			s.logger.Debug("WS: Origin check",
 				"origin", origin,
 				"host", host,
 				"allowed", allowed,

@@ -20,6 +20,7 @@ var (
 	configPath    string // Legacy YAML config override
 	autoApprove   bool
 	debug         bool
+	logLevel      string   // --log-level flag (debug, info, warn, error)
 	dirFlags      []string // --dir flags: can be "path" or "server:path"
 	logFile       string
 	logComponents string
@@ -48,9 +49,12 @@ like auggie, claude-code, and others that implement ACP.`,
 		}
 
 		// Initialize logging
-		logLevel := "info"
-		if debug {
-			logLevel = "debug"
+		// Priority: --log-level flag > --debug flag > default (info)
+		effectiveLogLevel := "info"
+		if logLevel != "" {
+			effectiveLogLevel = logLevel
+		} else if debug {
+			effectiveLogLevel = "debug"
 		}
 		var components []string
 		if logComponents != "" {
@@ -62,7 +66,7 @@ like auggie, claude-code, and others that implement ACP.`,
 			}
 		}
 		if err := logging.Initialize(logging.Config{
-			Level:      logLevel,
+			Level:      effectiveLogLevel,
 			LogFile:    logFile,
 			Components: components,
 		}); err != nil {
@@ -119,7 +123,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&acpServerName, "acp", "", "ACP server name to use (defaults to first in config)")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Configuration file path (YAML or JSON format, overrides settings.json)")
 	rootCmd.PersistentFlags().BoolVar(&autoApprove, "auto-approve", false, "Automatically approve permission requests")
-	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging")
+	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging (shorthand for --log-level=debug)")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "Log level: debug, info, warn, error (default: info)")
 	rootCmd.PersistentFlags().StringArrayVarP(&dirFlags, "dir", "d", nil, "Working directory for ACP sessions. Can be specified multiple times.\nFormat: [server-name:]path (e.g., --dir /path or --dir auggie:/path)")
 	rootCmd.PersistentFlags().StringVarP(&logFile, "logfile", "l", "", "Log file path (logs are also written to console)")
 	rootCmd.PersistentFlags().StringVar(&logComponents, "log-components", "", "Comma-separated list of components to log (e.g., 'web,session,acp'). Empty means all components.")

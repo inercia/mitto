@@ -512,8 +512,13 @@ func main() {
 
 func run() error {
 	// Initialize logging (minimal for desktop app)
+	// Default to INFO level, but allow override via MITTO_LOG_LEVEL environment variable
+	logLevel := "info"
+	if envLevel := os.Getenv("MITTO_LOG_LEVEL"); envLevel != "" {
+		logLevel = envLevel
+	}
 	if err := logging.Initialize(logging.Config{
-		Level: "info",
+		Level: logLevel,
 	}); err != nil {
 		return fmt.Errorf("failed to initialize logging: %w", err)
 	}

@@ -443,7 +443,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 				"client_ip", clientIP,
 			)
 		} else {
-			s.logger.Info("HTTP request",
+			s.logger.Debug("HTTP request",
 				"method", r.Method,
 				"path", path,
 				"raw_uri", r.RequestURI,
