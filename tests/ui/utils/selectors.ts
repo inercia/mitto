@@ -7,7 +7,7 @@
  * API prefix for all API endpoints.
  * The server uses /mitto as the default prefix for security through obscurity.
  */
-export const API_PREFIX = '/mitto';
+export const API_PREFIX = "/mitto";
 
 /**
  * Build an API URL with the configured prefix.
@@ -16,33 +16,34 @@ export const API_PREFIX = '/mitto';
  */
 export function apiUrl(path: string): string {
   // Ensure path starts with /
-  if (!path.startsWith('/')) {
-    path = '/' + path;
+  if (!path.startsWith("/")) {
+    path = "/" + path;
   }
   return API_PREFIX + path;
 }
 
 export const selectors = {
   // App container
-  app: '#app',
+  app: "#app",
   // Use a more specific selector for the app loading spinner (not tool call spinners)
   // The app loading spinner is in the center of the screen, not inside a message
-  loadingSpinner: '#app > .animate-spin, .flex.items-center.justify-center > .animate-spin',
+  loadingSpinner:
+    "#app > .animate-spin, .flex.items-center.justify-center > .animate-spin",
 
   // Chat input area
-  chatInput: 'textarea',
+  chatInput: "textarea",
   sendButton: 'button:has-text("Send")',
   cancelButton: 'button:has-text("Cancel")',
 
   // Messages
-  userMessage: '.bg-mitto-user, .bg-blue-600',
-  agentMessage: '.bg-mitto-agent, .prose',
-  systemMessage: '.text-gray-500, .text-xs',
-  errorMessage: '.text-red-500',
-  thoughtMessage: '.text-gray-400',
+  userMessage: ".bg-mitto-user, .bg-blue-600",
+  agentMessage: ".bg-mitto-agent, .prose",
+  systemMessage: ".text-gray-500, .text-xs",
+  errorMessage: ".text-red-500",
+  thoughtMessage: ".text-gray-400",
   toolMessage: '.text-yellow-500:has-text("🔧")',
   // All messages in the chat (for ordering tests)
-  allMessages: '.message-enter',
+  allMessages: ".message-enter",
 
   // Sessions/Conversations sidebar
   // Note: The UI uses "Conversations" as the heading text
@@ -58,12 +59,12 @@ export const selectors = {
   workspaceDialog: '[role="dialog"]:has-text("Workspace")',
 
   // Header
-  header: 'header',
+  header: "header",
   connectionStatus: '[class*="connection"]',
 
   // Body
-  body: 'body',
-  darkTheme: '.bg-mitto-bg',
+  body: "body",
+  darkTheme: ".bg-mitto-bg",
 } as const;
 
 /**
@@ -76,4 +77,3 @@ export const timeouts = {
   shortAction: 5000,
   animation: 500,
 } as const;
-

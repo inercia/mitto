@@ -1,7 +1,7 @@
-import { FullConfig } from '@playwright/test';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { FullConfig } from "@playwright/test";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,56 +11,64 @@ const __dirname = path.dirname(__filename);
  * Runs once before all tests.
  */
 async function globalSetup(config: FullConfig): Promise<void> {
-  console.log('🔧 Running global setup...');
+  console.log("🔧 Running global setup...");
 
-  const testDir = process.env.MITTO_DIR || '/tmp/mitto-test';
+  const testDir = process.env.MITTO_DIR || "/tmp/mitto-test";
 
   // Create test directory structure
   await fs.rm(testDir, { recursive: true, force: true });
   await fs.mkdir(testDir, { recursive: true });
-  await fs.mkdir(path.join(testDir, 'sessions'), { recursive: true });
+  await fs.mkdir(path.join(testDir, "sessions"), { recursive: true });
 
   // Get project root (two levels up from tests/ui)
-  const projectRoot = path.resolve(__dirname, '../..');
+  const projectRoot = path.resolve(__dirname, "../..");
 
   // Create test settings.json
   const settings = {
     acp_servers: [
       {
-        name: 'mock-acp',
-        command: path.join(projectRoot, 'tests/mocks/acp-server/mock-acp-server'),
+        name: "mock-acp",
+        command: path.join(
+          projectRoot,
+          "tests/mocks/acp-server/mock-acp-server",
+        ),
       },
     ],
     web: {
-      host: '127.0.0.1',
+      host: "127.0.0.1",
       port: 8089,
-      theme: 'v2',
+      theme: "v2",
     },
   };
 
   await fs.writeFile(
-    path.join(testDir, 'settings.json'),
-    JSON.stringify(settings, null, 2)
+    path.join(testDir, "settings.json"),
+    JSON.stringify(settings, null, 2),
   );
 
   // Create workspaces.json
   const workspaces = {
     workspaces: [
       {
-        acp_server: 'mock-acp',
-        acp_command: path.join(projectRoot, 'tests/mocks/acp-server/mock-acp-server'),
-        working_dir: path.join(projectRoot, 'tests/fixtures/workspaces/project-alpha'),
+        acp_server: "mock-acp",
+        acp_command: path.join(
+          projectRoot,
+          "tests/mocks/acp-server/mock-acp-server",
+        ),
+        working_dir: path.join(
+          projectRoot,
+          "tests/fixtures/workspaces/project-alpha",
+        ),
       },
     ],
   };
 
   await fs.writeFile(
-    path.join(testDir, 'workspaces.json'),
-    JSON.stringify(workspaces, null, 2)
+    path.join(testDir, "workspaces.json"),
+    JSON.stringify(workspaces, null, 2),
   );
 
   console.log(`✅ Test environment created at ${testDir}`);
 }
 
 export default globalSetup;
-

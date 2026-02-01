@@ -1,6 +1,6 @@
-import { test, expect } from '../fixtures/test-fixtures';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { test, expect } from "../fixtures/test-fixtures";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,27 +13,33 @@ const __dirname = path.dirname(__filename);
  */
 
 // Get the project root for test workspace paths
-const projectRoot = path.resolve(__dirname, '../../..');
-const WORKSPACE_ALPHA = path.join(projectRoot, 'tests/fixtures/workspaces/project-alpha');
-const WORKSPACE_BETA = path.join(projectRoot, 'tests/fixtures/workspaces/project-beta');
+const projectRoot = path.resolve(__dirname, "../../..");
+const WORKSPACE_ALPHA = path.join(
+  projectRoot,
+  "tests/fixtures/workspaces/project-alpha",
+);
+const WORKSPACE_BETA = path.join(
+  projectRoot,
+  "tests/fixtures/workspaces/project-beta",
+);
 
 // Timeout for agent responses (agents can be slow)
 const AGENT_RESPONSE_TIMEOUT = 60000;
 
-test.describe('Workspace API', () => {
-  test('should list workspaces via API', async ({ request, apiUrl }) => {
-    const response = await request.get(apiUrl('/api/workspaces'));
+test.describe("Workspace API", () => {
+  test("should list workspaces via API", async ({ request, apiUrl }) => {
+    const response = await request.get(apiUrl("/api/workspaces"));
     expect(response.ok()).toBeTruthy();
 
     const data = await response.json();
-    expect(data).toHaveProperty('workspaces');
+    expect(data).toHaveProperty("workspaces");
     expect(Array.isArray(data.workspaces)).toBeTruthy();
   });
 
-  test('should add workspace via API', async ({ request, apiUrl }) => {
-    const response = await request.post(apiUrl('/api/workspaces'), {
+  test("should add workspace via API", async ({ request, apiUrl }) => {
+    const response = await request.post(apiUrl("/api/workspaces"), {
       data: {
-        acp_server: 'mock-acp',
+        acp_server: "mock-acp",
         working_dir: WORKSPACE_BETA,
       },
     });
@@ -41,29 +47,29 @@ test.describe('Workspace API', () => {
     expect([201, 409]).toContain(response.status());
   });
 
-  test('should list available ACP servers', async ({ request, apiUrl }) => {
-    const response = await request.get(apiUrl('/api/workspaces'));
+  test("should list available ACP servers", async ({ request, apiUrl }) => {
+    const response = await request.get(apiUrl("/api/workspaces"));
     expect(response.ok()).toBeTruthy();
 
     const data = await response.json();
-    expect(data).toHaveProperty('acp_servers');
+    expect(data).toHaveProperty("acp_servers");
     expect(Array.isArray(data.acp_servers)).toBeTruthy();
   });
 });
 
-test.describe('Multi-Workspace Sessions', () => {
+test.describe("Multi-Workspace Sessions", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
   });
 
-  test('should create session with workspace', async ({ request, apiUrl }) => {
+  test("should create session with workspace", async ({ request, apiUrl }) => {
     // Ensure workspace is configured
-    await request.post(apiUrl('/api/workspaces'), {
-      data: { acp_server: 'mock-acp', working_dir: WORKSPACE_ALPHA },
+    await request.post(apiUrl("/api/workspaces"), {
+      data: { acp_server: "mock-acp", working_dir: WORKSPACE_ALPHA },
     });
 
     // Create a session for the workspace
-    const response = await request.post(apiUrl('/api/sessions'), {
+    const response = await request.post(apiUrl("/api/sessions"), {
       data: {
         name: `Workspace Test ${Date.now()}`,
         working_dir: WORKSPACE_ALPHA,
@@ -76,7 +82,7 @@ test.describe('Multi-Workspace Sessions', () => {
     expect(session.working_dir).toBe(WORKSPACE_ALPHA);
   });
 
-  test('should show session in sidebar after creation', async ({
+  test("should show session in sidebar after creation", async ({
     page,
     request,
     selectors,
@@ -86,7 +92,7 @@ test.describe('Multi-Workspace Sessions', () => {
     const sessionName = `UI Workspace Test ${Date.now()}`;
 
     // Create session via API
-    await request.post(apiUrl('/api/sessions'), {
+    await request.post(apiUrl("/api/sessions"), {
       data: {
         name: sessionName,
         working_dir: WORKSPACE_ALPHA,
@@ -107,20 +113,20 @@ test.describe('Multi-Workspace Sessions', () => {
   });
 });
 
-test.describe('Workspace Session Isolation', () => {
-  test('should maintain separate sessions per workspace', async ({
+test.describe("Workspace Session Isolation", () => {
+  test("should maintain separate sessions per workspace", async ({
     request,
     apiUrl,
   }) => {
     // Create sessions for different workspaces
-    const session1 = await request.post(apiUrl('/api/sessions'), {
+    const session1 = await request.post(apiUrl("/api/sessions"), {
       data: {
         name: `Isolation Test Alpha ${Date.now()}`,
         working_dir: WORKSPACE_ALPHA,
       },
     });
 
-    const session2 = await request.post(apiUrl('/api/sessions'), {
+    const session2 = await request.post(apiUrl("/api/sessions"), {
       data: {
         name: `Isolation Test Beta ${Date.now()}`,
         working_dir: WORKSPACE_BETA,
@@ -141,9 +147,12 @@ test.describe('Workspace Session Isolation', () => {
     expect(data2.working_dir).toBe(WORKSPACE_BETA);
   });
 
-  test('should verify session working directory via API', async ({ request, apiUrl }) => {
+  test("should verify session working directory via API", async ({
+    request,
+    apiUrl,
+  }) => {
     // Create a session
-    const createResponse = await request.post(apiUrl('/api/sessions'), {
+    const createResponse = await request.post(apiUrl("/api/sessions"), {
       data: {
         name: `API Verify ${Date.now()}`,
         working_dir: WORKSPACE_ALPHA,
@@ -154,11 +163,12 @@ test.describe('Workspace Session Isolation', () => {
     const session = await createResponse.json();
 
     // Fetch session details
-    const detailsResponse = await request.get(apiUrl(`/api/sessions/${session.session_id}`));
+    const detailsResponse = await request.get(
+      apiUrl(`/api/sessions/${session.session_id}`),
+    );
     expect(detailsResponse.ok()).toBeTruthy();
 
     const details = await detailsResponse.json();
     expect(details.working_dir).toBe(WORKSPACE_ALPHA);
   });
 });
-

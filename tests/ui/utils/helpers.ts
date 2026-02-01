@@ -1,5 +1,5 @@
-import { Page, expect } from '@playwright/test';
-import { selectors, timeouts } from './selectors';
+import { Page, expect } from "@playwright/test";
+import { selectors, timeouts } from "./selectors";
 
 /**
  * Wait for the Mitto app to be fully loaded and ready
@@ -56,7 +56,7 @@ export async function sendMessage(page: Page, message: string): Promise<void> {
  */
 export async function waitForUserMessage(
   page: Page,
-  message: string
+  message: string,
 ): Promise<void> {
   await expect(page.locator(`text=${message}`)).toBeVisible({
     timeout: timeouts.shortAction,
@@ -89,7 +89,7 @@ export async function createNewSession(page: Page): Promise<void> {
  */
 export async function switchToSession(
   page: Page,
-  sessionName: string
+  sessionName: string,
 ): Promise<void> {
   const sessionItem = page.locator(selectors.sessionItem(sessionName));
   await expect(sessionItem).toBeVisible({ timeout: timeouts.shortAction });
@@ -102,7 +102,7 @@ export async function switchToSession(
 /**
  * Generate a unique test message
  */
-export function uniqueMessage(prefix: string = 'Test'): string {
+export function uniqueMessage(prefix: string = "Test"): string {
   return `${prefix} ${Date.now()}`;
 }
 
@@ -110,7 +110,7 @@ export function uniqueMessage(prefix: string = 'Test'): string {
  * Navigate to the app and wait for it to be ready
  */
 export async function navigateAndWait(page: Page): Promise<void> {
-  await page.goto('/');
+  await page.goto("/");
   await waitForAppReady(page);
 }
 
@@ -118,8 +118,7 @@ export async function navigateAndWait(page: Page): Promise<void> {
  * Navigate to the app, wait for it to be ready, and ensure there's an active session
  */
 export async function navigateAndEnsureSession(page: Page): Promise<void> {
-  await page.goto('/');
+  await page.goto("/");
   await waitForAppReady(page);
   await ensureActiveSession(page);
 }
-

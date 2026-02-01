@@ -1,6 +1,6 @@
-import { test as base, expect } from '@playwright/test';
-import { selectors, timeouts, apiUrl } from '../utils/selectors';
-import * as helpers from '../utils/helpers';
+import { test as base, expect } from "@playwright/test";
+import { selectors, timeouts, apiUrl } from "../utils/selectors";
+import * as helpers from "../utils/helpers";
 
 /**
  * Extended test fixtures for Mitto UI tests.
@@ -38,4 +38,3 @@ export const test = base.extend<MittoFixtures>({
 });
 
 export { expect };
-

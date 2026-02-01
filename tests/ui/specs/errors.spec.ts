@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-fixtures';
+import { test, expect } from "../fixtures/test-fixtures";
 
 /**
  * Error handling and UI resilience tests for Mitto Web UI.
@@ -7,12 +7,12 @@ import { test, expect } from '../fixtures/test-fixtures';
  * and remains functional after error conditions.
  */
 
-test.describe('Error Handling', () => {
+test.describe("Error Handling", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
   });
 
-  test('should handle empty message submission gracefully', async ({
+  test("should handle empty message submission gracefully", async ({
     page,
     selectors,
   }) => {
@@ -20,7 +20,7 @@ test.describe('Error Handling', () => {
     const sendButton = page.locator(selectors.sendButton);
 
     // Clear the input
-    await textarea.fill('');
+    await textarea.fill("");
 
     // Send button should be disabled
     await expect(sendButton).toBeDisabled();
@@ -29,7 +29,7 @@ test.describe('Error Handling', () => {
     await expect(page.locator(selectors.app)).toBeVisible();
   });
 
-  test('should remain functional after rapid message sending', async ({
+  test("should remain functional after rapid message sending", async ({
     page,
     selectors,
     helpers,
@@ -51,14 +51,14 @@ test.describe('Error Handling', () => {
     await expect(textarea).toBeVisible();
   });
 
-  test('should handle page navigation gracefully', async ({
+  test("should handle page navigation gracefully", async ({
     page,
     selectors,
     timeouts,
   }) => {
     // Navigate away and back
-    await page.goto('about:blank');
-    await page.goto('/');
+    await page.goto("about:blank");
+    await page.goto("/");
 
     // Wait for app to load
     await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
@@ -72,12 +72,16 @@ test.describe('Error Handling', () => {
   });
 });
 
-test.describe('UI Resilience', () => {
+test.describe("UI Resilience", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
   });
 
-  test('should handle viewport resize', async ({ page, selectors, timeouts }) => {
+  test("should handle viewport resize", async ({
+    page,
+    selectors,
+    timeouts,
+  }) => {
     // Start with desktop size
     await page.setViewportSize({ width: 1280, height: 800 });
     await expect(page.locator(selectors.chatInput)).toBeVisible({
@@ -102,7 +106,7 @@ test.describe('UI Resilience', () => {
     });
   });
 
-  test('should handle multiple page refreshes', async ({
+  test("should handle multiple page refreshes", async ({
     page,
     selectors,
     timeouts,
@@ -125,15 +129,17 @@ test.describe('UI Resilience', () => {
   });
 });
 
-test.describe('Network Error Handling', () => {
+test.describe("Network Error Handling", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
   });
 
-  test('should show error state when API fails', async ({ page, selectors }) => {
+  test("should show error state when API fails", async ({
+    page,
+    selectors,
+  }) => {
     // This test would require mocking network failures
     // For now, we just verify the app loads correctly
     await expect(page.locator(selectors.app)).toBeVisible();
   });
 });
-

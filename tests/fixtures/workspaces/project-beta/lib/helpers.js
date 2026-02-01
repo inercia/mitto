@@ -18,4 +18,3 @@ function add(a, b) {
 }
 
 module.exports = { greet, add };
-

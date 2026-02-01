@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-fixtures';
+import { test, expect } from "../fixtures/test-fixtures";
 
 /**
  * WebSocket connection and status tests for Mitto Web UI.
@@ -7,12 +7,12 @@ import { test, expect } from '../fixtures/test-fixtures';
  * and that connection status is displayed to the user.
  */
 
-test.describe('WebSocket Connection', () => {
+test.describe("WebSocket Connection", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndEnsureSession(page);
   });
 
-  test('should establish WebSocket connection on page load', async ({
+  test("should establish WebSocket connection on page load", async ({
     page,
     selectors,
     timeouts,
@@ -23,7 +23,7 @@ test.describe('WebSocket Connection', () => {
     await expect(textarea).toBeEnabled({ timeout: timeouts.appReady });
   });
 
-  test('should show session is active after connection', async ({
+  test("should show session is active after connection", async ({
     page,
     selectors,
     timeouts,
@@ -33,11 +33,11 @@ test.describe('WebSocket Connection', () => {
     await expect(textarea).toBeEnabled({ timeout: timeouts.shortAction });
 
     // Should be able to type
-    await textarea.fill('Test connection');
-    await expect(textarea).toHaveValue('Test connection');
+    await textarea.fill("Test connection");
+    await expect(textarea).toHaveValue("Test connection");
   });
 
-  test('should handle page refresh gracefully', async ({
+  test("should handle page refresh gracefully", async ({
     page,
     selectors,
     timeouts,
@@ -56,14 +56,18 @@ test.describe('WebSocket Connection', () => {
     await expect(textarea).toBeEnabled({ timeout: timeouts.appReady });
   });
 
-  test('should maintain session list after refresh', async ({
+  test("should maintain session list after refresh", async ({
     page,
     selectors,
     timeouts,
   }) => {
     // Get the conversations sidebar
-    const conversationsHeader = page.getByRole('heading', { name: 'Conversations' });
-    await expect(conversationsHeader).toBeVisible({ timeout: timeouts.appReady });
+    const conversationsHeader = page.getByRole("heading", {
+      name: "Conversations",
+    });
+    await expect(conversationsHeader).toBeVisible({
+      timeout: timeouts.appReady,
+    });
 
     // Refresh the page
     await page.reload();
@@ -72,28 +76,33 @@ test.describe('WebSocket Connection', () => {
     });
 
     // Conversations sidebar should still be visible
-    await expect(page.getByRole('heading', { name: 'Conversations' })).toBeVisible({
+    await expect(
+      page.getByRole("heading", { name: "Conversations" }),
+    ).toBeVisible({
       timeout: timeouts.appReady,
     });
   });
 });
 
-test.describe('Connection State UI', () => {
+test.describe("Connection State UI", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndEnsureSession(page);
   });
 
-  test('should enable chat input when connected', async ({ page, selectors }) => {
+  test("should enable chat input when connected", async ({
+    page,
+    selectors,
+  }) => {
     // Textarea should be enabled
     const textarea = page.locator(selectors.chatInput);
     await expect(textarea).toBeEnabled();
 
     // Should be able to type
-    await textarea.fill('Test message');
-    await expect(textarea).toHaveValue('Test message');
+    await textarea.fill("Test message");
+    await expect(textarea).toHaveValue("Test message");
   });
 
-  test('should show streaming indicator when agent is responding', async ({
+  test("should show streaming indicator when agent is responding", async ({
     page,
     selectors,
     timeouts,
@@ -102,7 +111,7 @@ test.describe('Connection State UI', () => {
     await expect(textarea).toBeEnabled({ timeout: timeouts.appReady });
 
     // Send a message to trigger agent response
-    await textarea.fill('Hello, please respond');
+    await textarea.fill("Hello, please respond");
     await page.locator(selectors.sendButton).click();
 
     // The textarea placeholder might change to indicate streaming
@@ -115,8 +124,8 @@ test.describe('Connection State UI', () => {
   });
 });
 
-test.describe('Session Persistence', () => {
-  test('should maintain session after sending message', async ({
+test.describe("Session Persistence", () => {
+  test("should maintain session after sending message", async ({
     page,
     selectors,
     timeouts,
@@ -130,7 +139,7 @@ test.describe('Session Persistence', () => {
     await expect(textarea).toBeVisible({ timeout: timeouts.appReady });
     await expect(textarea).toBeEnabled({ timeout: timeouts.appReady });
 
-    const testMessage = helpers.uniqueMessage('Session test');
+    const testMessage = helpers.uniqueMessage("Session test");
     await textarea.fill(testMessage);
     await page.locator(selectors.sendButton).click();
 
@@ -144,4 +153,3 @@ test.describe('Session Persistence', () => {
     await expect(textarea).toBeEnabled();
   });
 });
-

@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-fixtures';
+import { test, expect } from "../fixtures/test-fixtures";
 
 /**
  * Session management tests for Mitto Web UI.
@@ -6,27 +6,33 @@ import { test, expect } from '../fixtures/test-fixtures';
  * These tests verify session creation, listing, renaming, and deletion.
  */
 
-test.describe('Session Management', () => {
+test.describe("Session Management", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
   });
 
-  test('should display sessions sidebar', async ({ page, timeouts }) => {
-    const conversationsHeader = page.getByRole('heading', { name: 'Conversations' });
-    await expect(conversationsHeader).toBeVisible({ timeout: timeouts.appReady });
+  test("should display sessions sidebar", async ({ page, timeouts }) => {
+    const conversationsHeader = page.getByRole("heading", {
+      name: "Conversations",
+    });
+    await expect(conversationsHeader).toBeVisible({
+      timeout: timeouts.appReady,
+    });
   });
 
-  test('should have at least one session on load', async ({
+  test("should have at least one session on load", async ({
     page,
     selectors,
     timeouts,
   }) => {
     // There should be at least one session item in the sidebar
     const sessionItems = page.locator(selectors.sessionsList);
-    await expect(sessionItems.first()).toBeVisible({ timeout: timeouts.appReady });
+    await expect(sessionItems.first()).toBeVisible({
+      timeout: timeouts.appReady,
+    });
   });
 
-  test('should create new session when clicking new button', async ({
+  test("should create new session when clicking new button", async ({
     page,
     selectors,
     timeouts,
@@ -46,14 +52,14 @@ test.describe('Session Management', () => {
     expect(newCount).toBeGreaterThanOrEqual(initialCount);
   });
 
-  test('should switch between sessions', async ({
+  test("should switch between sessions", async ({
     page,
     selectors,
     timeouts,
     helpers,
   }) => {
     // Send a message in the first session
-    const testMessage = helpers.uniqueMessage('First session');
+    const testMessage = helpers.uniqueMessage("First session");
     await helpers.sendMessage(page, testMessage);
     await helpers.waitForUserMessage(page, testMessage);
 
@@ -79,17 +85,17 @@ test.describe('Session Management', () => {
   });
 });
 
-test.describe('Session API', () => {
-  test('should list sessions via API', async ({ request, apiUrl }) => {
-    const response = await request.get(apiUrl('/api/sessions'));
+test.describe("Session API", () => {
+  test("should list sessions via API", async ({ request, apiUrl }) => {
+    const response = await request.get(apiUrl("/api/sessions"));
     expect(response.ok()).toBeTruthy();
 
     const sessions = await response.json();
     expect(Array.isArray(sessions)).toBeTruthy();
   });
 
-  test('should create session via API', async ({ request, apiUrl }) => {
-    const response = await request.post(apiUrl('/api/sessions'), {
+  test("should create session via API", async ({ request, apiUrl }) => {
+    const response = await request.post(apiUrl("/api/sessions"), {
       data: {
         name: `API Test Session ${Date.now()}`,
       },
@@ -100,4 +106,3 @@ test.describe('Session API', () => {
     expect(session.session_id).toBeTruthy();
   });
 });
-

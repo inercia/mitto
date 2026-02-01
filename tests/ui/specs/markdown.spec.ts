@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-fixtures';
+import { test, expect } from "../fixtures/test-fixtures";
 
 /**
  * Markdown rendering and message display tests for Mitto Web UI.
@@ -7,30 +7,27 @@ import { test, expect } from '../fixtures/test-fixtures';
  * in agent responses.
  */
 
-test.describe('Markdown Rendering', () => {
+test.describe("Markdown Rendering", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
     await helpers.ensureActiveSession(page);
   });
 
-  test('should render agent responses', async ({
-    page,
-    helpers,
-  }) => {
+  test("should render agent responses", async ({ page, helpers }) => {
     // Send a message that will trigger a response
-    await helpers.sendMessage(page, 'Hello');
+    await helpers.sendMessage(page, "Hello");
 
     // Wait for agent response (uses .first() to handle multiple messages)
     await helpers.waitForAgentResponse(page);
   });
 
-  test('should display code blocks with syntax highlighting', async ({
+  test("should display code blocks with syntax highlighting", async ({
     page,
     selectors,
     helpers,
   }) => {
     // Send a message asking for code
-    await helpers.sendMessage(page, 'Show me some code');
+    await helpers.sendMessage(page, "Show me some code");
 
     // Wait for response (uses .first() to handle multiple messages)
     await helpers.waitForAgentResponse(page);
@@ -40,18 +37,20 @@ test.describe('Markdown Rendering', () => {
     await expect(page.locator(selectors.app)).toBeVisible();
   });
 
-  test('should handle long messages without breaking layout', async ({
+  test("should handle long messages without breaking layout", async ({
     page,
     selectors,
     timeouts,
     helpers,
   }) => {
     // Send a long message
-    const longMessage = 'A'.repeat(500);
+    const longMessage = "A".repeat(500);
     await helpers.sendMessage(page, longMessage);
 
     // Wait for message to appear
-    await expect(page.locator(`text=${longMessage.substring(0, 50)}`)).toBeVisible({
+    await expect(
+      page.locator(`text=${longMessage.substring(0, 50)}`),
+    ).toBeVisible({
       timeout: timeouts.shortAction,
     });
 
@@ -64,20 +63,20 @@ test.describe('Markdown Rendering', () => {
   });
 });
 
-test.describe('Message Styling', () => {
+test.describe("Message Styling", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
     await helpers.ensureActiveSession(page);
   });
 
-  test('should differentiate user and agent messages', async ({
+  test("should differentiate user and agent messages", async ({
     page,
     selectors,
     timeouts,
     helpers,
   }) => {
     // Send a message
-    const testMessage = helpers.uniqueMessage('Style test');
+    const testMessage = helpers.uniqueMessage("Style test");
     await helpers.sendMessage(page, testMessage);
 
     // Wait for user message
@@ -93,14 +92,14 @@ test.describe('Message Styling', () => {
     await helpers.waitForAgentResponse(page);
   });
 
-  test('should display timestamps or metadata', async ({
+  test("should display timestamps or metadata", async ({
     page,
     selectors,
     timeouts,
     helpers,
   }) => {
     // Send a message
-    await helpers.sendMessage(page, 'Test for metadata');
+    await helpers.sendMessage(page, "Test for metadata");
 
     // Wait for message
     await page.waitForTimeout(1000);
@@ -112,4 +111,3 @@ test.describe('Message Styling', () => {
     expect(count).toBeGreaterThanOrEqual(0); // May or may not have metadata
   });
 });
-

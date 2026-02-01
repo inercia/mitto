@@ -330,7 +330,8 @@ export function ChatInput({
     if (isReadOnly)
       return "This is a read-only session. Create a new session to chat.";
     if (isSending) return "Sending message...";
-    if (isQueueFull) return `Queue full (${queueConfig.max_size}/${queueConfig.max_size})...`;
+    if (isQueueFull)
+      return `Queue full (${queueConfig.max_size}/${queueConfig.max_size})...`;
     if (isStreaming) {
       const remaining = queueConfig.max_size - queueLength;
       return `Agent responding... (${remaining} queue slot${remaining !== 1 ? "s" : ""} left)`;
@@ -871,8 +872,12 @@ export function ChatInput({
                       isReadOnly ||
                       isImproving ||
                       isQueueFull}
-                      class="min-w-[5.5rem] ${isQueueFull ? "bg-orange-600 hover:bg-orange-700" : "bg-red-600 hover:bg-red-700"} disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
-                      title=${isQueueFull ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})` : "Send message"}
+                      class="min-w-[5.5rem] ${isQueueFull
+                        ? "bg-orange-600 hover:bg-orange-700"
+                        : "bg-red-600 hover:bg-red-700"} disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
+                      title=${isQueueFull
+                        ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
+                        : "Send message"}
                     >
                       <span>${isQueueFull ? "Full" : "Send"}</span>
                     </button>

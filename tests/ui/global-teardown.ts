@@ -1,14 +1,14 @@
-import { FullConfig } from '@playwright/test';
-import fs from 'fs/promises';
+import { FullConfig } from "@playwright/test";
+import fs from "fs/promises";
 
 /**
  * Global teardown for Playwright tests.
  * Runs once after all tests complete.
  */
 async function globalTeardown(config: FullConfig): Promise<void> {
-  console.log('🧹 Running global teardown...');
+  console.log("🧹 Running global teardown...");
 
-  const testDir = process.env.MITTO_DIR || '/tmp/mitto-test';
+  const testDir = process.env.MITTO_DIR || "/tmp/mitto-test";
 
   // Clean up test directory (optional - keep for debugging)
   if (process.env.CI) {
@@ -24,4 +24,3 @@ async function globalTeardown(config: FullConfig): Promise<void> {
 }
 
 export default globalTeardown;
-
