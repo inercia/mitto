@@ -105,6 +105,59 @@ func TestParse(t *testing.T) {
 }
 ```
 
+## Test Isolation for Global State
+
+When tests modify global state (environment variables, caches), use `t.Setenv()` and `t.Cleanup()` to ensure proper isolation. This is **critical** because Go runs tests in parallel across packages.
+
+### ❌ Anti-Pattern: Manual Save/Restore
+
+```go
+// BAD: Race condition when tests run in parallel across packages
+func TestSomething(t *testing.T) {
+    original := os.Getenv(appdir.MittoDirEnv)  // May capture another test's value!
+    defer func() {
+        os.Setenv(appdir.MittoDirEnv, original)
+        appdir.ResetCache()
+    }()
+
+    os.Setenv(appdir.MittoDirEnv, tmpDir)
+    appdir.ResetCache()  // Race: cache may be read before this runs
+    // ...
+}
+```
+
+### ✅ Correct Pattern: Use t.Setenv() and t.Cleanup()
+
+```go
+// GOOD: t.Setenv automatically restores, t.Cleanup ensures cache reset
+func TestSomething(t *testing.T) {
+    tmpDir := t.TempDir()
+    t.Setenv(appdir.MittoDirEnv, tmpDir)  // Auto-restores on test end
+    appdir.ResetCache()                    // Reset AFTER setting env
+    t.Cleanup(appdir.ResetCache)           // Ensure cache reset even on panic
+
+    // Test code here...
+}
+```
+
+### Key Rules
+
+1. **Always use `t.Setenv()`** instead of `os.Setenv()` for environment variables in tests
+2. **Call `ResetCache()` AFTER `t.Setenv()`** - the order matters!
+3. **Use `t.Cleanup()`** to ensure cache is reset even if test panics
+4. **Never call `ResetCache()` before setting the env var** - creates a race window
+
+### Why This Matters
+
+Go runs tests in parallel across packages by default. The old pattern had this race:
+
+1. Test A saves `originalDir` and sets `MITTO_DIR=/tmp/testA`
+2. Test B saves `originalDir` (which is now `/tmp/testA`!)
+3. Test A's defer runs, restoring the original
+4. Test B's defer runs, restoring `/tmp/testA` instead of the real original
+
+With `t.Setenv()`, Go handles the save/restore atomically and correctly.
+
 ## Finding Project Root in Tests
 
 When tests need to access project resources (like the mock ACP server):
@@ -223,9 +276,11 @@ func TestNewConnection_EmptyCommand(t *testing.T) {
 | Variable | Description |
 |----------|-------------|
 | `MITTO_TEST_MODE` | Set to `1` to enable test mode |
-| `MITTO_DIR` | Override the Mitto data directory |
+| `MITTO_DIR` | Override the Mitto data directory (use `t.Setenv()` in tests) |
 | `MITTO_TEST_URL` | Base URL for UI tests (default: `http://127.0.0.1:8089`) |
 | `CI` | Set automatically in CI environments |
+
+**Important**: Always use `t.Setenv()` to set environment variables in tests. Never use `os.Setenv()` directly as it can cause race conditions when tests run in parallel. See "Test Isolation for Global State" section above.
 
 ## Test Coverage Targets
 

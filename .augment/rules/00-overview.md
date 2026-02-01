@@ -8,137 +8,72 @@ alwaysApply: true
 
 Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables terminal-based interaction with AI coding agents like Auggie and Claude Code.
 
-**Key documentation**: See `docs/devel/` for comprehensive architecture details.
+## Architecture Documentation
+
+**Always consult `docs/devel/` for detailed architecture:**
+
+| Document | Topics |
+|----------|--------|
+| [architecture.md](../docs/devel/architecture.md) | System overview, package breakdown |
+| [session-management.md](../docs/devel/session-management.md) | Recording, playback, state ownership |
+| [message-queue.md](../docs/devel/message-queue.md) | Queue system, title generation, API |
+| [web-interface.md](../docs/devel/web-interface.md) | HTTP server, streaming, mobile support |
+| [websocket-messaging.md](../docs/devel/websocket-messaging.md) | Message types, sync, reconnection |
+| [workspaces.md](../docs/devel/workspaces.md) | Multi-workspace, persistence |
 
 ## Package Structure
 
 ```
 cmd/mitto/          → Entry point only (minimal code)
-cmd/mitto-app/      → macOS native app entry point (WebView wrapper)
-config/             → Embedded default configuration (config.default.yaml)
+cmd/mitto-app/      → macOS native app entry point
 internal/cmd/       → CLI commands (Cobra-based)
 internal/acp/       → ACP protocol client (SDK wrapper)
-internal/appdir/    → Platform-native directory management (MITTO_DIR)
-internal/auxiliary/ → Hidden auxiliary ACP session for utility tasks (title generation)
-internal/config/    → Configuration loading (YAML/JSON) and settings persistence
-internal/fileutil/  → Shared JSON file I/O utilities
-internal/logging/   → Structured logging with context helpers
-internal/session/   → Session persistence (Store/Recorder/Player/Lock)
-internal/web/       → Web interface server (HTTP, WebSocket, Markdown)
-platform/mac/       → macOS app resources (Info.plist, icons, scripts)
-web/                → Embedded frontend assets (HTML, JS, CSS)
-web/static/         → Frontend source files
-  ├── components/   → Preact components (Message.js, ChatInput.js, etc.)
-  ├── hooks/        → Custom Preact hooks (useWebSocket.js, useSwipeNavigation.js)
-  ├── utils/        → Utility modules (storage.js, api.js, csrf.js, etc.)
-  ├── app.js        → Main application
-  ├── lib.js        → Pure utility functions (testable, no DOM deps)
-  └── lib.test.js   → Jest tests for lib.js
-tests/              → Test suite (integration, UI, mocks, fixtures)
+internal/auxiliary/ → Hidden ACP session for utility tasks
+internal/config/    → Configuration loading (YAML/JSON)
+internal/session/   → Session persistence (Store/Recorder/Player/Lock/Queue)
+internal/web/       → Web interface server (HTTP, WebSocket)
+web/static/         → Frontend (Preact/HTM components)
 ```
 
 ## Separation of Concerns
 
 - **Never** import `internal/cmd` from other internal packages
-- **Never** import CLI-specific code (readline, cobra) in `internal/acp`, `internal/session`, or `internal/web`
-- The `acp` package uses callback functions (`output func(string)`) for UI independence
-- The `web` package implements its own `acp.Client` (`WebClient`) with callback-based streaming
+- **Never** import CLI-specific code in `internal/acp`, `internal/session`, or `internal/web`
 - Session package is completely independent of ACP, CLI, and Web
 
-## Utility Packages
+## Key Utility Packages
 
-### Fileutil Package
-
-The `internal/fileutil` package provides shared JSON file I/O utilities:
-
-| Function | Purpose |
-|----------|---------|
-| `ReadJSON(path, v)` | Read and unmarshal JSON file |
-| `WriteJSON(path, v, perm)` | Write JSON with pretty-printing (simple) |
-| `WriteJSONAtomic(path, v, perm)` | Write JSON atomically (temp file + sync + rename) |
+### Fileutil
 
 ```go
-// Atomic write (recommended for important data)
-if err := fileutil.WriteJSONAtomic(metaPath, &meta, 0644); err != nil {
-    return err
-}
+fileutil.WriteJSONAtomic(path, &data, 0644)  // Atomic write (recommended)
+fileutil.ReadJSON(path, &data)                // Read JSON
 ```
 
-### Appdir Package
+### Appdir
 
-The `internal/appdir` package provides platform-native directory management:
+Platform-native directories: `MITTO_DIR` env var, or `~/Library/Application Support/Mitto` (macOS).
 
-**Directory locations (in priority order):**
-1. `MITTO_DIR` environment variable (if set)
-2. Platform-specific default:
-   - **macOS**: `~/Library/Application Support/Mitto`
-   - **Linux**: `$XDG_DATA_HOME/mitto` or `~/.local/share/mitto`
-   - **Windows**: `%APPDATA%\Mitto`
-
-| Function | Purpose |
-|----------|---------|
-| `Dir()` | Returns the Mitto data directory path (cached) |
-| `EnsureDir()` | Creates the Mitto directory and sessions subdirectory if needed |
-| `SettingsPath()` | Returns path to `settings.json` |
-| `WorkspacesPath()` | Returns path to `workspaces.json` |
-| `SessionsDir()` | Returns path to `sessions/` subdirectory |
-| `ResetCache()` | Clears cached directory (for testing) |
-
-### Directory Structure
-
+```go
+appdir.Dir()           // Data directory path
+appdir.SessionsDir()   // sessions/ subdirectory
+appdir.SettingsPath()  // settings.json path
 ```
-~/Library/Application Support/Mitto/    # (or platform equivalent)
-├── settings.json                        # User configuration (JSON)
-├── workspaces.json                      # Workspace configuration (JSON, optional)
-└── sessions/                            # Session data
-    ├── 20260125-143052-a1b2c3d4/
-    │   ├── events.jsonl
-    │   └── metadata.json
-    └── ...
+
+### Logging
+
+```go
+// Session-scoped (auto-includes session_id, working_dir, acp_server)
+logger := logging.WithSessionContext(base, sessionID, workingDir, acpServer)
+
+// Client-scoped (auto-includes client_id, session_id)
+logger := logging.WithClient(base, clientID, sessionID)
 ```
 
 ## Documentation Standards
 
-### Code Comments
-
-```go
-// Package session provides session persistence and management for Mitto.
-package session
-
-// Store provides session persistence operations.
-// It is safe for concurrent use.
-type Store struct { ... }
-
-// TryAcquireLock attempts to acquire a lock on the session.
-// Returns ErrSessionLocked if the session is locked by another active process.
-func (s *Store) TryAcquireLock(...) (*Lock, error) { ... }
-```
-
-### Architecture Updates
-
 When adding new features:
-1. Update `docs/devel/` with new components (see [README](../docs/devel/README.md) for which file)
+1. Update `docs/devel/` (see [README](../docs/devel/README.md) for which file)
 2. Add Mermaid diagrams for complex flows
 3. Document design decisions and rationale
-
-## Logging Package
-
-The `internal/logging` package provides structured logging with context helpers:
-
-| Function | Purpose |
-|----------|---------|
-| `WithComponent(name)` | Returns logger for a specific component |
-| `WithSession(base, sessionID)` | Returns logger with `session_id` context |
-| `WithSessionContext(base, sessionID, workingDir, acpServer)` | Returns logger with full session context |
-| `WithClient(base, clientID, sessionID)` | Returns logger with WebSocket client context |
-
-```go
-// Create session-scoped logger (automatically includes session_id in all logs)
-sessionLogger := logging.WithSessionContext(logger, sessionID, workingDir, acpServer)
-sessionLogger.Info("Processing prompt")  // Includes session_id, working_dir, acp_server
-
-// Create client-scoped logger for WebSocket handlers
-clientLogger := logging.WithClient(logger, clientID, sessionID)
-clientLogger.Debug("Message received")  // Includes client_id, session_id
-```
 
