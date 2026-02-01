@@ -81,6 +81,7 @@ import {
   SunIcon,
   MoonIcon,
   LightningIcon,
+  QueueIcon,
 } from "./components/Icons.js";
 
 // Import constants
@@ -1105,6 +1106,8 @@ function App() {
     fetchStoredSessions,
     backgroundCompletion,
     clearBackgroundCompletion,
+    queueLength,
+    queueConfig,
     workspaces,
     acpServers,
     addWorkspace,
@@ -2264,18 +2267,32 @@ function App() {
                 title="Streaming"
               ></span>
             `}
-            ${activeSessionId &&
-            html`
-              <span class="text-gray-500" title="Session is auto-saved">
-                <${SaveIcon} className="w-4 h-4" />
-              </span>
-            `}
             <span
               class="w-2 h-2 rounded-full ${connected
                 ? "bg-green-400"
                 : "bg-red-400"}"
               title="${connected ? "Connected" : "Disconnected"}"
             ></span>
+            ${activeSessionId &&
+            html`
+              <span class="text-gray-500" title="Session is auto-saved">
+                <${SaveIcon} className="w-4 h-4" />
+              </span>
+            `}
+            ${queueLength > 0 &&
+            html`
+              <span
+                class="relative text-gray-500"
+                title="${queueLength}/${queueConfig.max_size} queued${queueLength >= queueConfig.max_size ? " (full)" : ""}"
+              >
+                <${QueueIcon} className="w-4 h-4" />
+                <span
+                  class="absolute -top-1.5 -right-1.5 ${queueLength >= queueConfig.max_size ? "bg-red-500" : "bg-blue-500"} text-white text-[10px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5"
+                >
+                  ${queueLength}
+                </span>
+              </span>
+            `}
           </div>
         </div>
 
@@ -2432,6 +2449,8 @@ function App() {
           onDraftChange=${updateDraft}
           sessionDraftsRef=${sessionDraftsRef}
           onPromptsOpen=${handlePromptsOpen}
+          queueLength=${queueLength}
+          queueConfig=${queueConfig}
         />
       </div>
     </div>

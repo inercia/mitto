@@ -30,4 +30,5 @@ export {
   KeyboardIcon,
   SunIcon,
   MoonIcon,
+  QueueIcon,
 } from "./Icons.js";

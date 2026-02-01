@@ -43,6 +43,8 @@ function getContrastColor(hexColor) {
  * @param {string} props.draft - Current draft text
  * @param {Function} props.onDraftChange - Callback when draft changes
  * @param {Function} props.onPromptsOpen - Callback when prompts dropdown is opened (for refresh)
+ * @param {number} props.queueLength - Current number of messages in queue
+ * @param {Object} props.queueConfig - Queue configuration { enabled, max_size, delay_seconds }
  */
 export function ChatInput({
   onSend,
@@ -57,6 +59,8 @@ export function ChatInput({
   draft = "",
   onDraftChange,
   onPromptsOpen,
+  queueLength = 0,
+  queueConfig = { enabled: true, max_size: 10, delay_seconds: 0 },
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -160,12 +164,25 @@ export function ChatInput({
     }
   }, [text]);
 
+  // Check if queue is at capacity (only relevant when streaming, as messages get queued)
+  const isQueueFull = isStreaming && queueLength >= queueConfig.max_size;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     // Allow sending if there's text OR images (or both)
     const hasContent =
       text.trim() || pendingImages.some((img) => !img.uploading);
-    if (hasContent && !disabled && !isReadOnly && !isStreaming && !isSending) {
+
+    // Check queue capacity when agent is streaming (message will be queued)
+    if (isQueueFull) {
+      setSendError(
+        `Queue is full (${queueConfig.max_size}/${queueConfig.max_size}). Wait for the agent to finish or clear the queue.`,
+      );
+      setTimeout(() => setSendError(null), 10000);
+      return;
+    }
+
+    if (hasContent && !disabled && !isReadOnly && !isSending) {
       // Filter out images that are still uploading
       const readyImages = pendingImages.filter((img) => !img.uploading);
       const messageText = text.trim();
@@ -313,7 +330,11 @@ export function ChatInput({
     if (isReadOnly)
       return "This is a read-only session. Create a new session to chat.";
     if (isSending) return "Sending message...";
-    if (isStreaming) return "Agent is responding...";
+    if (isQueueFull) return `Queue full (${queueConfig.max_size}/${queueConfig.max_size})...`;
+    if (isStreaming) {
+      const remaining = queueConfig.max_size - queueLength;
+      return `Agent responding... (${remaining} queue slot${remaining !== 1 ? "s" : ""} left)`;
+    }
     if (isImproving) return "Improving prompt...";
     if (isDragOver) return "Drop image here...";
     return isSmallWindow
@@ -848,10 +869,12 @@ export function ChatInput({
                       disabled=${isFullyDisabled ||
                       (!text.trim() && !hasPendingImages) ||
                       isReadOnly ||
-                      isImproving}
-                      class="min-w-[5.5rem] bg-red-600 hover:bg-red-700 disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
+                      isImproving ||
+                      isQueueFull}
+                      class="min-w-[5.5rem] ${isQueueFull ? "bg-orange-600 hover:bg-orange-700" : "bg-red-600 hover:bg-red-700"} disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
+                      title=${isQueueFull ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})` : "Send message"}
                     >
-                      <span>Send</span>
+                      <span>${isQueueFull ? "Full" : "Send"}</span>
                     </button>
                   `}
             ${hasPrompts &&

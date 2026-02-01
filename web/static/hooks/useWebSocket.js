@@ -79,6 +79,17 @@ export function useWebSocket() {
   // { sessionId, sessionName, timestamp }
   const [backgroundCompletion, setBackgroundCompletion] = useState(null);
 
+  // Queue length for the active session
+  const [queueLength, setQueueLength] = useState(0);
+
+  // Queue configuration for the active session
+  // { enabled: bool, max_size: int, delay_seconds: int }
+  const [queueConfig, setQueueConfig] = useState({
+    enabled: true,
+    max_size: 10,
+    delay_seconds: 0,
+  });
+
   const eventsWsRef = useRef(null);
   const reconnectRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -295,6 +306,16 @@ export function useWebSocket() {
             ...prev,
             [sessionId]: msg.data.working_dir,
           }));
+        }
+
+        // Update queue length from server
+        if (msg.data.queue_length !== undefined) {
+          setQueueLength(msg.data.queue_length);
+        }
+
+        // Update queue configuration from server
+        if (msg.data.queue_config) {
+          setQueueConfig(msg.data.queue_config);
         }
 
         setSessions((prev) => {
@@ -671,6 +692,25 @@ export function useWebSocket() {
 
       case "permission":
         console.log("Permission requested:", msg.data);
+        break;
+
+      case "queue_updated":
+        // Server notifies us about queue state changes
+        if (msg.data?.queue_length !== undefined) {
+          setQueueLength(msg.data.queue_length);
+          console.log(
+            `Queue updated: ${msg.data.action || "unknown"}, length: ${msg.data.queue_length}`,
+          );
+        }
+        break;
+
+      case "queue_message_titled":
+        // Server notifies us that a queued message received an auto-generated title
+        // This can be used by queue management UI to update displayed titles
+        console.log(
+          `Queue message titled: ${msg.data?.message_id} -> "${msg.data?.title}"`,
+        );
+        // Future: dispatch event or update state for queue management UI
         break;
     }
   }, []);
@@ -1726,6 +1766,8 @@ export function useWebSocket() {
     fetchStoredSessions,
     backgroundCompletion,
     clearBackgroundCompletion,
+    queueLength,
+    queueConfig,
     workspaces,
     acpServers,
     addWorkspace,
