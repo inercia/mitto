@@ -16,7 +16,6 @@ import (
 var (
 	webPort         int
 	webPortExternal int
-	webHost         string
 	webStaticDir    string
 )
 
@@ -45,7 +44,6 @@ func init() {
 
 	webCmd.Flags().IntVar(&webPort, "port", 8080, "HTTP server port for local access (127.0.0.1). Use 0 for random port")
 	webCmd.Flags().IntVar(&webPortExternal, "port-external", 0, "HTTP server port for external access when enabled (0.0.0.0). Use 0 for random port")
-	webCmd.Flags().StringVar(&webHost, "host", "127.0.0.1", "HTTP server host (deprecated: local always binds to 127.0.0.1)")
 	webCmd.Flags().StringVar(&webStaticDir, "static-dir", "", "Serve static files from this directory instead of embedded assets (for development)")
 }
 
@@ -109,12 +107,13 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	localAddr := fmt.Sprintf("127.0.0.1:%d", localPort)
 
 	fmt.Printf("🌐 Starting web interface...\n")
-	if len(webWorkspaces) == 0 {
+	switch len(webWorkspaces) {
+	case 0:
 		fmt.Printf("   No workspaces configured (will prompt in UI)\n")
-	} else if len(webWorkspaces) == 1 {
+	case 1:
 		fmt.Printf("   ACP Server: %s\n", webWorkspaces[0].ACPServer)
 		fmt.Printf("   Directory: %s\n", webWorkspaces[0].WorkingDir)
-	} else {
+	default:
 		fmt.Printf("   Workspaces:\n")
 		for _, ws := range webWorkspaces {
 			fmt.Printf("     - %s: %s\n", ws.ACPServer, ws.WorkingDir)
@@ -149,9 +148,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// Create workspace save callback (only used when not from CLI)
 	var onWorkspaceSave web.WorkspaceSaveFunc
 	if !fromCLI {
-		onWorkspaceSave = func(workspaces []config.WorkspaceSettings) error {
-			return config.SaveWorkspaces(workspaces)
-		}
+		onWorkspaceSave = config.SaveWorkspaces
 	}
 
 	// Determine if config is read-only and get RC file path if applicable
@@ -201,11 +198,12 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	} else {
 		// Auth not configured, show what port would be used when enabled
 		// External port: -1 = disabled, 0 = random, >0 = specific port
-		if externalPort < 0 {
+		switch {
+		case externalPort < 0:
 			fmt.Printf("   External port (when enabled): disabled\n")
-		} else if externalPort == 0 {
+		case externalPort == 0:
 			fmt.Printf("   External port (when enabled): random\n")
-		} else {
+		default:
 			fmt.Printf("   External port (when enabled): %d\n", externalPort)
 		}
 	}
