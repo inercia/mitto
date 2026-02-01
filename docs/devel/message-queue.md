@@ -315,6 +315,31 @@ sessions/
 2. **Atomic writes**: Uses `fileutil.WriteJSONAtomic()` to prevent corruption
 3. **Title in queue**: Stored with message for persistence across server restarts
 
+## Automatic Queue Dequeuing
+
+The queue system supports automatic dequeuing for idle agent sessions:
+
+### Behavior
+
+1. **After prompt completion**: When the agent finishes responding, `processNextQueuedMessage()` is called automatically, which pops the next message from the queue and sends it (applying the configured delay first).
+
+2. **On server startup**: `ProcessPendingQueues()` checks all persisted sessions for queued messages. For sessions with pending items, it:
+   - Resumes the session (starts ACP process)
+   - Checks if the delay period has elapsed
+   - Sends the first queued message if conditions are met
+
+3. **Delay handling**: The `delay_seconds` configuration controls how long to wait:
+   - **Normal flow**: After a prompt completes, sleep for `delay_seconds` before sending the next queued message
+   - **Startup flow**: Check if `delay_seconds` has elapsed since `lastResponseComplete` before sending
+
+### Methods
+
+| Method | Location | Purpose |
+|--------|----------|---------|
+| `processNextQueuedMessage()` | `BackgroundSession` | Called after prompt completion, applies delay synchronously |
+| `TryProcessQueuedMessage()` | `BackgroundSession` | Used for startup/periodic checking, respects delay elapsed time |
+| `ProcessPendingQueues()` | `SessionManager` | Called on server startup, resumes sessions with queued items |
+
 ## Frontend Integration
 
 ### State Management
