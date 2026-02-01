@@ -80,6 +80,38 @@ Reply with ONLY the title, nothing else.`,
 	return title, nil
 }
 
+// GenerateQueuedMessageTitle generates a short title for a queued message.
+// The title is meant to be a brief summary (2-3 words) to help identify the message in the queue.
+func GenerateQueuedMessageTitle(ctx context.Context, message string) (string, error) {
+	// Truncate very long messages to avoid overwhelming the prompt
+	truncatedMsg := message
+	if len(truncatedMsg) > 500 {
+		truncatedMsg = truncatedMsg[:497] + "..."
+	}
+
+	prompt := fmt.Sprintf(
+		`Summarize this message in 2-3 words for a queue display: "%s"
+
+Reply with ONLY the short title, nothing else.`,
+		truncatedMsg,
+	)
+
+	response, err := Prompt(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate queued message title: %w", err)
+	}
+
+	// Clean up the response - remove quotes, trim whitespace
+	title := trimQuotes(response)
+
+	// Limit title length
+	if len(title) > 30 {
+		title = title[:27] + "..."
+	}
+
+	return title, nil
+}
+
 // ImprovePrompt enhances a user's prompt to make it clearer, more specific, and more effective.
 func ImprovePrompt(ctx context.Context, userPrompt string) (string, error) {
 	prompt := fmt.Sprintf(
