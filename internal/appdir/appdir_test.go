@@ -130,3 +130,114 @@ func TestWorkspacesPath(t *testing.T) {
 		t.Errorf("WorkspacesPath() = %q, want %q", workspacesPath, expected)
 	}
 }
+
+func TestHooksDir(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	hooksDir, err := HooksDir()
+	if err != nil {
+		t.Fatalf("HooksDir() failed: %v", err)
+	}
+
+	expected := filepath.Join(customDir, HooksDirName)
+	if hooksDir != expected {
+		t.Errorf("HooksDir() = %q, want %q", hooksDir, expected)
+	}
+}
+
+func TestAuthSessionsPath(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	authSessionsPath, err := AuthSessionsPath()
+	if err != nil {
+		t.Fatalf("AuthSessionsPath() failed: %v", err)
+	}
+
+	expected := filepath.Join(customDir, AuthSessionsFileName)
+	if authSessionsPath != expected {
+		t.Errorf("AuthSessionsPath() = %q, want %q", authSessionsPath, expected)
+	}
+}
+
+func TestRCFilePath_EnvOverride(t *testing.T) {
+	// Create a temp RC file
+	tmpDir := t.TempDir()
+	rcFile := filepath.Join(tmpDir, "custom-mittorc")
+	if err := os.WriteFile(rcFile, []byte("# test rc"), 0644); err != nil {
+		t.Fatalf("failed to create test RC file: %v", err)
+	}
+
+	t.Setenv(MittoRCEnv, rcFile)
+
+	path, err := RCFilePath()
+	if err != nil {
+		t.Fatalf("RCFilePath() failed: %v", err)
+	}
+
+	if path != rcFile {
+		t.Errorf("RCFilePath() = %q, want %q", path, rcFile)
+	}
+}
+
+func TestRCFilePath_EnvOverride_FileNotExists(t *testing.T) {
+	// Set env to a non-existent file - should fall through to other locations
+	t.Setenv(MittoRCEnv, "/nonexistent/path/to/mittorc")
+
+	// This should not error, just return empty string if no RC file found
+	path, err := RCFilePath()
+	if err != nil {
+		t.Fatalf("RCFilePath() failed: %v", err)
+	}
+
+	// Path should be empty or a valid existing file (if user has one)
+	if path != "" {
+		// If a path is returned, verify it exists
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("RCFilePath() returned %q but file does not exist", path)
+		}
+	}
+}
+
+func TestRCFilePath_HomeDirRC(t *testing.T) {
+	// Clear the env override
+	t.Setenv(MittoRCEnv, "")
+	os.Unsetenv(MittoRCEnv)
+
+	// Get home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot get home directory: %v", err)
+	}
+
+	// Check if ~/.mittorc exists
+	homeMittoRC := filepath.Join(homeDir, ".mittorc")
+	if _, err := os.Stat(homeMittoRC); os.IsNotExist(err) {
+		// No RC file exists - RCFilePath should return empty string
+		path, err := RCFilePath()
+		if err != nil {
+			t.Fatalf("RCFilePath() failed: %v", err)
+		}
+		// Path could be empty or point to XDG location
+		if path != "" {
+			// Verify the returned path exists
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("RCFilePath() returned %q but file does not exist", path)
+			}
+		}
+	} else {
+		// RC file exists - should return it
+		path, err := RCFilePath()
+		if err != nil {
+			t.Fatalf("RCFilePath() failed: %v", err)
+		}
+		if path != homeMittoRC {
+			t.Errorf("RCFilePath() = %q, want %q", path, homeMittoRC)
+		}
+	}
+}
