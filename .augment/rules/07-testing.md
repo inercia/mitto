@@ -25,8 +25,9 @@ tests/
 │   │   └── sender.go            # Response utilities
 │   └── testutil/                # Shared Go test utilities
 ├── integration/                 # Go integration tests
-│   ├── cli/                     # CLI command tests
-│   └── api/                     # HTTP/WebSocket API tests
+│   ├── cli/                     # CLI command tests (external process)
+│   ├── api/                     # HTTP/WebSocket API tests (external process)
+│   └── inprocess/               # In-process integration tests (fast, uses Go client)
 ├── ui/                          # Playwright UI tests (TypeScript)
 │   ├── specs/                   # Test specifications
 │   ├── fixtures/                # Playwright fixtures
@@ -291,16 +292,20 @@ Current coverage by package (run `go test -cover ./internal/...`):
 | `internal/config` | 82.4% | 80%+ | ✅ Good |
 | `internal/fileutil` | 84.6% | 80%+ | ✅ Good |
 | `internal/auxiliary` | 71.9% | 70%+ | ✅ Good |
-| `internal/logging` | 80%+ | 80%+ | ✅ Good (new tests added) |
-| `internal/session` | 64.5% | 70%+ | ⚠️ Needs improvement |
+| `internal/logging` | 80%+ | 80%+ | ✅ Good |
+| `internal/session` | 73.5% | 70%+ | ✅ Good |
+| `internal/msghooks` | 70%+ | 70%+ | ✅ Good (new tests added) |
+| `internal/appdir` | 60%+ | 60%+ | ✅ Good (new tests added) |
 | `internal/acp` | 61.4% | 70%+ | ⚠️ Needs improvement |
-| `internal/appdir` | 56.7% | 60%+ | ⚠️ Close to target |
-| `internal/web` | 35%+ | 50%+ | ⚠️ Improved with new tests |
+| `internal/web` | 56.8% | 60%+ | ⚠️ Improved with unit + integration tests |
+| `internal/client` | 50%+ | 60%+ | ⚠️ Covered by integration tests |
 | `internal/cmd` | 8.7% | 30%+ | ❌ CLI logic hard to unit test |
 
 **Priority areas for test improvement:**
-1. `internal/session` - Add concurrency tests and error path coverage
-2. `internal/acp` - Add more connection lifecycle tests
+1. `internal/acp` - Add more connection lifecycle tests
+2. `internal/web` - Add more WebSocket handler tests
+
+**Note:** Integration tests in `tests/integration/inprocess/` provide additional coverage for `internal/web` and `internal/client` that isn't reflected in unit test coverage numbers. Use `-coverpkg` flag to include them.
 
 ## Web Package Test Files
 
@@ -311,11 +316,14 @@ The `internal/web` package has comprehensive test coverage:
 | `http_helpers_test.go` | JSON response helpers, request parsing |
 | `websocket_integration_test.go` | WebSocket message flow, reconnection |
 | `ws_conn_test.go` | WebSocket connection wrapper |
-| `ws_messages_test.go` | Message buffer (Write, Peek, Flush) |
+| `ws_messages_test.go` | Message buffer (Write, Peek, Flush, Append) |
 | `title_test.go` | Session title generation |
 | `background_session_test.go` | ACP session lifecycle |
 | `external_listener_test.go` | External access listener |
 | `websocket_security_test.go` | WebSocket security (rate limiting, etc.) |
+| `config_handlers_test.go` | Config API, auth changes |
+| `queue_api_test.go` | Queue CRUD, move operations |
+| `image_api_test.go` | Image upload, from-path security |
 
 ### Testing EventBuffer
 
@@ -431,6 +439,139 @@ func TestCLIHelp(t *testing.T) {
     output, err := cmd.CombinedOutput()
     // ...
 }
+```
+
+## In-Process Integration Tests
+
+The `tests/integration/inprocess/` package provides **fast integration tests** that run the web server in-process using `httptest.Server`. These tests use the `internal/client` package to interact with the server.
+
+### Advantages Over External Process Tests
+
+| Aspect | In-Process | External Process |
+|--------|------------|------------------|
+| Speed | Fast (no process spawn) | Slower |
+| Debugging | Easy (same process) | Harder |
+| Coverage | Counted in coverage reports | Not counted |
+| Isolation | Per-test temp directories | Shared state possible |
+
+### Test Server Setup
+
+```go
+//go:build integration
+
+package inprocess
+
+import (
+    "net/http/httptest"
+    "testing"
+
+    "github.com/inercia/mitto/internal/client"
+    "github.com/inercia/mitto/internal/web"
+)
+
+// SetupTestServer creates an in-process test server with mock ACP.
+func SetupTestServer(t *testing.T) *TestServer {
+    t.Helper()
+
+    tmpDir := t.TempDir()
+    t.Setenv(appdir.MittoDirEnv, tmpDir)
+    appdir.ResetCache()
+    t.Cleanup(appdir.ResetCache)
+
+    // Find mock ACP server binary
+    mockACPCmd := findMockACPServer(t)
+
+    // Create web server config
+    webConfig := web.Config{
+        ACPCommand:        mockACPCmd,
+        ACPServer:         "mock-acp",
+        DefaultWorkingDir: filepath.Join(tmpDir, "workspace"),
+        AutoApprove:       true,
+        FromCLI:           true,
+    }
+
+    srv, err := web.NewServer(webConfig)
+    if err != nil {
+        t.Fatalf("Failed to create web server: %v", err)
+    }
+
+    // Use httptest.Server with the server's Handler()
+    httpServer := httptest.NewServer(srv.Handler())
+    t.Cleanup(httpServer.Close)
+
+    // Create Go client pointing to test server
+    mittoClient := client.New(httpServer.URL)
+
+    return &TestServer{
+        Server:     srv,
+        HTTPServer: httpServer,
+        Client:     mittoClient,
+    }
+}
+```
+
+### Using the Go Client
+
+The `internal/client` package provides a typed Go client for the Mitto REST API and WebSocket:
+
+```go
+func TestSessionLifecycle(t *testing.T) {
+    ts := SetupTestServer(t)
+
+    // Create session via REST API
+    session, err := ts.Client.CreateSession(client.CreateSessionRequest{
+        Name: "Test Session",
+    })
+    if err != nil {
+        t.Fatalf("CreateSession failed: %v", err)
+    }
+    defer ts.Client.DeleteSession(session.SessionID)
+
+    // Connect via WebSocket
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+
+    ws, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+        OnConnected: func(sid, cid, acp string) {
+            t.Logf("Connected: session=%s, client=%s", sid, cid)
+        },
+        OnAgentMessage: func(html string) {
+            t.Logf("Agent: %s", html)
+        },
+    })
+    if err != nil {
+        t.Fatalf("Connect failed: %v", err)
+    }
+    defer ws.Close()
+
+    // Send prompt and wait for response
+    err = ws.SendPrompt("Hello, test!")
+    if err != nil {
+        t.Fatalf("SendPrompt failed: %v", err)
+    }
+}
+```
+
+### Key Test Scenarios
+
+| Test | What It Validates |
+|------|-------------------|
+| `TestSessionLifecycle` | Create → List → Get → Delete |
+| `TestQueueOperations` | Add → List → Clear queue |
+| `TestWebSocketConnection` | Connect → Callbacks → Disconnect |
+| `TestSendPromptAndReceiveResponse` | Full prompt/response flow |
+| `TestWebSocketRename` | Session rename via WebSocket |
+
+### Running In-Process Tests
+
+```bash
+# Run in-process integration tests only
+go test -tags integration -v ./tests/integration/inprocess
+
+# Run with coverage (uses -coverpkg to include all packages)
+go test -tags integration -coverprofile=coverage.out \
+    -coverpkg=./internal/web/...,./internal/client/...,./internal/session/... \
+    ./tests/integration/inprocess
 ```
 
 ## Playwright UI Test Conventions

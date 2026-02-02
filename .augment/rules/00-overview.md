@@ -29,7 +29,9 @@ cmd/mitto-app/      → macOS native app entry point
 internal/cmd/       → CLI commands (Cobra-based)
 internal/acp/       → ACP protocol client (SDK wrapper)
 internal/auxiliary/ → Hidden ACP session for utility tasks
+internal/client/    → Go client for Mitto REST API + WebSocket (used in tests)
 internal/config/    → Configuration loading (YAML/JSON)
+internal/msghooks/  → Message hooks (pre/post processing)
 internal/session/   → Session persistence (Store/Recorder/Player/Lock/Queue)
 internal/web/       → Web interface server (HTTP, WebSocket)
 web/static/         → Frontend (Preact/HTM components)

@@ -91,3 +91,65 @@ Dual listener architecture:
 
 See architecture docs for auth flow and Tailscale funnel debugging.
 
+## Testing the Web Server
+
+### Handler() Method for httptest.Server
+
+The `Server` exposes a `Handler()` method for use with `httptest.Server`:
+
+```go
+srv, err := web.NewServer(config)
+if err != nil {
+    t.Fatalf("NewServer failed: %v", err)
+}
+
+// Use httptest.Server for in-process testing
+httpServer := httptest.NewServer(srv.Handler())
+defer httpServer.Close()
+
+// Create client pointing to test server
+client := client.New(httpServer.URL)
+```
+
+This enables fast in-process integration tests without spawning external processes.
+
+### Testing Auth Changes
+
+When testing authentication configuration changes, set `externalPort: -1` to prevent the server from trying to start an external listener:
+
+```go
+server := &Server{
+    config: Config{
+        MittoConfig: &config.Config{
+            Web: config.WebConfig{
+                ExternalPort: -1, // Disabled
+            },
+        },
+    },
+    externalPort: -1, // Also set server's port
+}
+
+// Now test auth changes without starting listener
+server.applyAuthChanges(false, true, authConfig)
+```
+
+### Testing Image Upload Security
+
+The `handleUploadImageFromPath` endpoint only allows localhost access:
+
+```go
+func TestHandleUploadImageFromPath_NonLocalhost(t *testing.T) {
+    // Simulate request from non-localhost IP
+    req := httptest.NewRequest(http.MethodPost, "/api/sessions/id/images/from-path", nil)
+    req.RemoteAddr = "192.168.1.100:12345" // Non-localhost
+    w := httptest.NewRecorder()
+
+    server.handleUploadImageFromPath(w, req, store, sessionID)
+
+    // Should be forbidden
+    if w.Code != http.StatusForbidden {
+        t.Errorf("Status = %d, want %d", w.Code, http.StatusForbidden)
+    }
+}
+```
+
