@@ -2,8 +2,11 @@ package auxiliary
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -55,13 +58,7 @@ func Prompt(ctx context.Context, message string) (string, error) {
 
 // GenerateTitle generates a short title for a conversation based on the initial message.
 func GenerateTitle(ctx context.Context, initialMessage string) (string, error) {
-	prompt := fmt.Sprintf(
-		`Consider this initial message in a conversation with an LLM: "%s"
-
-What title would you use for this conversation? Keep it very short, just 2 or 3 words.
-Reply with ONLY the title, nothing else.`,
-		initialMessage,
-	)
+	prompt := fmt.Sprintf(GenerateTitlePromptTemplate, initialMessage)
 
 	response, err := Prompt(ctx, prompt)
 	if err != nil {
@@ -89,12 +86,7 @@ func GenerateQueuedMessageTitle(ctx context.Context, message string) (string, er
 		truncatedMsg = truncatedMsg[:497] + "..."
 	}
 
-	prompt := fmt.Sprintf(
-		`Summarize this message in 2-3 words for a queue display: "%s"
-
-Reply with ONLY the short title, nothing else.`,
-		truncatedMsg,
-	)
+	prompt := fmt.Sprintf(GenerateQueuedMessageTitlePromptTemplate, truncatedMsg)
 
 	response, err := Prompt(ctx, prompt)
 	if err != nil {
@@ -114,13 +106,7 @@ Reply with ONLY the short title, nothing else.`,
 
 // ImprovePrompt enhances a user's prompt to make it clearer, more specific, and more effective.
 func ImprovePrompt(ctx context.Context, userPrompt string) (string, error) {
-	prompt := fmt.Sprintf(
-		`The user wants to improve the following prompt. Please enhance it by making it clearer, more specific, and more effective, while preserving the user's intent. Consider the current project context. Return ONLY the improved prompt text without any explanations or preamble.
-
-Original prompt:
-%s`,
-		userPrompt,
-	)
+	prompt := fmt.Sprintf(ImprovePromptTemplate, userPrompt)
 
 	response, err := Prompt(ctx, prompt)
 	if err != nil {
@@ -131,6 +117,104 @@ Original prompt:
 	improved := trimQuotes(response)
 
 	return improved, nil
+}
+
+// FollowUpSuggestion represents a suggested follow-up response.
+type FollowUpSuggestion struct {
+	// Label is the short button text (2-4 words)
+	Label string `json:"label"`
+	// Value is the full response text to send when clicked
+	Value string `json:"value"`
+}
+
+// AnalyzeFollowUpQuestions analyzes an agent message and extracts follow-up suggestions.
+// It uses the auxiliary conversation to identify questions or prompts in the agent's response
+// and returns suggested responses the user might want to send.
+// Returns an empty slice if no follow-up questions are found.
+func AnalyzeFollowUpQuestions(ctx context.Context, agentMessage string) ([]FollowUpSuggestion, error) {
+	manager := GetManager()
+	if manager == nil {
+		return nil, fmt.Errorf("auxiliary manager not initialized")
+	}
+
+	// Truncate very long messages to avoid overwhelming the prompt
+	truncatedMsg := agentMessage
+	if len(truncatedMsg) > 2000 {
+		truncatedMsg = truncatedMsg[:1997] + "..."
+	}
+
+	prompt := fmt.Sprintf(AnalyzeFollowUpQuestionsPromptTemplate, truncatedMsg)
+
+	response, err := manager.Prompt(ctx, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to analyze follow-up questions: %w", err)
+	}
+
+	// Parse JSON response
+	suggestions, err := parseFollowUpSuggestions(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse follow-up suggestions: %w", err)
+	}
+
+	return suggestions, nil
+}
+
+// parseFollowUpSuggestions parses the JSON response from the auxiliary conversation.
+// It handles cases where the response might have extra text around the JSON.
+func parseFollowUpSuggestions(response string) ([]FollowUpSuggestion, error) {
+	response = strings.TrimSpace(response)
+
+	// Try direct parsing first
+	var suggestions []FollowUpSuggestion
+	if err := json.Unmarshal([]byte(response), &suggestions); err == nil {
+		return validateSuggestions(suggestions), nil
+	}
+
+	// Try to extract JSON array from the response
+	// Look for [...] pattern
+	jsonPattern := regexp.MustCompile(`\[[\s\S]*\]`)
+	match := jsonPattern.FindString(response)
+	if match != "" {
+		if err := json.Unmarshal([]byte(match), &suggestions); err == nil {
+			return validateSuggestions(suggestions), nil
+		}
+	}
+
+	// If we can't parse it, return empty slice (not an error - just no suggestions)
+	return nil, nil
+}
+
+// validateSuggestions filters and validates the suggestions.
+func validateSuggestions(suggestions []FollowUpSuggestion) []FollowUpSuggestion {
+	var valid []FollowUpSuggestion
+	for _, s := range suggestions {
+		label := strings.TrimSpace(s.Label)
+		value := strings.TrimSpace(s.Value)
+
+		// Skip empty suggestions
+		if label == "" || value == "" {
+			continue
+		}
+
+		// Truncate if too long
+		if len(label) > 50 {
+			label = label[:47] + "..."
+		}
+		if len(value) > 1000 {
+			value = value[:997] + "..."
+		}
+
+		valid = append(valid, FollowUpSuggestion{
+			Label: label,
+			Value: value,
+		})
+
+		// Limit to 5 suggestions max
+		if len(valid) >= 5 {
+			break
+		}
+	}
+	return valid
 }
 
 // trimQuotes removes surrounding quotes from a string.
