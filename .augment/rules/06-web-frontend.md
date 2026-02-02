@@ -645,6 +645,54 @@ useEffect(() => {
 }, [fetchStoredSessions, forceReconnectActiveSession]);
 ```
 
+### Session Staleness Detection
+
+When a mobile phone has been locked for an extended period (e.g., overnight), the server-side auth session may have expired (24-hour duration). The frontend detects this scenario and redirects to login instead of showing a stuck state.
+
+**How it works:**
+1. Track when the page was hidden using `lastHiddenTimeRef`
+2. On visibility change to visible, calculate how long the page was hidden
+3. If hidden longer than `STALE_THRESHOLD_MS` (1 hour), do an explicit auth check
+4. If auth check returns 401, redirect to login immediately
+5. If network errors persist, retry before attempting WebSocket reconnection
+
+```javascript
+// Time threshold for staleness check
+const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+
+// Track when page was hidden
+const lastHiddenTimeRef = useRef(null);
+
+const handleVisibilityChange = async () => {
+    if (document.visibilityState === 'hidden') {
+        lastHiddenTimeRef.current = Date.now();
+        return;
+    }
+
+    if (document.visibilityState === 'visible') {
+        const hiddenDuration = lastHiddenTimeRef.current
+            ? Date.now() - lastHiddenTimeRef.current
+            : 0;
+
+        // If hidden for a long time, verify auth before reconnecting
+        if (hiddenDuration > STALE_THRESHOLD_MS) {
+            const { authenticated, networkError } = await checkAuthWithRetry();
+            if (!authenticated && !networkError) {
+                // 401 - session expired, redirectToLogin was already called
+                return;
+            }
+        }
+
+        // Proceed with normal reconnection...
+    }
+};
+```
+
+**Why this matters:**
+- Without this, users see a stuck/unresponsive UI after overnight phone lock
+- The WebSocket may fail to connect, but the UI doesn't indicate why
+- Explicit auth check ensures clear feedback: redirect to login if session expired
+
 ### Key Storage Functions
 
 | Function | Purpose |
