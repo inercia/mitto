@@ -256,3 +256,27 @@ func TestEventBuffer_AllEventTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestEventBuffer_Append(t *testing.T) {
+	buf := NewEventBuffer()
+
+	// Test direct Append method
+	event := BufferedEvent{
+		Type: BufferedEventToolCall,
+		Data: &ToolCallData{
+			ID:    "tool-1",
+			Title: "test_tool",
+		},
+	}
+
+	buf.Append(event)
+
+	if buf.Len() != 1 {
+		t.Errorf("Len = %d, want 1", buf.Len())
+	}
+
+	events := buf.Events()
+	if events[0].Type != BufferedEventToolCall {
+		t.Errorf("Type = %v, want %v", events[0].Type, BufferedEventToolCall)
+	}
+}

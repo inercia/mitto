@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -268,4 +269,152 @@ func TestHandleSessionQueue_MethodNotAllowed(t *testing.T) {
 
 	// Clean up
 	queue.Delete()
+}
+
+func TestNewQueueConfigResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *config.QueueConfig
+		expected QueueConfigResponse
+	}{
+		{
+			name:   "nil config uses defaults",
+			config: nil,
+			expected: QueueConfigResponse{
+				Enabled:      true,                       // default
+				MaxSize:      config.DefaultQueueMaxSize, // 10
+				DelaySeconds: 0,                          // default
+			},
+		},
+		{
+			name: "custom config",
+			config: &config.QueueConfig{
+				Enabled:      boolPtr(false),
+				MaxSize:      intPtr(50),
+				DelaySeconds: 5,
+			},
+			expected: QueueConfigResponse{
+				Enabled:      false,
+				MaxSize:      50,
+				DelaySeconds: 5,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NewQueueConfigResponse(tt.config)
+			if got.Enabled != tt.expected.Enabled {
+				t.Errorf("Enabled = %v, want %v", got.Enabled, tt.expected.Enabled)
+			}
+			if got.MaxSize != tt.expected.MaxSize {
+				t.Errorf("MaxSize = %v, want %v", got.MaxSize, tt.expected.MaxSize)
+			}
+			if got.DelaySeconds != tt.expected.DelaySeconds {
+				t.Errorf("DelaySeconds = %v, want %v", got.DelaySeconds, tt.expected.DelaySeconds)
+			}
+		})
+	}
+}
+
+func TestHandleMoveQueueMessage(t *testing.T) {
+	server, sessionID := setupQueueTestServer(t)
+	queue := server.store.Queue(sessionID)
+	defer queue.Delete()
+
+	// Add two messages to the queue (message, imageIDs, clientID, maxSize)
+	msg1, _ := queue.Add("First message", nil, "", 0)
+	msg2, _ := queue.Add("Second message", nil, "", 0)
+
+	// Move second message up
+	body := `{"direction": "up"}`
+	req := httptest.NewRequest(http.MethodPost, "/mitto/api/sessions/"+sessionID+"/queue/"+msg2.ID+"/move", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleMoveQueueMessage(w, req, queue, sessionID, msg2.ID)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// Verify the order changed
+	var resp QueueListResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(resp.Messages) != 2 {
+		t.Fatalf("Expected 2 messages, got %d", len(resp.Messages))
+	}
+
+	// After moving msg2 up, it should be first
+	if resp.Messages[0].ID != msg2.ID {
+		t.Errorf("First message ID = %s, want %s", resp.Messages[0].ID, msg2.ID)
+	}
+	if resp.Messages[1].ID != msg1.ID {
+		t.Errorf("Second message ID = %s, want %s", resp.Messages[1].ID, msg1.ID)
+	}
+}
+
+func TestHandleMoveQueueMessage_InvalidDirection(t *testing.T) {
+	server, sessionID := setupQueueTestServer(t)
+	queue := server.store.Queue(sessionID)
+	defer queue.Delete()
+
+	msg, _ := queue.Add("Test message", nil, "", 0)
+
+	body := `{"direction": "invalid"}`
+	req := httptest.NewRequest(http.MethodPost, "/mitto/api/sessions/"+sessionID+"/queue/"+msg.ID+"/move", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleMoveQueueMessage(w, req, queue, sessionID, msg.ID)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleMoveQueueMessage_MessageNotFound(t *testing.T) {
+	server, sessionID := setupQueueTestServer(t)
+	queue := server.store.Queue(sessionID)
+	defer queue.Delete()
+
+	body := `{"direction": "up"}`
+	req := httptest.NewRequest(http.MethodPost, "/mitto/api/sessions/"+sessionID+"/queue/nonexistent/move", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleMoveQueueMessage(w, req, queue, sessionID, "nonexistent")
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestNotifyQueueUpdate_NilSessionManager(t *testing.T) {
+	server := &Server{
+		sessionManager: nil,
+	}
+
+	// Should not panic
+	server.notifyQueueUpdate("session-id", "add", "msg-id")
+}
+
+func TestNotifyQueueReorder_NilSessionManager(t *testing.T) {
+	server := &Server{
+		sessionManager: nil,
+	}
+
+	// Should not panic
+	server.notifyQueueReorder("session-id", nil)
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+func intPtr(i int) *int {
+	return &i
 }

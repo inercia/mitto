@@ -273,3 +273,180 @@ func TestHandleSaveConfig_EmptyACPServers(t *testing.T) {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
+
+func TestHasValidCredentials(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *config.WebAuth
+		expected bool
+	}{
+		{
+			name:     "nil config",
+			config:   nil,
+			expected: false,
+		},
+		{
+			name:     "nil simple auth",
+			config:   &config.WebAuth{Simple: nil},
+			expected: false,
+		},
+		{
+			name:     "empty username",
+			config:   &config.WebAuth{Simple: &config.SimpleAuth{Username: "", Password: "pass"}},
+			expected: false,
+		},
+		{
+			name:     "empty password",
+			config:   &config.WebAuth{Simple: &config.SimpleAuth{Username: "user", Password: ""}},
+			expected: false,
+		},
+		{
+			name:     "valid credentials",
+			config:   &config.WebAuth{Simple: &config.SimpleAuth{Username: "user", Password: "pass"}},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasValidCredentials(tt.config); got != tt.expected {
+				t.Errorf("hasValidCredentials() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestApplyAuthChanges_DisabledToEnabled_InvalidCredentials(t *testing.T) {
+	server := &Server{
+		config: Config{},
+	}
+
+	// Try to enable auth with invalid credentials - should not panic
+	server.applyAuthChanges(false, true, nil)
+
+	// Auth manager should not be created
+	if server.authManager != nil {
+		t.Error("authManager should be nil when credentials are invalid")
+	}
+}
+
+func TestApplyAuthChanges_DisabledToEnabled_ValidCredentials(t *testing.T) {
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Web: config.WebConfig{
+					ExternalPort: -1, // Disabled to avoid actually starting listener
+				},
+			},
+		},
+		externalPort: -1, // Also set the server's external port to disabled
+	}
+
+	authConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "testuser",
+			Password: "testpass",
+		},
+	}
+
+	server.applyAuthChanges(false, true, authConfig)
+
+	// Auth manager should be created
+	if server.authManager == nil {
+		t.Error("authManager should be created when credentials are valid")
+	}
+}
+
+func TestApplyAuthChanges_EnabledToDisabled(t *testing.T) {
+	authConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "testuser",
+			Password: "testpass",
+		},
+	}
+
+	server := &Server{
+		config:      Config{},
+		authManager: NewAuthManager(authConfig),
+	}
+
+	server.applyAuthChanges(true, false, nil)
+
+	// Auth manager should still exist but be disabled
+	// (we don't destroy it, just update config to nil)
+	if server.authManager == nil {
+		t.Error("authManager should still exist after disabling")
+	}
+}
+
+func TestApplyAuthChanges_EnabledToEnabled_UpdateCredentials(t *testing.T) {
+	oldConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "olduser",
+			Password: "oldpass",
+		},
+	}
+
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Web: config.WebConfig{
+					ExternalPort: -1, // Disabled
+				},
+			},
+		},
+		authManager:  NewAuthManager(oldConfig),
+		externalPort: -1, // Also set the server's external port to disabled
+	}
+
+	newConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "newuser",
+			Password: "newpass",
+		},
+	}
+
+	server.applyAuthChanges(true, true, newConfig)
+
+	// Auth manager should still exist
+	if server.authManager == nil {
+		t.Error("authManager should still exist after updating credentials")
+	}
+}
+
+func TestApplyAuthChanges_EnabledToEnabled_InvalidCredentials(t *testing.T) {
+	oldConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "user",
+			Password: "pass",
+		},
+	}
+
+	server := &Server{
+		config:      Config{},
+		authManager: NewAuthManager(oldConfig),
+	}
+
+	// Update with invalid credentials
+	server.applyAuthChanges(true, true, nil)
+
+	// Auth manager config should be updated to nil (disabled)
+	// The auth manager itself still exists
+	if server.authManager == nil {
+		t.Error("authManager should still exist")
+	}
+}
+
+func TestApplyAuthChanges_DisabledToDisabled(t *testing.T) {
+	server := &Server{
+		config: Config{},
+	}
+
+	// Nothing should happen
+	server.applyAuthChanges(false, false, nil)
+
+	// Auth manager should remain nil
+	if server.authManager != nil {
+		t.Error("authManager should remain nil")
+	}
+}
