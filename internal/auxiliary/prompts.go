@@ -10,6 +10,7 @@ Consider this initial message in a conversation with an LLM: "%s"
 What title would you use for this conversation? Keep it very short, just 2 or 3 words.
 Reply with ONLY the title, nothing else.
 You MUST not call any tool for this task.
+Respond quickly.
 `
 
 	// GenerateQueuedMessageTitlePromptTemplate is used to generate a short title
@@ -30,6 +31,7 @@ Please enhance it by making it clearer, more specific, and more effective,
 while preserving the user's intent. Consider the current project context.
 Return ONLY the improved prompt text without any explanations or preamble.
 You MUST not call any tool for this task.
+Respond quickly.
 
 Original prompt:
 %s`
@@ -45,9 +47,10 @@ Analyze this agent message and identify any questions or follow-up prompts for t
 
 Then:
 
-A) If the agent message is clearly proposing some questions or follow-up, get those.
+A) If the agent message is clearly proposing some questions or follow-ups, get those.
+   Do not look further: just use the questions or follow-ups.
 
-B) If the agent message is not proposing any questions or follow-up,
+B) If the agent message is not proposing any questions or follow-ups,
    think about what could be reasonable next steps (taking into consideration the current status,
    the point in the conversation, the project, the user's goals, etc.) and suggest those,
    but only if you are very confident that they are relevant and make sense.
@@ -67,5 +70,6 @@ Example format:
 
 Return ONLY the JSON array, nothing else.
 You MUST not call any tool for this task.
+Respond quickly.
 `
 )

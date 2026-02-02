@@ -92,3 +92,146 @@ func TestGenerateTitle_TitleTruncation(t *testing.T) {
 		t.Errorf("Truncated title length = %d, want 50", len(truncated))
 	}
 }
+
+func TestParseFollowUpSuggestions(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int // number of suggestions expected
+	}{
+		{
+			name:     "valid JSON array",
+			input:    `[{"label": "Test", "value": "test value"}]`,
+			expected: 1,
+		},
+		{
+			name:     "multiple suggestions",
+			input:    `[{"label": "One", "value": "one"}, {"label": "Two", "value": "two"}]`,
+			expected: 2,
+		},
+		{
+			name:     "JSON with surrounding text",
+			input:    `Here are some suggestions: [{"label": "Test", "value": "test"}] Hope this helps!`,
+			expected: 1,
+		},
+		{
+			name:     "empty array",
+			input:    `[]`,
+			expected: 0,
+		},
+		{
+			name:     "invalid JSON",
+			input:    `not valid json`,
+			expected: 0,
+		},
+		{
+			name:     "empty string",
+			input:    ``,
+			expected: 0,
+		},
+		{
+			name:     "whitespace only",
+			input:    `   `,
+			expected: 0,
+		},
+		{
+			name:     "more than 5 suggestions (should be limited)",
+			input:    `[{"label": "1", "value": "1"}, {"label": "2", "value": "2"}, {"label": "3", "value": "3"}, {"label": "4", "value": "4"}, {"label": "5", "value": "5"}, {"label": "6", "value": "6"}]`,
+			expected: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseFollowUpSuggestions(tt.input)
+			if len(result) != tt.expected {
+				t.Errorf("parseFollowUpSuggestions() returned %d suggestions, want %d", len(result), tt.expected)
+			}
+		})
+	}
+}
+
+func TestValidateSuggestions(t *testing.T) {
+	tests := []struct {
+		name        string
+		suggestions []FollowUpSuggestion
+		expected    int
+	}{
+		{
+			name:        "valid suggestions",
+			suggestions: []FollowUpSuggestion{{Label: "Test", Value: "test"}},
+			expected:    1,
+		},
+		{
+			name:        "empty label filtered",
+			suggestions: []FollowUpSuggestion{{Label: "", Value: "test"}},
+			expected:    0,
+		},
+		{
+			name:        "empty value filtered",
+			suggestions: []FollowUpSuggestion{{Label: "Test", Value: ""}},
+			expected:    0,
+		},
+		{
+			name:        "whitespace only filtered",
+			suggestions: []FollowUpSuggestion{{Label: "  ", Value: "  "}},
+			expected:    0,
+		},
+		{
+			name:        "mixed valid and invalid",
+			suggestions: []FollowUpSuggestion{{Label: "Valid", Value: "valid"}, {Label: "", Value: "invalid"}},
+			expected:    1,
+		},
+		{
+			name:        "nil input",
+			suggestions: nil,
+			expected:    0,
+		},
+		{
+			name:        "empty slice",
+			suggestions: []FollowUpSuggestion{},
+			expected:    0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := validateSuggestions(tt.suggestions)
+			if len(result) != tt.expected {
+				t.Errorf("validateSuggestions() returned %d suggestions, want %d", len(result), tt.expected)
+			}
+		})
+	}
+}
+
+func TestValidateSuggestions_Truncation(t *testing.T) {
+	// Test that long labels and values are truncated
+	longLabel := "This is a very long label that exceeds the fifty character limit for labels"
+	longValue := ""
+	for i := 0; i < 1100; i++ {
+		longValue += "x"
+	}
+
+	suggestions := []FollowUpSuggestion{{Label: longLabel, Value: longValue}}
+	result := validateSuggestions(suggestions)
+
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 suggestion, got %d", len(result))
+	}
+
+	// Label should be truncated to 50 chars (47 + "...")
+	if len(result[0].Label) != 50 {
+		t.Errorf("Label length = %d, want 50", len(result[0].Label))
+	}
+	if result[0].Label[47:] != "..." {
+		t.Errorf("Label should end with '...', got %q", result[0].Label[47:])
+	}
+
+	// Value should be truncated to 1000 chars (997 + "...")
+	if len(result[0].Value) != 1000 {
+		t.Errorf("Value length = %d, want 1000", len(result[0].Value))
+	}
+	if result[0].Value[997:] != "..." {
+		t.Errorf("Value should end with '...', got %q", result[0].Value[997:])
+	}
+}

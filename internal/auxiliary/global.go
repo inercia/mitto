@@ -150,24 +150,22 @@ func AnalyzeFollowUpQuestions(ctx context.Context, agentMessage string) ([]Follo
 		return nil, fmt.Errorf("failed to analyze follow-up questions: %w", err)
 	}
 
-	// Parse JSON response
-	suggestions, err := parseFollowUpSuggestions(response)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse follow-up suggestions: %w", err)
-	}
+	// Parse JSON response - returns empty slice if parsing fails (not an error)
+	suggestions := parseFollowUpSuggestions(response)
 
 	return suggestions, nil
 }
 
 // parseFollowUpSuggestions parses the JSON response from the auxiliary conversation.
 // It handles cases where the response might have extra text around the JSON.
-func parseFollowUpSuggestions(response string) ([]FollowUpSuggestion, error) {
+// Returns an empty slice if parsing fails (this is not considered an error).
+func parseFollowUpSuggestions(response string) []FollowUpSuggestion {
 	response = strings.TrimSpace(response)
 
 	// Try direct parsing first
 	var suggestions []FollowUpSuggestion
 	if err := json.Unmarshal([]byte(response), &suggestions); err == nil {
-		return validateSuggestions(suggestions), nil
+		return validateSuggestions(suggestions)
 	}
 
 	// Try to extract JSON array from the response
@@ -176,12 +174,12 @@ func parseFollowUpSuggestions(response string) ([]FollowUpSuggestion, error) {
 	match := jsonPattern.FindString(response)
 	if match != "" {
 		if err := json.Unmarshal([]byte(match), &suggestions); err == nil {
-			return validateSuggestions(suggestions), nil
+			return validateSuggestions(suggestions)
 		}
 	}
 
 	// If we can't parse it, return empty slice (not an error - just no suggestions)
-	return nil, nil
+	return nil
 }
 
 // validateSuggestions filters and validates the suggestions.
