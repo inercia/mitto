@@ -35,7 +35,17 @@ import {
 
 import { playAgentCompletedSound } from "../utils/audio.js";
 
-import { secureFetch, authFetch, checkAuth } from "../utils/csrf.js";
+import {
+  secureFetch,
+  authFetch,
+  checkAuth,
+  redirectToLogin,
+} from "../utils/csrf.js";
+
+// Time threshold (in ms) for considering the session potentially stale
+// If the page has been hidden for longer than this, we do an explicit auth check
+// before trying to reconnect. The server session expires after 24 hours.
+const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 
 import { apiUrl, wsUrl } from "../utils/api.js";
 
@@ -56,6 +66,62 @@ async function checkAuthOrRedirect() {
     console.error("Auth check failed:", err);
     return false;
   }
+}
+
+/**
+ * Check authentication with retry logic for network errors.
+ * After prolonged phone sleep, the network may take a moment to recover.
+ * This function retries a few times before giving up.
+ *
+ * @param {number} maxRetries - Maximum number of retries (default: 3)
+ * @param {number} retryDelay - Delay between retries in ms (default: 500)
+ * @returns {Promise<{authenticated: boolean, networkError: boolean}>}
+ *   - authenticated: true if the session is valid
+ *   - networkError: true if all retries failed due to network errors
+ */
+async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(apiUrl("/api/config"), {
+        credentials: "same-origin",
+      });
+
+      // Got a response - check if authenticated
+      if (response.status === 401) {
+        console.log(
+          "Auth check: session expired or invalid (401), redirecting to login",
+        );
+        redirectToLogin();
+        return { authenticated: false, networkError: false };
+      }
+
+      if (response.ok) {
+        return { authenticated: true, networkError: false };
+      }
+
+      // Other error status - treat as auth failure if persistent
+      console.warn(`Auth check returned status ${response.status}`);
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, retryDelay));
+        continue;
+      }
+      return { authenticated: false, networkError: false };
+    } catch (err) {
+      // Network error - retry if we have attempts left
+      console.warn(
+        `Auth check network error (attempt ${attempt + 1}/${maxRetries + 1}):`,
+        err.message,
+      );
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, retryDelay));
+        continue;
+      }
+      // All retries exhausted
+      return { authenticated: false, networkError: true };
+    }
+  }
+  // Should not reach here
+  return { authenticated: false, networkError: true };
 }
 
 /**
@@ -108,6 +174,9 @@ export function useWebSocket() {
 
   // Track if this is a reconnection (vs initial connection)
   const wasConnectedRef = useRef(false);
+
+  // Track when the page was last hidden (for staleness detection on mobile)
+  const lastHiddenTimeRef = useRef(null);
 
   // Fetch workspaces and ACP servers
   const fetchWorkspaces = useCallback(async () => {
@@ -1851,13 +1920,65 @@ export function useWebSocket() {
   // Refresh session list, force reconnect session WebSocket, and retry pending prompts when app becomes visible
   // On mobile, when the phone sleeps, WebSocket connections can become "zombie" connections
   // that appear open but are actually dead. The safest approach is to force a fresh reconnection.
+  // Also detect if the session might be stale (phone locked overnight) and verify auth first.
   useEffect(() => {
-    const handleVisibilityChange = () => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === "hidden") {
+        // Track when the page was hidden so we can detect staleness on wake
+        lastHiddenTimeRef.current = Date.now();
+        console.log("App hidden, tracking time");
+        return;
+      }
+
       if (document.visibilityState === "visible") {
-        console.log("App became visible, forcing session reconnect");
+        const now = Date.now();
+        const hiddenDuration = lastHiddenTimeRef.current
+          ? now - lastHiddenTimeRef.current
+          : 0;
+        const wasHiddenLong = hiddenDuration > STALE_THRESHOLD_MS;
+
+        console.log(
+          `App became visible after ${Math.round(hiddenDuration / 1000)}s` +
+            (wasHiddenLong ? " (checking auth first)" : ""),
+        );
 
         // Clean up expired prompts first
         cleanupExpiredPrompts();
+
+        // If the page was hidden for a long time (e.g., phone locked overnight),
+        // do an explicit auth check before trying to reconnect.
+        // This prevents the user from seeing a stuck/stale state.
+        if (wasHiddenLong) {
+          console.log("Session may be stale, verifying authentication...");
+          const { authenticated, networkError } = await checkAuthWithRetry();
+
+          if (!authenticated) {
+            if (networkError) {
+              // Network is not available yet - this is common right after phone unlock
+              // Wait a bit longer and try again
+              console.log(
+                "Network not available, will retry auth check in 2s...",
+              );
+              setTimeout(async () => {
+                const retry = await checkAuthWithRetry();
+                if (!retry.authenticated && !retry.networkError) {
+                  // 401 - session expired
+                  return;
+                }
+                // Either authenticated or still network error - proceed with normal reconnect
+                // If still network error, the WebSocket reconnect will handle retries
+                fetchStoredSessions();
+                setTimeout(() => {
+                  forceReconnectActiveSession();
+                }, 300);
+              }, 2000);
+              return;
+            }
+            // Auth check returned 401 - redirectToLogin was already called
+            return;
+          }
+          console.log("Authentication verified, proceeding with reconnect");
+        }
 
         // Fetch stored sessions (updates the session list in sidebar)
         fetchStoredSessions();

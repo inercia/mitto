@@ -93,7 +93,7 @@ function needsCSRFProtection(method) {
  * Redirect to the login page.
  * Clears the CSRF token cache before redirecting.
  */
-function redirectToLogin() {
+export function redirectToLogin() {
   clearCSRFToken();
   window.location.href = "/auth.html";
 }
