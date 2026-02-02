@@ -32,7 +32,7 @@ continue talking to your agents from your phone or from your tablet, and you wan
 to switch between them easily, and you want to be able to do it all without having to
 install yet another AI coding agent...
 
-<img align="center" src="docs/videos/mobile.gif" alt="Mitto" width="512" />
+<img align="center" src="docs/videos/mobile.gif" alt="Mitto" width="480" />
 
 ---
 
