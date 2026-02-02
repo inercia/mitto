@@ -333,8 +333,7 @@ export function ChatInput({
     if (isQueueFull)
       return `Queue full (${queueConfig.max_size}/${queueConfig.max_size})...`;
     if (isStreaming) {
-      const remaining = queueConfig.max_size - queueLength;
-      return `Agent responding... (${remaining} queue slot${remaining !== 1 ? "s" : ""} left)`;
+      return "Agent responding...";
     }
     if (isImproving) return "Improving prompt...";
     if (isDragOver) return "Drop image here...";
