@@ -539,3 +539,11 @@ web:
 #   #   # Automatically generate short titles for queued messages (default: true)
 #   #   # Uses the auxiliary conversation to create 2-3 word titles
 #   #   auto_generate_titles: true
+
+# Follow-up suggestions configuration
+# When enabled, agent messages are analyzed asynchronously to identify
+# questions or follow-up prompts, and suggested response buttons are
+# displayed to the user.
+conversations:
+  action_buttons:
+    enabled: true  # Enable follow-up suggestions by default

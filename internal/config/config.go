@@ -334,6 +334,29 @@ type ConversationsConfig struct {
 	// Queue contains message queue configuration for handling messages while agent is busy.
 	// May be nil to use default queue behavior.
 	Queue *QueueConfig `json:"queue,omitempty" yaml:"queue,omitempty"`
+	// ActionButtons contains configuration for suggested response buttons.
+	// May be nil to use default behavior (enabled).
+	ActionButtons *ActionButtonsConfig `json:"action_buttons,omitempty" yaml:"action_buttons,omitempty"`
+}
+
+// ActionButtonsConfig configures the follow-up suggestions feature.
+// When enabled, agent messages are analyzed asynchronously to identify
+// questions or follow-up prompts, and suggested response buttons are
+// displayed to the user.
+type ActionButtonsConfig struct {
+	// Enabled controls whether follow-up suggestions are enabled.
+	// When true, agent messages are analyzed to extract suggested responses.
+	// Default: true (enabled by default)
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+}
+
+// IsEnabled returns whether follow-up suggestions are enabled.
+// Safe to call on nil receiver - returns true (the default) if not configured.
+func (a *ActionButtonsConfig) IsEnabled() bool {
+	if a == nil || a.Enabled == nil {
+		return true // Default: enabled
+	}
+	return *a.Enabled
 }
 
 // DefaultQueueMaxSize is the default maximum number of messages allowed in a queue.
@@ -425,6 +448,24 @@ func (c *ConversationsConfig) GetQueueConfig() *QueueConfig {
 		return nil
 	}
 	return c.Queue
+}
+
+// GetActionButtonsConfig returns the action buttons configuration.
+// Safe to call on nil receiver - returns nil if not configured.
+func (c *ConversationsConfig) GetActionButtonsConfig() *ActionButtonsConfig {
+	if c == nil {
+		return nil
+	}
+	return c.ActionButtons
+}
+
+// AreActionButtonsEnabled returns whether action buttons are enabled.
+// Safe to call on nil receiver - returns false if not configured.
+func (c *ConversationsConfig) AreActionButtonsEnabled() bool {
+	if c == nil {
+		return false
+	}
+	return c.ActionButtons.IsEnabled()
 }
 
 // MergeProcessors combines global and workspace processors according to precedence rules.
@@ -582,6 +623,9 @@ type rawConfig struct {
 			MaxSize            *int  `yaml:"max_size"`
 			AutoGenerateTitles *bool `yaml:"auto_generate_titles"`
 		} `yaml:"queue"`
+		ActionButtons *struct {
+			Enabled *bool `yaml:"enabled"`
+		} `yaml:"action_buttons"`
 	} `yaml:"conversations"`
 }
 
@@ -805,8 +849,15 @@ func Parse(data []byte) (*Config, error) {
 			}
 		}
 
+		// Parse action buttons config
+		if raw.Conversations.ActionButtons != nil {
+			cfg.Conversations.ActionButtons = &ActionButtonsConfig{
+				Enabled: raw.Conversations.ActionButtons.Enabled,
+			}
+		}
+
 		// If no config was actually set, nil out the conversations config
-		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil {
+		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil && cfg.Conversations.ActionButtons == nil {
 			cfg.Conversations = nil
 		}
 	}
