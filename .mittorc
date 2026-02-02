@@ -242,7 +242,7 @@ prompts:
 
       Run formatters to ensure consistent style across the codebase:
       ```bash
-      make fmt
+      make fmt fmt-docs
       ```
 
       This will format:

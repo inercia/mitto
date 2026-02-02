@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci
 
 # Binary name
 BINARY_NAME=mitto
@@ -146,6 +146,16 @@ fmt-check:
 	@echo "Checking Go code formatting..."
 	@test -z "$$(gofmt -l .)" || (echo "The following files need formatting:" && gofmt -l . && exit 1)
 	@echo "All Go files are properly formatted."
+
+# Format documentation markdown files (requires prettier)
+fmt-docs: deps-js
+	@echo "Formatting documentation markdown files..."
+	npx prettier --write "docs/**/*.md"
+
+# Check documentation formatting (fails if files need formatting)
+fmt-docs-check: deps-js
+	@echo "Checking documentation formatting..."
+	npx prettier --check "docs/**/*.md"
 
 # Lint code (requires golangci-lint)
 lint:
