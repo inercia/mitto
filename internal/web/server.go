@@ -393,6 +393,12 @@ func (s *Server) Serve(listener net.Listener) error {
 	return s.httpServer.Serve(listener)
 }
 
+// Handler returns the HTTP handler for the server.
+// This is useful for testing with httptest.Server.
+func (s *Server) Handler() http.Handler {
+	return s.httpServer.Handler
+}
+
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown() error {
 	s.mu.Lock()
