@@ -61,5 +61,25 @@ export const KEYBOARD_SHORTCUTS = [
     section: "Navigation",
   },
   // Input shortcuts (work in both macOS app and browser)
-  { keys: "⌃P", description: "Improve prompt (magic wand)", section: "Input" },
+  {
+    keys: "↵",
+    description: "Send message",
+    section: "Input",
+  },
+  {
+    keys: "⇧↵",
+    description: "Insert newline",
+    section: "Input",
+  },
+  {
+    keys: "⌘↵",
+    description: "Add message to queue",
+    section: "Input",
+    hint: "Use Ctrl+Enter on Windows/Linux",
+  },
+  {
+    keys: "⌃P",
+    description: "Improve prompt (magic wand)",
+    section: "Input",
+  },
 ];
