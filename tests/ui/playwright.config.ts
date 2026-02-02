@@ -74,9 +74,11 @@ export default defineConfig({
   outputDir: "./test-results",
 
   // Web server configuration - starts mitto automatically for tests
+  // Note: The webServer starts BEFORE globalSetup runs, so we use a helper script
+  // to create the settings file before starting mitto.
   webServer: {
     command:
-      'bash -c "cd ../.. && make build build-mock-acp && ./mitto web --port 8089 --dir mock-acp:tests/fixtures/workspaces/project-alpha"',
+      'bash -c "cd ../.. && make build build-mock-acp && ./tests/ui/start-test-server.sh"',
     port: 8089,
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
