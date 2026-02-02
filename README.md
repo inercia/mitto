@@ -70,14 +70,12 @@ For Linux, install the binary from the [releases page](https://github.com/inerci
 
 ## Documentation
 
-| | |
-|---|---|
-| 📖 [Usage Guide](docs/usage.md) | Commands, flags, examples |
-| ⚙️ [Configuration](docs/config/README.md) | ACP servers, settings |
-| 🌐 [Web Interface](docs/config/web/README.md) | Auth, hooks, themes, security |
-| 🍎 [macOS App](docs/config/mac/README.md) | Hotkeys, notifications |
-| 🔧 [Development](docs/development.md) | Building, testing |
-| 🏗️ [Architecture](docs/devel/README.md) | Design internals |
+- 📖 [Usage Guide](docs/usage.md): Commands, flags, examples
+- ⚙️ [Configuration](docs/config/README.md): ACP servers, settings
+  - 🌐 [Linux/Web Interface](docs/config/web/README.md): Auth, hooks, themes, security
+  - 🍎 [macOS App](docs/config/mac/README.md): Hotkeys, notifications
+- 🔧 [Development](docs/development.md): Building, testing
+- 🏗️ [Architecture](docs/devel/README.md): Design internals
 
 ## Requirements
 
