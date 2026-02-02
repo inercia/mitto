@@ -525,15 +525,23 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
                           key=${shortcut.keys}
                           class="flex items-center justify-between py-2 px-3 rounded-lg bg-slate-700/30"
                         >
-                          <div class="flex items-center gap-2">
-                            <span class="text-gray-300"
-                              >${shortcut.description}</span
-                            >
-                            ${shortcut.macOnly &&
+                          <div class="flex flex-col gap-0.5">
+                            <div class="flex items-center gap-2">
+                              <span class="text-gray-300"
+                                >${shortcut.description}</span
+                              >
+                              ${shortcut.macOnly &&
+                              html`
+                                <span
+                                  class="text-[10px] px-1.5 py-0.5 rounded bg-slate-600 text-gray-400"
+                                  >macOS app</span
+                                >
+                              `}
+                            </div>
+                            ${shortcut.hint &&
                             html`
-                              <span
-                                class="text-[10px] px-1.5 py-0.5 rounded bg-slate-600 text-gray-400"
-                                >macOS app</span
+                              <span class="text-[11px] text-gray-500"
+                                >${shortcut.hint}</span
                               >
                             `}
                           </div>
@@ -550,7 +558,10 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
               `,
             )}
         </div>
-        <div class="mt-4 pt-3 border-t border-slate-700">
+        <div class="mt-4 pt-3 border-t border-slate-700 space-y-2">
+          <p class="text-xs text-gray-500 text-center">
+            On touch devices, swipe left/right to switch conversations
+          </p>
           <p class="text-xs text-gray-500 text-center">Press Escape to close</p>
         </div>
       </div>
@@ -2656,6 +2667,7 @@ function App() {
           onPromptsOpen=${handlePromptsOpen}
           queueLength=${queueLength}
           queueConfig=${queueConfig}
+          onAddToQueue=${handleAddToQueue}
         />
       </div>
     </div>

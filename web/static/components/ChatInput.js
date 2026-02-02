@@ -45,6 +45,7 @@ function getContrastColor(hexColor) {
  * @param {Function} props.onPromptsOpen - Callback when prompts dropdown is opened (for refresh)
  * @param {number} props.queueLength - Current number of messages in queue
  * @param {Object} props.queueConfig - Queue configuration { enabled, max_size, delay_seconds }
+ * @param {Function} props.onAddToQueue - Callback to add message to queue (Cmd/Ctrl+Enter)
  */
 export function ChatInput({
   onSend,
@@ -61,6 +62,7 @@ export function ChatInput({
   onPromptsOpen,
   queueLength = 0,
   queueConfig = { enabled: true, max_size: 10, delay_seconds: 0 },
+  onAddToQueue,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -218,6 +220,15 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e) => {
+    // Cmd/Ctrl+Enter to add to queue
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) {
+      e.preventDefault();
+      if (onAddToQueue && text.trim()) {
+        onAddToQueue();
+      }
+      return;
+    }
+    // Enter (without modifiers) to send
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);

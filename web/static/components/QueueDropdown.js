@@ -187,7 +187,7 @@ export function QueueDropdown({
   return html`
     <div
       ref=${dropdownRef}
-      class="queue-dropdown absolute top-full left-0 right-0 mt-1 mx-4 bg-slate-700/95 backdrop-blur-sm border border-slate-600 rounded-lg shadow-xl z-40 overflow-hidden"
+      class="queue-dropdown absolute top-full left-0 right-0 mx-auto mt-1 w-[70%] bg-slate-700/95 backdrop-blur-sm border border-slate-600 rounded-lg shadow-xl z-40 overflow-hidden"
       onMouseEnter=${handleMouseEnter}
       onMouseLeave=${handleMouseLeave}
     >
