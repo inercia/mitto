@@ -20,6 +20,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Workspaces](workspaces.md)** - Multi-workspace architecture, CLI usage, REST API, and workspace persistence
 
+- **[Follow-up Suggestions](follow-up-suggestions.md)** - AI-generated response suggestions, persistence, multi-client sync, and lifecycle
+
 ## Quick Links
 
 | Topic | Document | Key Sections |
@@ -34,6 +36,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Resync mechanism | [WebSocket Messaging](websocket-messaging.md) | Resync Mechanism |
 | Workspace API | [Workspaces](workspaces.md) | Workspace REST API |
 | Mobile support | [Web Interface](web-interface.md) | Mobile Wake Resync |
+| Action buttons | [Follow-up Suggestions](follow-up-suggestions.md) | Persistence, Lifecycle |
 
 ## Additional Documentation
 
