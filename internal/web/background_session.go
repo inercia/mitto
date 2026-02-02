@@ -70,8 +70,13 @@ type BackgroundSession struct {
 	// Queue processing
 	queueConfig *config.QueueConfig // Queue configuration (nil means use defaults)
 
-	// Action buttons
-	actionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration (nil means disabled)
+	// Action buttons (follow-up suggestions)
+	// These are AI-generated response options shown after the agent completes a response.
+	// We use a two-tier cache (memory + disk) so suggestions persist across client
+	// reconnections and server restarts. See docs/devel/follow-up-suggestions.md.
+	actionButtonsConfig *config.ActionButtonsConfig // Configuration (nil means disabled)
+	actionButtonsMu     sync.RWMutex                // Protects cachedActionButtons
+	cachedActionButtons []ActionButton              // In-memory cache for fast access
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -296,6 +301,7 @@ func (bs *BackgroundSession) GetQueueConfig() *config.QueueConfig {
 // Multiple observers can be added to the same session.
 // If the session is currently streaming, the observer will receive all buffered
 // events (thoughts, messages, tool calls, file operations) in the order they occurred.
+// If there are cached action buttons, they will be sent to the new observer.
 func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 	bs.observersMu.Lock()
 	if bs.observers == nil {
@@ -317,6 +323,10 @@ func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 
 	if isPrompting {
 		bs.replayBufferedEventsTo(observer)
+	} else {
+		// If not prompting, send cached action buttons to the new observer
+		// This ensures new clients see the follow-up suggestions
+		bs.sendCachedActionButtonsTo(observer)
 	}
 }
 
@@ -368,6 +378,23 @@ func (bs *BackgroundSession) replayBufferedEventsTo(observer SessionObserver) {
 			}
 		}
 	}
+}
+
+// sendCachedActionButtonsTo sends cached action buttons to a single observer.
+// Called when a new client connects to ensure they see the current suggestions,
+// even if they connected after the suggestions were originally generated.
+// This solves the problem of users switching devices or refreshing and missing suggestions.
+func (bs *BackgroundSession) sendCachedActionButtonsTo(observer SessionObserver) {
+	buttons := bs.GetActionButtons()
+	if len(buttons) == 0 {
+		return
+	}
+
+	if bs.logger != nil {
+		bs.logger.Debug("Sending cached action buttons to new observer", "button_count", len(buttons))
+	}
+
+	observer.OnActionButtons(buttons)
 }
 
 // RemoveObserver removes an observer from the session.
@@ -761,6 +788,10 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		}
 	}
 
+	// Clear action buttons when new activity starts
+	// This ensures suggestions are tied to the latest agent response
+	bs.clearActionButtons()
+
 	// Persist user prompt with image references
 	if bs.recorder != nil {
 		if err := bs.recorder.RecordUserPromptWithImages(message, imageRefs); err != nil && bs.logger != nil {
@@ -935,6 +966,28 @@ func (bs *BackgroundSession) analyzeFollowUpQuestions(agentMessage string) {
 		})
 	}
 
+	// Cache in memory
+	bs.actionButtonsMu.Lock()
+	bs.cachedActionButtons = buttons
+	bs.actionButtonsMu.Unlock()
+
+	// Persist to disk
+	if bs.store != nil && bs.persistedID != "" {
+		abStore := bs.store.ActionButtons(bs.persistedID)
+		// Convert to session.ActionButton for storage
+		sessionButtons := make([]session.ActionButton, len(buttons))
+		for i, b := range buttons {
+			sessionButtons[i] = session.ActionButton{
+				Label:    b.Label,
+				Response: b.Response,
+			}
+		}
+		eventCount := bs.GetEventCount()
+		if err := abStore.Set(sessionButtons, int64(eventCount)); err != nil {
+			bs.logger.Debug("failed to persist action buttons", "error", err)
+		}
+	}
+
 	bs.logger.Info("follow-up analysis: sending buttons to observers", "count", len(buttons))
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnActionButtons(buttons)
@@ -944,8 +997,9 @@ func (bs *BackgroundSession) analyzeFollowUpQuestions(agentMessage string) {
 // TriggerFollowUpSuggestions triggers follow-up suggestions analysis for a resumed session.
 // This reads the last agent message from stored events and analyzes it asynchronously.
 // It only works for sessions with message history and when follow-up suggestions are enabled.
+// If cached action buttons already exist, they are loaded and no new analysis is triggered.
 // This is non-blocking and runs the analysis in a goroutine.
-// Returns true if the analysis was triggered, false if skipped.
+// Returns true if the analysis was triggered or cached buttons were loaded, false if skipped.
 func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
 	// Check if follow-up suggestions are enabled
 	if !bs.actionButtonsConfig.IsEnabled() {
@@ -971,6 +1025,15 @@ func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
 		return false
 	}
 
+	// Check if we already have cached action buttons (from disk)
+	// If so, load them into memory cache - no need to re-analyze
+	cachedButtons := bs.GetActionButtons()
+	if len(cachedButtons) > 0 {
+		bs.logger.Debug("follow-up suggestions: using cached buttons from disk",
+			"button_count", len(cachedButtons))
+		return true
+	}
+
 	// Read stored events for this session
 	events, err := bs.store.ReadEvents(bs.persistedID)
 	if err != nil {
@@ -991,6 +1054,82 @@ func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
 	// Run analysis asynchronously
 	go bs.analyzeFollowUpQuestions(agentMessage)
 	return true
+}
+
+// clearActionButtons clears the cached action buttons from memory and disk.
+// Called when new conversation activity occurs (user sends a prompt) because
+// the existing suggestions become stale—they were generated for the previous
+// agent response, not the upcoming one. New suggestions will be generated
+// when the agent completes its next response.
+func (bs *BackgroundSession) clearActionButtons() {
+	// Clear in-memory cache
+	bs.actionButtonsMu.Lock()
+	hadButtons := len(bs.cachedActionButtons) > 0
+	bs.cachedActionButtons = nil
+	bs.actionButtonsMu.Unlock()
+
+	// Clear from disk
+	if bs.store != nil && bs.persistedID != "" {
+		abStore := bs.store.ActionButtons(bs.persistedID)
+		if err := abStore.Clear(); err != nil && bs.logger != nil {
+			bs.logger.Debug("failed to clear action buttons from disk", "error", err)
+		}
+	}
+
+	// Notify observers that buttons are cleared (send empty array)
+	if hadButtons {
+		bs.notifyObservers(func(o SessionObserver) {
+			o.OnActionButtons([]ActionButton{})
+		})
+	}
+}
+
+// GetActionButtons returns the current action buttons.
+// Uses a two-tier lookup: memory cache first (fast), then disk (persistent).
+// The disk fallback ensures suggestions survive server restarts.
+// Returns nil if no suggestions are available.
+func (bs *BackgroundSession) GetActionButtons() []ActionButton {
+	// Check in-memory cache first
+	bs.actionButtonsMu.RLock()
+	if bs.cachedActionButtons != nil {
+		result := make([]ActionButton, len(bs.cachedActionButtons))
+		copy(result, bs.cachedActionButtons)
+		bs.actionButtonsMu.RUnlock()
+		return result
+	}
+	bs.actionButtonsMu.RUnlock()
+
+	// Fall back to disk
+	if bs.store == nil || bs.persistedID == "" {
+		return nil
+	}
+
+	abStore := bs.store.ActionButtons(bs.persistedID)
+	buttons, err := abStore.Get()
+	if err != nil {
+		if bs.logger != nil {
+			bs.logger.Debug("failed to read action buttons from disk", "error", err)
+		}
+		return nil
+	}
+
+	// Convert session.ActionButton to web.ActionButton
+	result := make([]ActionButton, len(buttons))
+	for i, b := range buttons {
+		result[i] = ActionButton{
+			Label:    b.Label,
+			Response: b.Response,
+		}
+	}
+
+	// Cache in memory for future access
+	if len(result) > 0 {
+		bs.actionButtonsMu.Lock()
+		bs.cachedActionButtons = result
+		bs.actionButtonsMu.Unlock()
+	}
+
+	return result
 }
 
 // Cancel cancels the current prompt.
