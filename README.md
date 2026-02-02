@@ -25,14 +25,14 @@ So you have installed some ACP compatible agents, like Claude Code, or Copilot C
 other AI coding agent, and you want to have multiple instances running at the same time, each one in
 its own workspace (ie, folder)
 
-<img align="center" src="docs/videos/desktop.gif" alt="Mitto" width="512" height="256"/>
+<img align="center" src="docs/videos/desktop.gif" alt="Mitto" width="1024"/>
 
 but you also want to be able to continue your work from your browser, or go for a coffee and
 continue talking to your agents from your phone or from your tablet, and you want to be able
 to switch between them easily, and you want to be able to do it all without having to
 install yet another AI coding agent...
 
-<img align="center" src="docs/videos/mobile.gif" alt="Mitto" width="256" height="512"/>
+<img align="center" src="docs/videos/mobile.gif" alt="Mitto" width="512" />
 
 ---
 
