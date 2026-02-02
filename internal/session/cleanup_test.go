@@ -67,15 +67,17 @@ func TestCleanup_CleanupAllLocks(t *testing.T) {
 
 	initialCount := ActiveLockCount()
 
-	// Acquire multiple locks
-	var locks []*Lock
+	// Acquire multiple locks - we don't use the locks directly,
+	// but they must remain in scope until CleanupAllLocks is called
+	locks := make([]*Lock, 3)
 	for i := 0; i < 3; i++ {
 		lock, err := store.TryAcquireLock("test-cleanup-all-"+string(rune('a'+i)), "cli")
 		if err != nil {
 			t.Fatalf("TryAcquireLock failed: %v", err)
 		}
-		locks = append(locks, lock) //nolint:staticcheck // locks used for count verification
+		locks[i] = lock
 	}
+	_ = locks // Silence unused variable warning - locks kept in scope for cleanup test
 
 	// Should have 3 more locks
 	if ActiveLockCount() != initialCount+3 {
