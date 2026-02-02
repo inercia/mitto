@@ -72,6 +72,12 @@ func (s *Store) Queue(sessionID string) *Queue {
 	return NewQueue(s.sessionDir(sessionID))
 }
 
+// ActionButtons returns an ActionButtonsStore instance for managing action buttons of a session.
+// The returned ActionButtonsStore is safe for concurrent use.
+func (s *Store) ActionButtons(sessionID string) *ActionButtonsStore {
+	return NewActionButtonsStore(s.sessionDir(sessionID))
+}
+
 // Create creates a new session with the given metadata.
 func (s *Store) Create(meta Metadata) error {
 	log := logging.Session()
