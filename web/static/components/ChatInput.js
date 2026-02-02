@@ -89,11 +89,17 @@ export function ChatInput({
     }
   }, [showDropup, onPromptsOpen]);
 
-  // Track ongoing prompt improvements: { targetSessionId, abortController }
-  const [improvingState, setImprovingState] = useState(null);
+  // Track ongoing prompt improvements per session (persists across session switches)
+  // Map: sessionId -> { abortController }
+  const improvingSessionsRef = useRef(new Map());
+  // Force re-render when improving state changes
+  const [improvingVersion, setImprovingVersion] = useState(0);
   const [improveError, setImproveError] = useState(null);
   const textareaRef = useRef(null);
   const dropupRef = useRef(null);
+
+  // Check if the current session has an active improve request
+  const isImproving = improvingSessionsRef.current.has(sessionId);
 
   // Sending state for message delivery tracking
   const [isSending, setIsSending] = useState(false);
@@ -117,6 +123,7 @@ export function ChatInput({
   }, []);
 
   // Clear pending images and sending state when session changes
+  // Note: improving state is tracked per-session in improvingSessionsRef and persists
   useEffect(() => {
     setPendingImages([]);
     setUploadError(null);
@@ -124,10 +131,8 @@ export function ChatInput({
     setSendError(null);
     setPendingSendText("");
     setPendingSendImages([]);
+    setImproveError(null);
   }, [sessionId]);
-
-  // For backwards compatibility
-  const isImproving = !!improvingState;
 
   // Determine if input should be fully disabled (no session or explicitly disabled)
   const isFullyDisabled = disabled || noSession || isSending;
@@ -290,7 +295,9 @@ export function ChatInput({
     const targetSessionId = sessionId;
     const controller = new AbortController();
 
-    setImprovingState({ targetSessionId, abortController: controller });
+    // Track that this session has an active improve request
+    improvingSessionsRef.current.set(targetSessionId, { abortController: controller });
+    setImprovingVersion((v) => v + 1); // Force re-render
     setImproveError(null);
 
     try {
@@ -327,14 +334,19 @@ export function ChatInput({
       }
     } catch (err) {
       console.error("Failed to improve prompt:", err);
-      if (err.name === "AbortError") {
-        setImproveError("Request timed out. Please try again.");
-      } else {
-        setImproveError(err.message || "Failed to improve prompt");
+      // Only show error if we're still on the session that had the error
+      if (targetSessionId === sessionId) {
+        if (err.name === "AbortError") {
+          setImproveError("Request timed out. Please try again.");
+        } else {
+          setImproveError(err.message || "Failed to improve prompt");
+        }
+        setTimeout(() => setImproveError(null), 5000);
       }
-      setTimeout(() => setImproveError(null), 5000);
     } finally {
-      setImprovingState(null);
+      // Remove this session from the improving map
+      improvingSessionsRef.current.delete(targetSessionId);
+      setImprovingVersion((v) => v + 1); // Force re-render
     }
   };
 
@@ -803,6 +815,7 @@ export function ChatInput({
                             key=${"ws-" + idx}
                             type="button"
                             onClick=${() => handlePredefinedPrompt(prompt)}
+                            title=${prompt.description || prompt.name}
                             class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
                             style=${prompt.backgroundColor
                               ? {
@@ -864,6 +877,7 @@ export function ChatInput({
                             key=${"other-" + idx}
                             type="button"
                             onClick=${() => handlePredefinedPrompt(prompt)}
+                            title=${prompt.description || prompt.name}
                             class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
                             style=${prompt.backgroundColor
                               ? {

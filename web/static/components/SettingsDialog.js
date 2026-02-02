@@ -1233,7 +1233,7 @@ export function SettingsDialog({
                   <div class="space-y-4">
                     <div class="flex items-center justify-between">
                       <p class="text-gray-400 text-sm">
-                        ACP servers are AI coding assistants.
+                        ACP servers are AI coding assistants.${" "}
                         <a
                           href="https://agentclientprotocol.com/overview/agents"
                           onClick=${(e) => {
@@ -1244,7 +1244,7 @@ export function SettingsDialog({
                           }}
                           class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
                           >Popular examples</a
-                        >
+                        >${" "}
                         include Auggie and Claude Code. You can configure
                         multiple servers and choose which one to use for each
                         workspace.
@@ -1761,7 +1761,16 @@ export function SettingsDialog({
                           </h5>
                           <p class="text-xs text-gray-500">
                             Commands to run when external access starts/stops
-                            (e.g., for tunneling)
+                            (e.g., for tunneling).${" "}
+                            <button
+                              type="button"
+                              onClick=${() =>
+                                openExternalURL(
+                                  "https://github.com/inercia/mitto/blob/main/docs/config/ext-access.md"
+                                )}
+                              class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                              >Learn more</button
+                            >
                           </p>
                           <div class="flex items-center gap-2">
                             <label class="text-sm text-gray-400 w-12">Up</label>
