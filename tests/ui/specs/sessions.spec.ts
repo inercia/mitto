@@ -58,6 +58,9 @@ test.describe("Session Management", () => {
     timeouts,
     helpers,
   }) => {
+    // Ensure we have an active session before trying to send a message
+    await helpers.ensureActiveSession(page);
+
     // Send a message in the first session
     const testMessage = helpers.uniqueMessage("First session");
     await helpers.sendMessage(page, testMessage);
@@ -70,7 +73,10 @@ test.describe("Session Management", () => {
     });
 
     // The first message should not be visible in the new session
-    await expect(page.locator(`text=${testMessage}`)).toBeHidden({
+    // Use a more specific selector to check the user's message, not the echoed response
+    await expect(
+      page.locator(selectors.userMessage).filter({ hasText: testMessage })
+    ).toHaveCount(0, {
       timeout: 2000,
     });
 
