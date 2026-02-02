@@ -126,6 +126,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	// Try to get existing background session first
 	bs := s.sessionManager.GetSession(sessionID)
+	wasResumed := false // Track if we resumed the session (vs already running)
 
 	// If no running session, try to resume it
 	if bs == nil && store != nil {
@@ -143,9 +144,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					clientLogger.Error("Failed to resume session", "error", err)
 				}
 				// Continue without a running session - client can still view history
-			} else if clientLogger != nil {
-				clientLogger.Debug("Resumed session for WebSocket client",
-					"acp_id", bs.GetACPID())
+			} else {
+				wasResumed = true
+				if clientLogger != nil {
+					clientLogger.Debug("Resumed session for WebSocket client",
+						"acp_id", bs.GetACPID())
+				}
 			}
 		}
 	}
@@ -165,6 +169,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	// Send connection confirmation with session info
 	client.sendSessionConnected(bs)
+
+	// Trigger follow-up suggestions for resumed sessions with message history
+	// This analyzes the last agent message and sends suggested responses asynchronously
+	if wasResumed && bs != nil {
+		bs.TriggerFollowUpSuggestions()
+	}
 }
 
 func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
@@ -555,6 +565,24 @@ func (c *SessionWSClient) OnPromptComplete(eventCount int) {
 	c.sendMessage(WSMsgTypePromptComplete, map[string]interface{}{
 		"session_id":  c.sessionID,
 		"event_count": eventCount,
+	})
+}
+
+// OnActionButtons is called when action buttons are extracted from the agent's response.
+func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
+	c.logger.Debug("action_buttons: OnActionButtons called", "button_count", len(buttons))
+	if len(buttons) == 0 {
+		return
+	}
+	c.logger.Info("action_buttons: sending to WebSocket",
+		"session_id", c.sessionID,
+		"button_count", len(buttons))
+	for i, btn := range buttons {
+		c.logger.Debug("action_buttons: button detail", "index", i, "label", btn.Label, "response_len", len(btn.Response))
+	}
+	c.sendMessage(WSMsgTypeActionButtons, map[string]interface{}{
+		"session_id": c.sessionID,
+		"buttons":    buttons,
 	})
 }
 

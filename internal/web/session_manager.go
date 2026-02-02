@@ -401,17 +401,26 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		queueConfig = globalConv.Queue
 	}
 
+	// Get action buttons config (prefer workspace config, fall back to global)
+	var actionButtonsConfig *config.ActionButtonsConfig
+	if workspaceConv != nil && workspaceConv.ActionButtons != nil {
+		actionButtonsConfig = workspaceConv.ActionButtons
+	} else if globalConv != nil {
+		actionButtonsConfig = globalConv.ActionButtons
+	}
+
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
-		ACPCommand:  acpCommand,
-		ACPServer:   acpServer,
-		WorkingDir:  workingDir,
-		AutoApprove: sm.autoApprove,
-		Logger:      sm.logger,
-		Store:       store,
-		SessionName: name,
-		Processors:  processors,
-		HookManager: hookMgr,
-		QueueConfig: queueConfig,
+		ACPCommand:          acpCommand,
+		ACPServer:           acpServer,
+		WorkingDir:          workingDir,
+		AutoApprove:         sm.autoApprove,
+		Logger:              sm.logger,
+		Store:               store,
+		SessionName:         name,
+		Processors:          processors,
+		HookManager:         hookMgr,
+		QueueConfig:         queueConfig,
+		ActionButtonsConfig: actionButtonsConfig,
 	})
 	if err != nil {
 		return nil, err
@@ -551,21 +560,30 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		queueConfig = globalConv.Queue
 	}
 
+	// Get action buttons config (prefer workspace config, fall back to global)
+	var actionButtonsConfig *config.ActionButtonsConfig
+	if workspaceConv != nil && workspaceConv.ActionButtons != nil {
+		actionButtonsConfig = workspaceConv.ActionButtons
+	} else if globalConv != nil {
+		actionButtonsConfig = globalConv.ActionButtons
+	}
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
-		PersistedID:  sessionID,
-		ACPCommand:   acpCommand,
-		ACPServer:    acpServer,
-		ACPSessionID: acpSessionID,
-		WorkingDir:   workingDir,
-		AutoApprove:  sm.autoApprove,
-		Logger:       sm.logger,
-		Store:        store,
-		SessionName:  sessionName,
-		Processors:   processors,
-		HookManager:  hookMgr,
-		QueueConfig:  queueConfig,
+		PersistedID:         sessionID,
+		ACPCommand:          acpCommand,
+		ACPServer:           acpServer,
+		ACPSessionID:        acpSessionID,
+		WorkingDir:          workingDir,
+		AutoApprove:         sm.autoApprove,
+		Logger:              sm.logger,
+		Store:               store,
+		SessionName:         sessionName,
+		Processors:          processors,
+		HookManager:         hookMgr,
+		QueueConfig:         queueConfig,
+		ActionButtonsConfig: actionButtonsConfig,
 	})
 	if err != nil {
 		return nil, err

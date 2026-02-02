@@ -79,6 +79,10 @@ func (m *mockObserver) OnQueueReordered(messages []session.QueuedMessage) {
 	// no-op for testing
 }
 
+func (m *mockObserver) OnActionButtons(buttons []ActionButton) {
+	// no-op for testing
+}
+
 func TestSessionObserver_Interface(t *testing.T) {
 	// Verify mockObserver implements SessionObserver
 	var _ SessionObserver = (*mockObserver)(nil)

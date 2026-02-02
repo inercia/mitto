@@ -32,7 +32,8 @@ type ConfigSaveRequest struct {
 		} `json:"auth,omitempty"`
 		Hooks *configPkg.WebHooks `json:"hooks,omitempty"`
 	} `json:"web"`
-	UI *configPkg.UIConfig `json:"ui,omitempty"`
+	UI            *configPkg.UIConfig            `json:"ui,omitempty"`
+	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
 }
 
 // handleConfig handles GET and POST /api/config.
@@ -67,6 +68,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response["web"] = s.config.MittoConfig.Web
 		response["ui"] = s.config.MittoConfig.UI
 		response["prompts"] = s.config.MittoConfig.Prompts
+		response["conversations"] = s.config.MittoConfig.Conversations
 
 		// Convert ACP servers to JSON-friendly format (including per-server prompts)
 		acpServers := make([]map[string]interface{}, len(s.config.MittoConfig.ACPServers))
@@ -266,11 +268,17 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		newUIConfig = *req.UI
 	}
 
-	// Preserve Session and Conversations config (not exposed in web UI)
+	// Preserve Session config (not exposed in web UI)
 	var sessionConfig *configPkg.SessionConfig
-	var conversationsConfig *configPkg.ConversationsConfig
 	if s.config.MittoConfig != nil {
 		sessionConfig = s.config.MittoConfig.Session
+	}
+
+	// Use Conversations from request if provided, otherwise preserve existing
+	var conversationsConfig *configPkg.ConversationsConfig
+	if req.Conversations != nil {
+		conversationsConfig = req.Conversations
+	} else if s.config.MittoConfig != nil {
 		conversationsConfig = s.config.MittoConfig.Conversations
 	}
 
@@ -312,12 +320,16 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		}
 	}
 
-	// Update ACP servers, prompts, web config, and UI config
+	// Update ACP servers, prompts, web config, UI config, and conversations config
 	if s.config.MittoConfig != nil {
 		s.config.MittoConfig.ACPServers = newACPServers
 		s.config.MittoConfig.Prompts = settings.Prompts
 		s.config.MittoConfig.Web = runtimeWebConfig
 		s.config.MittoConfig.UI = settings.UI
+		s.config.MittoConfig.Conversations = settings.Conversations
+
+		// Update session manager's global conversations config so new sessions use the updated settings
+		s.sessionManager.SetGlobalConversations(settings.Conversations)
 	}
 
 	// Update workspaces - need to resolve ACP commands

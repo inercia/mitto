@@ -12,6 +12,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/msghooks"
@@ -68,6 +69,9 @@ type BackgroundSession struct {
 
 	// Queue processing
 	queueConfig *config.QueueConfig // Queue configuration (nil means use defaults)
+
+	// Action buttons
+	actionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration (nil means disabled)
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -84,6 +88,8 @@ type BackgroundSessionConfig struct {
 	Processors   []config.MessageProcessor // Merged processors for message transformation
 	HookManager  *msghooks.Manager         // External command hooks for message transformation
 	QueueConfig  *config.QueueConfig       // Queue processing configuration
+
+	ActionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration
 }
 
 // NewBackgroundSession creates a new background session.
@@ -92,17 +98,18 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bs := &BackgroundSession{
-		ctx:           ctx,
-		cancel:        cancel,
-		autoApprove:   cfg.AutoApprove,
-		logger:        cfg.Logger,
-		eventBuffer:   NewEventBuffer(),
-		observers:     make(map[SessionObserver]struct{}),
-		processors:    cfg.Processors,
-		hookManager:   cfg.HookManager,
-		workingDir:    cfg.WorkingDir,
-		isFirstPrompt: true, // New session starts with first prompt pending
-		queueConfig:   cfg.QueueConfig,
+		ctx:                 ctx,
+		cancel:              cancel,
+		autoApprove:         cfg.AutoApprove,
+		logger:              cfg.Logger,
+		eventBuffer:         NewEventBuffer(),
+		observers:           make(map[SessionObserver]struct{}),
+		processors:          cfg.Processors,
+		hookManager:         cfg.HookManager,
+		workingDir:          cfg.WorkingDir,
+		isFirstPrompt:       true, // New session starts with first prompt pending
+		queueConfig:         cfg.QueueConfig,
+		actionButtonsConfig: cfg.ActionButtonsConfig,
 	}
 
 	// Create recorder for persistence
@@ -168,20 +175,21 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	bs := &BackgroundSession{
-		persistedID:   config.PersistedID,
-		ctx:           ctx,
-		cancel:        cancel,
-		autoApprove:   config.AutoApprove,
-		logger:        sessionLogger,
-		eventBuffer:   NewEventBuffer(),
-		observers:     make(map[SessionObserver]struct{}),
-		isResumed:     true, // Mark as resumed session
-		store:         config.Store,
-		processors:    config.Processors,
-		hookManager:   config.HookManager,
-		workingDir:    config.WorkingDir,
-		isFirstPrompt: false, // Resumed session = first prompt already sent
-		queueConfig:   config.QueueConfig,
+		persistedID:         config.PersistedID,
+		ctx:                 ctx,
+		cancel:              cancel,
+		autoApprove:         config.AutoApprove,
+		logger:              sessionLogger,
+		eventBuffer:         NewEventBuffer(),
+		observers:           make(map[SessionObserver]struct{}),
+		isResumed:           true, // Mark as resumed session
+		store:               config.Store,
+		processors:          config.Processors,
+		hookManager:         config.HookManager,
+		workingDir:          config.WorkingDir,
+		isFirstPrompt:       false, // Resumed session = first prompt already sent
+		queueConfig:         config.QueueConfig,
+		actionButtonsConfig: config.ActionButtonsConfig,
 	}
 
 	// Resume recorder for the existing session
@@ -819,7 +827,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	// Run prompt in background
 	go func() {
-		_, err := bs.acpConn.Prompt(bs.ctx, acp.PromptRequest{
+		promptResp, err := bs.acpConn.Prompt(bs.ctx, acp.PromptRequest{
 			SessionId: acp.SessionId(bs.acpID),
 			Prompt:    finalBlocks,
 		})
@@ -840,6 +848,17 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			bs.acpClient.FlushMarkdown()
 		}
 
+		// Get the agent message for async analysis (before flushing)
+		var agentMessage string
+		isEndTurn := err == nil && promptResp.StopReason == acp.StopReasonEndTurn
+		if bs.actionButtonsConfig.IsEnabled() && isEndTurn {
+			bs.bufferMu.Lock()
+			if bs.eventBuffer != nil {
+				agentMessage = bs.eventBuffer.GetAgentMessage()
+			}
+			bs.bufferMu.Unlock()
+		}
+
 		// Persist buffered messages
 		bs.flushAndPersistMessages()
 
@@ -856,10 +875,122 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 			// Process next queued message if queue processing is enabled
 			bs.processNextQueuedMessage()
+
+			// Async follow-up analysis (non-blocking)
+			// This runs after prompt_complete so the user sees the response immediately
+			if agentMessage != "" {
+				go bs.analyzeFollowUpQuestions(agentMessage)
+			}
 		}
 	}()
 
 	return nil
+}
+
+// analyzeFollowUpQuestions asynchronously analyzes an agent message for follow-up questions.
+// It uses the auxiliary conversation to identify questions and sends suggested responses
+// to observers via OnActionButtons. This is non-blocking and runs in a goroutine.
+func (bs *BackgroundSession) analyzeFollowUpQuestions(agentMessage string) {
+	// Create a timeout context for the analysis
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Check if session is still valid before starting
+	if bs.IsClosed() {
+		bs.logger.Debug("follow-up analysis skipped: session closed")
+		return
+	}
+
+	bs.logger.Debug("follow-up analysis: starting", "message_length", len(agentMessage))
+
+	// Use the auxiliary conversation to analyze the message
+	suggestions, err := auxiliary.AnalyzeFollowUpQuestions(ctx, agentMessage)
+	if err != nil {
+		bs.logger.Debug("follow-up analysis failed", "error", err)
+		return
+	}
+
+	if len(suggestions) == 0 {
+		bs.logger.Debug("follow-up analysis: no suggestions found")
+		return
+	}
+
+	// Check again if session is still valid and not prompting
+	// If the user has already sent a new message, don't show stale suggestions
+	if bs.IsClosed() {
+		bs.logger.Debug("follow-up analysis: session closed before sending buttons")
+		return
+	}
+	if bs.IsPrompting() {
+		bs.logger.Debug("follow-up analysis: session is prompting, discarding buttons")
+		return
+	}
+
+	// Convert auxiliary suggestions to ActionButton format
+	buttons := make([]ActionButton, 0, len(suggestions))
+	for _, s := range suggestions {
+		buttons = append(buttons, ActionButton{
+			Label:    s.Label,
+			Response: s.Value,
+		})
+	}
+
+	bs.logger.Info("follow-up analysis: sending buttons to observers", "count", len(buttons))
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnActionButtons(buttons)
+	})
+}
+
+// TriggerFollowUpSuggestions triggers follow-up suggestions analysis for a resumed session.
+// This reads the last agent message from stored events and analyzes it asynchronously.
+// It only works for sessions with message history and when follow-up suggestions are enabled.
+// This is non-blocking and runs the analysis in a goroutine.
+// Returns true if the analysis was triggered, false if skipped.
+func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
+	// Check if follow-up suggestions are enabled
+	if !bs.actionButtonsConfig.IsEnabled() {
+		bs.logger.Debug("follow-up suggestions: disabled in config")
+		return false
+	}
+
+	// Check if session is prompting (don't interfere with active prompts)
+	if bs.IsPrompting() {
+		bs.logger.Debug("follow-up suggestions: session is prompting, skipping")
+		return false
+	}
+
+	// Check if session is closed
+	if bs.IsClosed() {
+		bs.logger.Debug("follow-up suggestions: session is closed, skipping")
+		return false
+	}
+
+	// Need store to read events
+	if bs.store == nil {
+		bs.logger.Debug("follow-up suggestions: no store, skipping")
+		return false
+	}
+
+	// Read stored events for this session
+	events, err := bs.store.ReadEvents(bs.persistedID)
+	if err != nil {
+		bs.logger.Debug("follow-up suggestions: failed to read events", "error", err)
+		return false
+	}
+
+	// Get the last agent message from stored events
+	agentMessage := session.GetLastAgentMessage(events)
+	if agentMessage == "" {
+		bs.logger.Debug("follow-up suggestions: no agent message found in history")
+		return false
+	}
+
+	bs.logger.Info("follow-up suggestions: triggering analysis for resumed session",
+		"message_length", len(agentMessage))
+
+	// Run analysis asynchronously
+	go bs.analyzeFollowUpQuestions(agentMessage)
+	return true
 }
 
 // Cancel cancels the current prompt.

@@ -322,6 +322,10 @@ func (m *mockSessionObserver) OnQueueReordered(messages []session.QueuedMessage)
 	// no-op for testing
 }
 
+func (m *mockSessionObserver) OnActionButtons(buttons []ActionButton) {
+	// no-op for testing
+}
+
 func (m *mockSessionObserver) getQueueMessagesSending() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
