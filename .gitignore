@@ -144,3 +144,8 @@ tests/ui/test-results/
 /mitto-app
 tests/mocks/acp-server/mock-acp-server
 test-results/
+
+# -----------------------------------------------------------------------------
+# Local Augment Rules (not committed)
+# -----------------------------------------------------------------------------
+.augment/rules/99-local.md
