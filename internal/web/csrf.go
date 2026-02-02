@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 
 	"github.com/inercia/mitto/internal/logging"
@@ -103,8 +102,7 @@ func (c *CSRFManager) HandleCSRFToken(w http.ResponseWriter, r *http.Request) {
 	// Set cookie so subsequent requests can use it
 	c.SetCSRFCookie(w, token)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": token})
+	writeJSONOK(w, map[string]string{"token": token})
 }
 
 // isStateChangingMethod returns true for HTTP methods that change state.

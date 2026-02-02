@@ -605,6 +605,9 @@ func run() error {
 		rcFilePath = configResult.SourcePath
 	}
 
+	// Initialize prompts cache for global prompts from MITTO_DIR/prompts/
+	promptsCache := config.NewPromptsCache()
+
 	webConfig := web.Config{
 		Workspaces:      workspaces,
 		AutoApprove:     false,
@@ -614,6 +617,7 @@ func run() error {
 		OnWorkspaceSave: onWorkspaceSave,
 		ConfigReadOnly:  configReadOnly,
 		RCFilePath:      rcFilePath,
+		PromptsCache:    promptsCache,
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)

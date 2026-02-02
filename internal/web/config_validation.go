@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 )
@@ -19,12 +18,10 @@ func (e *configValidationError) Error() string {
 
 // writeConfigError writes a JSON error response for config validation errors.
 func (s *Server) writeConfigError(w http.ResponseWriter, err *configValidationError) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(err.StatusCode)
 	if err.Details != nil {
-		json.NewEncoder(w).Encode(err.Details)
+		writeJSON(w, err.StatusCode, err.Details)
 	} else {
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Message})
+		writeJSON(w, err.StatusCode, map[string]string{"error": err.Message})
 	}
 }
 

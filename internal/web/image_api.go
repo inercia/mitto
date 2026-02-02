@@ -88,12 +88,7 @@ func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request, store
 	// Parse multipart form
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		if strings.Contains(err.Error(), "request body too large") {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			json.NewEncoder(w).Encode(map[string]string{
-				"error":   "image_too_large",
-				"message": "Image exceeds 10MB limit",
-			})
+			writeErrorJSON(w, http.StatusRequestEntityTooLarge, "image_too_large", "Image exceeds 10MB limit")
 			return
 		}
 		http.Error(w, "Failed to parse form", http.StatusBadRequest)
@@ -124,12 +119,7 @@ func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request, store
 
 	// Validate MIME type
 	if !session.IsSupportedImageType(mimeType) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "unsupported_format",
-			"message": "Only PNG, JPEG, GIF, and WebP images are supported",
-		})
+		writeErrorJSON(w, http.StatusBadRequest, "unsupported_format", "Only PNG, JPEG, GIF, and WebP images are supported")
 		return
 	}
 
@@ -149,49 +139,25 @@ func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request, store
 		Size:     info.Size,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+	writeJSONCreated(w, response)
 }
 
 // handleImageSaveError handles errors from SaveImage and returns appropriate HTTP responses.
 func (s *Server) handleImageSaveError(w http.ResponseWriter, err error) {
-	w.Header().Set("Content-Type", "application/json")
-
 	switch err {
 	case session.ErrImageTooLarge:
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "image_too_large",
-			"message": "Image exceeds 10MB limit",
-		})
+		writeErrorJSON(w, http.StatusRequestEntityTooLarge, "image_too_large", "Image exceeds 10MB limit")
 	case session.ErrUnsupportedFormat:
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "unsupported_format",
-			"message": "Only PNG, JPEG, GIF, and WebP images are supported",
-		})
+		writeErrorJSON(w, http.StatusBadRequest, "unsupported_format", "Only PNG, JPEG, GIF, and WebP images are supported")
 	case session.ErrSessionImageLimit:
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "session_limit",
-			"message": "Session has reached the maximum of 50 images",
-		})
+		writeErrorJSON(w, http.StatusBadRequest, "session_limit", "Session has reached the maximum of 50 images")
 	case session.ErrSessionStorageLimit:
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "storage_limit",
-			"message": "Session has reached the maximum storage of 100MB for images",
-		})
+		writeErrorJSON(w, http.StatusBadRequest, "storage_limit", "Session has reached the maximum storage of 100MB for images")
 	default:
 		if s.logger != nil {
 			s.logger.Error("Failed to save image", "error", err)
 		}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   "save_failed",
-			"message": "Failed to save image",
-		})
+		writeErrorJSON(w, http.StatusInternalServerError, "save_failed", "Failed to save image")
 	}
 }
 
@@ -220,8 +186,7 @@ func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request, store 
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	writeJSONOK(w, result)
 }
 
 // handleServeImage handles GET /api/sessions/{id}/images/{imageId}
@@ -402,11 +367,9 @@ func (s *Server) handleUploadImageFromPath(w http.ResponseWriter, r *http.Reques
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	if len(responses) > 0 {
-		w.WriteHeader(http.StatusCreated)
+		writeJSONCreated(w, responses)
 	} else {
-		w.WriteHeader(http.StatusOK)
+		writeJSONOK(w, responses)
 	}
-	json.NewEncoder(w).Encode(responses)
 }

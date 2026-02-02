@@ -67,8 +67,22 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if s.config.MittoConfig != nil {
 		response["web"] = s.config.MittoConfig.Web
 		response["ui"] = s.config.MittoConfig.UI
-		response["prompts"] = s.config.MittoConfig.Prompts
 		response["conversations"] = s.config.MittoConfig.Conversations
+
+		// Merge prompts from global files and settings
+		// Global file prompts (MITTO_DIR/prompts/*.md) have lower priority than settings prompts
+		var globalFilePrompts []configPkg.WebPrompt
+		if s.config.PromptsCache != nil {
+			var err error
+			globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
+			if err != nil && s.logger != nil {
+				s.logger.Warn("Failed to load global file prompts", "error", err)
+			}
+		}
+		// Merge: settings prompts override global file prompts by name
+		// Note: workspace prompts are handled separately via /api/workspace-prompts
+		mergedPrompts := configPkg.MergePrompts(globalFilePrompts, s.config.MittoConfig.Prompts, nil)
+		response["prompts"] = mergedPrompts
 
 		// Convert ACP servers to JSON-friendly format (including per-server prompts)
 		acpServers := make([]map[string]interface{}, len(s.config.MittoConfig.ACPServers))

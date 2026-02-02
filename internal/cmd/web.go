@@ -158,6 +158,9 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		rcFilePath = configResult.SourcePath
 	}
 
+	// Initialize prompts cache for global prompts from MITTO_DIR/prompts/
+	promptsCache := config.NewPromptsCache()
+
 	// Create web server with workspaces
 	srv, err := web.NewServer(web.Config{
 		Workspaces:      webWorkspaces,
@@ -169,6 +172,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		OnWorkspaceSave: onWorkspaceSave,
 		ConfigReadOnly:  configReadOnly,
 		RCFilePath:      rcFilePath,
+		PromptsCache:    promptsCache,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)

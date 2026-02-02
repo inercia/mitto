@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -150,8 +149,7 @@ func (s *Server) handleExternalStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ExternalStatusResponse{
+	writeJSONOK(w, ExternalStatusResponse{
 		Enabled: s.IsExternalListenerRunning(),
 		Port:    s.GetExternalPort(),
 	})

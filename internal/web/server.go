@@ -49,6 +49,9 @@ type Config struct {
 	// RCFilePath is the path to the RC file if config was loaded from one.
 	// This is used to show the user which file is being used when ConfigReadOnly is true.
 	RCFilePath string
+	// PromptsCache provides cached access to global prompts from MITTO_DIR/prompts/.
+	// If nil, global file prompts are not loaded.
+	PromptsCache *configPkg.PromptsCache
 }
 
 // GetWorkspaces returns the effective list of workspaces.
