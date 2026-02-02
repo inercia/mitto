@@ -219,6 +219,84 @@ func TestBuildConversationHistory(t *testing.T) {
 	}
 }
 
+func TestGetLastAgentMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		events   []Event
+		expected string
+	}{
+		{
+			name:     "empty events",
+			events:   []Event{},
+			expected: "",
+		},
+		{
+			name: "no user prompt",
+			events: []Event{
+				{Type: EventTypeSessionStart, Data: SessionStartData{SessionID: "test"}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "Orphan message"}},
+			},
+			expected: "",
+		},
+		{
+			name: "single turn",
+			events: []Event{
+				{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "Hello"}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "Hi there!"}},
+			},
+			expected: "Hi there!",
+		},
+		{
+			name: "multiple turns returns last",
+			events: []Event{
+				{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "First question"}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "First answer"}},
+				{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "Second question"}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "Second answer"}},
+			},
+			expected: "Second answer",
+		},
+		{
+			name: "multiple agent messages after last user prompt",
+			events: []Event{
+				{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "Do something"}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "Part 1. "}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "Part 2. "}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "Part 3."}},
+			},
+			expected: "Part 1. Part 2. Part 3.",
+		},
+		{
+			name: "user prompt with no agent response yet",
+			events: []Event{
+				{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "Old question"}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "Old answer"}},
+				{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "New question"}},
+			},
+			expected: "",
+		},
+		{
+			name: "ignores tool calls between messages",
+			events: []Event{
+				{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "Fix the bug"}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "I'll fix it. "}},
+				{Type: EventTypeToolCall, Data: ToolCallData{Title: "read file"}},
+				{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "Done!"}},
+			},
+			expected: "I'll fix it. Done!",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetLastAgentMessage(tt.events)
+			if result != tt.expected {
+				t.Errorf("GetLastAgentMessage() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
 }

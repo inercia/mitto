@@ -229,6 +229,46 @@ func BuildConversationHistory(events []Event, maxTurns int) string {
 	return sb.String()
 }
 
+// GetLastAgentMessage extracts the last agent message text from a list of events.
+// It finds the most recent user_prompt and collects all subsequent agent_message events
+// until the next user_prompt or end of events.
+// Returns an empty string if no agent message is found after the last user prompt.
+func GetLastAgentMessage(events []Event) string {
+	if len(events) == 0 {
+		return ""
+	}
+
+	// Find the last user_prompt index
+	lastUserPromptIdx := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == EventTypeUserPrompt {
+			lastUserPromptIdx = i
+			break
+		}
+	}
+
+	// If no user prompt found, there's no conversation context
+	if lastUserPromptIdx == -1 {
+		return ""
+	}
+
+	// Collect all agent messages after the last user prompt
+	var agentMessage strings.Builder
+	for i := lastUserPromptIdx + 1; i < len(events); i++ {
+		if events[i].Type == EventTypeAgentMessage {
+			data, err := DecodeEventData(events[i])
+			if err != nil {
+				continue
+			}
+			if d, ok := data.(AgentMessageData); ok {
+				agentMessage.WriteString(d.Text)
+			}
+		}
+	}
+
+	return agentMessage.String()
+}
+
 // truncateText truncates text to maxLen characters, adding "..." if truncated.
 func truncateText(text string, maxLen int) string {
 	if len(text) <= maxLen {
