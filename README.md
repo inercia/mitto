@@ -25,13 +25,14 @@ So you have installed some ACP compatible agents, like Claude Code, or Copilot C
 other AI coding agent, and you want to have multiple instances running at the same time, each one in
 its own workspace (ie, folder)
 
-// TODO: image
+<img align="center" src="docs/videos/desktop.gif" alt="Mitto" width="512" height="256"/>
 
-but you also want to be able to continue your work from your browser, to continue talking to your agents
-from your phone or from your tablet, and you want to be able to switch between them easily, and you want
-to be able to do it all without having to install yet another AI coding agent...
+but you also want to be able to continue your work from your browser, or go for a coffee and
+continue talking to your agents from your phone or from your tablet, and you want to be able
+to switch between them easily, and you want to be able to do it all without having to
+install yet another AI coding agent...
 
-// TODO: image
+<img align="center" src="docs/videos/mobile.gif" alt="Mitto" width="256" height="512"/>
 
 ---
 
@@ -51,11 +52,7 @@ to be able to do it all without having to install yet another AI coding agent...
 
 🔒 **Permission Control** — Review and approve agent actions
 
- **Support gestures** — Swipe between conversations
-
- **Keyboard shortcuts** — Use keyboard shortcuts to create, delete or navigate between conversations.
-
-<!-- Screenshots will go here -->
+🖥️ **Keyboard shortcuts** — Use keyboard shortcuts to create, delete or navigate between conversations.
 
 ## Quick Start
 
@@ -85,8 +82,8 @@ acp:
 |---|---|
 | 📖 [Usage Guide](docs/usage.md) | Commands, flags, examples |
 | ⚙️ [Configuration](docs/config/README.md) | ACP servers, settings |
-| 🌐 [Web Interface](docs/config/web.md) | Auth, hooks, themes |
-| 🍎 [macOS App](docs/config/mac.md) | Hotkeys, notifications |
+| 🌐 [Web Interface](docs/config/web/README.md) | Auth, hooks, themes, security |
+| 🍎 [macOS App](docs/config/mac/README.md) | Hotkeys, notifications |
 | 🔧 [Development](docs/development.md) | Building, testing |
 | 🏗️ [Architecture](docs/devel/README.md) | Design internals |
 
