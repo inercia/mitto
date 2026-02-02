@@ -27,22 +27,6 @@ const (
 	ConfigSourceCustomFile
 )
 
-// String returns a human-readable name for the config source.
-func (s ConfigSource) String() string {
-	switch s {
-	case ConfigSourceRCFile:
-		return "RC file"
-	case ConfigSourceSettingsJSON:
-		return "settings.json"
-	case ConfigSourceEmbeddedDefaults:
-		return "embedded defaults"
-	case ConfigSourceCustomFile:
-		return "custom config file"
-	default:
-		return "none"
-	}
-}
-
 // LoadResult contains the loaded configuration and metadata about its source.
 type LoadResult struct {
 	// Config is the loaded configuration.

@@ -30,6 +30,8 @@ type WebPrompt struct {
 	Prompt string `json:"prompt"`
 	// BackgroundColor is an optional hex color string for the prompt button (e.g., "#E8F5E9")
 	BackgroundColor string `json:"backgroundColor,omitempty"`
+	// Description is an optional description shown as tooltip in the UI
+	Description string `json:"description,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -515,6 +517,59 @@ func ApplyProcessors(message string, processors []MessageProcessor, isFirstMessa
 			result = processor.Apply(result)
 		}
 	}
+	return result
+}
+
+// ============================================================================
+// Prompt Merging
+//
+// Prompts can come from multiple sources with different priorities.
+// MergePrompts combines them, with later sources overriding earlier ones by name.
+//
+// Priority order (lowest to highest):
+//   1. Global file prompts (MITTO_DIR/prompts/*.md)
+//   2. Settings file prompts (config.Prompts)
+//   3. Workspace prompts (.mittorc)
+// ============================================================================
+
+// MergePrompts combines prompts from multiple sources with proper priority.
+// Later sources override earlier ones when prompts have the same name.
+// The order of prompts is preserved, with higher-priority prompts appearing first.
+//
+// Parameters:
+//   - globalFilePrompts: prompts from MITTO_DIR/prompts/*.md (lowest priority)
+//   - settingsPrompts: prompts from settings file (medium priority)
+//   - workspacePrompts: prompts from workspace .mittorc (highest priority)
+//
+// Returns a merged list with duplicates removed (by name).
+func MergePrompts(globalFilePrompts, settingsPrompts, workspacePrompts []WebPrompt) []WebPrompt {
+	seen := make(map[string]bool)
+	var result []WebPrompt
+
+	// Add workspace prompts first (highest priority)
+	for _, p := range workspacePrompts {
+		if p.Name != "" && !seen[p.Name] {
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
+	// Add settings prompts (medium priority)
+	for _, p := range settingsPrompts {
+		if p.Name != "" && !seen[p.Name] {
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
+	// Add global file prompts (lowest priority)
+	for _, p := range globalFilePrompts {
+		if p.Name != "" && !seen[p.Name] {
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
 	return result
 }
 

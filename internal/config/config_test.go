@@ -1339,3 +1339,80 @@ conversations:
 		t.Errorf("Processor[1].Position = %q, want %q", p1.Position, ProcessorPositionAppend)
 	}
 }
+
+func TestMergePrompts(t *testing.T) {
+	globalFile := []WebPrompt{
+		{Name: "Global1", Prompt: "global1"},
+		{Name: "Shared", Prompt: "global-shared"},
+	}
+	settings := []WebPrompt{
+		{Name: "Settings1", Prompt: "settings1"},
+		{Name: "Shared", Prompt: "settings-shared"},
+	}
+	workspace := []WebPrompt{
+		{Name: "Workspace1", Prompt: "workspace1"},
+		{Name: "Shared", Prompt: "workspace-shared"},
+	}
+
+	result := MergePrompts(globalFile, settings, workspace)
+
+	// Should have 4 prompts: Workspace1, Shared (from workspace), Settings1, Global1
+	if len(result) != 4 {
+		t.Fatalf("len(result) = %d, want 4", len(result))
+	}
+
+	// Check order: workspace first, then settings, then global
+	if result[0].Name != "Workspace1" {
+		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "Workspace1")
+	}
+	if result[1].Name != "Shared" {
+		t.Errorf("result[1].Name = %q, want %q", result[1].Name, "Shared")
+	}
+	// Shared should have workspace value (highest priority)
+	if result[1].Prompt != "workspace-shared" {
+		t.Errorf("result[1].Prompt = %q, want %q", result[1].Prompt, "workspace-shared")
+	}
+	if result[2].Name != "Settings1" {
+		t.Errorf("result[2].Name = %q, want %q", result[2].Name, "Settings1")
+	}
+	if result[3].Name != "Global1" {
+		t.Errorf("result[3].Name = %q, want %q", result[3].Name, "Global1")
+	}
+}
+
+func TestMergePrompts_EmptyInputs(t *testing.T) {
+	// All empty
+	result := MergePrompts(nil, nil, nil)
+	if len(result) != 0 {
+		t.Errorf("MergePrompts(nil, nil, nil) = %d prompts, want 0", len(result))
+	}
+
+	// Only global
+	global := []WebPrompt{{Name: "G1", Prompt: "g1"}}
+	result = MergePrompts(global, nil, nil)
+	if len(result) != 1 || result[0].Name != "G1" {
+		t.Errorf("MergePrompts with only global failed")
+	}
+
+	// Only workspace
+	workspace := []WebPrompt{{Name: "W1", Prompt: "w1"}}
+	result = MergePrompts(nil, nil, workspace)
+	if len(result) != 1 || result[0].Name != "W1" {
+		t.Errorf("MergePrompts with only workspace failed")
+	}
+}
+
+func TestMergePrompts_SkipsEmptyNames(t *testing.T) {
+	prompts := []WebPrompt{
+		{Name: "", Prompt: "no name"},
+		{Name: "Valid", Prompt: "valid"},
+	}
+
+	result := MergePrompts(prompts, nil, nil)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].Name != "Valid" {
+		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "Valid")
+	}
+}
