@@ -360,14 +360,51 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	}
 }
 
+// hasValidCredentials checks if auth config has non-empty username and password.
+func hasValidCredentials(authConfig *configPkg.WebAuth) bool {
+	return authConfig != nil &&
+		authConfig.Simple != nil &&
+		authConfig.Simple.Username != "" &&
+		authConfig.Simple.Password != ""
+}
+
+// ensureExternalListenerStarted starts the external listener if not already running.
+func (s *Server) ensureExternalListenerStarted() {
+	if s.IsExternalListenerRunning() {
+		return
+	}
+
+	// Use configured external port: -1 = disabled, 0 = random, >0 = specific port
+	port := s.GetExternalPort()
+	if port == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
+		port = s.config.MittoConfig.Web.ExternalPort
+	}
+
+	// Only start if port is >= 0 (port 0 = random, port > 0 = specific)
+	// Port -1 means disabled
+	if port < 0 {
+		if s.logger != nil {
+			s.logger.Debug("External listener disabled (port = -1)")
+		}
+		return
+	}
+
+	actualPort, err := s.StartExternalListener(port)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to start external listener", "error", err)
+		}
+	} else if s.logger != nil {
+		s.logger.Info("External listener started", "port", actualPort)
+	}
+}
+
 // applyAuthChanges handles dynamic changes to authentication and external access.
 // It validates that credentials are non-empty before enabling external access.
 func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthConfig *configPkg.WebAuth) {
 	// Case 1: Auth was disabled, now enabled -> create auth manager and start external listener
 	if !oldAuthEnabled && newAuthEnabled {
-		// Validate credentials are non-empty before enabling external access
-		if newAuthConfig == nil || newAuthConfig.Simple == nil ||
-			newAuthConfig.Simple.Username == "" || newAuthConfig.Simple.Password == "" {
+		if !hasValidCredentials(newAuthConfig) {
 			if s.logger != nil {
 				s.logger.Error("Cannot enable external access: credentials are incomplete")
 			}
@@ -384,28 +421,7 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			s.authManager.UpdateConfig(newAuthConfig)
 		}
 
-		// Start external listener if not already running
-		if !s.IsExternalListenerRunning() {
-			// Use configured external port: -1 = disabled, 0 = random, >0 = specific port
-			port := s.GetExternalPort()
-			if port == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
-				port = s.config.MittoConfig.Web.ExternalPort
-			}
-			// Only start if port is >= 0 (port 0 = random, port > 0 = specific)
-			// Port -1 means disabled
-			if port >= 0 {
-				actualPort, err := s.StartExternalListener(port)
-				if err != nil {
-					if s.logger != nil {
-						s.logger.Error("Failed to start external listener", "error", err)
-					}
-				} else if s.logger != nil {
-					s.logger.Info("External listener started", "port", actualPort)
-				}
-			} else if s.logger != nil {
-				s.logger.Debug("External listener disabled (port = -1)")
-			}
-		}
+		s.ensureExternalListenerStarted()
 		return
 	}
 
@@ -427,9 +443,7 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 
 	// Case 3: Auth was enabled and still enabled -> update credentials and ensure listener is running
 	if oldAuthEnabled && newAuthEnabled {
-		// Validate credentials are non-empty before updating
-		if newAuthConfig == nil || newAuthConfig.Simple == nil ||
-			newAuthConfig.Simple.Username == "" || newAuthConfig.Simple.Password == "" {
+		if !hasValidCredentials(newAuthConfig) {
 			if s.logger != nil {
 				s.logger.Error("Cannot update external access: credentials are incomplete, stopping listener")
 			}
@@ -447,28 +461,7 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 			}
 		}
 
-		// Ensure external listener is running (it might have been stopped or never started)
-		if !s.IsExternalListenerRunning() {
-			// Use configured external port: -1 = disabled, 0 = random, >0 = specific port
-			port := s.GetExternalPort()
-			if port == 0 && s.config.MittoConfig != nil && s.config.MittoConfig.Web.ExternalPort > 0 {
-				port = s.config.MittoConfig.Web.ExternalPort
-			}
-			// Only start if port is >= 0 (port 0 = random, port > 0 = specific)
-			// Port -1 means disabled
-			if port >= 0 {
-				actualPort, err := s.StartExternalListener(port)
-				if err != nil {
-					if s.logger != nil {
-						s.logger.Error("Failed to start external listener", "error", err)
-					}
-				} else if s.logger != nil {
-					s.logger.Info("External listener started", "port", actualPort)
-				}
-			} else if s.logger != nil {
-				s.logger.Debug("External listener disabled (port = -1)")
-			}
-		}
+		s.ensureExternalListenerStarted()
 		return
 	}
 
