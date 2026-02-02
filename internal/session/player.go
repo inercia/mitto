@@ -3,8 +3,26 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 )
+
+// eventDataTypes maps event types to their corresponding data struct types.
+// This registry is used by DecodeEventData to avoid duplicate switch statements.
+var eventDataTypes = map[EventType]reflect.Type{
+	EventTypeUserPrompt:     reflect.TypeOf(UserPromptData{}),
+	EventTypeAgentMessage:   reflect.TypeOf(AgentMessageData{}),
+	EventTypeAgentThought:   reflect.TypeOf(AgentThoughtData{}),
+	EventTypeToolCall:       reflect.TypeOf(ToolCallData{}),
+	EventTypeToolCallUpdate: reflect.TypeOf(ToolCallUpdateData{}),
+	EventTypePlan:           reflect.TypeOf(PlanData{}),
+	EventTypePermission:     reflect.TypeOf(PermissionData{}),
+	EventTypeFileRead:       reflect.TypeOf(FileOperationData{}),
+	EventTypeFileWrite:      reflect.TypeOf(FileOperationData{}),
+	EventTypeError:          reflect.TypeOf(ErrorData{}),
+	EventTypeSessionStart:   reflect.TypeOf(SessionStartData{}),
+	EventTypeSessionEnd:     reflect.TypeOf(SessionEndData{}),
+}
 
 // Player provides session playback functionality.
 type Player struct {
@@ -27,21 +45,6 @@ func NewPlayer(store *Store, sessionID string) (*Player, error) {
 		events:    events,
 		position:  0,
 	}, nil
-}
-
-// SessionID returns the session ID.
-func (p *Player) SessionID() string {
-	return p.sessionID
-}
-
-// Metadata returns the session metadata.
-func (p *Player) Metadata() (Metadata, error) {
-	return p.store.GetMetadata(p.sessionID)
-}
-
-// Events returns all events in the session.
-func (p *Player) Events() []Event {
-	return p.events
 }
 
 // EventCount returns the total number of events.
@@ -103,53 +106,20 @@ func (p *Player) EventsOfType(eventType EventType) []Event {
 }
 
 // DecodeEventData decodes the event data into the appropriate type.
+// If the data is already the correct struct type, it returns it directly.
+// If the data is a map (from JSON unmarshaling), it converts it to the appropriate struct.
 func DecodeEventData(event Event) (interface{}, error) {
-	// If data is already the correct type, return it
-	switch event.Type {
-	case EventTypeUserPrompt:
-		if data, ok := event.Data.(UserPromptData); ok {
-			return data, nil
-		}
-	case EventTypeAgentMessage:
-		if data, ok := event.Data.(AgentMessageData); ok {
-			return data, nil
-		}
-	case EventTypeAgentThought:
-		if data, ok := event.Data.(AgentThoughtData); ok {
-			return data, nil
-		}
-	case EventTypeToolCall:
-		if data, ok := event.Data.(ToolCallData); ok {
-			return data, nil
-		}
-	case EventTypeToolCallUpdate:
-		if data, ok := event.Data.(ToolCallUpdateData); ok {
-			return data, nil
-		}
-	case EventTypePlan:
-		if data, ok := event.Data.(PlanData); ok {
-			return data, nil
-		}
-	case EventTypePermission:
-		if data, ok := event.Data.(PermissionData); ok {
-			return data, nil
-		}
-	case EventTypeFileRead, EventTypeFileWrite:
-		if data, ok := event.Data.(FileOperationData); ok {
-			return data, nil
-		}
-	case EventTypeError:
-		if data, ok := event.Data.(ErrorData); ok {
-			return data, nil
-		}
-	case EventTypeSessionStart:
-		if data, ok := event.Data.(SessionStartData); ok {
-			return data, nil
-		}
-	case EventTypeSessionEnd:
-		if data, ok := event.Data.(SessionEndData); ok {
-			return data, nil
-		}
+	// Look up the expected type for this event
+	expectedType, ok := eventDataTypes[event.Type]
+	if !ok {
+		// Unknown event type, return data as-is
+		return event.Data, nil
+	}
+
+	// Check if data is already the correct type
+	dataValue := reflect.ValueOf(event.Data)
+	if dataValue.Type() == expectedType {
+		return event.Data, nil
 	}
 
 	// Data is likely a map from JSON unmarshaling, convert it
@@ -277,66 +247,27 @@ func truncateText(text string, maxLen int) string {
 	return text[:maxLen-3] + "..."
 }
 
-// decodeMapToStruct converts a map to the appropriate struct type.
+// decodeMapToStruct converts a map to the appropriate struct type using the eventDataTypes registry.
 func decodeMapToStruct(eventType EventType, data interface{}) (interface{}, error) {
+	// Look up the expected type for this event
+	expectedType, ok := eventDataTypes[eventType]
+	if !ok {
+		// Unknown event type, return data as-is
+		return data, nil
+	}
+
 	// Re-marshal and unmarshal to convert map to struct
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	var result interface{}
-	switch eventType {
-	case EventTypeUserPrompt:
-		var d UserPromptData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypeAgentMessage:
-		var d AgentMessageData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypeAgentThought:
-		var d AgentThoughtData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypeToolCall:
-		var d ToolCallData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypeToolCallUpdate:
-		var d ToolCallUpdateData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypePlan:
-		var d PlanData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypePermission:
-		var d PermissionData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypeFileRead, EventTypeFileWrite:
-		var d FileOperationData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypeError:
-		var d ErrorData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypeSessionStart:
-		var d SessionStartData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	case EventTypeSessionEnd:
-		var d SessionEndData
-		err = json.Unmarshal(jsonData, &d)
-		result = d
-	default:
-		return data, nil
-	}
-
-	if err != nil {
+	// Create a new instance of the expected type and unmarshal into it
+	resultPtr := reflect.New(expectedType).Interface()
+	if err := json.Unmarshal(jsonData, resultPtr); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal data: %w", err)
 	}
-	return result, nil
+
+	// Return the value (not the pointer)
+	return reflect.ValueOf(resultPtr).Elem().Interface(), nil
 }
