@@ -91,14 +91,6 @@ func (c *Connection) HasImageSupport() bool {
 	return c.capabilities.PromptCapabilities.Image
 }
 
-// HasLoadSessionSupport returns true if the agent supports loading/resuming sessions.
-func (c *Connection) HasLoadSessionSupport() bool {
-	if c.capabilities == nil {
-		return false
-	}
-	return c.capabilities.LoadSession
-}
-
 // NewSession creates a new ACP session.
 func (c *Connection) NewSession(ctx context.Context, cwd string) error {
 	sess, err := c.conn.NewSession(ctx, acp.NewSessionRequest{
@@ -112,55 +104,6 @@ func (c *Connection) NewSession(ctx context.Context, cwd string) error {
 	c.session = &sess
 	c.client.print("📝 Created session: %s\n", sess.SessionId)
 	return nil
-}
-
-// LoadSession loads an existing ACP session by ID.
-// This allows resuming a previous conversation if the agent supports it.
-// Returns an error if the agent doesn't support session loading or if the session doesn't exist.
-func (c *Connection) LoadSession(ctx context.Context, sessionID, cwd string) error {
-	if !c.HasLoadSessionSupport() {
-		return fmt.Errorf("agent does not support session loading")
-	}
-
-	resp, err := c.conn.LoadSession(ctx, acp.LoadSessionRequest{
-		SessionId:  acp.SessionId(sessionID),
-		Cwd:        cwd,
-		McpServers: []acp.McpServer{},
-	})
-	if err != nil {
-		return fmt.Errorf("load session error: %w", err)
-	}
-
-	// Create a NewSessionResponse-like structure to store the session
-	c.session = &acp.NewSessionResponse{
-		SessionId: acp.SessionId(sessionID),
-		Models:    resp.Models,
-		Modes:     resp.Modes,
-	}
-	c.client.print("📝 Resumed session: %s\n", sessionID)
-	return nil
-}
-
-// NewOrLoadSession creates a new session or loads an existing one.
-// If acpSessionID is provided and the agent supports session loading, it attempts to load that session.
-// Otherwise, it creates a new session.
-// Returns the ACP session ID and whether a new session was created.
-func (c *Connection) NewOrLoadSession(ctx context.Context, acpSessionID, cwd string) (string, bool, error) {
-	// Try to load existing session if we have an ACP session ID and the agent supports it
-	if acpSessionID != "" && c.HasLoadSessionSupport() {
-		err := c.LoadSession(ctx, acpSessionID, cwd)
-		if err == nil {
-			return acpSessionID, false, nil
-		}
-		// Log the error but fall through to create a new session
-		c.client.print("⚠️ Could not resume session: %v (creating new session)\n", err)
-	}
-
-	// Create a new session
-	if err := c.NewSession(ctx, cwd); err != nil {
-		return "", false, err
-	}
-	return c.SessionID(), true, nil
 }
 
 // Prompt sends a message to the agent and waits for the response.

@@ -129,9 +129,3 @@ func (l *Loader) loadHookFile(path string) (*Hook, error) {
 
 	return &hook, nil
 }
-
-// LoadFromDir is a convenience function to load hooks from a directory.
-func LoadFromDir(hooksDir string, logger *slog.Logger) ([]*Hook, error) {
-	loader := NewLoader(hooksDir, logger)
-	return loader.Load()
-}

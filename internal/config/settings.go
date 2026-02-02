@@ -253,82 +253,6 @@ func SaveSettings(settings *Settings) error {
 	return fileutil.WriteJSONAtomic(settingsPath, settings, 0644)
 }
 
-// SettingsPath returns the path to the settings.json file.
-// This is a convenience function that delegates to appdir.SettingsPath().
-func SettingsPath() (string, error) {
-	return appdir.SettingsPath()
-}
-
-// LoadWithHierarchy loads configuration using the following hierarchy:
-//  1. If an RC file exists (~/.mittorc), use it exclusively
-//  2. If no RC file exists, check for settings.json (macOS app only creates it)
-//  3. If neither exists, return ErrNoRCFile
-//
-// The macOS app should use LoadSettingsWithFallback instead, which creates
-// settings.json from embedded defaults when needed.
-func LoadWithHierarchy() (*LoadResult, error) {
-	// Check for RC file first (highest priority)
-	rcPath, err := appdir.RCFilePath()
-	if err != nil {
-		return nil, fmt.Errorf("failed to check RC file: %w", err)
-	}
-
-	if rcPath != "" {
-		// RC file exists - use it exclusively
-		cfg, err := Load(rcPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load RC file %s: %w", rcPath, err)
-		}
-		return &LoadResult{
-			Config:     cfg,
-			Source:     ConfigSourceRCFile,
-			SourcePath: rcPath,
-		}, nil
-	}
-
-	// No RC file found
-	return nil, ErrNoRCFile
-}
-
-// ErrNoRCFile is returned when no RC file is found and one is required.
-var ErrNoRCFile = fmt.Errorf("no configuration file found")
-
-// RCFileRequiredError provides a helpful error message for users.
-type RCFileRequiredError struct {
-	DefaultPath string
-}
-
-func (e *RCFileRequiredError) Error() string {
-	return fmt.Sprintf(`Configuration file required.
-
-Mitto requires a configuration file to run. Please create one at:
-
-    %s
-
-Example configuration:
-
-    acp:
-      - auggie:
-          command: auggie --acp
-      - claude-code:
-          command: npx -y @zed-industries/claude-code-acp@latest
-
-    web:
-      port: 8080
-
-For more options, see the Mitto documentation.
-`, e.DefaultPath)
-}
-
-// NewRCFileRequiredError returns an error with instructions for creating an RC file.
-func NewRCFileRequiredError() *RCFileRequiredError {
-	defaultPath, err := appdir.DefaultRCFilePath()
-	if err != nil {
-		defaultPath = "~/.mittorc"
-	}
-	return &RCFileRequiredError{DefaultPath: defaultPath}
-}
-
 // LoadSettingsWithFallback loads configuration with the following hierarchy:
 //  1. If an RC file exists (~/.mittorc), use it exclusively (ignores settings.json)
 //  2. If no RC file exists, use settings.json (creates from defaults if needed)
@@ -366,10 +290,4 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 		Source:     ConfigSourceSettingsJSON,
 		SourcePath: settingsPath,
 	}, nil
-}
-
-// LoadEmbeddedDefaults parses and returns the embedded default configuration.
-// This is useful for getting default values without creating settings.json.
-func LoadEmbeddedDefaults() (*Config, error) {
-	return Parse(defaultConfig.DefaultConfigYAML)
 }

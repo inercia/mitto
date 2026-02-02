@@ -266,30 +266,3 @@ func RCFilePath() (string, error) {
 
 	return "", nil
 }
-
-// RCFileExists returns true if an RC file exists at any of the standard locations.
-func RCFileExists() (bool, error) {
-	path, err := RCFilePath()
-	if err != nil {
-		return false, err
-	}
-	return path != "", nil
-}
-
-// DefaultRCFilePath returns the default RC file path for the current platform.
-// This is the path where the user should create their RC file.
-// Unlike RCFilePath(), this does not check if the file exists.
-func DefaultRCFilePath() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	switch runtime.GOOS {
-	case "darwin", "windows":
-		return filepath.Join(homeDir, ".mittorc"), nil
-	default:
-		// Linux: prefer ~/.mittorc for simplicity
-		return filepath.Join(homeDir, ".mittorc"), nil
-	}
-}
