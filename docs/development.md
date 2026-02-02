@@ -180,4 +180,3 @@ The web frontend uses no build step - edit files in `web/static/` and refresh th
 6. Submit a pull request
 
 See [architecture.md](architecture.md) for detailed information about the codebase structure.
-

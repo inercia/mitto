@@ -1,10 +1,14 @@
 # Message Hooks Configuration
 
-Mitto supports external command-based hooks that can dynamically transform messages before sending them to the ACP server. Unlike static text processors, hooks execute arbitrary commands that receive message context as JSON input and produce transformed output.
+Mitto supports external command-based hooks that can dynamically transform messages
+before sending them to the ACP server. Unlike static text processors, hooks execute
+arbitrary commands that receive message context as JSON input and produce transformed
+output.
 
 ## Overview
 
 Hooks are loaded from YAML files in the `MITTO_DIR/hooks/` directory:
+
 - **macOS**: `~/Library/Application Support/Mitto/hooks/`
 - **Linux**: `~/.local/share/mitto/hooks/` (or `$XDG_DATA_HOME/mitto/hooks/`)
 - **Windows**: `%APPDATA%\Mitto\hooks\`
@@ -17,24 +21,24 @@ Each YAML file in the hooks directory defines one hook:
 
 ```yaml
 # Required fields
-name: my-hook                    # Human-readable identifier
-command: /path/to/script.sh      # Command to execute (see Command Resolution)
-when: first                      # "first", "all", or "all-except-first"
+name: my-hook # Human-readable identifier
+command: /path/to/script.sh # Command to execute (see Command Resolution)
+when: first # "first", "all", or "all-except-first"
 
 # Optional fields
-description: "Adds context"      # Description of what the hook does
-enabled: true                    # Default: true
-position: prepend                # "prepend" or "append" (default: prepend)
-priority: 100                    # Execution order, lower = earlier (default: 100)
+description: "Adds context" # Description of what the hook does
+enabled: true # Default: true
+position: prepend # "prepend" or "append" (default: prepend)
+priority: 100 # Execution order, lower = earlier (default: 100)
 
 # I/O configuration
-input: message                   # "message", "conversation", or "none" (default: message)
-output: transform                # "transform", "prepend", "append", "discard" (default: transform)
+input: message # "message", "conversation", or "none" (default: message)
+output: transform # "transform", "prepend", "append", "discard" (default: transform)
 
 # Execution settings
-timeout: 5s                      # Command timeout (default: 5s)
-working_dir: session             # "session" or "hook" (default: session)
-on_error: skip                   # "skip" or "fail" (default: skip)
+timeout: 5s # Command timeout (default: 5s)
+working_dir: session # "session" or "hook" (default: session)
+on_error: skip # "skip" or "fail" (default: skip)
 
 # Environment variables (in addition to automatic ones)
 environment:
@@ -69,7 +73,7 @@ For hooks with companion scripts, use relative paths:
 ```yaml
 # git-context.yaml
 name: git-context
-command: ./git-context.sh    # Resolved to hooks/git-context.sh
+command: ./git-context.sh # Resolved to hooks/git-context.sh
 when: first
 ```
 
@@ -97,8 +101,8 @@ All input is JSON. The format depends on the `input` setting:
   "session_id": "20260131-143052-a1b2c3d4",
   "working_dir": "/path/to/project",
   "history": [
-    {"role": "user", "content": "Previous question"},
-    {"role": "assistant", "content": "Previous answer"}
+    { "role": "user", "content": "Previous question" },
+    { "role": "assistant", "content": "Previous answer" }
   ]
 }
 ```
@@ -114,15 +118,17 @@ All output must be JSON. The format depends on the `output` setting:
 ### `output: transform` (default)
 
 Replace the message entirely:
+
 ```json
-{"message": "The completely transformed message"}
+{ "message": "The completely transformed message" }
 ```
 
 ### `output: prepend` or `output: append`
 
 Add text before/after the message:
+
 ```json
-{"text": "Context to add:\n\n"}
+{ "text": "Context to add:\n\n" }
 ```
 
 ### `output: discard`
@@ -132,6 +138,7 @@ Output is ignored (hook runs for side effects only).
 ### Error Output
 
 Hooks can signal errors gracefully:
+
 ```json
 {
   "error": "Something went wrong",
@@ -141,7 +148,8 @@ Hooks can signal errors gracefully:
 
 ### Attachments
 
-Hooks can attach files (images, etc.) to the message. Attachments are sent to the ACP server as content blocks alongside the text message.
+Hooks can attach files (images, etc.) to the message. Attachments are sent to the ACP
+server as content blocks alongside the text message.
 
 ```json
 {
@@ -156,29 +164,27 @@ Hooks can attach files (images, etc.) to the message. Attachments are sent to th
 }
 ```
 
-Attachment fields:
-| Field | Description |
-|-------|-------------|
-| `type` | Attachment type: `"image"`, `"text"`, `"file"` |
-| `path` | File path (relative to working directory or absolute) |
-| `data` | Base64-encoded content (alternative to `path`) |
-| `mime_type` | MIME type (auto-detected if not provided) |
-| `name` | Display name for the attachment |
+Attachment fields: | Field | Description | |-------|-------------| | `type` | Attachment
+type: `"image"`, `"text"`, `"file"` | | `path` | File path (relative to working
+directory or absolute) | | `data` | Base64-encoded content (alternative to `path`) | |
+`mime_type` | MIME type (auto-detected if not provided) | | `name` | Display name for
+the attachment |
 
-Either `path` or `data` must be provided. If using `path`, the file is read and base64-encoded automatically.
+Either `path` or `data` must be provided. If using `path`, the file is read and
+base64-encoded automatically.
 
 ## Environment Variables
 
 The following environment variables are automatically set for all hooks:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `MITTO_SESSION_ID` | Current session ID | `20260131-143052-a1b2c3d4` |
-| `MITTO_WORKING_DIR` | Session working directory | `/Users/me/myproject` |
-| `MITTO_IS_FIRST_MESSAGE` | Whether this is the first message | `true` or `false` |
-| `MITTO_HOOKS_DIR` | Path to the hooks directory | `~/Library/Application Support/Mitto/hooks` |
-| `MITTO_HOOK_FILE` | Path to the current hook's YAML file | `.../hooks/my-hook.yaml` |
-| `MITTO_HOOK_DIR` | Directory containing the current hook file | `.../hooks` |
+| Variable                 | Description                                | Example                                     |
+| ------------------------ | ------------------------------------------ | ------------------------------------------- |
+| `MITTO_SESSION_ID`       | Current session ID                         | `20260131-143052-a1b2c3d4`                  |
+| `MITTO_WORKING_DIR`      | Session working directory                  | `/Users/me/myproject`                       |
+| `MITTO_IS_FIRST_MESSAGE` | Whether this is the first message          | `true` or `false`                           |
+| `MITTO_HOOKS_DIR`        | Path to the hooks directory                | `~/Library/Application Support/Mitto/hooks` |
+| `MITTO_HOOK_FILE`        | Path to the current hook's YAML file       | `.../hooks/my-hook.yaml`                    |
+| `MITTO_HOOK_DIR`         | Directory containing the current hook file | `.../hooks`                                 |
 
 ## Examples
 
@@ -272,21 +278,22 @@ Within the same priority, order is undefined.
 
 ## Error Handling
 
-| `on_error` | Behavior |
-|------------|----------|
+| `on_error`       | Behavior                                    |
+| ---------------- | ------------------------------------------- |
 | `skip` (default) | Log warning, continue with original message |
-| `fail` | Abort the message, return error to user |
+| `fail`           | Abort the message, return error to user     |
 
 Hooks that timeout or exit with non-zero status are treated as errors.
 
 ## Comparison with Processors
 
-| Feature | Processors | Hooks |
-|---------|------------|-------|
-| Configuration | YAML in config files | YAML files in hooks directory |
-| Transformation | Static text prepend/append | Dynamic via external commands |
-| Input | None | JSON via stdin |
-| Output | None | JSON via stdout |
-| Use case | Simple prompts, reminders | Complex transformations, external data |
+| Feature        | Processors                 | Hooks                                  |
+| -------------- | -------------------------- | -------------------------------------- |
+| Configuration  | YAML in config files       | YAML files in hooks directory          |
+| Transformation | Static text prepend/append | Dynamic via external commands          |
+| Input          | None                       | JSON via stdin                         |
+| Output         | None                       | JSON via stdout                        |
+| Use case       | Simple prompts, reminders  | Complex transformations, external data |
 
-Both processors and hooks can be used together. Processors are applied first, then hooks.
+Both processors and hooks can be used together. Processors are applied first, then
+hooks.

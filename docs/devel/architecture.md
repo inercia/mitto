@@ -41,6 +41,7 @@ graph TB
 Implements the command-line interface using [Cobra](https://github.com/spf13/cobra).
 
 **Key Responsibilities:**
+
 - Parse command-line arguments and flags
 - Load configuration via `internal/config`
 - Create and manage ACP connections
@@ -52,6 +53,7 @@ Implements the command-line interface using [Cobra](https://github.com/spf13/cob
 Manages the Mitto data directory, which stores configuration and session data.
 
 **Directory Locations (in priority order):**
+
 1. `MITTO_DIR` environment variable (if set)
 2. Platform-specific default:
    - **macOS**: `~/Library/Application Support/Mitto`
@@ -59,6 +61,7 @@ Manages the Mitto data directory, which stores configuration and session data.
    - **Windows**: `%APPDATA%\Mitto`
 
 **Key Functions:**
+
 - `Dir()` - Returns the Mitto data directory path
 - `EnsureDir()` - Creates the directory structure if needed
 - `SettingsPath()` - Returns path to `settings.json`
@@ -69,6 +72,7 @@ Manages the Mitto data directory, which stores configuration and session data.
 Handles loading, parsing, and persisting Mitto configuration.
 
 **Configuration System:**
+
 - **Default config**: `config/config.default.yaml` (embedded in binary)
 - **User settings**: `MITTO_DIR/settings.json` (auto-created from defaults)
 - **Override**: `--config` flag accepts YAML or JSON files
@@ -76,6 +80,7 @@ Handles loading, parsing, and persisting Mitto configuration.
 **Configuration Formats:**
 
 YAML format (for `--config` flag):
+
 ```yaml
 acp:
   - auggie:
@@ -88,13 +93,17 @@ web:
 ```
 
 JSON format (for `settings.json` or `--config` flag):
+
 ```json
 {
   "acp_servers": [
-    {"name": "auggie", "command": "auggie --acp"},
-    {"name": "claude-code", "command": "npx -y @zed-industries/claude-code-acp@latest"}
+    { "name": "auggie", "command": "auggie --acp" },
+    {
+      "name": "claude-code",
+      "command": "npx -y @zed-industries/claude-code-acp@latest"
+    }
   ],
-  "web": {"host": "127.0.0.1", "port": 8080}
+  "web": { "host": "127.0.0.1", "port": 8080 }
 }
 ```
 
@@ -129,20 +138,20 @@ See [Session Management](session-management.md) for detailed documentation.
 
 Provides a browser-based UI for ACP communication via HTTP and WebSocket.
 
-
 ## Design Decisions
 
 ### 1. Separation of Store, Recorder, and Player
 
 The session package uses three distinct components following the Single Responsibility Principle:
 
-| Component | Responsibility |
-|-----------|---------------|
-| **Store** | Low-level file I/O, thread safety, CRUD operations |
+| Component    | Responsibility                                         |
+| ------------ | ------------------------------------------------------ |
+| **Store**    | Low-level file I/O, thread safety, CRUD operations     |
 | **Recorder** | High-level recording API, session lifecycle management |
-| **Player** | Read-only playback, navigation, filtering |
+| **Player**   | Read-only playback, navigation, filtering              |
 
 This separation allows:
+
 - Independent testing of each component
 - Different access patterns (write-heavy recording vs. read-heavy playback)
 - Future extensibility (e.g., different storage backends)
@@ -170,6 +179,7 @@ Session IDs use the format `YYYYMMDD-HHMMSS-XXXXXXXX` (timestamp + random hex):
 ```
 
 **Rationale:**
+
 - Human-readable and sortable by creation time
 - No external UUID dependency
 - Sufficient uniqueness for single-user CLI tool
@@ -270,6 +280,7 @@ flowchart LR
 ### Mitto Data Directory
 
 **Platform-specific locations:**
+
 - **macOS**: `~/Library/Application Support/Mitto/`
 - **Linux**: `~/.local/share/mitto/`
 - **Windows**: `%APPDATA%\Mitto\`
@@ -278,6 +289,7 @@ flowchart LR
 ### File Formats
 
 **metadata.json:**
+
 ```json
 {
   "session_id": "20260125-143052-a1b2c3d4",
@@ -291,6 +303,7 @@ flowchart LR
 ```
 
 **events.jsonl:**
+
 ```jsonl
 {"type":"session_start","timestamp":"2026-01-25T14:30:52Z","data":{"session_id":"...","acp_server":"auggie","working_dir":"/home/user/project"}}
 {"type":"user_prompt","timestamp":"2026-01-25T14:30:55Z","data":{"message":"Hello, can you help me?"}}
@@ -302,28 +315,28 @@ flowchart LR
 
 ### Core Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| `github.com/coder/acp-go-sdk` | ACP protocol implementation |
-| `github.com/spf13/cobra` | CLI framework |
-| `github.com/reeflective/readline` | Interactive input |
-| `gopkg.in/yaml.v3` | YAML configuration parsing |
+| Package                           | Purpose                     |
+| --------------------------------- | --------------------------- |
+| `github.com/coder/acp-go-sdk`     | ACP protocol implementation |
+| `github.com/spf13/cobra`          | CLI framework               |
+| `github.com/reeflective/readline` | Interactive input           |
+| `gopkg.in/yaml.v3`                | YAML configuration parsing  |
 
 ### Web Interface Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| `github.com/gorilla/websocket` | WebSocket support |
-| `github.com/yuin/goldmark` | Markdown to HTML conversion |
+| Package                                    | Purpose                             |
+| ------------------------------------------ | ----------------------------------- |
+| `github.com/gorilla/websocket`             | WebSocket support                   |
+| `github.com/yuin/goldmark`                 | Markdown to HTML conversion         |
 | `github.com/yuin/goldmark-highlighting/v2` | Syntax highlighting for code blocks |
 
 ### Frontend Dependencies (CDN)
 
-| Library | CDN | Purpose |
-|---------|-----|---------|
-| Preact | esm.sh | Lightweight React-like UI framework |
-| HTM | esm.sh | JSX-like syntax without build step |
-| Tailwind CSS | cdn.tailwindcss.com | Utility-first CSS framework |
+| Library      | CDN                 | Purpose                             |
+| ------------ | ------------------- | ----------------------------------- |
+| Preact       | esm.sh              | Lightweight React-like UI framework |
+| HTM          | esm.sh              | JSX-like syntax without build step  |
+| Tailwind CSS | cdn.tailwindcss.com | Utility-first CSS framework         |
 
 ## Future Considerations
 
@@ -334,4 +347,3 @@ flowchart LR
 5. **Multiple Storage Backends**: Support for database or cloud storage
 6. **Session Sharing**: Share sessions between users or machines
 7. **Touch Gestures**: Swipe navigation for mobile web interface
-

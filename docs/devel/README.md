@@ -24,19 +24,19 @@ This directory contains technical documentation for developers working on Mitto.
 
 ## Quick Links
 
-| Topic | Document | Key Sections |
-|-------|----------|--------------|
-| Package structure | [Architecture](architecture.md) | Component Breakdown |
-| Configuration | [Architecture](architecture.md) | `internal/config` |
-| ACP client | [Architecture](architecture.md) | `internal/acp` |
-| Event types | [Session Management](session-management.md) | Event Types |
-| Queue API | [Message Queue](message-queue.md) | REST API |
-| Queue titles | [Message Queue](message-queue.md) | Title Generation |
-| WebSocket protocol | [WebSocket Messaging](websocket-messaging.md) | Message Format |
-| Resync mechanism | [WebSocket Messaging](websocket-messaging.md) | Resync Mechanism |
-| Workspace API | [Workspaces](workspaces.md) | Workspace REST API |
-| Mobile support | [Web Interface](web-interface.md) | Mobile Wake Resync |
-| Action buttons | [Follow-up Suggestions](follow-up-suggestions.md) | Persistence, Lifecycle |
+| Topic              | Document                                          | Key Sections           |
+| ------------------ | ------------------------------------------------- | ---------------------- |
+| Package structure  | [Architecture](architecture.md)                   | Component Breakdown    |
+| Configuration      | [Architecture](architecture.md)                   | `internal/config`      |
+| ACP client         | [Architecture](architecture.md)                   | `internal/acp`         |
+| Event types        | [Session Management](session-management.md)       | Event Types            |
+| Queue API          | [Message Queue](message-queue.md)                 | REST API               |
+| Queue titles       | [Message Queue](message-queue.md)                 | Title Generation       |
+| WebSocket protocol | [WebSocket Messaging](websocket-messaging.md)     | Message Format         |
+| Resync mechanism   | [WebSocket Messaging](websocket-messaging.md)     | Resync Mechanism       |
+| Workspace API      | [Workspaces](workspaces.md)                       | Workspace REST API     |
+| Mobile support     | [Web Interface](web-interface.md)                 | Mobile Wake Resync     |
+| Action buttons     | [Follow-up Suggestions](follow-up-suggestions.md) | Persistence, Lifecycle |
 
 ## Additional Documentation
 

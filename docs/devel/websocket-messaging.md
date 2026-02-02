@@ -45,6 +45,7 @@ This ensures events are persisted in the correct streaming order, preserving the
 Every event persisted to the session store is assigned a monotonically increasing sequence number (`seq`). The sequence number is assigned at persistence time by `session.Store.AppendEvent()`.
 
 **Key properties:**
+
 - `seq` starts at 1 for each session
 - `seq` is assigned at persistence time, not at event creation
 - `seq` is never reused or reassigned
@@ -65,30 +66,30 @@ All WebSocket messages use a JSON envelope format with `type` and optional `data
 
 ### Frontend → Backend Messages
 
-| Type | Data | Description |
-|------|------|-------------|
-| `prompt` | `{message, image_ids?, prompt_id}` | Send user message to agent |
-| `cancel` | `{}` | Cancel current agent operation |
-| `permission_answer` | `{request_id, approved}` | Respond to permission request |
-| `sync_session` | `{after_seq}` | Request events after sequence number |
-| `keepalive` | `{client_time}` | Application-level keepalive |
-| `rename_session` | `{name}` | Rename the current session |
+| Type                | Data                               | Description                          |
+| ------------------- | ---------------------------------- | ------------------------------------ |
+| `prompt`            | `{message, image_ids?, prompt_id}` | Send user message to agent           |
+| `cancel`            | `{}`                               | Cancel current agent operation       |
+| `permission_answer` | `{request_id, approved}`           | Respond to permission request        |
+| `sync_session`      | `{after_seq}`                      | Request events after sequence number |
+| `keepalive`         | `{client_time}`                    | Application-level keepalive          |
+| `rename_session`    | `{name}`                           | Rename the current session           |
 
 ### Backend → Frontend Messages
 
-| Type | Data | Description |
-|------|------|-------------|
-| `connected` | `{session_id, client_id, acp_server, is_running}` | Connection established |
-| `prompt_received` | `{prompt_id}` | ACK that prompt was received and persisted |
-| `user_prompt` | `{sender_id, prompt_id, message, is_mine}` | Broadcast of user prompt to all clients |
-| `agent_message` | `{html}` | HTML-rendered agent response chunk |
-| `agent_thought` | `{text}` | Agent thinking/reasoning (plain text) |
-| `tool_call` | `{id, title, status}` | Tool invocation notification |
-| `tool_update` | `{id, status}` | Tool status update |
-| `permission` | `{request_id, title, description, options}` | Permission request |
-| `prompt_complete` | `{event_count}` | Agent finished responding |
-| `session_sync` | `{events, event_count, is_running, is_prompting}` | Response to sync request |
-| `error` | `{message, code?}` | Error notification |
+| Type              | Data                                              | Description                                |
+| ----------------- | ------------------------------------------------- | ------------------------------------------ |
+| `connected`       | `{session_id, client_id, acp_server, is_running}` | Connection established                     |
+| `prompt_received` | `{prompt_id}`                                     | ACK that prompt was received and persisted |
+| `user_prompt`     | `{sender_id, prompt_id, message, is_mine}`        | Broadcast of user prompt to all clients    |
+| `agent_message`   | `{html}`                                          | HTML-rendered agent response chunk         |
+| `agent_thought`   | `{text}`                                          | Agent thinking/reasoning (plain text)      |
+| `tool_call`       | `{id, title, status}`                             | Tool invocation notification               |
+| `tool_update`     | `{id, status}`                                    | Tool status update                         |
+| `permission`      | `{request_id, title, description, options}`       | Permission request                         |
+| `prompt_complete` | `{event_count}`                                   | Agent finished responding                  |
+| `session_sync`    | `{events, event_count, is_running, is_prompting}` | Response to sync request                   |
+| `error`           | `{message, code?}`                                | Error notification                         |
 
 ## Replay of Missing Content
 
@@ -139,6 +140,7 @@ sequenceDiagram
 When a new observer connects to a `BackgroundSession`, the session checks if it's currently prompting. If so, it sends any buffered thought and message content to the new observer using `Peek()` (which reads without clearing the buffer).
 
 **Key methods in `agentMessageBuffer`:**
+
 - `Peek()`: Returns buffer content without clearing it
 - `Flush()`: Returns buffer content and clears it (used at prompt completion)
 
@@ -151,6 +153,7 @@ The resync mechanism allows clients to catch up on events they missed while disc
 ### Sequence Number Tracking
 
 The frontend tracks the last seen sequence number in localStorage. This is updated when:
+
 - Loading a session (set to highest `seq` from loaded events)
 - Receiving `prompt_complete` (updated from `event_count` field)
 - Receiving `session_sync` (updated after merge)
@@ -181,6 +184,7 @@ sequenceDiagram
 ### Merge and Deduplication
 
 When sync events arrive, they're merged with existing messages using `mergeMessagesWithSync()` which:
+
 1. Creates a hash set of existing messages for deduplication
 2. Filters out duplicates from new messages
 3. Merges both lists and sorts by `seq`
@@ -194,6 +198,7 @@ The reconnection system handles WebSocket disconnections gracefully, including t
 ### Automatic Reconnection on Close
 
 When a WebSocket closes unexpectedly, the frontend schedules a reconnection after a 2-second delay. The reconnection only occurs if:
+
 - The session is still the active session
 - No newer WebSocket has been created for that session
 

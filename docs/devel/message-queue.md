@@ -39,19 +39,19 @@ Queue behavior is configured globally or per-workspace (NOT per-session):
 ```yaml
 conversations:
   queue:
-    enabled: true              # Auto-process queued messages (default: true)
-    delay_seconds: 0           # Delay before sending next message (default: 0)
-    max_size: 10               # Maximum messages in queue (default: 10)
+    enabled: true # Auto-process queued messages (default: true)
+    delay_seconds: 0 # Delay before sending next message (default: 0)
+    max_size: 10 # Maximum messages in queue (default: 10)
     auto_generate_titles: true # Generate short titles (default: true)
 ```
 
 ### Configuration Scope
 
-| Setting | Scope | Rationale |
-|---------|-------|-----------|
-| `enabled` | Global/Workspace | Consistent behavior across sessions |
-| `delay_seconds` | Global/Workspace | Rate limiting applies uniformly |
-| `max_size` | Global/Workspace | Resource limits are workspace-wide |
+| Setting                | Scope            | Rationale                                  |
+| ---------------------- | ---------------- | ------------------------------------------ |
+| `enabled`              | Global/Workspace | Consistent behavior across sessions        |
+| `delay_seconds`        | Global/Workspace | Rate limiting applies uniformly            |
+| `max_size`             | Global/Workspace | Resource limits are workspace-wide         |
 | `auto_generate_titles` | Global/Workspace | Feature toggle, not per-session preference |
 
 ## Queue Package (`internal/session/queue.go`)
@@ -76,24 +76,24 @@ type Queue struct { ... }
 
 ### Methods
 
-| Method | Description |
-|--------|-------------|
+| Method                                      | Description                                        |
+| ------------------------------------------- | -------------------------------------------------- |
 | `Add(message, imageIDs, clientID, maxSize)` | Add message, returns `ErrQueueFull` if at capacity |
-| `List()` | Get all messages in FIFO order |
-| `Get(id)` | Get specific message by ID |
-| `Remove(id)` | Remove specific message |
-| `Pop()` | Remove and return first message |
-| `Clear()` | Remove all messages |
-| `Len()` | Get queue length |
-| `UpdateTitle(id, title)` | Update a message's title |
+| `List()`                                    | Get all messages in FIFO order                     |
+| `Get(id)`                                   | Get specific message by ID                         |
+| `Remove(id)`                                | Remove specific message                            |
+| `Pop()`                                     | Remove and return first message                    |
+| `Clear()`                                   | Remove all messages                                |
+| `Len()`                                     | Get queue length                                   |
+| `UpdateTitle(id, title)`                    | Update a message's title                           |
 
 ### Error Values
 
-| Error | Condition |
-|-------|-----------|
-| `ErrQueueEmpty` | `Pop()` on empty queue |
+| Error                | Condition                                               |
+| -------------------- | ------------------------------------------------------- |
+| `ErrQueueEmpty`      | `Pop()` on empty queue                                  |
 | `ErrMessageNotFound` | `Get()`, `Remove()`, or `UpdateTitle()` with invalid ID |
-| `ErrQueueFull` | `Add()` when queue has `maxSize` messages |
+| `ErrQueueFull`       | `Add()` when queue has `maxSize` messages               |
 
 ## Title Generation
 
@@ -109,7 +109,7 @@ sequenceDiagram
 
     API->>Worker: Enqueue(sessionID, messageID, message)
     Note over Worker: Buffered channel (100 requests)
-    
+
     loop Process sequentially
         Worker->>Aux: GenerateQueuedMessageTitle(message)
         Aux-->>Worker: "Fix Bug" (2-3 words)
@@ -120,11 +120,11 @@ sequenceDiagram
 
 ### Components
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| `QueueTitleWorker` | `internal/web/queue_title.go` | Sequential request processor |
-| `GenerateQueuedMessageTitle` | `internal/auxiliary/global.go` | Prompt for title generation |
-| `Queue.UpdateTitle` | `internal/session/queue.go` | Persist title to queue.json |
+| Component                    | File                           | Purpose                      |
+| ---------------------------- | ------------------------------ | ---------------------------- |
+| `QueueTitleWorker`           | `internal/web/queue_title.go`  | Sequential request processor |
+| `GenerateQueuedMessageTitle` | `internal/auxiliary/global.go` | Prompt for title generation  |
+| `Queue.UpdateTitle`          | `internal/session/queue.go`    | Persist title to queue.json  |
 
 ### QueueTitleWorker
 
@@ -149,6 +149,7 @@ worker.Close()
 ```
 
 **Design decisions:**
+
 - **Sequential processing**: Prevents concurrent auxiliary requests
 - **Buffered channel (100)**: Drops requests if overwhelmed (logs warning)
 - **30-second timeout**: Per-request timeout for title generation
@@ -158,17 +159,18 @@ worker.Close()
 
 ### Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/sessions/{id}/queue` | List all queued messages |
-| `POST` | `/api/sessions/{id}/queue` | Add message to queue |
-| `GET` | `/api/sessions/{id}/queue/{msg_id}` | Get specific message |
-| `DELETE` | `/api/sessions/{id}/queue/{msg_id}` | Delete specific message |
-| `DELETE` | `/api/sessions/{id}/queue` | Clear entire queue |
+| Method   | Path                                | Description              |
+| -------- | ----------------------------------- | ------------------------ |
+| `GET`    | `/api/sessions/{id}/queue`          | List all queued messages |
+| `POST`   | `/api/sessions/{id}/queue`          | Add message to queue     |
+| `GET`    | `/api/sessions/{id}/queue/{msg_id}` | Get specific message     |
+| `DELETE` | `/api/sessions/{id}/queue/{msg_id}` | Delete specific message  |
+| `DELETE` | `/api/sessions/{id}/queue`          | Clear entire queue       |
 
 ### Request/Response Examples
 
 **POST /api/sessions/{id}/queue**
+
 ```json
 // Request
 {"message": "Fix the login bug", "image_ids": []}
@@ -183,6 +185,7 @@ worker.Close()
 ```
 
 **GET /api/sessions/{id}/queue** (after title generated)
+
 ```json
 {
   "messages": [
@@ -198,37 +201,43 @@ worker.Close()
 ```
 
 **Error: Queue Full (409 Conflict)**
+
 ```json
-{"error": "queue_full", "message": "Queue is full. Maximum 10 messages allowed."}
+{
+  "error": "queue_full",
+  "message": "Queue is full. Maximum 10 messages allowed."
+}
 ```
 
 ## WebSocket Notifications
 
 ### Message Types
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `queue_updated` | Server → Client | Queue state changed |
-| `queue_message_sending` | Server → Client | Message about to be sent |
-| `queue_message_sent` | Server → Client | Message delivered to agent |
-| `queue_message_titled` | Server → Client | Title generated for message |
+| Type                    | Direction       | Description                 |
+| ----------------------- | --------------- | --------------------------- |
+| `queue_updated`         | Server → Client | Queue state changed         |
+| `queue_message_sending` | Server → Client | Message about to be sent    |
+| `queue_message_sent`    | Server → Client | Message delivered to agent  |
+| `queue_message_titled`  | Server → Client | Title generated for message |
 
 ### Payload Examples
 
 **queue_updated**
+
 ```json
 {
   "type": "queue_updated",
   "data": {
     "session_id": "20260201-120000-abc12345",
     "queue_length": 3,
-    "action": "added",      // "added", "removed", "cleared"
+    "action": "added", // "added", "removed", "cleared"
     "message_id": "q-1738396800-abc12345"
   }
 }
 ```
 
 **queue_message_titled**
+
 ```json
 {
   "type": "queue_message_titled",
@@ -334,11 +343,11 @@ The queue system supports automatic dequeuing for idle agent sessions:
 
 ### Methods
 
-| Method | Location | Purpose |
-|--------|----------|---------|
-| `processNextQueuedMessage()` | `BackgroundSession` | Called after prompt completion, applies delay synchronously |
-| `TryProcessQueuedMessage()` | `BackgroundSession` | Used for startup/periodic checking, respects delay elapsed time |
-| `ProcessPendingQueues()` | `SessionManager` | Called on server startup, resumes sessions with queued items |
+| Method                       | Location            | Purpose                                                         |
+| ---------------------------- | ------------------- | --------------------------------------------------------------- |
+| `processNextQueuedMessage()` | `BackgroundSession` | Called after prompt completion, applies delay synchronously     |
+| `TryProcessQueuedMessage()`  | `BackgroundSession` | Used for startup/periodic checking, respects delay elapsed time |
+| `ProcessPendingQueues()`     | `SessionManager`    | Called on server startup, resumes sessions with queued items    |
 
 ## Frontend Integration
 
@@ -348,8 +357,8 @@ The frontend tracks queue state via `useWebSocket` hook:
 
 ```javascript
 const {
-  queueLength,    // Current queue size
-  queueConfig,    // { enabled, max_size, delay_seconds }
+  queueLength, // Current queue size
+  queueConfig, // { enabled, max_size, delay_seconds }
 } = useWebSocket();
 ```
 
@@ -362,7 +371,9 @@ const isQueueFull = isStreaming && queueLength >= queueConfig.max_size;
 
 // Show error if user tries to send
 if (isQueueFull) {
-  setSendError(`Queue is full (${queueConfig.max_size}/${queueConfig.max_size})`);
+  setSendError(
+    `Queue is full (${queueConfig.max_size}/${queueConfig.max_size})`,
+  );
   return;
 }
 ```
@@ -378,15 +389,14 @@ case "queue_message_titled":
 
 ## Thread Safety
 
-| Component | Mechanism | Notes |
-|-----------|-----------|-------|
-| `Queue` | `sync.Mutex` | Protects read-modify-write cycle |
-| `QueueTitleWorker` | Buffered channel | Sequential processing |
-| `BackgroundSession` | Observer pattern | Thread-safe notifications |
+| Component           | Mechanism        | Notes                            |
+| ------------------- | ---------------- | -------------------------------- |
+| `Queue`             | `sync.Mutex`     | Protects read-modify-write cycle |
+| `QueueTitleWorker`  | Buffered channel | Sequential processing            |
+| `BackgroundSession` | Observer pattern | Thread-safe notifications        |
 
 ## Related Documentation
 
 - [Session Management](session-management.md) - Session lifecycle and state ownership
 - [WebSocket Messaging](websocket-messaging.md) - WebSocket protocol details
 - [Architecture](architecture.md) - Overall system architecture
-

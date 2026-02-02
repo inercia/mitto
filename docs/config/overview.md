@@ -48,12 +48,13 @@ acp:
 ```
 
 Each server has:
+
 - **name** (key): Identifier used to reference the server
 - **command**: Shell command to start the ACP server
 
 The first server in the list is the default.
 
-See [ACP Servers Configuration](acp.md) for detailed setup instructions for each supported agent (Claude, Auggie, Copilot).
+See [ACP Servers Configuration](web/acp.md) for detailed setup instructions for each supported agent (Claude, Auggie, Copilot).
 
 ### Web Interface
 
@@ -75,7 +76,7 @@ Configure UI behavior including confirmation dialogs and macOS-specific settings
 ui:
   # Confirmation dialogs
   confirmations:
-    delete_session: true  # Show confirmation when deleting conversations (default: true)
+    delete_session: true # Show confirmation when deleting conversations (default: true)
 
   # macOS desktop app settings (see mac.md for details)
   mac:
@@ -118,7 +119,7 @@ web:
 ui:
   # Confirmation dialogs
   confirmations:
-    delete_session: true  # Set to false to skip delete confirmations
+    delete_session: true # Set to false to skip delete confirmations
 
   # macOS desktop app settings (optional)
   mac:
@@ -133,11 +134,11 @@ ui:
 
 ## Related Documentation
 
-- [ACP Servers](acp.md) - Setup instructions for Claude, Auggie, Copilot
-- [Workspace Configuration](workspace.md) - Project-specific `.mittorc` files
+- [ACP Servers](web/acp.md) - Setup instructions for Claude, Auggie, Copilot
+- [Workspace Configuration](web/workspace.md) - Project-specific `.mittorc` files
 - [Conversation Processing](conversations.md) - Message processing rules
-- [Web Configuration](web.md) - Web server, authentication, hooks, security
-- [macOS Configuration](mac.md) - Hotkeys, notifications, desktop app settings
+- [Web Interface Configuration](web/README.md) - Web server, authentication, hooks, security
+- [macOS App Configuration](mac/README.md) - Hotkeys, notifications, desktop app settings
 - [Architecture](../devel/README.md) - System design and internals
 
 ## JSON Format
@@ -147,8 +148,11 @@ When using `settings.json`, the format is slightly different:
 ```json
 {
   "acp_servers": [
-    {"name": "auggie", "command": "auggie --acp"},
-    {"name": "claude-code", "command": "npx -y @zed-industries/claude-code-acp@latest"}
+    { "name": "auggie", "command": "auggie --acp" },
+    {
+      "name": "claude-code",
+      "command": "npx -y @zed-industries/claude-code-acp@latest"
+    }
   ],
   "web": {
     "host": "127.0.0.1",
@@ -169,4 +173,3 @@ When using `settings.json`, the format is slightly different:
   }
 }
 ```
-

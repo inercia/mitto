@@ -44,11 +44,11 @@ mitto web --dir /path/to/project1 --dir claude-code:/path/to/project2
 
 ## Workspace REST API
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/workspaces` | List all workspaces and available ACP servers |
-| POST | `/api/workspaces` | Add a new workspace dynamically |
-| DELETE | `/api/workspaces?dir=...` | Remove a workspace |
+| Method | Endpoint                  | Description                                   |
+| ------ | ------------------------- | --------------------------------------------- |
+| GET    | `/api/workspaces`         | List all workspaces and available ACP servers |
+| POST   | `/api/workspaces`         | Add a new workspace dynamically               |
+| DELETE | `/api/workspaces?dir=...` | Remove a workspace                            |
 
 ### GET /api/workspaces Response
 
@@ -67,8 +67,11 @@ mitto web --dir /path/to/project1 --dir claude-code:/path/to/project2
     }
   ],
   "acp_servers": [
-    {"name": "auggie", "command": "auggie --acp"},
-    {"name": "claude-code", "command": "npx -y @zed-industries/claude-code-acp@latest"}
+    { "name": "auggie", "command": "auggie --acp" },
+    {
+      "name": "claude-code",
+      "command": "npx -y @zed-industries/claude-code-acp@latest"
+    }
   ]
 }
 ```
@@ -130,24 +133,27 @@ type WorkspaceConfig struct {
 
 ## SessionManager Workspace Methods
 
-| Method | Description |
-|--------|-------------|
-| `GetWorkspaces()` | Returns all configured workspaces |
-| `GetWorkspace(workingDir)` | Returns workspace for a specific directory |
-| `GetDefaultWorkspace()` | Returns the first (default) workspace |
-| `AddWorkspace(ws)` | Dynamically adds a new workspace at runtime |
-| `RemoveWorkspace(workingDir)` | Removes a workspace by directory path |
+| Method                        | Description                                 |
+| ----------------------------- | ------------------------------------------- |
+| `GetWorkspaces()`             | Returns all configured workspaces           |
+| `GetWorkspace(workingDir)`    | Returns workspace for a specific directory  |
+| `GetDefaultWorkspace()`       | Returns the first (default) workspace       |
+| `AddWorkspace(ws)`            | Dynamically adds a new workspace at runtime |
+| `RemoveWorkspace(workingDir)` | Removes a workspace by directory path       |
 
 ## Workspace Persistence
 
 Workspaces are persisted to `workspaces.json` when:
+
 - Running the macOS app (always persists changes)
 - Running CLI without `--dir` flags (loads from and saves to file)
 
 Workspaces are NOT persisted when:
+
 - Running CLI with `--dir` flags (CLI flags take precedence)
 
 **workspaces.json:**
+
 ```json
 {
   "workspaces": [
@@ -159,4 +165,3 @@ Workspaces are NOT persisted when:
   ]
 }
 ```
-

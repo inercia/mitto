@@ -36,20 +36,20 @@ flowchart TB
 
 ## Event Types
 
-| Event Type | Description |
-|------------|-------------|
-| `session_start` | Session initialization with metadata |
-| `session_end` | Session termination with reason |
-| `user_prompt` | User input message |
-| `agent_message` | Agent response text |
-| `agent_thought` | Agent's internal reasoning |
-| `tool_call` | Tool invocation by agent |
-| `tool_call_update` | Tool execution status update |
-| `plan` | Agent's task plan |
-| `permission` | Permission request and outcome |
-| `file_read` | File read operation |
-| `file_write` | File write operation |
-| `error` | Error occurrence |
+| Event Type         | Description                          |
+| ------------------ | ------------------------------------ |
+| `session_start`    | Session initialization with metadata |
+| `session_end`      | Session termination with reason      |
+| `user_prompt`      | User input message                   |
+| `agent_message`    | Agent response text                  |
+| `agent_thought`    | Agent's internal reasoning           |
+| `tool_call`        | Tool invocation by agent             |
+| `tool_call_update` | Tool execution status update         |
+| `plan`             | Agent's task plan                    |
+| `permission`       | Permission request and outcome       |
+| `file_read`        | File read operation                  |
+| `file_write`       | File write operation                 |
+| `error`            | Error occurrence                     |
 
 ## Session State Ownership Model
 
@@ -81,13 +81,13 @@ graph TB
 
 ### Component Responsibilities
 
-| Component | Owns | Does NOT Own |
-|-----------|------|--------------|
-| `session.Store` | Persisted metadata, event log, file I/O | Runtime state, ACP connection |
-| `BackgroundSession` | ACP process, observers, prompt state, message buffers | Persistence (delegates to Store), UI state |
-| `SessionManager` | Running session registry, workspace config, session limits | Individual session state, persistence |
-| `SessionWSClient` | WebSocket connection, permission response channel | Session lifecycle, persistence |
-| Frontend | UI state, active session selection, message display | Backend state, persistence |
+| Component           | Owns                                                       | Does NOT Own                               |
+| ------------------- | ---------------------------------------------------------- | ------------------------------------------ |
+| `session.Store`     | Persisted metadata, event log, file I/O                    | Runtime state, ACP connection              |
+| `BackgroundSession` | ACP process, observers, prompt state, message buffers      | Persistence (delegates to Store), UI state |
+| `SessionManager`    | Running session registry, workspace config, session limits | Individual session state, persistence      |
+| `SessionWSClient`   | WebSocket connection, permission response channel          | Session lifecycle, persistence             |
+| Frontend            | UI state, active session selection, message display        | Backend state, persistence                 |
 
 ### State Flow
 
@@ -118,6 +118,7 @@ type SessionObserver interface {
 ```
 
 Multiple `SessionWSClient` instances can observe the same `BackgroundSession`, enabling:
+
 - Multiple browser tabs viewing the same session
 - Session continues running when all clients disconnect
 - Clients can reconnect and sync via incremental updates
@@ -127,6 +128,7 @@ Multiple `SessionWSClient` instances can observe the same `BackgroundSession`, e
 Each session has an optional message queue that allows users to queue messages while the agent is processing. Queued messages are automatically delivered when the agent becomes idle.
 
 For detailed documentation on the queue system, including:
+
 - Queue configuration and scope
 - REST API endpoints
 - WebSocket notifications

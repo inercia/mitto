@@ -44,6 +44,7 @@ Without persistence, follow-up suggestions are ephemeral—only clients connecte
 4. **Network reconnection**: Mobile waking from sleep misses suggestions
 
 The solution uses a two-tier cache:
+
 - **In-memory**: Fast access for active sessions
 - **On-disk**: Survives server restarts and session resumption
 
@@ -54,7 +55,7 @@ Follow-up suggestions are configured globally or per-workspace:
 ```yaml
 conversations:
   action_buttons:
-    enabled: true  # Enable follow-up suggestions (default: true)
+    enabled: true # Enable follow-up suggestions (default: true)
 ```
 
 ## Storage Architecture
@@ -75,8 +76,11 @@ sessions/
 ```json
 {
   "buttons": [
-    {"label": "Yes, proceed", "response": "Yes, please proceed with the changes"},
-    {"label": "Show diff", "response": "Can you show me the diff first?"}
+    {
+      "label": "Yes, proceed",
+      "response": "Yes, please proceed with the changes"
+    },
+    { "label": "Show diff", "response": "Can you show me the diff first?" }
   ],
   "generated_at": "2026-02-01T12:00:00Z",
   "for_event_seq": 42
@@ -85,12 +89,12 @@ sessions/
 
 ### Design Decisions
 
-| Decision | Rationale |
-|----------|-----------|
-| Separate file (not in events) | Suggestions are transient UI state, not conversation history |
-| Delete on clear (not empty file) | Reduces disk clutter; missing file = no suggestions |
-| `for_event_seq` field | Tracks which agent message the suggestions relate to (for debugging) |
-| In-memory + disk | Memory for speed, disk for persistence across restarts |
+| Decision                         | Rationale                                                            |
+| -------------------------------- | -------------------------------------------------------------------- |
+| Separate file (not in events)    | Suggestions are transient UI state, not conversation history         |
+| Delete on clear (not empty file) | Reduces disk clutter; missing file = no suggestions                  |
+| `for_event_seq` field            | Tracks which agent message the suggestions relate to (for debugging) |
+| In-memory + disk                 | Memory for speed, disk for persistence across restarts               |
 
 ## ActionButtonsStore (`internal/session/action_buttons.go`)
 
@@ -111,13 +115,13 @@ type ActionButtonsStore struct { ... }
 
 ### Methods
 
-| Method | Description |
-|--------|-------------|
-| `Get()` | Returns current buttons (empty slice if none) |
-| `Set(buttons, eventSeq)` | Stores buttons, replacing any existing |
-| `Clear()` | Removes all buttons (deletes file) |
-| `IsEmpty()` | Returns true if no buttons stored |
-| `Delete()` | Removes the file (for session cleanup) |
+| Method                   | Description                                   |
+| ------------------------ | --------------------------------------------- |
+| `Get()`                  | Returns current buttons (empty slice if none) |
+| `Set(buttons, eventSeq)` | Stores buttons, replacing any existing        |
+| `Clear()`                | Removes all buttons (deletes file)            |
+| `IsEmpty()`              | Returns true if no buttons stored             |
+| `Delete()`               | Removes the file (for session cleanup)        |
 
 ### Analysis Details
 
@@ -128,6 +132,7 @@ The auxiliary session uses a specialized prompt to extract follow-up suggestions
 3. **Constraints**: Max 3 suggestions, labels ≤50 chars, responses ≤1000 chars
 
 The analysis looks for:
+
 - Direct questions the agent asked
 - Implicit decision points ("Would you like me to...")
 - Common follow-up actions based on context
@@ -164,10 +169,10 @@ sequenceDiagram
 
 Suggestions are cleared when new conversation activity occurs:
 
-| Trigger | Why |
-|---------|-----|
-| User sends prompt | Suggestions are stale—new response will generate new ones |
-| Agent starts responding | Prevents showing outdated suggestions during streaming |
+| Trigger                 | Why                                                       |
+| ----------------------- | --------------------------------------------------------- |
+| User sends prompt       | Suggestions are stale—new response will generate new ones |
+| Agent starts responding | Prevents showing outdated suggestions during streaming    |
 
 ```mermaid
 sequenceDiagram
@@ -216,8 +221,8 @@ sequenceDiagram
 
 ### Message Types
 
-| Type | Direction | Description |
-|------|-----------|-------------|
+| Type             | Direction       | Description                        |
+| ---------------- | --------------- | ---------------------------------- |
 | `action_buttons` | Server → Client | Suggestions available (or cleared) |
 
 ### Payload
@@ -228,8 +233,8 @@ sequenceDiagram
   "data": {
     "session_id": "20260201-120000-abc12345",
     "buttons": [
-      {"label": "Yes", "response": "Yes, please proceed"},
-      {"label": "No", "response": "No, cancel"}
+      { "label": "Yes", "response": "Yes, please proceed" },
+      { "label": "No", "response": "No, cancel" }
     ]
   }
 }
@@ -249,11 +254,11 @@ When cleared, `buttons` is an empty array:
 
 ## Thread Safety
 
-| Component | Mechanism | Notes |
-|-----------|-----------|-------|
-| `ActionButtonsStore` | `sync.Mutex` | Protects file read/write |
-| `BackgroundSession.cachedActionButtons` | `sync.RWMutex` | Allows concurrent reads |
-| Observer notifications | Iteration over map copy | Non-blocking broadcasts |
+| Component                               | Mechanism               | Notes                    |
+| --------------------------------------- | ----------------------- | ------------------------ |
+| `ActionButtonsStore`                    | `sync.Mutex`            | Protects file read/write |
+| `BackgroundSession.cachedActionButtons` | `sync.RWMutex`          | Allows concurrent reads  |
+| Observer notifications                  | Iteration over map copy | Non-blocking broadcasts  |
 
 ## Performance Considerations
 

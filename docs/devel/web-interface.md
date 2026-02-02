@@ -41,12 +41,13 @@ graph TB
 
 The web interface uses two WebSocket endpoints:
 
-| Endpoint | Handler | Purpose |
-|----------|---------|---------|
-| `/api/events` | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed) |
-| `/api/sessions/{id}/ws` | `SessionWSClient` | Per-session communication (prompts, responses, tools) |
+| Endpoint                | Handler              | Purpose                                               |
+| ----------------------- | -------------------- | ----------------------------------------------------- |
+| `/api/events`           | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed)  |
+| `/api/sessions/{id}/ws` | `SessionWSClient`    | Per-session communication (prompts, responses, tools) |
 
 This separation allows:
+
 - Global events to be broadcast to all connected clients
 - Per-session events to be scoped to interested clients only
 - Sessions to continue running when no clients are connected
@@ -65,23 +66,23 @@ The ACP agent sends responses as text chunks via `SessionUpdate` callbacks. The 
 
 The `MarkdownBuffer` balances real-time streaming with correct Markdown rendering:
 
-| Flush Trigger | Condition | Rationale |
-|---------------|-----------|-----------|
-| Line complete | `\n` received | Most content is line-based |
-| Code block end | Closing ``` | Don't break syntax highlighting |
-| Paragraph break | `\n\n` | Natural semantic boundary |
-| Timeout | 200ms idle | Ensure eventual delivery |
-| Buffer limit | 4KB accumulated | Prevent memory issues |
+| Flush Trigger   | Condition       | Rationale                       |
+| --------------- | --------------- | ------------------------------- |
+| Line complete   | `\n` received   | Most content is line-based      |
+| Code block end  | Closing ```     | Don't break syntax highlighting |
+| Paragraph break | `\n\n`          | Natural semantic boundary       |
+| Timeout         | 200ms idle      | Ensure eventual delivery        |
+| Buffer limit    | 4KB accumulated | Prevent memory issues           |
 
 ## Frontend Technology
 
 The frontend uses a CDN-first approach for zero build complexity:
 
-| Library | Purpose | Size |
-|---------|---------|------|
-| Preact | UI framework | ~3KB |
-| HTM | JSX-like syntax without build | ~1KB |
-| Tailwind Play CDN | Styling | Runtime |
+| Library           | Purpose                       | Size    |
+| ----------------- | ----------------------------- | ------- |
+| Preact            | UI framework                  | ~3KB    |
+| HTM               | JSX-like syntax without build | ~1KB    |
+| Tailwind Play CDN | Styling                       | Runtime |
 
 All assets are embedded in the Go binary via `go:embed`, enabling single-binary distribution.
 
@@ -125,7 +126,7 @@ Mobile browsers (iOS Safari, Android Chrome) suspend WebSocket connections when 
 
 ### Solution Architecture
 
-```mermaid
+````mermaid
 sequenceDiagram
     participant Phone as Mobile Browser
     participant WS as WebSocket
@@ -173,4 +174,4 @@ The `handleSyncSession` function in `session_ws.go` handles incremental sync:
 ```go
 // Client sends: {"type": "sync_session", "data": {"session_id": "...", "after_seq": 42}}
 // Server responds with events where seq > 42
-```
+````
