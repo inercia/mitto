@@ -1,6 +1,8 @@
 # Workspace Configuration
 
-Mitto supports workspace-specific configuration through `.mittorc` files placed in project directories. These settings apply only when working in that specific workspace.
+Mitto supports workspace-specific configuration through `.mittorc`
+files placed in project directories. These settings apply only when
+working in that specific workspace.
 
 ## Overview
 
@@ -9,7 +11,8 @@ Mitto supports workspace-specific configuration through `.mittorc` files placed 
 | **Global**    | `~/.mittorc` or `settings.json` | Applies to all workspaces      |
 | **Workspace** | `<project>/.mittorc`            | Applies only to that workspace |
 
-Workspace configuration is automatically loaded when you open a workspace in Mitto. The file is cached and reloaded every 30 seconds to pick up changes.
+Workspace configuration is automatically loaded when you open a workspace in Mitto.
+The file is cached and reloaded every 30 seconds to pick up changes.
 
 ## File Location
 

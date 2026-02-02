@@ -4,7 +4,8 @@
 
 ## Overview
 
-The web interface provides a browser-based UI that works identically on Linux, macOS, or any other platform. This document covers web server settings, authentication, security, and deployment options.
+The web interface provides a browser-based UI that works identically on Linux, macOS, or any other platform.
+This document covers web server settings, authentication, security, and deployment options.
 
 ## Table of Contents
 
@@ -34,47 +35,53 @@ The web interface provides a browser-based UI that works identically on Linux, m
 
 ## Basic Configuration
 
+Start by creating a `~/.mittorc` like:
+
 ```yaml
+acp:
+  - claude-code:
+      command: npx -y @zed-industries/claude-code-acp@latest
+
 web:
   host: 127.0.0.1 # Server host (default: 127.0.0.1)
   port: 8080 # Server port (default: 8080)
   theme: v2 # UI theme: "default" or "v2"
 ```
 
-### Host
-
-- `127.0.0.1` (default) - Only accept local connections
-- `0.0.0.0` - Accept connections from any interface (required for remote access)
-
-### Port
-
-The HTTP server port. Default is `8080`.
-
-### Theme
-
-- `default` - Original Tailwind-based theme with dark mode
-- `v2` - Modern theme with a cleaner visual style
-
-## Starting the Web Server
+and then start the Web server with:
 
 ```bash
-# Start with default settings (localhost:8080)
-mitto web
+# Start with default settings in a specific directory
+mitto web --dir /some/directory
 
 # Specify a different port
-mitto web --port 3000
+mitto web --port 3000  --dir /some/directory
 
-# Listen on all interfaces (for remote access)
-mitto web --host 0.0.0.0
+# Create multiple workspaces
+mitto web  --dir /some/directory-a  --dir /some/directory-b
+```
 
-# Use a specific ACP server
-mitto web --server claude-code
+and then connect to `http://localhost:8080` in your browser.
+
+## Multi-Workspace Support
+
+Configure multiple workspaces via CLI:
+
+```bash
+# Single workspace
+mitto web --dir /path/to/project
+
+# Multiple workspaces
+mitto web --dir /path/to/project1 --dir /path/to/project2
+
+# Specify ACP server per workspace
+mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
 ```
 
 ## Predefined Prompts
 
 Configure quick-access prompts that appear in the chat interface. Prompts are a
-**top-level** configuration section (not under `web`):
+**top-level** configuration section:
 
 ```yaml
 prompts:
@@ -227,43 +234,9 @@ web:
 
 ### External Access Tunnels
 
-Lifecycle hooks are commonly used to start tunneling services for external access.
-For detailed setup guides, see [External Access Configuration](../ext-access.md):
-
-- **Tailscale Funnel** - Automatic HTTPS via Tailscale
-- **ngrok** - Quick public URLs with inspection dashboard
-- **Cloudflare Tunnel** - Zero Trust access through Cloudflare
-- **And more** - localtunnel, bore, SSH port forwarding
-
-Quick example with ngrok:
-
-```yaml
-web:
-  hooks:
-    up:
-      command: "ngrok http ${PORT}"
-      name: "ngrok"
-    down:
-      command: "pkill -f 'ngrok http'"
-      name: "stop-ngrok"
-```
+See [External Access Configuration](../ext-access.md) for details.
 
 > **Important:** Always enable authentication when exposing Mitto externally.
-
-## Multi-Workspace Support
-
-Configure multiple workspaces via CLI:
-
-```bash
-# Single workspace
-mitto web --dir /path/to/project
-
-# Multiple workspaces
-mitto web --dir /path/to/project1 --dir /path/to/project2
-
-# Specify ACP server per workspace
-mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
-```
 
 ## Development Mode
 
