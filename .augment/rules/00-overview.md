@@ -20,6 +20,7 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | [web-interface.md](../docs/devel/web-interface.md) | HTTP server, streaming, mobile support |
 | [websocket-messaging.md](../docs/devel/websocket-messaging.md) | Message types, sync, reconnection |
 | [workspaces.md](../docs/devel/workspaces.md) | Multi-workspace, persistence |
+| [follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) | Action buttons, auxiliary analysis, persistence |
 
 ## Package Structure
 

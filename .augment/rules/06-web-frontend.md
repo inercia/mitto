@@ -1058,3 +1058,66 @@ Even with no-cache headers, browsers may still cache:
 
 **Always test with hard refresh** (Cmd+Shift+R on Mac, Ctrl+Shift+R on Windows)
 
+## Follow-up Suggestions (Action Buttons)
+
+Action buttons are AI-generated response options shown after the agent completes a response. They help users quickly continue conversations without typing.
+
+### WebSocket Message Handling
+
+```javascript
+case 'action_buttons': {
+    const { session_id, buttons } = msg.data;
+    setSessions(prev => ({
+        ...prev,
+        [session_id]: {
+            ...prev[session_id],
+            actionButtons: buttons || []
+        }
+    }));
+    break;
+}
+```
+
+### UI Rendering Pattern
+
+```javascript
+// Show action buttons only when:
+// 1. Session is not streaming
+// 2. Buttons array is not empty
+// 3. Session is the active session
+{!isStreaming && actionButtons.length > 0 && html`
+    <div class="flex flex-wrap gap-2 p-4">
+        ${actionButtons.map(btn => html`
+            <button
+                class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm"
+                onClick=${() => onSend(btn.response)}
+            >
+                ${btn.label}
+            </button>
+        `)}
+    </div>
+`}
+```
+
+### Key Behaviors
+
+| Event | Action |
+|-------|--------|
+| `action_buttons` received | Update session state with new buttons |
+| User clicks button | Send `btn.response` as prompt, buttons auto-clear |
+| User types and sends | Buttons cleared by server (new prompt = stale suggestions) |
+| Session switch | New session's buttons loaded from server |
+
+### State Management
+
+Action buttons are stored per-session in the sessions state:
+
+```javascript
+const [sessions, setSessions] = useState({});
+// sessions[sessionId].actionButtons = [{label, response}, ...]
+```
+
+Buttons are cleared automatically when:
+1. Server sends empty `buttons` array
+2. User sends a new prompt (server clears and broadcasts)
+

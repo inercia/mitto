@@ -64,6 +64,7 @@ See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md) fo
 - `agent_message` - Streaming HTML
 - `sync_session` / `session_sync` - Mobile wake resync
 - `queue_message_titled` - Queue title generated
+- `action_buttons` - Follow-up suggestions (generated or cleared)
 
 ## Structured Logging
 
@@ -149,6 +150,58 @@ func TestHandleUploadImageFromPath_NonLocalhost(t *testing.T) {
     // Should be forbidden
     if w.Code != http.StatusForbidden {
         t.Errorf("Status = %d, want %d", w.Code, http.StatusForbidden)
+    }
+}
+```
+
+## Follow-up Suggestions (Action Buttons)
+
+See [docs/devel/follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) for full architecture.
+
+### Key Patterns
+
+**Two-tier cache** in `BackgroundSession`:
+```go
+// Memory cache for fast access
+bs.actionButtonsMu.RLock()
+if bs.cachedActionButtons != nil {
+    // Return from memory
+}
+bs.actionButtonsMu.RUnlock()
+
+// Fall back to disk
+abStore := bs.store.ActionButtons(bs.persistedID)
+buttons, _ := abStore.Get()
+```
+
+**Async analysis** - non-blocking after prompt completes:
+```go
+// In handlePromptComplete
+if agentMessage != "" {
+    go bs.analyzeFollowUpQuestions(agentMessage)  // Non-blocking
+}
+```
+
+**Clear on new activity** - suggestions become stale when user sends new prompt:
+```go
+func (bs *BackgroundSession) clearActionButtons() {
+    // Clear memory
+    bs.cachedActionButtons = nil
+    // Clear disk
+    abStore.Clear()
+    // Notify observers (empty array = hide buttons)
+    bs.notifyObservers(func(o SessionObserver) {
+        o.OnActionButtons([]ActionButton{})
+    })
+}
+```
+
+**Send to new observers** - clients connecting after generation still see suggestions:
+```go
+func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
+    // ... add to observers map ...
+    if !isPrompting {
+        bs.sendCachedActionButtonsTo(observer)  // Send cached buttons
     }
 }
 ```

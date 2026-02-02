@@ -18,6 +18,7 @@ globs:
 | `Player` | Read-only playback, navigation | No (single-user) |
 | `Lock` | Session locking, heartbeat, cleanup | Yes (mutex + goroutine) |
 | `Queue` | Message queue for busy agent | Yes (mutex) |
+| `ActionButtonsStore` | Follow-up suggestions persistence | Yes (mutex) |
 
 ## Lock Management
 
@@ -49,4 +50,27 @@ auxiliary.Shutdown()  // On exit
 ```
 
 **Key characteristics**: Lazy init, auto-approve permissions, file writes denied, thread-safe.
+
+## Action Buttons Store
+
+The `ActionButtonsStore` persists follow-up suggestions to disk. See [docs/devel/follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) for full architecture.
+
+```go
+// Get action buttons store for a session
+abStore := store.ActionButtons(sessionID)
+
+// Store suggestions after analysis
+abStore.Set(buttons, eventSeq)
+
+// Read suggestions (returns empty slice if none)
+buttons, err := abStore.Get()
+
+// Clear when user sends new prompt
+abStore.Clear()
+```
+
+**Key patterns**:
+- Separate file (`action_buttons.json`) - not in events.jsonl (transient UI state, not history)
+- Delete file on clear (vs writing empty) - reduces disk clutter
+- Two-tier cache in BackgroundSession: memory (fast) + disk (persistent)
 
