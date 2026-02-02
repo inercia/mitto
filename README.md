@@ -42,7 +42,7 @@ install yet another AI coding agent...
 
 🖥️ **Multiple Interfaces** — Native macOS app and Web Browser
 
-🖥️ **Mobile fiendly** — Connect from your mobile phone to the sessions in your laptop, and continue your work on the go. Support touchscreen gestures for switching between conversations and more.
+🖥️ **Mobile fiendly** — Connect from your mobile phone to the sessions in your laptop, and [continue your work on the go](docs/config/ext-access.md). Support touchscreen gestures for switching between conversations and more.
 
 💬 **Session Management** — Automatic conversation history with resume capability
 

@@ -87,9 +87,6 @@ web:
     up:
       command: "tailscale funnel ${PORT}"
       name: "tailscale-funnel"
-    down:
-      command: "tailscale funnel --off ${PORT}"
-      name: "stop-funnel"
 ```
 
 For background operation:
@@ -100,9 +97,6 @@ web:
     up:
       command: "tailscale funnel ${PORT} &"
       name: "tailscale-funnel"
-    down:
-      command: "tailscale funnel --off ${PORT}"
-      name: "stop-funnel"
 ```
 
 ### Benefits
@@ -140,9 +134,6 @@ web:
     up:
       command: "ngrok http ${PORT} --log=stdout"
       name: "ngrok"
-    down:
-      command: "pkill -f 'ngrok http'"
-      name: "stop-ngrok"
   auth:
     simple:
       username: admin
@@ -157,9 +148,6 @@ web:
     up:
       command: "ngrok http ${PORT} > /dev/null 2>&1 & sleep 2 && curl -s localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'"
       name: "ngrok"
-    down:
-      command: "pkill -f 'ngrok http'"
-      name: "stop-ngrok"
 ```
 
 ### Benefits
