@@ -1116,6 +1116,7 @@ function App() {
     removeSession,
     isStreaming,
     hasMoreMessages,
+    actionButtons,
     sessionInfo,
     activeSessionId,
     activeSessions,
@@ -1142,6 +1143,8 @@ function App() {
   const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
   const [isMovingQueueMessage, setIsMovingQueueMessage] = useState(false);
   const [isAddingToQueue, setIsAddingToQueue] = useState(false);
+  const [queueToastVisible, setQueueToastVisible] = useState(false);
+  const [queueBadgePulse, setQueueBadgePulse] = useState(false);
   const [renameDialog, setRenameDialog] = useState({
     isOpen: false,
     session: null,
@@ -2146,6 +2149,9 @@ function App() {
     [moveQueueMessage],
   );
 
+  // Ref to track queue toast hide timer
+  const queueToastTimerRef = useRef(null);
+
   // Handle adding current draft to queue
   const handleAddToQueue = useCallback(async () => {
     if (!currentDraft?.trim() || isAddingToQueue) return;
@@ -2156,7 +2162,20 @@ function App() {
       if (result.success) {
         // Clear the draft after successful addition
         updateDraft(activeSessionId, "");
-        // Keep dropdown open to show the new item
+
+        // Show queue toast feedback
+        if (queueToastTimerRef.current) {
+          clearTimeout(queueToastTimerRef.current);
+        }
+        setQueueToastVisible(true);
+        queueToastTimerRef.current = setTimeout(() => {
+          setQueueToastVisible(false);
+          queueToastTimerRef.current = null;
+        }, 2000);
+
+        // Trigger badge pulse animation
+        setQueueBadgePulse(true);
+        setTimeout(() => setQueueBadgePulse(false), 600);
       }
     } finally {
       setIsAddingToQueue(false);
@@ -2372,6 +2391,19 @@ function App() {
         </div>
       `}
 
+      <!-- Queue added toast -->
+      ${queueToastVisible &&
+      html`
+        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
+          <div
+            class="queue-toast flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-full shadow-lg"
+          >
+            <span class="text-lg">📋</span>
+            <span class="text-sm font-medium">Message queued</span>
+          </div>
+        </div>
+      `}
+
       <!-- Sidebar (hidden on mobile by default) -->
       <div
         class="hidden md:block w-80 bg-mitto-sidebar border-r border-slate-700 flex-shrink-0"
@@ -2487,7 +2519,9 @@ function App() {
                     class="absolute -top-1.5 -right-1.5 ${queueLength >=
                     queueConfig.max_size
                       ? "bg-red-500"
-                      : "bg-blue-500"} text-white text-[10px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5"
+                      : "bg-blue-500"} ${queueBadgePulse
+                      ? "queue-badge-pulse"
+                      : ""} text-white text-[10px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5"
                   >
                     ${queueLength}
                   </span>
@@ -2668,6 +2702,7 @@ function App() {
           queueLength=${queueLength}
           queueConfig=${queueConfig}
           onAddToQueue=${handleAddToQueue}
+          actionButtons=${actionButtons}
         />
       </div>
     </div>

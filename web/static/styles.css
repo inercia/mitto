@@ -223,6 +223,30 @@
   animation: toastSlideOut 0.2s ease-in forwards;
 }
 
+/* Queue toast - ensure white text in both light and dark modes */
+.queue-toast {
+  color: white !important;
+}
+
+/* Queue badge pulse animation */
+@keyframes queueBadgePulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+  }
+  50% {
+    transform: scale(1.3);
+    box-shadow: 0 0 0 6px rgba(59, 130, 246, 0);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
+.queue-badge-pulse {
+  animation: queueBadgePulse 0.5s ease-out;
+}
+
 /* Session streaming indicator */
 @keyframes pulse-streaming {
   0%,
@@ -806,6 +830,10 @@
 
 .queue-dropdown {
   animation: queueDropdownSlideIn 0.15s ease-out forwards;
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.5),
+    0 8px 16px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
 .queue-dropdown.closing {
@@ -834,6 +862,10 @@
 .light .queue-dropdown {
   background: rgba(226, 232, 240, 0.97);
   border-color: #cbd5e1;
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.25),
+    0 8px 16px rgba(0, 0, 0, 0.15),
+    0 0 0 1px rgba(0, 0, 0, 0.08);
 }
 
 .light .queue-dropdown-header {
@@ -875,4 +907,11 @@
 
 .light .queue-dropdown-list::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
+}
+
+/* Action Buttons - Hide raw mitto-action tags in rendered content
+   These tags are parsed by the backend and rendered as buttons,
+   but this CSS ensures they're hidden if parsing fails or during streaming */
+mitto-action {
+  display: none !important;
 }

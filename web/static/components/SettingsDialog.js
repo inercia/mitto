@@ -2,7 +2,13 @@
 const { useState, useEffect, html } = window.preact;
 
 // Import utilities
-import { secureFetch, apiUrl } from "../utils/index.js";
+import {
+  secureFetch,
+  apiUrl,
+  hasNativeFolderPicker,
+  pickFolder,
+  openExternalURL,
+} from "../utils/index.js";
 
 // Import shared library functions
 import {
@@ -360,6 +366,9 @@ export function SettingsDialog({
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
 
+  // Follow-up suggestions settings (advanced) - enabled by default
+  const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
+
   // Follow system theme setting (client-side, stored in localStorage)
   const [followSystemTheme, setFollowSystemTheme] = useState(() => {
     if (typeof localStorage !== "undefined") {
@@ -581,6 +590,11 @@ export function SettingsDialog({
         config.ui?.confirmations?.delete_session !== false,
       );
 
+      // Load follow-up suggestions settings (advanced) - enabled by default
+      setActionButtonsEnabled(
+        config.conversations?.action_buttons?.enabled !== false,
+      );
+
       // Set default server for new workspace
       if (servers.length > 0) {
         setNewWorkspaceServer(servers[0].name);
@@ -673,12 +687,20 @@ export function SettingsDialog({
         };
       }
 
+      // Build conversations config with explicit enabled state
+      const conversationsConfig = {
+        action_buttons: {
+          enabled: actionButtonsEnabled,
+        },
+      };
+
       const config = {
         workspaces: workspaces,
         acp_servers: acpServers,
         prompts: prompts, // Top-level prompts
         web: webConfig,
         ui: uiConfig,
+        conversations: conversationsConfig,
       };
 
       const res = await secureFetch(apiUrl("/api/config"), {
@@ -927,15 +949,6 @@ export function SettingsDialog({
   // Can close if we have both ACP servers and workspaces configured
   const canClose = acpServers.length > 0 && workspaces.length > 0;
 
-  // Helper to open external URLs
-  const openExternalURL = (url) => {
-    if (typeof window.mittoOpenURL === "function") {
-      window.mittoOpenURL(url);
-    } else {
-      window.open(url, "_blank");
-    }
-  };
-
   return html`
     <div
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
@@ -1079,14 +1092,31 @@ export function SettingsDialog({
                           <label class="block text-sm text-gray-400 mb-1"
                             >Directory Path</label
                           >
-                          <input
-                            type="text"
-                            value=${newWorkspacePath}
-                            onInput=${(e) =>
-                              setNewWorkspacePath(e.target.value)}
-                            placeholder="/path/to/project"
-                            class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
+                          <div class="flex gap-2">
+                            <input
+                              type="text"
+                              value=${newWorkspacePath}
+                              onInput=${(e) =>
+                                setNewWorkspacePath(e.target.value)}
+                              placeholder="/path/to/project"
+                              class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            ${hasNativeFolderPicker() &&
+                            html`
+                              <button
+                                type="button"
+                                onClick=${async () => {
+                                  const path = await pickFolder();
+                                  if (path) {
+                                    setNewWorkspacePath(path);
+                                  }
+                                }}
+                                class="px-3 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm transition-colors whitespace-nowrap"
+                              >
+                                Browse…
+                              </button>
+                            `}
+                          </div>
                         </div>
                         <div>
                           <label class="block text-sm text-gray-400 mb-1"
@@ -1869,6 +1899,33 @@ export function SettingsDialog({
                         </label>
                       </div>
                     `}
+
+                    <!-- Advanced Settings -->
+                    <div class="space-y-3 pt-4 border-t border-slate-700/50">
+                      <h4 class="text-sm font-medium text-gray-300">
+                        Advanced
+                      </h4>
+                      <label
+                        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${actionButtonsEnabled}
+                          onChange=${(e) =>
+                            setActionButtonsEnabled(e.target.checked)}
+                          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                        />
+                        <div class="flex-1">
+                          <div class="font-medium text-sm">
+                            Follow-up Suggestions
+                          </div>
+                          <div class="text-xs text-gray-500">
+                            Analyze agent responses to suggest clickable
+                            follow-up options (uses auxiliary conversation)
+                          </div>
+                        </div>
+                      </label>
+                    </div>
                   </div>
                 `}
               `}

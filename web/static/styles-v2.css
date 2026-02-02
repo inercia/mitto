@@ -847,6 +847,13 @@ a:hover {
 .v2-theme button[class*="bg-blue-"].text-white {
   color: #ffffff !important;
 }
+/* Ensure white text on red/blue badge spans (e.g., queue badge) */
+.v2-theme span.bg-red-500.text-white,
+.v2-theme span.bg-blue-500.text-white,
+.v2-theme span[class*="bg-red-"].text-white,
+.v2-theme span[class*="bg-blue-"].text-white {
+  color: #ffffff !important;
+}
 
 .v2-theme .bg-yellow-400 {
   background: #facc15 !important;

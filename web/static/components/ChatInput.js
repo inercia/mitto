@@ -46,6 +46,7 @@ function getContrastColor(hexColor) {
  * @param {number} props.queueLength - Current number of messages in queue
  * @param {Object} props.queueConfig - Queue configuration { enabled, max_size, delay_seconds }
  * @param {Function} props.onAddToQueue - Callback to add message to queue (Cmd/Ctrl+Enter)
+ * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  */
 export function ChatInput({
   onSend,
@@ -63,6 +64,7 @@ export function ChatInput({
   queueLength = 0,
   queueConfig = { enabled: true, max_size: 10, delay_seconds: 0 },
   onAddToQueue,
+  actionButtons = [],
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -566,6 +568,36 @@ export function ChatInput({
 
   const hasPrompts = predefinedPrompts && predefinedPrompts.length > 0;
   const hasPendingImages = pendingImages.length > 0;
+  const hasActionButtons = actionButtons && actionButtons.length > 0;
+
+  // Debug logging for action buttons
+  if (actionButtons && actionButtons.length > 0) {
+    console.log("[ActionButtons] ChatInput received buttons:", {
+      count: actionButtons.length,
+      labels: actionButtons.map(b => b.label),
+      isStreaming,
+      isReadOnly,
+      noSession,
+      willRender: hasActionButtons && !isStreaming && !isReadOnly && !noSession,
+    });
+  }
+
+  // Handle action button click - populate the textarea with the response text
+  const handleActionButtonClick = useCallback(
+    (response) => {
+      setText(response);
+      // Focus the textarea and adjust height
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (textarea) {
+          textarea.focus();
+          textarea.style.height = "auto";
+          textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+        }
+      });
+    },
+    [setText],
+  );
 
   return html`
     <form
@@ -585,6 +617,43 @@ export function ChatInput({
         class="hidden"
         onChange=${handleFileInputChange}
       />
+
+      ${hasActionButtons &&
+      !isStreaming &&
+      !isReadOnly &&
+      !noSession &&
+      html`
+        <div class="max-w-4xl mx-auto mb-3">
+          <div class="flex flex-wrap gap-2">
+            ${actionButtons.map(
+              (btn, idx) => html`
+                <button
+                  key=${idx}
+                  type="button"
+                  onClick=${() => handleActionButtonClick(btn.response)}
+                  class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 border border-blue-500"
+                  title=${btn.response}
+                >
+                  <svg
+                    class="w-3.5 h-3.5 flex-shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                    />
+                  </svg>
+                  <span class="truncate max-w-[200px]">${btn.label}</span>
+                </button>
+              `,
+            )}
+          </div>
+        </div>
+      `}
 
       ${hasPendingImages &&
       html`
@@ -694,7 +763,8 @@ export function ChatInput({
           hasPrompts &&
           html`
             <div
-              class="absolute bottom-full right-0 mb-2 w-64 bg-slate-800 border border-slate-600 rounded-xl shadow-lg overflow-hidden z-50 max-h-80 overflow-y-auto"
+              class="absolute bottom-full right-0 mb-2 w-64 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 max-h-80 overflow-y-auto"
+              style="box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
             >
               <div class="py-1">
                 ${(() => {

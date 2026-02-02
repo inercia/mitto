@@ -519,23 +519,22 @@ export function DragHandleIcon({ className = "w-4 h-4" }) {
 }
 
 /**
- * Queue/list icon (4 stacked horizontal lines)
+ * Queue icon - Arrow pointing up with stacked layers (like "arrow_upward_alt" + stack)
+ * Represents messages queued/stacked waiting to be sent
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
 export function QueueIcon({ className = "w-4 h-4" }) {
   return html`
     <svg
       class="${className}"
-      fill="none"
-      stroke="currentColor"
+      fill="currentColor"
       viewBox="0 0 24 24"
     >
-      <path
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        stroke-width="2"
-        d="M4 6h16M4 10h16M4 14h16M4 18h16"
-      />
+      <!-- Top arrow -->
+      <path d="M12 3L6 9h4v4h4V9h4L12 3z" />
+      <!-- Stacked layers below -->
+      <path d="M6 15h12v2H6v-2z" opacity="0.7" />
+      <path d="M6 19h12v2H6v-2z" opacity="0.4" />
     </svg>
   `;
 }
