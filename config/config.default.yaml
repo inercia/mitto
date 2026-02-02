@@ -381,7 +381,7 @@ prompts:
   - name: "Create PR"
     backgroundColor: "#B2DFDB"  # Light Teal
     prompt: |
-      Guide me through creating a pull request for the current changes.
+      Guide me through creating a pull request for the committed changes.
 
       ### 1. Prepare the Code
 
@@ -390,72 +390,101 @@ prompts:
       - Fix any formatting issues
 
       **Run tests:**
-      - Identify and run the project's test suite
+      - If tests were run recently in this session and no code changes have been made since, skip re-running
+      - Otherwise, identify and run the project's test suite
       - If tests fail, report the failures and ask how to proceed
 
-      ### 2. Analyze Changes
+      ### 2. Ensure Feature Branch
 
-      - Run `git diff --stat` to see all modified files
-      - Run `git diff` to review the actual changes
-      - Group changes into logical, cohesive units:
-        - **Feature code**: New functionality or feature changes
-        - **Bug fixes**: Corrections to existing behavior
-        - **Refactoring**: Code improvements without behavior changes
-        - **Tests**: New or updated tests
-        - **Documentation**: README, comments, docs updates
-        - **Dependencies**: Package updates, go.mod, package.json, etc.
+      Check the current branch: `git branch --show-current`
 
-      ### 3. Propose Commit Structure
+      **If on main/master:**
+      1. Review the commits to understand the changes: `git log --oneline -5`
+      2. Create a descriptive branch name based on the changes:
+         - Use existing project conventions (e.g., `feature/`, `fix/`, `chore/` prefixes)
+         - Keep it short but descriptive (e.g., `feature/add-user-auth`, `fix/login-validation`)
+      3. Create and switch to the new branch: `git checkout -b <branch-name>`
 
-      For each logical group, present a table:
+      **If already on a feature branch:**
+      - Continue with the current branch
 
-      | # | Type | Commit Message | Files | Description |
-      |---|------|----------------|-------|-------------|
-      | 1 | feat | feat: add user authentication | auth/*.go | New auth module |
+      ### 3. Sync with Upstream
 
-      For each commit, propose **3 message options** using conventional commits:
-      - Option A: Concise (50 chars max)
-      - Option B: Descriptive (with scope)
-      - Option C: Detailed (with body if needed)
+      Ensure your branch is up-to-date before creating the PR:
 
-      ### 4. Review with User
+      1. Fetch the latest changes: `git fetch origin`
+      2. Identify the base branch: `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'`
+      3. Rebase onto the latest base branch: `git rebase origin/<base-branch>`
+      4. If there are merge conflicts:
+         - Report the conflicting files
+         - Help resolve each conflict
+         - Continue the rebase: `git rebase --continue`
+         - If conflicts are too complex, ask the user how to proceed (abort, manual resolution, etc.)
 
-      Ask the user to:
-      - **Approve** the proposed structure
-      - **Modify** (reorder, merge, split, change messages)
-      - **Cancel** to abort
+      ### 4. Generate PR Title and Description
 
-      **Wait for explicit approval before proceeding.**
+      **Analyze the commits** to create a good PR title and description:
 
-      ### 5. Create Commits
+      ```bash
+      git log --oneline origin/<base-branch>..HEAD
+      ```
 
-      For each approved commit:
-      1. Stage only the relevant files: `git add <files>`
-      2. Create the commit: `git commit -m "<message>"`
-      3. Report success or failure
+      **PR Title:**
+      - Summarize the overall change in one line (50-72 chars ideal)
+      - Use conventional commit style if the project follows it (e.g., `feat: add user authentication`)
+      - Be specific: "Fix login validation error" not "Fix bug"
+      - If multiple commits, describe the overall goal, not individual changes
 
-      ### 6. Create Pull Request
+      **PR Description:**
+      Structure the description as:
 
-      Once all commits are created:
+      ```markdown
+      ## Summary
+      Brief explanation of what this PR does and why.
 
-      1. Check if there's an upstream branch: `git rev-parse --abbrev-ref --symbolic-full-name @{u}`
-      2. Push the branch if needed: `git push -u origin HEAD`
-      3. Generate a PR title and description:
-         - Title: Summarize the overall change
-         - Description: List all commits with brief explanations
-         - Include any related issues (look for issue references in commits/branch name)
-      4. Present the PR details for approval
-      5. Create the PR: `gh pr create --title "<title>" --body "<body>"`
+      ## Changes
+      - List key changes (can be derived from commit messages)
+      - Group related changes together
+      - Highlight any breaking changes or important notes
 
-      Report the PR URL when complete.
+      ## Testing
+      How the changes were tested (if applicable).
+
+      ## Related Issues
+      Fixes #123, Relates to #456 (if any issue references found in commits/branch)
+      ```
+
+      Present the proposed title and description for approval before creating the PR.
+
+      ### 5. Push and Create Pull Request
+
+      After approval, push the branch and create the PR:
+
+      ```bash
+      git push --force-with-lease -u origin HEAD
+      gh pr create --title "<approved-title>" --body "<approved-description>"
+      ```
+
+      ### 6. Report PR Link
+
+      After the PR is created, prominently display:
+
+      ```
+      ✅ Pull Request Created Successfully!
+
+      🔗 PR URL: <the-pr-url>
+
+      Share this link to request reviews and approvals.
+      ```
+
+      Also show how to view the PR in browser: `gh pr view --web`
 
       ## Rules
 
-      - Always run formatters and tests before committing
+      - Always run formatters and tests before creating the PR
       - Respect `.gitignore`
-      - Use conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
-      - Keep commits atomic (one logical change per commit)
       - Never force push without explicit permission
+      - Assume commits are already created (use "Create commits" prompt if needed first)
 
 # Web server configuration
 web:
