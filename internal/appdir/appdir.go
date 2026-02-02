@@ -33,6 +33,9 @@ const (
 	// HooksDirName is the name of the hooks subdirectory.
 	HooksDirName = "hooks"
 
+	// PromptsDirName is the name of the prompts subdirectory.
+	PromptsDirName = "prompts"
+
 	// AuthSessionsFileName is the name of the auth sessions file.
 	AuthSessionsFileName = "auth_sessions.json"
 )
@@ -148,6 +151,12 @@ func EnsureDir() error {
 		return fmt.Errorf("failed to create hooks directory %s: %w", hooksDir, err)
 	}
 
+	// Create prompts subdirectory
+	promptsDir := filepath.Join(dir, PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create prompts directory %s: %w", promptsDir, err)
+	}
+
 	return nil
 }
 
@@ -185,6 +194,16 @@ func HooksDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, HooksDirName), nil
+}
+
+// PromptsDir returns the full path to the prompts directory.
+// This directory contains global prompt files in markdown format with YAML front-matter.
+func PromptsDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, PromptsDirName), nil
 }
 
 // AuthSessionsPath returns the full path to the auth_sessions.json file.

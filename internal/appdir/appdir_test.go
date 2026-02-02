@@ -78,6 +78,16 @@ func TestEnsureDir(t *testing.T) {
 	if !info.IsDir() {
 		t.Error("sessions path is not a directory")
 	}
+
+	// Verify prompts subdirectory exists
+	promptsDir := filepath.Join(tmpDir, PromptsDirName)
+	info, err = os.Stat(promptsDir)
+	if err != nil {
+		t.Fatalf("prompts dir does not exist after EnsureDir(): %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("prompts path is not a directory")
+	}
 }
 
 func TestSettingsPath(t *testing.T) {
@@ -145,6 +155,23 @@ func TestHooksDir(t *testing.T) {
 	expected := filepath.Join(customDir, HooksDirName)
 	if hooksDir != expected {
 		t.Errorf("HooksDir() = %q, want %q", hooksDir, expected)
+	}
+}
+
+func TestPromptsDir(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	promptsDir, err := PromptsDir()
+	if err != nil {
+		t.Fatalf("PromptsDir() failed: %v", err)
+	}
+
+	expected := filepath.Join(customDir, PromptsDirName)
+	if promptsDir != expected {
+		t.Errorf("PromptsDir() = %q, want %q", promptsDir, expected)
 	}
 }
 
