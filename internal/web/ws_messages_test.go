@@ -1,7 +1,12 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"testing"
+
+	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/session"
 )
 
 func TestParseMessage_Valid(t *testing.T) {
@@ -280,3 +285,242 @@ func TestEventBuffer_Append(t *testing.T) {
 		t.Errorf("Type = %v, want %v", events[0].Type, BufferedEventToolCall)
 	}
 }
+
+// replayTestObserver implements SessionObserver for testing ReplayTo.
+// It tracks all event types with full details.
+type replayTestObserver struct {
+	agentMessages []string
+	agentThoughts []string
+	toolCalls     []struct{ id, title, status string }
+	toolUpdates   []struct {
+		id     string
+		status *string
+	}
+	planCalls int
+	fileReads []struct {
+		path string
+		size int
+	}
+	fileWrites []struct {
+		path string
+		size int
+	}
+}
+
+func (m *replayTestObserver) OnAgentMessage(html string) {
+	m.agentMessages = append(m.agentMessages, html)
+}
+func (m *replayTestObserver) OnAgentThought(text string) {
+	m.agentThoughts = append(m.agentThoughts, text)
+}
+func (m *replayTestObserver) OnToolCall(id, title, status string) {
+	m.toolCalls = append(m.toolCalls, struct{ id, title, status string }{id, title, status})
+}
+func (m *replayTestObserver) OnToolUpdate(id string, status *string) {
+	m.toolUpdates = append(m.toolUpdates, struct {
+		id     string
+		status *string
+	}{id, status})
+}
+func (m *replayTestObserver) OnPlan() { m.planCalls++ }
+func (m *replayTestObserver) OnFileRead(path string, size int) {
+	m.fileReads = append(m.fileReads, struct {
+		path string
+		size int
+	}{path, size})
+}
+func (m *replayTestObserver) OnFileWrite(path string, size int) {
+	m.fileWrites = append(m.fileWrites, struct {
+		path string
+		size int
+	}{path, size})
+}
+func (m *replayTestObserver) OnPermission(_ context.Context, _ acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+	return acp.RequestPermissionResponse{}, nil
+}
+func (m *replayTestObserver) OnPromptComplete(_ int)                     {}
+func (m *replayTestObserver) OnActionButtons(_ []ActionButton)           {}
+func (m *replayTestObserver) OnUserPrompt(_, _, _ string, _ []string)    {}
+func (m *replayTestObserver) OnError(_ string)                           {}
+func (m *replayTestObserver) OnQueueUpdated(_ int, _, _ string)          {}
+func (m *replayTestObserver) OnQueueReordered(_ []session.QueuedMessage) {}
+func (m *replayTestObserver) OnQueueMessageSending(_ string)             {}
+func (m *replayTestObserver) OnQueueMessageSent(_ string)                {}
+
+func TestBufferedEvent_ReplayTo(t *testing.T) {
+	observer := &replayTestObserver{}
+
+	// Test each event type
+	events := []BufferedEvent{
+		{Type: BufferedEventAgentThought, Data: &AgentThoughtData{Text: "thinking"}},
+		{Type: BufferedEventAgentMessage, Data: &AgentMessageData{HTML: "<p>hello</p>"}},
+		{Type: BufferedEventToolCall, Data: &ToolCallData{ID: "t1", Title: "Read", Status: "running"}},
+		{Type: BufferedEventToolCallUpdate, Data: &ToolCallUpdateData{ID: "t1", Status: ptr("done")}},
+		{Type: BufferedEventPlan, Data: &PlanData{}},
+		{Type: BufferedEventFileRead, Data: &FileOperationData{Path: "/a.txt", Size: 100}},
+		{Type: BufferedEventFileWrite, Data: &FileOperationData{Path: "/b.txt", Size: 200}},
+	}
+
+	for _, e := range events {
+		e.ReplayTo(observer)
+	}
+
+	if len(observer.agentThoughts) != 1 || observer.agentThoughts[0] != "thinking" {
+		t.Errorf("agentThoughts = %v, want [thinking]", observer.agentThoughts)
+	}
+	if len(observer.agentMessages) != 1 || observer.agentMessages[0] != "<p>hello</p>" {
+		t.Errorf("agentMessages = %v, want [<p>hello</p>]", observer.agentMessages)
+	}
+	if len(observer.toolCalls) != 1 {
+		t.Errorf("toolCalls = %v, want 1 call", observer.toolCalls)
+	}
+	if len(observer.toolUpdates) != 1 {
+		t.Errorf("toolUpdates = %v, want 1 update", observer.toolUpdates)
+	}
+	if observer.planCalls != 1 {
+		t.Errorf("planCalls = %d, want 1", observer.planCalls)
+	}
+	if len(observer.fileReads) != 1 || observer.fileReads[0].path != "/a.txt" {
+		t.Errorf("fileReads = %v, want [{/a.txt 100}]", observer.fileReads)
+	}
+	if len(observer.fileWrites) != 1 || observer.fileWrites[0].path != "/b.txt" {
+		t.Errorf("fileWrites = %v, want [{/b.txt 200}]", observer.fileWrites)
+	}
+}
+
+func TestBufferedEvent_ReplayTo_EmptyData(t *testing.T) {
+	observer := &replayTestObserver{}
+
+	// Empty text should not trigger callback
+	event := BufferedEvent{Type: BufferedEventAgentThought, Data: &AgentThoughtData{Text: ""}}
+	event.ReplayTo(observer)
+
+	if len(observer.agentThoughts) != 0 {
+		t.Errorf("agentThoughts = %v, want empty", observer.agentThoughts)
+	}
+
+	// Empty HTML should not trigger callback
+	event = BufferedEvent{Type: BufferedEventAgentMessage, Data: &AgentMessageData{HTML: ""}}
+	event.ReplayTo(observer)
+
+	if len(observer.agentMessages) != 0 {
+		t.Errorf("agentMessages = %v, want empty", observer.agentMessages)
+	}
+}
+
+// mockPersister implements EventPersister for testing PersistTo.
+type mockPersister struct {
+	agentMessages []string
+	agentThoughts []string
+	toolCalls     []struct{ id, title, status, kind string }
+	toolUpdates   []struct {
+		id     string
+		status *string
+	}
+	planCalls int
+	fileReads []struct {
+		path string
+		size int
+	}
+	fileWrites []struct {
+		path string
+		size int
+	}
+	returnErr error
+}
+
+func (m *mockPersister) RecordAgentMessage(html string) error {
+	m.agentMessages = append(m.agentMessages, html)
+	return m.returnErr
+}
+func (m *mockPersister) RecordAgentThought(text string) error {
+	m.agentThoughts = append(m.agentThoughts, text)
+	return m.returnErr
+}
+func (m *mockPersister) RecordToolCall(id, title, status, kind string, _, _ any) error {
+	m.toolCalls = append(m.toolCalls, struct{ id, title, status, kind string }{id, title, status, kind})
+	return m.returnErr
+}
+func (m *mockPersister) RecordToolCallUpdate(id string, status, _ *string) error {
+	m.toolUpdates = append(m.toolUpdates, struct {
+		id     string
+		status *string
+	}{id, status})
+	return m.returnErr
+}
+func (m *mockPersister) RecordPlan(_ []session.PlanEntry) error {
+	m.planCalls++
+	return m.returnErr
+}
+func (m *mockPersister) RecordFileRead(path string, size int) error {
+	m.fileReads = append(m.fileReads, struct {
+		path string
+		size int
+	}{path, size})
+	return m.returnErr
+}
+func (m *mockPersister) RecordFileWrite(path string, size int) error {
+	m.fileWrites = append(m.fileWrites, struct {
+		path string
+		size int
+	}{path, size})
+	return m.returnErr
+}
+
+func TestBufferedEvent_PersistTo(t *testing.T) {
+	persister := &mockPersister{}
+
+	events := []BufferedEvent{
+		{Type: BufferedEventAgentThought, Data: &AgentThoughtData{Text: "thinking"}},
+		{Type: BufferedEventAgentMessage, Data: &AgentMessageData{HTML: "<p>hello</p>"}},
+		{Type: BufferedEventToolCall, Data: &ToolCallData{ID: "t1", Title: "Read", Status: "running"}},
+		{Type: BufferedEventToolCallUpdate, Data: &ToolCallUpdateData{ID: "t1", Status: ptr("done")}},
+		{Type: BufferedEventPlan, Data: &PlanData{}},
+		{Type: BufferedEventFileRead, Data: &FileOperationData{Path: "/a.txt", Size: 100}},
+		{Type: BufferedEventFileWrite, Data: &FileOperationData{Path: "/b.txt", Size: 200}},
+	}
+
+	for _, e := range events {
+		if err := e.PersistTo(persister); err != nil {
+			t.Errorf("PersistTo returned error: %v", err)
+		}
+	}
+
+	if len(persister.agentThoughts) != 1 || persister.agentThoughts[0] != "thinking" {
+		t.Errorf("agentThoughts = %v, want [thinking]", persister.agentThoughts)
+	}
+	if len(persister.agentMessages) != 1 || persister.agentMessages[0] != "<p>hello</p>" {
+		t.Errorf("agentMessages = %v, want [<p>hello</p>]", persister.agentMessages)
+	}
+	if len(persister.toolCalls) != 1 {
+		t.Errorf("toolCalls = %v, want 1 call", persister.toolCalls)
+	}
+	if len(persister.toolUpdates) != 1 {
+		t.Errorf("toolUpdates = %v, want 1 update", persister.toolUpdates)
+	}
+	if persister.planCalls != 1 {
+		t.Errorf("planCalls = %d, want 1", persister.planCalls)
+	}
+	if len(persister.fileReads) != 1 || persister.fileReads[0].path != "/a.txt" {
+		t.Errorf("fileReads = %v, want [{/a.txt 100}]", persister.fileReads)
+	}
+	if len(persister.fileWrites) != 1 || persister.fileWrites[0].path != "/b.txt" {
+		t.Errorf("fileWrites = %v, want [{/b.txt 200}]", persister.fileWrites)
+	}
+}
+
+func TestBufferedEvent_PersistTo_ReturnsError(t *testing.T) {
+	persister := &mockPersister{returnErr: errors.New("persist error")}
+
+	event := BufferedEvent{Type: BufferedEventAgentMessage, Data: &AgentMessageData{HTML: "test"}}
+	err := event.PersistTo(persister)
+
+	if err == nil {
+		t.Error("PersistTo should return error")
+	}
+	if err.Error() != "persist error" {
+		t.Errorf("error = %v, want 'persist error'", err)
+	}
+}
+
+func ptr(s string) *string { return &s }

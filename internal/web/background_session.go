@@ -349,34 +349,7 @@ func (bs *BackgroundSession) replayBufferedEventsTo(observer SessionObserver) {
 	}
 
 	for _, event := range events {
-		switch event.Type {
-		case BufferedEventAgentThought:
-			if data, ok := event.Data.(*AgentThoughtData); ok && data.Text != "" {
-				observer.OnAgentThought(data.Text)
-			}
-		case BufferedEventAgentMessage:
-			if data, ok := event.Data.(*AgentMessageData); ok && data.HTML != "" {
-				observer.OnAgentMessage(data.HTML)
-			}
-		case BufferedEventToolCall:
-			if data, ok := event.Data.(*ToolCallData); ok {
-				observer.OnToolCall(data.ID, data.Title, data.Status)
-			}
-		case BufferedEventToolCallUpdate:
-			if data, ok := event.Data.(*ToolCallUpdateData); ok {
-				observer.OnToolUpdate(data.ID, data.Status)
-			}
-		case BufferedEventPlan:
-			observer.OnPlan()
-		case BufferedEventFileRead:
-			if data, ok := event.Data.(*FileOperationData); ok {
-				observer.OnFileRead(data.Path, data.Size)
-			}
-		case BufferedEventFileWrite:
-			if data, ok := event.Data.(*FileOperationData); ok {
-				observer.OnFileWrite(data.Path, data.Size)
-			}
-		}
+		event.ReplayTo(observer)
 	}
 }
 
@@ -520,50 +493,8 @@ func (bs *BackgroundSession) flushAndPersistMessages() {
 
 	// Persist each event in order
 	for _, event := range events {
-		switch event.Type {
-		case BufferedEventAgentThought:
-			if data, ok := event.Data.(*AgentThoughtData); ok && data.Text != "" {
-				if err := bs.recorder.RecordAgentThought(data.Text); err != nil && bs.logger != nil {
-					bs.logger.Error("Failed to persist agent thought", "error", err)
-				}
-			}
-		case BufferedEventAgentMessage:
-			if data, ok := event.Data.(*AgentMessageData); ok && data.HTML != "" {
-				if err := bs.recorder.RecordAgentMessage(data.HTML); err != nil && bs.logger != nil {
-					bs.logger.Error("Failed to persist agent message", "error", err)
-				}
-			}
-		case BufferedEventToolCall:
-			if data, ok := event.Data.(*ToolCallData); ok {
-				// RecordToolCall signature: (toolCallID, title, status, kind string, rawInput, rawOutput any)
-				if err := bs.recorder.RecordToolCall(data.ID, data.Title, data.Status, "", nil, nil); err != nil && bs.logger != nil {
-					bs.logger.Error("Failed to persist tool call", "error", err)
-				}
-			}
-		case BufferedEventToolCallUpdate:
-			if data, ok := event.Data.(*ToolCallUpdateData); ok {
-				// RecordToolCallUpdate signature: (toolCallID string, status, title *string)
-				if err := bs.recorder.RecordToolCallUpdate(data.ID, data.Status, nil); err != nil && bs.logger != nil {
-					bs.logger.Error("Failed to persist tool call update", "error", err)
-				}
-			}
-		case BufferedEventPlan:
-			// RecordPlan signature: (entries []PlanEntry)
-			if err := bs.recorder.RecordPlan(nil); err != nil && bs.logger != nil {
-				bs.logger.Error("Failed to persist plan", "error", err)
-			}
-		case BufferedEventFileRead:
-			if data, ok := event.Data.(*FileOperationData); ok {
-				if err := bs.recorder.RecordFileRead(data.Path, data.Size); err != nil && bs.logger != nil {
-					bs.logger.Error("Failed to persist file read", "error", err)
-				}
-			}
-		case BufferedEventFileWrite:
-			if data, ok := event.Data.(*FileOperationData); ok {
-				if err := bs.recorder.RecordFileWrite(data.Path, data.Size); err != nil && bs.logger != nil {
-					bs.logger.Error("Failed to persist file write", "error", err)
-				}
-			}
+		if err := event.PersistTo(bs.recorder); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist event", "type", event.Type, "error", err)
 		}
 	}
 }

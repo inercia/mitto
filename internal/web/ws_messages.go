@@ -17,6 +17,8 @@ package web
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/inercia/mitto/internal/session"
 )
 
 // WSMessage represents a WebSocket message between frontend and backend.
@@ -217,6 +219,18 @@ type BufferedEvent struct {
 	Data interface{}
 }
 
+// EventPersister defines the interface for persisting buffered events.
+// This is implemented by session.Recorder to allow decoupled persistence.
+type EventPersister interface {
+	RecordAgentMessage(html string) error
+	RecordAgentThought(text string) error
+	RecordToolCall(toolCallID, title, status, kind string, rawInput, rawOutput any) error
+	RecordToolCallUpdate(toolCallID string, status, title *string) error
+	RecordPlan(entries []session.PlanEntry) error
+	RecordFileRead(path string, size int) error
+	RecordFileWrite(path string, size int) error
+}
+
 // AgentMessageData holds data for an agent message event.
 type AgentMessageData struct {
 	HTML string
@@ -398,4 +412,71 @@ func (b *EventBuffer) GetAgentThought() string {
 		}
 	}
 	return result.String()
+}
+
+// ReplayTo sends this buffered event to a SessionObserver.
+// This is used to catch up newly connected observers on in-progress streaming.
+func (e BufferedEvent) ReplayTo(observer SessionObserver) {
+	switch e.Type {
+	case BufferedEventAgentThought:
+		if data, ok := e.Data.(*AgentThoughtData); ok && data.Text != "" {
+			observer.OnAgentThought(data.Text)
+		}
+	case BufferedEventAgentMessage:
+		if data, ok := e.Data.(*AgentMessageData); ok && data.HTML != "" {
+			observer.OnAgentMessage(data.HTML)
+		}
+	case BufferedEventToolCall:
+		if data, ok := e.Data.(*ToolCallData); ok {
+			observer.OnToolCall(data.ID, data.Title, data.Status)
+		}
+	case BufferedEventToolCallUpdate:
+		if data, ok := e.Data.(*ToolCallUpdateData); ok {
+			observer.OnToolUpdate(data.ID, data.Status)
+		}
+	case BufferedEventPlan:
+		observer.OnPlan()
+	case BufferedEventFileRead:
+		if data, ok := e.Data.(*FileOperationData); ok {
+			observer.OnFileRead(data.Path, data.Size)
+		}
+	case BufferedEventFileWrite:
+		if data, ok := e.Data.(*FileOperationData); ok {
+			observer.OnFileWrite(data.Path, data.Size)
+		}
+	}
+}
+
+// PersistTo persists this buffered event to an EventPersister (e.g., session.Recorder).
+// Returns an error if persistence fails.
+func (e BufferedEvent) PersistTo(persister EventPersister) error {
+	switch e.Type {
+	case BufferedEventAgentThought:
+		if data, ok := e.Data.(*AgentThoughtData); ok && data.Text != "" {
+			return persister.RecordAgentThought(data.Text)
+		}
+	case BufferedEventAgentMessage:
+		if data, ok := e.Data.(*AgentMessageData); ok && data.HTML != "" {
+			return persister.RecordAgentMessage(data.HTML)
+		}
+	case BufferedEventToolCall:
+		if data, ok := e.Data.(*ToolCallData); ok {
+			return persister.RecordToolCall(data.ID, data.Title, data.Status, "", nil, nil)
+		}
+	case BufferedEventToolCallUpdate:
+		if data, ok := e.Data.(*ToolCallUpdateData); ok {
+			return persister.RecordToolCallUpdate(data.ID, data.Status, nil)
+		}
+	case BufferedEventPlan:
+		return persister.RecordPlan(nil)
+	case BufferedEventFileRead:
+		if data, ok := e.Data.(*FileOperationData); ok {
+			return persister.RecordFileRead(data.Path, data.Size)
+		}
+	case BufferedEventFileWrite:
+		if data, ok := e.Data.(*FileOperationData); ok {
+			return persister.RecordFileWrite(data.Path, data.Size)
+		}
+	}
+	return nil
 }
