@@ -64,17 +64,9 @@ For Linux, install the binary from the [releases page](https://github.com/inerci
 
 ### Configure
 
-1) For Mac OS, just open the Mitto application and follow the instructions.
+- For **Mac OS**, just open the Mitto application and follow the instructions.
 
-2) For Linux:
-
-Create `~/.mittorc`:
-
-```yaml
-acp:
-  - claude-code:
-      command: npx -y @zed-industries/claude-code-acp@latest
-```
+- For **Linux**, follow the instructions [here](docs/config/web/README.md).
 
 ## Documentation
 
