@@ -3,12 +3,14 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	embeddedconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
@@ -77,6 +79,19 @@ like auggie, claude-code, and others that implement ACP.`,
 		if err := appdir.EnsureDir(); err != nil {
 			return fmt.Errorf("failed to create Mitto directory: %w", err)
 		}
+
+		// Deploy builtin prompts on first run
+		if builtinPromptsDir, bpErr := appdir.BuiltinPromptsDir(); bpErr != nil {
+			slog.Warn("Failed to get builtin prompts directory", "error", bpErr)
+		} else {
+			deployed, deployErr := embeddedconfig.EnsureBuiltinPrompts(builtinPromptsDir)
+			if deployErr != nil {
+				slog.Warn("Failed to deploy builtin prompts", "error", deployErr)
+			} else if deployed {
+				slog.Info("Deployed builtin prompts", "dir", builtinPromptsDir)
+			}
+		}
+
 		// Load configuration using the hierarchy:
 		// 1. --config flag (explicit path) takes highest priority
 		// 2. RC file (~/.mittorc) if it exists
