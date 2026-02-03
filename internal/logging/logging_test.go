@@ -9,30 +9,6 @@ import (
 	"testing"
 )
 
-func TestWithSession(t *testing.T) {
-	var buf bytes.Buffer
-	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	base := slog.New(handler)
-
-	logger := WithSession(base, "test-session-123")
-	logger.Info("test message")
-
-	output := buf.String()
-	if !strings.Contains(output, "session_id=test-session-123") {
-		t.Errorf("Expected session_id in output, got: %s", output)
-	}
-	if !strings.Contains(output, "test message") {
-		t.Errorf("Expected message in output, got: %s", output)
-	}
-}
-
-func TestWithSession_NilLogger(t *testing.T) {
-	logger := WithSession(nil, "test-session")
-	if logger != nil {
-		t.Error("WithSession(nil, ...) should return nil")
-	}
-}
-
 func TestWithSessionContext(t *testing.T) {
 	var buf bytes.Buffer
 	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
@@ -81,32 +57,6 @@ func TestWithClient_NilLogger(t *testing.T) {
 	logger := WithClient(nil, "client", "session")
 	if logger != nil {
 		t.Error("WithClient(nil, ...) should return nil")
-	}
-}
-
-func TestWithSession_MultipleMessages(t *testing.T) {
-	var buf bytes.Buffer
-	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	base := slog.New(handler)
-
-	logger := WithSession(base, "persistent-session")
-
-	// Log multiple messages - all should have session_id
-	logger.Info("first message")
-	logger.Debug("second message")
-	logger.Warn("third message")
-
-	output := buf.String()
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-
-	if len(lines) != 3 {
-		t.Errorf("Expected 3 log lines, got %d", len(lines))
-	}
-
-	for i, line := range lines {
-		if !strings.Contains(line, "session_id=persistent-session") {
-			t.Errorf("Line %d missing session_id: %s", i+1, line)
-		}
 	}
 }
 
@@ -384,7 +334,6 @@ func TestComponentShortcuts(t *testing.T) {
 		{"web", Web()},
 		{"auth", Auth()},
 		{"hook", Hook()},
-		{"websocket", WebSocket()},
 		{"session", Session()},
 		{"shutdown", Shutdown()},
 	}

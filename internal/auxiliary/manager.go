@@ -172,10 +172,3 @@ func (m *Manager) Prompt(ctx context.Context, message string) (string, error) {
 	// Return collected response
 	return client.getResponse(), nil
 }
-
-// IsStarted returns whether the auxiliary session has been started.
-func (m *Manager) IsStarted() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.started
-}

@@ -73,9 +73,3 @@ func SaveWorkspaces(workspaces []WorkspaceSettings) error {
 	// Use atomic write for safety
 	return fileutil.WriteJSONAtomic(workspacesPath, file, 0644)
 }
-
-// WorkspacesPath returns the path to the workspaces.json file.
-// This is a convenience function that delegates to appdir.WorkspacesPath().
-func WorkspacesPath() (string, error) {
-	return appdir.WorkspacesPath()
-}

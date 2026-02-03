@@ -210,11 +210,6 @@ func Hook() *slog.Logger {
 	return WithComponent("hook")
 }
 
-// WebSocket returns a logger for WebSocket events.
-func WebSocket() *slog.Logger {
-	return WithComponent("websocket")
-}
-
 // Session returns a logger for session events.
 func Session() *slog.Logger {
 	return WithComponent("session")
@@ -223,15 +218,6 @@ func Session() *slog.Logger {
 // Shutdown returns a logger for shutdown events.
 func Shutdown() *slog.Logger {
 	return WithComponent("shutdown")
-}
-
-// WithSession returns a logger with session context attributes.
-// This creates a child logger that automatically includes session_id in all log messages.
-func WithSession(base *slog.Logger, sessionID string) *slog.Logger {
-	if base == nil {
-		return nil
-	}
-	return base.With("session_id", sessionID)
 }
 
 // WithSessionContext returns a logger with full session context.

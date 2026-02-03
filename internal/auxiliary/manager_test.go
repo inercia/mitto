@@ -52,11 +52,15 @@ func TestNewManager(t *testing.T) {
 	}
 }
 
-func TestManager_IsStarted_Initially(t *testing.T) {
+func TestManager_Started_Initially(t *testing.T) {
 	manager := NewManager("echo test", nil)
 
-	if manager.IsStarted() {
-		t.Error("IsStarted should return false initially")
+	manager.mu.Lock()
+	started := manager.started
+	manager.mu.Unlock()
+
+	if started {
+		t.Error("started should be false initially")
 	}
 }
 
@@ -101,7 +105,10 @@ func TestManager_WithMockACP(t *testing.T) {
 	defer cancel()
 
 	// First prompt should start the manager
-	if manager.IsStarted() {
+	manager.mu.Lock()
+	startedBefore := manager.started
+	manager.mu.Unlock()
+	if startedBefore {
 		t.Error("Manager should not be started before first prompt")
 	}
 
@@ -111,7 +118,10 @@ func TestManager_WithMockACP(t *testing.T) {
 	}
 
 	// Manager should now be started
-	if !manager.IsStarted() {
+	manager.mu.Lock()
+	startedAfter := manager.started
+	manager.mu.Unlock()
+	if !startedAfter {
 		t.Error("Manager should be started after first prompt")
 	}
 
@@ -138,7 +148,10 @@ func TestManager_MultiplePrompts(t *testing.T) {
 	}
 
 	// Manager should still be running
-	if !manager.IsStarted() {
+	manager.mu.Lock()
+	started := manager.started
+	manager.mu.Unlock()
+	if !started {
 		t.Error("Manager should still be started after multiple prompts")
 	}
 }
@@ -162,7 +175,10 @@ func TestManager_CloseAfterPrompt(t *testing.T) {
 	}
 
 	// Manager should no longer be started
-	if manager.IsStarted() {
+	manager.mu.Lock()
+	started := manager.started
+	manager.mu.Unlock()
+	if started {
 		t.Error("Manager should not be started after Close")
 	}
 }

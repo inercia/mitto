@@ -71,42 +71,6 @@ func TestShutdownManager_CleanupOrder(t *testing.T) {
 	}
 }
 
-func TestShutdownManager_Reason(t *testing.T) {
-	sm := NewShutdownManager()
-
-	if reason := sm.Reason(); reason != "" {
-		t.Errorf("Expected empty reason before shutdown, got %q", reason)
-	}
-
-	sm.Shutdown("test_reason")
-
-	if reason := sm.Reason(); reason != "test_reason" {
-		t.Errorf("Expected reason 'test_reason', got %q", reason)
-	}
-}
-
-func TestShutdownManager_Done(t *testing.T) {
-	sm := NewShutdownManager()
-
-	// Done channel should not be closed before shutdown
-	select {
-	case <-sm.Done():
-		t.Error("Done channel closed before shutdown")
-	default:
-		// Expected
-	}
-
-	sm.Shutdown("test")
-
-	// Done channel should be closed after shutdown
-	select {
-	case <-sm.Done():
-		// Expected
-	case <-time.After(time.Second):
-		t.Error("Done channel not closed after shutdown")
-	}
-}
-
 func TestShutdownManager_TerminateUI(t *testing.T) {
 	sm := NewShutdownManager()
 
@@ -154,11 +118,11 @@ func TestShutdownManager_NilHooks(t *testing.T) {
 	// Don't set any hooks - should not panic
 	sm.Shutdown("test")
 
-	// Verify shutdown completed
-	select {
-	case <-sm.Done():
-		// Expected
-	case <-time.After(time.Second):
-		t.Error("Shutdown did not complete")
+	// Verify shutdown completed by checking internal state
+	sm.mu.Lock()
+	reason := sm.reason
+	sm.mu.Unlock()
+	if reason != "test" {
+		t.Errorf("Expected reason 'test', got %q", reason)
 	}
 }

@@ -157,15 +157,3 @@ func (sm *ShutdownManager) doShutdown(reason string) {
 	// Signal that shutdown is complete
 	close(sm.done)
 }
-
-// Done returns a channel that is closed when shutdown is complete.
-func (sm *ShutdownManager) Done() <-chan struct{} {
-	return sm.done
-}
-
-// Reason returns the reason for shutdown, or empty string if not yet shut down.
-func (sm *ShutdownManager) Reason() string {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	return sm.reason
-}

@@ -104,21 +104,3 @@ func TestSaveWorkspaces(t *testing.T) {
 		t.Errorf("loaded[0].WorkingDir = %q, want %q", loaded[0].WorkingDir, "/test/path")
 	}
 }
-
-func TestWorkspacesPath(t *testing.T) {
-	// Use temp dir - t.Setenv automatically restores original value
-	customDir := t.TempDir()
-	t.Setenv(appdir.MittoDirEnv, customDir)
-	appdir.ResetCache()
-	t.Cleanup(appdir.ResetCache)
-
-	path, err := WorkspacesPath()
-	if err != nil {
-		t.Fatalf("WorkspacesPath() returned error: %v", err)
-	}
-
-	expected := filepath.Join(customDir, appdir.WorkspacesFileName)
-	if path != expected {
-		t.Errorf("WorkspacesPath() = %q, want %q", path, expected)
-	}
-}
