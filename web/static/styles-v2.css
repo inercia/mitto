@@ -877,6 +877,7 @@ a:hover {
 /* Disabled states - light theme */
 .v2-theme:not(.dark) .disabled\:bg-slate-700:disabled {
   background: #e5e5e5 !important;
+  color: #9ca3af !important; /* Light gray text for better contrast on disabled bg */
 }
 /* Disabled states - dark theme */
 .v2-theme.dark .disabled\:bg-slate-700:disabled {

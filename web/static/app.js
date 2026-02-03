@@ -1165,6 +1165,7 @@ function App() {
     isOpen: false,
   }); // Keyboard shortcuts dialog
   const [globalPrompts, setGlobalPrompts] = useState([]); // Global prompts from web.prompts
+  const [globalPromptsACPServer, setGlobalPromptsACPServer] = useState(null); // ACP server used when fetching global prompts
   const [acpServersWithPrompts, setAcpServersWithPrompts] = useState([]); // ACP servers with their per-server prompts
   const [workspacePrompts, setWorkspacePrompts] = useState([]); // Workspace-specific prompts from .mittorc
   const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
@@ -1653,6 +1654,27 @@ function App() {
     return () =>
       document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
+
+  // Refetch global prompts when ACP server changes
+  // This ensures prompts with "acps" restrictions are filtered correctly per workspace
+  useEffect(() => {
+    const acpServer = sessionInfo?.acp_server;
+    // Skip if ACP server hasn't changed or isn't set yet
+    if (!acpServer || acpServer === globalPromptsACPServer) return;
+
+    // Fetch global prompts filtered by ACP server
+    authFetch(apiUrl(`/api/config?acp_server=${encodeURIComponent(acpServer)}`))
+      .then((res) => res.json())
+      .then((config) => {
+        if (config?.prompts) {
+          setGlobalPrompts(config.prompts);
+          setGlobalPromptsACPServer(acpServer);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch global prompts for ACP server:", err);
+      });
+  }, [sessionInfo?.acp_server, globalPromptsACPServer]);
 
   // Follow system theme state - persisted to localStorage
   const [followSystemTheme, setFollowSystemTheme] = useState(() => {

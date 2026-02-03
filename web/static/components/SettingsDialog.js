@@ -41,15 +41,20 @@ import {
 function ServerEditForm({ server, onSave, onCancel }) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
-  const [prompts, setPrompts] = useState(server.prompts || []);
+  // Separate file-based prompts (read-only) from settings-based prompts (editable)
+  const allPrompts = server.prompts || [];
+  const filePrompts = allPrompts.filter((p) => p.source === "file");
+  const [settingsPrompts, setSettingsPrompts] = useState(
+    allPrompts.filter((p) => p.source !== "file"),
+  );
   const [showAddPrompt, setShowAddPrompt] = useState(false);
   const [newPromptName, setNewPromptName] = useState("");
   const [newPromptText, setNewPromptText] = useState("");
 
   const addPrompt = () => {
     if (newPromptName.trim() && newPromptText.trim()) {
-      setPrompts([
-        ...prompts,
+      setSettingsPrompts([
+        ...settingsPrompts,
         { name: newPromptName.trim(), prompt: newPromptText.trim() },
       ]);
       setNewPromptName("");
@@ -59,8 +64,17 @@ function ServerEditForm({ server, onSave, onCancel }) {
   };
 
   const removePrompt = (index) => {
-    setPrompts(prompts.filter((_, i) => i !== index));
+    setSettingsPrompts(settingsPrompts.filter((_, i) => i !== index));
   };
+
+  // When saving, only pass settings-based prompts (file-based are read-only)
+  const handleSave = () => {
+    // Remove source field from prompts before saving
+    const promptsToSave = settingsPrompts.map(({ source, ...rest }) => rest);
+    onSave(name, command, promptsToSave);
+  };
+
+  const hasPrompts = filePrompts.length > 0 || settingsPrompts.length > 0;
 
   return html`
     <div class="space-y-3">
@@ -139,7 +153,7 @@ function ServerEditForm({ server, onSave, onCancel }) {
             </div>
           </div>
         `}
-        ${prompts.length === 0
+        ${!hasPrompts
           ? html`
               <div class="text-xs text-gray-500 italic">
                 No server-specific prompts
@@ -147,10 +161,37 @@ function ServerEditForm({ server, onSave, onCancel }) {
             `
           : html`
               <div class="space-y-1">
-                ${prompts.map(
+                <!-- File-based prompts (read-only) -->
+                ${filePrompts.map(
                   (p, idx) => html`
                     <div
-                      key=${idx}
+                      key=${"file-" + idx}
+                      class="flex items-center gap-2 p-2 bg-slate-800/50 rounded text-sm border border-slate-700/50"
+                      title="From prompts file (read-only)"
+                    >
+                      <div class="flex-1 min-w-0">
+                        <div class="font-medium text-xs flex items-center gap-1">
+                          ${p.name}
+                          <span
+                            class="text-[10px] px-1 py-0.5 bg-slate-600/50 text-gray-400 rounded"
+                            >file</span
+                          >
+                        </div>
+                        <div
+                          class="text-xs text-gray-500 truncate"
+                          title=${p.prompt}
+                        >
+                          ${p.description || p.prompt}
+                        </div>
+                      </div>
+                    </div>
+                  `,
+                )}
+                <!-- Settings-based prompts (editable) -->
+                ${settingsPrompts.map(
+                  (p, idx) => html`
+                    <div
+                      key=${"settings-" + idx}
                       class="flex items-center gap-2 p-2 bg-slate-800 rounded text-sm group"
                     >
                       <div class="flex-1 min-w-0">
@@ -185,7 +226,7 @@ function ServerEditForm({ server, onSave, onCancel }) {
           Cancel
         </button>
         <button
-          onClick=${() => onSave(name, command, prompts)}
+          onClick=${handleSave}
           class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
         >
           Save
@@ -443,10 +484,15 @@ export function SettingsDialog({
         hooks: config.web?.hooks || null,
       };
 
+      // Filter prompts to only save settings-based prompts (not file-based ones)
+      const settingsPrompts = newPrompts
+        .filter((p) => !p.source || p.source === "settings")
+        .map(({ source, ...rest }) => rest); // Remove source field before saving
+
       const saveConfig = {
         workspaces: config.workspaces || [],
         acp_servers: config.acp_servers || [],
-        prompts: newPrompts,
+        prompts: settingsPrompts,
         web: webConfig,
         ui: config.ui || {},
       };
@@ -707,10 +753,17 @@ export function SettingsDialog({
         },
       };
 
+      // Filter prompts to only save settings-based prompts (not file-based ones)
+      // Prompts with source='settings' or no source (new prompts) should be saved
+      // Prompts with source='file' or source='workspace' should not be saved to settings.json
+      const settingsPrompts = prompts
+        .filter((p) => !p.source || p.source === "settings")
+        .map(({ source, ...rest }) => rest); // Remove source field before saving
+
       const config = {
         workspaces: workspaces,
         acp_servers: acpServers,
-        prompts: prompts, // Top-level prompts
+        prompts: settingsPrompts, // Only settings-based prompts
         web: webConfig,
         ui: uiConfig,
         conversations: conversationsConfig,
@@ -1381,7 +1434,7 @@ export function SettingsDialog({
                                                 <span
                                                   class="flex items-center gap-1 text-xs text-blue-400"
                                                   title="${srv.prompts
-                                                    .length} custom prompt(s)"
+                                                    .length} server-specific prompt(s)"
                                                 >
                                                   <${LightningIcon}
                                                     className="w-3.5 h-3.5"
@@ -1592,9 +1645,12 @@ export function SettingsDialog({
                                   ? html`
                                       <${PromptEditForm}
                                         prompt=${prompt}
+                                        readOnly=${prompt.source === "file" ||
+                                        prompt.source === "workspace"}
                                         onSave=${(name, text, bgColor) => {
                                           const updated = [...prompts];
                                           updated[index] = {
+                                            ...prompts[index],
                                             name,
                                             prompt: text,
                                           };
@@ -1636,9 +1692,25 @@ export function SettingsDialog({
                                           `}
                                           <div class="flex-1 min-w-0">
                                             <div
-                                              class="font-medium text-sm text-blue-400"
+                                              class="font-medium text-sm text-blue-400 flex items-center gap-2"
                                             >
                                               ${prompt.name}
+                                              ${prompt.source === "file" &&
+                                              html`
+                                                <span
+                                                  class="text-xs px-1.5 py-0.5 bg-slate-600 text-gray-300 rounded"
+                                                  title="Loaded from file (read-only)"
+                                                  >file</span
+                                                >
+                                              `}
+                                              ${prompt.source === "workspace" &&
+                                              html`
+                                                <span
+                                                  class="text-xs px-1.5 py-0.5 bg-purple-600/50 text-purple-200 rounded"
+                                                  title="Defined in workspace .mittorc (read-only)"
+                                                  >workspace</span
+                                                >
+                                              `}
                                             </div>
                                             <div
                                               class="text-xs text-gray-500 mt-1 truncate"
@@ -1648,30 +1720,47 @@ export function SettingsDialog({
                                           </div>
                                         </div>
                                         <div class="flex items-center gap-1">
-                                          <button
-                                            onClick=${() =>
-                                              setEditingPrompt(index)}
-                                            class="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                                            title="Edit"
-                                          >
-                                            <${EditIcon}
-                                              className="w-4 h-4 text-gray-400"
-                                            />
-                                          </button>
-                                          <button
-                                            onClick=${() => {
-                                              const updated = prompts.filter(
-                                                (_, i) => i !== index,
-                                              );
-                                              setPrompts(updated);
-                                            }}
-                                            class="p-1.5 hover:bg-red-500/20 rounded transition-colors"
-                                            title="Delete"
-                                          >
-                                            <${TrashIcon}
-                                              className="w-4 h-4 text-gray-400 hover:text-red-400"
-                                            />
-                                          </button>
+                                          ${prompt.source !== "file" &&
+                                          prompt.source !== "workspace"
+                                            ? html`
+                                                <button
+                                                  onClick=${() =>
+                                                    setEditingPrompt(index)}
+                                                  class="p-1.5 hover:bg-slate-700 rounded transition-colors"
+                                                  title="Edit"
+                                                >
+                                                  <${EditIcon}
+                                                    className="w-4 h-4 text-gray-400"
+                                                  />
+                                                </button>
+                                                <button
+                                                  onClick=${() => {
+                                                    const updated =
+                                                      prompts.filter(
+                                                        (_, i) => i !== index,
+                                                      );
+                                                    setPrompts(updated);
+                                                  }}
+                                                  class="p-1.5 hover:bg-red-500/20 rounded transition-colors"
+                                                  title="Delete"
+                                                >
+                                                  <${TrashIcon}
+                                                    className="w-4 h-4 text-gray-400 hover:text-red-400"
+                                                  />
+                                                </button>
+                                              `
+                                            : html`
+                                                <button
+                                                  onClick=${() =>
+                                                    setEditingPrompt(index)}
+                                                  class="p-1.5 hover:bg-slate-700 rounded transition-colors"
+                                                  title="View"
+                                                >
+                                                  <${EditIcon}
+                                                    className="w-4 h-4 text-gray-500"
+                                                  />
+                                                </button>
+                                              `}
                                         </div>
                                       </div>
                                     `}

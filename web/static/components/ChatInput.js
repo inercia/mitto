@@ -29,6 +29,89 @@ function getContrastColor(hexColor) {
 }
 
 /**
+ * Convert hex color to HSL values for sorting.
+ * @param {string} hexColor - Hex color string (e.g., "#E8F5E9")
+ * @returns {Object} - { h: 0-360, s: 0-100, l: 0-100 } or null if invalid
+ */
+function hexToHSL(hexColor) {
+  if (!hexColor || !hexColor.startsWith("#")) return null;
+
+  const hex = hexColor.replace("#", "");
+  const r = parseInt(hex.substr(0, 2), 16) / 255;
+  const g = parseInt(hex.substr(2, 2), 16) / 255;
+  const b = parseInt(hex.substr(4, 2), 16) / 255;
+
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+
+  if (max === min) {
+    // Achromatic (gray)
+    return { h: 0, s: 0, l: l * 100 };
+  }
+
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+
+  let h;
+  switch (max) {
+    case r:
+      h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      break;
+    case g:
+      h = ((b - r) / d + 2) / 6;
+      break;
+    case b:
+      h = ((r - g) / d + 4) / 6;
+      break;
+  }
+
+  return { h: h * 360, s: s * 100, l: l * 100 };
+}
+
+/**
+ * Calculate a single numeric color score for consistent sorting.
+ * Groups similar colors together using quantized hue buckets.
+ * @param {Object} hsl - HSL values { h, s, l }
+ * @returns {number} - Color score (lower = sorted first)
+ */
+function getColorScore(hsl) {
+  if (!hsl) return Infinity; // No color = sort to end
+
+  // Quantize hue into 12 buckets (30 degrees each) for stable grouping
+  // This groups similar colors together (e.g., all greens, all purples)
+  const hueBucket = Math.floor(hsl.h / 30);
+
+  // Within each hue bucket, sort by saturation (more saturated first)
+  // then by lightness (lighter first)
+  // Score: hueBucket * 10000 + (100 - saturation) * 100 + lightness
+  return hueBucket * 10000 + (100 - hsl.s) * 100 + hsl.l;
+}
+
+/**
+ * Sort prompts by color (hue), then by name.
+ * Prompts without colors are sorted to the end.
+ * @param {Array} prompts - Array of prompt objects
+ * @returns {Array} - Sorted array of prompts
+ */
+function sortPromptsByColor(prompts) {
+  return [...prompts].sort((a, b) => {
+    const hslA = hexToHSL(a.backgroundColor);
+    const hslB = hexToHSL(b.backgroundColor);
+    const scoreA = getColorScore(hslA);
+    const scoreB = getColorScore(hslB);
+
+    // Sort by color score first
+    if (scoreA !== scoreB) {
+      return scoreA - scoreB;
+    }
+
+    // If same color score (or both have no color), sort by name
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/**
  * ChatInput component - message composition with image support
  * @param {Object} props
  * @param {Function} props.onSend - Callback when message is sent (text, images)
@@ -780,82 +863,50 @@ export function ChatInput({
             >
               <div class="py-1">
                 ${(() => {
-                  // Separate workspace prompts from other prompts
-                  const wsPrompts = predefinedPrompts.filter(
-                    (p) => p.source === "workspace",
-                  );
-                  const otherPrompts = predefinedPrompts.filter(
-                    (p) => p.source !== "workspace",
-                  );
+                  // Sort all prompts by color (no separation by source)
+                  const sortedPrompts = sortPromptsByColor(predefinedPrompts);
+
+                  // Helper to get badge info based on source
+                  const getBadgeInfo = (source) => {
+                    if (source === "workspace") {
+                      return {
+                        label: "W",
+                        title: "Workspace prompt",
+                        bgColor: "bg-green-600/80",
+                      };
+                    } else if (source === "file") {
+                      return {
+                        label: "F",
+                        title: "File-based prompt",
+                        bgColor: "bg-purple-600/80",
+                      };
+                    } else {
+                      return {
+                        label: "S",
+                        title: "Settings prompt",
+                        bgColor: "bg-blue-600/80",
+                      };
+                    }
+                  };
 
                   return html`
-                    ${wsPrompts.length > 0 &&
-                    html`
-                      <div
-                        class="px-3 py-1.5 text-xs text-green-400 font-medium border-b border-slate-700 flex items-center gap-1.5"
-                      >
-                        <svg
-                          class="w-3 h-3"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-                          />
-                        </svg>
-                        Workspace
-                      </div>
-                      ${wsPrompts.map(
-                        (prompt, idx) => html`
-                          <button
-                            key=${"ws-" + idx}
-                            type="button"
-                            onClick=${() => handlePredefinedPrompt(prompt)}
-                            title=${prompt.description || prompt.name}
-                            class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
-                            style=${prompt.backgroundColor
-                              ? {
-                                  backgroundColor: prompt.backgroundColor,
-                                  color: getContrastColor(
-                                    prompt.backgroundColor,
-                                  ),
-                                }
-                              : {}}
-                          >
-                            <svg
-                              class="w-4 h-4 text-green-400 flex-shrink-0"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M13 10V3L4 14h7v7l9-11h-7z"
-                              />
-                            </svg>
-                            <span class="truncate">${prompt.name}</span>
-                          </button>
-                        `,
-                      )}
-                    `}
-                    ${wsPrompts.length > 0 &&
-                    otherPrompts.length > 0 &&
-                    html` <div class="border-t border-slate-700 my-1"></div> `}
-                    ${otherPrompts.length > 0 &&
-                    html`
-                      ${wsPrompts.length > 0 &&
-                      html`
-                        <div
-                          class="px-3 py-1.5 text-xs text-blue-400 font-medium flex items-center gap-1.5"
+                    ${sortedPrompts.map(
+                      (prompt, idx) => html`
+                        <button
+                          key=${"prompt-" + idx}
+                          type="button"
+                          onClick=${() => handlePredefinedPrompt(prompt)}
+                          title=${prompt.description || prompt.name}
+                          class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                          style=${prompt.backgroundColor
+                            ? {
+                                backgroundColor: prompt.backgroundColor,
+                                color: getContrastColor(prompt.backgroundColor),
+                              }
+                            : {}}
                         >
                           <svg
-                            class="w-3 h-3"
+                            class="w-4 h-4 flex-shrink-0 opacity-60"
                             fill="none"
                             stroke="currentColor"
                             viewBox="0 0 24 24"
@@ -864,48 +915,21 @@ export function ChatInput({
                               stroke-linecap="round"
                               stroke-linejoin="round"
                               stroke-width="2"
-                              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                              d="M13 10V3L4 14h7v7l9-11h-7z"
                             />
-                            <circle cx="12" cy="12" r="3" />
                           </svg>
-                          Global
-                        </div>
-                      `}
-                      ${otherPrompts.map(
-                        (prompt, idx) => html`
-                          <button
-                            key=${"other-" + idx}
-                            type="button"
-                            onClick=${() => handlePredefinedPrompt(prompt)}
-                            title=${prompt.description || prompt.name}
-                            class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
-                            style=${prompt.backgroundColor
-                              ? {
-                                  backgroundColor: prompt.backgroundColor,
-                                  color: getContrastColor(
-                                    prompt.backgroundColor,
-                                  ),
-                                }
-                              : {}}
+                          <span class="truncate flex-1">${prompt.name}</span>
+                          <span
+                            class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
+                              prompt.source,
+                            ).bgColor} text-white/90 flex-shrink-0"
+                            title=${getBadgeInfo(prompt.source).title}
                           >
-                            <svg
-                              class="w-4 h-4 text-blue-400 flex-shrink-0"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M13 10V3L4 14h7v7l9-11h-7z"
-                              />
-                            </svg>
-                            <span class="truncate">${prompt.name}</span>
-                          </button>
-                        `,
-                      )}
-                    `}
+                            ${getBadgeInfo(prompt.source).label}
+                          </span>
+                        </button>
+                      `,
+                    )}
                   `;
                 })()}
               </div>
