@@ -228,28 +228,6 @@ func TestMarkdownBuffer_NestedCodeBlocks(t *testing.T) {
 	}
 }
 
-func TestEscapeHTML(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"<script>alert('xss')</script>", "&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;"},
-		{"a & b", "a &amp; b"},
-		{`"quoted"`, "&quot;quoted&quot;"},
-		{"normal text", "normal text"},
-		{"<>&\"'", "&lt;&gt;&amp;&quot;&#39;"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := escapeHTML(tt.input)
-			if result != tt.expected {
-				t.Errorf("escapeHTML(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestMarkdownBuffer_EmptyFlush(t *testing.T) {
 	flushCount := 0
 
@@ -612,31 +590,5 @@ func TestMarkdownBuffer_InlineCodeNoSplit(t *testing.T) {
 	// Note: We check for isolated backticks, not those in code blocks
 	if strings.Contains(html, "`some_function") || strings.Contains(html, "_name`") {
 		t.Errorf("expected backticks to be converted to HTML, but found literal backticks in: %s", html)
-	}
-}
-
-func TestHasUnmatchedInlineFormatting(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected bool
-	}{
-		{"empty", "", false},
-		{"no formatting", "hello world", false},
-		{"matched bold", "**bold**", false},
-		{"unmatched bold", "**bold", true},
-		{"matched code", "`code`", false},
-		{"unmatched code", "`code", true},
-		{"multiple matched", "**bold** and `code`", false},
-		{"one unmatched bold", "**bold** and **more", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := hasUnmatchedInlineFormatting(tt.input)
-			if result != tt.expected {
-				t.Errorf("hasUnmatchedInlineFormatting(%q) = %v, want %v", tt.input, result, tt.expected)
-			}
-		})
 	}
 }

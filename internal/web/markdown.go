@@ -2,40 +2,12 @@
 package web
 
 import (
-	"bytes"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/microcosm-cc/bluemonday"
-	"github.com/yuin/goldmark"
-	highlighting "github.com/yuin/goldmark-highlighting/v2"
-	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/renderer/html"
+	"github.com/inercia/mitto/internal/conversion"
 )
-
-// htmlSanitizer is a shared HTML sanitizer policy for agent messages.
-// It allows safe HTML elements while stripping potentially dangerous ones like <script>.
-var htmlSanitizer = createHTMLSanitizer()
-
-// createHTMLSanitizer creates a bluemonday policy that allows safe HTML for markdown rendering.
-// This policy is more permissive than StrictPolicy but still prevents XSS attacks.
-func createHTMLSanitizer() *bluemonday.Policy {
-	p := bluemonday.UGCPolicy()
-
-	// Allow code highlighting classes from goldmark-highlighting
-	p.AllowAttrs("class").Matching(bluemonday.SpaceSeparatedTokens).OnElements("code", "pre", "span", "div")
-
-	// Allow data attributes for code blocks (used by some highlighters)
-	p.AllowDataAttributes()
-
-	// Allow id attributes for heading anchors
-	p.AllowAttrs("id").Matching(bluemonday.Paragraph).OnElements("h1", "h2", "h3", "h4", "h5", "h6")
-
-	return p
-}
 
 const (
 	// defaultFlushTimeout is the default timeout for flushing buffered content.
@@ -53,7 +25,7 @@ const (
 type MarkdownBuffer struct {
 	mu           sync.Mutex
 	buffer       strings.Builder
-	md           goldmark.Markdown
+	converter    *conversion.Converter
 	onFlush      func(html string)
 	flushTimer   *time.Timer
 	flushTimeout time.Duration
@@ -64,74 +36,11 @@ type MarkdownBuffer struct {
 
 // NewMarkdownBuffer creates a new streaming Markdown buffer.
 func NewMarkdownBuffer(onFlush func(html string)) *MarkdownBuffer {
-	md := goldmark.New(
-		goldmark.WithExtensions(
-			extension.GFM, // GitHub Flavored Markdown
-			highlighting.NewHighlighting(
-				highlighting.WithStyle("monokai"),
-			),
-		),
-		goldmark.WithParserOptions(
-			parser.WithAutoHeadingID(),
-		),
-		goldmark.WithRendererOptions(
-			html.WithHardWraps(),
-			html.WithXHTML(),
-			// Note: html.WithUnsafe() was removed for security.
-			// Raw HTML in markdown is now sanitized via bluemonday before output.
-		),
-	)
-
 	return &MarkdownBuffer{
-		md:           md,
+		converter:    conversion.DefaultConverter(),
 		onFlush:      onFlush,
 		flushTimeout: defaultFlushTimeout,
 	}
-}
-
-// codeBlockPattern matches opening/closing code fences.
-var codeBlockPattern = regexp.MustCompile("^```")
-
-// listItemPattern matches list item lines (ordered or unordered).
-// Matches: "1. ", "2. ", "- ", "* ", "+ " with optional leading whitespace
-var listItemPattern = regexp.MustCompile(`^\s*(\d+\.\s+|[-*+]\s+)`)
-
-// tableRowPattern matches table row lines (lines starting with |, with optional leading whitespace).
-// Also matches table separator rows like |---|---|
-var tableRowPattern = regexp.MustCompile(`^\s*\|`)
-
-// hasUnmatchedInlineFormatting checks if the content has unmatched inline formatting markers.
-// This includes **, *, _, and ` markers that would be broken if we flush mid-content.
-func hasUnmatchedInlineFormatting(content string) bool {
-	// Count occurrences of formatting markers
-	// For **, we need to count pairs
-	boldCount := strings.Count(content, "**")
-	if boldCount%2 != 0 {
-		return true
-	}
-
-	// For inline code, count backticks (but not code blocks which start with ```)
-	// We need to be careful: ``` is a code block, `` is escaped backtick, ` is inline code
-	// Simple approach: count single backticks that aren't part of ```
-	inlineCodeCount := 0
-	for i := 0; i < len(content); i++ {
-		if content[i] == '`' {
-			// Check if this is part of a code fence (```)
-			if i+2 < len(content) && content[i+1] == '`' && content[i+2] == '`' {
-				// Skip the entire ``` sequence
-				i += 2
-				continue
-			}
-			// Check if this is a double backtick (``)
-			if i+1 < len(content) && content[i+1] == '`' {
-				// Skip the `` sequence
-				i++
-				continue
-			}
-			inlineCodeCount++
-		}
-	}
-	return inlineCodeCount%2 != 0
 }
 
 // Write adds a chunk of text to the buffer and triggers smart flushing.
@@ -151,7 +60,7 @@ func (mb *MarkdownBuffer) Write(chunk string) {
 		// Check for code block boundaries on newline
 		if char == '\n' {
 			line := mb.getLastLine()
-			if codeBlockPattern.MatchString(line) {
+			if conversion.IsCodeBlockStart(line) {
 				mb.inCodeBlock = !mb.inCodeBlock
 				if !mb.inCodeBlock {
 					// End of code block - flush the complete block
@@ -165,12 +74,12 @@ func (mb *MarkdownBuffer) Write(chunk string) {
 				content := mb.buffer.String()
 
 				// Track list state: entering a list when we see a list item
-				if listItemPattern.MatchString(line) {
+				if conversion.IsListItem(line) {
 					mb.inList = true
 				}
 
 				// Track table state: entering a table when we see a table row
-				if tableRowPattern.MatchString(line) {
+				if conversion.IsTableRow(line) {
 					mb.inTable = true
 				} else if mb.inTable && strings.TrimSpace(line) == "" {
 					// Empty line or non-table line ends a table
@@ -188,7 +97,7 @@ func (mb *MarkdownBuffer) Write(chunk string) {
 
 				// Don't flush mid-list, mid-table, or with unmatched formatting
 				// Only flush if buffer is getting large AND we're not in a list/table AND formatting is complete
-				if mb.buffer.Len() > maxBufferSize/2 && !mb.inList && !mb.inTable && !hasUnmatchedInlineFormatting(mb.buffer.String()) {
+				if mb.buffer.Len() > maxBufferSize/2 && !mb.inList && !mb.inTable && !conversion.HasUnmatchedInlineFormatting(mb.buffer.String()) {
 					mb.flushLocked()
 					continue
 				}
@@ -199,7 +108,7 @@ func (mb *MarkdownBuffer) Write(chunk string) {
 	// Force flush if buffer exceeds max size (but only if safe to flush)
 	// Also force flush if buffer exceeds absolute maximum to prevent unbounded growth
 	content := mb.buffer.String()
-	safeToFlush := mb.endsWithCompleteLine() && !hasUnmatchedInlineFormatting(content)
+	safeToFlush := mb.endsWithCompleteLine() && !conversion.HasUnmatchedInlineFormatting(content)
 	if mb.buffer.Len() >= maxBufferSize && !mb.inCodeBlock && !mb.inList && !mb.inTable && safeToFlush {
 		mb.flushLocked()
 		return
@@ -215,7 +124,7 @@ func (mb *MarkdownBuffer) Write(chunk string) {
 		defer mb.mu.Unlock()
 		// Don't flush if we're in the middle of a code block, list, table, incomplete line, or unmatched formatting
 		content := mb.buffer.String()
-		safeToFlush := mb.endsWithCompleteLine() && !hasUnmatchedInlineFormatting(content)
+		safeToFlush := mb.endsWithCompleteLine() && !conversion.HasUnmatchedInlineFormatting(content)
 		if mb.inCodeBlock || mb.inList || mb.inTable || !safeToFlush {
 			return
 		}
@@ -260,22 +169,10 @@ func (mb *MarkdownBuffer) flushLocked() {
 	content := mb.buffer.String()
 	mb.buffer.Reset()
 
-	// Convert to HTML
-	var htmlBuf bytes.Buffer
-	if err := mb.md.Convert([]byte(content), &htmlBuf); err != nil {
-		// On error, send as escaped text
-		if mb.onFlush != nil {
-			mb.onFlush("<pre>" + escapeHTML(content) + "</pre>")
-		}
-		return
-	}
-
-	htmlStr := htmlBuf.String()
+	// Convert to HTML using the converter (which handles sanitization)
+	htmlStr := mb.converter.ConvertToSafeHTML(content)
 	if htmlStr != "" && mb.onFlush != nil {
-		// Sanitize HTML to prevent XSS attacks from malicious agent responses.
-		// This removes dangerous elements like <script> while preserving safe formatting.
-		sanitizedHTML := htmlSanitizer.Sanitize(htmlStr)
-		mb.onFlush(sanitizedHTML)
+		mb.onFlush(htmlStr)
 	}
 }
 
@@ -300,14 +197,4 @@ func (mb *MarkdownBuffer) Reset() {
 	mb.inCodeBlock = false
 	mb.inList = false
 	mb.inTable = false
-}
-
-// escapeHTML escapes special HTML characters.
-func escapeHTML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, "\"", "&quot;")
-	s = strings.ReplaceAll(s, "'", "&#39;")
-	return s
 }

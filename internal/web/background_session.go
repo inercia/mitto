@@ -842,7 +842,13 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			// This runs after prompt_complete so the user sees the response immediately
 			// Note: 'message' is captured from the outer function scope (the user's prompt)
 			if agentMessage != "" {
-				go bs.analyzeFollowUpQuestions(message, agentMessage)
+				// Skip follow-up analysis if there are queued messages that will be processed immediately
+				// (no delay configured). The suggestions would be stale by the time they arrive.
+				if bs.hasImmediateQueuedMessages() {
+					bs.logger.Debug("follow-up analysis: skipped due to pending immediate queue messages")
+				} else {
+					go bs.analyzeFollowUpQuestions(message, agentMessage)
+				}
 			}
 		}
 	}()
@@ -1080,6 +1086,36 @@ func (bs *BackgroundSession) Cancel() error {
 }
 
 // --- Queue processing methods ---
+
+// hasImmediateQueuedMessages returns true if there are queued messages that will be processed
+// immediately (queue processing is enabled, queue is not empty, and no delay is configured).
+// This is used to skip follow-up suggestion analysis when the suggestions would be stale
+// by the time they arrive (because the next message will be sent immediately).
+func (bs *BackgroundSession) hasImmediateQueuedMessages() bool {
+	// Check if queue processing is enabled
+	if bs.queueConfig != nil && !bs.queueConfig.IsEnabled() {
+		return false
+	}
+
+	// Check if there's a delay configured - if so, suggestions might still be useful
+	if bs.queueConfig != nil && bs.queueConfig.GetDelaySeconds() > 0 {
+		return false
+	}
+
+	// Check if we have a store and queue
+	if bs.store == nil || bs.persistedID == "" {
+		return false
+	}
+
+	// Check if queue has messages
+	queue := bs.store.Queue(bs.persistedID)
+	queueLen, err := queue.Len()
+	if err != nil {
+		return false
+	}
+
+	return queueLen > 0
+}
 
 // processNextQueuedMessage checks the queue and sends the next message if queue processing is enabled.
 // This is called after a prompt completes and applies the configured delay before sending.
