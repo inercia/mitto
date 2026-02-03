@@ -223,6 +223,25 @@ func (sm *SessionManager) GetWorkspacePrompts(workingDir string) []config.WebPro
 	return rc.Prompts
 }
 
+// GetWorkspacePromptsDirs returns the prompts_dirs defined in the workspace's .mittorc file.
+// Returns nil if no .mittorc exists or if it has no prompts_dirs section.
+func (sm *SessionManager) GetWorkspacePromptsDirs(workingDir string) []string {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return nil
+	}
+
+	rc, err := sm.workspaceRCCache.Get(workingDir)
+	if err != nil {
+		return nil
+	}
+
+	if rc == nil {
+		return nil
+	}
+
+	return rc.PromptsDirs
+}
+
 // GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
 // Returns zero time if the file doesn't exist or the cache is not initialized.
 func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -630,7 +631,7 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleWorkspacePrompts handles GET /api/workspace-prompts?dir=...
-// Returns the prompts from the workspace's .mittorc file.
+// Returns the prompts from the workspace's .mittorc file and prompts_dirs.
 // Supports conditional requests via If-Modified-Since header.
 func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -664,12 +665,25 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	prompts := s.sessionManager.GetWorkspacePrompts(workingDir)
+	// Get prompts from workspace prompts_dirs (if any)
+	var dirPrompts []config.WebPrompt
+	promptsDirs := s.sessionManager.GetWorkspacePromptsDirs(workingDir)
+	if len(promptsDirs) > 0 {
+		dirPrompts = s.loadPromptsFromDirs(workingDir, promptsDirs)
+	}
+
+	// Get inline prompts from .mittorc (higher priority than prompts_dirs)
+	inlinePrompts := s.sessionManager.GetWorkspacePrompts(workingDir)
+
+	// Merge: inline prompts override dir prompts by name
+	prompts := config.MergePrompts(nil, dirPrompts, inlinePrompts)
 
 	if s.logger != nil {
 		s.logger.Debug("Returning workspace prompts",
 			"working_dir", workingDir,
 			"prompt_count", len(prompts),
+			"dir_prompt_count", len(dirPrompts),
+			"inline_prompt_count", len(inlinePrompts),
 			"last_modified", lastModified)
 	}
 
@@ -677,4 +691,36 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 		"prompts":     prompts,
 		"working_dir": workingDir,
 	})
+}
+
+// loadPromptsFromDirs loads prompts from a list of directories.
+// Relative paths are resolved against workspaceRoot.
+// Non-existent directories are silently ignored.
+func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []config.WebPrompt {
+	var allPrompts []config.WebPrompt
+
+	for _, dir := range dirs {
+		// Resolve relative paths
+		absDir := dir
+		if !filepath.IsAbs(dir) {
+			absDir = filepath.Join(workspaceRoot, dir)
+		}
+
+		// Load prompts from this directory (silently ignore errors)
+		prompts, err := config.LoadPromptsFromDir(absDir)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Debug("Failed to load prompts from directory",
+					"dir", absDir,
+					"error", err)
+			}
+			continue
+		}
+
+		// Convert to WebPrompts and merge (later dirs override earlier)
+		webPrompts := config.PromptsToWebPrompts(prompts)
+		allPrompts = config.MergePrompts(nil, allPrompts, webPrompts)
+	}
+
+	return allPrompts
 }
