@@ -239,6 +239,29 @@ func GetLastAgentMessage(events []Event) string {
 	return agentMessage.String()
 }
 
+// GetLastUserPrompt extracts the last user prompt text from a list of events.
+// Returns an empty string if no user prompt is found.
+func GetLastUserPrompt(events []Event) string {
+	if len(events) == 0 {
+		return ""
+	}
+
+	// Find the last user_prompt
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == EventTypeUserPrompt {
+			data, err := DecodeEventData(events[i])
+			if err != nil {
+				return ""
+			}
+			if d, ok := data.(UserPromptData); ok {
+				return d.Message
+			}
+		}
+	}
+
+	return ""
+}
+
 // truncateText truncates text to maxLen characters, adding "..." if truncated.
 func truncateText(text string, maxLen int) string {
 	if len(text) <= maxLen {
