@@ -132,7 +132,7 @@ func TestToWebPrompt(t *testing.T) {
 		Name:            "Test",
 		Content:         "Content here",
 		BackgroundColor: "#FF0000",
-		Description:     "This should not appear in WebPrompt",
+		Description:     "Test description",
 	}
 
 	wp := prompt.ToWebPrompt()
@@ -145,6 +145,13 @@ func TestToWebPrompt(t *testing.T) {
 	}
 	if wp.BackgroundColor != "#FF0000" {
 		t.Errorf("WebPrompt.BackgroundColor = %q, want %q", wp.BackgroundColor, "#FF0000")
+	}
+	if wp.Description != "Test description" {
+		t.Errorf("WebPrompt.Description = %q, want %q", wp.Description, "Test description")
+	}
+	// File-based prompts should have Source=PromptSourceFile
+	if wp.Source != PromptSourceFile {
+		t.Errorf("WebPrompt.Source = %q, want %q", wp.Source, PromptSourceFile)
 	}
 }
 
@@ -263,5 +270,233 @@ func TestPromptsToWebPrompts_Empty(t *testing.T) {
 	webPrompts = PromptsToWebPrompts([]*PromptFile{})
 	if webPrompts != nil {
 		t.Errorf("PromptsToWebPrompts([]) = %v, want nil", webPrompts)
+	}
+}
+
+func TestParsePromptFile_WithACPs(t *testing.T) {
+	data := []byte(`---
+name: "Claude Only Prompt"
+acps: "claude-code"
+---
+
+This prompt is only for Claude Code.
+`)
+
+	prompt, err := ParsePromptFile("claude-only.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Name != "Claude Only Prompt" {
+		t.Errorf("Name = %q, want %q", prompt.Name, "Claude Only Prompt")
+	}
+	if prompt.ACPs != "claude-code" {
+		t.Errorf("ACPs = %q, want %q", prompt.ACPs, "claude-code")
+	}
+}
+
+func TestParsePromptFile_WithMultipleACPs(t *testing.T) {
+	data := []byte(`---
+name: "Multi ACP Prompt"
+acps: "auggie, claude-code, custom-acp"
+---
+
+This prompt works with multiple ACPs.
+`)
+
+	prompt, err := ParsePromptFile("multi-acp.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.ACPs != "auggie, claude-code, custom-acp" {
+		t.Errorf("ACPs = %q, want %q", prompt.ACPs, "auggie, claude-code, custom-acp")
+	}
+}
+
+func TestIsAllowedForACP_EmptyACPs(t *testing.T) {
+	prompt := &PromptFile{Name: "Test", ACPs: ""}
+
+	// Empty ACPs means allowed for all
+	if !prompt.IsAllowedForACP("auggie") {
+		t.Error("IsAllowedForACP('auggie') = false, want true for empty ACPs")
+	}
+	if !prompt.IsAllowedForACP("claude-code") {
+		t.Error("IsAllowedForACP('claude-code') = false, want true for empty ACPs")
+	}
+	if !prompt.IsAllowedForACP("") {
+		t.Error("IsAllowedForACP('') = false, want true for empty ACPs")
+	}
+}
+
+func TestIsAllowedForACP_SingleACP(t *testing.T) {
+	prompt := &PromptFile{Name: "Test", ACPs: "claude-code"}
+
+	if !prompt.IsAllowedForACP("claude-code") {
+		t.Error("IsAllowedForACP('claude-code') = false, want true")
+	}
+	if prompt.IsAllowedForACP("auggie") {
+		t.Error("IsAllowedForACP('auggie') = true, want false")
+	}
+	// Empty ACP server should allow all prompts
+	if !prompt.IsAllowedForACP("") {
+		t.Error("IsAllowedForACP('') = false, want true for empty server")
+	}
+}
+
+func TestIsAllowedForACP_MultipleACPs(t *testing.T) {
+	prompt := &PromptFile{Name: "Test", ACPs: "auggie, claude-code, custom-acp"}
+
+	if !prompt.IsAllowedForACP("auggie") {
+		t.Error("IsAllowedForACP('auggie') = false, want true")
+	}
+	if !prompt.IsAllowedForACP("claude-code") {
+		t.Error("IsAllowedForACP('claude-code') = false, want true")
+	}
+	if !prompt.IsAllowedForACP("custom-acp") {
+		t.Error("IsAllowedForACP('custom-acp') = false, want true")
+	}
+	if prompt.IsAllowedForACP("other-acp") {
+		t.Error("IsAllowedForACP('other-acp') = true, want false")
+	}
+}
+
+func TestIsAllowedForACP_CaseInsensitive(t *testing.T) {
+	prompt := &PromptFile{Name: "Test", ACPs: "Claude-Code"}
+
+	if !prompt.IsAllowedForACP("claude-code") {
+		t.Error("IsAllowedForACP('claude-code') = false, want true (case insensitive)")
+	}
+	if !prompt.IsAllowedForACP("CLAUDE-CODE") {
+		t.Error("IsAllowedForACP('CLAUDE-CODE') = false, want true (case insensitive)")
+	}
+}
+
+func TestFilterPromptsByACP(t *testing.T) {
+	prompts := []*PromptFile{
+		{Name: "All ACPs", ACPs: ""},
+		{Name: "Claude Only", ACPs: "claude-code"},
+		{Name: "Auggie Only", ACPs: "auggie"},
+		{Name: "Both", ACPs: "claude-code, auggie"},
+	}
+
+	// Filter for auggie
+	filtered := FilterPromptsByACP(prompts, "auggie")
+	if len(filtered) != 3 {
+		t.Errorf("FilterPromptsByACP(auggie) returned %d prompts, want 3", len(filtered))
+	}
+
+	// Check that "Claude Only" is not in the filtered list
+	for _, p := range filtered {
+		if p.Name == "Claude Only" {
+			t.Error("FilterPromptsByACP(auggie) should not include 'Claude Only'")
+		}
+	}
+
+	// Filter for claude-code
+	filtered = FilterPromptsByACP(prompts, "claude-code")
+	if len(filtered) != 3 {
+		t.Errorf("FilterPromptsByACP(claude-code) returned %d prompts, want 3", len(filtered))
+	}
+
+	// Check that "Auggie Only" is not in the filtered list
+	for _, p := range filtered {
+		if p.Name == "Auggie Only" {
+			t.Error("FilterPromptsByACP(claude-code) should not include 'Auggie Only'")
+		}
+	}
+
+	// Empty ACP server should return all prompts
+	filtered = FilterPromptsByACP(prompts, "")
+	if len(filtered) != 4 {
+		t.Errorf("FilterPromptsByACP('') returned %d prompts, want 4", len(filtered))
+	}
+
+	// Empty prompts should return empty
+	filtered = FilterPromptsByACP([]*PromptFile{}, "auggie")
+	if len(filtered) != 0 {
+		t.Errorf("FilterPromptsByACP on empty slice returned %d prompts, want 0", len(filtered))
+	}
+
+	// Nil prompts should return nil
+	filtered = FilterPromptsByACP(nil, "auggie")
+	if filtered != nil {
+		t.Errorf("FilterPromptsByACP(nil) = %v, want nil", filtered)
+	}
+}
+
+func TestIsSpecificToACP(t *testing.T) {
+	tests := []struct {
+		name      string
+		acps      string
+		acpServer string
+		want      bool
+	}{
+		{"empty ACPs is not specific", "", "auggie", false},
+		{"empty ACP server", "auggie", "", false},
+		{"exact match", "auggie", "auggie", true},
+		{"case insensitive match", "Auggie", "auggie", true},
+		{"no match", "claude-code", "auggie", false},
+		{"multiple ACPs with match", "claude-code, auggie", "auggie", true},
+		{"multiple ACPs without match", "claude-code, other", "auggie", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &PromptFile{ACPs: tt.acps}
+			got := p.IsSpecificToACP(tt.acpServer)
+			if got != tt.want {
+				t.Errorf("IsSpecificToACP(%q) = %v, want %v", tt.acpServer, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterPromptsSpecificToACP(t *testing.T) {
+	prompts := []*PromptFile{
+		{Name: "All ACPs", ACPs: ""},
+		{Name: "Claude Only", ACPs: "claude-code"},
+		{Name: "Auggie Only", ACPs: "auggie"},
+		{Name: "Both", ACPs: "claude-code, auggie"},
+	}
+
+	// Filter for auggie - should only get prompts with explicit acps: field
+	filtered := FilterPromptsSpecificToACP(prompts, "auggie")
+	if len(filtered) != 2 {
+		t.Errorf("FilterPromptsSpecificToACP(auggie) returned %d prompts, want 2", len(filtered))
+	}
+
+	// Check that "All ACPs" and "Claude Only" are not in the filtered list
+	for _, p := range filtered {
+		if p.Name == "All ACPs" {
+			t.Error("FilterPromptsSpecificToACP(auggie) should not include 'All ACPs' (generic prompt)")
+		}
+		if p.Name == "Claude Only" {
+			t.Error("FilterPromptsSpecificToACP(auggie) should not include 'Claude Only'")
+		}
+	}
+
+	// Filter for claude-code
+	filtered = FilterPromptsSpecificToACP(prompts, "claude-code")
+	if len(filtered) != 2 {
+		t.Errorf("FilterPromptsSpecificToACP(claude-code) returned %d prompts, want 2", len(filtered))
+	}
+
+	// Empty ACP server should return nil
+	filtered = FilterPromptsSpecificToACP(prompts, "")
+	if filtered != nil {
+		t.Errorf("FilterPromptsSpecificToACP('') = %v, want nil", filtered)
+	}
+
+	// Empty prompts should return nil
+	filtered = FilterPromptsSpecificToACP([]*PromptFile{}, "auggie")
+	if filtered != nil {
+		t.Errorf("FilterPromptsSpecificToACP on empty slice = %v, want nil", filtered)
+	}
+
+	// Nil prompts should return nil
+	filtered = FilterPromptsSpecificToACP(nil, "auggie")
+	if filtered != nil {
+		t.Errorf("FilterPromptsSpecificToACP(nil) = %v, want nil", filtered)
 	}
 }

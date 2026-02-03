@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/inercia/mitto/internal/appdir"
 )
 
 // PromptFile represents a parsed markdown prompt file with YAML front-matter.
@@ -38,6 +36,11 @@ type PromptFile struct {
 	// Tags is an optional list of categorization tags for future use.
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 
+	// ACPs is an optional comma-separated list of ACP server names this prompt applies to.
+	// If empty, the prompt works with all ACP servers.
+	// Example: "acps: auggie, claude-code" means only show this prompt for those ACP servers.
+	ACPs string `yaml:"acps,omitempty" json:"-"`
+
 	// Enabled controls whether the prompt is active. Defaults to true if not specified.
 	Enabled *bool `yaml:"enabled,omitempty" json:"-"`
 
@@ -54,13 +57,63 @@ func (p *PromptFile) IsEnabled() bool {
 	return p.Enabled == nil || *p.Enabled
 }
 
+// IsAllowedForACP returns true if the prompt is allowed for the given ACP server.
+// If the ACPs field is empty, the prompt is allowed for all ACP servers.
+// The ACPs field is a comma-separated list of ACP server names.
+func (p *PromptFile) IsAllowedForACP(acpServer string) bool {
+	// Empty ACPs means allowed for all
+	if p.ACPs == "" {
+		return true
+	}
+
+	// If no ACP server specified, allow all prompts
+	if acpServer == "" {
+		return true
+	}
+
+	// Parse comma-separated list and check for match
+	for _, acp := range strings.Split(p.ACPs, ",") {
+		acp = strings.TrimSpace(acp)
+		if strings.EqualFold(acp, acpServer) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSpecificToACP returns true if the prompt is specifically targeted at the given ACP server.
+// Unlike IsAllowedForACP, this returns false for prompts with empty ACPs field (generic prompts).
+// This is used to show ACP-specific prompts in the server settings UI.
+func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
+	// Empty ACPs means generic prompt, not specific to any ACP
+	if p.ACPs == "" {
+		return false
+	}
+
+	// If no ACP server specified, can't match
+	if acpServer == "" {
+		return false
+	}
+
+	// Parse comma-separated list and check for match
+	for _, acp := range strings.Split(p.ACPs, ",") {
+		acp = strings.TrimSpace(acp)
+		if strings.EqualFold(acp, acpServer) {
+			return true
+		}
+	}
+	return false
+}
+
 // ToWebPrompt converts the PromptFile to a WebPrompt for API responses.
+// File-based prompts are marked with Source=PromptSourceFile.
 func (p *PromptFile) ToWebPrompt() WebPrompt {
 	return WebPrompt{
 		Name:            p.Name,
 		Prompt:          p.Content,
 		BackgroundColor: p.BackgroundColor,
 		Description:     p.Description,
+		Source:          PromptSourceFile,
 	}
 }
 
@@ -209,17 +262,6 @@ func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 	return prompts, nil
 }
 
-// LoadGlobalPrompts loads prompts from MITTO_DIR/prompts/.
-// Returns an empty slice if the directory doesn't exist or contains no valid prompts.
-func LoadGlobalPrompts() ([]*PromptFile, error) {
-	promptsDir, err := appdir.PromptsDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get prompts directory: %w", err)
-	}
-
-	return LoadPromptsFromDir(promptsDir)
-}
-
 // PromptsToWebPrompts converts a slice of PromptFile to WebPrompt.
 func PromptsToWebPrompts(prompts []*PromptFile) []WebPrompt {
 	if len(prompts) == 0 {
@@ -229,6 +271,40 @@ func PromptsToWebPrompts(prompts []*PromptFile) []WebPrompt {
 	result := make([]WebPrompt, 0, len(prompts))
 	for _, p := range prompts {
 		result = append(result, p.ToWebPrompt())
+	}
+	return result
+}
+
+// FilterPromptsByACP filters prompts to only include those allowed for the given ACP server.
+// If acpServer is empty, all prompts are returned (no filtering).
+func FilterPromptsByACP(prompts []*PromptFile, acpServer string) []*PromptFile {
+	if acpServer == "" || len(prompts) == 0 {
+		return prompts
+	}
+
+	result := make([]*PromptFile, 0, len(prompts))
+	for _, p := range prompts {
+		if p.IsAllowedForACP(acpServer) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// FilterPromptsSpecificToACP filters prompts to only include those specifically targeted
+// at the given ACP server (have acps: field that includes the server name).
+// Generic prompts (with empty acps: field) are excluded.
+// If acpServer is empty, returns an empty slice.
+func FilterPromptsSpecificToACP(prompts []*PromptFile, acpServer string) []*PromptFile {
+	if acpServer == "" || len(prompts) == 0 {
+		return nil
+	}
+
+	result := make([]*PromptFile, 0)
+	for _, p := range prompts {
+		if p.IsSpecificToACP(acpServer) {
+			result = append(result, p)
+		}
 	}
 	return result
 }

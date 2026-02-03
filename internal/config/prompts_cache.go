@@ -226,6 +226,42 @@ func (c *PromptsCache) GetWebPrompts() ([]WebPrompt, error) {
 	return c.webPrompts, nil
 }
 
+// GetWebPromptsForACP returns the cached prompts filtered by ACP server.
+// If acpServer is empty, returns all prompts (no filtering).
+func (c *PromptsCache) GetWebPromptsForACP(acpServer string) ([]WebPrompt, error) {
+	// Ensure cache is fresh
+	prompts, err := c.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	// If no ACP server specified, return all prompts
+	if acpServer == "" {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.webPrompts, nil
+	}
+
+	// Filter prompts by ACP server
+	filtered := FilterPromptsByACP(prompts, acpServer)
+	return PromptsToWebPrompts(filtered), nil
+}
+
+// GetWebPromptsSpecificToACP returns prompts that are specifically targeted at the given ACP server.
+// Unlike GetWebPromptsForACP, this excludes generic prompts (with empty acps: field).
+// This is used to show ACP-specific prompts in the server settings UI.
+func (c *PromptsCache) GetWebPromptsSpecificToACP(acpServer string) ([]WebPrompt, error) {
+	// Ensure cache is fresh
+	prompts, err := c.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter prompts specific to this ACP server
+	filtered := FilterPromptsSpecificToACP(prompts, acpServer)
+	return PromptsToWebPrompts(filtered), nil
+}
+
 // ForceReload clears the cache and reloads from disk.
 func (c *PromptsCache) ForceReload() ([]*PromptFile, error) {
 	c.mu.Lock()
