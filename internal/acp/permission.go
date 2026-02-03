@@ -39,22 +39,6 @@ func AutoApprovePermission(options []acp.PermissionOption) acp.RequestPermission
 	}
 }
 
-// SelectPermissionOption selects a specific permission option by index.
-// Returns a cancelled response if the index is out of bounds.
-func SelectPermissionOption(options []acp.PermissionOption, index int) acp.RequestPermissionResponse {
-	if index >= 0 && index < len(options) {
-		return acp.RequestPermissionResponse{
-			Outcome: acp.RequestPermissionOutcome{
-				Selected: &acp.RequestPermissionOutcomeSelected{OptionId: options[index].OptionId},
-			},
-		}
-	}
-
-	return acp.RequestPermissionResponse{
-		Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
-	}
-}
-
 // CancelledPermissionResponse returns a cancelled permission response.
 func CancelledPermissionResponse() acp.RequestPermissionResponse {
 	return acp.RequestPermissionResponse{

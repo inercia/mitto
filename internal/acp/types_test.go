@@ -7,27 +7,6 @@ import (
 	"testing"
 )
 
-func TestImageAttachment(t *testing.T) {
-	data := base64.StdEncoding.EncodeToString([]byte("fake image data"))
-	mimeType := "image/png"
-	name := "screenshot.png"
-
-	att := ImageAttachment(data, mimeType, name)
-
-	if att.Type != "image" {
-		t.Errorf("Type = %q, want %q", att.Type, "image")
-	}
-	if att.Data != data {
-		t.Errorf("Data = %q, want %q", att.Data, data)
-	}
-	if att.MimeType != mimeType {
-		t.Errorf("MimeType = %q, want %q", att.MimeType, mimeType)
-	}
-	if att.Name != name {
-		t.Errorf("Name = %q, want %q", att.Name, name)
-	}
-}
-
 func TestImageAttachmentFromFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.png")
@@ -133,8 +112,8 @@ func TestBuildContentBlocks_EmptyMessage(t *testing.T) {
 
 func TestBuildContentBlocks_WithAttachments(t *testing.T) {
 	attachments := []Attachment{
-		ImageAttachment("data1", "image/png", "img1.png"),
-		ImageAttachment("data2", "image/jpeg", "img2.jpg"),
+		{Type: "image", Data: "data1", MimeType: "image/png", Name: "img1.png"},
+		{Type: "image", Data: "data2", MimeType: "image/jpeg", Name: "img2.jpg"},
 	}
 
 	blocks := BuildContentBlocks("What's in these images?", attachments)

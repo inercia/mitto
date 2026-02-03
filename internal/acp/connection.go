@@ -83,14 +83,6 @@ func (c *Connection) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// HasImageSupport returns true if the agent supports image content in prompts.
-func (c *Connection) HasImageSupport() bool {
-	if c.capabilities == nil {
-		return false
-	}
-	return c.capabilities.PromptCapabilities.Image
-}
-
 // NewSession creates a new ACP session.
 func (c *Connection) NewSession(ctx context.Context, cwd string) error {
 	sess, err := c.conn.NewSession(ctx, acp.NewSessionRequest{
@@ -144,12 +136,4 @@ func (c *Connection) Close() error {
 // Done returns a channel that's closed when the connection is done.
 func (c *Connection) Done() <-chan struct{} {
 	return c.conn.Done()
-}
-
-// SessionID returns the current session ID.
-func (c *Connection) SessionID() string {
-	if c.session == nil {
-		return ""
-	}
-	return string(c.session.SessionId)
 }

@@ -19,16 +19,6 @@ type Attachment struct {
 	Name string `json:"name,omitempty"`
 }
 
-// ImageAttachment creates an image attachment from base64 data.
-func ImageAttachment(data, mimeType, name string) Attachment {
-	return Attachment{
-		Type:     "image",
-		Data:     data,
-		MimeType: mimeType,
-		Name:     name,
-	}
-}
-
 // ImageAttachmentFromFile creates an image attachment from a file path.
 func ImageAttachmentFromFile(path, mimeType string) (Attachment, error) {
 	data, err := os.ReadFile(path)

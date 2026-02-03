@@ -164,32 +164,6 @@ func TestOSFileSystem_WriteTextFile_RelativePath(t *testing.T) {
 	}
 }
 
-func TestReadTextFileSimple(t *testing.T) {
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "simple.txt")
-	content := "Simple content"
-
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("failed to write test file: %v", err)
-	}
-
-	result, err := ReadTextFileSimple(path)
-	if err != nil {
-		t.Fatalf("ReadTextFileSimple failed: %v", err)
-	}
-
-	if result != content {
-		t.Errorf("Content = %q, want %q", result, content)
-	}
-}
-
-func TestReadTextFileSimple_NotFound(t *testing.T) {
-	_, err := ReadTextFileSimple("/nonexistent/file.txt")
-	if err == nil {
-		t.Error("expected error for non-existent file")
-	}
-}
-
 func TestDefaultFileSystem(t *testing.T) {
 	// Verify DefaultFileSystem is set
 	if DefaultFileSystem == nil {

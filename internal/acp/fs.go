@@ -82,9 +82,3 @@ func (fs *OSFileSystem) WriteTextFile(path, content string) error {
 
 // DefaultFileSystem is the default FileSystem implementation using the real OS.
 var DefaultFileSystem FileSystem = &OSFileSystem{}
-
-// ReadTextFileSimple reads a text file without line/limit filtering.
-// This is a convenience function for simple file reads.
-func ReadTextFileSimple(path string) (string, error) {
-	return DefaultFileSystem.ReadTextFile(path, nil, nil)
-}

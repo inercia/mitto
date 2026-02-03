@@ -120,8 +120,8 @@ func TestConnection_HasImageSupport_BeforeInitialize(t *testing.T) {
 	defer conn.Close()
 
 	// Before Initialize, capabilities should be nil
-	if conn.HasImageSupport() {
-		t.Error("HasImageSupport should return false before Initialize")
+	if conn.capabilities != nil {
+		t.Error("capabilities should be nil before Initialize")
 	}
 }
 
@@ -157,38 +157,6 @@ func TestConnection_NewSession(t *testing.T) {
 	// Check output contains session creation message
 	if !strings.Contains(output.String(), "session") {
 		t.Errorf("Output should contain 'session', got: %s", output.String())
-	}
-}
-
-func TestConnection_SessionID(t *testing.T) {
-	mockPath := getMockACPPath(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := NewConnection(ctx, mockPath, true, nil, nil)
-	if err != nil {
-		t.Fatalf("NewConnection failed: %v", err)
-	}
-	defer conn.Close()
-
-	// Before session creation, SessionID should be empty
-	if conn.SessionID() != "" {
-		t.Error("SessionID should be empty before NewSession")
-	}
-
-	if err := conn.Initialize(ctx); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-	if err := conn.NewSession(ctx, tmpDir); err != nil {
-		t.Fatalf("NewSession failed: %v", err)
-	}
-
-	// After session creation, SessionID should not be empty
-	sessionID := conn.SessionID()
-	if sessionID == "" {
-		t.Error("SessionID should not be empty after NewSession")
 	}
 }
 

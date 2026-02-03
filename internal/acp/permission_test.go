@@ -75,61 +75,6 @@ func TestAutoApprovePermission_EmptyOptions(t *testing.T) {
 	}
 }
 
-func TestSelectPermissionOption_ValidIndex(t *testing.T) {
-	options := []acp.PermissionOption{
-		{OptionId: "first", Name: "First"},
-		{OptionId: "second", Name: "Second"},
-		{OptionId: "third", Name: "Third"},
-	}
-
-	tests := []struct {
-		index  int
-		wantID string
-	}{
-		{0, "first"},
-		{1, "second"},
-		{2, "third"},
-	}
-
-	for _, tt := range tests {
-		resp := SelectPermissionOption(options, tt.index)
-		if resp.Outcome.Selected == nil {
-			t.Errorf("index %d: expected Selected outcome", tt.index)
-			continue
-		}
-		if string(resp.Outcome.Selected.OptionId) != tt.wantID {
-			t.Errorf("index %d: OptionId = %q, want %q", tt.index, resp.Outcome.Selected.OptionId, tt.wantID)
-		}
-	}
-}
-
-func TestSelectPermissionOption_InvalidIndex(t *testing.T) {
-	options := []acp.PermissionOption{
-		{OptionId: "first", Name: "First"},
-		{OptionId: "second", Name: "Second"},
-	}
-
-	tests := []int{-1, 2, 3, 100}
-
-	for _, index := range tests {
-		resp := SelectPermissionOption(options, index)
-		if resp.Outcome.Cancelled == nil {
-			t.Errorf("index %d: expected Cancelled outcome for invalid index", index)
-		}
-		if resp.Outcome.Selected != nil {
-			t.Errorf("index %d: Selected should be nil for invalid index", index)
-		}
-	}
-}
-
-func TestSelectPermissionOption_EmptyOptions(t *testing.T) {
-	resp := SelectPermissionOption(nil, 0)
-
-	if resp.Outcome.Cancelled == nil {
-		t.Error("expected Cancelled outcome for nil options")
-	}
-}
-
 func TestCancelledPermissionResponse(t *testing.T) {
 	resp := CancelledPermissionResponse()
 
