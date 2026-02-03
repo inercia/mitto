@@ -36,6 +36,9 @@ const (
 	// PromptsDirName is the name of the prompts subdirectory.
 	PromptsDirName = "prompts"
 
+	// BuiltinPromptsDirName is the name of the builtin prompts subdirectory.
+	BuiltinPromptsDirName = "builtin"
+
 	// AuthSessionsFileName is the name of the auth sessions file.
 	AuthSessionsFileName = "auth_sessions.json"
 )
@@ -204,6 +207,16 @@ func PromptsDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, PromptsDirName), nil
+}
+
+// BuiltinPromptsDir returns the full path to the builtin prompts directory.
+// This directory contains prompts that are deployed from the embedded filesystem.
+func BuiltinPromptsDir() (string, error) {
+	promptsDir, err := PromptsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(promptsDir, BuiltinPromptsDirName), nil
 }
 
 // AuthSessionsPath returns the full path to the auth_sessions.json file.
