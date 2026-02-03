@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -22,6 +21,18 @@ type ACPServer struct {
 	Prompts []WebPrompt
 }
 
+// PromptSource indicates where a prompt originated from.
+type PromptSource string
+
+const (
+	// PromptSourceFile indicates the prompt was loaded from a .md file in MITTO_DIR/prompts/
+	PromptSourceFile PromptSource = "file"
+	// PromptSourceSettings indicates the prompt was defined in settings.json
+	PromptSourceSettings PromptSource = "settings"
+	// PromptSourceWorkspace indicates the prompt was defined in a workspace .mittorc file
+	PromptSourceWorkspace PromptSource = "workspace"
+)
+
 // WebPrompt represents a predefined prompt for the web interface.
 type WebPrompt struct {
 	// Name is the display name for the prompt button
@@ -32,6 +43,10 @@ type WebPrompt struct {
 	BackgroundColor string `json:"backgroundColor,omitempty"`
 	// Description is an optional description shown as tooltip in the UI
 	Description string `json:"description,omitempty"`
+	// Source indicates where this prompt originated from (file, settings, workspace).
+	// This is used by the frontend to determine which prompts should be saved back to settings.
+	// Only prompts with Source="settings" or empty Source should be saved.
+	Source PromptSource `json:"source,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -540,6 +555,11 @@ func ApplyProcessors(message string, processors []MessageProcessor, isFirstMessa
 // Later sources override earlier ones when prompts have the same name.
 // The order of prompts is preserved, with higher-priority prompts appearing first.
 //
+// Each prompt's Source field is set to indicate its origin:
+//   - PromptSourceFile for globalFilePrompts (already set by ToWebPrompt)
+//   - PromptSourceSettings for settingsPrompts
+//   - PromptSourceWorkspace for workspacePrompts
+//
 // Parameters:
 //   - globalFilePrompts: prompts from MITTO_DIR/prompts/*.md (lowest priority)
 //   - settingsPrompts: prompts from settings file (medium priority)
@@ -553,6 +573,7 @@ func MergePrompts(globalFilePrompts, settingsPrompts, workspacePrompts []WebProm
 	// Add workspace prompts first (highest priority)
 	for _, p := range workspacePrompts {
 		if p.Name != "" && !seen[p.Name] {
+			p.Source = PromptSourceWorkspace
 			result = append(result, p)
 			seen[p.Name] = true
 		}
@@ -561,12 +582,14 @@ func MergePrompts(globalFilePrompts, settingsPrompts, workspacePrompts []WebProm
 	// Add settings prompts (medium priority)
 	for _, p := range settingsPrompts {
 		if p.Name != "" && !seen[p.Name] {
+			p.Source = PromptSourceSettings
 			result = append(result, p)
 			seen[p.Name] = true
 		}
 	}
 
 	// Add global file prompts (lowest priority)
+	// Note: Source is already set to PromptSourceFile by ToWebPrompt()
 	for _, p := range globalFilePrompts {
 		if p.Name != "" && !seen[p.Name] {
 			result = append(result, p)
@@ -693,36 +716,6 @@ type rawConfig struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"action_buttons"`
 	} `yaml:"conversations"`
-}
-
-// DefaultConfigPath returns the default configuration file path for the current platform.
-func DefaultConfigPath() string {
-	// Check for environment variable override first
-	if envPath := os.Getenv("MITTORC"); envPath != "" {
-		return envPath
-	}
-
-	// Use platform-specific config directory
-	var configDir string
-	switch runtime.GOOS {
-	case "windows":
-		configDir = os.Getenv("APPDATA")
-		if configDir == "" {
-			configDir = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming")
-		}
-	case "darwin":
-		home, _ := os.UserHomeDir()
-		configDir = home // macOS traditionally uses ~/.mittorc
-	default: // linux and others
-		if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
-			configDir = xdgConfig
-		} else {
-			home, _ := os.UserHomeDir()
-			configDir = home
-		}
-	}
-
-	return filepath.Join(configDir, ".mittorc")
 }
 
 // Load reads and parses the configuration file from the given path.

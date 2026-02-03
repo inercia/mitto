@@ -610,21 +610,6 @@ func TestServerNames_Empty(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigPath_EnvOverride(t *testing.T) {
-	// Save original value
-	original := os.Getenv("MITTORC")
-	defer os.Setenv("MITTORC", original)
-
-	// Set custom path
-	customPath := "/custom/path/.mittorc"
-	os.Setenv("MITTORC", customPath)
-
-	path := DefaultConfigPath()
-	if path != customPath {
-		t.Errorf("DefaultConfigPath = %q, want %q", path, customPath)
-	}
-}
-
 func TestParse_StaticDir(t *testing.T) {
 	yaml := `
 acp:
@@ -1460,9 +1445,11 @@ conversations:
 }
 
 func TestMergePrompts(t *testing.T) {
+	// Note: globalFile prompts should have Source=PromptSourceFile set by ToWebPrompt()
+	// when loaded from files. Here we simulate that.
 	globalFile := []WebPrompt{
-		{Name: "Global1", Prompt: "global1"},
-		{Name: "Shared", Prompt: "global-shared"},
+		{Name: "Global1", Prompt: "global1", Source: PromptSourceFile},
+		{Name: "Shared", Prompt: "global-shared", Source: PromptSourceFile},
 	}
 	settings := []WebPrompt{
 		{Name: "Settings1", Prompt: "settings1"},
@@ -1484,18 +1471,36 @@ func TestMergePrompts(t *testing.T) {
 	if result[0].Name != "Workspace1" {
 		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "Workspace1")
 	}
+	// Workspace prompts should have Source=PromptSourceWorkspace
+	if result[0].Source != PromptSourceWorkspace {
+		t.Errorf("result[0].Source = %q, want %q", result[0].Source, PromptSourceWorkspace)
+	}
+
 	if result[1].Name != "Shared" {
 		t.Errorf("result[1].Name = %q, want %q", result[1].Name, "Shared")
 	}
-	// Shared should have workspace value (highest priority)
+	// Shared should have workspace value (highest priority) and workspace source
 	if result[1].Prompt != "workspace-shared" {
 		t.Errorf("result[1].Prompt = %q, want %q", result[1].Prompt, "workspace-shared")
 	}
+	if result[1].Source != PromptSourceWorkspace {
+		t.Errorf("result[1].Source = %q, want %q", result[1].Source, PromptSourceWorkspace)
+	}
+
 	if result[2].Name != "Settings1" {
 		t.Errorf("result[2].Name = %q, want %q", result[2].Name, "Settings1")
 	}
+	// Settings prompts should have Source=PromptSourceSettings
+	if result[2].Source != PromptSourceSettings {
+		t.Errorf("result[2].Source = %q, want %q", result[2].Source, PromptSourceSettings)
+	}
+
 	if result[3].Name != "Global1" {
 		t.Errorf("result[3].Name = %q, want %q", result[3].Name, "Global1")
+	}
+	// Global file prompts should retain Source=PromptSourceFile
+	if result[3].Source != PromptSourceFile {
+		t.Errorf("result[3].Source = %q, want %q", result[3].Source, PromptSourceFile)
 	}
 }
 
