@@ -79,16 +79,3 @@ func releaseAllLocks() {
 		lock.Release()
 	}
 }
-
-// CleanupAllLocks releases all active locks held by this process.
-// This should be called during graceful shutdown.
-func CleanupAllLocks() {
-	releaseAllLocks()
-}
-
-// ActiveLockCount returns the number of active locks held by this process.
-func ActiveLockCount() int {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	return len(activeLocks)
-}

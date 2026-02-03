@@ -332,12 +332,6 @@ func GetMimeTypeFromExt(ext string) string {
 	return ""
 }
 
-// GetMimeTypeExtension returns the file extension for a MIME type.
-func GetMimeTypeExtension(mimeType string) (string, bool) {
-	ext, ok := supportedImageTypes[mimeType]
-	return ext, ok
-}
-
 // IsSupportedImageType checks if a MIME type is supported.
 func IsSupportedImageType(mimeType string) bool {
 	_, ok := supportedImageTypes[mimeType]

@@ -278,25 +278,3 @@ func TestIsSupportedImageType(t *testing.T) {
 		}
 	}
 }
-
-func TestGetMimeTypeExtension(t *testing.T) {
-	tests := []struct {
-		mimeType string
-		wantExt  string
-		wantOk   bool
-	}{
-		{"image/png", ".png", true},
-		{"image/jpeg", ".jpg", true},
-		{"image/gif", ".gif", true},
-		{"image/webp", ".webp", true},
-		{"image/bmp", "", false},
-	}
-
-	for _, tt := range tests {
-		ext, ok := GetMimeTypeExtension(tt.mimeType)
-		if ext != tt.wantExt || ok != tt.wantOk {
-			t.Errorf("GetMimeTypeExtension(%q) = (%q, %v), want (%q, %v)",
-				tt.mimeType, ext, ok, tt.wantExt, tt.wantOk)
-		}
-	}
-}
