@@ -49,7 +49,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetConfig handles GET {prefix}/api/config.
+// Supports optional query parameter:
+//   - acp_server: If specified, global file prompts are filtered to only include prompts
+//     that are allowed for this ACP server (based on the "acps" front-matter field).
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	// Get optional acp_server parameter for filtering global file prompts
+	acpServer := r.URL.Query().Get("acp_server")
+
 	// Build complete config response including workspaces and ACP servers
 	response := map[string]interface{}{
 		"workspaces":      s.sessionManager.GetWorkspaces(),
@@ -71,10 +77,15 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 		// Merge prompts from global files and settings
 		// Global file prompts (MITTO_DIR/prompts/*.md) have lower priority than settings prompts
+		// If acpServer is specified, filter global file prompts by ACP server
 		var globalFilePrompts []configPkg.WebPrompt
 		if s.config.PromptsCache != nil {
 			var err error
-			globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
+			if acpServer != "" {
+				globalFilePrompts, err = s.config.PromptsCache.GetWebPromptsForACP(acpServer)
+			} else {
+				globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
+			}
 			if err != nil && s.logger != nil {
 				s.logger.Warn("Failed to load global file prompts", "error", err)
 			}
@@ -85,15 +96,37 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response["prompts"] = mergedPrompts
 
 		// Convert ACP servers to JSON-friendly format (including per-server prompts)
+		// Also include file-based prompts that are specifically targeted at each ACP server
 		acpServers := make([]map[string]interface{}, len(s.config.MittoConfig.ACPServers))
 		for i, srv := range s.config.MittoConfig.ACPServers {
 			acpServers[i] = map[string]interface{}{
 				"name":    srv.Name,
 				"command": srv.Command,
 			}
-			// Include prompts if present
-			if len(srv.Prompts) > 0 {
-				acpServers[i]["prompts"] = srv.Prompts
+
+			// Get file-based prompts specific to this ACP server
+			var filePrompts []configPkg.WebPrompt
+			if s.config.PromptsCache != nil {
+				var err error
+				filePrompts, err = s.config.PromptsCache.GetWebPromptsSpecificToACP(srv.Name)
+				if err != nil && s.logger != nil {
+					s.logger.Warn("Failed to load ACP-specific file prompts",
+						"acp_server", srv.Name, "error", err)
+				}
+			}
+
+			// Merge: settings prompts (srv.Prompts) take priority over file prompts
+			// File prompts already have Source=PromptSourceFile from ToWebPrompt()
+			// Settings prompts need Source=PromptSourceSettings
+			allPrompts := append([]configPkg.WebPrompt{}, filePrompts...)
+			for _, p := range srv.Prompts {
+				// Set source for settings-based prompts
+				p.Source = configPkg.PromptSourceSettings
+				allPrompts = append(allPrompts, p)
+			}
+
+			if len(allPrompts) > 0 {
+				acpServers[i]["prompts"] = allPrompts
 			}
 		}
 		response["acp_servers"] = acpServers
