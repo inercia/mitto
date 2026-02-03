@@ -14,10 +14,14 @@ import (
 const WorkspaceRCFileName = ".mittorc"
 
 // WorkspaceRC represents workspace-specific configuration loaded from .mittorc.
-// Supports prompts and conversations sections; other sections are ignored.
+// Supports prompts, prompts_dirs, and conversations sections; other sections are ignored.
 type WorkspaceRC struct {
 	// Prompts is the list of workspace-specific prompts.
 	Prompts []WebPrompt `json:"prompts,omitempty"`
+	// PromptsDirs is a list of additional directories to search for prompt files.
+	// Paths can be absolute or relative (resolved against the workspace directory).
+	// These directories are searched in addition to global prompts directories.
+	PromptsDirs []string `json:"prompts_dirs,omitempty"`
 	// Conversations contains workspace-specific conversation processing configuration.
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 	// LoadedAt is the time when this config was loaded.
@@ -36,6 +40,8 @@ type rawWorkspaceRC struct {
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
 	} `yaml:"prompts"`
+	// PromptsDirs is a list of additional directories to search for prompt files
+	PromptsDirs []string `yaml:"prompts_dirs"`
 	// Conversations section for message processing
 	Conversations *struct {
 		Processing *struct {
@@ -125,6 +131,9 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			})
 		}
 	}
+
+	// Copy prompts directories
+	rc.PromptsDirs = raw.PromptsDirs
 
 	// Copy conversations config
 	if raw.Conversations != nil && raw.Conversations.Processing != nil {

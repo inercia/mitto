@@ -135,6 +135,95 @@ func TestParseWorkspaceRC_InvalidYAML(t *testing.T) {
 	}
 }
 
+func TestParseWorkspaceRC_PromptsDirs(t *testing.T) {
+	yaml := `
+prompts_dirs:
+  - ".prompts"
+  - "/shared/team/prompts"
+  - "project-prompts"
+prompts:
+  - name: "Inline"
+    prompt: "Inline prompt"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+
+	if len(rc.PromptsDirs) != 3 {
+		t.Errorf("PromptsDirs count = %d, want 3", len(rc.PromptsDirs))
+	}
+
+	if rc.PromptsDirs[0] != ".prompts" {
+		t.Errorf("PromptsDirs[0] = %q, want %q", rc.PromptsDirs[0], ".prompts")
+	}
+
+	if rc.PromptsDirs[1] != "/shared/team/prompts" {
+		t.Errorf("PromptsDirs[1] = %q, want %q", rc.PromptsDirs[1], "/shared/team/prompts")
+	}
+
+	if rc.PromptsDirs[2] != "project-prompts" {
+		t.Errorf("PromptsDirs[2] = %q, want %q", rc.PromptsDirs[2], "project-prompts")
+	}
+
+	// Should also have the inline prompt
+	if len(rc.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1", len(rc.Prompts))
+	}
+}
+
+func TestParseWorkspaceRC_PromptsDirsOnly(t *testing.T) {
+	yaml := `
+prompts_dirs:
+  - ".prompts"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+
+	if len(rc.PromptsDirs) != 1 {
+		t.Errorf("PromptsDirs count = %d, want 1", len(rc.PromptsDirs))
+	}
+
+	if len(rc.Prompts) != 0 {
+		t.Errorf("Prompts count = %d, want 0", len(rc.Prompts))
+	}
+}
+
+func TestParseWorkspaceRC_EmptyPromptsDirs(t *testing.T) {
+	yaml := `
+prompts_dirs: []
+prompts:
+  - name: "Test"
+    prompt: "Test prompt"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+
+	if len(rc.PromptsDirs) != 0 {
+		t.Errorf("PromptsDirs count = %d, want 0", len(rc.PromptsDirs))
+	}
+
+	if len(rc.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1", len(rc.Prompts))
+	}
+}
+
 func TestLoadWorkspaceRC_NonexistentFile(t *testing.T) {
 	rc, err := LoadWorkspaceRC("/nonexistent/path/to/workspace")
 	if err != nil {
