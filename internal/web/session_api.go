@@ -632,6 +632,7 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 
 // handleWorkspacePrompts handles GET /api/workspace-prompts?dir=...
 // Returns the prompts from the workspace's .mittorc file and prompts_dirs.
+// Prompts are filtered by the workspace's ACP server if specified in the prompt's acps field.
 // Supports conditional requests via If-Modified-Since header.
 func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -643,6 +644,14 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 	if workingDir == "" {
 		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
 		return
+	}
+
+	// Get the ACP server for this workspace (used for filtering prompts)
+	var acpServer string
+	if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+		acpServer = ws.ACPServer
+	} else if defaultWs := s.sessionManager.GetDefaultWorkspace(); defaultWs != nil {
+		acpServer = defaultWs.ACPServer
 	}
 
 	// Get the file's last modification time for conditional requests
@@ -669,7 +678,7 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 	var dirPrompts []config.WebPrompt
 	promptsDirs := s.sessionManager.GetWorkspacePromptsDirs(workingDir)
 	if len(promptsDirs) > 0 {
-		dirPrompts = s.loadPromptsFromDirs(workingDir, promptsDirs)
+		dirPrompts = s.loadPromptsFromDirs(workingDir, promptsDirs, acpServer)
 	}
 
 	// Get inline prompts from .mittorc (higher priority than prompts_dirs)
@@ -681,6 +690,7 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 	if s.logger != nil {
 		s.logger.Debug("Returning workspace prompts",
 			"working_dir", workingDir,
+			"acp_server", acpServer,
 			"prompt_count", len(prompts),
 			"dir_prompt_count", len(dirPrompts),
 			"inline_prompt_count", len(inlinePrompts),
@@ -695,8 +705,9 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 
 // loadPromptsFromDirs loads prompts from a list of directories.
 // Relative paths are resolved against workspaceRoot.
+// If acpServer is specified, prompts are filtered to only include those allowed for that ACP server.
 // Non-existent directories are silently ignored.
-func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []config.WebPrompt {
+func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string, acpServer string) []config.WebPrompt {
 	var allPrompts []config.WebPrompt
 
 	for _, dir := range dirs {
@@ -716,6 +727,9 @@ func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []conf
 			}
 			continue
 		}
+
+		// Filter prompts by ACP server if specified
+		prompts = config.FilterPromptsByACP(prompts, acpServer)
 
 		// Convert to WebPrompts and merge (later dirs override earlier)
 		webPrompts := config.PromptsToWebPrompts(prompts)

@@ -6,14 +6,6 @@ import (
 	"unicode"
 )
 
-const (
-	// MaxSessionNameLength is the maximum allowed length for session names.
-	MaxSessionNameLength = 200
-
-	// MaxWorkingDirLength is the maximum allowed length for working directory paths.
-	MaxWorkingDirLength = 4096
-)
-
 // sessionIDRegex matches the session ID format: YYYYMMDD-HHMMSS-XXXXXXXX
 // where YYYYMMDD is the date, HHMMSS is the time, and XXXXXXXX is 8 hex characters.
 // Example: 20260127-113605-87080ed8
@@ -26,68 +18,6 @@ func IsValidSessionID(id string) bool {
 		return false
 	}
 	return sessionIDRegex.MatchString(id)
-}
-
-// SanitizeSessionName sanitizes a session name by:
-// - Truncating to MaxSessionNameLength
-// - Removing control characters
-// - Trimming whitespace
-func SanitizeSessionName(name string) string {
-	// Remove control characters
-	name = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
-			return -1
-		}
-		return r
-	}, name)
-
-	// Trim whitespace
-	name = strings.TrimSpace(name)
-
-	// Truncate to max length
-	if len(name) > MaxSessionNameLength {
-		// Try to truncate at a word boundary
-		truncated := name[:MaxSessionNameLength]
-		if lastSpace := strings.LastIndex(truncated, " "); lastSpace > MaxSessionNameLength-50 {
-			truncated = truncated[:lastSpace]
-		}
-		name = strings.TrimSpace(truncated)
-	}
-
-	return name
-}
-
-// SanitizeWorkingDir sanitizes a working directory path by:
-// - Truncating to MaxWorkingDirLength
-// - Removing control characters
-// - Trimming whitespace
-func SanitizeWorkingDir(path string) string {
-	// Remove control characters
-	path = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, path)
-
-	// Trim whitespace
-	path = strings.TrimSpace(path)
-
-	// Truncate to max length
-	if len(path) > MaxWorkingDirLength {
-		path = path[:MaxWorkingDirLength]
-	}
-
-	return path
-}
-
-// ValidatePromptMessage validates a prompt message.
-// Returns an error message if invalid, empty string if valid.
-func ValidatePromptMessage(message string) string {
-	if strings.TrimSpace(message) == "" {
-		return "Message cannot be empty"
-	}
-	return ""
 }
 
 // GenericErrorMessages maps internal error types to user-friendly messages.
@@ -218,13 +148,4 @@ func ValidatePassword(password string) string {
 	}
 
 	return ""
-}
-
-// ValidateCredentials validates both username and password.
-// Returns the first error message found, or empty string if both are valid.
-func ValidateCredentials(username, password string) string {
-	if err := ValidateUsername(username); err != "" {
-		return err
-	}
-	return ValidatePassword(password)
 }

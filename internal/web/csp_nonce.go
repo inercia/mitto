@@ -161,14 +161,10 @@ type cspNonceMiddlewareOptions struct {
 	apiPrefix string
 }
 
-// cspNonceMiddleware generates a CSP nonce for each request and injects it into HTML responses.
+// cspNonceMiddlewareWithOptions creates a CSP nonce middleware with additional options.
+// It generates a CSP nonce for each request and injects it into HTML responses.
 // This allows inline scripts with the nonce attribute while blocking other inline scripts.
 // It also injects the API prefix for frontend JavaScript to use.
-func cspNonceMiddleware(config SecurityConfig) func(http.Handler) http.Handler {
-	return cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: config})
-}
-
-// cspNonceMiddlewareWithOptions creates a CSP nonce middleware with additional options.
 func cspNonceMiddlewareWithOptions(opts cspNonceMiddlewareOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

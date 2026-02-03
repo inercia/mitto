@@ -43,7 +43,7 @@ func TestCSPNonceMiddleware_HTMLResponse(t *testing.T) {
 	})
 
 	// Wrap with CSP nonce middleware
-	wrapped := cspNonceMiddleware(DefaultSecurityConfig())(handler)
+	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
 
 	// Make a request
 	req := httptest.NewRequest("GET", "/", nil)
@@ -91,7 +91,7 @@ func TestCSPNonceMiddleware_NonHTMLResponse(t *testing.T) {
 	})
 
 	// Wrap with CSP nonce middleware
-	wrapped := cspNonceMiddleware(DefaultSecurityConfig())(handler)
+	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
 
 	// Make a request
 	req := httptest.NewRequest("GET", "/api/test", nil)
@@ -130,7 +130,7 @@ func TestCSPNonceMiddleware_MultipleNoncePlaceholders(t *testing.T) {
 <script nonce="{{CSP_NONCE}}" src="c.js"></script>`))
 	})
 
-	wrapped := cspNonceMiddleware(DefaultSecurityConfig())(handler)
+	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -300,7 +300,7 @@ func TestCSPNonceMiddleware_ContentLengthUpdated(t *testing.T) {
 		w.Write([]byte(originalContent))
 	})
 
-	wrapped := cspNonceMiddleware(DefaultSecurityConfig())(handler)
+	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -326,7 +326,7 @@ func TestCSPNonceMiddleware_WriteHeaderHTML(t *testing.T) {
 		w.Write([]byte(`<html><body>Test</body></html>`))
 	})
 
-	wrapped := cspNonceMiddleware(DefaultSecurityConfig())(handler)
+	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -351,7 +351,7 @@ func TestCSPNonceMiddleware_WriteHeaderNonHTML(t *testing.T) {
 		w.Write([]byte(`{"status": "ok"}`))
 	})
 
-	wrapped := cspNonceMiddleware(DefaultSecurityConfig())(handler)
+	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{config: DefaultSecurityConfig()})(handler)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()

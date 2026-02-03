@@ -113,33 +113,23 @@ func (ct *ConnectionTracker) TotalConnections() int {
 	return total
 }
 
-// createSecureUpgraderFull creates a WebSocket upgrader with all security options.
-func createSecureUpgraderFull(config WebSocketSecurityConfig, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) websocket.Upgrader {
-	return websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin:     createOriginCheckerFull(config.AllowedOrigins, logger, externalChecker),
-	}
-}
-
-// createOriginChecker returns a function that validates WebSocket origins.
-func createOriginChecker(allowedOrigins []string) func(*http.Request) bool {
-	return createOriginCheckerWithLogger(allowedOrigins, nil)
-}
-
 // OriginCheckLogger is a function that logs origin check details.
 type OriginCheckLogger func(origin, host string, allowed bool, reason string)
 
 // ExternalConnectionChecker is a function that checks if a request is from an authenticated external connection.
 type ExternalConnectionChecker func(r *http.Request) bool
 
-// createOriginCheckerWithLogger returns a function that validates WebSocket origins with logging.
-func createOriginCheckerWithLogger(allowedOrigins []string, logger OriginCheckLogger) func(*http.Request) bool {
-	return createOriginCheckerFull(allowedOrigins, logger, nil)
+// createSecureUpgrader creates a WebSocket upgrader with all security options.
+func createSecureUpgrader(config WebSocketSecurityConfig, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     createOriginChecker(config.AllowedOrigins, logger, externalChecker),
+	}
 }
 
-// createOriginCheckerFull returns a function that validates WebSocket origins with all options.
-func createOriginCheckerFull(allowedOrigins []string, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) func(*http.Request) bool {
+// createOriginChecker returns a function that validates WebSocket origins.
+func createOriginChecker(allowedOrigins []string, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) func(*http.Request) bool {
 	// Build a set of allowed origins for fast lookup
 	allowedSet := make(map[string]bool)
 	allowAll := false
@@ -282,5 +272,5 @@ func (s *Server) getSecureUpgrader() websocket.Upgrader {
 
 	// Allow authenticated external connections (e.g., Tailscale funnel)
 	// These have already been authenticated by the auth middleware
-	return createSecureUpgraderFull(s.wsSecurityConfig, logger, IsExternalConnection)
+	return createSecureUpgrader(s.wsSecurityConfig, logger, IsExternalConnection)
 }

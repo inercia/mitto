@@ -43,94 +43,6 @@ func TestIsValidSessionID(t *testing.T) {
 	}
 }
 
-func TestSanitizeSessionName(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"normal name", "My Session", "My Session"},
-		{"with leading/trailing spaces", "  My Session  ", "My Session"},
-		{"with control characters", "My\x00Session\x1F", "MySession"},
-		{"with newlines (preserved)", "Line1\nLine2", "Line1\nLine2"},
-		{"with tabs (preserved)", "Col1\tCol2", "Col1\tCol2"},
-		{"empty string", "", ""},
-		{"only spaces", "   ", ""},
-		{"very long name", strings.Repeat("a", 300), strings.Repeat("a", 200)},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := SanitizeSessionName(tt.input)
-			if got != tt.expected {
-				t.Errorf("SanitizeSessionName(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestSanitizeSessionName_TruncatesAtWordBoundary(t *testing.T) {
-	// Create a string that's longer than MaxSessionNameLength
-	// with a space near the end
-	longName := strings.Repeat("word ", 50) // 250 chars
-	result := SanitizeSessionName(longName)
-
-	// Should be truncated
-	if len(result) > MaxSessionNameLength {
-		t.Errorf("Result length %d exceeds max %d", len(result), MaxSessionNameLength)
-	}
-
-	// Should end at a word boundary (no trailing space)
-	if strings.HasSuffix(result, " ") {
-		t.Error("Result should not end with a space")
-	}
-}
-
-func TestSanitizeWorkingDir(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"normal path", "/home/user/project", "/home/user/project"},
-		{"with spaces", "  /home/user/project  ", "/home/user/project"},
-		{"with control characters", "/home/user\x00/project", "/home/user/project"},
-		{"empty string", "", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := SanitizeWorkingDir(tt.input)
-			if got != tt.expected {
-				t.Errorf("SanitizeWorkingDir(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestValidatePromptMessage(t *testing.T) {
-	tests := []struct {
-		name    string
-		message string
-		wantErr bool
-	}{
-		{"valid message", "Hello, world!", false},
-		{"empty message", "", true},
-		{"only spaces", "   ", true},
-		{"message with newlines", "Line1\nLine2", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidatePromptMessage(tt.message)
-			hasErr := err != ""
-			if hasErr != tt.wantErr {
-				t.Errorf("ValidatePromptMessage(%q) error = %q, wantErr %v", tt.message, err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestValidateUsername(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -215,39 +127,6 @@ func TestValidatePassword(t *testing.T) {
 			}
 			if tt.wantErr && err != tt.errMsg {
 				t.Errorf("ValidatePassword(%q) error = %q, want %q", tt.pwd, err, tt.errMsg)
-			}
-		})
-	}
-}
-
-func TestValidateCredentials(t *testing.T) {
-	tests := []struct {
-		name     string
-		username string
-		password string
-		wantErr  bool
-		errMsg   string
-	}{
-		{"both valid", "admin", "SecurePass123", false, ""},
-		{"empty username", "", "SecurePass123", true, "Username is required"},
-		{"short username", "ab", "SecurePass123", true, "Username must be at least 3 characters"},
-		{"empty password", "admin", "", true, "Password is required"},
-		{"short password", "admin", "short", true, "Password must be at least 8 characters"},
-		{"common password", "admin", "password", true, "Password is too common. Please choose a stronger password"},
-		{"both invalid returns username error first", "", "", true, "Username is required"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateCredentials(tt.username, tt.password)
-			hasErr := err != ""
-			if hasErr != tt.wantErr {
-				t.Errorf("ValidateCredentials(%q, %q) hasErr = %v, wantErr %v, got error: %q",
-					tt.username, tt.password, hasErr, tt.wantErr, err)
-			}
-			if tt.wantErr && err != tt.errMsg {
-				t.Errorf("ValidateCredentials(%q, %q) error = %q, want %q",
-					tt.username, tt.password, err, tt.errMsg)
 			}
 		})
 	}

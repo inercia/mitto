@@ -6,7 +6,7 @@ import (
 )
 
 func TestOriginChecker_SameOrigin(t *testing.T) {
-	checker := createOriginChecker(nil) // nil = same-origin only
+	checker := createOriginChecker(nil, nil, nil) // nil = same-origin only
 
 	tests := []struct {
 		name      string
@@ -73,7 +73,7 @@ func TestOriginChecker_AllowList(t *testing.T) {
 		"https://trusted.com",
 		"https://also-trusted.com:8443",
 	}
-	checker := createOriginChecker(allowedOrigins)
+	checker := createOriginChecker(allowedOrigins, nil, nil)
 
 	tests := []struct {
 		name      string
@@ -119,7 +119,7 @@ func TestOriginChecker_AllowList(t *testing.T) {
 }
 
 func TestOriginChecker_AllowAll(t *testing.T) {
-	checker := createOriginChecker([]string{"*"})
+	checker := createOriginChecker([]string{"*"}, nil, nil)
 
 	tests := []struct {
 		name   string
