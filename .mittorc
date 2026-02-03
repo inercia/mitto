@@ -52,8 +52,8 @@ prompts:
       before making any changes. Focus on high-impact, low-risk improvements first.
       Prioritize removing dead code and simplifying confusing code early in the process.
 
-  - name: "Run All Tests"
-    backgroundColor: "#BBDEFB"  # Light Blue - testing/verification
+  - name: "Run tests"
+    backgroundColor: "#FFE0B2"  # Light Blue - testing/verification
     prompt: |
       Please run the complete test suite for this project and fix any failures:
 
@@ -103,7 +103,7 @@ prompts:
       Please start by running the tests and report the results.
 
   - name: "Create PR"
-    backgroundColor: "#F3E5F5"  # Light Purple - workflow/process
+    backgroundColor: "#B2DFDB"  # Light Purple - workflow/process
     prompt: |
       Please help me create a Pull Request with the following workflow:
 
@@ -163,7 +163,7 @@ prompts:
       Report success or any errors after each step.
 
   - name: "Create Release"
-    backgroundColor: "#FFF3E0"  # Light Orange - release/deployment
+    backgroundColor: "#B2DFDB"
     prompt: |
       Please help me create a new release with the following workflow:
 
@@ -211,17 +211,17 @@ prompts:
 
       ## Step 4: Determine Version
 
-      1. Get the latest tag: `git describe --tags --abbrev=0`
-      2. Analyze commits since the last tag using conventional commit prefixes:
+      7. Get the latest tag: `git describe --tags --abbrev=0`
+      8. Analyze commits since the last tag using conventional commit prefixes:
          - `feat:` commits → suggest MINOR version bump
          - `fix:` commits → suggest PATCH version bump
          - Breaking changes (indicated by `!` or `BREAKING CHANGE:`) → suggest MAJOR version bump
-      3. Present the suggested version with reasoning:
+      9. Present the suggested version with reasoning:
          - Current version: vX.Y.Z
          - Suggested version: vX.Y.Z
          - Reason: List of relevant commits
 
-      4. **WAIT FOR MY APPROVAL** of the version number
+      10. **WAIT FOR MY APPROVAL** of the version number
 
       ## Step 5: Create & Push Tag
 
@@ -234,7 +234,7 @@ prompts:
       Report success or any errors after each step.
 
   - name: "Prepare for CI"
-    backgroundColor: "#E3F2FD"  # Light Blue - preparation/validation
+    backgroundColor: "#B2DFDB"  # Light Blue - preparation/validation
     prompt: |
       Please prepare the codebase for CI by performing the following steps:
 
