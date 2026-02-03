@@ -558,6 +558,8 @@ web:
 #         agent_completed: true  # Play a sound when the agent finishes
 #     # Window behavior
 #     show_in_all_spaces: false  # Show window in all macOS Spaces (requires restart)
+#     # Login item (requires macOS 13+)
+#     start_at_login: false  # Launch Mitto automatically when you log in
 
 # Conversation processing - transformations applied to user messages
 # Processors are applied in order. Each processor specifies:

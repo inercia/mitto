@@ -330,6 +330,79 @@ prompts:
 	}
 }
 
+func TestParse_PromptsDirs(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+prompts_dirs:
+  - "/custom/prompts"
+  - "/shared/team/prompts"
+  - "relative/prompts"
+prompts:
+  - name: "Inline"
+    prompt: "Inline prompt"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.PromptsDirs) != 3 {
+		t.Fatalf("PromptsDirs count = %d, want 3", len(cfg.PromptsDirs))
+	}
+
+	if cfg.PromptsDirs[0] != "/custom/prompts" {
+		t.Errorf("PromptsDirs[0] = %q, want %q", cfg.PromptsDirs[0], "/custom/prompts")
+	}
+
+	if cfg.PromptsDirs[1] != "/shared/team/prompts" {
+		t.Errorf("PromptsDirs[1] = %q, want %q", cfg.PromptsDirs[1], "/shared/team/prompts")
+	}
+
+	if cfg.PromptsDirs[2] != "relative/prompts" {
+		t.Errorf("PromptsDirs[2] = %q, want %q", cfg.PromptsDirs[2], "relative/prompts")
+	}
+
+	// Should also have the inline prompt
+	if len(cfg.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1", len(cfg.Prompts))
+	}
+}
+
+func TestParse_PromptsDirsEmpty(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+prompts_dirs: []
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.PromptsDirs) != 0 {
+		t.Errorf("PromptsDirs count = %d, want 0", len(cfg.PromptsDirs))
+	}
+}
+
+func TestParse_NoPromptsDirs(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.PromptsDirs) != 0 {
+		t.Errorf("PromptsDirs = %v, want empty", cfg.PromptsDirs)
+	}
+}
+
 func TestLoad_ValidFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, ".mittorc")
@@ -1044,6 +1117,52 @@ ui:
 	// Also verify the helper method
 	if cfg.ShouldConfirmQuitWithRunningSessions() != false {
 		t.Error("ShouldConfirmQuitWithRunningSessions() = true, want false")
+	}
+}
+
+func TestParse_UIStartAtLogin(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  mac:
+    start_at_login: true
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Mac == nil {
+		t.Fatal("UI.Mac is nil")
+	}
+
+	if !cfg.UI.Mac.StartAtLogin {
+		t.Error("UI.Mac.StartAtLogin = false, want true")
+	}
+}
+
+func TestParse_UIStartAtLoginFalse(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  mac:
+    start_at_login: false
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Mac == nil {
+		t.Fatal("UI.Mac is nil")
+	}
+
+	if cfg.UI.Mac.StartAtLogin {
+		t.Error("UI.Mac.StartAtLogin = true, want false")
 	}
 }
 

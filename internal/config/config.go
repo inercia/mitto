@@ -143,6 +143,10 @@ type MacUIConfig struct {
 	// When enabled, the Mitto window will be visible across all Spaces.
 	// Requires app restart to take effect. (default: false)
 	ShowInAllSpaces bool `json:"show_in_all_spaces,omitempty"`
+	// StartAtLogin enables launching Mitto automatically when the user logs in.
+	// This uses macOS SMAppService API (requires macOS 13+).
+	// (default: false)
+	StartAtLogin bool `json:"start_at_login,omitempty"`
 }
 
 // ConfirmationsConfig represents confirmation dialog settings.
@@ -579,6 +583,10 @@ type Config struct {
 	ACPServers []ACPServer
 	// Prompts is a list of predefined prompts for the dropup menu (global prompts)
 	Prompts []WebPrompt
+	// PromptsDirs is a list of additional directories to search for prompt files.
+	// These are searched in addition to the default MITTO_DIR/prompts/ directory.
+	// Paths can be absolute or relative (resolved against the config file's directory).
+	PromptsDirs []string
 	// Web contains web interface configuration
 	Web WebConfig
 	// UI contains desktop app UI configuration
@@ -608,7 +616,9 @@ type rawConfig struct {
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
 	} `yaml:"prompts"`
-	Web struct {
+	// PromptsDirs is a list of additional directories to search for prompt files
+	PromptsDirs []string `yaml:"prompts_dirs"`
+	Web         struct {
 		Host         string `yaml:"host"`
 		Port         int    `yaml:"port"`
 		ExternalPort int    `yaml:"external_port"`
@@ -661,6 +671,7 @@ type rawConfig struct {
 				} `yaml:"sounds"`
 			} `yaml:"notifications"`
 			ShowInAllSpaces bool `yaml:"show_in_all_spaces"`
+			StartAtLogin    bool `yaml:"start_at_login"`
 		} `yaml:"mac"`
 	} `yaml:"ui"`
 	Conversations *struct {
@@ -792,6 +803,9 @@ func Parse(data []byte) (*Config, error) {
 		})
 	}
 
+	// Populate prompts directories
+	cfg.PromptsDirs = raw.PromptsDirs
+
 	// Populate web config
 	cfg.Web.Host = raw.Web.Host
 	cfg.Web.Port = raw.Web.Port
@@ -869,6 +883,9 @@ func Parse(data []byte) (*Config, error) {
 
 			// Populate show in all spaces setting
 			cfg.UI.Mac.ShowInAllSpaces = raw.UI.Mac.ShowInAllSpaces
+
+			// Populate start at login setting
+			cfg.UI.Mac.StartAtLogin = raw.UI.Mac.StartAtLogin
 		}
 	}
 
