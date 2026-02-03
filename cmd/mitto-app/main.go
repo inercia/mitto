@@ -225,6 +225,7 @@ import (
 
 	webview "github.com/webview/webview_go"
 
+	embeddedconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
@@ -556,6 +557,19 @@ func run() error {
 	// Ensure Mitto directory exists
 	if err := appdir.EnsureDir(); err != nil {
 		return fmt.Errorf("failed to create Mitto directory: %w", err)
+	}
+
+	// Deploy builtin prompts on first run
+	builtinPromptsDir, err := appdir.BuiltinPromptsDir()
+	if err != nil {
+		slog.Warn("Failed to get builtin prompts directory", "error", err)
+	} else {
+		deployed, err := embeddedconfig.EnsureBuiltinPrompts(builtinPromptsDir)
+		if err != nil {
+			slog.Warn("Failed to deploy builtin prompts", "error", err)
+		} else if deployed {
+			slog.Info("Deployed builtin prompts", "dir", builtinPromptsDir)
+		}
 	}
 
 	// Load configuration using the hierarchy:
