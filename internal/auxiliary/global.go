@@ -130,20 +130,26 @@ type FollowUpSuggestion struct {
 // AnalyzeFollowUpQuestions analyzes an agent message and extracts follow-up suggestions.
 // It uses the auxiliary conversation to identify questions or prompts in the agent's response
 // and returns suggested responses the user might want to send.
+// The userPrompt parameter provides context about what the user asked.
 // Returns an empty slice if no follow-up questions are found.
-func AnalyzeFollowUpQuestions(ctx context.Context, agentMessage string) ([]FollowUpSuggestion, error) {
+func AnalyzeFollowUpQuestions(ctx context.Context, userPrompt, agentMessage string) ([]FollowUpSuggestion, error) {
 	manager := GetManager()
 	if manager == nil {
 		return nil, fmt.Errorf("auxiliary manager not initialized")
 	}
 
 	// Truncate very long messages to avoid overwhelming the prompt
-	truncatedMsg := agentMessage
-	if len(truncatedMsg) > 2000 {
-		truncatedMsg = truncatedMsg[:1997] + "..."
+	truncatedUserPrompt := userPrompt
+	if len(truncatedUserPrompt) > 500 {
+		truncatedUserPrompt = truncatedUserPrompt[:497] + "..."
 	}
 
-	prompt := fmt.Sprintf(AnalyzeFollowUpQuestionsPromptTemplate, truncatedMsg)
+	truncatedAgentMsg := agentMessage
+	if len(truncatedAgentMsg) > 2000 {
+		truncatedAgentMsg = truncatedAgentMsg[:1997] + "..."
+	}
+
+	prompt := fmt.Sprintf(AnalyzeFollowUpQuestionsPromptTemplate, truncatedUserPrompt, truncatedAgentMsg)
 
 	response, err := manager.Prompt(ctx, prompt)
 	if err != nil {

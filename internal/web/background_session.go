@@ -840,8 +840,9 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 			// Async follow-up analysis (non-blocking)
 			// This runs after prompt_complete so the user sees the response immediately
+			// Note: 'message' is captured from the outer function scope (the user's prompt)
 			if agentMessage != "" {
-				go bs.analyzeFollowUpQuestions(agentMessage)
+				go bs.analyzeFollowUpQuestions(message, agentMessage)
 			}
 		}
 	}()
@@ -852,7 +853,8 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 // analyzeFollowUpQuestions asynchronously analyzes an agent message for follow-up questions.
 // It uses the auxiliary conversation to identify questions and sends suggested responses
 // to observers via OnActionButtons. This is non-blocking and runs in a goroutine.
-func (bs *BackgroundSession) analyzeFollowUpQuestions(agentMessage string) {
+// userPrompt provides context about what the user asked.
+func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage string) {
 	// Create a timeout context for the analysis
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -863,10 +865,12 @@ func (bs *BackgroundSession) analyzeFollowUpQuestions(agentMessage string) {
 		return
 	}
 
-	bs.logger.Debug("follow-up analysis: starting", "message_length", len(agentMessage))
+	bs.logger.Debug("follow-up analysis: starting",
+		"user_prompt_length", len(userPrompt),
+		"agent_message_length", len(agentMessage))
 
 	// Use the auxiliary conversation to analyze the message
-	suggestions, err := auxiliary.AnalyzeFollowUpQuestions(ctx, agentMessage)
+	suggestions, err := auxiliary.AnalyzeFollowUpQuestions(ctx, userPrompt, agentMessage)
 	if err != nil {
 		bs.logger.Debug("follow-up analysis failed", "error", err)
 		return
@@ -972,7 +976,8 @@ func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
 		return false
 	}
 
-	// Get the last agent message from stored events
+	// Get the last user prompt and agent message from stored events
+	userPrompt := session.GetLastUserPrompt(events)
 	agentMessage := session.GetLastAgentMessage(events)
 	if agentMessage == "" {
 		bs.logger.Debug("follow-up suggestions: no agent message found in history")
@@ -980,10 +985,11 @@ func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
 	}
 
 	bs.logger.Info("follow-up suggestions: triggering analysis for resumed session",
-		"message_length", len(agentMessage))
+		"user_prompt_length", len(userPrompt),
+		"agent_message_length", len(agentMessage))
 
 	// Run analysis asynchronously
-	go bs.analyzeFollowUpQuestions(agentMessage)
+	go bs.analyzeFollowUpQuestions(userPrompt, agentMessage)
 	return true
 }
 
