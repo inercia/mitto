@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	embeddedconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 )
@@ -44,9 +45,30 @@ Disabled prompts (enabled: false) are not shown.`,
 	RunE: runPromptsList,
 }
 
+var (
+	updateBuiltinDryRun bool
+)
+
+var promptsUpdateBuiltinCmd = &cobra.Command{
+	Use:   "update-builtin",
+	Short: "Update builtin prompts from embedded files",
+	Long: `Update the builtin prompts in MITTO_DIR/prompts/builtin/ with the
+latest versions embedded in the Mitto binary.
+
+This command will overwrite any local modifications to builtin prompts.
+Use --dry-run to see what would be updated without making changes.
+
+Note: Custom prompts in other directories are not affected.`,
+	RunE: runPromptsUpdateBuiltin,
+}
+
 func init() {
 	rootCmd.AddCommand(promptsCmd)
 	promptsCmd.AddCommand(promptsListCmd)
+	promptsCmd.AddCommand(promptsUpdateBuiltinCmd)
+
+	promptsUpdateBuiltinCmd.Flags().BoolVar(&updateBuiltinDryRun, "dry-run", false,
+		"Show what would be updated without making changes")
 }
 
 func runPromptsList(cmd *cobra.Command, args []string) error {
@@ -93,5 +115,76 @@ func runPromptsList(cmd *cobra.Command, args []string) error {
 	w.Flush()
 
 	fmt.Printf("\nTotal: %d prompt(s)\n", len(prompts))
+	return nil
+}
+
+func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
+	builtinDir, err := appdir.BuiltinPromptsDir()
+	if err != nil {
+		return fmt.Errorf("failed to get builtin prompts directory: %w", err)
+	}
+
+	fmt.Printf("Builtin prompts directory: %s\n\n", builtinDir)
+
+	// List embedded prompts
+	embeddedFiles, err := embeddedconfig.ListEmbeddedPrompts()
+	if err != nil {
+		return fmt.Errorf("failed to list embedded prompts: %w", err)
+	}
+
+	if len(embeddedFiles) == 0 {
+		fmt.Println("No embedded prompts found.")
+		return nil
+	}
+
+	if updateBuiltinDryRun {
+		fmt.Println("Dry run mode - no changes will be made.")
+		fmt.Println()
+		fmt.Println("The following prompts would be deployed:")
+		for _, f := range embeddedFiles {
+			targetPath := filepath.Join(builtinDir, f)
+			if _, err := os.Stat(targetPath); err == nil {
+				fmt.Printf("  [overwrite] %s\n", f)
+			} else {
+				fmt.Printf("  [new]       %s\n", f)
+			}
+		}
+		fmt.Printf("\nTotal: %d prompt(s)\n", len(embeddedFiles))
+		return nil
+	}
+
+	// Confirm before overwriting
+	fmt.Println("WARNING: This will overwrite any local modifications to builtin prompts.")
+	fmt.Print("Continue? [y/N] ")
+
+	var response string
+	fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	// Deploy with force=true to overwrite existing files
+	result, err := embeddedconfig.DeployBuiltinPrompts(builtinDir, true)
+	if err != nil {
+		return fmt.Errorf("failed to deploy builtin prompts: %w", err)
+	}
+
+	// Report results
+	if len(result.Deployed) > 0 {
+		fmt.Println("\nDeployed prompts:")
+		for _, f := range result.Deployed {
+			fmt.Printf("  ✓ %s\n", f)
+		}
+	}
+
+	if len(result.Errors) > 0 {
+		fmt.Println("\nErrors:")
+		for _, e := range result.Errors {
+			fmt.Printf("  ✗ %s\n", e)
+		}
+	}
+
+	fmt.Printf("\nTotal: %d deployed, %d errors\n", len(result.Deployed), len(result.Errors))
 	return nil
 }
