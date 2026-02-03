@@ -22,6 +22,7 @@ package main
 #import <Carbon/Carbon.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "menu_darwin.h"
+#include "loginitem_darwin.h"
 
 // Global hotkey reference (static to avoid duplicate symbols)
 static EventHotKeyRef gHotKeyRef = NULL;
@@ -494,6 +495,34 @@ func unregisterHotkey() {
 	C.unregisterGlobalHotkey()
 }
 
+// isLoginItemSupported checks if the login item API is available.
+// Always returns true since LaunchAgents work on all macOS versions.
+// This is exposed to JavaScript via webview.Bind.
+func isLoginItemSupported() bool {
+	return bool(C.isLoginItemSupported())
+}
+
+// isLoginItemEnabled checks if Mitto is configured to start at login.
+// This is exposed to JavaScript via webview.Bind.
+func isLoginItemEnabled() bool {
+	return bool(C.isLoginItemEnabled())
+}
+
+// setLoginItemEnabled enables or disables starting at login.
+// This is exposed to JavaScript via webview.Bind.
+func setLoginItemEnabled(enabled bool) error {
+	var result C.int
+	if enabled {
+		result = C.enableLoginItem()
+	} else {
+		result = C.disableLoginItem()
+	}
+	if result != 0 {
+		return fmt.Errorf("failed to update login item (error code: %d)", result)
+	}
+	return nil
+}
+
 const (
 	appName         = "Mitto"
 	windowWidth     = 1200
@@ -590,6 +619,20 @@ func run() error {
 	auxiliary.Initialize(server.Command, nil)
 	defer auxiliary.Shutdown()
 
+	// Sync login item state with config
+	// This ensures the LaunchAgent registration matches the config setting
+	if cfg != nil && cfg.UI.Mac != nil && isLoginItemSupported() {
+		currentState := isLoginItemEnabled()
+		desiredState := cfg.UI.Mac.StartAtLogin
+		if currentState != desiredState {
+			if err := setLoginItemEnabled(desiredState); err != nil {
+				slog.Warn("Failed to sync login item state", "desired", desiredState, "error", err)
+			} else {
+				slog.Info("Login item state synced", "enabled", desiredState)
+			}
+		}
+	}
+
 	// Create workspace save callback for persistence
 	onWorkspaceSave := func(ws []config.WorkspaceSettings) error {
 		return config.SaveWorkspaces(ws)
@@ -606,7 +649,11 @@ func run() error {
 	}
 
 	// Initialize prompts cache for global prompts from MITTO_DIR/prompts/
+	// and any additional directories from config
 	promptsCache := config.NewPromptsCache()
+	if len(cfg.PromptsDirs) > 0 {
+		promptsCache.SetAdditionalDirs(cfg.PromptsDirs)
+	}
 
 	webConfig := web.Config{
 		Workspaces:      workspaces,
@@ -705,6 +752,11 @@ func run() error {
 	w.Bind("mittoOpenExternalURL", openExternalURL)
 	w.Bind("mittoPickFolder", pickFolder)
 	w.Bind("mittoPickImages", pickImages)
+
+	// Bind login item functions (start at login)
+	w.Bind("mittoIsLoginItemSupported", isLoginItemSupported)
+	w.Bind("mittoIsLoginItemEnabled", isLoginItemEnabled)
+	w.Bind("mittoSetLoginItemEnabled", setLoginItemEnabled)
 
 	// Register global hotkey to toggle app visibility
 	hotkeyStr, hotkeyEnabled := getHotkeyConfig(cfg)

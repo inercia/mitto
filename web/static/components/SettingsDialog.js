@@ -362,6 +362,8 @@ export function SettingsDialog({
   // UI settings state (macOS only)
   const [agentCompletedSound, setAgentCompletedSound] = useState(false);
   const [showInAllSpaces, setShowInAllSpaces] = useState(false);
+  const [startAtLogin, setStartAtLogin] = useState(false);
+  const [loginItemSupported, setLoginItemSupported] = useState(false);
 
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
@@ -585,6 +587,16 @@ export function SettingsDialog({
       );
       setShowInAllSpaces(config.ui?.mac?.show_in_all_spaces || false);
 
+      // Load login item state from native API (macOS 13+ only)
+      if (typeof window.mittoIsLoginItemSupported === "function") {
+        const supported = await window.mittoIsLoginItemSupported();
+        setLoginItemSupported(supported);
+        if (supported && typeof window.mittoIsLoginItemEnabled === "function") {
+          const enabled = await window.mittoIsLoginItemEnabled();
+          setStartAtLogin(enabled);
+        }
+      }
+
       // Load confirmation settings (all platforms, default to true)
       setConfirmDeleteSession(
         config.ui?.confirmations?.delete_session !== false,
@@ -684,6 +696,7 @@ export function SettingsDialog({
             },
           },
           show_in_all_spaces: showInAllSpaces,
+          start_at_login: startAtLogin,
         };
       }
 
@@ -718,6 +731,19 @@ export function SettingsDialog({
       // Update the global sound setting flag
       if (isMacApp) {
         window.mittoAgentCompletedSoundEnabled = agentCompletedSound;
+      }
+
+      // Apply login item setting via native API (macOS 13+ only)
+      if (
+        loginItemSupported &&
+        typeof window.mittoSetLoginItemEnabled === "function"
+      ) {
+        try {
+          await window.mittoSetLoginItemEnabled(startAtLogin);
+        } catch (err) {
+          console.error("Failed to update login item:", err);
+          // Don't fail the save, just log the error
+        }
       }
 
       // Fetch updated external status to get the actual running port
@@ -1906,6 +1932,27 @@ export function SettingsDialog({
                             </div>
                           </div>
                         </label>
+                        ${loginItemSupported &&
+                        html`
+                          <label
+                            class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                          >
+                            <input
+                              type="checkbox"
+                              checked=${startAtLogin}
+                              onChange=${(e) => setStartAtLogin(e.target.checked)}
+                              class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                            />
+                            <div>
+                              <div class="font-medium text-sm">
+                                Start at Login
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Launch Mitto automatically when you log in
+                              </div>
+                            </div>
+                          </label>
+                        `}
                       </div>
                     `}
 
