@@ -19,18 +19,6 @@ This document covers web server settings, authentication, security, and deployme
 - [Reverse Proxy Setup](#reverse-proxy-setup)
 - [Complete Example](#complete-example)
 
-## Related Documentation
-
-| Topic                   | Location                             |
-| ----------------------- | ------------------------------------ |
-| External Access         | [../ext-access.md](../ext-access.md) |
-| ACP Servers             | [acp.md](acp.md)                     |
-| Workspace Config        | [workspace.md](workspace.md)         |
-| Configuration Overview  | [../overview.md](../overview.md)     |
-| Prompts & Quick Actions | [../prompts.md](../prompts.md)       |
-| Message Hooks           | [../hooks.md](../hooks.md)           |
-| macOS App               | [../mac/README.md](../mac/README.md) |
-
 ---
 
 ## Basic Configuration
@@ -200,39 +188,7 @@ web:
     max_ws_message_size: 65536 # Default: 64KB
 ```
 
-## Lifecycle Hooks
-
-Run commands at specific points in the server lifecycle.
-
-### Up Hook
-
-Runs **after** the server starts (asynchronously):
-
-```yaml
-web:
-  hooks:
-    up:
-      command: "echo 'Server started on port ${PORT}'"
-      name: "startup"
-```
-
-### Down Hook
-
-Runs **before** the server shuts down (synchronously):
-
-```yaml
-web:
-  hooks:
-    down:
-      command: "echo 'Server stopping'"
-      name: "cleanup"
-```
-
-### Variable Substitution
-
-- `${PORT}` - The port number the server is listening on
-
-### External Access Tunnels
+### Lifetime hooks and External Access Tunnels
 
 See [External Access Configuration](../ext-access.md) for details.
 
@@ -344,3 +300,15 @@ Mitto automatically sets security headers:
 - `Cross-Origin-Resource-Policy: same-origin`
 
 HSTS is enabled when using HTTPS.
+
+---
+
+## Related Documentation
+
+[External Access] (../ext-access.md)
+[ACP Servers] (acp.md)
+[Workspace Config] [workspace.md)
+[Configuration Overview] (../overview.md)
+[Prompts & Quick Actions] (../prompts.md)
+[Message Hooks] (../hooks.md)
+[macOS App] (../mac/README.md)

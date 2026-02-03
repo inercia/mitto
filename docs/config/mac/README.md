@@ -17,6 +17,7 @@ The Mitto macOS app is a native application that embeds the web interface in a W
 - [Configuration](#configuration)
 - [Hotkeys](#hotkeys)
 - [Window Behavior](#window-behavior)
+- [Start at Login](#start-at-login)
 - [Notifications](#notifications)
 - [Environment Variables](#environment-variables)
 - [Complete Example](#complete-example)
@@ -203,6 +204,27 @@ You can also configure this through the Settings dialog:
 4. Click **Save Changes**
 5. Restart the app
 
+## Start at Login
+
+Launch Mitto automatically when you log in to your Mac:
+
+```yaml
+ui:
+  mac:
+    start_at_login: true # Launch Mitto at login (default: false)
+```
+
+When enabled, Mitto will start automatically after you log in to your Mac. The app creates a LaunchAgent at `~/Library/LaunchAgents/io.mitto.app.plist` to manage this.
+
+### Configuring via Settings Dialog
+
+1. Open the Settings dialog (gear icon in sidebar)
+2. Click the **UI** tab (only visible in macOS app)
+3. Toggle **Start at Login** under macOS Settings
+4. Click **Save Changes**
+
+The setting takes effect immediately—no restart required.
+
 ## Notifications
 
 Configure notification behavior for the macOS app.
@@ -272,6 +294,9 @@ ui:
     # Window behavior
     show_in_all_spaces: true # Requires app restart
 
+    # Login item
+    start_at_login: true # Launch at login
+
     # Notification settings
     notifications:
       sounds:
@@ -293,6 +318,7 @@ When using `settings.json`:
         }
       },
       "show_in_all_spaces": true,
+      "start_at_login": true,
       "notifications": {
         "sounds": {
           "agent_completed": true

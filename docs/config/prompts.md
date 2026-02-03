@@ -20,12 +20,14 @@ When you hover over a prompt button, a tooltip shows its description (if provide
 Prompts can be defined in multiple locations. When prompts have the same name,
 higher-priority sources override lower-priority ones.
 
-| Priority    | Source                   | Location                     |
-| ----------- | ------------------------ | ---------------------------- |
-| 1 (lowest)  | Built-in defaults        | `config/config.default.yaml` |
-| 2           | Global prompts directory | `MITTO_DIR/prompts/*.md`     |
-| 3           | User settings file       | `MITTO_DIR/settings.yaml`    |
-| 4 (highest) | Workspace `.mittorc`     | `<workspace>/.mittorc`       |
+| Priority    | Source                       | Location                     |
+| ----------- | ---------------------------- | ---------------------------- |
+| 1 (lowest)  | Built-in defaults            | `config/config.default.yaml` |
+| 2           | Global prompts directory     | `MITTO_DIR/prompts/*.md`     |
+| 3           | Additional prompts dirs      | `prompts_dirs` in settings   |
+| 4           | User settings file           | `MITTO_DIR/settings.yaml`    |
+| 5           | Workspace prompts dirs       | `prompts_dirs` in `.mittorc` |
+| 6 (highest) | Workspace `.mittorc` prompts | `prompts:` in `.mittorc`     |
 
 ### 1. Built-in Default Prompts
 
@@ -94,6 +96,78 @@ prompts:
 
 Workspace prompts have the highest priority and appear in a separate "Workspace" section
 in the UI.
+
+## Additional Prompts Directories
+
+You can configure additional directories to search for prompt files using the
+`prompts_dirs` option. This allows you to:
+
+- Share prompts across multiple projects
+- Organize prompts in team-shared directories
+- Keep project-specific prompts in custom locations
+
+### Global `prompts_dirs` (in settings)
+
+Add additional directories to search after the default `MITTO_DIR/prompts/`:
+
+```yaml
+# ~/.mittorc or MITTO_DIR/settings.yaml
+prompts_dirs:
+  - "/shared/team/prompts"
+  - "/Users/me/my-prompts"
+```
+
+These directories are searched in order, with later directories overriding earlier ones
+when prompts have the same name. All paths should be absolute.
+
+### Workspace `prompts_dirs` (in `.mittorc`)
+
+Add workspace-specific prompt directories:
+
+```yaml
+# my-project/.mittorc
+prompts_dirs:
+  - ".prompts" # Relative to workspace root
+  - "/shared/team/prompts" # Absolute path
+
+prompts:
+  - name: "Inline Prompt"
+    prompt: "This has highest priority"
+```
+
+**Path resolution:**
+
+- Relative paths are resolved against the workspace root directory
+- Absolute paths are used as-is
+- Non-existent directories are silently ignored
+
+**Priority order within workspace:**
+
+1. Prompts from `prompts_dirs` (in order listed)
+2. Inline `prompts:` entries (highest priority)
+
+### Example: Team Shared Prompts
+
+```yaml
+# ~/.mittorc (global)
+prompts_dirs:
+  - "/Users/Shared/team-prompts"
+
+# my-project/.mittorc (workspace)
+prompts_dirs:
+  - ".prompts"  # Project-specific prompts
+
+prompts:
+  - name: "Deploy"
+    prompt: "Deploy to staging environment"
+```
+
+In this setup:
+
+1. `MITTO_DIR/prompts/` is always searched first
+2. `/Users/Shared/team-prompts/` is searched next (from global config)
+3. `my-project/.prompts/` is searched (from workspace config)
+4. Inline prompts from `.mittorc` have highest priority
 
 ## File Format for Global Prompts
 
