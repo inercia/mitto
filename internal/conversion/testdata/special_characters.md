@@ -1,0 +1,4 @@
+Special characters: &amp; < > " '
+
+Also: © ® ™ € £ ¥
+
