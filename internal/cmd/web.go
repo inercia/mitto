@@ -159,7 +159,11 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize prompts cache for global prompts from MITTO_DIR/prompts/
+	// and any additional directories from config
 	promptsCache := config.NewPromptsCache()
+	if len(cfg.PromptsDirs) > 0 {
+		promptsCache.SetAdditionalDirs(cfg.PromptsDirs)
+	}
 
 	// Create web server with workspaces
 	srv, err := web.NewServer(web.Config{
