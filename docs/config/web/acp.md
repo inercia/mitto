@@ -15,7 +15,7 @@ acp:
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
   - auggie:
-      command: auggie --acp
+      command: auggie --acp --allow-indexing
   - copilot:
       command: copilot --acp
 ```
@@ -32,7 +32,7 @@ You can configure predefined prompts specific to each ACP server:
 ```yaml
 acp:
   - auggie:
-      command: auggie --acp
+      command: auggie --acp --allow-indexing
       prompts:
         - name: "Improve Rules"
           prompt: "Please improve the Augment rules based on recent learnings"
@@ -82,7 +82,7 @@ Install Auggie CLI from your Augment Code dashboard, then configure:
 ```yaml
 acp:
   - auggie:
-      command: auggie --acp
+      command: auggie --acp --allow-indexing
 ```
 
 ### Requirements

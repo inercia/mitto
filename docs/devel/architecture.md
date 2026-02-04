@@ -84,7 +84,7 @@ YAML format (for `--config` flag):
 ```yaml
 acp:
   - auggie:
-      command: auggie --acp
+      command: auggie --acp --allow-indexing
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
 web:
@@ -97,7 +97,7 @@ JSON format (for `settings.json` or `--config` flag):
 ```json
 {
   "acp_servers": [
-    { "name": "auggie", "command": "auggie --acp" },
+    { "name": "auggie", "command": "auggie --acp --allow-indexing" },
     {
       "name": "claude-code",
       "command": "npx -y @zed-industries/claude-code-acp@latest"

@@ -134,7 +134,7 @@ mitto web --dir ~/projects/other-app --port 3001
 mitto cli --acp claude-code
 
 # Use Auggie
-mitto cli --acp auggie
+mitto cli --acp "auggie"
 ```
 
 ## Related Documentation

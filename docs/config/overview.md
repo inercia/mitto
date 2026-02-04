@@ -40,7 +40,7 @@ Configure the AI coding agents that Mitto can connect to:
 ```yaml
 acp:
   - auggie:
-      command: auggie --acp
+      command: auggie --acp --allow-indexing
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
   - copilot:
@@ -98,7 +98,7 @@ Here's a complete configuration example:
 # ACP Servers
 acp:
   - auggie:
-      command: auggie --acp
+      command: auggie --acp --allow-indexing
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
 
@@ -148,7 +148,7 @@ When using `settings.json`, the format is slightly different:
 ```json
 {
   "acp_servers": [
-    { "name": "auggie", "command": "auggie --acp" },
+    { "name": "auggie", "command": "auggie --acp --allow-indexing" },
     {
       "name": "claude-code",
       "command": "npx -y @zed-industries/claude-code-acp@latest"

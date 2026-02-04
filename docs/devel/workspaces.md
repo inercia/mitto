@@ -57,7 +57,7 @@ mitto web --dir /path/to/project1 --dir claude-code:/path/to/project2
   "workspaces": [
     {
       "acp_server": "auggie",
-      "acp_command": "auggie --acp",
+      "acp_command": "auggie --acp --allow-indexing",
       "working_dir": "/path/to/project1"
     },
     {
@@ -67,7 +67,7 @@ mitto web --dir /path/to/project1 --dir claude-code:/path/to/project2
     }
   ],
   "acp_servers": [
-    { "name": "auggie", "command": "auggie --acp" },
+    { "name": "auggie", "command": "auggie --acp --allow-indexing" },
     {
       "name": "claude-code",
       "command": "npx -y @zed-industries/claude-code-acp@latest"
@@ -159,7 +159,7 @@ Workspaces are NOT persisted when:
   "workspaces": [
     {
       "acp_server": "auggie",
-      "acp_command": "auggie --acp",
+      "acp_command": "auggie --acp --allow-indexing",
       "working_dir": "/path/to/project"
     }
   ]
