@@ -197,6 +197,8 @@ export function ChatInput({
   const [uploadError, setUploadError] = useState(null);
   const fileInputRef = useRef(null);
 
+
+
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
   useEffect(() => {
@@ -936,13 +938,13 @@ export function ChatInput({
             </div>
           `}
 
-          <div class="flex rounded-xl overflow-hidden">
+          <div class="flex rounded-xl overflow-hidden gap-1">
             ${isStreaming
               ? html`
                   <button
                     type="button"
                     onClick=${onCancel}
-                    class="min-w-[5.5rem] bg-red-600 hover:bg-red-700 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
+                    class="min-w-[5.5rem] bg-red-600 hover:bg-red-700 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2 rounded-xl"
                   >
                     <svg
                       class="w-4 h-4"
