@@ -286,6 +286,9 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 	case WSMsgTypeCancel:
 		c.handleCancel()
 
+	case WSMsgTypeForceReset:
+		c.handleForceReset()
+
 	case WSMsgTypePermissionAnswer:
 		var data struct {
 			OptionID string `json:"option_id"`
@@ -353,6 +356,16 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, 
 func (c *SessionWSClient) handleCancel() {
 	if c.bgSession != nil {
 		c.bgSession.Cancel()
+	}
+}
+
+func (c *SessionWSClient) handleForceReset() {
+	if c.bgSession != nil {
+		c.bgSession.ForceReset()
+		// Notify the client that the session was reset
+		c.sendMessage(WSMsgTypeSessionReset, map[string]interface{}{
+			"session_id": c.sessionID,
+		})
 	}
 }
 
@@ -457,36 +470,61 @@ func (c *SessionWSClient) sendError(message string) {
 
 // OnAgentMessage is called when the agent sends a message chunk.
 func (c *SessionWSClient) OnAgentMessage(html string) {
+	// Include is_prompting so the frontend knows if this is part of a user prompt response
+	// or an unsolicited agent message (e.g., "indexing workspace" notifications).
+	isPrompting := false
+	if c.bgSession != nil {
+		isPrompting = c.bgSession.IsPrompting()
+	}
 	c.sendMessage(WSMsgTypeAgentMessage, map[string]interface{}{
-		"html":       html,
-		"format":     "html",
-		"session_id": c.sessionID,
+		"html":         html,
+		"format":       "html",
+		"session_id":   c.sessionID,
+		"is_prompting": isPrompting,
 	})
 }
 
 // OnAgentThought is called when the agent sends a thought chunk.
 func (c *SessionWSClient) OnAgentThought(text string) {
+	// Include is_prompting so the frontend knows if this is part of a user prompt response
+	isPrompting := false
+	if c.bgSession != nil {
+		isPrompting = c.bgSession.IsPrompting()
+	}
 	c.sendMessage(WSMsgTypeAgentThought, map[string]interface{}{
-		"text":       text,
-		"session_id": c.sessionID,
+		"text":         text,
+		"session_id":   c.sessionID,
+		"is_prompting": isPrompting,
 	})
 }
 
 // OnToolCall is called when a tool call starts.
 func (c *SessionWSClient) OnToolCall(id, title, status string) {
+	// Include is_prompting so the frontend knows if this is part of a user prompt response
+	isPrompting := false
+	if c.bgSession != nil {
+		isPrompting = c.bgSession.IsPrompting()
+	}
 	c.sendMessage(WSMsgTypeToolCall, map[string]interface{}{
-		"id":         id,
-		"title":      title,
-		"status":     status,
-		"session_id": c.sessionID,
+		"id":           id,
+		"title":        title,
+		"status":       status,
+		"session_id":   c.sessionID,
+		"is_prompting": isPrompting,
 	})
 }
 
 // OnToolUpdate is called when a tool call status is updated.
 func (c *SessionWSClient) OnToolUpdate(id string, status *string) {
+	// Include is_prompting so the frontend knows if this is part of a user prompt response
+	isPrompting := false
+	if c.bgSession != nil {
+		isPrompting = c.bgSession.IsPrompting()
+	}
 	data := map[string]interface{}{
-		"id":         id,
-		"session_id": c.sessionID,
+		"id":           id,
+		"session_id":   c.sessionID,
+		"is_prompting": isPrompting,
 	}
 	if status != nil {
 		data["status"] = *status
@@ -591,12 +629,13 @@ func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 // senderID identifies which client sent the prompt (for deduplication).
 func (c *SessionWSClient) OnUserPrompt(senderID, promptID, message string, imageIDs []string) {
 	c.sendMessage(WSMsgTypeUserPrompt, map[string]interface{}{
-		"session_id": c.sessionID,
-		"sender_id":  senderID,
-		"prompt_id":  promptID,
-		"message":    message,
-		"image_ids":  imageIDs,
-		"is_mine":    senderID == c.clientID,
+		"session_id":   c.sessionID,
+		"sender_id":    senderID,
+		"prompt_id":    promptID,
+		"message":      message,
+		"image_ids":    imageIDs,
+		"is_mine":      senderID == c.clientID,
+		"is_prompting": true, // Signal frontend to show Stop button immediately
 	})
 }
 
