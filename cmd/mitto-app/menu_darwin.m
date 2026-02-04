@@ -74,11 +74,20 @@ extern void goQuitCallback(void);
                                                  cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                              timeoutInterval:2.0];
 
-        NSURLResponse *response = nil;
-        NSError *error = nil;
-        NSData *data = [NSURLConnection sendSynchronousRequest:request
-                                             returningResponse:&response
-                                                         error:&error];
+        // Use synchronous request with semaphore (NSURLConnection is deprecated but NSURLSession
+        // doesn't have a simple synchronous API, and this runs on the main thread during quit)
+        __block NSData *data = nil;
+        __block NSError *error = nil;
+        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+
+        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request
+                                                                     completionHandler:^(NSData *responseData, NSURLResponse *response, NSError *responseError) {
+            data = responseData;
+            error = responseError;
+            dispatch_semaphore_signal(semaphore);
+        }];
+        [task resume];
+        dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
 
         if (error == nil && data != nil) {
             // Parse JSON response

@@ -16,13 +16,14 @@ package main
 
 /*
 #cgo darwin CFLAGS: -x objective-c
-#cgo darwin LDFLAGS: -framework Cocoa -framework Carbon -framework UniformTypeIdentifiers
+#cgo darwin LDFLAGS: -framework Cocoa -framework Carbon -framework UniformTypeIdentifiers -framework UserNotifications
 
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "menu_darwin.h"
 #include "loginitem_darwin.h"
+#include "notifications_darwin.h"
 
 // Global hotkey reference (static to avoid duplicate symbols)
 static EventHotKeyRef gHotKeyRef = NULL;
@@ -349,6 +350,92 @@ func goSwipeNavigationCallback(direction *C.char) {
 	w.Dispatch(func() {
 		w.Eval(js)
 	})
+}
+
+//export goNotificationPermissionCallback
+func goNotificationPermissionCallback(granted C.int) {
+	// This callback is called asynchronously when permission request completes
+	// Currently we don't need to do anything here as the frontend will
+	// check permission status when needed
+	if granted != 0 {
+		slog.Info("Notification permission granted")
+	} else {
+		slog.Info("Notification permission denied")
+	}
+}
+
+//export goNotificationTappedCallback
+func goNotificationTappedCallback(sessionId *C.char) {
+	globalWebViewMu.Lock()
+	w := globalWebView
+	globalWebViewMu.Unlock()
+
+	if w == nil {
+		return
+	}
+
+	sessionIdStr := C.GoString(sessionId)
+	slog.Debug("Notification tapped", "session_id", sessionIdStr)
+
+	// Bring app to foreground and switch to the session
+	w.Dispatch(func() {
+		// First activate the app window
+		C.activateApp()
+		// Then switch to the session that was tapped
+		js := fmt.Sprintf("if (window.mittoSwitchToSession) window.mittoSwitchToSession('%s');", sessionIdStr)
+		w.Eval(js)
+	})
+}
+
+// initNotifications initializes the notification center.
+// Must be called after the app is running.
+func initNotifications() {
+	C.initNotificationCenter()
+	slog.Debug("Notification center initialized")
+}
+
+// requestNotificationPermission requests permission to show notifications.
+// This is exposed to JavaScript via webview.Bind.
+func requestNotificationPermission() {
+	C.requestNotificationPermission()
+}
+
+// getNotificationPermissionStatus returns the current notification permission status.
+// Returns: 0 = not determined, 1 = denied, 2 = authorized
+// This is exposed to JavaScript via webview.Bind.
+func getNotificationPermissionStatus() int {
+	return int(C.getNotificationPermissionStatus())
+}
+
+// NotificationResult represents the result of showing a notification.
+type NotificationResult struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// showNativeNotification posts a notification to the macOS Notification Center.
+// This is exposed to JavaScript via webview.Bind.
+func showNativeNotification(title, body, sessionId string) NotificationResult {
+	cTitle := C.CString(title)
+	defer C.free(unsafe.Pointer(cTitle))
+	cBody := C.CString(body)
+	defer C.free(unsafe.Pointer(cBody))
+	cSessionId := C.CString(sessionId)
+	defer C.free(unsafe.Pointer(cSessionId))
+
+	result := C.showNativeNotification(cTitle, cBody, cSessionId)
+	if result != 0 {
+		return NotificationResult{Success: false, Error: "Failed to show notification"}
+	}
+	return NotificationResult{Success: true}
+}
+
+// removeNotificationsForSession removes all delivered notifications for a session.
+// This is exposed to JavaScript via webview.Bind.
+func removeNotificationsForSession(sessionId string) {
+	cSessionId := C.CString(sessionId)
+	defer C.free(unsafe.Pointer(cSessionId))
+	C.removeNotificationsForSession(cSessionId)
 }
 
 // setupMenu creates the native macOS menu bar with standard items.
@@ -772,6 +859,15 @@ func run() error {
 	w.Bind("mittoIsLoginItemEnabled", isLoginItemEnabled)
 	w.Bind("mittoSetLoginItemEnabled", setLoginItemEnabled)
 
+	// Bind notification functions (native macOS notifications)
+	w.Bind("mittoRequestNotificationPermission", requestNotificationPermission)
+	w.Bind("mittoGetNotificationPermissionStatus", getNotificationPermissionStatus)
+	w.Bind("mittoShowNativeNotification", showNativeNotification)
+	w.Bind("mittoRemoveNotificationsForSession", removeNotificationsForSession)
+
+	// Initialize notification center (must be done after app is running)
+	initNotifications()
+
 	// Register global hotkey to toggle app visibility
 	hotkeyStr, hotkeyEnabled := getHotkeyConfig(cfg)
 	if hotkeyEnabled {
@@ -801,6 +897,27 @@ func run() error {
 		w.Dispatch(func() {
 			C.setWindowShowInAllSpaces(C.int(1))
 			slog.Info("Window configured to show in all Spaces")
+		})
+	}
+
+	// Request notification permission on startup if native notifications are enabled
+	// This ensures permission is requested when the setting is saved and app is restarted
+	nativeNotificationsEnabled := false
+	if cfg != nil && cfg.UI.Mac != nil && cfg.UI.Mac.Notifications != nil {
+		nativeNotificationsEnabled = cfg.UI.Mac.Notifications.NativeEnabled
+	}
+	if nativeNotificationsEnabled {
+		w.Dispatch(func() {
+			status := getNotificationPermissionStatus()
+			slog.Info("Native notifications enabled, checking permission", "status", status)
+			if status == 0 { // Not determined - request permission
+				slog.Info("Requesting notification permission on startup")
+				requestNotificationPermission()
+			} else if status == 1 { // Denied
+				slog.Info("Notification permission denied - notifications will not be shown")
+			} else if status == 2 { // Authorized
+				slog.Info("Notification permission already granted")
+			}
 		})
 	}
 

@@ -153,6 +153,8 @@ jobs:
           # Copy resources
           cp platform/mac/Info.plist "Mitto.app/Contents/"
           cp platform/mac/AppIcon.icns "Mitto.app/Contents/Resources/"
+          # Ad-hoc sign the app with entitlements (required for notifications)
+          codesign --force --deep --sign - --entitlements platform/mac/Entitlements.plist "Mitto.app"
 
       - name: Create app archive
         run: |

@@ -244,6 +244,9 @@ build-mac-app: deps-go
 	@cp platform/mac/Info.plist "$(APP_BUNDLE)/Contents/"
 	@# Copy icon
 	@cp platform/mac/AppIcon.icns "$(APP_BUNDLE)/Contents/Resources/"
+	@# Ad-hoc sign the app with entitlements (required for notifications)
+	@echo "Signing app bundle..."
+	@codesign --force --deep --sign - --entitlements platform/mac/Entitlements.plist "$(APP_BUNDLE)"
 	@echo ""
 	@echo "✅ Built $(APP_BUNDLE)"
 	@echo ""
