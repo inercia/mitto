@@ -50,6 +50,7 @@ type BackgroundSession struct {
 	promptMu             sync.Mutex
 	isPrompting          bool
 	promptCount          int
+	promptStartTime      time.Time // When the current prompt started (for stuck detection)
 	lastResponseComplete time.Time // When the agent last completed a response (for queue delay)
 
 	// Configuration
@@ -659,10 +660,25 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	bs.promptMu.Lock()
 	if bs.isPrompting {
-		bs.promptMu.Unlock()
-		return &sessionError{"prompt already in progress"}
+		// Check if the current prompt is stuck (running for too long without activity)
+		// If it's been more than 5 minutes, auto-recover by resetting the state
+		const stuckPromptTimeout = 5 * time.Minute
+		if !bs.promptStartTime.IsZero() && time.Since(bs.promptStartTime) > stuckPromptTimeout {
+			if bs.logger != nil {
+				bs.logger.Warn("Auto-recovering stuck prompt",
+					"prompt_start_time", bs.promptStartTime,
+					"elapsed", time.Since(bs.promptStartTime))
+			}
+			bs.isPrompting = false
+			bs.lastResponseComplete = time.Now()
+			// Fall through to process the new prompt
+		} else {
+			bs.promptMu.Unlock()
+			return &sessionError{"prompt already in progress"}
+		}
 	}
 	bs.isPrompting = true
+	bs.promptStartTime = time.Now()
 	bs.promptCount++
 
 	// Check if we need to inject conversation history (first prompt of resumed session)
@@ -798,6 +814,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		// This must happen before processNextQueuedMessage so the next message can be sent
 		bs.promptMu.Lock()
 		bs.isPrompting = false
+		bs.promptStartTime = time.Time{}
 		bs.lastResponseComplete = time.Now()
 		bs.promptMu.Unlock()
 
@@ -1075,14 +1092,80 @@ func (bs *BackgroundSession) GetActionButtons() []ActionButton {
 	return result
 }
 
-// Cancel cancels the current prompt.
+// Cancel cancels the current prompt and resets the prompting state.
+// This sends a cancel notification to the ACP agent and resets the isPrompting flag
+// so the session can accept new prompts even if the agent doesn't respond to the cancel.
 func (bs *BackgroundSession) Cancel() error {
+	// Reset prompting state regardless of whether cancel succeeds
+	// This ensures the session can accept new prompts even if the agent is unresponsive
+	bs.promptMu.Lock()
+	wasPrompting := bs.isPrompting
+	bs.isPrompting = false
+	bs.promptStartTime = time.Time{}
+	bs.lastResponseComplete = time.Now()
+	bs.promptMu.Unlock()
+
+	if wasPrompting {
+		// Flush any buffered content before notifying completion
+		if bs.acpClient != nil {
+			bs.acpClient.FlushMarkdown()
+		}
+		bs.flushAndPersistMessages()
+
+		// Notify observers that the prompt was cancelled
+		eventCount := bs.GetEventCount()
+		bs.notifyObservers(func(o SessionObserver) {
+			o.OnPromptComplete(eventCount)
+		})
+
+		if bs.logger != nil {
+			bs.logger.Info("Session cancelled, prompting state reset")
+		}
+	}
+
+	// Send cancel notification to ACP agent (best effort)
 	if bs.acpConn == nil {
 		return nil
 	}
 	return bs.acpConn.Cancel(bs.ctx, acp.CancelNotification{
 		SessionId: acp.SessionId(bs.acpID),
 	})
+}
+
+// ForceReset forcefully resets the session's prompting state.
+// This is used when the agent is completely unresponsive and Cancel doesn't work.
+// It resets the isPrompting flag, flushes any buffered content, and notifies observers.
+// Unlike Cancel, this does NOT send a cancel notification to the agent.
+func (bs *BackgroundSession) ForceReset() {
+	bs.promptMu.Lock()
+	wasPrompting := bs.isPrompting
+	bs.isPrompting = false
+	bs.promptStartTime = time.Time{}
+	bs.lastResponseComplete = time.Now()
+	bs.promptMu.Unlock()
+
+	if !wasPrompting {
+		if bs.logger != nil {
+			bs.logger.Debug("ForceReset called but session was not prompting")
+		}
+		return
+	}
+
+	// Flush any buffered content
+	if bs.acpClient != nil {
+		bs.acpClient.FlushMarkdown()
+	}
+	bs.flushAndPersistMessages()
+
+	// Notify observers that the prompt was forcefully reset
+	eventCount := bs.GetEventCount()
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnPromptComplete(eventCount)
+	})
+
+	if bs.logger != nil {
+		bs.logger.Warn("Session forcefully reset due to unresponsive agent")
+	}
 }
 
 // --- Queue processing methods ---
