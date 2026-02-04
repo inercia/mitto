@@ -146,6 +146,10 @@ type NotificationSoundsConfig struct {
 type NotificationsConfig struct {
 	// Sounds contains notification sound settings
 	Sounds *NotificationSoundsConfig `json:"sounds,omitempty"`
+	// NativeEnabled enables native macOS notifications instead of in-app toasts.
+	// When enabled, notifications appear in the macOS Notification Center.
+	// Requires notification permission from the user. (default: false)
+	NativeEnabled bool `json:"native_enabled,omitempty"`
 }
 
 // MacUIConfig represents macOS-specific UI configuration.
@@ -692,6 +696,7 @@ type rawConfig struct {
 				Sounds *struct {
 					AgentCompleted bool `yaml:"agent_completed"`
 				} `yaml:"sounds"`
+				NativeEnabled bool `yaml:"native_enabled"`
 			} `yaml:"notifications"`
 			ShowInAllSpaces bool `yaml:"show_in_all_spaces"`
 			StartAtLogin    bool `yaml:"start_at_login"`
@@ -866,7 +871,9 @@ func Parse(data []byte) (*Config, error) {
 
 			// Populate notifications
 			if raw.UI.Mac.Notifications != nil {
-				cfg.UI.Mac.Notifications = &NotificationsConfig{}
+				cfg.UI.Mac.Notifications = &NotificationsConfig{
+					NativeEnabled: raw.UI.Mac.Notifications.NativeEnabled,
+				}
 				if raw.UI.Mac.Notifications.Sounds != nil {
 					cfg.UI.Mac.Notifications.Sounds = &NotificationSoundsConfig{
 						AgentCompleted: raw.UI.Mac.Notifications.Sounds.AgentCompleted,

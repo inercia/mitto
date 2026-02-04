@@ -10,7 +10,7 @@
 # Run 'mitto prompts update-builtin' to update builtin prompts after upgrading
 acp:
   - auggie:
-      command: auggie --acp
+      command: auggie --allow-indexing --acp
 
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
@@ -81,10 +81,11 @@ web:
 #       show_hide:
 #         enabled: true
 #         key: "cmd+ctrl+m"  # Hotkey to toggle app visibility
-#     # Notification sounds
+#     # Notification settings
 #     notifications:
 #       sounds:
 #         agent_completed: true  # Play a sound when the agent finishes
+#       native_enabled: false  # Use native macOS notifications instead of in-app toasts
 #     # Window behavior
 #     show_in_all_spaces: false  # Show window in all macOS Spaces (requires restart)
 #     # Login item (requires macOS 13+)

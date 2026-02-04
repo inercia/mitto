@@ -146,11 +146,20 @@ func LoadSettings() (*Config, error) {
 		return nil, fmt.Errorf("failed to read settings file %s: %w", settingsPath, err)
 	}
 
+	// Deduplicate ACP server prompts to clean up any accumulation from previous bugs
+	// This is a one-time fix that runs on every load, but is idempotent
+	settingsModified := deduplicateACPServerPrompts(&settings)
+
 	cfg := settings.ToConfig()
 
 	// Validate the config has at least one ACP server
 	if len(cfg.ACPServers) == 0 {
 		return nil, fmt.Errorf("no ACP servers configured in settings")
+	}
+
+	// If we modified settings during deduplication, save the cleaned version
+	if settingsModified {
+		_ = SaveSettings(&settings) // Ignore error - deduplication is best-effort
 	}
 
 	// Handle external access password with secure storage
@@ -176,6 +185,43 @@ func LoadSettings() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// deduplicateACPServerPrompts removes duplicate prompts from ACP server configurations.
+// This is a cleanup function to fix settings files that accumulated duplicates due to
+// a bug where file-based prompts were being merged without deduplication.
+// Returns true if any modifications were made.
+func deduplicateACPServerPrompts(settings *Settings) bool {
+	modified := false
+
+	for i := range settings.ACPServers {
+		prompts := settings.ACPServers[i].Prompts
+		if len(prompts) <= 1 {
+			continue
+		}
+
+		// Deduplicate by name, keeping the first occurrence
+		seen := make(map[string]bool)
+		var dedupedPrompts []WebPrompt
+
+		for _, p := range prompts {
+			if p.Name == "" {
+				continue // Skip prompts without names
+			}
+			if !seen[p.Name] {
+				seen[p.Name] = true
+				dedupedPrompts = append(dedupedPrompts, p)
+			}
+		}
+
+		// Check if we removed any duplicates
+		if len(dedupedPrompts) < len(prompts) {
+			settings.ACPServers[i].Prompts = dedupedPrompts
+			modified = true
+		}
+	}
+
+	return modified
 }
 
 // migratePasswordToKeychain moves the password from settings.json to the system keychain.
