@@ -1,8 +1,11 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -448,5 +451,88 @@ func TestApplyAuthChanges_DisabledToDisabled(t *testing.T) {
 	// Auth manager should remain nil
 	if server.authManager != nil {
 		t.Error("authManager should remain nil")
+	}
+}
+
+func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
+	// Use temp dir to avoid writing to real settings file
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{WorkingDir: "/workspace1", ACPServer: "test-server"},
+	})
+
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				ACPServers: []config.ACPServer{
+					{Name: "test-server", Command: "test-cmd"},
+				},
+			},
+		},
+		sessionManager: sm,
+	}
+
+	// Simulate what the frontend sends
+	body := strings.NewReader(`{
+		"workspaces": [{"working_dir": "/workspace1", "acp_server": "test-server"}],
+		"acp_servers": [{"name": "test-server", "command": "test-cmd"}],
+		"ui": {
+			"confirmations": {
+				"delete_session": false
+			},
+			"mac": {
+				"notifications": {
+					"sounds": {
+						"agent_completed": true
+					},
+					"native_enabled": true
+				},
+				"show_in_all_spaces": true
+			}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSaveConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// Read the saved settings file and verify native_enabled is saved
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("Failed to read settings file: %v", err)
+	}
+
+	t.Logf("Saved settings: %s", string(data))
+
+	var settings config.Settings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("Failed to parse settings: %v", err)
+	}
+
+	if settings.UI.Mac == nil {
+		t.Fatal("Settings.UI.Mac is nil")
+	}
+
+	if settings.UI.Mac.Notifications == nil {
+		t.Fatal("Settings.UI.Mac.Notifications is nil")
+	}
+
+	if !settings.UI.Mac.Notifications.NativeEnabled {
+		t.Errorf("NativeEnabled = false, want true")
+	}
+
+	if settings.UI.Mac.Notifications.Sounds == nil || !settings.UI.Mac.Notifications.Sounds.AgentCompleted {
+		t.Errorf("AgentCompleted = false, want true")
 	}
 }

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -95,8 +96,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		mergedPrompts := configPkg.MergePrompts(globalFilePrompts, s.config.MittoConfig.Prompts, nil)
 		response["prompts"] = mergedPrompts
 
-		// Convert ACP servers to JSON-friendly format (including per-server prompts)
-		// Also include file-based prompts that are specifically targeted at each ACP server
+		// Convert ACP servers to JSON-friendly format
+		// Only include file-based prompts that explicitly list this ACP server in their acps: field
 		acpServers := make([]map[string]interface{}, len(s.config.MittoConfig.ACPServers))
 		for i, srv := range s.config.MittoConfig.ACPServers {
 			acpServers[i] = map[string]interface{}{
@@ -104,7 +105,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 				"command": srv.Command,
 			}
 
-			// Get file-based prompts specific to this ACP server
+			// Get file-based prompts that explicitly target this ACP server
+			// Only prompts with acps: field containing this server name are included
 			var filePrompts []configPkg.WebPrompt
 			if s.config.PromptsCache != nil {
 				var err error
@@ -115,18 +117,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Merge: settings prompts (srv.Prompts) take priority over file prompts
-			// File prompts already have Source=PromptSourceFile from ToWebPrompt()
-			// Settings prompts need Source=PromptSourceSettings
-			allPrompts := append([]configPkg.WebPrompt{}, filePrompts...)
-			for _, p := range srv.Prompts {
-				// Set source for settings-based prompts
-				p.Source = configPkg.PromptSourceSettings
-				allPrompts = append(allPrompts, p)
-			}
-
-			if len(allPrompts) > 0 {
-				acpServers[i]["prompts"] = allPrompts
+			if len(filePrompts) > 0 {
+				acpServers[i]["prompts"] = filePrompts
 			}
 		}
 		response["acp_servers"] = acpServers
@@ -146,6 +138,22 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	var req ConfigSaveRequest
 	if !parseJSONBody(w, r, &req) {
 		return
+	}
+
+	// DEBUG: Log UI config received (always log to slog for debugging)
+	if req.UI != nil {
+		slog.Info("Config save: UI config received",
+			"ui", req.UI,
+			"mac", req.UI.Mac,
+		)
+		if req.UI.Mac != nil && req.UI.Mac.Notifications != nil {
+			slog.Info("Config save: Notifications config",
+				"native_enabled", req.UI.Mac.Notifications.NativeEnabled,
+				"sounds", req.UI.Mac.Notifications.Sounds,
+			)
+		}
+	} else {
+		slog.Info("Config save: UI config is nil")
 	}
 
 	// Validate request structure
@@ -168,6 +176,19 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "Failed to build settings: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// DEBUG: Log settings before save
+	if s.logger != nil {
+		s.logger.Info("Config save: Settings to save",
+			"ui", settings.UI,
+			"ui.mac", settings.UI.Mac,
+		)
+		if settings.UI.Mac != nil && settings.UI.Mac.Notifications != nil {
+			s.logger.Info("Config save: Settings notifications",
+				"native_enabled", settings.UI.Mac.Notifications.NativeEnabled,
+			)
+		}
 	}
 
 	// Save settings to disk
@@ -245,13 +266,14 @@ func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 // On macOS, the password is stored in the Keychain and omitted from settings.json.
 // On other platforms, the password is stored in settings.json.
 func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, error) {
-	// Build new ACP servers (including per-server prompts)
+	// Build new ACP servers (without per-server prompts - those come from files only)
 	newACPServers := make([]configPkg.ACPServerSettings, len(req.ACPServers))
 	for i, srv := range req.ACPServers {
 		newACPServers[i] = configPkg.ACPServerSettings{
 			Name:    srv.Name,
 			Command: srv.Command,
-			Prompts: srv.Prompts,
+			// Per-server prompts are no longer saved to settings.json
+			// They are managed via prompt files with acps: field
 		}
 	}
 

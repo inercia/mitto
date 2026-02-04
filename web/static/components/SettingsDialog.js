@@ -37,44 +37,17 @@ import {
 
 /**
  * Helper component for editing a server inline
+ * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
 function ServerEditForm({ server, onSave, onCancel }) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
-  // Separate file-based prompts (read-only) from settings-based prompts (editable)
-  const allPrompts = server.prompts || [];
-  const filePrompts = allPrompts.filter((p) => p.source === "file");
-  const [settingsPrompts, setSettingsPrompts] = useState(
-    allPrompts.filter((p) => p.source !== "file"),
-  );
-  const [showAddPrompt, setShowAddPrompt] = useState(false);
-  const [newPromptName, setNewPromptName] = useState("");
-  const [newPromptText, setNewPromptText] = useState("");
+  // All prompts are now file-based (read-only)
+  const filePrompts = server.prompts || [];
 
-  const addPrompt = () => {
-    if (newPromptName.trim() && newPromptText.trim()) {
-      setSettingsPrompts([
-        ...settingsPrompts,
-        { name: newPromptName.trim(), prompt: newPromptText.trim() },
-      ]);
-      setNewPromptName("");
-      setNewPromptText("");
-      setShowAddPrompt(false);
-    }
-  };
-
-  const removePrompt = (index) => {
-    setSettingsPrompts(settingsPrompts.filter((_, i) => i !== index));
-  };
-
-  // When saving, only pass settings-based prompts (file-based are read-only)
   const handleSave = () => {
-    // Remove source field from prompts before saving
-    const promptsToSave = settingsPrompts.map(({ source, ...rest }) => rest);
-    onSave(name, command, promptsToSave);
+    onSave(name, command);
   };
-
-  const hasPrompts = filePrompts.length > 0 || settingsPrompts.length > 0;
 
   return html`
     <div class="space-y-3">
@@ -97,126 +70,37 @@ function ServerEditForm({ server, onSave, onCancel }) {
         />
       </div>
 
-      <!-- Server-specific prompts -->
-      <div>
-        <div class="flex items-center justify-between mb-2">
-          <label class="text-sm text-gray-400">Server-specific prompts</label>
-          <button
-            type="button"
-            onClick=${() => setShowAddPrompt(!showAddPrompt)}
-            class="p-1 hover:bg-slate-600 rounded transition-colors ${showAddPrompt
-              ? "bg-slate-600"
-              : ""}"
-            title="Add prompt"
+      <!-- Server-specific prompts (read-only, from files with acps: field) -->
+      ${filePrompts.length > 0 &&
+      html`
+        <div>
+          <label class="text-sm text-gray-400 mb-2 block"
+            >Server-specific prompts
+            <span class="text-xs text-gray-500">(from prompt files)</span></label
           >
-            <${PlusIcon} className="w-4 h-4" />
-          </button>
-        </div>
-
-        ${showAddPrompt &&
-        html`
-          <div class="p-2 bg-slate-800 rounded-lg mb-2 space-y-2">
-            <input
-              type="text"
-              placeholder="Button label"
-              value=${newPromptName}
-              onInput=${(e) => setNewPromptName(e.target.value)}
-              class="w-full px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <textarea
-              placeholder="Prompt text"
-              value=${newPromptText}
-              onInput=${(e) => setNewPromptText(e.target.value)}
-              rows="2"
-              class="w-full px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-            />
-            <div class="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick=${() => {
-                  setShowAddPrompt(false);
-                  setNewPromptName("");
-                  setNewPromptText("");
-                }}
-                class="px-2 py-1 text-xs hover:bg-slate-700 rounded transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick=${addPrompt}
-                disabled=${!newPromptName.trim() || !newPromptText.trim()}
-                class="px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded transition-colors disabled:opacity-50"
-              >
-                Add
-              </button>
-            </div>
+          <div class="space-y-1">
+            ${filePrompts.map(
+              (p, idx) => html`
+                <div
+                  key=${idx}
+                  class="flex items-center gap-2 p-2 bg-slate-800/50 rounded text-sm border border-slate-700/50"
+                  title="From prompts file with acps: ${server.name}"
+                >
+                  <div class="flex-1 min-w-0">
+                    <div class="font-medium text-xs">${p.name}</div>
+                    <div
+                      class="text-xs text-gray-500 truncate"
+                      title=${p.prompt}
+                    >
+                      ${p.description || p.prompt}
+                    </div>
+                  </div>
+                </div>
+              `,
+            )}
           </div>
-        `}
-        ${!hasPrompts
-          ? html`
-              <div class="text-xs text-gray-500 italic">
-                No server-specific prompts
-              </div>
-            `
-          : html`
-              <div class="space-y-1">
-                <!-- File-based prompts (read-only) -->
-                ${filePrompts.map(
-                  (p, idx) => html`
-                    <div
-                      key=${"file-" + idx}
-                      class="flex items-center gap-2 p-2 bg-slate-800/50 rounded text-sm border border-slate-700/50"
-                      title="From prompts file (read-only)"
-                    >
-                      <div class="flex-1 min-w-0">
-                        <div class="font-medium text-xs flex items-center gap-1">
-                          ${p.name}
-                          <span
-                            class="text-[10px] px-1 py-0.5 bg-slate-600/50 text-gray-400 rounded"
-                            >file</span
-                          >
-                        </div>
-                        <div
-                          class="text-xs text-gray-500 truncate"
-                          title=${p.prompt}
-                        >
-                          ${p.description || p.prompt}
-                        </div>
-                      </div>
-                    </div>
-                  `,
-                )}
-                <!-- Settings-based prompts (editable) -->
-                ${settingsPrompts.map(
-                  (p, idx) => html`
-                    <div
-                      key=${"settings-" + idx}
-                      class="flex items-center gap-2 p-2 bg-slate-800 rounded text-sm group"
-                    >
-                      <div class="flex-1 min-w-0">
-                        <div class="font-medium text-xs">${p.name}</div>
-                        <div
-                          class="text-xs text-gray-500 truncate"
-                          title=${p.prompt}
-                        >
-                          ${p.prompt}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick=${() => removePrompt(idx)}
-                        class="p-1 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors opacity-0 group-hover:opacity-100"
-                        title="Remove"
-                      >
-                        <${CloseIcon} className="w-3 h-3" />
-                      </button>
-                    </div>
-                  `,
-                )}
-              </div>
-            `}
-      </div>
+        </div>
+      `}
 
       <div class="flex justify-end gap-2">
         <button
@@ -361,6 +245,7 @@ export function SettingsDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [warning, setWarning] = useState("");
 
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
@@ -402,6 +287,9 @@ export function SettingsDialog({
 
   // UI settings state (macOS only)
   const [agentCompletedSound, setAgentCompletedSound] = useState(false);
+  const [nativeNotifications, setNativeNotifications] = useState(false);
+  const [notificationPermissionStatus, setNotificationPermissionStatus] =
+    useState(-1); // -1 = unknown, 0 = not determined, 1 = denied, 2 = authorized
   const [showInAllSpaces, setShowInAllSpaces] = useState(false);
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [loginItemSupported, setLoginItemSupported] = useState(false);
@@ -441,6 +329,7 @@ export function SettingsDialog({
     if (isOpen) {
       // Clear any previous messages when dialog opens
       setError("");
+      setWarning("");
       setSuccess("");
       loadConfig();
       loadStoredSessions();
@@ -631,7 +520,16 @@ export function SettingsDialog({
       setAgentCompletedSound(
         config.ui?.mac?.notifications?.sounds?.agent_completed || false,
       );
+      setNativeNotifications(
+        config.ui?.mac?.notifications?.native_enabled || false,
+      );
       setShowInAllSpaces(config.ui?.mac?.show_in_all_spaces || false);
+
+      // Load notification permission status (macOS only) - used to show warning if denied
+      if (typeof window.mittoGetNotificationPermissionStatus === "function") {
+        const status = await window.mittoGetNotificationPermissionStatus();
+        setNotificationPermissionStatus(status);
+      }
 
       // Load login item state from native API (macOS 13+ only)
       if (typeof window.mittoIsLoginItemSupported === "function") {
@@ -666,6 +564,7 @@ export function SettingsDialog({
 
   const handleSave = async () => {
     setError("");
+    setWarning("");
     setSuccess("");
 
     // Validation
@@ -740,6 +639,7 @@ export function SettingsDialog({
             sounds: {
               agent_completed: agentCompletedSound,
             },
+            native_enabled: nativeNotifications,
           },
           show_in_all_spaces: showInAllSpaces,
           start_at_login: startAtLogin,
@@ -760,14 +660,24 @@ export function SettingsDialog({
         .filter((p) => !p.source || p.source === "settings")
         .map(({ source, ...rest }) => rest); // Remove source field before saving
 
+      // ACP servers are saved without prompts (prompts come from files with acps: field)
+      const acpServersToSave = acpServers.map((srv) => ({
+        name: srv.name,
+        command: srv.command,
+      }));
+
       const config = {
         workspaces: workspaces,
-        acp_servers: acpServers,
+        acp_servers: acpServersToSave,
         prompts: settingsPrompts, // Only settings-based prompts
         web: webConfig,
         ui: uiConfig,
         conversations: conversationsConfig,
       };
+
+      // DEBUG: Log config being saved
+      console.log("DEBUG: Saving config:", JSON.stringify(config.ui, null, 2));
+      console.log("DEBUG: nativeNotifications state:", nativeNotifications);
 
       const res = await secureFetch(apiUrl("/api/config"), {
         method: "POST",
@@ -781,9 +691,10 @@ export function SettingsDialog({
         throw new Error(result.error || "Failed to save configuration");
       }
 
-      // Update the global sound setting flag
+      // Update the global sound and notification setting flags
       if (isMacApp) {
         window.mittoAgentCompletedSoundEnabled = agentCompletedSound;
+        window.mittoNativeNotificationsEnabled = nativeNotifications;
       }
 
       // Apply login item setting via native API (macOS 13+ only)
@@ -834,9 +745,10 @@ export function SettingsDialog({
         }
       }
       setSuccess(successMsg);
+
       onSave?.();
 
-      // Always close dialog after short delay
+      // Close dialog after short delay
       setTimeout(() => onClose?.(), 500);
     } catch (err) {
       setError(err.message);
@@ -955,7 +867,7 @@ export function SettingsDialog({
     setError("");
   };
 
-  const updateServer = (oldName, newName, newCommand, serverPrompts = []) => {
+  const updateServer = (oldName, newName, newCommand) => {
     if (!newName.trim() || !newCommand.trim()) {
       setError("Server name and command cannot be empty");
       return;
@@ -970,14 +882,14 @@ export function SettingsDialog({
       return;
     }
 
-    // Update server (including prompts)
+    // Update server (prompts are now read-only from files)
     setAcpServers(
       acpServers.map((s) =>
         s.name === oldName
           ? {
               name: newName.trim(),
               command: newCommand.trim(),
-              prompts: serverPrompts,
+              prompts: s.prompts, // Preserve existing prompts (read-only from files)
             }
           : s,
       ),
@@ -1411,13 +1323,8 @@ export function SettingsDialog({
                                     ? html`
                                         <${ServerEditForm}
                                           server=${srv}
-                                          onSave=${(name, cmd, serverPrompts) =>
-                                            updateServer(
-                                              srv.name,
-                                              name,
-                                              cmd,
-                                              serverPrompts,
-                                            )}
+                                          onSave=${(name, cmd) =>
+                                            updateServer(srv.name, name, cmd)}
                                           onCancel=${() =>
                                             setEditingServer(null)}
                                         />
@@ -2006,6 +1913,34 @@ export function SettingsDialog({
                         >
                           <input
                             type="checkbox"
+                            checked=${nativeNotifications}
+                            onChange=${(e) => {
+                              // Simply save the preference - permission will be requested on app restart
+                              setNativeNotifications(e.target.checked);
+                            }}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                          />
+                          <div>
+                            <div class="font-medium text-sm">
+                              Native notifications
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Show notifications in macOS Notification Center
+                              (requires restart)
+                              ${notificationPermissionStatus === 1
+                                ? html`<span class="text-yellow-500 ml-1"
+                                    >(permission denied in System
+                                    Settings)</span
+                                  >`
+                                : ""}
+                            </div>
+                          </div>
+                        </label>
+                        <label
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
                             checked=${showInAllSpaces}
                             onChange=${(e) =>
                               setShowInAllSpaces(e.target.checked)}
@@ -2084,6 +2019,14 @@ export function SettingsDialog({
               class="mb-3 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
             >
               ${error}
+            </div>
+          `}
+          ${warning &&
+          html`
+            <div
+              class="mb-3 p-3 bg-yellow-500/20 border border-yellow-500/50 rounded-lg text-yellow-400 text-sm"
+            >
+              ${warning}
             </div>
           `}
           ${success &&
