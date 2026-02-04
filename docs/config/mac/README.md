@@ -14,13 +14,9 @@ The Mitto macOS app is a native application that embeds the web interface in a W
 ## Table of Contents
 
 - [Building](#building)
-- [Configuration](#configuration)
-- [Hotkeys](#hotkeys)
+- [Installation from GitHub Releases](#installation-from-github-releases)
 - [Window Behavior](#window-behavior)
-- [Start at Login](#start-at-login)
 - [Notifications](#notifications)
-- [Environment Variables](#environment-variables)
-- [Complete Example](#complete-example)
 
 ## Related Documentation
 
@@ -60,6 +56,47 @@ open Mitto.app
 cp -r Mitto.app /Applications/
 ```
 
+## Installation from GitHub Releases
+
+When downloading Mitto.app from GitHub Releases, macOS Gatekeeper will show a security
+warning because the app is not signed with an Apple Developer certificate.
+
+### First Launch Warning
+
+On first launch, you'll see a dialog saying:
+
+> "Mitto" cannot be opened because it is from an unidentified developer.
+
+### How to Open the App
+
+**Option 1: Right-click to Open (Recommended)**
+
+1. Right-click (or Control-click) on `Mitto.app`
+2. Select **Open** from the context menu
+3. Click **Open** in the dialog that appears
+
+This only needs to be done once. After that, you can open the app normally.
+
+**Option 2: System Settings**
+
+1. Try to open `Mitto.app` (it will be blocked)
+2. Open **System Settings** → **Privacy & Security**
+3. Scroll down to find the message about Mitto being blocked
+4. Click **Open Anyway**
+5. Enter your password if prompted
+
+### Why This Happens
+
+The Mitto macOS app is **ad-hoc signed** with entitlements (required for
+features like native notifications), but it's not signed with an Apple
+Developer ID certificate. This means:
+
+- ✅ All features work correctly (notifications, hotkeys, etc.)
+- ✅ The app is safe to run
+- ⚠️ macOS Gatekeeper shows a warning on first launch
+
+Proper code signing with an Apple Developer ID ($99/year) would eliminate this warning, but is not currently implemented.
+
 ## How It Works
 
 The macOS app:
@@ -72,43 +109,7 @@ The macOS app:
 
 This reuses 100% of the web interface code while providing native macOS integration.
 
-## Configuration
-
-macOS settings are configured under the `ui.mac` section:
-
-```yaml
-ui:
-  mac:
-    hotkeys:
-      show_hide:
-        enabled: true
-        key: "cmd+ctrl+m"
-    notifications:
-      sounds:
-        agent_completed: true
-```
-
-## Hotkeys
-
-The macOS app supports two types of hotkeys:
-
-1. **Global hotkeys** - Work even when the app is not focused (configurable)
-2. **Menu hotkeys** - Standard macOS menu shortcuts (fixed)
-
 ### Global Hotkeys
-
-#### Show/Hide Hotkey
-
-Toggle the app window visibility with a global hotkey:
-
-```yaml
-ui:
-  mac:
-    hotkeys:
-      show_hide:
-        enabled: true # Enable/disable the hotkey (default: true)
-        key: "cmd+ctrl+m" # Hotkey combination (default: cmd+ctrl+m)
-```
 
 **Supported modifiers:**
 
@@ -130,16 +131,6 @@ ui:
 key: "cmd+shift+m"      # Default
 key: "ctrl+alt+space"   # Alternative
 key: "cmd+shift+."      # Using period
-```
-
-To disable the hotkey:
-
-```yaml
-ui:
-  mac:
-    hotkeys:
-      show_hide:
-        enabled: false
 ```
 
 ### Menu Hotkeys
@@ -182,40 +173,6 @@ You can also view these shortcuts in the app by clicking the keyboard icon in th
 
 ## Window Behavior
 
-### Show in All Spaces
-
-Make the Mitto window appear in all macOS Spaces (virtual desktops):
-
-```yaml
-ui:
-  mac:
-    show_in_all_spaces: true # Show window in all Spaces (default: false)
-```
-
-When enabled, the Mitto window will be visible regardless of which Space you're currently in. This is useful if you frequently switch between Spaces and want quick access to Mitto.
-
-> **Note:** This setting requires an app restart to take effect.
-
-You can also configure this through the Settings dialog:
-
-1. Open the Settings dialog (gear icon in sidebar)
-2. Click the **UI** tab (only visible in macOS app)
-3. Toggle **Show in All Spaces** under Window
-4. Click **Save Changes**
-5. Restart the app
-
-## Start at Login
-
-Launch Mitto automatically when you log in to your Mac:
-
-```yaml
-ui:
-  mac:
-    start_at_login: true # Launch Mitto at login (default: false)
-```
-
-When enabled, Mitto will start automatically after you log in to your Mac. The app creates a LaunchAgent at `~/Library/LaunchAgents/io.mitto.app.plist` to manage this.
-
 ### Configuring via Settings Dialog
 
 1. Open the Settings dialog (gear icon in sidebar)
@@ -229,29 +186,18 @@ The setting takes effect immediately—no restart required.
 
 Configure notification behavior for the macOS app.
 
-### Sounds
+### Native Notifications
 
-#### Agent Completed Sound
+Display notifications in the macOS Notification Center instead of in-app toasts. When enabled:
 
-Play a notification sound when the AI agent finishes its response:
+- Notifications appear in the top-right corner of the screen (Notification Center)
+- Notifications are visible even when the app is in the background
+- Clicking a notification brings the app to the foreground and switches to that session
+- Notifications are grouped by session
+- **Auto-dismiss**: Notifications automatically disappear after 5 seconds to keep Notification Center clean
+- **Auto-cleanup**: Notifications are removed when you switch to that session
 
-```yaml
-ui:
-  mac:
-    notifications:
-      sounds:
-        agent_completed: true # Play sound when agent finishes (default: false)
-```
-
-When enabled, a pleasant two-tone chime plays whenever:
-
-- The agent completes a response in the active session
-- A background session finishes processing
-
-This is useful when:
-
-- Running long-running tasks where you want to be notified when complete
-- Working in another application while waiting for the agent
+**Note:** The first time you enable this, macOS will prompt you to allow notifications. If you deny the permission, you can enable it later in System Settings → Notifications → Mitto.
 
 ### Configuring via Settings Dialog
 
@@ -259,49 +205,9 @@ You can also configure these settings through the UI:
 
 1. Open the Settings dialog (gear icon in sidebar)
 2. Click the **UI** tab (only visible in macOS app)
-3. Toggle **Agent Completed** under Notifications → Sounds
-4. Click **Save Changes**
-
-## Environment Variables
-
-Override settings when launching:
-
-```bash
-# Use a specific ACP server
-MITTO_ACP_SERVER=claude-code open Mitto.app
-
-# Use a specific working directory
-MITTO_WORK_DIR=/path/to/project open Mitto.app
-
-# Custom global hotkey
-MITTO_HOTKEY="ctrl+shift+space" open Mitto.app
-
-# Disable global hotkey
-MITTO_HOTKEY=disabled open Mitto.app
-```
-
-## Complete Example
-
-```yaml
-ui:
-  mac:
-    # Global hotkeys
-    hotkeys:
-      show_hide:
-        enabled: true
-        key: "cmd+shift+m"
-
-    # Window behavior
-    show_in_all_spaces: true # Requires app restart
-
-    # Login item
-    start_at_login: true # Launch at login
-
-    # Notification settings
-    notifications:
-      sounds:
-        agent_completed: true
-```
+3. Toggle **Native notifications** to use macOS Notification Center
+4. Toggle **Play sound when agent completes** for audio feedback
+5. Click **Save Changes**
 
 ## JSON Format
 
@@ -320,6 +226,7 @@ When using `settings.json`:
       "show_in_all_spaces": true,
       "start_at_login": true,
       "notifications": {
+        "native_enabled": true,
         "sounds": {
           "agent_completed": true
         }
