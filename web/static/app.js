@@ -1274,7 +1274,7 @@ function App() {
   // Ref to track toast hide timer
   const toastTimerRef = useRef(null);
 
-  // Show toast when a background session completes
+  // Show toast and native notification when a background session completes
   useEffect(() => {
     if (backgroundCompletion) {
       // Clear any existing timer
@@ -1282,6 +1282,21 @@ function App() {
         clearTimeout(toastTimerRef.current);
       }
 
+      // Check if native notifications are enabled (macOS app only)
+      const useNativeNotification =
+        window.mittoNativeNotificationsEnabled &&
+        typeof window.mittoShowNativeNotification === "function";
+
+      if (useNativeNotification) {
+        // Show native macOS notification
+        window.mittoShowNativeNotification(
+          backgroundCompletion.sessionName || "Conversation",
+          "Agent completed",
+          backgroundCompletion.sessionId,
+        );
+      }
+
+      // Always show in-app toast (in addition to native notification if enabled)
       setToastData(backgroundCompletion);
       setToastVisible(true);
       clearBackgroundCompletion();
@@ -1312,6 +1327,17 @@ function App() {
       }
     };
   }, []);
+
+  // Remove native notifications for the active session when switching to it
+  // This prevents stale notifications from lingering in Notification Center
+  useEffect(() => {
+    if (
+      activeSessionId &&
+      typeof window.mittoRemoveNotificationsForSession === "function"
+    ) {
+      window.mittoRemoveNotificationsForSession(activeSessionId);
+    }
+  }, [activeSessionId]);
 
   // Get the current draft for the active session (null key = no session)
   const currentDraft = sessionDrafts[activeSessionId ?? "__no_session__"] || "";
@@ -1548,6 +1574,10 @@ function App() {
         if (config?.ui?.mac?.notifications?.sounds?.agent_completed) {
           setAgentCompletedSoundEnabled(true);
           window.mittoAgentCompletedSoundEnabled = true;
+        }
+        // Load native notifications setting (macOS only)
+        if (config?.ui?.mac?.notifications?.native_enabled) {
+          window.mittoNativeNotificationsEnabled = true;
         }
         // Check if ACP servers or workspaces are configured - if not, force open settings
         // Skip this if config is read-only (user manages config via file)
@@ -2044,6 +2074,13 @@ function App() {
       navigateToPreviousSession();
     };
 
+    // Switch to Session - called from native notification tap
+    window.mittoSwitchToSession = (sessionId) => {
+      if (sessionId) {
+        switchSession(sessionId);
+      }
+    };
+
     // Cleanup on unmount
     return () => {
       delete window.mittoNewConversation;
@@ -2053,6 +2090,7 @@ function App() {
       delete window.mittoCloseConversation;
       delete window.mittoNextConversation;
       delete window.mittoPrevConversation;
+      delete window.mittoSwitchToSession;
     };
   }, [
     newSession,
@@ -2066,6 +2104,7 @@ function App() {
     configReadonly,
     navigateToNextSession,
     navigateToPreviousSession,
+    switchSession,
   ]);
 
   const handleNewSession = async () => {

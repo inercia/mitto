@@ -566,6 +566,8 @@ export function useWebSocket() {
           "agent_message received:",
           sessionId,
           msg.data.html?.substring(0, 50) + "...",
+          "is_prompting:",
+          msg.data.is_prompting,
         );
         setSessions((prev) => {
           const session = prev[sessionId];
@@ -590,9 +592,13 @@ export function useWebSocket() {
             });
             messages = limitMessages(messages);
           }
+          // Only set isStreaming if is_prompting is true (agent is responding to a user prompt).
+          // This prevents unsolicited agent messages (e.g., "indexing workspace" notifications)
+          // from showing the Stop button.
+          const isPrompting = msg.data.is_prompting ?? true; // Default to true for backward compat
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: true },
+            [sessionId]: { ...session, messages, isStreaming: isPrompting },
           };
         });
         break;
@@ -617,10 +623,11 @@ export function useWebSocket() {
             });
             messages = limitMessages(messages);
           }
-          // Agent thoughts indicate the agent is still working
+          // Only set isStreaming if is_prompting is true (agent is responding to a user prompt)
+          const isPrompting = msg.data.is_prompting ?? true;
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: true },
+            [sessionId]: { ...session, messages, isStreaming: isPrompting },
           };
         });
         break;
@@ -639,10 +646,11 @@ export function useWebSocket() {
               timestamp: Date.now(),
             },
           ]);
-          // Tool calls indicate the agent is still working
+          // Only set isStreaming if is_prompting is true (agent is responding to a user prompt)
+          const isPrompting = msg.data.is_prompting ?? true;
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: true },
+            [sessionId]: { ...session, messages, isStreaming: isPrompting },
           };
         });
         break;
@@ -658,10 +666,11 @@ export function useWebSocket() {
           if (idx >= 0 && msg.data.status) {
             messages[idx] = { ...messages[idx], status: msg.data.status };
           }
-          // Tool updates indicate the agent is still working
+          // Only set isStreaming if is_prompting is true (agent is responding to a user prompt)
+          const isPrompting = msg.data.is_prompting ?? true;
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: true },
+            [sessionId]: { ...session, messages, isStreaming: isPrompting },
           };
         });
         break;
@@ -786,6 +795,29 @@ export function useWebSocket() {
         );
         break;
 
+      case "session_reset":
+        // Session was forcefully reset due to unresponsive agent
+        console.log("Session forcefully reset:", sessionId);
+        // The server also sends prompt_complete, so isStreaming will be reset
+        // Add a system message to inform the user
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          const messages = limitMessages([
+            ...session.messages,
+            {
+              role: ROLE_ERROR,
+              text: "Session was forcefully reset due to unresponsive agent.",
+              timestamp: Date.now(),
+            },
+          ]);
+          return {
+            ...prev,
+            [sessionId]: { ...session, messages, isStreaming: false },
+          };
+        });
+        break;
+
       case "session_sync": {
         // Handle incremental sync response
         // IMPORTANT: This can be called on reconnection after streaming messages were already
@@ -867,13 +899,35 @@ export function useWebSocket() {
       case "user_prompt": {
         // Broadcast notification that a user prompt was sent
         // This is sent to ALL connected clients for multi-browser sync
-        const { is_mine, prompt_id, message, image_ids, sender_id } = msg.data;
+        const {
+          is_mine,
+          prompt_id,
+          message,
+          image_ids,
+          sender_id,
+          is_prompting,
+        } = msg.data;
         console.log("user_prompt received:", {
           is_mine,
           prompt_id,
           sender_id,
+          is_prompting,
           message: message?.substring(0, 50),
         });
+
+        // Set isStreaming = true immediately when a prompt is sent
+        // This shows the Stop button right away, not waiting for agent response
+        if (is_prompting) {
+          setSessions((prev) => {
+            const session = prev[sessionId];
+            if (!session) return prev;
+            if (session.isStreaming) return prev; // Already streaming
+            return {
+              ...prev,
+              [sessionId]: { ...session, isStreaming: true },
+            };
+          });
+        }
 
         if (is_mine) {
           // This client sent the prompt - it's already in our UI
@@ -1745,6 +1799,13 @@ export function useWebSocket() {
     sendToSession(activeSessionId, { type: "cancel" });
   }, [activeSessionId, sendToSession]);
 
+  // Force reset a stuck session (when agent is unresponsive)
+  const forceReset = useCallback(() => {
+    if (!activeSessionId) return;
+    console.log("Force resetting session:", activeSessionId);
+    sendToSession(activeSessionId, { type: "force_reset" });
+  }, [activeSessionId, sendToSession]);
+
   // Retry pending prompts for a session (called on reconnect or visibility change)
   const retryPendingPrompts = useCallback(
     (sessionId) => {
@@ -2086,6 +2147,7 @@ export function useWebSocket() {
     messages,
     sendPrompt,
     cancelPrompt,
+    forceReset,
     newSession,
     switchSession,
     loadSession,
