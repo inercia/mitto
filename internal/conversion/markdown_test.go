@@ -308,3 +308,112 @@ func TestDefaultConverter(t *testing.T) {
 		t.Errorf("Expected <strong> tag, got: %s", result)
 	}
 }
+
+// TestIsTableSeparator tests table separator detection.
+func TestIsTableSeparator(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"|---|---|", true},
+		{"|------|-------|----------|", true},
+		{"| --- | --- |", true},
+		{"|:---|:---:|---:|", true},
+		{"| cell |", false},
+		{"text", false},
+		{"|---|---|  |", true}, // Extra column (malformed but still a separator)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := IsTableSeparator(tt.input)
+			if result != tt.expected {
+				t.Errorf("IsTableSeparator(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestCountTableColumns tests column counting.
+func TestCountTableColumns(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int
+	}{
+		{"| a | b | c |", 3},
+		{"| a | b |", 2},
+		{"|---|---|", 2},
+		{"|------|-------|----------|", 3},
+		{"|------|-------|----------|  |", 4}, // Extra empty column
+		{"| File | Issue | Severity", 3},      // No trailing pipe
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := countTableColumns(tt.input)
+			if result != tt.expected {
+				t.Errorf("countTableColumns(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestNormalizeTableMarkdown tests table normalization.
+func TestNormalizeTableMarkdown(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "well-formed table unchanged",
+			input:    "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |",
+			expected: "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |",
+		},
+		{
+			name:     "extra column in separator fixed",
+			input:    "| File | Issue | Severity\n|------|-------|----------|  |\n| f1 | i1 | Low |",
+			expected: "| File | Issue | Severity\n|------|-------|----------|\n| f1 | i1 | Low |",
+		},
+		{
+			name:     "no table unchanged",
+			input:    "Just some text\nwith multiple lines",
+			expected: "Just some text\nwith multiple lines",
+		},
+		{
+			name:     "separator without header unchanged",
+			input:    "|---|---|---|\n| 1 | 2 | 3 |",
+			expected: "|---|---|---|\n| 1 | 2 | 3 |",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := NormalizeTableMarkdown(tt.input)
+			if result != tt.expected {
+				t.Errorf("NormalizeTableMarkdown:\ninput:    %q\nexpected: %q\ngot:      %q", tt.input, tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestConverter_MalformedTable tests that malformed tables are now rendered correctly.
+func TestConverter_MalformedTable(t *testing.T) {
+	converter := NewConverter()
+
+	// This is the exact case from the bug report - extra | at end of separator
+	input := "| File | Issue | Severity\n|------|-------|----------|  |\n| file1 | issue1 | Low |"
+
+	result, err := converter.Convert(input)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	// Should render as a table, not a paragraph
+	if !strings.Contains(result, "<table>") {
+		t.Errorf("Expected <table> tag, got: %s", result)
+	}
+	if strings.Contains(result, "|---") {
+		t.Errorf("Raw markdown separator should not appear in output: %s", result)
+	}
+}

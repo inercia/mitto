@@ -82,7 +82,7 @@ func (mb *MarkdownBuffer) Write(chunk string) {
 				if conversion.IsTableRow(line) {
 					mb.inTable = true
 				} else if mb.inTable && strings.TrimSpace(line) == "" {
-					// Empty line or non-table line ends a table
+					// Empty line ends a table
 					mb.inTable = false
 				}
 
@@ -154,10 +154,35 @@ func (mb *MarkdownBuffer) endsWithCompleteLine() bool {
 }
 
 // Flush converts buffered content to HTML and sends it.
+// This is a "force flush" that ignores table/list/code block state.
+// Use SafeFlush() for event interleaving that respects markdown boundaries.
 func (mb *MarkdownBuffer) Flush() {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 	mb.flushLocked()
+}
+
+// SafeFlush flushes buffered content only if it's safe to do so.
+// It will NOT flush if we're in the middle of a table, list, or code block
+// to avoid rendering incomplete markdown structures.
+// Returns true if content was flushed, false if flush was skipped.
+func (mb *MarkdownBuffer) SafeFlush() bool {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	// Don't flush if we're in the middle of a structured block
+	if mb.inCodeBlock || mb.inList || mb.inTable {
+		return false
+	}
+
+	// Don't flush incomplete lines or unmatched formatting
+	content := mb.buffer.String()
+	if !mb.endsWithCompleteLine() || conversion.HasUnmatchedInlineFormatting(content) {
+		return false
+	}
+
+	mb.flushLocked()
+	return true
 }
 
 // flushLocked performs the flush (must be called with lock held).

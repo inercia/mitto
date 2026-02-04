@@ -592,3 +592,199 @@ func TestMarkdownBuffer_InlineCodeNoSplit(t *testing.T) {
 		t.Errorf("expected backticks to be converted to HTML, but found literal backticks in: %s", html)
 	}
 }
+
+func TestMarkdownBuffer_SafeFlush_InTable(t *testing.T) {
+	var results []string
+	var mu sync.Mutex
+
+	buffer := NewMarkdownBuffer(func(html string) {
+		mu.Lock()
+		results = append(results, html)
+		mu.Unlock()
+	})
+
+	// Write table header
+	buffer.Write("| File | Issue | Severity |\n")
+
+	// Try SafeFlush while in table - should NOT flush
+	flushed := buffer.SafeFlush()
+	if flushed {
+		t.Error("SafeFlush should return false while in table")
+	}
+
+	mu.Lock()
+	if len(results) > 0 {
+		t.Error("SafeFlush should not have flushed while in table")
+	}
+	mu.Unlock()
+
+	// Write separator and data
+	buffer.Write("|------|-------|----------|\n")
+	buffer.Write("| auth.go | Missing check | High |\n")
+
+	// Still in table (no empty line yet)
+	flushed = buffer.SafeFlush()
+	if flushed {
+		t.Error("SafeFlush should return false while still in table")
+	}
+
+	// End table with empty line - this triggers auto-flush due to double newline
+	buffer.Write("\n")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// The auto-flush should have happened
+	if len(results) == 0 {
+		t.Error("Expected at least one flush result from auto-flush on double newline")
+		return
+	}
+
+	html := strings.Join(results, "")
+	if !strings.Contains(html, "<table>") {
+		t.Errorf("Expected table HTML, got: %s", html)
+	}
+}
+
+func TestMarkdownBuffer_SafeFlush_InCodeBlock(t *testing.T) {
+	var results []string
+	var mu sync.Mutex
+
+	buffer := NewMarkdownBuffer(func(html string) {
+		mu.Lock()
+		results = append(results, html)
+		mu.Unlock()
+	})
+
+	// Write code block start
+	buffer.Write("```go\n")
+	buffer.Write("func main() {\n")
+
+	// Try SafeFlush while in code block - should NOT flush
+	flushed := buffer.SafeFlush()
+	if flushed {
+		t.Error("SafeFlush should return false while in code block")
+	}
+
+	mu.Lock()
+	if len(results) > 0 {
+		t.Error("SafeFlush should not have flushed while in code block")
+	}
+	mu.Unlock()
+
+	// Write code block end - this triggers auto-flush
+	buffer.Write("}\n")
+	buffer.Write("```\n")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// The auto-flush should have happened after code block end
+	if len(results) == 0 {
+		t.Error("Expected at least one flush result after code block end")
+		return
+	}
+
+	html := strings.Join(results, "")
+	if !strings.Contains(html, "<code>") && !strings.Contains(html, "<pre>") {
+		t.Errorf("Expected code HTML, got: %s", html)
+	}
+}
+
+func TestMarkdownBuffer_SafeFlush_InList(t *testing.T) {
+	var results []string
+	var mu sync.Mutex
+
+	buffer := NewMarkdownBuffer(func(html string) {
+		mu.Lock()
+		results = append(results, html)
+		mu.Unlock()
+	})
+
+	// Write list items
+	buffer.Write("- Item 1\n")
+
+	// Try SafeFlush while in list - should NOT flush
+	flushed := buffer.SafeFlush()
+	if flushed {
+		t.Error("SafeFlush should return false while in list")
+	}
+
+	mu.Lock()
+	if len(results) > 0 {
+		t.Error("SafeFlush should not have flushed while in list")
+	}
+	mu.Unlock()
+
+	// Add more items
+	buffer.Write("- Item 2\n")
+
+	// Still in list
+	flushed = buffer.SafeFlush()
+	if flushed {
+		t.Error("SafeFlush should return false while still in list")
+	}
+
+	// End list with empty line - triggers auto-flush
+	buffer.Write("\n")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// The auto-flush should have happened
+	if len(results) == 0 {
+		t.Error("Expected at least one flush result after list ends")
+		return
+	}
+
+	html := strings.Join(results, "")
+	if !strings.Contains(html, "<li>") || !strings.Contains(html, "<ul>") {
+		t.Errorf("Expected list HTML, got: %s", html)
+	}
+}
+
+func TestMarkdownBuffer_ToolCallDoesNotSplitTable(t *testing.T) {
+	// Simulates the real scenario: table is streaming, then a tool call happens
+	var results []string
+	var mu sync.Mutex
+
+	buffer := NewMarkdownBuffer(func(html string) {
+		mu.Lock()
+		results = append(results, html)
+		mu.Unlock()
+	})
+
+	// Simulate table streaming
+	buffer.Write("| File | Issue | Severity |\n")
+	buffer.Write("|------|-------|----------|\n")
+
+	// Simulate tool call event - using SafeFlush (what WebClient does now)
+	flushed := buffer.SafeFlush()
+	if flushed {
+		t.Error("SafeFlush during table should return false")
+	}
+
+	// Continue table
+	buffer.Write("| auth.go | Missing | High |\n")
+	buffer.Write("\n") // End of table
+
+	// Final flush
+	buffer.Flush()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Concatenate all results
+	html := strings.Join(results, "")
+
+	// Should have exactly one <table> - not split
+	tableCount := strings.Count(html, "<table>")
+	if tableCount != 1 {
+		t.Errorf("Expected exactly 1 <table> (not split), got %d in: %s", tableCount, html)
+	}
+
+	// Should not have raw pipes visible (would indicate broken table)
+	if strings.Contains(html, "| File |") || strings.Contains(html, "|------|") {
+		t.Errorf("Table was not rendered correctly - raw markdown visible: %s", html)
+	}
+}

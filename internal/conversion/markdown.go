@@ -101,6 +101,9 @@ func CreateSanitizer() *bluemonday.Policy {
 
 // Convert converts markdown text to HTML.
 func (c *Converter) Convert(markdown string) (string, error) {
+	// Normalize table markdown to fix common formatting issues
+	markdown = NormalizeTableMarkdown(markdown)
+
 	var buf bytes.Buffer
 	if err := c.md.Convert([]byte(markdown), &buf); err != nil {
 		return "", err
@@ -158,6 +161,86 @@ func IsListItem(line string) bool {
 // IsTableRow returns true if the line is a table row.
 func IsTableRow(line string) bool {
 	return tableRowPattern.MatchString(line)
+}
+
+// tableSeparatorPattern matches table separator lines (e.g., |---|---|).
+var tableSeparatorPattern = regexp.MustCompile(`^\s*\|[\s\-:|]+\|[\s\-:|]*$`)
+
+// IsTableSeparator returns true if the line is a table separator line.
+func IsTableSeparator(line string) bool {
+	return tableSeparatorPattern.MatchString(line)
+}
+
+// NormalizeTableMarkdown fixes common table formatting issues that prevent proper rendering.
+// It ensures separator lines have the correct number of columns to match the header.
+func NormalizeTableMarkdown(content string) string {
+	lines := strings.Split(content, "\n")
+	result := make([]string, 0, len(lines))
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+
+		// Check if this is a table separator line
+		if IsTableSeparator(line) && i > 0 {
+			// Get the header line (previous line)
+			headerLine := lines[i-1]
+			if IsTableRow(headerLine) {
+				// Count columns in header
+				headerCols := countTableColumns(headerLine)
+				// Count columns in separator
+				sepCols := countTableColumns(line)
+
+				// If separator has more columns than header, fix it
+				if sepCols > headerCols && headerCols > 0 {
+					line = fixTableSeparator(line, headerCols)
+				}
+			}
+		}
+
+		result = append(result, line)
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// countTableColumns counts the number of columns in a table row.
+func countTableColumns(line string) int {
+	// Remove leading/trailing whitespace
+	line = strings.TrimSpace(line)
+
+	// Remove leading and trailing pipes if present
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
+
+	// Count remaining pipes + 1 = number of columns
+	return strings.Count(line, "|") + 1
+}
+
+// fixTableSeparator adjusts a table separator to have the specified number of columns.
+func fixTableSeparator(line string, targetCols int) string {
+	// Remove leading/trailing whitespace
+	line = strings.TrimSpace(line)
+
+	// Split by pipe
+	parts := strings.Split(line, "|")
+
+	// Filter out empty parts at the beginning and end
+	var cells []string
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		// Keep separator cells (contain dashes)
+		if strings.Contains(trimmed, "-") {
+			cells = append(cells, trimmed)
+		}
+	}
+
+	// If we have more cells than needed, truncate
+	if len(cells) > targetCols {
+		cells = cells[:targetCols]
+	}
+
+	// Rebuild the separator line
+	return "|" + strings.Join(cells, "|") + "|"
 }
 
 // HasUnmatchedInlineFormatting checks if the content has unmatched inline formatting markers.

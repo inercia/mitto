@@ -80,8 +80,10 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		}
 
 	case u.AgentThoughtChunk != nil:
-		// Flush any buffered message before thought to maintain event order
-		c.mdBuffer.Flush()
+		// Try to flush any buffered message before thought to maintain event order.
+		// Use SafeFlush to avoid breaking tables/lists/code blocks - if we're in
+		// the middle of one, the thought will appear after the structure completes.
+		c.mdBuffer.SafeFlush()
 		// Thoughts are sent as-is (not markdown)
 		thought := u.AgentThoughtChunk.Content
 		if thought.Text != nil && c.onAgentThought != nil {
@@ -89,10 +91,10 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		}
 
 	case u.ToolCall != nil:
-		// Flush any buffered message before tool call to maintain event order.
-		// Without this, all messages would be batched and sent at the end,
-		// appearing after all tool calls instead of interleaved.
-		c.mdBuffer.Flush()
+		// Try to flush any buffered message before tool call to maintain event order.
+		// Use SafeFlush to avoid breaking tables/lists/code blocks - if we're in
+		// the middle of one, the tool call will appear after the structure completes.
+		c.mdBuffer.SafeFlush()
 		if c.onToolCall != nil {
 			c.onToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, string(u.ToolCall.Status))
 		}
@@ -118,8 +120,9 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 
 // RequestPermission handles permission requests from the agent.
 func (c *WebClient) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	// Flush any pending markdown before showing permission dialog
-	c.mdBuffer.Flush()
+	// Try to flush any pending markdown before showing permission dialog.
+	// Use SafeFlush to avoid breaking tables/lists/code blocks.
+	c.mdBuffer.SafeFlush()
 
 	if c.autoApprove {
 		return c.autoApprovePermission(params)
