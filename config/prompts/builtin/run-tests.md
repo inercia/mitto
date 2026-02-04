@@ -15,9 +15,11 @@ Run the project's test suite and report results.
 ### 2. Analyze Results
 
 If tests pass:
+
 - Report success with a brief summary
 
 If tests fail:
+
 - For simple failures (typos, missing imports, obvious fixes):
   - Fix the issue immediately
   - Re-run the tests to verify the fix
@@ -39,6 +41,7 @@ Present a results table:
 ### 4. If Failures Remain
 
 For each unresolved failure:
+
 - **Test**: Name of the failing test
 - **Error**: The error message
 - **Cause**: Brief analysis of why it failed

@@ -12,4 +12,3 @@ Continue with the current task from where we left off.
 4. Report progress and what remains
 
 If blocked or unclear, ask for clarification before proceeding.
-

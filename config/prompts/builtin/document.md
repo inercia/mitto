@@ -15,9 +15,9 @@ Add documentation to the code we just wrote.
 5. **Examples**: Usage examples for public APIs
 
 ### Guidelines:
+
 - Explain WHY, not just WHAT (the code shows what)
 - Keep comments close to the code they describe
 - Update existing comments if code changed
 - Use the documentation style standard for this language/project
 - Don't state the obvious (avoid `// increment i` for `i++`)
-

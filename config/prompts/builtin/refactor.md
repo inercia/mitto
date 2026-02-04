@@ -4,7 +4,7 @@ description: "Refactor code for better quality"
 backgroundColor: "#C8E6C9"
 ---
 
-Refactor the current code for better quality.
+Refactor the current code for better quality and modularity.
 
 ### Focus areas:
 
@@ -16,11 +16,12 @@ Refactor the current code for better quality.
 6. **Idioms**: Follow language-specific best practices and conventions
 
 ### Process:
+
 - Make one type of change at a time
 - Run tests after each change to catch regressions
 - Preserve external behavior (this is refactoring, not rewriting)
 
 ### Document:
+
 - List each refactoring applied
 - Explain the benefit of each change
-

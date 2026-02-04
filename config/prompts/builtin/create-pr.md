@@ -9,19 +9,22 @@ Guide me through creating a pull request for the committed changes.
 ### 1. Prepare the Code
 
 **Format code:**
-- Identify and run the project's code formatters (e.g., `go fmt`, `prettier`, `black`, `rustfmt`)
-- Fix any formatting issues
+
+- If the code has been recently modified and you think it has not been formatted:
+  - Identify and run the project's code formatters (e.g., `go fmt`, `prettier`, `black`, `rustfmt`)
+  - fix any formatting issues by running the formatters.
 
 **Run tests:**
-- If tests were run recently in this session and no code changes have been made since, skip re-running
-- Otherwise, identify and run the project's test suite
-- If tests fail, report the failures and ask how to proceed
+
+- If tests were run recently in this session and no code changes have been made since, move to the next step
+- Otherwise, ask the user to run tests
 
 ### 2. Ensure Feature Branch
 
 Check the current branch: `git branch --show-current`
 
 **If on main/master:**
+
 1. Review the commits to understand the changes: `git log --oneline -5`
 2. Create a descriptive branch name based on the changes:
    - Use existing project conventions (e.g., `feature/`, `fix/`, `chore/` prefixes)
@@ -29,6 +32,7 @@ Check the current branch: `git branch --show-current`
 3. Create and switch to the new branch: `git checkout -b <branch-name>`
 
 **If already on a feature branch:**
+
 - Continue with the current branch
 
 ### 3. Sync with Upstream
@@ -53,12 +57,14 @@ git log --oneline origin/<base-branch>..HEAD
 ```
 
 **PR Title:**
+
 - Summarize the overall change in one line (50-72 chars ideal)
 - Use conventional commit style if the project follows it (e.g., `feat: add user authentication`)
 - Be specific: "Fix login validation error" not "Fix bug"
 - If multiple commits, describe the overall goal, not individual changes
 
 **PR Description:**
+
 Structure the description as:
 
 ```markdown
@@ -92,7 +98,7 @@ gh pr create --title "<approved-title>" --body "<approved-description>"
 
 After the PR is created, prominently display:
 
-```
+```console
 ✅ Pull Request Created Successfully!
 
 🔗 PR URL: <the-pr-url>
@@ -108,4 +114,3 @@ Also show how to view the PR in browser: `gh pr view --web`
 - Respect `.gitignore`
 - Never force push without explicit permission
 - Assume commits are already created (use "Create commits" prompt if needed first)
-
