@@ -166,6 +166,12 @@ func NewServer(config Config) (*Server, error) {
 		logger.Info("Cleaned up old images on startup", "removed_count", removed)
 	}
 
+	// Get API prefix early (needed by session manager for HTTP file links)
+	apiPrefix := configPkg.DefaultAPIPrefix
+	if config.MittoConfig != nil && config.MittoConfig.Web.APIPrefix != "" {
+		apiPrefix = config.MittoConfig.Web.APIPrefix
+	}
+
 	// Create session manager with workspace support
 	var sessionMgr *SessionManager
 	workspaces := config.Workspaces // Use direct field, not GetWorkspaces() which creates legacy workspace
@@ -177,10 +183,12 @@ func NewServer(config Config) (*Server, error) {
 			Logger:          logger,
 			FromCLI:         config.FromCLI,
 			OnWorkspaceSave: config.OnWorkspaceSave,
+			APIPrefix:       apiPrefix,
 		})
 	} else {
 		// Legacy single-workspace mode (CLI with no --dir flags and no saved workspaces)
 		sessionMgr = NewSessionManager(config.ACPCommand, config.ACPServer, config.AutoApprove, logger)
+		sessionMgr.SetAPIPrefix(apiPrefix)
 	}
 	sessionMgr.SetStore(store)
 
@@ -253,12 +261,6 @@ func NewServer(config Config) (*Server, error) {
 	// Initialize CSRF manager
 	csrfMgr := NewCSRFManager()
 
-	// Get API prefix from config (defaults to "/mitto")
-	apiPrefix := configPkg.DefaultAPIPrefix
-	if config.MittoConfig != nil && config.MittoConfig.Web.APIPrefix != "" {
-		apiPrefix = config.MittoConfig.Web.APIPrefix
-	}
-
 	// Set API prefix on auth manager for public path matching
 	if authMgr != nil {
 		authMgr.SetAPIPrefix(apiPrefix)
@@ -315,6 +317,11 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
+	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
+
+	// File server endpoint - serves files from workspace directories (for web browser access)
+	fileServer := NewFileServer(sessionMgr, logger)
+	mux.Handle(apiPrefix+"/api/files", fileServer)
 
 	// WebSocket endpoints - also use the API prefix
 	mux.HandleFunc(apiPrefix+"/api/events", s.handleGlobalEventsWS) // Global events (session lifecycle)
@@ -337,7 +344,14 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Serve static files with proper content types and security
-	mux.Handle("/", s.staticFileHandler(staticFS))
+	// Mount at both root (/) and API prefix (/mitto/) to support both local and proxied access
+	staticHandler := s.staticFileHandler(staticFS)
+	mux.Handle("/", staticHandler)
+	if apiPrefix != "" {
+		// Also serve static files under the API prefix for proxied access
+		// e.g., /mitto/viewer.html -> serves viewer.html from static files
+		mux.Handle(apiPrefix+"/", http.StripPrefix(apiPrefix, staticHandler))
+	}
 
 	// Wrap with auth middleware if enabled
 	var handler http.Handler = mux
