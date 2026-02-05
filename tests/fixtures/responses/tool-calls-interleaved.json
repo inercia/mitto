@@ -28,7 +28,7 @@
         },
         {
           "type": "agent_message",
-          "chunks": ["I found the issue in the file. ", "Let me fix it now."],
+          "chunks": ["I found the issue in the file. ", "Let me fix it now.\n"],
           "delay_ms": 50
         },
         {
