@@ -343,7 +343,7 @@ export function computeAllSessions(activeSessions, storedSessions) {
  * @returns {Array} Array of message objects for rendering (always in chronological order, oldest first)
  */
 export function convertEventsToMessages(events, options = {}) {
-  const { reverseInput = false } = options;
+  const { reverseInput = false, sessionId = null, apiPrefix = "" } = options;
 
   // If events are in reverse order (newest first), reverse them to chronological order
   const orderedEvents = reverseInput ? [...events].reverse() : events;
@@ -352,14 +352,27 @@ export function convertEventsToMessages(events, options = {}) {
   for (const event of orderedEvents) {
     const seq = event.seq || 0; // Include sequence number for tracking
     switch (event.type) {
-      case "user_prompt":
-        messages.push({
+      case "user_prompt": {
+        const message = {
           role: ROLE_USER,
           text: event.data?.message || event.data?.text || "",
           timestamp: new Date(event.timestamp).getTime(),
           seq,
-        });
+        };
+        // Convert stored image references to full image objects with URLs
+        // Image refs are stored as: [{id, name?, mime_type}]
+        // UI expects: [{id, url, name, mimeType}]
+        if (event.data?.images && event.data.images.length > 0 && sessionId) {
+          message.images = event.data.images.map((img) => ({
+            id: img.id,
+            url: `${apiPrefix}/api/sessions/${sessionId}/images/${img.id}`,
+            name: img.name || img.id,
+            mimeType: img.mime_type,
+          }));
+        }
+        messages.push(message);
         break;
+      }
       case "agent_message":
         messages.push({
           role: ROLE_AGENT,

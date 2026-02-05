@@ -47,7 +47,7 @@ import {
 // before trying to reconnect. The server session expires after 24 hours.
 const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 
-import { apiUrl, wsUrl } from "../utils/api.js";
+import { apiUrl, wsUrl, getApiPrefix } from "../utils/api.js";
 
 /**
  * Check if the user is authenticated.
@@ -826,7 +826,7 @@ export function useWebSocket() {
         // added to the UI. We need to deduplicate to avoid showing the same messages twice,
         // and ensure proper chronological ordering.
         const events = msg.data.events || [];
-        const newMessages = convertEventsToMessages(events);
+        const newMessages = convertEventsToMessages(events, { sessionId, apiPrefix: getApiPrefix() });
         const lastSeq =
           events.length > 0
             ? Math.max(...events.map((e) => e.seq || 0))
@@ -1250,6 +1250,8 @@ export function useWebSocket() {
         // Convert events to messages (events are in reverse order, so we reverse them back)
         const messages = convertEventsToMessages(events, {
           reverseInput: true,
+          sessionId,
+          apiPrefix: getApiPrefix(),
         });
 
         // Determine if there are more messages to load
@@ -1897,7 +1899,7 @@ export function useWebSocket() {
       }
 
       // Convert events to messages (events are in chronological order)
-      const olderMessages = convertEventsToMessages(events);
+      const olderMessages = convertEventsToMessages(events, { sessionId, apiPrefix: getApiPrefix() });
 
       // Determine if there are still more messages
       const newFirstSeq = getMinSeq(events);

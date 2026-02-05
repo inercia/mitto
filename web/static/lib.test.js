@@ -309,6 +309,96 @@ describe("convertEventsToMessages", () => {
     expect(events[1].seq).toBe(2);
     expect(events[2].seq).toBe(1);
   });
+
+  test("converts user_prompt with images when sessionId is provided", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: {
+          message: "Check this image",
+          images: [
+            { id: "img_001.png", name: "screenshot.png", mime_type: "image/png" },
+            { id: "img_002.jpg", mime_type: "image/jpeg" },
+          ],
+        },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 1,
+      },
+    ];
+    const result = convertEventsToMessages(events, { sessionId: "test-session" });
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe(ROLE_USER);
+    expect(result[0].text).toBe("Check this image");
+    expect(result[0].images).toHaveLength(2);
+    // Check first image (has name)
+    expect(result[0].images[0]).toEqual({
+      id: "img_001.png",
+      url: "/api/sessions/test-session/images/img_001.png",
+      name: "screenshot.png",
+      mimeType: "image/png",
+    });
+    // Check second image (no name, should use id)
+    expect(result[0].images[1]).toEqual({
+      id: "img_002.jpg",
+      url: "/api/sessions/test-session/images/img_002.jpg",
+      name: "img_002.jpg",
+      mimeType: "image/jpeg",
+    });
+  });
+
+  test("converts user_prompt with images and apiPrefix", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: {
+          message: "Test",
+          images: [{ id: "img_001.png", mime_type: "image/png" }],
+        },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 1,
+      },
+    ];
+    const result = convertEventsToMessages(events, {
+      sessionId: "test-session",
+      apiPrefix: "/mitto",
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].images[0].url).toBe(
+      "/mitto/api/sessions/test-session/images/img_001.png",
+    );
+  });
+
+  test("does not include images without sessionId", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: {
+          message: "Test",
+          images: [{ id: "img_001.png", mime_type: "image/png" }],
+        },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 1,
+      },
+    ];
+    // No sessionId provided
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].images).toBeUndefined();
+  });
+
+  test("handles empty images array", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "Test", images: [] },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 1,
+      },
+    ];
+    const result = convertEventsToMessages(events, { sessionId: "test-session" });
+    expect(result).toHaveLength(1);
+    expect(result[0].images).toBeUndefined();
+  });
 });
 
 // =============================================================================
