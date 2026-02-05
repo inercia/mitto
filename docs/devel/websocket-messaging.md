@@ -42,23 +42,67 @@ This ensures events are persisted in the correct streaming order, preserving the
 
 ### Sequence Number Assignment
 
-Every event persisted to the session store is assigned a monotonically increasing sequence number (`seq`). The sequence number is assigned at persistence time by `session.Store.AppendEvent()`.
+Every event is assigned a monotonically increasing sequence number (`seq`) **when it is received from the ACP**, not at persistence time. This ensures streaming and persisted events have the same `seq`, enabling proper deduplication and ordering across WebSocket reconnections.
 
 **Key properties:**
 
 - `seq` starts at 1 for each session
-- `seq` is assigned at persistence time, not at event creation
+- `seq` is assigned immediately when the event is received from ACP (in `BackgroundSession`)
+- `seq` is included in WebSocket messages to observers
+- `seq` is preserved when events are persisted to `events.jsonl`
 - `seq` is never reused or reassigned
-- Events are stored in `seq` order in `events.jsonl`
+- For coalescing events (agent messages, thoughts), multiple chunks share the same `seq`
+
+**Sequence number flow:**
+
+```mermaid
+sequenceDiagram
+    participant ACP as ACP Agent
+    participant BS as BackgroundSession
+    participant Buffer as EventBuffer
+    participant WS as WebSocket Clients
+    participant Store as Session Store
+
+    Note over BS: nextSeq = EventCount + 1
+
+    ACP->>BS: AgentMessage("Hello...")
+    BS->>BS: seq = getNextSeq() → 5
+    BS->>Buffer: AppendAgentMessage(seq=5, "Hello...")
+    BS->>WS: OnAgentMessage(seq=5, "Hello...")
+
+    ACP->>BS: AgentMessage(" world!") [continuation]
+    BS->>BS: seq = getNextSeq() → 6
+    BS->>Buffer: AppendAgentMessage(seq=6, " world!")
+    Note over Buffer: Appends to existing event, returns seq=5
+    BS->>BS: Return unused seq (nextSeq--)
+    BS->>WS: OnAgentMessage(seq=5, " world!")
+
+    ACP->>BS: ToolCall(read file)
+    BS->>BS: seq = getNextSeq() → 6
+    BS->>Buffer: AppendToolCall(seq=6, ...)
+    BS->>WS: OnToolCall(seq=6, ...)
+
+    ACP->>BS: PromptComplete
+    BS->>Buffer: Flush()
+    Buffer-->>BS: Events with seq [5, 6]
+    BS->>Store: Persist events (seq preserved)
+```
+
+**Why assign seq at receive time (not persistence time)?**
+
+1. **Streaming and sync use same seq**: Clients can deduplicate by `(session_id, seq)`
+2. **Correct ordering after reconnect**: Sort by `seq` gives correct order
+3. **No race conditions**: Seq is assigned once, upfront, before any notification
+4. **Coalescing works correctly**: Multiple chunks of the same message share the same seq
 
 ### Frontend Ordering Strategy
 
 The frontend preserves message order using these principles:
 
-1. **Streaming messages** are displayed in the order they arrive via WebSocket
+1. **Streaming messages** include `seq` and are displayed in arrival order
 2. **Loaded sessions** use the order from `events.jsonl` (which preserves streaming order)
-3. **Sync messages** are appended at the end (they represent events that happened AFTER the last seen event)
-4. **Deduplication** prevents the same message from appearing twice
+3. **Sync messages** are merged with existing messages and sorted by `seq`
+4. **Deduplication** uses `seq` (preferred) or content hash (fallback)
 
 ## Message Format
 
@@ -81,15 +125,17 @@ All WebSocket messages use a JSON envelope format with `type` and optional `data
 | ----------------- | ------------------------------------------------- | ------------------------------------------ |
 | `connected`       | `{session_id, client_id, acp_server, is_running}` | Connection established                     |
 | `prompt_received` | `{prompt_id}`                                     | ACK that prompt was received and persisted |
-| `user_prompt`     | `{sender_id, prompt_id, message, is_mine}`        | Broadcast of user prompt to all clients    |
-| `agent_message`   | `{html}`                                          | HTML-rendered agent response chunk         |
-| `agent_thought`   | `{text}`                                          | Agent thinking/reasoning (plain text)      |
-| `tool_call`       | `{id, title, status}`                             | Tool invocation notification               |
-| `tool_update`     | `{id, status}`                                    | Tool status update                         |
+| `user_prompt`     | `{seq, sender_id, prompt_id, message, is_mine}`   | Broadcast of user prompt to all clients    |
+| `agent_message`   | `{seq, html, is_prompting}`                       | HTML-rendered agent response chunk         |
+| `agent_thought`   | `{seq, text, is_prompting}`                       | Agent thinking/reasoning (plain text)      |
+| `tool_call`       | `{seq, id, title, status, is_prompting}`          | Tool invocation notification               |
+| `tool_update`     | `{seq, id, status, is_prompting}`                 | Tool status update                         |
 | `permission`      | `{request_id, title, description, options}`       | Permission request                         |
 | `prompt_complete` | `{event_count}`                                   | Agent finished responding                  |
 | `session_sync`    | `{events, event_count, is_running, is_prompting}` | Response to sync request                   |
 | `error`           | `{message, code?}`                                | Error notification                         |
+
+**Note on `seq`**: All event messages (`user_prompt`, `agent_message`, `agent_thought`, `tool_call`, `tool_update`) include a sequence number for ordering and deduplication. Multiple chunks of the same logical message (e.g., streaming agent message) share the same `seq`.
 
 ## Replay of Missing Content
 
@@ -185,11 +231,24 @@ sequenceDiagram
 
 When sync events arrive, they're merged with existing messages using `mergeMessagesWithSync()` which:
 
-1. Creates a hash set of existing messages for deduplication
-2. Filters out duplicates from new messages
-3. Merges both lists and sorts by `seq`
+1. Creates a map of existing messages by `seq` for fast lookup
+2. Deduplicates by `seq` (preferred) or content hash (fallback)
+3. Combines all messages and sorts by `seq` for correct ordering
 
-This handles the case where some messages were received via streaming (no `seq`) and the same messages arrive via sync (with `seq`).
+Since streaming messages now include `seq`, deduplication is straightforward:
+
+- Same `(session_id, seq)` = same event
+- Content hash is used as fallback for messages without `seq` (backward compatibility)
+
+**Why sorting by seq is now safe:**
+
+Previously, sorting by `seq` caused incorrect ordering because tool calls were persisted immediately (early seq) while agent messages were buffered (late seq). Now that:
+
+1. All events are buffered together during streaming
+2. `seq` is assigned when the event is received (not at persistence)
+3. Streaming messages include `seq`
+
+...sorting by `seq` gives the correct chronological order.
 
 ## Reconnection Handling
 

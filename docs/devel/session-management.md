@@ -102,20 +102,28 @@ graph TB
 
 ```go
 // SessionObserver receives real-time updates from a BackgroundSession
+// Events include a sequence number (seq) for ordering and deduplication.
 type SessionObserver interface {
-    OnAgentMessage(html string)
-    OnAgentThought(text string)
-    OnToolCall(id, title, status string)
-    OnToolUpdate(id string, status *string)
-    OnPlan()
-    OnFileWrite(path string, size int)
-    OnFileRead(path string, size int)
+    OnAgentMessage(seq int64, html string)
+    OnAgentThought(seq int64, text string)
+    OnToolCall(seq int64, id, title, status string)
+    OnToolUpdate(seq int64, id string, status *string)
+    OnPlan(seq int64)
+    OnFileWrite(seq int64, path string, size int)
+    OnFileRead(seq int64, path string, size int)
     OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
     OnPromptComplete(eventCount int)
+    OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string)
     OnError(message string)
-    GetClientID() string
+    // ... queue and action button methods
 }
 ```
+
+**Sequence numbers (`seq`)**: All event methods include a `seq` parameter that uniquely identifies the event within the session. This enables:
+
+- **Deduplication**: Same `(session_id, seq)` = same event
+- **Ordering**: Sort by `seq` for correct chronological order
+- **Sync tracking**: Clients track `lastSeenSeq` to request missed events
 
 Multiple `SessionWSClient` instances can observe the same `BackgroundSession`, enabling:
 
