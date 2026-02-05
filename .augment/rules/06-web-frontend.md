@@ -726,42 +726,48 @@ When a client connects mid-stream, the backend sends any buffered content that h
 
 ## Message Ordering
 
-### Why NOT to Sort by Sequence Number
+### Sequence Number Based Ordering
 
-**IMPORTANT**: Do NOT re-sort messages by `seq` or timestamp. This causes incorrect ordering.
+All streaming events now include a sequence number (`seq`) assigned when the event is received from the ACP. This enables proper ordering and deduplication across WebSocket reconnections.
 
-The problem is that different event types are persisted at different times:
-1. **Tool calls** are persisted **immediately** when they occur (get early `seq` numbers)
-2. **Agent messages** are **buffered** during streaming and persisted when the prompt completes (get later `seq` numbers)
-
-If we sorted by `seq`, all tool calls would appear before the agent message, even though they were interleaved during the actual conversation:
-
-```
-Actual streaming order:    "Let me help..." → tool_call → "I found..." → tool_call → "Done!"
-Persisted seq order:       tool_call(seq=2) → tool_call(seq=3) → agent_message(seq=4)
-```
+**Key properties of `seq`:**
+- Assigned immediately when event is received (not at persistence time)
+- Included in all WebSocket messages (`agent_message`, `tool_call`, etc.)
+- Multiple chunks of the same logical message share the same `seq`
+- Sorting by `seq` gives correct chronological order
 
 ### Correct Ordering Strategy
 
 The frontend preserves message order using these principles:
 
-1. **Streaming messages** are displayed in the order they arrive via WebSocket
-2. **Loaded sessions** use the order from `events.jsonl` (which is append-only)
-3. **Sync messages** are appended at the end (they represent events that happened AFTER the last seen event)
-4. **Deduplication** prevents the same message from appearing twice
+1. **Streaming messages** include `seq` and are displayed in arrival order
+2. **Loaded sessions** use the order from `events.jsonl` (which preserves streaming order)
+3. **Sync messages** are merged with existing messages and sorted by `seq`
+4. **Deduplication** uses `seq` (preferred) or content hash (fallback)
+
+### Why Sorting by Seq is Now Safe
+
+Previously, sorting by `seq` caused incorrect ordering because tool calls were persisted immediately while agent messages were buffered. This has been fixed:
+
+1. All events are now buffered together during streaming
+2. `seq` is assigned when the event is received from ACP
+3. Streaming messages include `seq` in WebSocket messages
+4. Persisted events use the same `seq` as their streaming counterparts
+
+This means `seq` correctly represents the chronological order of events.
 
 ## Message Deduplication
 
 ### The Duplicate Message Problem
 
 Duplicate messages can occur when:
-1. **Sync after streaming**: Messages received via WebSocket streaming don't have sequence numbers. When reconnecting, sync may return the same messages (now with seq numbers).
+1. **Sync after streaming**: Messages received via WebSocket streaming may overlap with sync messages after reconnection.
 2. **Multiple observers**: If multiple WebSocket connections exist for the same session, each receives the same message.
 3. **Reconnection race conditions**: Old WebSocket's `onclose` handler may interfere with new connection.
 
 ### Deduplication in mergeMessagesWithSync
 
-The `mergeMessagesWithSync` function handles deduplication and appending (NOT sorting):
+The `mergeMessagesWithSync` function handles deduplication, merging, and sorting by `seq`:
 
 ```javascript
 export function mergeMessagesWithSync(existingMessages, newMessages) {
@@ -772,14 +778,21 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     return existingMessages;
   }
 
-  // Create hash set of existing messages for deduplication
+  // Create a map of existing messages by seq for fast lookup
+  const existingBySeq = new Map();
   const existingHashes = new Set();
   for (const m of existingMessages) {
+    if (m.seq) {
+      existingBySeq.set(m.seq, m);
+    }
     existingHashes.add(getMessageHash(m));
   }
 
-  // Filter out duplicates from new messages
+  // Deduplicate by seq (preferred) or content hash (fallback)
   const filteredNewMessages = newMessages.filter((m) => {
+    if (m.seq && existingBySeq.has(m.seq)) {
+      return false;
+    }
     const hash = getMessageHash(m);
     return !existingHashes.has(hash);
   });
@@ -788,10 +801,21 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     return existingMessages;
   }
 
-  // Append new messages at the end - they happened after existing messages
-  return [...existingMessages, ...filteredNewMessages];
+  // Combine and sort by seq for correct ordering
+  const allMessages = [...existingMessages, ...filteredNewMessages];
+  allMessages.sort((a, b) => {
+    if (a.seq && b.seq) return a.seq - b.seq;
+    return 0; // Keep relative order for messages without seq
+  });
+
+  return allMessages;
 }
 ```
+
+**Key changes from previous implementation:**
+- Deduplication now uses `seq` as primary key (content hash as fallback)
+- Messages are sorted by `seq` after merging (safe now that seq is assigned at receive time)
+- Same `(session_id, seq)` = same event, guaranteed
 
 ### Using mergeMessagesWithSync in session_sync Handler
 
