@@ -34,11 +34,39 @@ type MarkdownBuffer struct {
 	inTable      bool // Track if we're inside a table
 }
 
+// MarkdownBufferConfig holds configuration for creating a MarkdownBuffer.
+type MarkdownBufferConfig struct {
+	// OnFlush is called when HTML content is ready to be sent.
+	OnFlush func(html string)
+	// FileLinksConfig configures file path detection and linking.
+	// If nil, file linking is disabled.
+	FileLinksConfig *conversion.FileLinkerConfig
+}
+
 // NewMarkdownBuffer creates a new streaming Markdown buffer.
 func NewMarkdownBuffer(onFlush func(html string)) *MarkdownBuffer {
 	return &MarkdownBuffer{
 		converter:    conversion.DefaultConverter(),
 		onFlush:      onFlush,
+		flushTimeout: defaultFlushTimeout,
+	}
+}
+
+// NewMarkdownBufferWithConfig creates a new streaming Markdown buffer with configuration.
+func NewMarkdownBufferWithConfig(cfg MarkdownBufferConfig) *MarkdownBuffer {
+	opts := []conversion.Option{
+		conversion.WithHighlighting("monokai"),
+		conversion.WithSanitization(conversion.CreateSanitizer()),
+	}
+
+	// Add file linking if configured
+	if cfg.FileLinksConfig != nil {
+		opts = append(opts, conversion.WithFileLinks(*cfg.FileLinksConfig))
+	}
+
+	return &MarkdownBuffer{
+		converter:    conversion.NewConverter(opts...),
+		onFlush:      cfg.OnFlush,
 		flushTimeout: defaultFlushTimeout,
 	}
 }
