@@ -3,11 +3,17 @@
 
 export {
   openExternalURL,
+  openFileURL,
+  convertFileURLToHTTP,
+  convertHTTPFileURLToFile,
+  convertHTTPFileURLToViewer,
+  setCurrentWorkspace,
   hasNativeFolderPicker,
   pickFolder,
   pickImages,
   hasNativeImagePicker,
   isNativeApp,
+  fixViewerURLIfNeeded,
 } from "./native.js";
 
 export {

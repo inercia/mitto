@@ -168,6 +168,116 @@ export function renderUserMarkdown(text) {
   }
 }
 
+// =============================================================================
+// Tool Title File Path Parsing
+// =============================================================================
+
+/**
+ * Regular expression to match file paths in tool titles.
+ * Matches patterns like:
+ * - "Edit src/main.js" -> "src/main.js"
+ * - "Read /home/user/file.txt" -> "/home/user/file.txt"
+ * - "Write ./config.yaml" -> "./config.yaml"
+ * - "View internal/web/server.go" -> "internal/web/server.go"
+ */
+const TOOL_TITLE_PATH_REGEX =
+  /\b((?:\.{0,2}\/)?(?:[\w.-]+\/)*[\w.-]+\.[a-zA-Z0-9]+)\b/g;
+
+/**
+ * Common tool action prefixes that precede file paths.
+ * Used to improve path detection accuracy.
+ */
+const TOOL_ACTION_PREFIXES = [
+  "Edit",
+  "Read",
+  "Write",
+  "View",
+  "Create",
+  "Delete",
+  "Update",
+  "Open",
+  "Save",
+  "Load",
+  "Modify",
+  "Remove",
+  "Rename",
+  "Copy",
+  "Move",
+];
+
+/**
+ * Parses a tool title and returns segments with file paths identified.
+ * Each segment is either plain text or a file path that can be linked.
+ *
+ * @param {string} title - The tool title (e.g., "Edit src/main.js")
+ * @returns {Array<{type: 'text'|'path', value: string}>} Array of segments
+ */
+export function parseToolTitlePaths(title) {
+  if (!title || typeof title !== "string") {
+    return [{ type: "text", value: title || "" }];
+  }
+
+  const segments = [];
+  let lastIndex = 0;
+
+  // Reset regex state
+  TOOL_TITLE_PATH_REGEX.lastIndex = 0;
+
+  let match;
+  while ((match = TOOL_TITLE_PATH_REGEX.exec(title)) !== null) {
+    const path = match[1];
+    const matchStart = match.index;
+
+    // Add text before this match
+    if (matchStart > lastIndex) {
+      segments.push({ type: "text", value: title.slice(lastIndex, matchStart) });
+    }
+
+    // Check if this looks like a real file path:
+    // 1. Has a file extension
+    // 2. Contains at least one path separator OR starts with ./ or ../
+    // 3. Doesn't look like a version number (e.g., "v1.0")
+    const hasExtension = /\.[a-zA-Z0-9]+$/.test(path);
+    const hasPathSeparator = path.includes("/");
+    const looksLikeVersion = /^v?\d+\.\d+/.test(path);
+
+    if (hasExtension && (hasPathSeparator || path.startsWith("./") || path.startsWith("../")) && !looksLikeVersion) {
+      segments.push({ type: "path", value: path });
+    } else {
+      // Not a file path, treat as text
+      segments.push({ type: "text", value: path });
+    }
+
+    lastIndex = matchStart + match[0].length;
+  }
+
+  // Add remaining text after last match
+  if (lastIndex < title.length) {
+    segments.push({ type: "text", value: title.slice(lastIndex) });
+  }
+
+  // If no segments were created, return the whole title as text
+  if (segments.length === 0) {
+    return [{ type: "text", value: title }];
+  }
+
+  return segments;
+}
+
+/**
+ * Checks if a tool title contains a file path.
+ * @param {string} title - The tool title
+ * @returns {boolean} True if the title contains a file path
+ */
+export function toolTitleHasPath(title) {
+  const segments = parseToolTitlePaths(title);
+  return segments.some((s) => s.type === "path");
+}
+
+// =============================================================================
+// Session State Management
+// =============================================================================
+
 /**
  * Combines active and stored sessions, avoiding duplicates, and sorts by creation time (most recent first).
  * @param {Array} activeSessions - Currently active sessions in memory
@@ -731,16 +841,30 @@ export function getWorkspaceColor(path) {
  * Gets complete workspace visual info (abbreviation and color).
  * @param {string} path - Full directory path
  * @param {string} customColor - Optional custom hex color (e.g., "#ff5500")
- * @returns {object} { abbreviation, color: { background, text, border }, basename }
+ * @param {string} customCode - Optional custom three-letter code
+ * @param {string} customName - Optional custom friendly name
+ * @returns {object} { abbreviation, color: { background, text, border }, basename, displayName }
  */
-export function getWorkspaceVisualInfo(path, customColor = null) {
+export function getWorkspaceVisualInfo(
+  path,
+  customColor = null,
+  customCode = null,
+  customName = null,
+) {
   // If a custom color is provided and valid, use it
   const color = customColor ? getColorFromHex(customColor) : null;
+  const basename = getBasename(path);
 
   return {
-    abbreviation: getWorkspaceAbbreviation(path),
+    // Use custom code if provided and valid (3 characters), otherwise calculate
+    abbreviation:
+      customCode && customCode.length === 3
+        ? customCode.toUpperCase()
+        : getWorkspaceAbbreviation(path),
     color: color || getWorkspaceColor(path),
-    basename: getBasename(path),
+    basename,
+    // Use custom name if provided, otherwise fall back to basename
+    displayName: customName || basename,
   };
 }
 
@@ -958,4 +1082,122 @@ export function cleanupExpiredPrompts() {
   } catch (err) {
     console.warn("Failed to cleanup expired prompts:", err);
   }
+}
+
+// =============================================================================
+// URL Detection and Linkification
+// =============================================================================
+
+/**
+ * Regular expression to detect URLs in text.
+ * Matches:
+ * - http:// and https:// URLs
+ * - ftp:// URLs
+ * - mailto: links
+ * - file:// URLs (for compatibility)
+ *
+ * The regex captures the full URL including path, query params, and fragments.
+ * It stops at whitespace, quotes, parentheses (unless balanced), and common punctuation at the end.
+ */
+const URL_PATTERN =
+  /\b((?:https?:\/\/|ftp:\/\/|file:\/\/|mailto:)[^\s<>"\[\]{}|\\^`]+?)(?=[.,;:!?)]*(?:\s|$)|$)/gi;
+
+/**
+ * Escapes HTML special characters in a string.
+ * @param {string} text - The text to escape
+ * @returns {string} The escaped text
+ */
+function escapeHtmlForLinkify(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+/**
+ * Converts URLs in plain text to clickable anchor tags.
+ * This function is designed for plain text content (not HTML).
+ *
+ * @param {string} text - Plain text that may contain URLs
+ * @returns {string} HTML string with URLs converted to anchor tags
+ *
+ * @example
+ * linkifyUrls("Check out https://example.com for more info")
+ * // Returns: 'Check out <a href="https://example.com" target="_blank" rel="noopener noreferrer" class="url-link">https://example.com</a> for more info'
+ */
+export function linkifyUrls(text) {
+  if (!text || typeof text !== "string") {
+    return text || "";
+  }
+
+  // Split text by URL matches and rebuild with links
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+
+  // Reset regex state
+  URL_PATTERN.lastIndex = 0;
+
+  while ((match = URL_PATTERN.exec(text)) !== null) {
+    const url = match[1];
+    const matchStart = match.index;
+
+    // Add text before the URL (escaped for HTML)
+    if (matchStart > lastIndex) {
+      parts.push(escapeHtmlForLinkify(text.slice(lastIndex, matchStart)));
+    }
+
+    // Clean up trailing punctuation that might have been captured
+    let cleanUrl = url;
+    // Remove trailing punctuation that's unlikely to be part of the URL
+    while (cleanUrl.length > 0 && /[.,;:!?)\]}>]$/.test(cleanUrl)) {
+      const lastChar = cleanUrl.slice(-1);
+      // Keep if it's a balanced closing bracket/paren
+      if (lastChar === ")" && (cleanUrl.match(/\(/g) || []).length > (cleanUrl.match(/\)/g) || []).length - 1) {
+        break;
+      }
+      if (lastChar === "]" && (cleanUrl.match(/\[/g) || []).length > (cleanUrl.match(/]/g) || []).length - 1) {
+        break;
+      }
+      cleanUrl = cleanUrl.slice(0, -1);
+    }
+
+    // Calculate any trailing chars that were removed
+    const trailingChars = url.slice(cleanUrl.length);
+
+    // Determine link attributes based on scheme
+    const isMailto = cleanUrl.toLowerCase().startsWith("mailto:");
+    const attrs = isMailto
+      ? `href="${escapeHtmlForLinkify(cleanUrl)}" class="url-link mailto-link"`
+      : `href="${escapeHtmlForLinkify(cleanUrl)}" target="_blank" rel="noopener noreferrer" class="url-link"`;
+
+    // Add the link
+    parts.push(`<a ${attrs}>${escapeHtmlForLinkify(cleanUrl)}</a>`);
+
+    // Add back any trailing punctuation as plain text
+    if (trailingChars) {
+      parts.push(escapeHtmlForLinkify(trailingChars));
+    }
+
+    lastIndex = match.index + url.length;
+  }
+
+  // Add remaining text after the last URL
+  if (lastIndex < text.length) {
+    parts.push(escapeHtmlForLinkify(text.slice(lastIndex)));
+  }
+
+  return parts.join("");
+}
+
+/**
+ * Checks if a text contains any URLs that would be linkified.
+ * @param {string} text - The text to check
+ * @returns {boolean} True if the text contains URLs
+ */
+export function hasUrls(text) {
+  if (!text || typeof text !== "string") {
+    return false;
+  }
+  URL_PATTERN.lastIndex = 0;
+  return URL_PATTERN.test(text);
 }

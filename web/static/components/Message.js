@@ -11,7 +11,11 @@ import {
   ROLE_ERROR,
   ROLE_SYSTEM,
   renderUserMarkdown,
+  parseToolTitlePaths,
+  linkifyUrls,
 } from "../lib.js";
+
+import { openFileURL, isNativeApp } from "../utils/index.js";
 
 /**
  * Message component - renders a single message in the chat
@@ -112,22 +116,62 @@ export function Message({ message, isLast, isStreaming }) {
       return html`<span class="text-xs text-gray-400">${message.status}</span>`;
     };
 
+    // Parse the title for file paths
+    const titleSegments = useMemo(
+      () => parseToolTitlePaths(message.title),
+      [message.title],
+    );
+
+    // Render title with clickable file paths
+    const renderTitle = () => {
+      return titleSegments.map((segment, index) => {
+        if (segment.type === "path") {
+          // Render as a clickable link
+          return html`<a
+            key=${index}
+            href="#"
+            class="file-link hover:underline"
+            onClick=${(e) => {
+              e.preventDefault();
+              // Get the current workspace from global state
+              const workspace = window.mittoCurrentWorkspace || "";
+              if (workspace) {
+                // Build the file URL
+                const absolutePath = segment.value.startsWith("/")
+                  ? segment.value
+                  : workspace + "/" + segment.value;
+                openFileURL("file://" + absolutePath);
+              }
+            }}
+            >${segment.value}</a
+          >`;
+        }
+        // Plain text segment
+        return html`<span key=${index}>${segment.value}</span>`;
+      });
+    };
+
     return html`
       <div class="message-enter flex justify-center mb-1">
         <div
           class="text-sm text-gray-400 flex items-center gap-2 bg-slate-800/50 dark:bg-slate-800/50 px-3 py-1.5 rounded-lg"
         >
           <span class="text-yellow-500">🔧</span>
-          <span class="font-medium">${message.title}</span>
+          <span class="font-medium">${renderTitle()}</span>
           ${renderStatus()}
         </div>
       </div>
     `;
   }
 
-  // Thought display (plain text)
+  // Thought display (plain text with URL linkification)
   if (isThought) {
     const showCursor = isLast && isStreaming && !message.complete;
+    // Linkify URLs in thought text
+    const linkedText = useMemo(
+      () => linkifyUrls(message.text),
+      [message.text],
+    );
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
@@ -135,17 +179,23 @@ export function Message({ message, isLast, isStreaming }) {
         >
           <div class="flex items-start gap-2">
             <span class="text-purple-400 mt-0.5">💭</span>
-            <span class="italic ${showCursor ? "streaming-cursor" : ""}"
-              >${message.text}</span
-            >
+            <span
+              class="italic ${showCursor ? "streaming-cursor" : ""}"
+              dangerouslySetInnerHTML=${{ __html: linkedText }}
+            />
           </div>
         </div>
       </div>
     `;
   }
 
-  // Error message
+  // Error message (with URL linkification)
   if (isError) {
+    // Linkify URLs in error text
+    const linkedErrorText = useMemo(
+      () => linkifyUrls(message.text),
+      [message.text],
+    );
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
@@ -153,7 +203,7 @@ export function Message({ message, isLast, isStreaming }) {
         >
           <div class="flex items-start gap-2">
             <span>❌</span>
-            <span>${message.text}</span>
+            <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
           </div>
         </div>
       </div>
@@ -170,6 +220,12 @@ export function Message({ message, isLast, isStreaming }) {
       [message.text],
     );
     const useMarkdown = renderedHtml !== null;
+
+    // For plain text, linkify URLs
+    const linkedPlainText = useMemo(
+      () => (useMarkdown ? null : linkifyUrls(message.text)),
+      [message.text, useMarkdown],
+    );
 
     return html`
       <div class="message-enter flex justify-end mb-3">
@@ -198,9 +254,10 @@ export function Message({ message, isLast, isStreaming }) {
                 class="markdown-content markdown-content-user text-sm"
                 dangerouslySetInnerHTML=${{ __html: renderedHtml }}
               />`
-            : html`<pre class="whitespace-pre-wrap font-sans text-sm m-0">
-${message.text}</pre
-              >`}
+            : html`<pre
+                class="whitespace-pre-wrap font-sans text-sm m-0"
+                dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
+              />`}
         </div>
       </div>
     `;
