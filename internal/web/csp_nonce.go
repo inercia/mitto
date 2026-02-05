@@ -129,15 +129,16 @@ func (w *cspNonceResponseWriter) setCSPHeader(includeNonce bool) {
 	var scriptSrc string
 	if includeNonce {
 		// Use nonce for inline scripts
-		scriptSrc = "'self' 'nonce-" + w.nonce + "' https://cdn.tailwindcss.com"
+		// Allow cdn.tailwindcss.com for Tailwind CSS and cdnjs.cloudflare.com for highlight.js
+		scriptSrc = "'self' 'nonce-" + w.nonce + "' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com"
 	} else {
 		// For non-HTML responses, no inline scripts needed
-		scriptSrc = "'self' https://cdn.tailwindcss.com"
+		scriptSrc = "'self' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com"
 	}
 
 	csp := "default-src 'self'; " +
 		"script-src " + scriptSrc + "; " +
-		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; " +
 		"img-src 'self' data:; " +
 		"font-src 'self' https://fonts.gstatic.com; " +
 		"connect-src 'self' ws: wss:; " +

@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>File Viewer - Mitto</title>
+    <link rel="icon" type="image/png" href="./favicon.png" />
+
+    <!-- Highlight.js CSS (GitHub Dark theme) -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css"
+    />
+    <!-- Light theme alternative (loaded dynamically based on preference) -->
+
+    <style>
+      :root {
+        --bg-color: #0d1117;
+        --header-bg: #161b22;
+        --text-color: #c9d1d9;
+        --text-secondary: #8b949e;
+        --border-color: #30363d;
+        --line-number-color: #6e7681;
+        --line-number-bg: #161b22;
+      }
+
+      .light {
+        --bg-color: #ffffff;
+        --header-bg: #f6f8fa;
+        --text-color: #24292f;
+        --text-secondary: #57606a;
+        --border-color: #d0d7de;
+        --line-number-color: #6e7781;
+        --line-number-bg: #f6f8fa;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
+          Arial, sans-serif;
+        background-color: var(--bg-color);
+        color: var(--text-color);
+        min-height: 100vh;
+      }
+
+      .header {
+        background-color: var(--header-bg);
+        border-bottom: 1px solid var(--border-color);
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+
+      .file-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .file-icon {
+        flex-shrink: 0;
+        width: 20px;
+        height: 20px;
+        color: var(--text-secondary);
+      }
+
+      .file-path {
+        font-size: 14px;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .file-size {
+        font-size: 12px;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        font-size: 12px;
+        font-weight: 500;
+        border-radius: 6px;
+        border: 1px solid var(--border-color);
+        background-color: var(--header-bg);
+        color: var(--text-color);
+        cursor: pointer;
+        transition: background-color 0.15s;
+      }
+
+      .btn:hover {
+        background-color: var(--border-color);
+      }
+
+      .btn svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .code-container {
+        overflow-x: auto;
+      }
+
+      pre {
+        margin: 0;
+        padding: 0;
+      }
+
+      pre code {
+        display: block;
+        padding: 16px;
+        font-family: "SF Mono", SFMono-Regular, Consolas, "Liberation Mono",
+          Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        tab-size: 4;
+      }
+
+      /* Line numbers */
+      .hljs-ln {
+        border-collapse: collapse;
+      }
+
+      .hljs-ln td {
+        padding: 0;
+      }
+
+      .hljs-ln-numbers {
+        user-select: none;
+        text-align: right;
+        color: var(--line-number-color);
+        background-color: var(--line-number-bg);
+        padding: 0 16px 0 16px;
+        vertical-align: top;
+        position: sticky;
+        left: 0;
+        border-right: 1px solid var(--border-color);
+      }
+
+      .hljs-ln-code {
+        padding-left: 16px !important;
+        width: 100%;
+      }
+
+      .loading,
+      .error {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 200px;
+        color: var(--text-secondary);
+      }
+
+      .error {
+        color: #f85149;
+      }
+
+      .spinner {
+        width: 32px;
+        height: 32px;
+        border: 3px solid var(--border-color);
+        border-top-color: #58a6ff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 12px;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="file-info">
+        <svg class="file-icon" viewBox="0 0 16 16" fill="currentColor">
+          <path
+            d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"
+          />
+        </svg>
+        <span class="file-path" id="filePath">Loading...</span>
+        <span class="file-size" id="fileSize"></span>
+      </div>
+      <div class="actions">
+        <button class="btn" id="copyBtn" title="Copy to clipboard">
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <path
+              d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"
+            />
+            <path
+              d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"
+            />
+          </svg>
+          Copy
+        </button>
+        <button class="btn" id="downloadBtn" title="Download file">
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <path
+              d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14Z"
+            />
+            <path
+              d="M7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"
+            />
+          </svg>
+          Download
+        </button>
+      </div>
+    </div>
+
+    <div class="code-container">
+      <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <span>Loading file...</span>
+      </div>
+      <div class="error" id="error" style="display: none">
+        <span id="errorMessage">Failed to load file</span>
+      </div>
+      <pre id="codeBlock" style="display: none"><code id="code"></code></pre>
+    </div>
+
+    <!-- Highlight.js -->
+    <script
+      nonce="{{CSP_NONCE}}"
+      src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"
+    ></script>
+    <!-- Line numbers plugin -->
+    <script
+      nonce="{{CSP_NONCE}}"
+      src="https://cdnjs.cloudflare.com/ajax/libs/highlightjs-line-numbers.js/2.8.0/highlightjs-line-numbers.min.js"
+    ></script>
+
+    <script nonce="{{CSP_NONCE}}">
+      // Parse URL parameters - support both new format (ws=UUID) and legacy (workspace=path)
+      const params = new URLSearchParams(window.location.search);
+      const workspaceUUID = params.get("ws");
+      const legacyWorkspace = params.get("workspace");
+      const path = params.get("path");
+
+      // Detect theme preference
+      if (
+        window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: light)").matches
+      ) {
+        document.body.classList.add("light");
+        // Load light theme CSS
+        const lightTheme = document.createElement("link");
+        lightTheme.rel = "stylesheet";
+        lightTheme.href =
+          "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css";
+        document.head.appendChild(lightTheme);
+      }
+
+      // Get API prefix from the URL path
+      function getAPIPrefix() {
+        const urlPath = window.location.pathname;
+        const viewerIndex = urlPath.indexOf("/viewer.html");
+        if (viewerIndex > 0) {
+          return urlPath.slice(0, viewerIndex);
+        }
+        return "";
+      }
+
+      // Format file size
+      function formatSize(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+        return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+      }
+
+      // Get language from file extension
+      function getLanguage(filename) {
+        const ext = filename.split(".").pop().toLowerCase();
+        const langMap = {
+          js: "javascript",
+          mjs: "javascript",
+          cjs: "javascript",
+          ts: "typescript",
+          tsx: "typescript",
+          jsx: "javascript",
+          py: "python",
+          rb: "ruby",
+          go: "go",
+          rs: "rust",
+          java: "java",
+          kt: "kotlin",
+          swift: "swift",
+          c: "c",
+          h: "c",
+          cpp: "cpp",
+          hpp: "cpp",
+          cc: "cpp",
+          cs: "csharp",
+          php: "php",
+          sh: "bash",
+          bash: "bash",
+          zsh: "bash",
+          fish: "bash",
+          ps1: "powershell",
+          sql: "sql",
+          html: "html",
+          htm: "html",
+          xml: "xml",
+          css: "css",
+          scss: "scss",
+          sass: "scss",
+          less: "less",
+          json: "json",
+          yaml: "yaml",
+          yml: "yaml",
+          toml: "toml",
+          ini: "ini",
+          conf: "ini",
+          md: "markdown",
+          markdown: "markdown",
+          dockerfile: "dockerfile",
+          makefile: "makefile",
+          cmake: "cmake",
+          gradle: "gradle",
+          groovy: "groovy",
+          lua: "lua",
+          perl: "perl",
+          r: "r",
+          scala: "scala",
+          clj: "clojure",
+          ex: "elixir",
+          exs: "elixir",
+          erl: "erlang",
+          hs: "haskell",
+          ml: "ocaml",
+          vim: "vim",
+          diff: "diff",
+          patch: "diff",
+        };
+        return langMap[ext] || null;
+      }
+
+      // Load and display file
+      async function loadFile() {
+        if ((!workspaceUUID && !legacyWorkspace) || !path) {
+          showError("Missing ws/workspace or path parameter");
+          return;
+        }
+
+        // Update UI with file path
+        document.getElementById("filePath").textContent = path;
+        document.title = `${path.split("/").pop()} - Mitto`;
+
+        try {
+          const apiPrefix = getAPIPrefix();
+          // Use UUID if available, otherwise fall back to legacy workspace path
+          const wsParam = workspaceUUID
+            ? `ws=${encodeURIComponent(workspaceUUID)}`
+            : `workspace=${encodeURIComponent(legacyWorkspace)}`;
+          const url = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}`;
+
+          const response = await fetch(url);
+          if (!response.ok) {
+            throw new Error(
+              response.status === 404
+                ? "File not found"
+                : response.status === 403
+                  ? "Access denied"
+                  : `HTTP ${response.status}`,
+            );
+          }
+
+          const content = await response.text();
+
+          // Update file size
+          const size = new Blob([content]).size;
+          document.getElementById("fileSize").textContent = formatSize(size);
+
+          // Display code with syntax highlighting
+          const codeElement = document.getElementById("code");
+          codeElement.textContent = content;
+
+          // Try to detect language
+          const lang = getLanguage(path);
+          if (lang) {
+            codeElement.className = `language-${lang}`;
+          }
+
+          // Apply highlighting
+          hljs.highlightElement(codeElement);
+
+          // Add line numbers
+          hljs.lineNumbersBlock(codeElement);
+
+          // Show code block
+          document.getElementById("loading").style.display = "none";
+          document.getElementById("codeBlock").style.display = "block";
+
+          // Set up copy button
+          document.getElementById("copyBtn").onclick = async () => {
+            try {
+              await navigator.clipboard.writeText(content);
+              const btn = document.getElementById("copyBtn");
+              const originalText = btn.innerHTML;
+              btn.innerHTML =
+                '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg> Copied!';
+              setTimeout(() => {
+                btn.innerHTML = originalText;
+              }, 2000);
+            } catch (err) {
+              console.error("Failed to copy:", err);
+            }
+          };
+
+          // Set up download button
+          document.getElementById("downloadBtn").onclick = () => {
+            const blob = new Blob([content], { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = path.split("/").pop();
+            a.click();
+            URL.revokeObjectURL(url);
+          };
+        } catch (err) {
+          showError(err.message);
+        }
+      }
+
+      function showError(message) {
+        document.getElementById("loading").style.display = "none";
+        document.getElementById("error").style.display = "flex";
+        document.getElementById("errorMessage").textContent = message;
+      }
+
+      // Load file on page load
+      loadFile();
+    </script>
+  </body>
+</html>
+
