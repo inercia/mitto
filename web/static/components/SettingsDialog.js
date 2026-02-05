@@ -293,9 +293,16 @@ export function SettingsDialog({
   const [showInAllSpaces, setShowInAllSpaces] = useState(false);
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [loginItemSupported, setLoginItemSupported] = useState(false);
+  const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
+  const [badgeClickCommand, setBadgeClickCommand] = useState(
+    "open ${WORKSPACE}",
+  );
 
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
+  // Confirmation settings (macOS only)
+  const [confirmQuitWithRunningSessions, setConfirmQuitWithRunningSessions] =
+    useState(true);
 
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
@@ -525,6 +532,14 @@ export function SettingsDialog({
       );
       setShowInAllSpaces(config.ui?.mac?.show_in_all_spaces || false);
 
+      // Load badge click action settings (macOS only)
+      setBadgeClickEnabled(
+        config.ui?.mac?.badge_click_action?.enabled !== false,
+      );
+      setBadgeClickCommand(
+        config.ui?.mac?.badge_click_action?.command || "open ${WORKSPACE}",
+      );
+
       // Load notification permission status (macOS only) - used to show warning if denied
       if (typeof window.mittoGetNotificationPermissionStatus === "function") {
         const status = await window.mittoGetNotificationPermissionStatus();
@@ -544,6 +559,10 @@ export function SettingsDialog({
       // Load confirmation settings (all platforms, default to true)
       setConfirmDeleteSession(
         config.ui?.confirmations?.delete_session !== false,
+      );
+      // Load confirmation settings (macOS only, default to true)
+      setConfirmQuitWithRunningSessions(
+        config.ui?.confirmations?.quit_with_running_sessions !== false,
       );
 
       // Load follow-up suggestions settings (advanced) - enabled by default
@@ -634,6 +653,9 @@ export function SettingsDialog({
 
       // Add macOS-specific settings
       if (isMacApp) {
+        // Add quit confirmation setting (macOS only)
+        uiConfig.confirmations.quit_with_running_sessions =
+          confirmQuitWithRunningSessions;
         uiConfig.mac = {
           notifications: {
             sounds: {
@@ -643,6 +665,10 @@ export function SettingsDialog({
           },
           show_in_all_spaces: showInAllSpaces,
           start_at_login: startAtLogin,
+          badge_click_action: {
+            enabled: badgeClickEnabled,
+            command: badgeClickCommand,
+          },
         };
       }
 
@@ -695,6 +721,15 @@ export function SettingsDialog({
       if (isMacApp) {
         window.mittoAgentCompletedSoundEnabled = agentCompletedSound;
         window.mittoNativeNotificationsEnabled = nativeNotifications;
+
+        // Update quit confirmation setting via native API
+        if (typeof window.mittoSetQuitConfirmEnabled === "function") {
+          try {
+            window.mittoSetQuitConfirmEnabled(confirmQuitWithRunningSessions);
+          } catch (err) {
+            console.error("Failed to update quit confirmation setting:", err);
+          }
+        }
       }
 
       // Apply login item setting via native API (macOS 13+ only)
@@ -834,6 +869,30 @@ export function SettingsDialog({
       workspaces.map((ws) =>
         ws.working_dir === workingDir
           ? { ...ws, color: color || undefined } // undefined to omit from JSON if empty
+          : ws,
+      ),
+    );
+  };
+
+  // Update workspace friendly name
+  const updateWorkspaceName = (workingDir, name) => {
+    setWorkspaces(
+      workspaces.map((ws) =>
+        ws.working_dir === workingDir
+          ? { ...ws, name: name || undefined } // undefined to omit from JSON if empty
+          : ws,
+      ),
+    );
+  };
+
+  // Update workspace code (three-letter abbreviation)
+  const updateWorkspaceCode = (workingDir, code) => {
+    // Ensure code is uppercase and max 3 characters
+    const sanitizedCode = (code || "").toUpperCase().slice(0, 3);
+    setWorkspaces(
+      workspaces.map((ws) =>
+        ws.working_dir === workingDir
+          ? { ...ws, code: sanitizedCode || undefined } // undefined to omit from JSON if empty
           : ws,
       ),
     );
@@ -1160,56 +1219,93 @@ export function SettingsDialog({
                           </div>
                         `
                       : html`
-                          <div class="space-y-2">
+                          <div class="space-y-3">
                             ${workspaces.map(
                               (ws) => html`
                                 <div
                                   key=${ws.working_dir}
-                                  class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 hover:bg-slate-700/30 transition-colors group"
+                                  class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 hover:bg-slate-700/30 transition-colors group"
                                 >
-                                  <${WorkspaceBadge}
-                                    path=${ws.working_dir}
-                                    customColor=${ws.color}
-                                    size="sm"
-                                  />
-                                  <div class="flex-1 min-w-0">
-                                    <div class="font-medium text-sm">
-                                      ${getBasename(ws.working_dir)}
+                                  <!-- Top row: Badge preview, path, ACP server, delete button -->
+                                  <div class="flex items-center gap-3 mb-3">
+                                    <${WorkspaceBadge}
+                                      path=${ws.working_dir}
+                                      customColor=${ws.color}
+                                      customCode=${ws.code}
+                                      customName=${ws.name}
+                                      size="sm"
+                                    />
+                                    <div class="flex-1 min-w-0">
+                                      <div
+                                        class="text-xs text-gray-500 truncate"
+                                        title=${ws.working_dir}
+                                      >
+                                        ${ws.working_dir}
+                                      </div>
                                     </div>
-                                    <div
-                                      class="text-xs text-gray-500 truncate"
-                                      title=${ws.working_dir}
+                                    <span
+                                      class="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs flex-shrink-0"
                                     >
-                                      ${ws.working_dir}
+                                      ${ws.acp_server}
+                                    </span>
+                                    <button
+                                      onClick=${() =>
+                                        removeWorkspace(ws.working_dir)}
+                                      class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                      title="Remove workspace"
+                                    >
+                                      <${TrashIcon} className="w-4 h-4" />
+                                    </button>
+                                  </div>
+
+                                  <!-- Customization row: Name, Code, Color inputs -->
+                                  <div class="flex items-center gap-3 pl-11">
+                                    <div class="flex-1 min-w-0">
+                                      <input
+                                        type="text"
+                                        value=${ws.name || ""}
+                                        onInput=${(e) =>
+                                          updateWorkspaceName(
+                                            ws.working_dir,
+                                            e.target.value,
+                                          )}
+                                        placeholder=${getBasename(ws.working_dir)}
+                                        class="w-full px-2 py-1 bg-gray-100 dark:bg-slate-700/50 rounded text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-400 dark:placeholder-gray-500"
+                                        title="Friendly name (optional)"
+                                      />
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                      <input
+                                        type="text"
+                                        value=${ws.code || ""}
+                                        onInput=${(e) =>
+                                          updateWorkspaceCode(
+                                            ws.working_dir,
+                                            e.target.value,
+                                          )}
+                                        placeholder=${getWorkspaceVisualInfo(
+                                          ws.working_dir,
+                                        ).abbreviation}
+                                        maxlength="3"
+                                        class="w-12 px-2 py-1 bg-gray-100 dark:bg-slate-700/50 rounded text-sm text-center uppercase text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-400 dark:placeholder-gray-500"
+                                        title="Three-letter code (optional)"
+                                      />
+                                      <input
+                                        type="color"
+                                        value=${ws.color ||
+                                        getWorkspaceVisualInfo(ws.working_dir)
+                                          .color.backgroundHex ||
+                                        "#808080"}
+                                        onChange=${(e) =>
+                                          updateWorkspaceColor(
+                                            ws.working_dir,
+                                            e.target.value,
+                                          )}
+                                        class="w-8 h-8 rounded cursor-pointer border border-slate-600 bg-transparent p-0.5"
+                                        title="Badge color"
+                                      />
                                     </div>
                                   </div>
-                                  <span
-                                    class="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs flex-shrink-0"
-                                  >
-                                    ${ws.acp_server}
-                                  </span>
-                                  <input
-                                    type="color"
-                                    value=${ws.color ||
-                                    getWorkspaceVisualInfo(ws.working_dir).color
-                                      .backgroundHex ||
-                                    "#808080"}
-                                    onChange=${(e) =>
-                                      updateWorkspaceColor(
-                                        ws.working_dir,
-                                        e.target.value,
-                                      )}
-                                    class="w-8 h-8 rounded cursor-pointer border border-slate-600 bg-transparent p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                                    title="Change badge color"
-                                  />
-                                  <button
-                                    onClick=${() =>
-                                      removeWorkspace(ws.working_dir)}
-                                    class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                    title="Remove workspace"
-                                  >
-                                    <${TrashIcon} className="w-4 h-4" />
-                                  </button>
                                 </div>
                               `,
                             )}
@@ -1879,6 +1975,29 @@ export function SettingsDialog({
                           </div>
                         </div>
                       </label>
+                      ${isMacApp &&
+                      html`
+                        <label
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${confirmQuitWithRunningSessions}
+                            onChange=${(e) =>
+                              setConfirmQuitWithRunningSessions(e.target.checked)}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                          />
+                          <div>
+                            <div class="font-medium text-sm">
+                              Confirm before quitting with active conversations
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Show a confirmation dialog when quitting while an
+                              agent is responding
+                            </div>
+                          </div>
+                        </label>
+                      `}
                     </div>
 
                     <!-- macOS-specific settings -->
@@ -1976,6 +2095,55 @@ export function SettingsDialog({
                               </div>
                             </div>
                           </label>
+                        `}
+
+                        <!-- Badge Click Action -->
+                        <label
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${badgeClickEnabled}
+                            onChange=${(e) =>
+                              setBadgeClickEnabled(e.target.checked)}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                          />
+                          <div class="flex-1">
+                            <div class="font-medium text-sm">
+                              Workspace badge click action
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Click workspace badge in conversation list to run
+                              a command
+                            </div>
+                          </div>
+                        </label>
+                        ${badgeClickEnabled &&
+                        html`
+                          <div
+                            class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-2"
+                          >
+                            <div class="flex items-center gap-2">
+                              <label class="text-sm text-gray-400 w-20"
+                                >Command</label
+                              >
+                              <input
+                                type="text"
+                                value=${badgeClickCommand}
+                                onInput=${(e) =>
+                                  setBadgeClickCommand(e.target.value)}
+                                placeholder="open \${WORKSPACE}"
+                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                              />
+                            </div>
+                            <p class="text-xs text-gray-500">
+                              Use${" "}
+                              <code class="bg-slate-600 px-1 rounded"
+                                >\${WORKSPACE}</code
+                              >${" "}
+                              as placeholder for the workspace path
+                            </p>
+                          </div>
                         `}
                       </div>
                     `}
