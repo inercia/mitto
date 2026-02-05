@@ -114,6 +114,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		BackgroundColor: p.BackgroundColor,
 		Description:     p.Description,
 		Source:          PromptSourceFile,
+		ACPs:            p.ACPs,
 	}
 }
 

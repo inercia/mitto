@@ -133,6 +133,7 @@ func TestToWebPrompt(t *testing.T) {
 		Content:         "Content here",
 		BackgroundColor: "#FF0000",
 		Description:     "Test description",
+		ACPs:            "auggie, claude-code",
 	}
 
 	wp := prompt.ToWebPrompt()
@@ -152,6 +153,10 @@ func TestToWebPrompt(t *testing.T) {
 	// File-based prompts should have Source=PromptSourceFile
 	if wp.Source != PromptSourceFile {
 		t.Errorf("WebPrompt.Source = %q, want %q", wp.Source, PromptSourceFile)
+	}
+	// ACPs field should be included for client-side filtering
+	if wp.ACPs != "auggie, claude-code" {
+		t.Errorf("WebPrompt.ACPs = %q, want %q", wp.ACPs, "auggie, claude-code")
 	}
 }
 

@@ -47,6 +47,7 @@ Disabled prompts (enabled: false) are not shown.`,
 
 var (
 	updateBuiltinDryRun bool
+	updateBuiltinForce  bool
 )
 
 var promptsUpdateBuiltinCmd = &cobra.Command{
@@ -57,6 +58,7 @@ latest versions embedded in the Mitto binary.
 
 This command will overwrite any local modifications to builtin prompts.
 Use --dry-run to see what would be updated without making changes.
+Use --force to skip the confirmation prompt.
 
 Note: Custom prompts in other directories are not affected.`,
 	RunE: runPromptsUpdateBuiltin,
@@ -69,6 +71,8 @@ func init() {
 
 	promptsUpdateBuiltinCmd.Flags().BoolVar(&updateBuiltinDryRun, "dry-run", false,
 		"Show what would be updated without making changes")
+	promptsUpdateBuiltinCmd.Flags().BoolVarP(&updateBuiltinForce, "force", "f", false,
+		"Skip confirmation prompt and overwrite without asking")
 }
 
 func runPromptsList(cmd *cobra.Command, args []string) error {
@@ -153,15 +157,17 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Confirm before overwriting
-	fmt.Println("WARNING: This will overwrite any local modifications to builtin prompts.")
-	fmt.Print("Continue? [y/N] ")
+	// Confirm before overwriting (unless --force is set)
+	if !updateBuiltinForce {
+		fmt.Println("WARNING: This will overwrite any local modifications to builtin prompts.")
+		fmt.Print("Continue? [y/N] ")
 
-	var response string
-	fmt.Scanln(&response)
-	if response != "y" && response != "Y" {
-		fmt.Println("Aborted.")
-		return nil
+		var response string
+		fmt.Scanln(&response)
+		if response != "y" && response != "Y" {
+			fmt.Println("Aborted.")
+			return nil
+		}
 	}
 
 	// Deploy with force=true to overwrite existing files
