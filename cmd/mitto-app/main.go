@@ -776,6 +776,17 @@ func run() error {
 		promptsCache.SetAdditionalDirs(cfg.PromptsDirs)
 	}
 
+	// Configure access logging (enabled by default for macOS app)
+	// Writes to $MITTO_DIR/access.log with size-based rotation
+	accessLogConfig := web.DefaultAccessLogConfig()
+	mittoDir, err := appdir.Dir()
+	if err != nil {
+		slog.Warn("Failed to get Mitto directory for access log", "error", err)
+	} else {
+		accessLogConfig.Path = filepath.Join(mittoDir, "access.log")
+		slog.Info("Access logging enabled", "path", accessLogConfig.Path)
+	}
+
 	webConfig := web.Config{
 		Workspaces:      workspaces,
 		AutoApprove:     false,
@@ -786,6 +797,7 @@ func run() error {
 		ConfigReadOnly:  configReadOnly,
 		RCFilePath:      rcFilePath,
 		PromptsCache:    promptsCache,
+		AccessLog:       accessLogConfig,
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)

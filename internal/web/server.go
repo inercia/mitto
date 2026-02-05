@@ -52,6 +52,9 @@ type Config struct {
 	// PromptsCache provides cached access to global prompts from MITTO_DIR/prompts/.
 	// If nil, global file prompts are not loaded.
 	PromptsCache *configPkg.PromptsCache
+	// AccessLog is the configuration for security access logging.
+	// If Path is empty, access logging is disabled.
+	AccessLog AccessLogConfig
 }
 
 // GetWorkspaces returns the effective list of workspaces.
@@ -140,6 +143,9 @@ type Server struct {
 
 	// Queue title worker for generating titles for queued messages
 	queueTitleWorker *QueueTitleWorker
+
+	// Access logger for security-relevant events (nil if disabled)
+	accessLogger *AccessLogger
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -269,6 +275,17 @@ func NewServer(config Config) (*Server, error) {
 	// Set API prefix on CSRF manager for exempt path matching
 	csrfMgr.SetAPIPrefix(apiPrefix)
 
+	// Initialize access logger (nil if disabled)
+	var accessLogger *AccessLogger
+	if config.AccessLog.Path != "" {
+		accessLogger = NewAccessLogger(config.AccessLog)
+		if accessLogger != nil {
+			accessLogger.SetAuthManager(authMgr)
+			accessLogger.SetAPIPrefix(apiPrefix)
+			logger.Info("Access logging enabled", "path", config.AccessLog.Path)
+		}
+	}
+
 	s := &Server{
 		config:            config,
 		logger:            logger,
@@ -282,6 +299,7 @@ func NewServer(config Config) (*Server, error) {
 		connectionTracker: connectionTracker,
 		wsSecurityConfig:  wsSecurityConfig,
 		proxyChecker:      proxyChecker,
+		accessLogger:      accessLogger,
 	}
 
 	// Initialize queue title worker
@@ -392,6 +410,11 @@ func NewServer(config Config) (*Server, error) {
 	// Wrap with logging middleware
 	handler = s.loggingMiddleware(handler)
 
+	// 7. Access logging for security-relevant events (outermost to capture final status)
+	if s.accessLogger != nil {
+		handler = s.accessLogger.Middleware(handler)
+	}
+
 	s.httpServer = &http.Server{Handler: handler}
 
 	logger.Info("Web server initialized", "acp_server", config.ACPServer, "api_prefix", apiPrefix)
@@ -453,6 +476,11 @@ func (s *Server) Shutdown() error {
 	// Close queue title worker
 	if s.queueTitleWorker != nil {
 		s.queueTitleWorker.Close()
+	}
+
+	// Close access logger
+	if s.accessLogger != nil {
+		s.accessLogger.Close()
 	}
 
 	return s.httpServer.Shutdown(context.Background())

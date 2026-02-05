@@ -17,6 +17,7 @@ var (
 	webPort         int
 	webPortExternal int
 	webStaticDir    string
+	webAccessLog    string
 )
 
 // webCmd represents the web command
@@ -45,6 +46,7 @@ func init() {
 	webCmd.Flags().IntVar(&webPort, "port", 8080, "HTTP server port for local access (127.0.0.1). Use 0 for random port")
 	webCmd.Flags().IntVar(&webPortExternal, "port-external", 0, "HTTP server port for external access when enabled (0.0.0.0). Use 0 for random port")
 	webCmd.Flags().StringVar(&webStaticDir, "static-dir", "", "Serve static files from this directory instead of embedded assets (for development)")
+	webCmd.Flags().StringVar(&webAccessLog, "access-log", "", "Path to security access log file (logs auth events, unauthorized access, etc.)")
 }
 
 func runWeb(cmd *cobra.Command, args []string) error {
@@ -165,6 +167,14 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		promptsCache.SetAdditionalDirs(cfg.PromptsDirs)
 	}
 
+	// Configure access log (disabled by default for CLI)
+	var accessLogConfig web.AccessLogConfig
+	if webAccessLog != "" {
+		accessLogConfig = web.DefaultAccessLogConfig()
+		accessLogConfig.Path = webAccessLog
+		fmt.Printf("   Access log: %s\n", webAccessLog)
+	}
+
 	// Create web server with workspaces
 	srv, err := web.NewServer(web.Config{
 		Workspaces:      webWorkspaces,
@@ -177,6 +187,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		ConfigReadOnly:  configReadOnly,
 		RCFilePath:      rcFilePath,
 		PromptsCache:    promptsCache,
+		AccessLog:       accessLogConfig,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
