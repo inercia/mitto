@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -234,6 +235,84 @@ func TestHandleUploadImageFromPath_NonLocalhost(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusForbidden)
 	}
+}
+
+func TestHandleUploadImageFromPath_ExternalConnection(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-frompath-ext",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		store: store,
+	}
+
+	// Test case 1: External connection with localhost IP (defense-in-depth)
+	// This simulates an attacker connecting to the external port from localhost
+	t.Run("localhost_via_external_port", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-session-frompath-ext/images/from-path", nil)
+		req.RemoteAddr = "127.0.0.1:12345" // Localhost IP, but marked as external connection
+
+		// Mark the request as coming from the external listener
+		ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		server.handleUploadImageFromPath(w, req, store, "test-session-frompath-ext")
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("Status = %d, want %d (external connections should be rejected)", w.Code, http.StatusForbidden)
+		}
+	})
+
+	// Test case 2: External connection via Tailscale (100.x.x.x IP range)
+	// Tailscale connections to the external port should be rejected
+	t.Run("tailscale_via_external_port", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-session-frompath-ext/images/from-path", nil)
+		req.RemoteAddr = "100.64.0.1:12345" // Tailscale CGNAT IP range
+
+		// Mark the request as coming from the external listener
+		ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		server.handleUploadImageFromPath(w, req, store, "test-session-frompath-ext")
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("Status = %d, want %d (Tailscale connections via external port should be rejected)", w.Code, http.StatusForbidden)
+		}
+	})
+
+	// Test case 3: External connection with spoofed X-Forwarded-For header
+	// Even if attacker spoofs localhost in X-Forwarded-For, external marker takes precedence
+	t.Run("spoofed_xff_via_external_port", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-session-frompath-ext/images/from-path", nil)
+		req.RemoteAddr = "192.168.1.100:12345"
+		req.Header.Set("X-Forwarded-For", "127.0.0.1") // Attacker tries to spoof localhost
+
+		// Mark the request as coming from the external listener
+		ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		server.handleUploadImageFromPath(w, req, store, "test-session-frompath-ext")
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("Status = %d, want %d (spoofed X-Forwarded-For should not bypass external check)", w.Code, http.StatusForbidden)
+		}
+	})
 }
 
 func TestHandleUploadImageFromPath_InvalidJSON(t *testing.T) {

@@ -274,7 +274,21 @@ type UploadFromPathRequest struct {
 // SECURITY: This endpoint is restricted to localhost connections only to prevent
 // arbitrary file read attacks from remote clients.
 func (s *Server) handleUploadImageFromPath(w http.ResponseWriter, r *http.Request, store *session.Store, sessionID string) {
-	// Security check: Only allow this endpoint from localhost (native macOS app).
+	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
+	// Even if an attacker spoofs X-Forwarded-For to appear as localhost, this check
+	// will block them because external listener requests are marked at the handler level.
+	if IsExternalConnection(r) {
+		if s.logger != nil {
+			s.logger.Warn("Rejected from-path request from external listener",
+				"session_id", sessionID,
+				"remote_addr", r.RemoteAddr,
+			)
+		}
+		http.Error(w, "This endpoint is only available from localhost", http.StatusForbidden)
+		return
+	}
+
+	// Security check 2: Only allow this endpoint from localhost (native macOS app).
 	// This prevents remote attackers from reading arbitrary files on the server.
 	clientIP := getClientIPWithProxyCheck(r)
 	if !isLoopbackIP(clientIP) {
