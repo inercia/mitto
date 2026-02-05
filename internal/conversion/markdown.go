@@ -16,8 +16,9 @@ import (
 
 // Converter handles markdown-to-HTML conversion with configurable options.
 type Converter struct {
-	md        goldmark.Markdown
-	sanitizer *bluemonday.Policy
+	md         goldmark.Markdown
+	sanitizer  *bluemonday.Policy
+	fileLinker *FileLinker
 }
 
 // Option configures the Converter.
@@ -48,6 +49,14 @@ func WithHighlighting(style string) Option {
 func WithSanitization(policy *bluemonday.Policy) Option {
 	return func(c *Converter) {
 		c.sanitizer = policy
+	}
+}
+
+// WithFileLinks enables file path detection and linking in the output HTML.
+// Detected file paths that exist on the filesystem are converted to clickable file:// links.
+func WithFileLinks(config FileLinkerConfig) Option {
+	return func(c *Converter) {
+		c.fileLinker = NewFileLinker(config)
 	}
 }
 
@@ -96,6 +105,12 @@ func CreateSanitizer() *bluemonday.Policy {
 	// Allow id attributes for heading anchors
 	p.AllowAttrs("id").Matching(bluemonday.Paragraph).OnElements("h1", "h2", "h3", "h4", "h5", "h6")
 
+	// Allow file:// URLs for file links (added by FileLinker post-processing)
+	p.AllowURLSchemes("http", "https", "mailto", "file")
+
+	// Allow class attribute on anchor tags for file-link styling
+	p.AllowAttrs("class").Matching(bluemonday.SpaceSeparatedTokens).OnElements("a")
+
 	return p
 }
 
@@ -114,6 +129,11 @@ func (c *Converter) Convert(markdown string) (string, error) {
 	// Apply sanitization if configured
 	if c.sanitizer != nil {
 		result = c.sanitizer.Sanitize(result)
+	}
+
+	// Apply file linking if configured (after sanitization to avoid stripping file:// links)
+	if c.fileLinker != nil {
+		result = c.fileLinker.LinkFilePaths(result)
 	}
 
 	return result, nil
