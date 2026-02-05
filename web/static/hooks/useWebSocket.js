@@ -751,7 +751,9 @@ export function useWebSocket() {
         }
 
         // Play notification sound if enabled (macOS only)
+        console.log("[prompt_complete] wasStreaming:", wasStreaming, "soundEnabled:", window.mittoAgentCompletedSoundEnabled, "isBackgroundSession:", isBackgroundSession);
         if (wasStreaming && window.mittoAgentCompletedSoundEnabled) {
+          console.log("[prompt_complete] Playing notification sound");
           playAgentCompletedSound();
         }
         break;

@@ -42,6 +42,10 @@ import {
 // Import utilities
 import {
   openExternalURL,
+  openFileURL,
+  convertHTTPFileURLToFile,
+  convertHTTPFileURLToViewer,
+  setCurrentWorkspace,
   pickImages,
   hasNativeImagePicker,
   isNativeApp,
@@ -54,6 +58,7 @@ import {
   initCSRF,
   apiUrl,
   authFetch,
+  fixViewerURLIfNeeded,
 } from "./utils/index.js";
 
 // Import hooks
@@ -92,9 +97,12 @@ import { KEYBOARD_SHORTCUTS } from "./constants.js";
 // Global Link Click Handler
 // =============================================================================
 
-// Intercept clicks on external links (http/https) to prevent WebView navigation.
-// In the native macOS app, this ensures links open in the default browser
-// instead of navigating within the WebView window.
+// Intercept clicks on external links (http/https), file links (file://),
+// and internal file API links to prevent WebView navigation.
+// In the native macOS app, this ensures:
+// - External links open in the default browser
+// - File links open in the default application for that file type
+// - Internal file API links (used in web mode) are converted to file:// URLs
 document.addEventListener("click", (e) => {
   // Find the closest anchor element (handles clicks on nested elements inside links)
   const link = e.target.closest("a");
@@ -103,8 +111,55 @@ document.addEventListener("click", (e) => {
   const href = link.getAttribute("href");
   if (!href) return;
 
-  // Only intercept external URLs (http/https)
+  console.log("[Mitto] Link clicked:", href, "isNativeApp:", isNativeApp());
+
+  // Handle file:// URLs (open in default application)
+  if (href.startsWith("file://")) {
+    console.log("[Mitto] Handling as file:// URL");
+    e.preventDefault();
+    e.stopPropagation();
+    openFileURL(href);
+    return;
+  }
+
+  // Handle internal file API links (e.g., /mitto/api/files?workspace=...&path=...)
+  if (href.includes("/api/files?")) {
+    console.log("[Mitto] Handling as /api/files link");
+    e.preventDefault();
+    e.stopPropagation();
+    if (isNativeApp()) {
+      // Native macOS app - convert to file:// URL and open with system app
+      const fileUrl = convertHTTPFileURLToFile(href);
+      console.log("[Mitto] Converted to file URL:", fileUrl);
+      if (fileUrl) {
+        openFileURL(fileUrl);
+      }
+    } else {
+      // Web browser - open in viewer page with syntax highlighting
+      const viewerUrl = convertHTTPFileURLToViewer(href);
+      console.log("[Mitto] Converted to viewer URL:", viewerUrl);
+      if (viewerUrl) {
+        window.open(viewerUrl, "_blank", "noopener,noreferrer");
+      }
+    }
+    return;
+  }
+
+  // Handle external URLs (http/https) - open in default browser
   if (href.startsWith("http://") || href.startsWith("https://")) {
+    // Check if this is an old viewer URL that needs fixing (missing API prefix)
+    // Old recordings may have URLs like https://host/viewer.html?... that need
+    // to be converted to https://host/mitto/viewer.html?...
+    const fixedUrl = fixViewerURLIfNeeded(href);
+    if (fixedUrl) {
+      console.log("[Mitto] Opening fixed viewer URL:", fixedUrl);
+      e.preventDefault();
+      e.stopPropagation();
+      window.open(fixedUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    console.log("[Mitto] Handling as external URL");
     e.preventDefault();
     e.stopPropagation();
     openExternalURL(href);
@@ -136,25 +191,31 @@ if (isNativeApp()) {
 /**
  * A colored badge showing a three-letter abbreviation for a workspace.
  * The color is deterministically generated from the workspace path,
- * or uses a custom color if provided.
+ * or uses custom values if provided.
  *
  * @param {string} path - The workspace directory path
  * @param {string} customColor - Optional custom hex color (e.g., "#ff5500")
+ * @param {string} customCode - Optional custom three-letter code
+ * @param {string} customName - Optional custom friendly name
  * @param {string} size - Size variant: 'sm', 'md', 'lg' (default: 'md')
  * @param {boolean} showPath - Whether to show the full path below the badge
  */
 function WorkspaceBadge({
   path,
   customColor,
+  customCode,
+  customName,
   size = "md",
   showPath = false,
   className = "",
 }) {
   if (!path) return null;
 
-  const { abbreviation, color, basename } = getWorkspaceVisualInfo(
+  const { abbreviation, color, displayName } = getWorkspaceVisualInfo(
     path,
     customColor,
+    customCode,
+    customName,
   );
 
   const sizeClasses = {
@@ -180,7 +241,7 @@ function WorkspaceBadge({
       ${showPath &&
       html`
         <div class="min-w-0 flex-1">
-          <div class="font-medium text-sm">${basename}</div>
+          <div class="font-medium text-sm">${displayName}</div>
           <div class="text-xs text-gray-500 truncate" title=${path}>
             ${path}
           </div>
@@ -193,30 +254,57 @@ function WorkspaceBadge({
 /**
  * A pill-shaped workspace badge for compact display.
  * Shows abbreviation and ACP server name (or workspace name if no ACP server).
+ * Supports click action to execute a configured command (e.g., open folder in Finder).
  *
  * @param {string} path - The workspace directory path
  * @param {string} customColor - Optional custom hex color (e.g., "#ff5500")
+ * @param {string} customCode - Optional custom three-letter code
+ * @param {string} customName - Optional custom friendly name
  * @param {string} acpServer - The ACP server name (e.g., "auggie", "claude-code")
  * @param {string} className - Additional CSS classes
+ * @param {boolean} clickable - Whether the badge is clickable (default: false)
+ * @param {function} onBadgeClick - Optional callback when badge is clicked
  */
-function WorkspacePill({ path, customColor, acpServer, className = "" }) {
+function WorkspacePill({
+  path,
+  customColor,
+  customCode,
+  customName,
+  acpServer,
+  className = "",
+  clickable = false,
+  onBadgeClick,
+}) {
   if (!path) return null;
 
-  const { abbreviation, color, basename } = getWorkspaceVisualInfo(
+  const { abbreviation, color, displayName: wsDisplayName } = getWorkspaceVisualInfo(
     path,
     customColor,
+    customCode,
+    customName,
   );
-  // Display ACP server name if available, otherwise fall back to workspace basename
-  const displayName = acpServer || basename;
+  // Display ACP server name if available, otherwise fall back to workspace display name
+  const displayName = acpServer || wsDisplayName;
+
+  const handleClick = (e) => {
+    if (!clickable) return;
+    e.stopPropagation(); // Prevent triggering session selection
+    if (onBadgeClick) {
+      onBadgeClick(path);
+    }
+  };
+
+  const cursorClass = clickable ? "cursor-pointer workspace-pill-clickable" : "";
 
   return html`
     <div
-      class="workspace-pill inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${className}"
+      class="workspace-pill inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cursorClass} ${className}"
       style=${{
         backgroundColor: color.background,
         color: color.text,
       }}
-      title=${path}
+      title=${clickable ? `Click to open: ${path}` : path}
+      onClick=${handleClick}
     >
       <span class="font-bold">${abbreviation}</span>
       <span class="truncate max-w-[80px]">${displayName}</span>
@@ -241,9 +329,8 @@ function SessionPropertiesDialog({
   const sessionName = session?.name || session?.description || "Untitled";
   const workingDir = session?.working_dir || session?.info?.working_dir || "";
   const acpServer = session?.acp_server || session?.info?.acp_server || "";
-  // Look up workspace color
+  // Look up workspace for customization
   const workspace = workspaces.find((ws) => ws.working_dir === workingDir);
-  const workspaceColor = workspace?.color || null;
 
   useEffect(() => {
     if (isOpen) {
@@ -296,7 +383,9 @@ function SessionPropertiesDialog({
               html`
                 <${WorkspaceBadge}
                   path=${workingDir}
-                  customColor=${workspaceColor}
+                  customColor=${workspace?.color}
+                  customCode=${workspace?.code}
+                  customName=${workspace?.name}
                   size="md"
                   showPath=${true}
                   className="mb-3"
@@ -573,7 +662,17 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
 // Workspace Selection Dialog
 // =============================================================================
 
+// Threshold for showing filter UI and max items with keyboard shortcuts
+// When workspace count exceeds this, filter input is shown and only first N items get number keys
+const WORKSPACE_FILTER_THRESHOLD = 5;
+
 function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
+  const [filterText, setFilterText] = useState("");
+  const filterInputRef = useRef(null);
+
+  // Show filter only when there are more than WORKSPACE_FILTER_THRESHOLD workspaces
+  const showFilter = workspaces.length > WORKSPACE_FILTER_THRESHOLD;
+
   // Sort workspaces alphabetically by working_dir for deterministic ordering
   const sortedWorkspaces = useMemo(() => {
     return [...workspaces].sort((a, b) =>
@@ -581,32 +680,77 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
     );
   }, [workspaces]);
 
-  // Handle keyboard shortcuts (1-9) to select workspaces
+  // Filter workspaces based on filter text (case-insensitive substring match on name or friendly name)
+  const filteredWorkspaces = useMemo(() => {
+    if (!filterText.trim()) return sortedWorkspaces;
+    const lowerFilter = filterText.toLowerCase();
+    return sortedWorkspaces.filter((ws) => {
+      // Match against friendly name if set, otherwise basename
+      const displayName = ws.name || getBasename(ws.working_dir);
+      return displayName.toLowerCase().includes(lowerFilter);
+    });
+  }, [sortedWorkspaces, filterText]);
+
+  // Reset filter when dialog opens
+  useEffect(() => {
+    if (isOpen) {
+      setFilterText("");
+    }
+  }, [isOpen]);
+
+  // Auto-focus filter input when dialog opens (only if filter is shown)
+  useEffect(() => {
+    if (isOpen && showFilter && filterInputRef.current) {
+      // Focus immediately and also after a delay to win against competing focus events
+      filterInputRef.current?.focus();
+      // Additional delayed focus to handle cases where other handlers steal focus
+      const timerId = setTimeout(() => {
+        filterInputRef.current?.focus();
+      }, 100);
+      return () => clearTimeout(timerId);
+    }
+  }, [isOpen, showFilter]);
+
+  // Handle keyboard shortcuts (1-5) to select workspaces
   useEffect(() => {
     if (!isOpen) return;
 
     const handleKeyDown = (e) => {
-      // Check for number keys 1-9
       const key = e.key;
-      if (key >= "1" && key <= "9") {
-        const index = parseInt(key, 10) - 1;
-        if (index < sortedWorkspaces.length) {
-          e.preventDefault();
-          onSelect(sortedWorkspaces[index]);
-        }
-      }
+
       // Escape to cancel
       if (key === "Escape") {
         e.preventDefault();
         onCancel();
+        return;
+      }
+
+      // Number keys 1-N for quick selection (N = WORKSPACE_FILTER_THRESHOLD)
+      // Only trigger if filter is empty (so typing numbers goes to filter when there's text)
+      // Check both React state and DOM value to handle race conditions with state updates
+      const maxShortcut = String(WORKSPACE_FILTER_THRESHOLD);
+      const filterInputHasValue = filterInputRef.current?.value?.length > 0;
+      const filterIsEmpty = !filterText && !filterInputHasValue;
+
+      if (key >= "1" && key <= maxShortcut && filterIsEmpty) {
+        const index = parseInt(key, 10) - 1;
+        if (index < filteredWorkspaces.length) {
+          e.preventDefault();
+          onSelect(filteredWorkspaces[index]);
+        }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, sortedWorkspaces, onSelect, onCancel]);
+  }, [isOpen, filteredWorkspaces, filterText, onSelect, onCancel]);
 
   if (!isOpen) return null;
+
+  // Help text varies based on whether filter is shown
+  const helpText = showFilter
+    ? `Type to filter, or press 1-${WORKSPACE_FILTER_THRESHOLD} to select.`
+    : "Click on a workspace or press its number to select it.";
 
   return html`
     <div
@@ -618,40 +762,82 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
         onClick=${(e) => e.stopPropagation()}
       >
         <h3 class="text-lg font-semibold mb-2">Select Workspace</h3>
-        <p class="text-gray-400 text-sm mb-4">
-          Click on a workspace or press its number to select it.
-        </p>
+        <p class="text-gray-400 text-sm mb-4">${helpText}</p>
+
+        ${showFilter &&
+        html`
+          <div class="mb-4">
+            <input
+              ref=${filterInputRef}
+              type="text"
+              value=${filterText}
+              onInput=${(e) => setFilterText(e.target.value)}
+              onKeyDown=${(e) => {
+                // Intercept number keys 1-9 to select workspaces quickly
+                const num = parseInt(e.key, 10);
+                if (num >= 1 && num <= Math.min(WORKSPACE_FILTER_THRESHOLD, filteredWorkspaces.length)) {
+                  e.preventDefault();
+                  const workspace = filteredWorkspaces[num - 1];
+                  if (workspace) {
+                    onSelect(workspace);
+                  }
+                }
+              }}
+              placeholder="Filter workspaces..."
+              autoFocus
+              class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500 placeholder-gray-500"
+            />
+          </div>
+        `}
+
         <div class="space-y-2">
-          ${sortedWorkspaces.map(
-            (ws, index) => html`
-              <button
-                key=${ws.working_dir}
-                onClick=${() => onSelect(ws)}
-                class="w-full p-4 text-left rounded-lg bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center gap-4"
-              >
-                <div
-                  class="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-600 text-gray-300 font-mono text-sm flex-shrink-0"
-                >
-                  ${index + 1}
+          ${filteredWorkspaces.length === 0
+            ? html`
+                <div class="text-center py-4 text-gray-500">
+                  No workspaces match your filter.
                 </div>
-                <${WorkspaceBadge}
-                  path=${ws.working_dir}
-                  customColor=${ws.color}
-                  size="lg"
-                />
-                <div class="flex-1 min-w-0">
-                  <div class="font-medium">${getBasename(ws.working_dir)}</div>
-                  <div
-                    class="text-xs text-gray-500 truncate"
-                    title=${ws.working_dir}
+              `
+            : filteredWorkspaces.map(
+                (ws, index) => html`
+                  <button
+                    key=${ws.working_dir}
+                    onClick=${() => onSelect(ws)}
+                    class="w-full p-4 text-left rounded-lg bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center gap-4"
                   >
-                    ${ws.working_dir}
-                  </div>
-                  <div class="text-xs text-blue-400 mt-1">${ws.acp_server}</div>
-                </div>
-              </button>
-            `,
-          )}
+                    ${index < WORKSPACE_FILTER_THRESHOLD
+                      ? html`
+                          <div
+                            class="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-600 text-gray-300 font-mono text-sm flex-shrink-0"
+                          >
+                            ${index + 1}
+                          </div>
+                        `
+                      : html`
+                          <div class="w-8 h-8 flex-shrink-0"></div>
+                        `}
+                    <${WorkspaceBadge}
+                      path=${ws.working_dir}
+                      customColor=${ws.color}
+                      customCode=${ws.code}
+                      size="lg"
+                    />
+                    <div class="flex-1 min-w-0">
+                      <div class="font-medium">
+                        ${ws.name || getBasename(ws.working_dir)}
+                      </div>
+                      <div
+                        class="text-xs text-gray-500 truncate"
+                        title=${ws.working_dir}
+                      >
+                        ${ws.working_dir}
+                      </div>
+                      <div class="text-xs text-blue-400 mt-1">
+                        ${ws.acp_server}
+                      </div>
+                    </div>
+                  </button>
+                `,
+              )}
         </div>
         <div class="flex justify-end mt-4">
           <button
@@ -754,6 +940,10 @@ function SessionItem({
   onRename,
   onDelete,
   workspaceColor = null,
+  workspaceCode = null,
+  workspaceName = null,
+  badgeClickEnabled = false,
+  onBadgeClick,
 }) {
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
@@ -903,7 +1093,11 @@ function SessionItem({
           <${WorkspacePill}
             path=${workingDir}
             customColor=${workspaceColor}
+            customCode=${workspaceCode}
+            customName=${workspaceName}
             acpServer=${acpServer}
+            clickable=${badgeClickEnabled}
+            onBadgeClick=${onBadgeClick}
           />
         `}
       </div>
@@ -934,6 +1128,8 @@ function SessionList({
   onShowKeyboardShortcuts,
   configReadonly = false,
   rcFilePath = null,
+  badgeClickEnabled = false,
+  onBadgeClick,
 }) {
   // Combine active and stored sessions using shared helper function
   // Note: Not using useMemo to ensure working_dir is always up-to-date
@@ -995,11 +1191,10 @@ function SessionList({
           const finalSession = workingDir
             ? { ...session, working_dir: workingDir }
             : session;
-          // Look up workspace color
+          // Look up workspace for customization
           const workspace = workspaces.find(
             (ws) => ws.working_dir === workingDir,
           );
-          const workspaceColor = workspace?.color || null;
           return html`
             <${SessionItem}
               key=${session.session_id}
@@ -1008,7 +1203,11 @@ function SessionList({
               onSelect=${onSelect}
               onRename=${onRename}
               onDelete=${onDelete}
-              workspaceColor=${workspaceColor}
+              workspaceColor=${workspace?.color || null}
+              workspaceCode=${workspace?.code || null}
+              workspaceName=${workspace?.name || null}
+              badgeClickEnabled=${badgeClickEnabled}
+              onBadgeClick=${onBadgeClick}
             />
           `;
         })}
@@ -1199,13 +1398,33 @@ function App() {
 
   // Compute merged prompts: workspace prompts (highest priority) + global prompts + server-specific prompts
   // Workspace prompts override global/server prompts with the same name
+  // Prompts are filtered by the current ACP server using the "acps" field
   const predefinedPrompts = useMemo(() => {
+    const currentAcpServer = sessionInfo?.acp_server?.toLowerCase() || "";
+
+    // Helper to check if a prompt is allowed for the current ACP server
+    // If acps is empty, the prompt is allowed for all servers
+    // Otherwise, check if the current server is in the comma-separated list
+    const isAllowedForACP = (prompt) => {
+      if (!prompt.acps || prompt.acps.trim() === "") {
+        return true; // No restriction, allowed for all
+      }
+      if (!currentAcpServer) {
+        return true; // No ACP server selected, show all prompts
+      }
+      // Parse comma-separated list and check for match (case-insensitive)
+      const allowedServers = prompt.acps.split(",").map((s) => s.trim().toLowerCase());
+      return allowedServers.includes(currentAcpServer);
+    };
+
     // Build a map of prompt names to prompts, with workspace prompts having highest priority
     const promptMap = new Map();
 
-    // First add global prompts (lowest priority)
+    // First add global prompts (lowest priority), filtered by ACP server
     for (const p of globalPrompts) {
-      promptMap.set(p.name, { ...p, source: "global" });
+      if (isAllowedForACP(p)) {
+        promptMap.set(p.name, { ...p, source: "global" });
+      }
     }
 
     // Then add server-specific prompts (medium priority)
@@ -1215,14 +1434,19 @@ function App() {
       );
       if (server?.prompts?.length > 0) {
         for (const p of server.prompts) {
-          promptMap.set(p.name, { ...p, source: "server" });
+          if (isAllowedForACP(p)) {
+            promptMap.set(p.name, { ...p, source: "server" });
+          }
         }
       }
     }
 
     // Finally add workspace prompts (highest priority - override others with same name)
+    // Workspace prompts are also filtered by ACP server
     for (const p of workspacePrompts) {
-      promptMap.set(p.name, { ...p, source: "workspace" });
+      if (isAllowedForACP(p)) {
+        promptMap.set(p.name, { ...p, source: "workspace" });
+      }
     }
 
     // Convert map back to array, maintaining order: workspace first, then server, then global
@@ -1526,6 +1750,9 @@ function App() {
   // UI confirmation settings (default: true - show confirmations)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
 
+  // Badge click action settings (macOS only, default: enabled)
+  const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
@@ -1571,13 +1798,27 @@ function App() {
           setConfirmDeleteSession(false);
         }
         // Load UI settings (macOS only)
+        console.log("[config] ui.mac.notifications:", config?.ui?.mac?.notifications);
         if (config?.ui?.mac?.notifications?.sounds?.agent_completed) {
+          console.log("[config] Setting agent_completed sound ENABLED");
           setAgentCompletedSoundEnabled(true);
           window.mittoAgentCompletedSoundEnabled = true;
         }
         // Load native notifications setting (macOS only)
         if (config?.ui?.mac?.notifications?.native_enabled) {
+          console.log("[config] Setting native notifications ENABLED");
           window.mittoNativeNotificationsEnabled = true;
+        }
+        // Load badge click action setting (macOS only, default: enabled)
+        // Only enable if running in native macOS app
+        if (typeof window.mittoPickFolder === "function") {
+          const badgeClickSetting =
+            config?.ui?.mac?.badge_click_action?.enabled;
+          // Default to enabled if not explicitly disabled
+          setBadgeClickEnabled(badgeClickSetting !== false);
+        } else {
+          // Disable for non-macOS environments
+          setBadgeClickEnabled(false);
         }
         // Check if ACP servers or workspaces are configured - if not, force open settings
         // Skip this if config is read-only (user manages config via file)
@@ -1655,6 +1896,17 @@ function App() {
       fetchWorkspacePrompts(workingDir, true); // Force refresh for new workspace
     }
   }, [sessionInfo?.working_dir, workspacePromptsDir, fetchWorkspacePrompts]);
+
+  // Set current workspace for file URL conversion (used in web browser mode)
+  useEffect(() => {
+    const workingDir = sessionInfo?.working_dir;
+    if (workingDir) {
+      // Find the workspace UUID from the workspaces list
+      const workspace = workspaces.find((ws) => ws.working_dir === workingDir);
+      const workspaceUUID = workspace?.uuid;
+      setCurrentWorkspace(workingDir, workspaceUUID);
+    }
+  }, [sessionInfo?.working_dir, workspaces]);
 
   // Periodic refresh of workspace prompts (every 30 seconds)
   // Uses conditional requests to avoid unnecessary data transfer
@@ -2273,17 +2525,61 @@ function App() {
     };
   }, [showQueueDropdown, fetchQueueMessages]);
 
-  // Handler for prompts dropdown open - refreshes workspace prompts
+  // Handler for prompts dropdown open - refreshes both global and workspace prompts
   const handlePromptsOpen = useCallback(() => {
+    // Refresh workspace prompts
     if (sessionInfo?.working_dir) {
       fetchWorkspacePrompts(sessionInfo.working_dir, false);
     }
-  }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
+
+    // Refresh global prompts (checks for new/modified prompt files)
+    const acpServer = sessionInfo?.acp_server;
+    const url = acpServer
+      ? apiUrl(`/api/config?acp_server=${encodeURIComponent(acpServer)}`)
+      : apiUrl("/api/config");
+
+    authFetch(url)
+      .then((res) => res.json())
+      .then((config) => {
+        if (config?.prompts) {
+          setGlobalPrompts(config.prompts);
+        }
+        if (config?.acp_servers) {
+          setAcpServersWithPrompts(config.acp_servers);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to refresh global prompts:", err);
+      });
+  }, [sessionInfo?.working_dir, sessionInfo?.acp_server, fetchWorkspacePrompts]);
 
   const handleSelectSession = (sessionId) => {
     switchSession(sessionId);
     setShowSidebar(false);
   };
+
+  // Handle badge click action - calls API to execute configured command
+  const handleBadgeClick = useCallback(
+    async (workspacePath) => {
+      if (!badgeClickEnabled || !workspacePath) return;
+
+      try {
+        const res = await authFetch(apiUrl("/api/badge-click"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspace_path: workspacePath }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          console.error("Badge click failed:", data.error || "Unknown error");
+        }
+      } catch (err) {
+        console.error("Badge click error:", err);
+      }
+    },
+    [badgeClickEnabled],
+  );
 
   const handleRenameSession = (session) => {
     setRenameDialog({ isOpen: true, session });
@@ -2414,6 +2710,12 @@ function App() {
               setConfirmDeleteSession(
                 config?.ui?.confirmations?.delete_session !== false,
               );
+              // Reload badge click action settings (macOS only)
+              if (typeof window.mittoPickFolder === "function") {
+                setBadgeClickEnabled(
+                  config?.ui?.mac?.badge_click_action?.enabled !== false,
+                );
+              }
             }
           } catch (err) {
             console.error("Failed to reload config after save:", err);
@@ -2487,6 +2789,8 @@ function App() {
           onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
           configReadonly=${configReadonly}
           rcFilePath=${rcFilePath}
+          badgeClickEnabled=${badgeClickEnabled}
+          onBadgeClick=${handleBadgeClick}
         />
       </div>
 
@@ -2514,6 +2818,8 @@ function App() {
               onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
               configReadonly=${configReadonly}
               rcFilePath=${rcFilePath}
+              badgeClickEnabled=${badgeClickEnabled}
+              onBadgeClick=${handleBadgeClick}
             />
           </div>
           <div

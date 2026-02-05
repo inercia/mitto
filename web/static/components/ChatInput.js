@@ -125,7 +125,7 @@ function sortPromptsByColor(prompts) {
  * @param {string} props.sessionId - Current session ID
  * @param {string} props.draft - Current draft text
  * @param {Function} props.onDraftChange - Callback when draft changes
- * @param {Function} props.onPromptsOpen - Callback when prompts dropdown is opened (for refresh)
+ * @param {Function} props.onPromptsOpen - Callback when prompts dropdown is opened (refreshes global and workspace prompts)
  * @param {number} props.queueLength - Current number of messages in queue
  * @param {Object} props.queueConfig - Queue configuration { enabled, max_size, delay_seconds }
  * @param {Function} props.onAddToQueue - Callback to add message to queue (Cmd/Ctrl+Enter)

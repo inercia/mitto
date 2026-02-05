@@ -371,6 +371,41 @@
   color: #93c5fd;
 }
 
+/* File links - styled with dotted underline */
+.markdown-content a.file-link,
+a.file-link {
+  color: #34d399; /* Green to distinguish from external links */
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.markdown-content a.file-link:hover,
+a.file-link:hover {
+  color: #6ee7b7;
+  text-decoration-style: solid;
+}
+
+/* URL links - external URLs detected in plain text */
+a.url-link {
+  color: #60a5fa; /* Blue to match other external links */
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a.url-link:hover {
+  color: #93c5fd;
+}
+
+/* Mailto links */
+a.mailto-link {
+  color: #f472b6; /* Pink for email links */
+}
+
+a.mailto-link:hover {
+  color: #f9a8d4;
+}
+
 /* Blockquotes */
 .markdown-content blockquote {
   border-left: 4px solid #3b82f6;
@@ -445,6 +480,33 @@
 
 .light .markdown-content a:hover {
   color: #1d4ed8;
+}
+
+.light .markdown-content a.file-link,
+.light a.file-link {
+  color: #059669; /* Darker green for light mode */
+}
+
+.light .markdown-content a.file-link:hover,
+.light a.file-link:hover {
+  color: #047857;
+}
+
+/* Light mode URL links */
+.light a.url-link {
+  color: #2563eb; /* Darker blue for light mode */
+}
+
+.light a.url-link:hover {
+  color: #1d4ed8;
+}
+
+.light a.mailto-link {
+  color: #db2777; /* Darker pink for light mode */
+}
+
+.light a.mailto-link:hover {
+  color: #be185d;
 }
 
 .light .markdown-content blockquote {
@@ -914,4 +976,39 @@
    but this CSS ensures they're hidden if parsing fails or during streaming */
 mitto-action {
   display: none !important;
+}
+
+/* Workspace pill clickable hover effect - uses filter instead of opacity
+   to maintain text legibility on colored backgrounds */
+.workspace-pill-clickable {
+  transition: filter 0.15s ease, transform 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+/* Dark theme: darken on hover */
+.workspace-pill-clickable:hover {
+  filter: brightness(0.85) saturate(1.1);
+  transform: scale(1.02);
+}
+/* Light theme: use explicit colors for better contrast */
+.light .workspace-pill-clickable:hover {
+  filter: none !important;
+  background-color: #9ca3af !important; /* gray-400 */
+  color: #000000 !important;
+  transform: scale(1.02);
+}
+/* Reset states when not hovering */
+.workspace-pill-clickable:not(:hover) {
+  filter: none;
+  transform: none;
+}
+/* Active/pressed state - dark theme */
+.workspace-pill-clickable:active {
+  filter: brightness(0.75);
+  transform: scale(0.98);
+}
+/* Active/pressed state - light theme */
+.light .workspace-pill-clickable:active {
+  filter: none !important;
+  background-color: #6b7280 !important; /* gray-500 */
+  color: #000000 !important;
+  transform: scale(0.98);
 }
