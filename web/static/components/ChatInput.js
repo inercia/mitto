@@ -503,7 +503,7 @@ export function ChatInput({
           img.id === tempId
             ? {
                 id: data.id,
-                url: data.url,
+                url: apiUrl(data.url),
                 name: data.name,
                 mimeType: data.mime_type,
                 uploading: false,
@@ -566,7 +566,7 @@ export function ChatInput({
           ...prev,
           {
             id: data.id,
-            url: data.url,
+            url: apiUrl(data.url),
             name: data.name,
             mimeType: data.mime_type,
             uploading: false,
