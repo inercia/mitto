@@ -238,7 +238,6 @@ func TestAccessLogger_SetAPIPrefix(t *testing.T) {
 	}
 }
 
-
 func TestAccessLogger_IsSecurityRelevantPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "access.log")
@@ -318,7 +317,6 @@ func TestAccessLogger_DetermineEventType(t *testing.T) {
 		})
 	}
 }
-
 
 func TestAccessLogResponseWriter(t *testing.T) {
 	rec := httptest.NewRecorder()

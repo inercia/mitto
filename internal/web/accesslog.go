@@ -198,7 +198,6 @@ func (a *AccessLogger) isSecurityRelevantPath(path string) bool {
 	return false
 }
 
-
 // accessLogResponseWriter wraps http.ResponseWriter to capture status code and bytes written.
 type accessLogResponseWriter struct {
 	http.ResponseWriter
@@ -347,4 +346,3 @@ func (a *AccessLogger) determineEventType(r *http.Request, statusCode int, isExt
 
 	return "" // Not a security-relevant event
 }
-
