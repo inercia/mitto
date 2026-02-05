@@ -508,6 +508,42 @@ func TestSessionManager_GetSession(t *testing.T) {
 	}
 }
 
+func TestSessionManager_GetActiveWorkingDirs(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+
+	// Initially empty
+	dirs := sm.GetActiveWorkingDirs()
+	if len(dirs) != 0 {
+		t.Errorf("GetActiveWorkingDirs = %d, want 0", len(dirs))
+	}
+
+	// Add sessions with different working dirs
+	sm.mu.Lock()
+	sm.sessions["test-1"] = &BackgroundSession{persistedID: "test-1", workingDir: "/workspace1"}
+	sm.sessions["test-2"] = &BackgroundSession{persistedID: "test-2", workingDir: "/workspace2"}
+	sm.sessions["test-3"] = &BackgroundSession{persistedID: "test-3", workingDir: "/workspace1"} // Duplicate
+	sm.sessions["test-4"] = &BackgroundSession{persistedID: "test-4", workingDir: ""}            // Empty
+	sm.mu.Unlock()
+
+	dirs = sm.GetActiveWorkingDirs()
+	// Should have 2 unique directories (excluding empty)
+	if len(dirs) != 2 {
+		t.Errorf("GetActiveWorkingDirs = %d, want 2", len(dirs))
+	}
+
+	// Check that both expected dirs are present
+	found := make(map[string]bool)
+	for _, dir := range dirs {
+		found[dir] = true
+	}
+	if !found["/workspace1"] {
+		t.Error("GetActiveWorkingDirs should include /workspace1")
+	}
+	if !found["/workspace2"] {
+		t.Error("GetActiveWorkingDirs should include /workspace2")
+	}
+}
+
 func TestSessionManager_SetWorkspaces(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 

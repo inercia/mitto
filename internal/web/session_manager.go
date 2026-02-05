@@ -55,6 +55,10 @@ type SessionManager struct {
 
 	// hookManager manages external command hooks for message transformation.
 	hookManager *msghooks.Manager
+
+	// apiPrefix is the URL prefix for API endpoints (e.g., "/mitto").
+	// Used to generate HTTP file links for web browser access.
+	apiPrefix string
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -89,9 +93,13 @@ type SessionManagerOptions struct {
 	FromCLI bool
 	// OnWorkspaceSave is called when workspaces are modified (only if FromCLI is false).
 	OnWorkspaceSave WorkspaceSaveFunc
+	// APIPrefix is the URL prefix for API endpoints (e.g., "/mitto").
+	// Used to generate HTTP file links for web browser access.
+	APIPrefix string
 }
 
 // NewSessionManagerWithOptions creates a new session manager with the given options.
+// Workspaces without UUIDs will have UUIDs generated automatically.
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
 		sessions:         make(map[string]*BackgroundSession),
@@ -101,10 +109,12 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		fromCLI:          opts.FromCLI,
 		onWorkspaceSave:  opts.OnWorkspaceSave,
 		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
+		apiPrefix:        opts.APIPrefix,
 	}
 
 	for i := range opts.Workspaces {
 		ws := &opts.Workspaces[i]
+		ws.EnsureUUID() // Ensure workspace has a UUID
 		sm.workspaces[ws.WorkingDir] = ws
 		if sm.defaultWorkspace == nil {
 			sm.defaultWorkspace = ws
@@ -129,7 +139,15 @@ func (sm *SessionManager) SetHookManager(hm *msghooks.Manager) {
 	sm.hookManager = hm
 }
 
+// SetAPIPrefix sets the API prefix for HTTP file links.
+func (sm *SessionManager) SetAPIPrefix(prefix string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.apiPrefix = prefix
+}
+
 // SetWorkspaces sets the available workspaces.
+// Workspaces without UUIDs will have UUIDs generated automatically.
 func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
 	sm.mu.Lock()
 
@@ -138,6 +156,7 @@ func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
 
 	for i := range workspaces {
 		ws := &workspaces[i]
+		ws.EnsureUUID() // Ensure workspace has a UUID
 		sm.workspaces[ws.WorkingDir] = ws
 		if sm.defaultWorkspace == nil {
 			sm.defaultWorkspace = ws
@@ -189,6 +208,44 @@ func (sm *SessionManager) GetWorkspace(workingDir string) *config.WorkspaceSetti
 		return ws
 	}
 	return nil
+}
+
+// GetWorkspaceByUUID returns the workspace with the given UUID.
+// Returns nil if no workspace with that UUID exists.
+func (sm *SessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	for _, ws := range sm.workspaces {
+		if ws.UUID == uuid {
+			return ws
+		}
+	}
+	// Also check default workspace
+	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
+		return sm.defaultWorkspace
+	}
+	return nil
+}
+
+// ResolveWorkspaceIdentifier resolves a workspace UUID to its WorkingDir.
+// Returns the working directory and true if found, empty string and false otherwise.
+func (sm *SessionManager) ResolveWorkspaceIdentifier(uuid string) (string, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	// Find workspace by UUID
+	for _, ws := range sm.workspaces {
+		if ws.UUID == uuid {
+			return ws.WorkingDir, true
+		}
+	}
+	// Check default workspace
+	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
+		return sm.defaultWorkspace.WorkingDir, true
+	}
+
+	return "", false
 }
 
 // GetDefaultWorkspace returns the default workspace.
@@ -254,6 +311,7 @@ func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Tim
 // AddWorkspace adds a new workspace to the manager.
 // If workspaces were not loaded from CLI flags and a save callback is set,
 // the workspaces will be persisted to disk.
+// A UUID will be automatically generated if the workspace doesn't have one.
 func (sm *SessionManager) AddWorkspace(ws config.WorkspaceSettings) {
 	sm.mu.Lock()
 
@@ -261,6 +319,9 @@ func (sm *SessionManager) AddWorkspace(ws config.WorkspaceSettings) {
 	if sm.workspaces == nil {
 		sm.workspaces = make(map[string]*config.WorkspaceSettings)
 	}
+
+	// Ensure the workspace has a UUID
+	ws.EnsureUUID()
 
 	// Add the workspace
 	sm.workspaces[ws.WorkingDir] = &ws
@@ -385,21 +446,24 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	globalConv := sm.globalConversations
 	hookMgr := sm.hookManager
 
-	// Determine ACP command and server from workspace configuration
-	var acpCommand, acpServer string
+	// Determine ACP command, server, and workspace UUID from workspace configuration
+	var acpCommand, acpServer, workspaceUUID string
 
 	if workspace != nil {
 		acpCommand = workspace.ACPCommand
 		acpServer = workspace.ACPServer
+		workspaceUUID = workspace.UUID
 		if workingDir == "" {
 			workingDir = workspace.WorkingDir
 		}
 	} else if ws, ok := sm.workspaces[workingDir]; ok {
 		acpCommand = ws.ACPCommand
 		acpServer = ws.ACPServer
+		workspaceUUID = ws.UUID
 	} else if sm.defaultWorkspace != nil {
 		acpCommand = sm.defaultWorkspace.ACPCommand
 		acpServer = sm.defaultWorkspace.ACPServer
+		workspaceUUID = sm.defaultWorkspace.UUID
 	}
 	sm.mu.Unlock()
 
@@ -428,6 +492,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		actionButtonsConfig = globalConv.ActionButtons
 	}
 
+	// Get file links config (prefer workspace config, fall back to global)
+	var fileLinksConfig *config.FileLinksConfig
+	if workspaceConv != nil && workspaceConv.FileLinks != nil {
+		fileLinksConfig = workspaceConv.FileLinks
+	} else if globalConv != nil {
+		fileLinksConfig = globalConv.FileLinks
+	}
+
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:          acpCommand,
 		ACPServer:           acpServer,
@@ -440,6 +512,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		HookManager:         hookMgr,
 		QueueConfig:         queueConfig,
 		ActionButtonsConfig: actionButtonsConfig,
+		FileLinksConfig:     fileLinksConfig,
+		APIPrefix:           sm.apiPrefix,
+		WorkspaceUUID:       workspaceUUID,
 	})
 	if err != nil {
 		return nil, err
@@ -487,6 +562,24 @@ func (sm *SessionManager) GetSession(sessionID string) *BackgroundSession {
 	return sm.sessions[sessionID]
 }
 
+// GetActiveWorkingDirs returns all working directories from active sessions.
+// This is used by the file server to validate workspace access.
+func (sm *SessionManager) GetActiveWorkingDirs() []string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	dirs := make([]string, 0, len(sm.sessions))
+	seen := make(map[string]bool)
+	for _, bs := range sm.sessions {
+		dir := bs.GetWorkingDir()
+		if dir != "" && !seen[dir] {
+			dirs = append(dirs, dir)
+			seen[dir] = true
+		}
+	}
+	return dirs
+}
+
 // GetOrCreateSession returns an existing session or creates a new one.
 // If the session exists in the store but isn't running, it starts a new ACP process.
 func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*BackgroundSession, bool, error) {
@@ -526,14 +619,16 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	globalConv := sm.globalConversations
 	hookMgr := sm.hookManager
 
-	// Determine ACP command and server from workspace configuration
-	var acpCommand, acpServer string
+	// Determine ACP command, server, and workspace UUID from workspace configuration
+	var acpCommand, acpServer, workspaceUUID string
 	if ws, ok := sm.workspaces[workingDir]; ok {
 		acpCommand = ws.ACPCommand
 		acpServer = ws.ACPServer
+		workspaceUUID = ws.UUID
 	} else if sm.defaultWorkspace != nil {
 		acpCommand = sm.defaultWorkspace.ACPCommand
 		acpServer = sm.defaultWorkspace.ACPServer
+		workspaceUUID = sm.defaultWorkspace.UUID
 	}
 
 	// Get session metadata for ACP command and ACP session ID
@@ -587,6 +682,14 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		actionButtonsConfig = globalConv.ActionButtons
 	}
 
+	// Get file links config (prefer workspace config, fall back to global)
+	var fileLinksConfig *config.FileLinksConfig
+	if workspaceConv != nil && workspaceConv.FileLinks != nil {
+		fileLinksConfig = workspaceConv.FileLinks
+	} else if globalConv != nil {
+		fileLinksConfig = globalConv.FileLinks
+	}
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
@@ -603,6 +706,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		HookManager:         hookMgr,
 		QueueConfig:         queueConfig,
 		ActionButtonsConfig: actionButtonsConfig,
+		FileLinksConfig:     fileLinksConfig,
+		APIPrefix:           sm.apiPrefix,
+		WorkspaceUUID:       workspaceUUID,
 	})
 	if err != nil {
 		return nil, err

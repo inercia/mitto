@@ -6,6 +6,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/conversion"
 )
 
 // WebClient implements acp.Client for web-based interaction.
@@ -41,6 +42,9 @@ type WebClientConfig struct {
 	OnFileWrite    func(path string, size int)
 	OnFileRead     func(path string, size int)
 	OnPermission   func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+	// FileLinksConfig configures file path detection and linking in agent messages.
+	// If nil, file linking is disabled.
+	FileLinksConfig *conversion.FileLinkerConfig
 }
 
 // NewWebClient creates a new web-based ACP client.
@@ -58,10 +62,13 @@ func NewWebClient(config WebClientConfig) *WebClient {
 	}
 
 	// Create markdown buffer that sends HTML via callback
-	c.mdBuffer = NewMarkdownBuffer(func(html string) {
-		if c.onAgentMessage != nil {
-			c.onAgentMessage(html)
-		}
+	c.mdBuffer = NewMarkdownBufferWithConfig(MarkdownBufferConfig{
+		OnFlush: func(html string) {
+			if c.onAgentMessage != nil {
+				c.onAgentMessage(html)
+			}
+		},
+		FileLinksConfig: config.FileLinksConfig,
 	})
 
 	return c

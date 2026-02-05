@@ -506,7 +506,9 @@ func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
 type WorkspaceAddRequest struct {
 	ACPServer  string `json:"acp_server"`
 	WorkingDir string `json:"working_dir"`
+	Name       string `json:"name,omitempty"`
 	Color      string `json:"color,omitempty"`
+	Code       string `json:"code,omitempty"`
 }
 
 // handleAddWorkspace adds a new workspace
@@ -562,7 +564,9 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 		ACPServer:  req.ACPServer,
 		ACPCommand: acpCommand,
 		WorkingDir: req.WorkingDir,
+		Name:       req.Name,
 		Color:      req.Color,
+		Code:       req.Code,
 	}
 	s.sessionManager.AddWorkspace(newWorkspace)
 

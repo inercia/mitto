@@ -410,10 +410,13 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
 	for i, ws := range req.Workspaces {
 		newWorkspaces[i] = configPkg.WorkspaceSettings{
+			UUID:       ws.UUID,
 			ACPServer:  ws.ACPServer,
 			ACPCommand: acpCommandMap[ws.ACPServer],
 			WorkingDir: ws.WorkingDir,
+			Name:       ws.Name,
 			Color:      ws.Color,
+			Code:       ws.Code,
 		}
 	}
 	s.sessionManager.SetWorkspaces(newWorkspaces)

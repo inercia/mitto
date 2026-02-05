@@ -14,6 +14,7 @@ import (
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversion"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/msghooks"
 	"github.com/inercia/mitto/internal/session"
@@ -78,6 +79,11 @@ type BackgroundSession struct {
 	actionButtonsConfig *config.ActionButtonsConfig // Configuration (nil means disabled)
 	actionButtonsMu     sync.RWMutex                // Protects cachedActionButtons
 	cachedActionButtons []ActionButton              // In-memory cache for fast access
+
+	// File links configuration
+	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
+	apiPrefix       string                  // URL prefix for API endpoints (for HTTP file links)
+	workspaceUUID   string                  // Workspace UUID for secure file links
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -96,6 +102,9 @@ type BackgroundSessionConfig struct {
 	QueueConfig  *config.QueueConfig       // Queue processing configuration
 
 	ActionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration
+	FileLinksConfig     *config.FileLinksConfig     // File path linking configuration
+	APIPrefix           string                      // URL prefix for API endpoints (for HTTP file links)
+	WorkspaceUUID       string                      // Workspace UUID for secure file links
 }
 
 // NewBackgroundSession creates a new background session.
@@ -116,6 +125,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		isFirstPrompt:       true, // New session starts with first prompt pending
 		queueConfig:         cfg.QueueConfig,
 		actionButtonsConfig: cfg.ActionButtonsConfig,
+		fileLinksConfig:     cfg.FileLinksConfig,
+		apiPrefix:           cfg.APIPrefix,
+		workspaceUUID:       cfg.WorkspaceUUID,
 	}
 
 	// Create recorder for persistence
@@ -196,6 +208,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		isFirstPrompt:       false, // Resumed session = first prompt already sent
 		queueConfig:         config.QueueConfig,
 		actionButtonsConfig: config.ActionButtonsConfig,
+		fileLinksConfig:     config.FileLinksConfig,
+		apiPrefix:           config.APIPrefix,
+		workspaceUUID:       config.WorkspaceUUID,
 	}
 
 	// Resume recorder for the existing session
@@ -238,6 +253,11 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 // GetSessionID returns the persisted session ID.
 func (bs *BackgroundSession) GetSessionID() string {
 	return bs.persistedID
+}
+
+// GetWorkingDir returns the working directory for this session.
+func (bs *BackgroundSession) GetWorkingDir() string {
+	return bs.workingDir
 }
 
 // GetACPID returns the ACP protocol session ID.
@@ -527,7 +547,7 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 	bs.acpCmd = cmd
 
 	// Create web client with callbacks that route to attached client or persist
-	bs.acpClient = NewWebClient(WebClientConfig{
+	webClientConfig := WebClientConfig{
 		AutoApprove:    bs.autoApprove,
 		OnAgentMessage: bs.onAgentMessage,
 		OnAgentThought: bs.onAgentThought,
@@ -537,7 +557,24 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 		OnFileWrite:    bs.onFileWrite,
 		OnFileRead:     bs.onFileRead,
 		OnPermission:   bs.onPermission,
-	})
+	}
+
+	// Configure file linking if enabled
+	// Web UI always uses HTTP links (file:// URLs are blocked by browsers for security)
+	// Note: IsEnabled() and IsAllowOutsideWorkspace() are safe to call on nil receivers
+	// and return sensible defaults (enabled=true, allowOutsideWorkspace=false)
+	if bs.fileLinksConfig.IsEnabled() {
+		webClientConfig.FileLinksConfig = &conversion.FileLinkerConfig{
+			WorkingDir:            bs.workingDir,
+			WorkspaceUUID:         bs.workspaceUUID, // Use UUID instead of path for security
+			Enabled:               true,
+			AllowOutsideWorkspace: bs.fileLinksConfig.IsAllowOutsideWorkspace(),
+			UseHTTPLinks:          true,         // Web UI requires HTTP links
+			APIPrefix:             bs.apiPrefix, // URL prefix for file server endpoint
+		}
+	}
+
+	bs.acpClient = NewWebClient(webClientConfig)
 
 	// Create ACP connection
 	bs.acpConn = acp.NewClientSideConnection(bs.acpClient, stdin, stdout)
