@@ -568,13 +568,19 @@ export function useWebSocket() {
           msg.data.html?.substring(0, 50) + "...",
           "is_prompting:",
           msg.data.is_prompting,
+          "seq:",
+          msg.data.seq,
         );
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
           let messages = [...session.messages];
           const last = messages[messages.length - 1];
-          if (last && last.role === ROLE_AGENT && !last.complete) {
+          // Check if we should append to existing message:
+          // - Same seq means it's a continuation of the same logical message
+          // - Or if last message is incomplete agent message (backward compat)
+          const sameSeq = msg.data.seq && last?.seq === msg.data.seq;
+          if (last && last.role === ROLE_AGENT && !last.complete && (sameSeq || !msg.data.seq)) {
             messages[messages.length - 1] = {
               ...last,
               html: (last.html || "") + msg.data.html,
@@ -583,12 +589,15 @@ export function useWebSocket() {
             console.log(
               "Creating new agent message, total messages:",
               messages.length + 1,
+              "seq:",
+              msg.data.seq,
             );
             messages.push({
               role: ROLE_AGENT,
               html: msg.data.html,
               complete: false,
               timestamp: Date.now(),
+              seq: msg.data.seq, // Include seq for ordering and deduplication
             });
             messages = limitMessages(messages);
           }
@@ -609,7 +618,11 @@ export function useWebSocket() {
           if (!session) return prev;
           let messages = [...session.messages];
           const last = messages[messages.length - 1];
-          if (last && last.role === ROLE_THOUGHT && !last.complete) {
+          // Check if we should append to existing thought:
+          // - Same seq means it's a continuation of the same logical thought
+          // - Or if last message is incomplete thought (backward compat)
+          const sameSeq = msg.data.seq && last?.seq === msg.data.seq;
+          if (last && last.role === ROLE_THOUGHT && !last.complete && (sameSeq || !msg.data.seq)) {
             messages[messages.length - 1] = {
               ...last,
               text: (last.text || "") + msg.data.text,
@@ -620,6 +633,7 @@ export function useWebSocket() {
               text: msg.data.text,
               complete: false,
               timestamp: Date.now(),
+              seq: msg.data.seq, // Include seq for ordering and deduplication
             });
             messages = limitMessages(messages);
           }
@@ -644,6 +658,7 @@ export function useWebSocket() {
               title: msg.data.title,
               status: msg.data.status,
               timestamp: Date.now(),
+              seq: msg.data.seq, // Include seq for ordering and deduplication
             },
           ]);
           // Only set isStreaming if is_prompting is true (agent is responding to a user prompt)
@@ -902,6 +917,7 @@ export function useWebSocket() {
         // Broadcast notification that a user prompt was sent
         // This is sent to ALL connected clients for multi-browser sync
         const {
+          seq,
           is_mine,
           prompt_id,
           message,
@@ -910,6 +926,7 @@ export function useWebSocket() {
           is_prompting,
         } = msg.data;
         console.log("user_prompt received:", {
+          seq,
           is_mine,
           prompt_id,
           sender_id,
@@ -934,9 +951,25 @@ export function useWebSocket() {
         if (is_mine) {
           // This client sent the prompt - it's already in our UI
           // Just remove from pending queue (same as prompt_received)
+          // Also update the seq on the existing message if we have it
           if (prompt_id) {
             removePendingPrompt(prompt_id);
-            console.log("Own prompt confirmed:", prompt_id);
+            console.log("Own prompt confirmed:", prompt_id, "seq:", seq);
+            // Update the seq on the existing user message
+            if (seq) {
+              setSessions((prev) => {
+                const session = prev[sessionId];
+                if (!session) return prev;
+                const messages = session.messages.map((m) => {
+                  // Find the user message we just sent (by content match)
+                  if (m.role === ROLE_USER && !m.seq && m.text === message) {
+                    return { ...m, seq };
+                  }
+                  return m;
+                });
+                return { ...prev, [sessionId]: { ...session, messages } };
+              });
+            }
             // Resolve any pending send promise
             const pending = pendingSendsRef.current[prompt_id];
             if (pending) {
@@ -947,27 +980,31 @@ export function useWebSocket() {
           }
         } else {
           // Another client sent this prompt - add to our UI
-          // But first check if we already have this message (deduplication)
+          // But first check if we already have this message (by seq or content)
           setSessions((prev) => {
             const session = prev[sessionId];
             if (!session) return prev;
 
-            // Check if this message already exists (by content)
-            const messageContent = message?.substring(0, 200) || "";
-            const alreadyExists = session.messages.some(
-              (m) =>
-                m.role === ROLE_USER &&
-                (m.text || "").substring(0, 200) === messageContent,
-            );
+            // Check if this message already exists (by seq if available, or by content)
+            const alreadyExists = session.messages.some((m) => {
+              if (m.role !== ROLE_USER) return false;
+              // If both have seq, compare by seq
+              if (seq && m.seq) return m.seq === seq;
+              // Otherwise compare by content
+              const messageContent = message?.substring(0, 200) || "";
+              return (m.text || "").substring(0, 200) === messageContent;
+            });
 
             if (alreadyExists) {
-              console.log("Skipping duplicate user_prompt:", prompt_id);
+              console.log("Skipping duplicate user_prompt:", prompt_id, "seq:", seq);
               return prev;
             }
 
             console.log(
               "Prompt from another client:",
               prompt_id,
+              "seq:",
+              seq,
               "adding to UI",
             );
             let messages = [...session.messages];
@@ -986,6 +1023,7 @@ export function useWebSocket() {
               text: message,
               timestamp: Date.now(),
               fromOtherClient: true,
+              seq, // Include seq for ordering and deduplication
             };
             // Add image references if present (we don't have the actual image data)
             if (image_ids && image_ids.length > 0) {

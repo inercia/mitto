@@ -617,9 +617,9 @@ describe("mergeMessagesWithSync", () => {
     expect(result.find((m) => m.id === "tool-2")).toBeDefined();
   });
 
-  test("preserves existing order and appends new messages", () => {
-    // Existing messages are in display order - we should NOT re-sort them
-    // New messages from sync are appended at the end (they happened AFTER lastSeenSeq)
+  test("sorts messages by seq after merging", () => {
+    // Messages with seq are sorted by seq for correct chronological order
+    // This is now safe because seq is assigned at receive time, not persistence time
     const existing = [
       { role: ROLE_AGENT, html: "Third", seq: 3, timestamp: 3000 },
     ];
@@ -629,28 +629,27 @@ describe("mergeMessagesWithSync", () => {
     ];
     const result = mergeMessagesWithSync(existing, newMessages);
     expect(result).toHaveLength(3);
-    // Existing message stays first, new messages are appended
-    expect(result[0].seq).toBe(3); // existing stays in place
-    expect(result[1].seq).toBe(1); // new messages appended in their order
-    expect(result[2].seq).toBe(2);
+    // Messages are sorted by seq for correct order
+    expect(result[0].seq).toBe(1); // First by seq
+    expect(result[1].seq).toBe(2); // Second by seq
+    expect(result[2].seq).toBe(3); // Third by seq
   });
 
-  test("appends new messages without re-sorting", () => {
-    // This test verifies we don't try to insert sync messages into the middle
-    // based on timestamp - they always go at the end
+  test("sorts messages by seq when both have seq", () => {
+    // When all messages have seq, they are sorted by seq
     const existing = [
-      { role: ROLE_USER, text: "First", timestamp: 1000 },
-      { role: ROLE_AGENT, html: "Third", timestamp: 3000 },
+      { role: ROLE_USER, text: "First", seq: 1, timestamp: 1000 },
+      { role: ROLE_AGENT, html: "Third", seq: 3, timestamp: 3000 },
     ];
     const newMessages = [
-      { role: ROLE_THOUGHT, text: "Second", timestamp: 2000 },
+      { role: ROLE_THOUGHT, text: "Second", seq: 2, timestamp: 2000 },
     ];
     const result = mergeMessagesWithSync(existing, newMessages);
     expect(result).toHaveLength(3);
-    // Existing messages stay in order, new messages appended
+    // Messages sorted by seq
     expect(result[0].text).toBe("First");
-    expect(result[1].html).toBe("Third");
-    expect(result[2].text).toBe("Second"); // appended at end
+    expect(result[1].text).toBe("Second");
+    expect(result[2].html).toBe("Third");
   });
 
   test("handles mixed seq and non-seq messages", () => {

@@ -460,27 +460,20 @@ export function getMessageHash(message) {
 }
 
 /**
- * Merge new messages from sync into existing messages, maintaining display order.
+ * Merge new messages from sync into existing messages, maintaining correct order.
  * This handles the case where:
- * 1. Existing messages may have been received via streaming (no seq, or client-side timestamp)
+ * 1. Existing messages may have been received via streaming (with seq from backend)
  * 2. New messages come from sync (with seq and server timestamp)
  *
  * The merge strategy:
- * 1. Create a hash set of existing messages for deduplication
- * 2. Filter out duplicates from new messages
- * 3. Append new messages at the end (they happened AFTER the existing messages)
+ * 1. Deduplicate by seq (if both have seq) or by content hash (fallback)
+ * 2. Combine all messages and sort by seq for correct ordering
+ * 3. Messages without seq are kept in their relative position
  *
- * IMPORTANT: Do NOT re-sort the entire message list by seq or timestamp.
- *
- * Existing messages are in correct display order from real-time streaming.
- * New messages from sync represent events that happened AFTER the lastSeenSeq,
- * so they should be appended at the end.
- *
- * Re-sorting by seq causes incorrect ordering because:
- * 1. Tool calls are persisted immediately with early seq numbers
- * 2. Agent messages are buffered and persisted later with later seq numbers
- * 3. This makes tool calls appear to come before agent messages when sorted by seq,
- *    even though they were interleaved during the actual conversation.
+ * Sorting by seq is now safe because:
+ * - All events (including tool calls) are buffered and persisted together
+ * - Seq is assigned when the event is received from ACP, not at persistence time
+ * - Streaming messages now include seq, so they match their persisted counterparts
  *
  * The sync messages themselves are already in chronological order from the backend
  * (they're read from events.jsonl which is append-only).
@@ -497,14 +490,24 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     return existingMessages;
   }
 
-  // Create hash set of existing messages for deduplication
+  // Create a map of existing messages by seq for fast lookup
+  const existingBySeq = new Map();
   const existingHashes = new Set();
   for (const m of existingMessages) {
+    if (m.seq) {
+      existingBySeq.set(m.seq, m);
+    }
     existingHashes.add(getMessageHash(m));
   }
 
   // Filter out duplicates from new messages
+  // Prefer seq-based deduplication, fall back to content hash
   const filteredNewMessages = newMessages.filter((m) => {
+    // If both have seq, deduplicate by seq
+    if (m.seq && existingBySeq.has(m.seq)) {
+      return false;
+    }
+    // Fall back to content hash for messages without seq
     const hash = getMessageHash(m);
     return !existingHashes.has(hash);
   });
@@ -513,8 +516,32 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     return existingMessages;
   }
 
-  // Append new messages at the end - they happened after existing messages
-  return [...existingMessages, ...filteredNewMessages];
+  // Combine all messages
+  const allMessages = [...existingMessages, ...filteredNewMessages];
+
+  // Sort by seq if available
+  // Messages with seq are sorted by seq
+  // Messages without seq maintain their relative position
+  allMessages.sort((a, b) => {
+    // Both have seq - sort by seq
+    if (a.seq && b.seq) {
+      return a.seq - b.seq;
+    }
+    // Only one has seq - the one with seq comes in its correct position
+    // The one without seq stays where it was (use timestamp as fallback)
+    if (a.seq && !b.seq) {
+      // a has seq, b doesn't - compare a.seq with b's approximate position
+      return 0; // Keep relative order
+    }
+    if (!a.seq && b.seq) {
+      // b has seq, a doesn't
+      return 0; // Keep relative order
+    }
+    // Neither has seq - use timestamp
+    return (a.timestamp || 0) - (b.timestamp || 0);
+  });
+
+  return allMessages;
 }
 
 /**
