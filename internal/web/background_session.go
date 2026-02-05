@@ -38,6 +38,13 @@ type BackgroundSession struct {
 	eventBuffer *EventBuffer // Unified buffer for all streaming events
 	bufferMu    sync.Mutex   // Protects eventBuffer
 
+	// Sequence number tracking for event ordering
+	// nextSeq is the next sequence number to assign to a new event.
+	// It's initialized from the store's EventCount + 1 and incremented for each new event.
+	// This ensures streaming events have the same seq as their persisted counterparts.
+	nextSeq int64
+	seqMu   sync.Mutex // Protects nextSeq
+
 	// Session lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -147,6 +154,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			})
 		}
 
+		// Initialize nextSeq from current event count (new session starts at 1)
+		bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+
 		// Create session-scoped logger with context
 		if bs.logger != nil {
 			bs.logger = logging.WithSessionContext(bs.logger, bs.persistedID, cfg.WorkingDir, cfg.ACPServer)
@@ -226,6 +236,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		}); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to update session status", "error", err)
 		}
+
+		// Initialize nextSeq from current event count
+		bs.nextSeq = int64(bs.recorder.EventCount()) + 1
 	}
 
 	// Start ACP process, passing the ACP session ID for potential resumption
@@ -299,6 +312,28 @@ func (bs *BackgroundSession) GetEventCount() int {
 		return 0
 	}
 	return bs.recorder.EventCount()
+}
+
+// getNextSeq returns the next sequence number and increments the counter.
+// This is used to assign sequence numbers to streaming events.
+func (bs *BackgroundSession) getNextSeq() int64 {
+	bs.seqMu.Lock()
+	defer bs.seqMu.Unlock()
+	seq := bs.nextSeq
+	bs.nextSeq++
+	return seq
+}
+
+// refreshNextSeq updates nextSeq from the current event count.
+// This should be called after events are persisted outside the normal buffer flow
+// (e.g., after user prompts are persisted directly).
+func (bs *BackgroundSession) refreshNextSeq() {
+	if bs.recorder == nil {
+		return
+	}
+	bs.seqMu.Lock()
+	defer bs.seqMu.Unlock()
+	bs.nextSeq = int64(bs.recorder.EventCount()) + 1
 }
 
 // CreatedAt returns when the session was created.
@@ -777,16 +812,23 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	bs.clearActionButtons()
 
 	// Persist user prompt with image references
+	// User prompts are persisted immediately (not buffered), so we need to
+	// refresh nextSeq after persistence to get the correct seq for the prompt
+	var userPromptSeq int64
 	if bs.recorder != nil {
 		if err := bs.recorder.RecordUserPromptWithImages(message, imageRefs); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
+		// Get the seq that was assigned to the user prompt (it's the current event count)
+		userPromptSeq = int64(bs.recorder.EventCount())
+		// Update nextSeq for subsequent agent events
+		bs.refreshNextSeq()
 	}
 
 	// Notify all observers about the user prompt (for multi-client sync)
 	// This includes the message text so other connected clients can display it
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(meta.SenderID, meta.PromptID, message, imageIDs)
+		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs)
 	})
 
 	// Build the actual prompt to send to ACP
@@ -1394,22 +1436,41 @@ func (bs *BackgroundSession) onAgentMessage(html string) {
 		return
 	}
 
+	// Get next seq for potential new event
+	candidateSeq := bs.getNextSeq()
+
 	// Buffer for persistence (protected by mutex)
+	// AppendAgentMessage returns the actual seq used (may be existing if appending)
+	// and whether a new event was created (if not, we need to "return" the seq)
 	bs.bufferMu.Lock()
+	var seq int64
+	var isNew bool
 	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendAgentMessage(html)
+		seq, isNew = bs.eventBuffer.AppendAgentMessage(candidateSeq, html)
+	} else {
+		seq = candidateSeq
+		isNew = true
 	}
 	bs.bufferMu.Unlock()
+
+	// If we didn't create a new event, we need to "return" the seq we got
+	// by decrementing nextSeq (since we incremented it but didn't use it)
+	if !isNew {
+		bs.seqMu.Lock()
+		bs.nextSeq--
+		bs.seqMu.Unlock()
+	}
 
 	// Notify all observers
 	observerCount := bs.ObserverCount()
 	if bs.logger != nil && observerCount > 1 {
 		bs.logger.Debug("Notifying multiple observers of agent message",
 			"observer_count", observerCount,
-			"html_len", len(html))
+			"html_len", len(html),
+			"seq", seq)
 	}
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnAgentMessage(html)
+		o.OnAgentMessage(seq, html)
 	})
 }
 
@@ -1418,16 +1479,31 @@ func (bs *BackgroundSession) onAgentThought(text string) {
 		return
 	}
 
+	// Get next seq for potential new event
+	candidateSeq := bs.getNextSeq()
+
 	// Buffer for persistence (protected by mutex)
 	bs.bufferMu.Lock()
+	var seq int64
+	var isNew bool
 	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendAgentThought(text)
+		seq, isNew = bs.eventBuffer.AppendAgentThought(candidateSeq, text)
+	} else {
+		seq = candidateSeq
+		isNew = true
 	}
 	bs.bufferMu.Unlock()
 
+	// If we didn't create a new event, return the unused seq
+	if !isNew {
+		bs.seqMu.Lock()
+		bs.nextSeq--
+		bs.seqMu.Unlock()
+	}
+
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnAgentThought(text)
+		o.OnAgentThought(seq, text)
 	})
 }
 
@@ -1436,16 +1512,19 @@ func (bs *BackgroundSession) onToolCall(id, title, status string) {
 		return
 	}
 
+	// Get next seq - tool calls always create new events
+	seq := bs.getNextSeq()
+
 	// Buffer for persistence (protected by mutex)
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendToolCall(id, title, status)
+		bs.eventBuffer.AppendToolCall(seq, id, title, status)
 	}
 	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnToolCall(id, title, status)
+		o.OnToolCall(seq, id, title, status)
 	})
 }
 
@@ -1454,16 +1533,19 @@ func (bs *BackgroundSession) onToolUpdate(id string, status *string) {
 		return
 	}
 
+	// Get next seq - tool updates always create new events
+	seq := bs.getNextSeq()
+
 	// Buffer for persistence (protected by mutex)
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendToolCallUpdate(id, status)
+		bs.eventBuffer.AppendToolCallUpdate(seq, id, status)
 	}
 	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnToolUpdate(id, status)
+		o.OnToolUpdate(seq, id, status)
 	})
 }
 
@@ -1472,16 +1554,19 @@ func (bs *BackgroundSession) onPlan() {
 		return
 	}
 
+	// Get next seq - plan events always create new events
+	seq := bs.getNextSeq()
+
 	// Buffer for persistence (protected by mutex)
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendPlan()
+		bs.eventBuffer.AppendPlan(seq)
 	}
 	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnPlan()
+		o.OnPlan(seq)
 	})
 }
 
@@ -1490,16 +1575,19 @@ func (bs *BackgroundSession) onFileWrite(path string, size int) {
 		return
 	}
 
+	// Get next seq - file write events always create new events
+	seq := bs.getNextSeq()
+
 	// Buffer for persistence (protected by mutex)
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendFileWrite(path, size)
+		bs.eventBuffer.AppendFileWrite(seq, path, size)
 	}
 	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnFileWrite(path, size)
+		o.OnFileWrite(seq, path, size)
 	})
 }
 
@@ -1508,16 +1596,19 @@ func (bs *BackgroundSession) onFileRead(path string, size int) {
 		return
 	}
 
+	// Get next seq - file read events always create new events
+	seq := bs.getNextSeq()
+
 	// Buffer for persistence (protected by mutex)
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendFileRead(path, size)
+		bs.eventBuffer.AppendFileRead(seq, path, size)
 	}
 	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnFileRead(path, size)
+		o.OnFileRead(seq, path, size)
 	})
 }
 

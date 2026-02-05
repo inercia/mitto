@@ -225,8 +225,11 @@ const (
 
 // BufferedEvent represents a single event in the streaming buffer.
 // Events are stored in the order they arrive and persisted together when the prompt completes.
+// Each event has a sequence number (Seq) assigned when it's created, which is used for
+// ordering and deduplication across WebSocket reconnections.
 type BufferedEvent struct {
 	Type BufferedEventType
+	Seq  int64 // Sequence number for ordering and deduplication
 	Data interface{}
 }
 
@@ -297,78 +300,102 @@ func (b *EventBuffer) Append(event BufferedEvent) {
 	b.events = append(b.events, event)
 }
 
+// LastSeq returns the sequence number of the last event in the buffer, or 0 if empty.
+func (b *EventBuffer) LastSeq() int64 {
+	if len(b.events) == 0 {
+		return 0
+	}
+	return b.events[len(b.events)-1].Seq
+}
+
 // AppendAgentMessage appends an agent message chunk to the buffer.
-// If the last event is also an agent message, the text is concatenated.
-func (b *EventBuffer) AppendAgentMessage(html string) {
+// If the last event is also an agent message, the text is concatenated and returns (lastSeq, false).
+// If this creates a new event, it uses the provided seq and returns (seq, true).
+func (b *EventBuffer) AppendAgentMessage(seq int64, html string) (int64, bool) {
 	if len(b.events) > 0 {
 		last := &b.events[len(b.events)-1]
 		if last.Type == BufferedEventAgentMessage {
 			if data, ok := last.Data.(*AgentMessageData); ok {
 				data.HTML += html
-				return
+				return last.Seq, false // Appended to existing event
 			}
 		}
 	}
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventAgentMessage,
+		Seq:  seq,
 		Data: &AgentMessageData{HTML: html},
 	})
+	return seq, true // Created new event
 }
 
 // AppendAgentThought appends an agent thought chunk to the buffer.
-// If the last event is also an agent thought, the text is concatenated.
-func (b *EventBuffer) AppendAgentThought(text string) {
+// If the last event is also an agent thought, the text is concatenated and returns (lastSeq, false).
+// If this creates a new event, it uses the provided seq and returns (seq, true).
+func (b *EventBuffer) AppendAgentThought(seq int64, text string) (int64, bool) {
 	if len(b.events) > 0 {
 		last := &b.events[len(b.events)-1]
 		if last.Type == BufferedEventAgentThought {
 			if data, ok := last.Data.(*AgentThoughtData); ok {
 				data.Text += text
-				return
+				return last.Seq, false // Appended to existing event
 			}
 		}
 	}
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventAgentThought,
+		Seq:  seq,
 		Data: &AgentThoughtData{Text: text},
 	})
+	return seq, true // Created new event
 }
 
 // AppendToolCall appends a tool call event to the buffer.
-func (b *EventBuffer) AppendToolCall(id, title, status string) {
+// Always creates a new event with the provided seq.
+func (b *EventBuffer) AppendToolCall(seq int64, id, title, status string) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventToolCall,
+		Seq:  seq,
 		Data: &ToolCallData{ID: id, Title: title, Status: status},
 	})
 }
 
 // AppendToolCallUpdate appends a tool call update event to the buffer.
-func (b *EventBuffer) AppendToolCallUpdate(id string, status *string) {
+// Always creates a new event with the provided seq.
+func (b *EventBuffer) AppendToolCallUpdate(seq int64, id string, status *string) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventToolCallUpdate,
+		Seq:  seq,
 		Data: &ToolCallUpdateData{ID: id, Status: status},
 	})
 }
 
 // AppendPlan appends a plan event to the buffer.
-func (b *EventBuffer) AppendPlan() {
+// Always creates a new event with the provided seq.
+func (b *EventBuffer) AppendPlan(seq int64) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventPlan,
+		Seq:  seq,
 		Data: &PlanData{},
 	})
 }
 
 // AppendFileRead appends a file read event to the buffer.
-func (b *EventBuffer) AppendFileRead(path string, size int) {
+// Always creates a new event with the provided seq.
+func (b *EventBuffer) AppendFileRead(seq int64, path string, size int) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventFileRead,
+		Seq:  seq,
 		Data: &FileOperationData{Path: path, Size: size},
 	})
 }
 
 // AppendFileWrite appends a file write event to the buffer.
-func (b *EventBuffer) AppendFileWrite(path string, size int) {
+// Always creates a new event with the provided seq.
+func (b *EventBuffer) AppendFileWrite(seq int64, path string, size int) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventFileWrite,
+		Seq:  seq,
 		Data: &FileOperationData{Path: path, Size: size},
 	})
 }
@@ -427,33 +454,34 @@ func (b *EventBuffer) GetAgentThought() string {
 
 // ReplayTo sends this buffered event to a SessionObserver.
 // This is used to catch up newly connected observers on in-progress streaming.
+// The event's Seq is passed to the observer for ordering and deduplication.
 func (e BufferedEvent) ReplayTo(observer SessionObserver) {
 	switch e.Type {
 	case BufferedEventAgentThought:
 		if data, ok := e.Data.(*AgentThoughtData); ok && data.Text != "" {
-			observer.OnAgentThought(data.Text)
+			observer.OnAgentThought(e.Seq, data.Text)
 		}
 	case BufferedEventAgentMessage:
 		if data, ok := e.Data.(*AgentMessageData); ok && data.HTML != "" {
-			observer.OnAgentMessage(data.HTML)
+			observer.OnAgentMessage(e.Seq, data.HTML)
 		}
 	case BufferedEventToolCall:
 		if data, ok := e.Data.(*ToolCallData); ok {
-			observer.OnToolCall(data.ID, data.Title, data.Status)
+			observer.OnToolCall(e.Seq, data.ID, data.Title, data.Status)
 		}
 	case BufferedEventToolCallUpdate:
 		if data, ok := e.Data.(*ToolCallUpdateData); ok {
-			observer.OnToolUpdate(data.ID, data.Status)
+			observer.OnToolUpdate(e.Seq, data.ID, data.Status)
 		}
 	case BufferedEventPlan:
-		observer.OnPlan()
+		observer.OnPlan(e.Seq)
 	case BufferedEventFileRead:
 		if data, ok := e.Data.(*FileOperationData); ok {
-			observer.OnFileRead(data.Path, data.Size)
+			observer.OnFileRead(e.Seq, data.Path, data.Size)
 		}
 	case BufferedEventFileWrite:
 		if data, ok := e.Data.(*FileOperationData); ok {
-			observer.OnFileWrite(data.Path, data.Size)
+			observer.OnFileWrite(e.Seq, data.Path, data.Size)
 		}
 	}
 }

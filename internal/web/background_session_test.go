@@ -254,31 +254,31 @@ type queueUpdate struct {
 	messageID   string
 }
 
-func (m *mockSessionObserver) OnAgentMessage(html string) {
+func (m *mockSessionObserver) OnAgentMessage(seq int64, html string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.agentMessages = append(m.agentMessages, html)
 }
 
-func (m *mockSessionObserver) OnAgentThought(text string) {
+func (m *mockSessionObserver) OnAgentThought(seq int64, text string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.agentThoughts = append(m.agentThoughts, text)
 }
 
-func (m *mockSessionObserver) OnToolCall(id, title, status string) {
+func (m *mockSessionObserver) OnToolCall(seq int64, id, title, status string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.toolCalls = append(m.toolCalls, id)
 }
 
-func (m *mockSessionObserver) OnToolUpdate(id string, status *string) {}
+func (m *mockSessionObserver) OnToolUpdate(seq int64, id string, status *string) {}
 
-func (m *mockSessionObserver) OnPlan() {}
+func (m *mockSessionObserver) OnPlan(seq int64) {}
 
-func (m *mockSessionObserver) OnFileWrite(path string, size int) {}
+func (m *mockSessionObserver) OnFileWrite(seq int64, path string, size int) {}
 
-func (m *mockSessionObserver) OnFileRead(path string, size int) {}
+func (m *mockSessionObserver) OnFileRead(seq int64, path string, size int) {}
 
 func (m *mockSessionObserver) OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
@@ -290,7 +290,7 @@ func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 	m.completed = true
 }
 
-func (m *mockSessionObserver) OnUserPrompt(senderID, promptID, message string, imageIDs []string) {
+func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string) {
 	// No-op for tests
 }
 

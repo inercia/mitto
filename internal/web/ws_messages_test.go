@@ -67,8 +67,17 @@ func TestEventBuffer_NewEventBuffer(t *testing.T) {
 func TestEventBuffer_AppendAgentMessage(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage("Hello, ")
-	buf.AppendAgentMessage("World!")
+	// First chunk creates new event with seq=1
+	seq1, isNew1 := buf.AppendAgentMessage(1, "Hello, ")
+	if !isNew1 || seq1 != 1 {
+		t.Errorf("First append: seq=%d, isNew=%v, want seq=1, isNew=true", seq1, isNew1)
+	}
+
+	// Second chunk appends to existing event, returns same seq
+	seq2, isNew2 := buf.AppendAgentMessage(2, "World!")
+	if isNew2 || seq2 != 1 {
+		t.Errorf("Second append: seq=%d, isNew=%v, want seq=1, isNew=false", seq2, isNew2)
+	}
 
 	// Consecutive agent messages should be concatenated
 	if buf.Len() != 1 {
@@ -84,8 +93,17 @@ func TestEventBuffer_AppendAgentMessage(t *testing.T) {
 func TestEventBuffer_AppendAgentThought(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentThought("Thinking... ")
-	buf.AppendAgentThought("Done!")
+	// First chunk creates new event with seq=1
+	seq1, isNew1 := buf.AppendAgentThought(1, "Thinking... ")
+	if !isNew1 || seq1 != 1 {
+		t.Errorf("First append: seq=%d, isNew=%v, want seq=1, isNew=true", seq1, isNew1)
+	}
+
+	// Second chunk appends to existing event, returns same seq
+	seq2, isNew2 := buf.AppendAgentThought(2, "Done!")
+	if isNew2 || seq2 != 1 {
+		t.Errorf("Second append: seq=%d, isNew=%v, want seq=1, isNew=false", seq2, isNew2)
+	}
 
 	// Consecutive thoughts should be concatenated
 	if buf.Len() != 1 {
@@ -102,11 +120,12 @@ func TestEventBuffer_InterleavedEvents(t *testing.T) {
 	buf := NewEventBuffer()
 
 	// Simulate interleaved streaming: message, tool, message, tool, message
-	buf.AppendAgentMessage("Let me help... ")
-	buf.AppendToolCall("tool-1", "Read file", "running")
-	buf.AppendAgentMessage("I found... ")
-	buf.AppendToolCall("tool-2", "Edit file", "running")
-	buf.AppendAgentMessage("Done!")
+	// Each event gets a unique seq
+	buf.AppendAgentMessage(1, "Let me help... ")
+	buf.AppendToolCall(2, "tool-1", "Read file", "running")
+	buf.AppendAgentMessage(3, "I found... ")
+	buf.AppendToolCall(4, "tool-2", "Edit file", "running")
+	buf.AppendAgentMessage(5, "Done!")
 
 	// Should have 5 separate events (not concatenated because interleaved)
 	if buf.Len() != 5 {
@@ -115,21 +134,21 @@ func TestEventBuffer_InterleavedEvents(t *testing.T) {
 
 	events := buf.Events()
 
-	// Verify order
-	if events[0].Type != BufferedEventAgentMessage {
-		t.Errorf("events[0].Type = %v, want AgentMessage", events[0].Type)
+	// Verify order and seq
+	if events[0].Type != BufferedEventAgentMessage || events[0].Seq != 1 {
+		t.Errorf("events[0].Type = %v, Seq = %d, want AgentMessage, 1", events[0].Type, events[0].Seq)
 	}
-	if events[1].Type != BufferedEventToolCall {
-		t.Errorf("events[1].Type = %v, want ToolCall", events[1].Type)
+	if events[1].Type != BufferedEventToolCall || events[1].Seq != 2 {
+		t.Errorf("events[1].Type = %v, Seq = %d, want ToolCall, 2", events[1].Type, events[1].Seq)
 	}
-	if events[2].Type != BufferedEventAgentMessage {
-		t.Errorf("events[2].Type = %v, want AgentMessage", events[2].Type)
+	if events[2].Type != BufferedEventAgentMessage || events[2].Seq != 3 {
+		t.Errorf("events[2].Type = %v, Seq = %d, want AgentMessage, 3", events[2].Type, events[2].Seq)
 	}
-	if events[3].Type != BufferedEventToolCall {
-		t.Errorf("events[3].Type = %v, want ToolCall", events[3].Type)
+	if events[3].Type != BufferedEventToolCall || events[3].Seq != 4 {
+		t.Errorf("events[3].Type = %v, Seq = %d, want ToolCall, 4", events[3].Type, events[3].Seq)
 	}
-	if events[4].Type != BufferedEventAgentMessage {
-		t.Errorf("events[4].Type = %v, want AgentMessage", events[4].Type)
+	if events[4].Type != BufferedEventAgentMessage || events[4].Seq != 5 {
+		t.Errorf("events[4].Type = %v, Seq = %d, want AgentMessage, 5", events[4].Type, events[4].Seq)
 	}
 
 	// Verify tool call data
@@ -145,8 +164,8 @@ func TestEventBuffer_InterleavedEvents(t *testing.T) {
 func TestEventBuffer_Flush(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage("Hello")
-	buf.AppendToolCall("tool-1", "Test", "done")
+	buf.AppendAgentMessage(1, "Hello")
+	buf.AppendToolCall(2, "tool-1", "Test", "done")
 
 	events := buf.Flush()
 	if len(events) != 2 {
@@ -165,7 +184,7 @@ func TestEventBuffer_Flush(t *testing.T) {
 func TestEventBuffer_Events_ReturnsCopy(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage("Hello")
+	buf.AppendAgentMessage(1, "Hello")
 
 	events1 := buf.Events()
 	events2 := buf.Events()
@@ -184,11 +203,11 @@ func TestEventBuffer_Events_ReturnsCopy(t *testing.T) {
 func TestEventBuffer_GetAgentMessage_Interleaved(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentMessage("Part 1. ")
-	buf.AppendToolCall("tool-1", "Test", "done")
-	buf.AppendAgentMessage("Part 2. ")
-	buf.AppendAgentThought("Thinking...")
-	buf.AppendAgentMessage("Part 3.")
+	buf.AppendAgentMessage(1, "Part 1. ")
+	buf.AppendToolCall(2, "tool-1", "Test", "done")
+	buf.AppendAgentMessage(3, "Part 2. ")
+	buf.AppendAgentThought(4, "Thinking...")
+	buf.AppendAgentMessage(5, "Part 3.")
 
 	// GetAgentMessage should concatenate all agent messages
 	result := buf.GetAgentMessage()
@@ -200,9 +219,9 @@ func TestEventBuffer_GetAgentMessage_Interleaved(t *testing.T) {
 func TestEventBuffer_GetAgentThought_Interleaved(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentThought("Thought 1. ")
-	buf.AppendAgentMessage("Message")
-	buf.AppendAgentThought("Thought 2.")
+	buf.AppendAgentThought(1, "Thought 1. ")
+	buf.AppendAgentMessage(2, "Message")
+	buf.AppendAgentThought(3, "Thought 2.")
 
 	// GetAgentThought should concatenate all thoughts
 	result := buf.GetAgentThought()
@@ -214,9 +233,9 @@ func TestEventBuffer_GetAgentThought_Interleaved(t *testing.T) {
 func TestEventBuffer_ToolCallUpdate(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendToolCall("tool-1", "Read file", "running")
+	buf.AppendToolCall(1, "tool-1", "Read file", "running")
 	status := "completed"
-	buf.AppendToolCallUpdate("tool-1", &status)
+	buf.AppendToolCallUpdate(2, "tool-1", &status)
 
 	if buf.Len() != 2 {
 		t.Errorf("Len = %d, want 2", buf.Len())
@@ -231,14 +250,14 @@ func TestEventBuffer_ToolCallUpdate(t *testing.T) {
 func TestEventBuffer_AllEventTypes(t *testing.T) {
 	buf := NewEventBuffer()
 
-	buf.AppendAgentThought("Thinking...")
-	buf.AppendAgentMessage("Hello")
-	buf.AppendToolCall("tool-1", "Read", "running")
+	buf.AppendAgentThought(1, "Thinking...")
+	buf.AppendAgentMessage(2, "Hello")
+	buf.AppendToolCall(3, "tool-1", "Read", "running")
 	status := "done"
-	buf.AppendToolCallUpdate("tool-1", &status)
-	buf.AppendPlan()
-	buf.AppendFileRead("/path/to/file", 100)
-	buf.AppendFileWrite("/path/to/output", 200)
+	buf.AppendToolCallUpdate(4, "tool-1", &status)
+	buf.AppendPlan(5)
+	buf.AppendFileRead(6, "/path/to/file", 100)
+	buf.AppendFileWrite(7, "/path/to/output", 200)
 
 	if buf.Len() != 7 {
 		t.Errorf("Len = %d, want 7", buf.Len())
@@ -307,29 +326,29 @@ type replayTestObserver struct {
 	}
 }
 
-func (m *replayTestObserver) OnAgentMessage(html string) {
+func (m *replayTestObserver) OnAgentMessage(_ int64, html string) {
 	m.agentMessages = append(m.agentMessages, html)
 }
-func (m *replayTestObserver) OnAgentThought(text string) {
+func (m *replayTestObserver) OnAgentThought(_ int64, text string) {
 	m.agentThoughts = append(m.agentThoughts, text)
 }
-func (m *replayTestObserver) OnToolCall(id, title, status string) {
+func (m *replayTestObserver) OnToolCall(_ int64, id, title, status string) {
 	m.toolCalls = append(m.toolCalls, struct{ id, title, status string }{id, title, status})
 }
-func (m *replayTestObserver) OnToolUpdate(id string, status *string) {
+func (m *replayTestObserver) OnToolUpdate(_ int64, id string, status *string) {
 	m.toolUpdates = append(m.toolUpdates, struct {
 		id     string
 		status *string
 	}{id, status})
 }
-func (m *replayTestObserver) OnPlan() { m.planCalls++ }
-func (m *replayTestObserver) OnFileRead(path string, size int) {
+func (m *replayTestObserver) OnPlan(_ int64) { m.planCalls++ }
+func (m *replayTestObserver) OnFileRead(_ int64, path string, size int) {
 	m.fileReads = append(m.fileReads, struct {
 		path string
 		size int
 	}{path, size})
 }
-func (m *replayTestObserver) OnFileWrite(path string, size int) {
+func (m *replayTestObserver) OnFileWrite(_ int64, path string, size int) {
 	m.fileWrites = append(m.fileWrites, struct {
 		path string
 		size int
@@ -338,27 +357,27 @@ func (m *replayTestObserver) OnFileWrite(path string, size int) {
 func (m *replayTestObserver) OnPermission(_ context.Context, _ acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
 }
-func (m *replayTestObserver) OnPromptComplete(_ int)                     {}
-func (m *replayTestObserver) OnActionButtons(_ []ActionButton)           {}
-func (m *replayTestObserver) OnUserPrompt(_, _, _ string, _ []string)    {}
-func (m *replayTestObserver) OnError(_ string)                           {}
-func (m *replayTestObserver) OnQueueUpdated(_ int, _, _ string)          {}
-func (m *replayTestObserver) OnQueueReordered(_ []session.QueuedMessage) {}
-func (m *replayTestObserver) OnQueueMessageSending(_ string)             {}
-func (m *replayTestObserver) OnQueueMessageSent(_ string)                {}
+func (m *replayTestObserver) OnPromptComplete(_ int)                           {}
+func (m *replayTestObserver) OnActionButtons(_ []ActionButton)                 {}
+func (m *replayTestObserver) OnUserPrompt(_ int64, _, _, _ string, _ []string) {}
+func (m *replayTestObserver) OnError(_ string)                                 {}
+func (m *replayTestObserver) OnQueueUpdated(_ int, _, _ string)                {}
+func (m *replayTestObserver) OnQueueReordered(_ []session.QueuedMessage)       {}
+func (m *replayTestObserver) OnQueueMessageSending(_ string)                   {}
+func (m *replayTestObserver) OnQueueMessageSent(_ string)                      {}
 
 func TestBufferedEvent_ReplayTo(t *testing.T) {
 	observer := &replayTestObserver{}
 
-	// Test each event type
+	// Test each event type with seq numbers
 	events := []BufferedEvent{
-		{Type: BufferedEventAgentThought, Data: &AgentThoughtData{Text: "thinking"}},
-		{Type: BufferedEventAgentMessage, Data: &AgentMessageData{HTML: "<p>hello</p>"}},
-		{Type: BufferedEventToolCall, Data: &ToolCallData{ID: "t1", Title: "Read", Status: "running"}},
-		{Type: BufferedEventToolCallUpdate, Data: &ToolCallUpdateData{ID: "t1", Status: ptr("done")}},
-		{Type: BufferedEventPlan, Data: &PlanData{}},
-		{Type: BufferedEventFileRead, Data: &FileOperationData{Path: "/a.txt", Size: 100}},
-		{Type: BufferedEventFileWrite, Data: &FileOperationData{Path: "/b.txt", Size: 200}},
+		{Type: BufferedEventAgentThought, Seq: 1, Data: &AgentThoughtData{Text: "thinking"}},
+		{Type: BufferedEventAgentMessage, Seq: 2, Data: &AgentMessageData{HTML: "<p>hello</p>"}},
+		{Type: BufferedEventToolCall, Seq: 3, Data: &ToolCallData{ID: "t1", Title: "Read", Status: "running"}},
+		{Type: BufferedEventToolCallUpdate, Seq: 4, Data: &ToolCallUpdateData{ID: "t1", Status: ptr("done")}},
+		{Type: BufferedEventPlan, Seq: 5, Data: &PlanData{}},
+		{Type: BufferedEventFileRead, Seq: 6, Data: &FileOperationData{Path: "/a.txt", Size: 100}},
+		{Type: BufferedEventFileWrite, Seq: 7, Data: &FileOperationData{Path: "/b.txt", Size: 200}},
 	}
 
 	for _, e := range events {
@@ -520,6 +539,96 @@ func TestBufferedEvent_PersistTo_ReturnsError(t *testing.T) {
 	}
 	if err.Error() != "persist error" {
 		t.Errorf("error = %v, want 'persist error'", err)
+	}
+}
+
+func TestEventBuffer_SeqCoalescing(t *testing.T) {
+	// Test that consecutive agent messages share the same seq (coalescing)
+	buf := NewEventBuffer()
+
+	// First chunk gets seq=1, creates new event
+	seq1, isNew1 := buf.AppendAgentMessage(1, "Hello ")
+	if !isNew1 {
+		t.Error("First chunk should create new event")
+	}
+	if seq1 != 1 {
+		t.Errorf("First chunk seq = %d, want 1", seq1)
+	}
+
+	// Second chunk gets seq=2, but appends to existing event, returns seq=1
+	seq2, isNew2 := buf.AppendAgentMessage(2, "world!")
+	if isNew2 {
+		t.Error("Second chunk should append to existing event")
+	}
+	if seq2 != 1 {
+		t.Errorf("Second chunk seq = %d, want 1 (coalesced)", seq2)
+	}
+
+	// Verify only one event with seq=1
+	events := buf.Events()
+	if len(events) != 1 {
+		t.Errorf("Events count = %d, want 1", len(events))
+	}
+	if events[0].Seq != 1 {
+		t.Errorf("Event seq = %d, want 1", events[0].Seq)
+	}
+
+	// Verify content is concatenated
+	data := events[0].Data.(*AgentMessageData)
+	if data.HTML != "Hello world!" {
+		t.Errorf("HTML = %q, want %q", data.HTML, "Hello world!")
+	}
+}
+
+func TestEventBuffer_SeqPreservedOnInterleave(t *testing.T) {
+	// Test that interleaved events preserve their individual seq numbers
+	buf := NewEventBuffer()
+
+	// Message with seq=1
+	buf.AppendAgentMessage(1, "Starting...")
+
+	// Tool call with seq=2
+	buf.AppendToolCall(2, "tool-1", "Read file", "running")
+
+	// New message with seq=3 (not coalesced because tool call in between)
+	seq3, isNew3 := buf.AppendAgentMessage(3, "Found it!")
+	if !isNew3 {
+		t.Error("Message after tool call should create new event")
+	}
+	if seq3 != 3 {
+		t.Errorf("Third event seq = %d, want 3", seq3)
+	}
+
+	events := buf.Events()
+	if len(events) != 3 {
+		t.Errorf("Events count = %d, want 3", len(events))
+	}
+
+	// Verify seq numbers are preserved
+	expectedSeqs := []int64{1, 2, 3}
+	for i, e := range events {
+		if e.Seq != expectedSeqs[i] {
+			t.Errorf("events[%d].Seq = %d, want %d", i, e.Seq, expectedSeqs[i])
+		}
+	}
+}
+
+func TestEventBuffer_LastSeq(t *testing.T) {
+	buf := NewEventBuffer()
+
+	// Empty buffer should return 0
+	if buf.LastSeq() != 0 {
+		t.Errorf("Empty buffer LastSeq = %d, want 0", buf.LastSeq())
+	}
+
+	buf.AppendAgentMessage(5, "Hello")
+	if buf.LastSeq() != 5 {
+		t.Errorf("After first event LastSeq = %d, want 5", buf.LastSeq())
+	}
+
+	buf.AppendToolCall(10, "tool-1", "Test", "done")
+	if buf.LastSeq() != 10 {
+		t.Errorf("After second event LastSeq = %d, want 10", buf.LastSeq())
 	}
 }
 

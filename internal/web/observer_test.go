@@ -19,31 +19,31 @@ type mockObserver struct {
 	userPrompts   []string
 }
 
-func (m *mockObserver) OnAgentMessage(html string) {
+func (m *mockObserver) OnAgentMessage(seq int64, html string) {
 	m.agentMessages = append(m.agentMessages, html)
 }
 
-func (m *mockObserver) OnAgentThought(text string) {
+func (m *mockObserver) OnAgentThought(seq int64, text string) {
 	m.agentThoughts = append(m.agentThoughts, text)
 }
 
-func (m *mockObserver) OnToolCall(id, title, status string) {
+func (m *mockObserver) OnToolCall(seq int64, id, title, status string) {
 	m.toolCalls = append(m.toolCalls, id)
 }
 
-func (m *mockObserver) OnToolUpdate(id string, status *string) {
+func (m *mockObserver) OnToolUpdate(seq int64, id string, status *string) {
 	// no-op for testing
 }
 
-func (m *mockObserver) OnPlan() {
+func (m *mockObserver) OnPlan(seq int64) {
 	m.planCalls++
 }
 
-func (m *mockObserver) OnFileWrite(path string, size int) {
+func (m *mockObserver) OnFileWrite(seq int64, path string, size int) {
 	// no-op for testing
 }
 
-func (m *mockObserver) OnFileRead(path string, size int) {
+func (m *mockObserver) OnFileRead(seq int64, path string, size int) {
 	// no-op for testing
 }
 
@@ -55,7 +55,7 @@ func (m *mockObserver) OnPromptComplete(eventCount int) {
 	m.promptsDone++
 }
 
-func (m *mockObserver) OnUserPrompt(senderID, promptID, message string, imageIDs []string) {
+func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string) {
 	m.userPrompts = append(m.userPrompts, message)
 }
 

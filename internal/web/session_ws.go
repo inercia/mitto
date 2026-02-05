@@ -469,7 +469,8 @@ func (c *SessionWSClient) sendError(message string) {
 // --- SessionObserver interface implementation ---
 
 // OnAgentMessage is called when the agent sends a message chunk.
-func (c *SessionWSClient) OnAgentMessage(html string) {
+// seq is the sequence number for this logical message (chunks of the same message share the same seq).
+func (c *SessionWSClient) OnAgentMessage(seq int64, html string) {
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	// or an unsolicited agent message (e.g., "indexing workspace" notifications).
 	isPrompting := false
@@ -477,6 +478,7 @@ func (c *SessionWSClient) OnAgentMessage(html string) {
 		isPrompting = c.bgSession.IsPrompting()
 	}
 	c.sendMessage(WSMsgTypeAgentMessage, map[string]interface{}{
+		"seq":          seq,
 		"html":         html,
 		"format":       "html",
 		"session_id":   c.sessionID,
@@ -485,13 +487,15 @@ func (c *SessionWSClient) OnAgentMessage(html string) {
 }
 
 // OnAgentThought is called when the agent sends a thought chunk.
-func (c *SessionWSClient) OnAgentThought(text string) {
+// seq is the sequence number for this logical thought (chunks share the same seq).
+func (c *SessionWSClient) OnAgentThought(seq int64, text string) {
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	isPrompting := false
 	if c.bgSession != nil {
 		isPrompting = c.bgSession.IsPrompting()
 	}
 	c.sendMessage(WSMsgTypeAgentThought, map[string]interface{}{
+		"seq":          seq,
 		"text":         text,
 		"session_id":   c.sessionID,
 		"is_prompting": isPrompting,
@@ -499,13 +503,15 @@ func (c *SessionWSClient) OnAgentThought(text string) {
 }
 
 // OnToolCall is called when a tool call starts.
-func (c *SessionWSClient) OnToolCall(id, title, status string) {
+// seq is the sequence number for this tool call event.
+func (c *SessionWSClient) OnToolCall(seq int64, id, title, status string) {
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	isPrompting := false
 	if c.bgSession != nil {
 		isPrompting = c.bgSession.IsPrompting()
 	}
 	c.sendMessage(WSMsgTypeToolCall, map[string]interface{}{
+		"seq":          seq,
 		"id":           id,
 		"title":        title,
 		"status":       status,
@@ -515,13 +521,15 @@ func (c *SessionWSClient) OnToolCall(id, title, status string) {
 }
 
 // OnToolUpdate is called when a tool call status is updated.
-func (c *SessionWSClient) OnToolUpdate(id string, status *string) {
+// seq is the sequence number for this tool update event.
+func (c *SessionWSClient) OnToolUpdate(seq int64, id string, status *string) {
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	isPrompting := false
 	if c.bgSession != nil {
 		isPrompting = c.bgSession.IsPrompting()
 	}
 	data := map[string]interface{}{
+		"seq":          seq,
 		"id":           id,
 		"session_id":   c.sessionID,
 		"is_prompting": isPrompting,
@@ -533,15 +541,19 @@ func (c *SessionWSClient) OnToolUpdate(id string, status *string) {
 }
 
 // OnPlan is called when a plan update occurs.
-func (c *SessionWSClient) OnPlan() {
+// seq is the sequence number for this plan event.
+func (c *SessionWSClient) OnPlan(seq int64) {
 	c.sendMessage(WSMsgTypePlan, map[string]interface{}{
+		"seq":        seq,
 		"session_id": c.sessionID,
 	})
 }
 
 // OnFileWrite is called when a file is written.
-func (c *SessionWSClient) OnFileWrite(path string, size int) {
+// seq is the sequence number for this file write event.
+func (c *SessionWSClient) OnFileWrite(seq int64, path string, size int) {
 	c.sendMessage(WSMsgTypeFileWrite, map[string]interface{}{
+		"seq":        seq,
 		"path":       path,
 		"size":       size,
 		"session_id": c.sessionID,
@@ -549,8 +561,10 @@ func (c *SessionWSClient) OnFileWrite(path string, size int) {
 }
 
 // OnFileRead is called when a file is read.
-func (c *SessionWSClient) OnFileRead(path string, size int) {
+// seq is the sequence number for this file read event.
+func (c *SessionWSClient) OnFileRead(seq int64, path string, size int) {
 	c.sendMessage(WSMsgTypeFileRead, map[string]interface{}{
+		"seq":        seq,
 		"path":       path,
 		"size":       size,
 		"session_id": c.sessionID,
@@ -627,8 +641,10 @@ func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 // OnUserPrompt is called when any observer sends a prompt.
 // This allows all connected clients to see user messages from other clients.
 // senderID identifies which client sent the prompt (for deduplication).
-func (c *SessionWSClient) OnUserPrompt(senderID, promptID, message string, imageIDs []string) {
+// seq is the sequence number for this user prompt event.
+func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string) {
 	c.sendMessage(WSMsgTypeUserPrompt, map[string]interface{}{
+		"seq":          seq,
 		"session_id":   c.sessionID,
 		"sender_id":    senderID,
 		"prompt_id":    promptID,

@@ -9,27 +9,41 @@ import (
 
 // SessionObserver defines the interface for receiving session events.
 // This allows multiple clients (WebSocket connections) to observe a single session.
+//
+// Events that are persisted include a sequence number (seq) for ordering and deduplication.
+// The seq is assigned when the event is received from the ACP, ensuring streaming and
+// persisted events have the same seq. Clients can use seq to:
+// - Deduplicate events (same session_id + seq = same event)
+// - Order events correctly after reconnection
+// - Track which events they've seen for sync requests
 type SessionObserver interface {
 	// OnAgentMessage is called when the agent sends a message chunk (HTML).
-	OnAgentMessage(html string)
+	// seq is the sequence number for this logical message (chunks of the same message share the same seq).
+	OnAgentMessage(seq int64, html string)
 
 	// OnAgentThought is called when the agent sends a thought chunk (plain text).
-	OnAgentThought(text string)
+	// seq is the sequence number for this logical thought (chunks share the same seq).
+	OnAgentThought(seq int64, text string)
 
 	// OnToolCall is called when a tool call starts.
-	OnToolCall(id, title, status string)
+	// seq is the sequence number for this tool call event.
+	OnToolCall(seq int64, id, title, status string)
 
 	// OnToolUpdate is called when a tool call status is updated.
-	OnToolUpdate(id string, status *string)
+	// seq is the sequence number for this tool update event.
+	OnToolUpdate(seq int64, id string, status *string)
 
 	// OnPlan is called when a plan update occurs.
-	OnPlan()
+	// seq is the sequence number for this plan event.
+	OnPlan(seq int64)
 
 	// OnFileWrite is called when a file is written.
-	OnFileWrite(path string, size int)
+	// seq is the sequence number for this file write event.
+	OnFileWrite(seq int64, path string, size int)
 
 	// OnFileRead is called when a file is read.
-	OnFileRead(path string, size int)
+	// seq is the sequence number for this file read event.
+	OnFileRead(seq int64, path string, size int)
 
 	// OnPermission is called when a permission request needs user input.
 	// Only the first observer to respond will have their answer used.
@@ -49,7 +63,8 @@ type SessionObserver interface {
 	// senderID identifies which observer sent the prompt (for deduplication).
 	// promptID is the client-generated ID for delivery confirmation.
 	// imageIDs contains IDs of any attached images.
-	OnUserPrompt(senderID, promptID, message string, imageIDs []string)
+	// seq is the sequence number for this user prompt event.
+	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string)
 
 	// OnError is called when an error occurs.
 	OnError(message string)
