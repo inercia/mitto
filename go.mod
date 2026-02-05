@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/coder/acp-go-sdk v0.6.3
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/keybase/go-keychain v0.0.1
 	github.com/microcosm-cc/bluemonday v1.0.27
