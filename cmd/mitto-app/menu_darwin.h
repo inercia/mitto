@@ -13,6 +13,10 @@ void setupMacOSMenu(const char* appName);
 // serverPort: the port number of the local HTTP server
 void setupQuitInterceptor(int confirmEnabled, int serverPort);
 
+// setQuitConfirmEnabled updates the quit confirmation setting at runtime.
+// enabled: if non-zero, shows confirmation dialog when running sessions exist
+void setQuitConfirmEnabled(int enabled);
+
 // setWindowShowInAllSpaces configures the main window to appear in all macOS Spaces.
 // enabled: if non-zero, the window will appear in all Spaces (virtual desktops)
 // This must be called after the window is created.

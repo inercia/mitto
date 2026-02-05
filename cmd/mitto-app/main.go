@@ -456,6 +456,16 @@ func setupQuitInterceptor(confirmEnabled bool, serverPort int) {
 	C.setupQuitInterceptor(enabled, C.int(serverPort))
 }
 
+// setQuitConfirmEnabled updates the quit confirmation setting at runtime.
+// This is exposed to JavaScript via webview.Bind.
+func setQuitConfirmEnabled(enabled bool) {
+	var cEnabled C.int
+	if enabled {
+		cEnabled = 1
+	}
+	C.setQuitConfirmEnabled(cEnabled)
+}
+
 // setupSwipeGesture sets up the two-finger swipe gesture recognizer for
 // navigating between conversations. Swipe left goes to next, swipe right
 // goes to previous conversation.
@@ -469,6 +479,16 @@ func openExternalURL(url string) {
 	cURL := C.CString(url)
 	defer C.free(unsafe.Pointer(cURL))
 	C.openURLInBrowser(cURL)
+}
+
+// openFileURL opens a file:// URL with the default application.
+// This uses NSWorkspace.openURL which handles file:// URLs correctly,
+// opening the file in the appropriate application based on its type.
+// This is exposed to JavaScript via webview.Bind.
+func openFileURL(url string) {
+	cURL := C.CString(url)
+	defer C.free(unsafe.Pointer(cURL))
+	C.openURLInBrowser(cURL) // NSWorkspace.openURL handles file:// URLs
 }
 
 // pickFolder opens a native folder picker dialog and returns the selected path.
@@ -851,6 +871,7 @@ func run() error {
 	// Bind Go functions to JavaScript
 	// This allows the frontend to call native functions
 	w.Bind("mittoOpenExternalURL", openExternalURL)
+	w.Bind("mittoOpenFileURL", openFileURL)
 	w.Bind("mittoPickFolder", pickFolder)
 	w.Bind("mittoPickImages", pickImages)
 
@@ -864,6 +885,9 @@ func run() error {
 	w.Bind("mittoGetNotificationPermissionStatus", getNotificationPermissionStatus)
 	w.Bind("mittoShowNativeNotification", showNativeNotification)
 	w.Bind("mittoRemoveNotificationsForSession", removeNotificationsForSession)
+
+	// Bind quit confirmation setting function
+	w.Bind("mittoSetQuitConfirmEnabled", setQuitConfirmEnabled)
 
 	// Initialize notification center (must be done after app is running)
 	initNotifications()

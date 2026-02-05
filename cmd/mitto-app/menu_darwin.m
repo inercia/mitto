@@ -70,24 +70,41 @@ extern void goQuitCallback(void);
         // Check for running sessions by making a synchronous HTTP request to the local server
         NSString *urlString = [NSString stringWithFormat:@"http://127.0.0.1:%d/api/sessions/running", self.serverPort];
         NSURL *url = [NSURL URLWithString:urlString];
-        NSURLRequest *request = [NSURLRequest requestWithURL:url
-                                                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                             timeoutInterval:2.0];
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url
+                                                               cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                           timeoutInterval:2.0];
 
-        // Use synchronous request with semaphore (NSURLConnection is deprecated but NSURLSession
-        // doesn't have a simple synchronous API, and this runs on the main thread during quit)
+        // Use a session with a dedicated delegate queue to avoid blocking the main thread's run loop
+        // The shared session's completion handlers require the main run loop to be running,
+        // which causes a deadlock when we're blocking with dispatch_semaphore_wait
+        NSOperationQueue *delegateQueue = [[NSOperationQueue alloc] init];
+        delegateQueue.maxConcurrentOperationCount = 1;
+
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        config.timeoutIntervalForRequest = 2.0;
+        config.timeoutIntervalForResource = 2.0;
+
+        NSURLSession *session = [NSURLSession sessionWithConfiguration:config
+                                                              delegate:nil
+                                                         delegateQueue:delegateQueue];
+
         __block NSData *data = nil;
         __block NSError *error = nil;
         dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 
-        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request
-                                                                     completionHandler:^(NSData *responseData, NSURLResponse *response, NSError *responseError) {
+        NSURLSessionDataTask *task = [session dataTaskWithRequest:request
+                                                completionHandler:^(NSData *responseData, NSURLResponse *response, NSError *responseError) {
             data = responseData;
             error = responseError;
             dispatch_semaphore_signal(semaphore);
         }];
         [task resume];
+
+        // Wait for the request to complete (max 2 seconds)
         dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+
+        // Clean up the session
+        [session invalidateAndCancel];
 
         if (error == nil && data != nil) {
             // Parse JSON response
@@ -343,6 +360,15 @@ void setupQuitInterceptor(int confirmEnabled, int serverPort) {
         // Set as the application delegate
         [app setDelegate:gAppDelegate];
     }
+}
+
+// setQuitConfirmEnabled updates the quit confirmation setting at runtime.
+void setQuitConfirmEnabled(int enabled) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gAppDelegate != nil) {
+            gAppDelegate.confirmQuitEnabled = (enabled != 0);
+        }
+    });
 }
 
 // setWindowShowInAllSpaces configures the main window to appear in all macOS Spaces.
