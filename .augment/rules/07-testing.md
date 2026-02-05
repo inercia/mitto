@@ -619,18 +619,53 @@ Running `mitto web` without a proper configuration file will cause the process t
 2. If no ACP servers are configured, the initialization blocks
 3. The process appears to hang with no error message
 
-**ALWAYS follow these steps:**
+### ⚠️ MANDATORY: Always Create a Test Config File First
 
-1. **Build the mock ACP server first**: `make build-mock-acp`
-2. **Create a `.mittorc` file** with at least one ACP server configured
-3. **Start Mitto with `--config`**: `mitto web --config /path/to/.mittorc`
+**Before ANY manual testing with `mitto web`, you MUST:**
 
-When running Playwright tests interactively (not using the test harness), **always** create a dummy `.mittorc` configuration file and start Mitto in web mode with the `--config` flag. This configuration approach:
+1. **Build the mock ACP server**: `make build-mock-acp`
+2. **Create a temporary test directory and config file**
+3. **Start Mitto with `--config` pointing to your test config**
 
-1. **Disables the Settings Dialog** - When `--config` is used, the config is read-only and the Settings dialog is never shown
-2. **Provides stable test conditions** - Known ACP server and workspace configuration
-3. **Allows testing all other UI elements** - Everything except Settings dialog can be tested
-4. **Avoids Keychain access** - No `web.auth` section means no keychain prompts
+### Quick Setup Script (Copy-Paste Ready)
+
+```bash
+# ALWAYS run these commands before starting mitto web for testing:
+
+# 1. Build the mock ACP server (skip if already built)
+make build-mock-acp
+
+# 2. Create test directory and config
+TEST_DIR=/tmp/mitto-test-$$
+mkdir -p "$TEST_DIR/workspace"
+cat > "$TEST_DIR/.mittorc" << 'EOF'
+# Minimal test configuration - NO external access, NO keychain
+acp:
+  - mock-acp:
+      command: ./tests/mocks/acp-server/mock-acp-server
+
+web:
+  host: 127.0.0.1
+  port: 8089
+  theme: v2
+  external_port: -1  # DISABLED - no external access
+  # NO auth section - prevents keychain access on macOS
+EOF
+
+echo "Test config created at: $TEST_DIR/.mittorc"
+echo "Start mitto with:"
+echo "  mitto web --config $TEST_DIR/.mittorc --dir $TEST_DIR/workspace --debug"
+```
+
+### Why This Configuration is Required
+
+This configuration approach:
+
+1. **Disables External Access** - `external_port: -1` ensures no 0.0.0.0 binding
+2. **Avoids Keychain access** - No `web.auth` section means no keychain prompts on macOS
+3. **Disables the Settings Dialog** - When `--config` is used, config is read-only
+4. **Provides stable test conditions** - Known ACP server and workspace configuration
+5. **Allows testing all UI elements** - Everything except Settings dialog can be tested
 
 ### Keychain Access Behavior
 
@@ -642,44 +677,12 @@ Mitto only accesses the macOS Keychain when **External Access is enabled** (i.e.
 
 **Keychain is NOT accessed when:**
 - No `web.auth` section exists in the configuration
-- External Access is disabled (no username/password configured)
+- `external_port: -1` (external access disabled)
 - Running on non-macOS platforms (uses NoopStore fallback)
 
-**For testing without keychain prompts:** Ensure your test `.mittorc` file has **no `web.auth` section**.
+**For testing without keychain prompts:** Ensure your test `.mittorc` file has **no `web.auth` section** and **`external_port: -1`**.
 
-### Setup Steps
-
-1. **Create a dummy `.mittorc` file** in a temporary directory:
-
-```yaml
-# /tmp/mitto-test/.mittorc
-# NOTE: No 'web.auth' section = no keychain access!
-acp:
-  - mock-acp:
-      command: /path/to/mock-acp-server  # Use the mock ACP server
-
-web:
-  host: 127.0.0.1
-  port: 8089  # Use a test port
-  theme: v2
-  # NO auth section - this prevents keychain access
-```
-
-2. **Create a test workspace directory**:
-
-```bash
-mkdir -p /tmp/mitto-test/workspace
-```
-
-3. **Start Mitto web server** pointing to the RC file:
-
-```bash
-mitto web --config /tmp/mitto-test/.mittorc --dir /tmp/mitto-test/workspace
-```
-
-4. **Run Playwright** against `http://127.0.0.1:8089`
-
-### Example Interactive Playwright Session
+### Complete Example: Starting Mitto for Playwright Testing
 
 ```bash
 # 1. Build the mock ACP server
@@ -693,13 +696,19 @@ acp:
       command: ./tests/mocks/acp-server/mock-acp-server
 
 web:
+  host: 127.0.0.1
   port: 8089
   theme: v2
+  external_port: -1  # IMPORTANT: Disable external access
   # NOTE: No auth section here - keychain will NOT be accessed
 EOF
 
 # 3. Start Mitto (in background or separate terminal)
-mitto web --config /tmp/mitto-test/.mittorc --dir /tmp/mitto-test/workspace &
+mitto web --config /tmp/mitto-test/.mittorc --dir /tmp/mitto-test/workspace --debug &
+
+# Wait for server to be ready
+sleep 2
+curl -s http://127.0.0.1:8089/api/config > /dev/null && echo "Server ready!"
 
 # 4. Run Playwright tests or use Playwright's interactive mode
 npx playwright test --headed
@@ -716,8 +725,9 @@ The frontend checks `config.config_readonly` from `/api/config`:
 
 ### Important Notes
 
-- **Always use `--config`** - Without it, the Settings dialog may appear
+- **Always use `--config`** - Without it, the Settings dialog may appear or the server may hang
 - **Always use `--dir`** - Ensures a workspace is configured
+- **Always set `external_port: -1`** - Disables external access, prevents binding to 0.0.0.0
 - **Use mock ACP server** - For deterministic testing without real AI
 - **Port 8089** - Recommended test port to avoid conflicts with development server on 8080
 - **No `web.auth` section** - Omit the auth section to avoid keychain access on macOS
