@@ -40,11 +40,10 @@ func DefaultAccessLogConfig() AccessLogConfig {
 // It logs security-relevant events such as authentication attempts, unauthorized
 // access, and rate limiting triggers.
 type AccessLogger struct {
-	writer     io.WriteCloser
-	mu         sync.Mutex
-	authMgr    *AuthManager // Reference to auth manager for enriched logging
-	apiPrefix  string       // API prefix for detecting security-relevant paths
-	logAllAuth bool         // Whether to log all requests to external port
+	writer    io.WriteCloser
+	mu        sync.Mutex
+	authMgr   *AuthManager // Reference to auth manager for enriched logging
+	apiPrefix string       // API prefix for detecting security-relevant paths
 }
 
 // NewAccessLogger creates a new access logger that writes to the specified file.
@@ -167,11 +166,12 @@ func (a *AccessLogger) Write(entry LogEntry) {
 func escapeQuotes(s string) string {
 	result := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
-		if s[i] == '"' {
+		switch s[i] {
+		case '"':
 			result = append(result, '\\', '"')
-		} else if s[i] == '\\' {
+		case '\\':
 			result = append(result, '\\', '\\')
-		} else {
+		default:
 			result = append(result, s[i])
 		}
 	}
