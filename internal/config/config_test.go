@@ -1151,6 +1151,88 @@ ui:
 	}
 }
 
+func TestParse_UIBadgeClickAction(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  mac:
+    badge_click_action:
+      enabled: true
+      command: "code ${WORKSPACE}"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Mac == nil {
+		t.Fatal("UI.Mac is nil")
+	}
+
+	if cfg.UI.Mac.BadgeClickAction == nil {
+		t.Fatal("UI.Mac.BadgeClickAction is nil")
+	}
+
+	if !cfg.UI.Mac.BadgeClickAction.GetEnabled() {
+		t.Error("UI.Mac.BadgeClickAction.GetEnabled() = false, want true")
+	}
+
+	if cfg.UI.Mac.BadgeClickAction.GetCommand() != "code ${WORKSPACE}" {
+		t.Errorf("UI.Mac.BadgeClickAction.GetCommand() = %q, want %q",
+			cfg.UI.Mac.BadgeClickAction.GetCommand(), "code ${WORKSPACE}")
+	}
+}
+
+func TestParse_UIBadgeClickActionDisabled(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  mac:
+    badge_click_action:
+      enabled: false
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Mac == nil {
+		t.Fatal("UI.Mac is nil")
+	}
+
+	if cfg.UI.Mac.BadgeClickAction == nil {
+		t.Fatal("UI.Mac.BadgeClickAction is nil")
+	}
+
+	if cfg.UI.Mac.BadgeClickAction.GetEnabled() {
+		t.Error("UI.Mac.BadgeClickAction.GetEnabled() = true, want false")
+	}
+}
+
+func TestBadgeClickActionConfig_Defaults(t *testing.T) {
+	// Test nil config returns defaults
+	var nilConfig *BadgeClickActionConfig
+	if !nilConfig.GetEnabled() {
+		t.Error("nil config should return enabled=true by default")
+	}
+	if nilConfig.GetCommand() != "open ${WORKSPACE}" {
+		t.Errorf("nil config should return default command, got %q", nilConfig.GetCommand())
+	}
+
+	// Test empty config returns defaults
+	emptyConfig := &BadgeClickActionConfig{}
+	if !emptyConfig.GetEnabled() {
+		t.Error("empty config should return enabled=true by default")
+	}
+	if emptyConfig.GetCommand() != "open ${WORKSPACE}" {
+		t.Errorf("empty config should return default command, got %q", emptyConfig.GetCommand())
+	}
+}
+
 func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
 	tests := []struct {
 		name     string

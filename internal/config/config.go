@@ -47,6 +47,11 @@ type WebPrompt struct {
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
 	Source PromptSource `json:"source,omitempty"`
+	// ACPs is an optional comma-separated list of ACP server names this prompt applies to.
+	// If empty, the prompt works with all ACP servers.
+	// Example: "auggie, claude-code" means only show this prompt for those ACP servers.
+	// This is included so the frontend can filter prompts client-side.
+	ACPs string `json:"acps,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -152,6 +157,36 @@ type NotificationsConfig struct {
 	NativeEnabled bool `json:"native_enabled,omitempty"`
 }
 
+// BadgeClickActionConfig configures the workspace badge click behavior in the conversation list.
+// When enabled, clicking a workspace badge executes a shell command.
+type BadgeClickActionConfig struct {
+	// Enabled controls whether clicking the workspace badge executes a command.
+	// Default: true (enabled by default)
+	Enabled *bool `json:"enabled,omitempty"`
+	// Command is the shell command to execute when the badge is clicked.
+	// Supports ${WORKSPACE} placeholder which is replaced with the workspace directory path.
+	// Default: "open ${WORKSPACE}" (opens the folder in Finder on macOS)
+	Command string `json:"command,omitempty"`
+}
+
+// GetEnabled returns whether badge click action is enabled.
+// Defaults to true if not explicitly set.
+func (c *BadgeClickActionConfig) GetEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true // Enabled by default
+	}
+	return *c.Enabled
+}
+
+// GetCommand returns the command to execute.
+// Defaults to "open ${WORKSPACE}" if not set.
+func (c *BadgeClickActionConfig) GetCommand() string {
+	if c == nil || c.Command == "" {
+		return "open ${WORKSPACE}"
+	}
+	return c.Command
+}
+
 // MacUIConfig represents macOS-specific UI configuration.
 type MacUIConfig struct {
 	// Hotkeys contains hotkey configuration for macOS
@@ -166,6 +201,10 @@ type MacUIConfig struct {
 	// This uses macOS SMAppService API (requires macOS 13+).
 	// (default: false)
 	StartAtLogin bool `json:"start_at_login,omitempty"`
+	// BadgeClickAction configures the workspace badge click behavior.
+	// When enabled, clicking a workspace badge in the conversation list
+	// executes a shell command (e.g., opening the folder in Finder).
+	BadgeClickAction *BadgeClickActionConfig `json:"badge_click_action,omitempty"`
 }
 
 // ConfirmationsConfig represents confirmation dialog settings.
@@ -362,6 +401,9 @@ type ConversationsConfig struct {
 	// ActionButtons contains configuration for suggested response buttons.
 	// May be nil to use default behavior (enabled).
 	ActionButtons *ActionButtonsConfig `json:"action_buttons,omitempty" yaml:"action_buttons,omitempty"`
+	// FileLinks contains configuration for file path recognition and linking.
+	// May be nil to use default behavior (enabled).
+	FileLinks *FileLinksConfig `json:"file_links,omitempty" yaml:"file_links,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -382,6 +424,39 @@ func (a *ActionButtonsConfig) IsEnabled() bool {
 		return true // Default: enabled
 	}
 	return *a.Enabled
+}
+
+// FileLinksConfig configures file path recognition and linking in messages.
+// When enabled, file paths in agent messages are detected and converted to
+// clickable file:// links that open in the system default application.
+type FileLinksConfig struct {
+	// Enabled controls whether file path linking is enabled.
+	// When true, file paths in messages are converted to clickable links.
+	// Default: true (enabled by default)
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// AllowOutsideWorkspace controls whether files outside the workspace can be linked.
+	// When false, only files within the current workspace directory are linked.
+	// Default: false (only workspace files)
+	AllowOutsideWorkspace *bool `json:"allow_outside_workspace,omitempty" yaml:"allow_outside_workspace,omitempty"`
+}
+
+// IsEnabled returns whether file path linking is enabled.
+// Safe to call on nil receiver - returns true (the default) if not configured.
+func (f *FileLinksConfig) IsEnabled() bool {
+	if f == nil || f.Enabled == nil {
+		return true // Default: enabled
+	}
+	return *f.Enabled
+}
+
+// IsAllowOutsideWorkspace returns whether files outside the workspace can be linked.
+// Safe to call on nil receiver - returns false (the default) if not configured.
+func (f *FileLinksConfig) IsAllowOutsideWorkspace() bool {
+	if f == nil || f.AllowOutsideWorkspace == nil {
+		return false // Default: only workspace files
+	}
+	return *f.AllowOutsideWorkspace
 }
 
 // DefaultQueueMaxSize is the default maximum number of messages allowed in a queue.
@@ -698,8 +773,12 @@ type rawConfig struct {
 				} `yaml:"sounds"`
 				NativeEnabled bool `yaml:"native_enabled"`
 			} `yaml:"notifications"`
-			ShowInAllSpaces bool `yaml:"show_in_all_spaces"`
-			StartAtLogin    bool `yaml:"start_at_login"`
+			ShowInAllSpaces  bool `yaml:"show_in_all_spaces"`
+			StartAtLogin     bool `yaml:"start_at_login"`
+			BadgeClickAction *struct {
+				Enabled *bool  `yaml:"enabled"`
+				Command string `yaml:"command"`
+			} `yaml:"badge_click_action"`
 		} `yaml:"mac"`
 	} `yaml:"ui"`
 	Conversations *struct {
@@ -886,6 +965,14 @@ func Parse(data []byte) (*Config, error) {
 
 			// Populate start at login setting
 			cfg.UI.Mac.StartAtLogin = raw.UI.Mac.StartAtLogin
+
+			// Populate badge click action setting
+			if raw.UI.Mac.BadgeClickAction != nil {
+				cfg.UI.Mac.BadgeClickAction = &BadgeClickActionConfig{
+					Enabled: raw.UI.Mac.BadgeClickAction.Enabled,
+					Command: raw.UI.Mac.BadgeClickAction.Command,
+				}
+			}
 		}
 	}
 

@@ -45,8 +45,9 @@ like auggie, claude-code, and others that implement ACP.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip config loading for help and completion commands
-		if cmd.Name() == "help" || cmd.Name() == "completion" {
+		// Skip config loading for commands that don't need it
+		// (help, completion, and prompts management commands)
+		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && cmd.Parent().Name() == "prompts" {
 			return nil
 		}
 
