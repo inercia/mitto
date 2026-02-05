@@ -607,10 +607,20 @@ var publicAPIPaths = map[string]bool{
 func (a *AuthManager) isPublicPath(path string) bool {
 	logger := logging.Auth()
 
-	// Check static paths (exact match)
+	// Check static paths (exact match) - at root level
 	if publicStaticPaths[path] {
 		logger.Info("AUTH: isPublicPath: MATCHED static path", "path", path)
 		return true
+	}
+
+	// Check static paths with API prefix (e.g., /mitto/auth.html)
+	if a.apiPrefix != "" {
+		for staticPath := range publicStaticPaths {
+			if path == a.apiPrefix+staticPath {
+				logger.Info("AUTH: isPublicPath: MATCHED prefixed static path", "path", path)
+				return true
+			}
+		}
 	}
 
 	// Check API paths with prefix
