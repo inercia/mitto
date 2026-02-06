@@ -1,6 +1,8 @@
 ---
-type: "agent_requested"
-description: "Trying changes in the UI with Playwright, adjusting the layout in the Web UI, running Playwright UI tests, test fixtures, 'mitto web' setup, and browser testing patters"
+description: Playwright UI tests, test fixtures, selectors, 'mitto web' setup, and browser testing patterns
+globs:
+  - "tests/ui/**/*"
+  - "playwright.config.ts"
 ---
 
 # Playwright UI Testing

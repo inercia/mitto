@@ -30,19 +30,22 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `02-session.md` | Working on `internal/session/` or `internal/auxiliary/` |
 | `03-cli.md` | Working on `internal/cmd/` or `cmd/mitto/` |
 | `04-acp.md` | Working on `internal/acp/` |
+| `05-msghooks.md` | Working on message hooks (`internal/msghooks/`) |
+| `06-conversion.md` | Markdown-to-HTML conversion (`internal/conversion/`) |
 | `08-config.md` | Working on configuration (`internal/config/`, YAML/JSON) |
 | `09-macos-app.md` | Working on macOS app (`cmd/mitto-app/`, `*.m`, `*.h`) |
 | **Web Backend (10-12)** | |
 | `10-web-backend-core.md` | Server, routing, HTTP handlers |
-| `11-web-backend-sequences.md` | Sequence numbers, observers, message ordering |
+| `11-web-backend-sequences.md` | Sequence numbers, observers, message ordering, MarkdownBuffer flushing |
 | `12-web-backend-actions.md` | Follow-up suggestions, action buttons |
-| **Web Frontend (20-25)** | |
+| **Web Frontend (20-26)** | |
 | `20-web-frontend-core.md` | Component structure, Preact/HTM basics |
 | `21-web-frontend-state.md` | State management, refs, useCallback |
 | `22-web-frontend-websocket.md` | WebSocket, message handling, reconnection |
-| `23-web-frontend-mobile.md` | Mobile wake resync, visibility change |
+| `23-web-frontend-mobile.md` | Mobile wake resync, visibility change, localStorage |
 | `24-web-frontend-lib.md` | lib.js utilities, markdown rendering |
 | `25-web-frontend-components.md` | UI components (ChatInput, QueueDropdown, Icons) |
+| `26-web-frontend-hooks.md` | Custom hooks (useResizeHandle, useSwipeNavigation) |
 | **Testing (30-33)** | |
 | `30-testing-unit.md` | Go unit tests (`*_test.go`) |
 | `31-testing-integration.md` | Integration tests, mock ACP server |
@@ -53,20 +56,21 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 ## Package Structure
 
 ```
-cmd/mitto/          → Entry point only (minimal code)
-cmd/mitto-app/      → macOS native app entry point
-internal/cmd/       → CLI commands (Cobra-based)
-internal/acp/       → ACP protocol client (SDK wrapper)
-internal/auxiliary/ → Hidden ACP session for utility tasks
-internal/client/    → Go client for Mitto REST API + WebSocket (used in tests)
-internal/config/    → Configuration loading (YAML/JSON)
-internal/msghooks/  → Message hooks (pre/post processing)
-internal/session/   → Session persistence (Store/Recorder/Player/Lock/Queue)
-internal/web/       → Web interface server (HTTP, WebSocket)
-web/static/         → Frontend (Preact/HTM)
-  ├── components/   → UI components (ChatInput, QueueDropdown, Message, etc.)
-  ├── hooks/        → Custom hooks (useWebSocket, useSwipeNavigation)
-  └── utils/        → Utilities (api.js, storage.js, native.js, csrf.js)
+cmd/mitto/            → Entry point only (minimal code)
+cmd/mitto-app/        → macOS native app entry point
+internal/cmd/         → CLI commands (Cobra-based)
+internal/acp/         → ACP protocol client (SDK wrapper)
+internal/auxiliary/   → Hidden ACP session for utility tasks
+internal/client/      → Go client for Mitto REST API + WebSocket (used in tests)
+internal/config/      → Configuration loading (YAML/JSON)
+internal/conversion/  → Markdown-to-HTML conversion, file link detection
+internal/msghooks/    → Message hooks (pre/post processing via external commands)
+internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue)
+internal/web/         → Web interface server (HTTP, WebSocket, MarkdownBuffer)
+web/static/           → Frontend (Preact/HTM)
+  ├── components/     → UI components (ChatInput, QueueDropdown, Message, etc.)
+  ├── hooks/          → Custom hooks (useWebSocket, useSwipeNavigation, useResizeHandle)
+  └── utils/          → Utilities (api.js, storage.js, native.js, csrf.js)
 ```
 
 ## Separation of Concerns

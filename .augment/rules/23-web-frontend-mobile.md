@@ -100,12 +100,35 @@ const handleVisibilityChange = async () => {
 
 ## Key Storage Functions
 
+Located in `web/static/utils/storage.js`:
+
+### Session Sync Functions
+
 | Function | Purpose |
 |----------|---------|
 | `getLastSeenSeq(sessionId)` | Get last seen sequence number from localStorage |
 | `setLastSeenSeq(sessionId, seq)` | Store sequence number in localStorage |
 | `getLastActiveSessionId()` | Get last active session for page reload recovery |
 | `setLastActiveSessionId(id)` | Store active session ID |
+
+### UI Preference Functions
+
+| Function | Purpose |
+|----------|---------|
+| `getQueueDropdownHeight()` | Get saved queue dropdown height (default: 256px) |
+| `setQueueDropdownHeight(height)` | Save queue dropdown height (clamped to 100-500px) |
+| `getQueueHeightConstraints()` | Get min/max/default height constraints |
+
+**Usage example:**
+```javascript
+import { getQueueDropdownHeight, setQueueDropdownHeight, getQueueHeightConstraints } from "../utils/storage.js";
+
+const constraints = getQueueHeightConstraints();
+// { min: 100, max: 500, default: 256 }
+
+const savedHeight = getQueueDropdownHeight();  // Returns saved or default
+setQueueDropdownHeight(300);  // Persists to localStorage
+```
 
 ## WebSocket Message Types for Sync
 

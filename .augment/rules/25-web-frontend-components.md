@@ -81,18 +81,50 @@ class="... rounded-r-xl border-l border-slate-600"
 
 ## QueueDropdown Component
 
-### Animation Pattern
+### Resizable Height
 
-Roll-up animation from bottom edge:
+The queue dropdown supports drag-to-resize with height persistence:
 
 ```javascript
-// CSS classes with transition
-const dropdownClasses = `... transition-all duration-300 ease-out ${
-  isOpen ? "max-h-64 opacity-100" : "max-h-0 opacity-0 pointer-events-none"
+import { useResizeHandle } from "../hooks/useResizeHandle.js";
+import { getQueueDropdownHeight, setQueueDropdownHeight, getQueueHeightConstraints } from "../utils/storage.js";
+
+const heightConstraints = getQueueHeightConstraints();
+const { height, isDragging, handleProps } = useResizeHandle({
+  initialHeight: getQueueDropdownHeight(),
+  minHeight: heightConstraints.min,  // 100px
+  maxHeight: heightConstraints.max,  // 500px
+  onDragStart: () => clearTimeout(inactivityTimerRef.current),  // Pause auto-close
+  onDragEnd: (finalHeight) => setQueueDropdownHeight(finalHeight),  // Persist
+});
+```
+
+**Resize handle UI** at top edge:
+```javascript
+<div class="queue-resize-handle cursor-ns-resize" ...${handleProps}>
+  <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+</div>
+```
+
+**Key behaviors:**
+- Drag up to expand, down to collapse
+- Height persisted to localStorage
+- Transitions disabled during drag for smooth resizing
+- Inactivity timer paused during drag
+
+### Animation Pattern
+
+Roll-up animation from bottom edge (transitions disabled during drag):
+
+```javascript
+const dropdownClasses = `... ${isDragging ? "" : "transition-all duration-300 ease-out"} ${
+  isOpen ? "opacity-100" : "opacity-0 pointer-events-none"
 }`;
 
-// Transform origin for roll-up effect
-style="transform-origin: bottom;"
+// Use explicit height instead of max-h for resize support
+const dropdownStyle = isOpen
+  ? `height: ${height}px; box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.3);`
+  : "height: 0px;";
 ```
 
 ### Auto-Close Behavior
@@ -149,13 +181,23 @@ Centralized SVG icons as Preact components:
 
 ```javascript
 // Import specific icons
-import { TrashIcon, ChevronUpIcon, ChevronDownIcon } from "./Icons.js";
+import { TrashIcon, ChevronUpIcon, ChevronDownIcon, GripIcon } from "./Icons.js";
 
 // Usage in JSX
 <${TrashIcon} className="w-4 h-4" />
+<${GripIcon} className="w-6 h-1.5" />  // Horizontal resize handle
 ```
 
-**Icon naming convention**: `[Name]Icon` (e.g., `TrashIcon`, `ChevronUpIcon`)
+**Icon naming convention**: `[Name]Icon` (e.g., `TrashIcon`, `ChevronUpIcon`, `GripIcon`)
+
+**Common icons:**
+| Icon | Purpose |
+|------|---------|
+| `TrashIcon` | Delete actions |
+| `ChevronUpIcon` / `ChevronDownIcon` | Move up/down, expand/collapse |
+| `GripIcon` | Horizontal drag handle for resize |
+| `DragHandleIcon` | Vertical drag handle (6 dots) |
+| `QueueIcon` | Queue panel toggle |
 
 ## Color Utilities in ChatInput
 

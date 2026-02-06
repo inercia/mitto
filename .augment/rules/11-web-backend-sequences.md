@@ -1,5 +1,5 @@
 ---
-description: Sequence number assignment, observer pattern, WebSocket message ordering, and SeqProvider
+description: Sequence number assignment, observer pattern, WebSocket message ordering, MarkdownBuffer flushing, and SeqProvider
 globs:
   - "internal/web/client.go"
   - "internal/web/markdown.go"
@@ -75,6 +75,46 @@ Result: Tool call appears BEFORE text in UI
 3. Buffer flushes → text uses preserved seq=N
 Result: Text appears BEFORE tool call in UI ✓
 ```
+
+## Tool Calls Signal End of Text Block
+
+**Critical insight**: When a tool call or thought arrives from ACP, it signals that the agent has finished its current text output. The MarkdownBuffer should be force-flushed immediately.
+
+**Rationale**: The ACP protocol does NOT interleave tool calls in the middle of markdown blocks. The agent always completes its explanation before invoking a tool:
+
+```
+Agent → "Let me read that file..." (AgentMessageChunk)
+Agent → ToolCall(read_file)        ← Signals text is complete
+Agent → "I found the following..." (AgentMessageChunk after tool completes)
+```
+
+### Flushing Strategy
+
+| Event Type | Action | Why |
+|------------|--------|-----|
+| `AgentMessageChunk` | Buffer (smart flush on boundaries) | Preserve markdown structure |
+| `AgentThoughtChunk` | **Force flush** buffer first | Text block is complete |
+| `ToolCall` | **Force flush** buffer first | Text block is complete |
+| Prompt complete | **Force flush** buffer | Session is done streaming |
+
+```go
+case u.ToolCall != nil:
+    seq := c.getNextSeq()
+    // Force flush - tool call means agent finished its text block
+    c.mdBuffer.Flush()  // Use Flush(), NOT SafeFlush()
+    if c.onToolCall != nil {
+        c.onToolCall(seq, ...)
+    }
+```
+
+### Flush() vs SafeFlush()
+
+| Method | Behavior | When to Use |
+|--------|----------|-------------|
+| `Flush()` | Force flush, ignores markdown state | Tool calls, thoughts, prompt complete |
+| `SafeFlush()` | Only flush if not in table/list/code | Periodic/timeout flushes |
+
+**Avoid SafeFlush for tool calls**: SafeFlush() can return false (not flushed) if we're mid-table. But if a tool call arrives, the agent is done with that table - flush it anyway.
 
 ### Callback Signatures
 
