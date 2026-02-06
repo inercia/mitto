@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 )
@@ -521,4 +522,107 @@ func TestWebClient_TerminalMethods(t *testing.T) {
 	if err != nil {
 		t.Errorf("KillTerminalCommand failed: %v", err)
 	}
+}
+
+// TestWebClient_ToolCallFlushesBufferedMessage verifies that when a tool call arrives,
+// any buffered agent message is flushed first. This ensures correct event ordering:
+// the agent's explanation appears before the tool call in the event stream.
+func TestWebClient_ToolCallFlushesBufferedMessage(t *testing.T) {
+	var events []string
+	var seqs []int64
+	var mu sync.Mutex
+
+	seqCounter := int64(0)
+	client := NewWebClient(WebClientConfig{
+		SeqProvider: &testSeqProvider{counter: &seqCounter},
+		OnAgentMessage: func(seq int64, html string) {
+			mu.Lock()
+			events = append(events, "message:"+html)
+			seqs = append(seqs, seq)
+			mu.Unlock()
+		},
+		OnToolCall: func(seq int64, id, title, status string) {
+			mu.Lock()
+			events = append(events, "tool:"+id)
+			seqs = append(seqs, seq)
+			mu.Unlock()
+		},
+	})
+	defer client.Close()
+
+	ctx := context.Background()
+
+	// Send agent message chunk (will be buffered)
+	err := client.SessionUpdate(ctx, acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "Let me read the file\n"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SessionUpdate (message) failed: %v", err)
+	}
+
+	// Send tool call - this should flush the buffered message first
+	err = client.SessionUpdate(ctx, acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			ToolCall: &acp.SessionUpdateToolCall{
+				ToolCallId: "tool-1",
+				Title:      "Read file",
+				Status:     acp.ToolCallStatusInProgress,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SessionUpdate (tool) failed: %v", err)
+	}
+
+	// Give the markdown buffer time to flush (it uses a timer)
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify we got both events
+	if len(events) < 2 {
+		t.Fatalf("expected at least 2 events, got %d: %v", len(events), events)
+	}
+
+	// The message should come before the tool call
+	messageIdx := -1
+	toolIdx := -1
+	for i, e := range events {
+		if messageIdx == -1 && len(e) > 8 && e[:8] == "message:" {
+			messageIdx = i
+		}
+		if toolIdx == -1 && len(e) > 5 && e[:5] == "tool:" {
+			toolIdx = i
+		}
+	}
+
+	if messageIdx == -1 {
+		t.Error("message event not found")
+	}
+	if toolIdx == -1 {
+		t.Error("tool event not found")
+	}
+	if messageIdx > toolIdx {
+		t.Errorf("message (idx=%d) should come before tool (idx=%d)", messageIdx, toolIdx)
+	}
+
+	// Verify sequence numbers: message should have lower seq than tool
+	if len(seqs) >= 2 && seqs[messageIdx] >= seqs[toolIdx] {
+		t.Errorf("message seq (%d) should be less than tool seq (%d)", seqs[messageIdx], seqs[toolIdx])
+	}
+}
+
+// testSeqProvider is a simple SeqProvider for testing
+type testSeqProvider struct {
+	counter *int64
+}
+
+func (p *testSeqProvider) GetNextSeq() int64 {
+	*p.counter++
+	return *p.counter
 }

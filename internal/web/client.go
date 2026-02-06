@@ -108,10 +108,8 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 	case u.AgentThoughtChunk != nil:
 		// Assign seq NOW at receive time.
 		seq := c.getNextSeq()
-		// Try to flush any buffered message before thought to maintain event order.
-		// Use SafeFlush to avoid breaking tables/lists/code blocks - if we're in
-		// the middle of one, the thought will appear after the structure completes.
-		c.mdBuffer.SafeFlush()
+		// A thought signals the agent has finished its current text block.
+		c.mdBuffer.Flush()
 		// Thoughts are sent as-is (not markdown)
 		thought := u.AgentThoughtChunk.Content
 		if thought.Text != nil && c.onAgentThought != nil {
@@ -121,10 +119,8 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 	case u.ToolCall != nil:
 		// Assign seq NOW at receive time.
 		seq := c.getNextSeq()
-		// Try to flush any buffered message before tool call to maintain event order.
-		// Use SafeFlush to avoid breaking tables/lists/code blocks - if we're in
-		// the middle of one, the tool call will appear after the structure completes.
-		c.mdBuffer.SafeFlush()
+		// A tool call signals the agent has finished its current text block.
+		c.mdBuffer.Flush()
 		if c.onToolCall != nil {
 			c.onToolCall(seq, string(u.ToolCall.ToolCallId), u.ToolCall.Title, string(u.ToolCall.Status))
 		}
