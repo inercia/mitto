@@ -1,0 +1,286 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  HOMEBREW_TAP_REPO: inercia/homebrew-mitto
+
+jobs:
+  update-formula:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version_clean=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "Using version: ${VERSION}"
+
+      - name: Wait for release assets
+        run: |
+          # Wait a bit for release assets to be fully available
+          sleep 30
+
+      - name: Download release assets and calculate checksums
+        id: checksums
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${VERSION}"
+
+          # Download CLI tarballs
+          for PLATFORM in darwin-amd64 darwin-arm64 linux-amd64 linux-arm64; do
+            echo "Downloading mitto-${PLATFORM}.tar.gz..."
+            curl -sL --fail "${BASE_URL}/mitto-${PLATFORM}.tar.gz" -o "mitto-${PLATFORM}.tar.gz" || {
+              echo "Failed to download mitto-${PLATFORM}.tar.gz"
+              exit 1
+            }
+          done
+
+          # Download macOS app bundles
+          for PLATFORM in darwin-amd64 darwin-arm64; do
+            echo "Downloading Mitto-${PLATFORM}.zip..."
+            curl -sL --fail "${BASE_URL}/Mitto-${PLATFORM}.zip" -o "Mitto-${PLATFORM}.zip" || {
+              echo "Failed to download Mitto-${PLATFORM}.zip"
+              exit 1
+            }
+          done
+
+          # Calculate SHA256 checksums for CLI
+          echo "sha256_darwin_amd64=$(sha256sum mitto-darwin-amd64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "sha256_darwin_arm64=$(sha256sum mitto-darwin-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "sha256_linux_amd64=$(sha256sum mitto-linux-amd64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "sha256_linux_arm64=$(sha256sum mitto-linux-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+          # Calculate SHA256 checksums for macOS app
+          echo "sha256_app_amd64=$(sha256sum Mitto-darwin-amd64.zip | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "sha256_app_arm64=$(sha256sum Mitto-darwin-arm64.zip | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Generate Homebrew formula
+        run: |
+          VERSION="${{ steps.version.outputs.version_clean }}"
+          
+          cat > mitto.rb << 'EOF'
+          # typed: strict
+          # frozen_string_literal: true
+
+          # Homebrew formula for Mitto - CLI client for the Agent Communication Protocol (ACP)
+          class Mitto < Formula
+            desc "CLI client for the Agent Communication Protocol (ACP)"
+            homepage "https://github.com/inercia/mitto"
+            version "VERSION_PLACEHOLDER"
+            license "Apache-2.0"
+          
+            on_macos do
+              if Hardware::CPU.intel?
+                url "https://github.com/inercia/mitto/releases/download/vVERSION_PLACEHOLDER/mitto-darwin-amd64.tar.gz"
+                sha256 "SHA256_DARWIN_AMD64_PLACEHOLDER"
+              else
+                url "https://github.com/inercia/mitto/releases/download/vVERSION_PLACEHOLDER/mitto-darwin-arm64.tar.gz"
+                sha256 "SHA256_DARWIN_ARM64_PLACEHOLDER"
+              end
+            end
+          
+            on_linux do
+              if Hardware::CPU.intel?
+                url "https://github.com/inercia/mitto/releases/download/vVERSION_PLACEHOLDER/mitto-linux-amd64.tar.gz"
+                sha256 "SHA256_LINUX_AMD64_PLACEHOLDER"
+              else
+                url "https://github.com/inercia/mitto/releases/download/vVERSION_PLACEHOLDER/mitto-linux-arm64.tar.gz"
+                sha256 "SHA256_LINUX_ARM64_PLACEHOLDER"
+              end
+            end
+          
+            def install
+              bin.install "mitto"
+            end
+          
+            def caveats
+              <<~EOS
+                Mitto requires an ACP server to be installed and configured.
+                
+                Supported ACP servers:
+                  - Auggie (auggie)
+                  - Claude Code (claude-code)
+                
+                Quick start:
+                  1. Run: mitto web
+                  2. Open: http://localhost:8080
+                
+                Or use the CLI:
+                  mitto cli
+                
+                For more information, visit:
+                  https://github.com/inercia/mitto
+              EOS
+            end
+          
+            test do
+              assert_match "Mitto is a command-line interface", shell_output("#{bin}/mitto --help")
+            end
+          end
+          EOF
+          
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" mitto.rb
+          sed -i "s/SHA256_DARWIN_AMD64_PLACEHOLDER/${{ steps.checksums.outputs.sha256_darwin_amd64 }}/g" mitto.rb
+          sed -i "s/SHA256_DARWIN_ARM64_PLACEHOLDER/${{ steps.checksums.outputs.sha256_darwin_arm64 }}/g" mitto.rb
+          sed -i "s/SHA256_LINUX_AMD64_PLACEHOLDER/${{ steps.checksums.outputs.sha256_linux_amd64 }}/g" mitto.rb
+          sed -i "s/SHA256_LINUX_ARM64_PLACEHOLDER/${{ steps.checksums.outputs.sha256_linux_arm64 }}/g" mitto.rb
+          
+          echo "Generated formula:"
+          cat mitto.rb
+
+      - name: Generate Homebrew cask for macOS app
+        run: |
+          VERSION="${{ steps.version.outputs.version_clean }}"
+
+          cat > mitto.cask.rb << 'EOF'
+          # typed: strict
+          # frozen_string_literal: true
+
+          # Homebrew Cask for Mitto macOS app
+          cask "mitto" do
+            version "VERSION_PLACEHOLDER"
+
+            on_arm do
+              sha256 "SHA256_APP_ARM64_PLACEHOLDER"
+
+              url "https://github.com/inercia/mitto/releases/download/vVERSION_PLACEHOLDER/Mitto-darwin-arm64.zip"
+            end
+            on_intel do
+              sha256 "SHA256_APP_AMD64_PLACEHOLDER"
+
+              url "https://github.com/inercia/mitto/releases/download/vVERSION_PLACEHOLDER/Mitto-darwin-amd64.zip"
+            end
+
+            name "Mitto"
+            desc "Desktop client for the Agent Communication Protocol (ACP)"
+            homepage "https://github.com/inercia/mitto"
+
+            depends_on formula: "mitto"
+
+            app "Mitto.app"
+
+            zap trash: [
+              "~/Library/Application Support/Mitto",
+              "~/Library/Caches/io.github.inercia.mitto",
+              "~/Library/Preferences/io.github.inercia.mitto.plist",
+            ]
+
+            caveats <<~EOS
+              Mitto.app provides a native macOS interface for ACP communication.
+
+              The CLI tool is also installed and available as 'mitto'.
+
+              For more information, visit:
+                https://github.com/inercia/mitto
+            EOS
+          end
+          EOF
+
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" mitto.cask.rb
+          sed -i "s/SHA256_APP_AMD64_PLACEHOLDER/${{ steps.checksums.outputs.sha256_app_amd64 }}/g" mitto.cask.rb
+          sed -i "s/SHA256_APP_ARM64_PLACEHOLDER/${{ steps.checksums.outputs.sha256_app_arm64 }}/g" mitto.cask.rb
+
+          echo "Generated cask:"
+          cat mitto.cask.rb
+
+      - name: Upload formula as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: mitto.rb
+          retention-days: 30
+
+      - name: Upload cask as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-cask
+          path: mitto.cask.rb
+          retention-days: 30
+
+      # Automatically update the Homebrew tap repository
+      - name: Update Homebrew tap repository
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_CLEAN="${{ steps.version.outputs.version_clean }}"
+
+          echo "Cloning homebrew tap repository..."
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${HOMEBREW_TAP_REPO}.git" homebrew-tap
+          cd homebrew-tap
+
+          # Ensure directories exist
+          mkdir -p Formula Casks
+
+          # Copy generated files
+          cp ../mitto.rb Formula/mitto.rb
+          cp ../mitto.cask.rb Casks/mitto.rb
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check if there are changes
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          # Commit and push
+          git add Formula/mitto.rb Casks/mitto.rb
+          git commit -m "Update mitto to ${VERSION}"
+          git push
+
+          echo ""
+          echo "=============================================="
+          echo "✅ Homebrew tap updated successfully!"
+          echo "=============================================="
+          echo ""
+          echo "Version: ${VERSION}"
+          echo "Repository: https://github.com/${HOMEBREW_TAP_REPO}"
+          echo ""
+          echo "Users can now install with:"
+          echo "  brew install inercia/mitto/mitto        # CLI only"
+          echo "  brew install --cask inercia/mitto/mitto # macOS app + CLI"
+
+      - name: Output manual steps (if no token configured)
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN == '' }}
+        run: |
+          echo "=============================================="
+          echo "⚠️  HOMEBREW_TAP_TOKEN not configured"
+          echo "=============================================="
+          echo ""
+          echo "To enable automatic tap updates, add a GitHub secret:"
+          echo "  Name: HOMEBREW_TAP_TOKEN"
+          echo "  Value: A Personal Access Token with 'repo' scope"
+          echo ""
+          echo "For now, manually update the tap:"
+          echo "1. Download artifacts from this workflow"
+          echo "2. Copy mitto.rb to homebrew-mitto/Formula/mitto.rb"
+          echo "3. Copy mitto.cask.rb to homebrew-mitto/Casks/mitto.rb"
+          echo ""
+          echo "See platform/homebrew/README.md for detailed instructions."

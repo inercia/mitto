@@ -1,0 +1,45 @@
+# typed: strict
+# frozen_string_literal: true
+
+# Homebrew Cask for Mitto macOS app
+cask "mitto" do
+  version "{{VERSION}}"
+
+  on_arm do
+    sha256 "{{SHA256_APP_ARM64}}"
+
+    url "https://github.com/inercia/mitto/releases/download/v{{VERSION}}/Mitto-darwin-arm64.zip"
+  end
+  on_intel do
+    sha256 "{{SHA256_APP_AMD64}}"
+
+    url "https://github.com/inercia/mitto/releases/download/v{{VERSION}}/Mitto-darwin-amd64.zip"
+  end
+
+  name "Mitto"
+  desc "Desktop client for the Agent Communication Protocol (ACP)"
+  homepage "https://github.com/inercia/mitto"
+
+  depends_on formula: "mitto"
+
+  app "Mitto.app"
+
+  zap trash: [
+    "~/Library/Application Support/Mitto",
+    "~/Library/Caches/io.github.inercia.mitto",
+    "~/Library/Preferences/io.github.inercia.mitto.plist",
+  ]
+
+  caveats <<~EOS
+    Mitto.app provides a native macOS interface for ACP communication.
+
+    The CLI tool is also installed and available as 'mitto'.
+
+    Supported ACP servers:
+      - Auggie (auggie)
+      - Claude Code (claude-code)
+
+    For more information, visit:
+      https://github.com/inercia/mitto
+  EOS
+end

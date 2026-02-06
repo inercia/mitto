@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -260,4 +260,111 @@ build-mac-app: deps-go
 # Clean macOS app bundle
 clean-mac-app:
 	rm -rf "$(APP_BUNDLE)"
+
+# =============================================================================
+# Homebrew Packaging
+# =============================================================================
+# Test Homebrew formula and cask generation and installation.
+# Requires: brew (Homebrew) to be installed.
+#
+# Usage:
+#   make homebrew-generate          # Generate formula and cask files
+#   make homebrew-test              # Full test: generate, style, install, verify
+#   make homebrew-test-style        # Only run style checks
+#   make homebrew-test-install      # Test installation (requires generate first)
+#   make homebrew-clean             # Clean up test artifacts and tap
+# =============================================================================
+
+HOMEBREW_VERSION ?= latest
+HOMEBREW_TAP_NAME = local/mitto-test
+HOMEBREW_TAP_PATH = /opt/homebrew/Library/Taps/local/homebrew-mitto-test
+HOMEBREW_GEN_SCRIPT = platform/homebrew/generate-formula.sh
+
+# Generate Homebrew formula and cask
+homebrew-generate:
+	@echo "Generating Homebrew formula and cask for version: $(HOMEBREW_VERSION)"
+	@mkdir -p build/homebrew
+	@cd build/homebrew && $(CURDIR)/$(HOMEBREW_GEN_SCRIPT) --all $(HOMEBREW_VERSION)
+	@echo ""
+	@echo "✅ Generated files in build/homebrew/:"
+	@ls -la build/homebrew/mitto*.rb
+
+# Run style checks on generated formula and cask
+homebrew-test-style: homebrew-generate
+	@echo ""
+	@echo "Running Homebrew style checks..."
+	@echo ""
+	@echo "Formula style check:"
+	@brew style build/homebrew/mitto.rb
+	@echo ""
+	@echo "Cask style check:"
+	@brew style build/homebrew/mitto.cask.rb
+	@echo ""
+	@echo "✅ All style checks passed!"
+
+# Set up local tap for testing
+homebrew-tap-setup: homebrew-generate
+	@echo "Setting up local tap for testing..."
+	@if brew tap | grep -q "$(HOMEBREW_TAP_NAME)"; then \
+		echo "Tap already exists, cleaning up first..."; \
+		$(MAKE) homebrew-clean; \
+	fi
+	@brew tap-new --no-git $(HOMEBREW_TAP_NAME)
+	@mkdir -p $(HOMEBREW_TAP_PATH)/Casks
+	@cp build/homebrew/mitto.rb $(HOMEBREW_TAP_PATH)/Formula/
+	@cp build/homebrew/mitto.cask.rb $(HOMEBREW_TAP_PATH)/Casks/mitto.rb
+	@echo "✅ Local tap ready: $(HOMEBREW_TAP_NAME)"
+
+# Test formula installation
+homebrew-test-install: homebrew-tap-setup
+	@echo ""
+	@echo "Testing CLI formula installation..."
+	@brew install --formula $(HOMEBREW_TAP_NAME)/mitto
+	@echo ""
+	@echo "Running formula test..."
+	@brew test $(HOMEBREW_TAP_NAME)/mitto
+	@echo ""
+	@echo "Verifying CLI installation..."
+	@which mitto
+	@mitto --help | head -3
+	@echo ""
+	@echo "✅ CLI formula installation test passed!"
+
+# Test cask installation (includes CLI as dependency)
+homebrew-test-cask: homebrew-tap-setup
+	@echo ""
+	@echo "Testing cask installation (includes CLI dependency)..."
+	@brew install --cask $(HOMEBREW_TAP_NAME)/mitto
+	@echo ""
+	@echo "Verifying installations..."
+	@echo "CLI: $$(which mitto)"
+	@echo "App: $$(ls -d /Applications/Mitto.app 2>/dev/null || echo 'not found')"
+	@mitto --help | head -3
+	@test -d /Applications/Mitto.app || (echo "❌ Mitto.app not found in /Applications" && exit 1)
+	@echo ""
+	@echo "✅ Cask installation test passed!"
+
+# Full Homebrew test: generate, style check, install formula, install cask
+homebrew-test: homebrew-clean
+	@echo "=============================================="
+	@echo "       HOMEBREW PACKAGING FULL TEST"
+	@echo "=============================================="
+	@echo ""
+	@$(MAKE) homebrew-test-style
+	@echo ""
+	@$(MAKE) homebrew-test-cask
+	@echo ""
+	@echo "=============================================="
+	@echo "✅ All Homebrew packaging tests passed!"
+	@echo "=============================================="
+	@$(MAKE) homebrew-clean
+
+# Clean up Homebrew test artifacts
+homebrew-clean:
+	@echo "Cleaning up Homebrew test artifacts..."
+	@-brew uninstall --cask mitto 2>/dev/null || true
+	@-brew uninstall --formula mitto 2>/dev/null || true
+	@-brew untap $(HOMEBREW_TAP_NAME) 2>/dev/null || true
+	@rm -rf build/homebrew
+	@echo "✅ Cleanup complete"
 
