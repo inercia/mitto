@@ -89,20 +89,19 @@ sequenceDiagram
     WC->>BS: GetNextSeq() → 5
     WC->>MD: Write(seq=5, "Hello...")
     Note over MD: Buffers content, stores pendingSeq=5
-    MD->>MD: Timer/flush triggers
-    MD->>BS: onAgentMessage(seq=5, html)
-    BS->>Buffer: AppendAgentMessage(seq=5, html)
-    BS->>WS: OnAgentMessage(seq=5, html)
 
     ACP->>WC: ToolCall(read file)
     WC->>BS: GetNextSeq() → 6
-    WC->>MD: SafeFlush() [may not flush if mid-table]
+    WC->>MD: Flush() [force flush before tool call]
+    MD->>BS: onAgentMessage(seq=5, html)
+    BS->>Buffer: AppendAgentMessage(seq=5, html)
+    BS->>WS: OnAgentMessage(seq=5, html)
     WC->>BS: onToolCall(seq=6, id, title, status)
     BS->>Buffer: AppendToolCall(seq=6, ...)
     BS->>WS: OnToolCall(seq=6, ...)
 
     Note over WC: Tool call has seq=6, text has seq=5
-    Note over WS: UI sorts by seq → text appears before tool call ✓
+    Note over WS: Events arrive in correct order ✓
 ```
 
 **Why assign seq at receive time (not emit time)?**
