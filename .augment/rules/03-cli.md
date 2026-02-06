@@ -1,5 +1,5 @@
 ---
-description: CLI command patterns, Cobra usage, signal handling, and user feedback
+description: CLI commands with Cobra, signal handling, user feedback with emoji, and multi-workspace usage
 globs:
   - "internal/cmd/**/*"
   - "cmd/mitto/**/*"

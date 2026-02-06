@@ -1,10 +1,8 @@
 ---
-description: Configuration loading, settings persistence, and workspace management
+description: Configuration loading with LoadSettings, Config vs Settings types, queue configuration, and workspace persistence
 globs:
   - "internal/config/**/*"
   - "config/**/*"
-  - "**/*.yaml"
-  - "**/*.json"
 ---
 
 # Configuration System

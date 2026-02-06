@@ -1,5 +1,5 @@
 ---
-description: ACP protocol client, SDK usage, connection lifecycle, and permission handling
+description: ACP protocol client with acp-go-sdk, connection lifecycle, permission auto-approve, and testing ACP connections
 globs:
   - "internal/acp/**/*"
 ---

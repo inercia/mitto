@@ -1,9 +1,7 @@
 ---
-description: Go coding conventions, error handling, thread safety, and common patterns
+description: Go coding conventions, error handling, thread safety, interfaces, constructors, and logging patterns
 globs:
   - "**/*.go"
-  - "internal/**/*"
-  - "cmd/**/*"
 ---
 
 # Go Conventions
@@ -34,6 +32,32 @@ if !exists {
 // Verify interface implementation at compile time
 var _ acp.Client = (*Client)(nil)
 ```
+
+## Interface-Based Decoupling
+
+Use small interfaces to decouple components:
+
+```go
+// Define interface where it's USED, not where it's implemented
+type SeqProvider interface {
+    GetNextSeq() int64
+}
+
+// WebClient uses the interface (doesn't know about BackgroundSession)
+type WebClient struct {
+    seqProvider SeqProvider
+}
+
+// BackgroundSession implements it (doesn't know WebClient uses it)
+func (bs *BackgroundSession) GetNextSeq() int64 {
+    return bs.getNextSeq()
+}
+```
+
+**Benefits:**
+- Testable: Mock `SeqProvider` in tests
+- Decoupled: `WebClient` doesn't import `BackgroundSession`
+- Flexible: Any type implementing `GetNextSeq()` works
 
 ## Constructor Pattern
 
@@ -83,6 +107,55 @@ os.Rename(tmpPath, path)
 // Always pass context through the call chain
 func (c *Connection) Prompt(ctx context.Context, message string) error {
     return c.conn.Prompt(ctx, acp.PromptRequest{...})
+}
+```
+
+## Callback Patterns
+
+### Consistent Parameter Ordering
+
+When callbacks need ordering/tracking info, put it first:
+
+```go
+// Good: seq first, then content
+OnAgentMessage func(seq int64, html string)
+OnToolCall     func(seq int64, id, title, status string)
+
+// Bad: content first, seq buried
+OnAgentMessage func(html string, seq int64)  // Inconsistent
+```
+
+### Nil-Safe Callback Invocation
+
+Always check callbacks before calling:
+
+```go
+if c.onAgentMessage != nil {
+    c.onAgentMessage(seq, html)
+}
+```
+
+### Passing Data Through Buffers
+
+When buffering content that needs metadata (like seq), track it in the buffer:
+
+```go
+type Buffer struct {
+    content    strings.Builder
+    pendingSeq int64  // Metadata from first write
+}
+
+func (b *Buffer) Write(seq int64, data string) {
+    if b.content.Len() == 0 {
+        b.pendingSeq = seq  // First write's metadata wins
+    }
+    b.content.WriteString(data)
+}
+
+func (b *Buffer) Flush() {
+    seq := b.pendingSeq  // Capture before reset
+    b.pendingSeq = 0
+    b.onFlush(seq, b.content.String())
 }
 ```
 

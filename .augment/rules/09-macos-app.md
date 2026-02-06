@@ -1,8 +1,9 @@
 ---
-description: macOS native app development, keyboard shortcuts, and platform integration
+description: macOS native app with WKWebView, keyboard shortcuts, trackpad gestures, icon generation, and native folder picker
 globs:
   - "cmd/mitto-app/**/*"
   - "platform/mac/**/*"
+  - "web/static/utils/native.js"
   - "**/*.m"
   - "**/*.h"
 ---
