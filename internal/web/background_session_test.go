@@ -1131,3 +1131,100 @@ func TestQueueTitleWorker_UpdateTitleSuccess(t *testing.T) {
 		t.Errorf("Title = %q, want %q", updatedMsg.Title, "Generated Title")
 	}
 }
+
+// TestBackgroundSession_FlushAndPersistMessages_SortsEventsBySeq verifies that events
+// are sorted by sequence number before persistence. This is critical because:
+// - Agent messages are buffered in MarkdownBuffer and may flush late
+// - Tool calls are added to EventBuffer immediately when SafeFlush fails
+// - Without sorting, tool calls would appear before agent messages in the persisted log
+func TestBackgroundSession_FlushAndPersistMessages_SortsEventsBySeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-sort"
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	recorder := session.NewRecorderWithID(store, sessionID)
+	if err := recorder.Resume(); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	// Create a session with an event buffer
+	bs := &BackgroundSession{
+		persistedID: sessionID,
+		store:       store,
+		recorder:    recorder,
+		eventBuffer: NewEventBuffer(),
+	}
+
+	// Simulate the out-of-order scenario that happens with markdown buffering:
+	// - Agent message arrives first (seq 1) but gets buffered in MarkdownBuffer
+	// - Tool call arrives (seq 2) and is added to EventBuffer immediately
+	// - Tool call update arrives (seq 3)
+	// - Agent message finally flushes from MarkdownBuffer (still seq 1)
+	//
+	// The EventBuffer would receive them in this order: [tool call (2), tool update (3), agent (1)]
+	// But we want them persisted in seq order: [agent (1), tool call (2), tool update (3)]
+
+	// Add events OUT OF ORDER (simulating what happens with markdown buffering)
+	bs.eventBuffer.AppendToolCall(2, "tool-1", "Read file", "running")
+	bs.eventBuffer.AppendToolCallUpdate(3, "tool-1", ptr("completed"))
+	bs.eventBuffer.AppendAgentMessage(1, "<p>Let me read the file</p>")
+
+	// Verify buffer order is out of sequence
+	bufferEvents := bs.eventBuffer.Events()
+	if len(bufferEvents) != 3 {
+		t.Fatalf("Expected 3 buffered events, got %d", len(bufferEvents))
+	}
+	if bufferEvents[0].Seq != 2 || bufferEvents[1].Seq != 3 || bufferEvents[2].Seq != 1 {
+		t.Errorf("Expected buffer in order [2,3,1], got [%d,%d,%d]",
+			bufferEvents[0].Seq, bufferEvents[1].Seq, bufferEvents[2].Seq)
+	}
+
+	// Flush and persist
+	bs.flushAndPersistMessages()
+
+	// Read persisted events and verify they are in seq order
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Filter out session_start event
+	var filteredEvents []session.Event
+	for _, e := range events {
+		if e.Type != session.EventTypeSessionStart {
+			filteredEvents = append(filteredEvents, e)
+		}
+	}
+
+	if len(filteredEvents) != 3 {
+		t.Fatalf("Expected 3 persisted events (excluding session_start), got %d", len(filteredEvents))
+	}
+
+	// Events should be persisted in seq order, so their types should be:
+	// 1. agent_message (originally seq 1, now persisted first)
+	// 2. tool_call (originally seq 2, now persisted second)
+	// 3. tool_call_update (originally seq 3, now persisted third)
+	expectedTypes := []session.EventType{
+		session.EventTypeAgentMessage,
+		session.EventTypeToolCall,
+		session.EventTypeToolCallUpdate,
+	}
+	for i, e := range filteredEvents {
+		if e.Type != expectedTypes[i] {
+			t.Errorf("Event %d: type = %s, want %s", i, e.Type, expectedTypes[i])
+		}
+	}
+}

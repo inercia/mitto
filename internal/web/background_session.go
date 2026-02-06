@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -538,8 +539,9 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 }
 
 // flushAndPersistMessages persists all buffered events in streaming order.
-// Events are persisted in the order they were received, ensuring correct
-// interleaving of agent messages, thoughts, and tool calls.
+// Events are sorted by their streaming sequence number before persistence,
+// ensuring correct interleaving even when events arrive out of order due to
+// buffering (e.g., MarkdownBuffer holding agent messages while tool calls arrive).
 func (bs *BackgroundSession) flushAndPersistMessages() {
 	if bs.recorder == nil {
 		return
@@ -552,6 +554,16 @@ func (bs *BackgroundSession) flushAndPersistMessages() {
 		events = bs.eventBuffer.Flush()
 	}
 	bs.bufferMu.Unlock()
+
+	// Sort events by streaming sequence number before persistence.
+	// This is critical because events may arrive out of order in the buffer:
+	// - Agent message chunks are buffered in MarkdownBuffer until complete
+	// - Tool calls are added to EventBuffer immediately when SafeFlush fails
+	// - This can cause tool calls to appear before the agent message explaining them
+	// Sorting ensures events are persisted (and later replayed) in the correct order.
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Seq < events[j].Seq
+	})
 
 	// Persist each event in order
 	for _, event := range events {
