@@ -29,3 +29,7 @@ require (
 	golang.org/x/net v0.26.0 // indirect
 	golang.org/x/sys v0.21.0 // indirect
 )
+
+// Once https://github.com/coder/acp-go-sdk/pull/18 is merged into coder/acp-go-sdk
+// and a new version is released, you can remove the replace directive and update to the official version.
+replace github.com/coder/acp-go-sdk => github.com/agentcooper/acp-go-sdk v0.0.0-20260130133646-65ae55c285fb
