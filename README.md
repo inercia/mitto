@@ -58,9 +58,19 @@ install yet another AI coding agent...
 
 ### Install
 
-For Mac OS, install the application from the [releases page](https://github.com/inercia/mitto/releases).
+#### Homebrew (macOS and Linux)
 
-For Linux, install the binary from the [releases page](https://github.com/inercia/mitto/releases).
+```bash
+brew tap inercia/mitto
+brew install mitto              # CLI only
+brew install --cask mitto-app   # macOS app (includes CLI)
+```
+
+#### Manual Download
+
+Download the latest release from the [releases page](https://github.com/inercia/mitto/releases):
+- **macOS**: Download `Mitto-darwin-*.dmg` for the native app, or `mitto-darwin-*.tar.gz` for CLI only
+- **Linux**: Download `mitto-linux-*.tar.gz`
 
 ### Configure
 
