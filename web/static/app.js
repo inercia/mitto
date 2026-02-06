@@ -490,58 +490,6 @@ function DeleteDialog({
 }
 
 // =============================================================================
-// Clean Inactive Sessions Confirmation Dialog
-// =============================================================================
-
-function CleanInactiveDialog({ isOpen, inactiveCount, onConfirm, onCancel }) {
-  if (!isOpen) return null;
-
-  return html`
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick=${onCancel}
-    >
-      <div
-        class="bg-mitto-sidebar rounded-xl p-6 w-80 shadow-2xl"
-        onClick=${(e) => e.stopPropagation()}
-      >
-        <h3 class="text-lg font-semibold mb-2">Clean Inactive Conversations</h3>
-        <p class="text-gray-400 text-sm mb-4">
-          ${inactiveCount === 0
-            ? "There are no inactive conversations to clean."
-            : html`Are you sure you want to delete
-                <span class="text-white font-medium">${inactiveCount}</span>
-                inactive conversation${inactiveCount === 1 ? "" : "s"}?
-                <br /><span class="text-gray-500 text-xs mt-2 block"
-                  >Only stored conversations without an active ACP connection
-                  will be removed.</span
-                >`}
-        </p>
-        <div class="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick=${onCancel}
-            class="px-4 py-2 rounded-lg hover:bg-slate-700 transition-colors"
-          >
-            ${inactiveCount === 0 ? "Close" : "Cancel"}
-          </button>
-          ${inactiveCount > 0 &&
-          html`
-            <button
-              type="button"
-              onClick=${onConfirm}
-              class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-            >
-              Clean All
-            </button>
-          `}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// =============================================================================
 // Keyboard Shortcuts Dialog
 // =============================================================================
 
@@ -1115,7 +1063,6 @@ function SessionList({
   activeSessionId,
   onSelect,
   onNewSession,
-  onCleanInactive,
   onRename,
   onDelete,
   onClose,
@@ -1151,13 +1098,6 @@ function SessionList({
             title="New Conversation"
           >
             <${PlusIcon} className="w-5 h-5" />
-          </button>
-          <button
-            onClick=${onCleanInactive}
-            class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
-            title="Clean Inactive Conversations"
-          >
-            <${TrashIcon} className="w-5 h-5" />
           </button>
           ${onClose &&
           html`
@@ -1351,9 +1291,6 @@ function App() {
   const [deleteDialog, setDeleteDialog] = useState({
     isOpen: false,
     session: null,
-  });
-  const [cleanInactiveDialog, setCleanInactiveDialog] = useState({
-    isOpen: false,
   });
   const [workspaceDialog, setWorkspaceDialog] = useState({ isOpen: false }); // Workspace selector for new session
   const [settingsDialog, setSettingsDialog] = useState({
@@ -2653,34 +2590,6 @@ function App() {
     fetchStoredSessions();
   };
 
-  // Get inactive sessions (stored sessions without an active ACP connection)
-  const inactiveSessions = useMemo(() => {
-    const activeIds = new Set(activeSessions.map((s) => s.session_id));
-    return storedSessions.filter((s) => !activeIds.has(s.session_id));
-  }, [activeSessions, storedSessions]);
-
-  const handleCleanInactive = () => {
-    setCleanInactiveDialog({ isOpen: true });
-  };
-
-  const handleConfirmCleanInactive = async () => {
-    setCleanInactiveDialog({ isOpen: false });
-
-    // Delete all inactive sessions
-    for (const session of inactiveSessions) {
-      try {
-        await secureFetch(apiUrl(`/api/sessions/${session.session_id}`), {
-          method: "DELETE",
-        });
-      } catch (err) {
-        console.error("Failed to delete session:", session.session_id, err);
-      }
-    }
-
-    // Refresh the stored sessions list
-    fetchStoredSessions();
-  };
-
   return html`
     <div class="h-screen-safe flex">
       <!-- Session Properties Dialog -->
@@ -2702,14 +2611,6 @@ function App() {
         isStreaming=${deleteDialog.session?.isStreaming || false}
         onConfirm=${handleConfirmDelete}
         onCancel=${() => setDeleteDialog({ isOpen: false, session: null })}
-      />
-
-      <!-- Clean Inactive Dialog -->
-      <${CleanInactiveDialog}
-        isOpen=${cleanInactiveDialog.isOpen}
-        inactiveCount=${inactiveSessions.length}
-        onConfirm=${handleConfirmCleanInactive}
-        onCancel=${() => setCleanInactiveDialog({ isOpen: false })}
       />
 
       <!-- Workspace Selection Dialog (for new conversations) -->
@@ -2809,7 +2710,6 @@ function App() {
           activeSessionId=${activeSessionId}
           onSelect=${handleSelectSession}
           onNewSession=${handleNewSession}
-          onCleanInactive=${handleCleanInactive}
           onRename=${handleRenameSession}
           onDelete=${handleDeleteSession}
           workspaces=${workspaces}
@@ -2837,7 +2737,6 @@ function App() {
               activeSessionId=${activeSessionId}
               onSelect=${handleSelectSession}
               onNewSession=${handleNewSession}
-              onCleanInactive=${handleCleanInactive}
               onRename=${handleRenameSession}
               onDelete=${handleDeleteSession}
               onClose=${() => setShowSidebar(false)}
