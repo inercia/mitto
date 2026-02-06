@@ -538,3 +538,16 @@ export function QueueIcon({ className = "w-4 h-4" }) {
     </svg>
   `;
 }
+
+/**
+ * Horizontal grip/handle icon for resize operations
+ * Shows a pill-shaped horizontal line that indicates "drag here"
+ * @param {string} className - CSS classes (default: 'w-8 h-1')
+ */
+export function GripIcon({ className = "w-8 h-1" }) {
+  return html`
+    <svg class="${className}" viewBox="0 0 32 6" fill="currentColor">
+      <rect x="0" y="0" width="32" height="6" rx="3" />
+    </svg>
+  `;
+}

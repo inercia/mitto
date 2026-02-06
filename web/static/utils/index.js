@@ -21,6 +21,9 @@ export {
   setLastSeenSeq,
   getLastActiveSessionId,
   setLastActiveSessionId,
+  getQueueDropdownHeight,
+  setQueueDropdownHeight,
+  getQueueHeightConstraints,
 } from "./storage.js";
 
 export { playAgentCompletedSound } from "./audio.js";

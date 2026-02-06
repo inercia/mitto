@@ -1106,13 +1106,13 @@ mitto-action {
   color: #94a3b8;
 }
 
-/* Chat input button container - smaller buttons aligned with textarea */
+/* Chat input button container - smaller buttons aligned with textarea bottom */
 .chat-input-buttons {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  align-self: stretch; /* Stretch to match textarea height */
-  justify-content: flex-end; /* Align buttons to the bottom */
+  align-self: flex-end; /* Align to bottom of flex container */
+  margin-bottom: 5px; /* Fine-tune alignment with textarea bottom */
 }
 
 .chat-input-buttons > div {

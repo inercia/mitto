@@ -65,6 +65,15 @@ export const selectors = {
   // Body
   body: "body",
   darkTheme: ".bg-mitto-bg",
+
+  // Queue dropdown
+  queueToggleButton: '[data-queue-toggle]',
+  queueDropdown: '.queue-dropdown',
+  queueResizeHandle: '.queue-resize-handle',
+  queueDropdownHeader: '.queue-dropdown-header',
+  queueDropdownList: '.queue-dropdown-list',
+  queueDropdownItem: '.queue-dropdown-item',
+  queueDropdownEmpty: '.queue-dropdown-empty',
 } as const;
 
 /**

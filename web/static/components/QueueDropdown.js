@@ -7,7 +7,14 @@ import {
   TrashIcon,
   ChevronUpIcon,
   ChevronDownIcon,
+  GripIcon,
 } from "./Icons.js";
+import { useResizeHandle } from "../hooks/useResizeHandle.js";
+import {
+  getQueueDropdownHeight,
+  setQueueDropdownHeight,
+  getQueueHeightConstraints,
+} from "../utils/storage.js";
 
 /**
  * Truncate text to a maximum length with ellipsis
@@ -48,12 +55,38 @@ export function QueueDropdown({
   const dropdownRef = useRef(null);
   const inactivityTimerRef = useRef(null);
 
+  // Get height constraints for resize
+  const heightConstraints = getQueueHeightConstraints();
+
+  // Use resize handle hook for drag-to-resize functionality
+  const { height, isDragging, handleProps } = useResizeHandle({
+    initialHeight: getQueueDropdownHeight(),
+    minHeight: heightConstraints.min,
+    maxHeight: heightConstraints.max,
+    onDragStart: () => {
+      // Pause inactivity timer while dragging
+      if (inactivityTimerRef.current) {
+        clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+    },
+    onDragEnd: (finalHeight) => {
+      // Persist the height when drag ends
+      setQueueDropdownHeight(finalHeight);
+    },
+  });
+
   // Compute classes for animation - positioned as floating overlay above the input
   // Shadow only on top (negative Y offset) to cast over conversation area, not over input
-  const dropdownClasses = `queue-dropdown absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-slate-600 rounded-t-lg overflow-hidden transition-all duration-300 ease-out z-20 ${
-    isOpen ? "max-h-64 opacity-100" : "max-h-0 opacity-0 pointer-events-none border-0"
-  }`;
-  const dropdownStyle = isOpen ? "box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.3);" : "";
+  // When open: use resizable height, when closed: collapse to 0
+  const dropdownClasses = `queue-dropdown absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-slate-600 rounded-t-lg overflow-hidden z-20 ${
+    isDragging ? "" : "transition-all duration-300 ease-out"
+  } ${isOpen ? "opacity-100" : "opacity-0 pointer-events-none border-0"}`;
+
+  // Use explicit height when open, 0 when closed
+  const dropdownStyle = isOpen
+    ? `height: ${height}px; box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.3);`
+    : "height: 0px;";
 
   // Reset inactivity timer on any interaction
   const resetInactivityTimer = useCallback(() => {
@@ -149,6 +182,10 @@ export function QueueDropdown({
     [onMove, isMoving],
   );
 
+  // Calculate remaining height for list (total height - header height - resize handle height)
+  // Header is ~40px, resize handle is ~16px
+  const listMaxHeight = Math.max(50, height - 56);
+
   // Render the content wrapper - always rendered for animation, visibility controlled by height
   return html`
     <div
@@ -159,6 +196,15 @@ export function QueueDropdown({
       onMouseEnter=${handleMouseEnter}
       onMouseLeave=${handleMouseLeave}
     >
+      <!-- Resize Handle at top edge -->
+      <div
+        class="queue-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none ${isDragging ? "bg-slate-600/50" : ""}"
+        ...${handleProps}
+        title="Drag to resize"
+      >
+        <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+      </div>
+
       <div
         class="queue-dropdown-header px-3 py-2 border-b border-slate-700 flex items-center justify-between"
       >
@@ -168,7 +214,10 @@ export function QueueDropdown({
       </div>
       ${messages.length > 0
         ? html`
-            <div class="queue-dropdown-list max-h-48 overflow-y-auto">
+            <div
+              class="queue-dropdown-list overflow-y-auto"
+              style="max-height: ${listMaxHeight}px;"
+            >
               ${messages.map(
                 (msg, index) => html`
                   <div

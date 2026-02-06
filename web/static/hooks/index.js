@@ -3,3 +3,4 @@
 
 export { useWebSocket } from "./useWebSocket.js";
 export { useSwipeNavigation } from "./useSwipeNavigation.js";
+export { useResizeHandle } from "./useResizeHandle.js";
