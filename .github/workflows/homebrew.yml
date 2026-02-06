@@ -222,9 +222,9 @@ jobs:
 
       # Automatically update the Homebrew tap repository
       - name: Update Homebrew tap repository
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           VERSION_CLEAN="${{ steps.version.outputs.version_clean }}"
@@ -268,7 +268,9 @@ jobs:
           echo "  brew install --cask inercia/mitto/mitto # macOS app + CLI"
 
       - name: Output manual steps (if no token configured)
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN == '' }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        if: env.HOMEBREW_TAP_TOKEN == ''
         run: |
           echo "=============================================="
           echo "⚠️  HOMEBREW_TAP_TOKEN not configured"
