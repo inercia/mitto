@@ -1,11 +1,10 @@
 // Mitto Web Interface - Queue Dropdown Component
 // Displays and manages queued messages waiting to be sent to the agent
 
-const { useState, useEffect, useRef, useCallback, html } = window.preact;
+const { useEffect, useRef, useCallback, html } = window.preact;
 
 import {
   TrashIcon,
-  PlusIcon,
   ChevronUpIcon,
   ChevronDownIcon,
 } from "./Icons.js";
@@ -23,7 +22,7 @@ function truncateText(text, maxLength = 50) {
 }
 
 /**
- * QueueDropdown component - displays queued messages with delete, move, and add functionality
+ * QueueDropdown component - displays queued messages with delete and move functionality
  * @param {Object} props
  * @param {boolean} props.isOpen - Whether the dropdown is visible
  * @param {Function} props.onClose - Callback to close the dropdown
@@ -34,9 +33,6 @@ function truncateText(text, maxLength = 50) {
  * @param {boolean} props.isMoving - Whether a move operation is in progress
  * @param {number} props.queueLength - Current number of messages in queue
  * @param {number} props.maxSize - Maximum queue size from config
- * @param {string} props.draftMessage - Current draft message from input
- * @param {Function} props.onAddToQueue - Callback to add current draft to queue
- * @param {boolean} props.isAdding - Whether an add operation is in progress
  */
 export function QueueDropdown({
   isOpen,
@@ -48,17 +44,16 @@ export function QueueDropdown({
   isMoving = false,
   queueLength = 0,
   maxSize = 10,
-  draftMessage = "",
-  onAddToQueue,
-  isAdding = false,
 }) {
   const dropdownRef = useRef(null);
   const inactivityTimerRef = useRef(null);
 
-  // Check if we can add to queue
-  const hasValidMessage = draftMessage?.trim()?.length > 0;
-  const isQueueFull = queueLength >= maxSize;
-  const canAddToQueue = hasValidMessage && !isQueueFull && !isAdding;
+  // Compute classes for animation - positioned as floating overlay above the input
+  // Shadow only on top (negative Y offset) to cast over conversation area, not over input
+  const dropdownClasses = `queue-dropdown absolute bottom-full left-0 right-0 w-full bg-slate-700/95 backdrop-blur-sm border-t border-l border-r border-slate-600 rounded-t-lg overflow-hidden transition-all duration-300 ease-out z-20 ${
+    isOpen ? "max-h-64 opacity-100" : "max-h-0 opacity-0 pointer-events-none border-0"
+  }`;
+  const dropdownStyle = isOpen ? "box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.3);" : "";
 
   // Reset inactivity timer on any interaction
   const resetInactivityTimer = useCallback(() => {
@@ -154,40 +149,13 @@ export function QueueDropdown({
     [onMove, isMoving],
   );
 
-  // Handle add to queue click
-  const handleAddToQueue = useCallback(
-    (e) => {
-      e.stopPropagation();
-      if (onAddToQueue && canAddToQueue) {
-        onAddToQueue();
-        // Close dropdown after a short delay to show the new item
-        if (inactivityTimerRef.current) {
-          clearTimeout(inactivityTimerRef.current);
-        }
-        inactivityTimerRef.current = setTimeout(() => {
-          onClose();
-        }, 1500); // 1.5 seconds after adding - enough to see the new item
-      }
-    },
-    [onAddToQueue, canAddToQueue, onClose],
-  );
-
-  if (!isOpen) return null;
-
-  // Determine button tooltip
-  let addButtonTitle = "Add current message to queue";
-  if (isQueueFull) {
-    addButtonTitle = `Queue is full (${queueLength}/${maxSize})`;
-  } else if (!hasValidMessage) {
-    addButtonTitle = "Type a message first";
-  } else if (isAdding) {
-    addButtonTitle = "Adding...";
-  }
-
+  // Render the content wrapper - always rendered for animation, visibility controlled by height
   return html`
     <div
       ref=${dropdownRef}
-      class="queue-dropdown absolute top-full left-0 right-0 mx-auto mt-1 w-[56%] bg-slate-700/95 backdrop-blur-sm border border-slate-600 rounded-lg z-40 overflow-hidden"
+      class=${dropdownClasses}
+      data-is-open=${String(isOpen)}
+      style="transform-origin: bottom; ${dropdownStyle}"
       onMouseEnter=${handleMouseEnter}
       onMouseLeave=${handleMouseLeave}
     >
@@ -263,20 +231,6 @@ export function QueueDropdown({
               No messages in queue
             </div>
           `}
-      <div class="queue-dropdown-footer px-3 py-2 border-t border-slate-700">
-        <button
-          type="button"
-          onClick=${handleAddToQueue}
-          disabled=${!canAddToQueue}
-          class="queue-add-button w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm rounded transition-colors ${canAddToQueue
-            ? "bg-blue-600 hover:bg-blue-500 text-white"
-            : "bg-slate-700/50 text-gray-500 cursor-not-allowed"}"
-          title=${addButtonTitle}
-        >
-          <${PlusIcon} className="w-3.5 h-3.5" />
-          <span>Add message to queue</span>
-        </button>
-      </div>
     </div>
   `;
 }

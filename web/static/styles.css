@@ -978,6 +978,208 @@ mitto-action {
   display: none !important;
 }
 
+/* =============================================================================
+   Action Toolbar (collapsible vertical toolbar for ChatInput)
+   ============================================================================= */
+
+/* Container class for the flex layout that holds the textarea */
+.chat-input-container {
+  position: relative;
+}
+
+/* Container for the action toolbar - positioned above the input area at the right edge of conversation */
+.action-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: absolute;
+  right: 24px;
+  bottom: calc(100% + 16px); /* Position above the form with some gap */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease-out;
+  z-index: 20;
+}
+
+.action-toolbar.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Individual toolbar button */
+.action-toolbar-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #334155;
+  border: 1px solid #475569;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transform: translateX(20px) scale(0.8);
+  opacity: 0;
+}
+
+.action-toolbar.visible .action-toolbar-btn {
+  transform: translateX(0) scale(1);
+  opacity: 1;
+}
+
+/* Staggered animation for buttons */
+.action-toolbar.visible .action-toolbar-btn:nth-child(1) {
+  transition-delay: 0s;
+}
+.action-toolbar.visible .action-toolbar-btn:nth-child(2) {
+  transition-delay: 0.05s;
+}
+.action-toolbar.visible .action-toolbar-btn:nth-child(3) {
+  transition-delay: 0.1s;
+}
+.action-toolbar.visible .action-toolbar-btn:nth-child(4) {
+  transition-delay: 0.15s;
+}
+.action-toolbar.visible .action-toolbar-btn:nth-child(5) {
+  transition-delay: 0.2s;
+}
+
+/* Reverse stagger for hiding */
+.action-toolbar:not(.visible) .action-toolbar-btn:nth-child(1) {
+  transition-delay: 0.1s;
+}
+.action-toolbar:not(.visible) .action-toolbar-btn:nth-child(2) {
+  transition-delay: 0.05s;
+}
+.action-toolbar:not(.visible) .action-toolbar-btn:nth-child(3) {
+  transition-delay: 0s;
+}
+
+.action-toolbar-btn:hover {
+  background: #475569;
+  color: #f1f5f9;
+  transform: scale(1.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.action-toolbar-btn:active {
+  transform: scale(0.95);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.action-toolbar-btn:disabled {
+  background: #1e293b;
+  color: #475569;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.action-toolbar-btn:disabled:hover {
+  transform: translateX(0) scale(1);
+}
+
+/* Spinning animation for loading state */
+.action-toolbar-btn.loading {
+  background: #3b82f6;
+  border-color: #60a5fa;
+  color: white;
+}
+
+/* Light theme */
+.light .action-toolbar-btn {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+  color: #64748b;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.light .action-toolbar-btn:hover {
+  background: #cbd5e1;
+  color: #1e293b;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.light .action-toolbar-btn:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+/* Chat input button container - smaller buttons aligned with textarea */
+.chat-input-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: stretch; /* Stretch to match textarea height */
+  justify-content: flex-end; /* Align buttons to the bottom */
+}
+
+.chat-input-buttons > div {
+  gap: 4px; /* Override Tailwind gap-2 for tighter spacing */
+}
+
+.chat-input-buttons .action-toolbar-btn {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+}
+
+.chat-input-buttons .action-toolbar-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Queue badge - small count indicator on queue button */
+.queue-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  color: white;
+  background: #2563eb;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Mobile: keep toolbar above input, smaller buttons */
+@media (max-width: 768px) {
+  .action-toolbar {
+    right: 12px;
+    bottom: calc(100% + 12px);
+  }
+
+  .action-toolbar-btn {
+    width: 36px;
+    height: 36px;
+    transform: translateY(10px) scale(0.8);
+  }
+
+  .action-toolbar.visible .action-toolbar-btn {
+    transform: translateY(0) scale(1);
+  }
+
+  .action-toolbar-btn:hover {
+    transform: scale(1.1);
+  }
+
+  .chat-input-buttons .action-toolbar-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .chat-input-buttons .action-toolbar-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
 /* Workspace pill clickable hover effect - uses filter instead of opacity
    to maintain text legibility on colored backgrounds */
 .workspace-pill-clickable {

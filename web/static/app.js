@@ -2425,16 +2425,33 @@ function App() {
     setKeyboardShortcutsDialog({ isOpen: true });
   };
 
+  // Ref to track queue panel auto-close timer after adding
+  const queuePanelAutoCloseTimerRef = useRef(null);
+
   // Queue dropdown handlers
   const handleToggleQueueDropdown = useCallback(() => {
+    console.log("[DEBUG] handleToggleQueueDropdown called, current showQueueDropdown:", showQueueDropdown);
+    // Cancel any auto-close timer when user manually toggles
+    if (queuePanelAutoCloseTimerRef.current) {
+      clearTimeout(queuePanelAutoCloseTimerRef.current);
+      queuePanelAutoCloseTimerRef.current = null;
+    }
     if (!showQueueDropdown) {
       // Opening - fetch latest queue messages
       fetchQueueMessages();
     }
-    setShowQueueDropdown((prev) => !prev);
+    setShowQueueDropdown((prev) => {
+      console.log("[DEBUG] setShowQueueDropdown: prev=", prev, "new=", !prev);
+      return !prev;
+    });
   }, [showQueueDropdown, fetchQueueMessages]);
 
   const handleCloseQueueDropdown = useCallback(() => {
+    // Cancel any auto-close timer when closing
+    if (queuePanelAutoCloseTimerRef.current) {
+      clearTimeout(queuePanelAutoCloseTimerRef.current);
+      queuePanelAutoCloseTimerRef.current = null;
+    }
     setShowQueueDropdown(false);
   }, []);
 
@@ -2489,11 +2506,26 @@ function App() {
         // Trigger badge pulse animation
         setQueueBadgePulse(true);
         setTimeout(() => setQueueBadgePulse(false), 600);
+
+        // Open queue panel briefly to show the new message
+        fetchQueueMessages();
+        setShowQueueDropdown(true);
+
+        // Clear any existing auto-close timer
+        if (queuePanelAutoCloseTimerRef.current) {
+          clearTimeout(queuePanelAutoCloseTimerRef.current);
+        }
+
+        // Auto-close the queue panel after 1.5 seconds
+        queuePanelAutoCloseTimerRef.current = setTimeout(() => {
+          setShowQueueDropdown(false);
+          queuePanelAutoCloseTimerRef.current = null;
+        }, 1500);
       }
     } finally {
       setIsAddingToQueue(false);
     }
-  }, [currentDraft, isAddingToQueue, addToQueue, updateDraft, activeSessionId]);
+  }, [currentDraft, isAddingToQueue, addToQueue, updateDraft, activeSessionId, fetchQueueMessages]);
 
   // Auto-hide queue dropdown when certain events occur
   useEffect(() => {
@@ -2867,50 +2899,7 @@ function App() {
                 : "bg-red-400"}"
               title="${connected ? "Connected" : "Disconnected"}"
             ></span>
-            ${activeSessionId &&
-            html`
-              <button
-                type="button"
-                onClick=${handleToggleQueueDropdown}
-                data-queue-toggle
-                class="relative text-gray-500 hover:text-gray-300 transition-colors p-1 -m-1 rounded"
-                title="${queueLength}/${queueConfig.max_size} queued${queueLength >=
-                queueConfig.max_size
-                  ? " (full)"
-                  : ""} - Click to manage"
-              >
-                <${QueueIcon} className="w-4 h-4" />
-                ${queueLength > 0 &&
-                html`
-                  <span
-                    class="absolute -top-1.5 -right-1.5 ${queueLength >=
-                    queueConfig.max_size
-                      ? "bg-red-500"
-                      : "bg-blue-500"} ${queueBadgePulse
-                      ? "queue-badge-pulse"
-                      : ""} text-white text-[10px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5"
-                  >
-                    ${queueLength}
-                  </span>
-                `}
-              </button>
-            `}
           </div>
-          <!-- Queue Dropdown -->
-          <${QueueDropdown}
-            isOpen=${showQueueDropdown}
-            onClose=${handleCloseQueueDropdown}
-            messages=${queueMessages}
-            onDelete=${handleDeleteQueueMessage}
-            onMove=${handleMoveQueueMessage}
-            isDeleting=${isDeletingQueueMessage}
-            isMoving=${isMovingQueueMessage}
-            queueLength=${queueLength}
-            maxSize=${queueConfig.max_size}
-            draftMessage=${currentDraft}
-            onAddToQueue=${handleAddToQueue}
-            isAdding=${isAddingToQueue}
-          />
         </div>
 
         <!-- Messages -->
@@ -3051,8 +3040,23 @@ function App() {
           `}
         </div>
 
-        <!-- Input -->
-        <${ChatInput}
+        <!-- Input Area Container (relative for QueueDropdown positioning) -->
+        <div class="relative flex-shrink-0">
+          <!-- Queue Dropdown (floating overlay above input) -->
+          <${QueueDropdown}
+            isOpen=${showQueueDropdown}
+            onClose=${handleCloseQueueDropdown}
+            messages=${queueMessages}
+            onDelete=${handleDeleteQueueMessage}
+            onMove=${handleMoveQueueMessage}
+            isDeleting=${isDeletingQueueMessage}
+            isMoving=${isMovingQueueMessage}
+            queueLength=${queueLength}
+            maxSize=${queueConfig.max_size}
+          />
+
+          <!-- Input -->
+          <${ChatInput}
           onSend=${sendPrompt}
           onCancel=${cancelPrompt}
           disabled=${!connected || !activeSessionId}
@@ -3069,8 +3073,11 @@ function App() {
           queueLength=${queueLength}
           queueConfig=${queueConfig}
           onAddToQueue=${handleAddToQueue}
+          onToggleQueue=${handleToggleQueueDropdown}
+          showQueueDropdown=${showQueueDropdown}
           actionButtons=${actionButtons}
         />
+        </div>
       </div>
     </div>
   `;

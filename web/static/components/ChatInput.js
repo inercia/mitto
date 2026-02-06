@@ -129,6 +129,8 @@ function sortPromptsByColor(prompts) {
  * @param {number} props.queueLength - Current number of messages in queue
  * @param {Object} props.queueConfig - Queue configuration { enabled, max_size, delay_seconds }
  * @param {Function} props.onAddToQueue - Callback to add message to queue (Cmd/Ctrl+Enter)
+ * @param {Function} props.onToggleQueue - Callback to toggle queue panel visibility
+ * @param {boolean} props.showQueueDropdown - Whether the queue dropdown is currently visible
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  */
 export function ChatInput({
@@ -147,6 +149,8 @@ export function ChatInput({
   queueLength = 0,
   queueConfig = { enabled: true, max_size: 10, delay_seconds: 0 },
   onAddToQueue,
+  onToggleQueue,
+  showQueueDropdown = false,
   actionButtons = [],
 }) {
   // Use the draft from parent state instead of local state
@@ -180,6 +184,11 @@ export function ChatInput({
   const [improveError, setImproveError] = useState(null);
   const textareaRef = useRef(null);
   const dropupRef = useRef(null);
+
+  // Track textarea focus for action toolbar visibility
+  const [isTextareaFocused, setIsTextareaFocused] = useState(false);
+  const toolbarHideTimeoutRef = useRef(null);
+  const toolbarRef = useRef(null);
 
   // Check if the current session has an active improve request
   const isImproving = improvingSessionsRef.current.has(sessionId);
@@ -257,6 +266,38 @@ export function ChatInput({
       textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
     }
   }, [text]);
+
+  // Clean up toolbar hide timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (toolbarHideTimeoutRef.current) {
+        clearTimeout(toolbarHideTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Handle textarea focus - show toolbar
+  const handleTextareaFocus = useCallback(() => {
+    if (toolbarHideTimeoutRef.current) {
+      clearTimeout(toolbarHideTimeoutRef.current);
+      toolbarHideTimeoutRef.current = null;
+    }
+    setIsTextareaFocused(true);
+  }, []);
+
+  // Handle textarea blur - hide toolbar with delay to allow button clicks
+  const handleTextareaBlur = useCallback((e) => {
+    // Check if the new focus target is within the toolbar
+    const toolbar = toolbarRef.current;
+    if (toolbar && toolbar.contains(e.relatedTarget)) {
+      // Don't hide if clicking a toolbar button
+      return;
+    }
+    // Delay hiding to allow button clicks to register
+    toolbarHideTimeoutRef.current = setTimeout(() => {
+      setIsTextareaFocused(false);
+    }, 150);
+  }, []);
 
   // Check if queue is at capacity (only relevant when streaming, as messages get queued)
   const isQueueFull = isStreaming && queueLength >= queueConfig.max_size;
@@ -702,7 +743,7 @@ export function ChatInput({
       onDrop=${handleDrop}
       onDragOver=${handleDragOver}
       onDragLeave=${handleDragLeave}
-      class="p-4 bg-mitto-input border-t border-slate-700 flex-shrink-0 ${isDragOver
+      class="p-4 bg-mitto-input border-t border-slate-700 flex-shrink-0 relative ${isDragOver
         ? "ring-2 ring-blue-500 ring-inset"
         : ""}"
     >
@@ -839,23 +880,112 @@ export function ChatInput({
         </div>
       `}
 
-      <div class="flex gap-2 max-w-4xl mx-auto">
-        <textarea
-          ref=${textareaRef}
-          value=${text}
-          onInput=${handleInput}
-          onKeyDown=${handleKeyDown}
-          onPaste=${handlePaste}
-          placeholder=${getPlaceholder()}
-          rows="2"
-          class="flex-1 bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
-          isReadOnly ||
-          isImproving
-            ? "opacity-50 cursor-not-allowed"
-            : ""}"
+      <!-- Collapsible Action Toolbar - positioned at bottom-right of conversation area -->
+      <div
+        ref=${toolbarRef}
+        class="action-toolbar ${isTextareaFocused && !isFullyDisabled && !isReadOnly ? "visible" : ""}"
+      >
+        <!-- Attach Image Button -->
+        <button
+          type="button"
+          onClick=${handleAttachClick}
+          onMouseDown=${(e) => e.preventDefault()}
           disabled=${isFullyDisabled || isReadOnly || isImproving}
-        />
-        <div class="relative flex flex-col gap-1.5 self-end" ref=${dropupRef}>
+          class="action-toolbar-btn"
+          title="Attach image"
+        >
+          <svg
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+            />
+          </svg>
+        </button>
+
+        <!-- Magic Wand / Improve Prompt Button -->
+        <button
+          type="button"
+          onClick=${handleImprovePrompt}
+          onMouseDown=${(e) => e.preventDefault()}
+          disabled=${isFullyDisabled ||
+          !text.trim() ||
+          isReadOnly ||
+          isStreaming ||
+          isImproving}
+          class="action-toolbar-btn ${isImproving ? "loading" : ""}"
+          title="Improve prompt with AI (Ctrl+P)"
+        >
+          ${isImproving
+            ? html`
+                <svg
+                  class="w-5 h-5 animate-spin"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    class="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    stroke-width="4"
+                  ></circle>
+                  <path
+                    class="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+              `
+            : html`
+                <svg
+                  class="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                  />
+                </svg>
+              `}
+        </button>
+      </div>
+
+      <div class="flex gap-2 max-w-4xl mx-auto chat-input-container">
+        <!-- Textarea container -->
+        <div class="relative flex-1">
+          <textarea
+            ref=${textareaRef}
+            value=${text}
+            onInput=${handleInput}
+            onKeyDown=${handleKeyDown}
+            onPaste=${handlePaste}
+            onFocus=${handleTextareaFocus}
+            onBlur=${handleTextareaBlur}
+            placeholder=${getPlaceholder()}
+            rows="2"
+            class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
+            isReadOnly ||
+            isImproving
+              ? "opacity-50 cursor-not-allowed"
+              : ""}"
+            disabled=${isFullyDisabled || isReadOnly || isImproving}
+          />
+        </div>
+
+        <!-- Vertical button stack (Send on top, Queue below) - aligned with textarea -->
+        <div class="relative chat-input-buttons flex-shrink-0" ref=${dropupRef}>
           ${showDropup &&
           hasPrompts &&
           html`
@@ -938,53 +1068,40 @@ export function ChatInput({
             </div>
           `}
 
-          <div class="flex rounded-xl overflow-hidden gap-1">
+          <!-- Send/Stop button (top) - with prompts dropdown -->
+          <div class="flex gap-1">
             ${isStreaming
               ? html`
+                  <!-- Stop button - uses action-toolbar-btn style but with red background -->
                   <button
                     type="button"
                     onClick=${onCancel}
-                    class="min-w-[5.5rem] bg-red-600 hover:bg-red-700 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2 rounded-xl"
+                    class="action-toolbar-btn"
+                    style="background: #dc2626 !important; border-color: #ef4444 !important; color: white !important; opacity: 1; transform: none;"
+                    title="Stop streaming"
                   >
-                    <svg
-                      class="w-4 h-4"
-                      fill="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <rect x="6" y="6" width="12" height="12" rx="2" />
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
                     </svg>
-                    <span>Stop</span>
                   </button>
                 `
               : isSending
                 ? html`
+                    <!-- Sending spinner - uses action-toolbar-btn disabled style -->
                     <button
                       type="button"
                       disabled
-                      class="min-w-[5.5rem] bg-slate-600 text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2 cursor-not-allowed"
+                      class="action-toolbar-btn"
+                      style="opacity: 1; transform: none;"
                     >
-                      <svg
-                        class="w-4 h-4 animate-spin"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          class="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          stroke-width="4"
-                        ></circle>
-                        <path
-                          class="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        ></path>
+                      <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
                     </button>
                   `
                 : html`
+                    <!-- Send button - uses action-toolbar-btn style, paper plane arrow pointing right -->
                     <button
                       type="submit"
                       disabled=${isFullyDisabled ||
@@ -992,142 +1109,86 @@ export function ChatInput({
                       isReadOnly ||
                       isImproving ||
                       isQueueFull}
-                      class="min-w-[5.5rem] ${isQueueFull
-                        ? "bg-orange-600 hover:bg-orange-700"
-                        : "bg-red-600 hover:bg-red-700"} disabled:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium transition-colors flex items-center justify-center gap-2"
+                      class="action-toolbar-btn ${isQueueFull ? "queue-full" : ""}"
+                      style="${isQueueFull
+                        ? "background: #ea580c !important; border-color: #f97316 !important; color: white !important; opacity: 1; transform: none;"
+                        : "opacity: 1; transform: none;"}"
                       title=${isQueueFull
                         ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
                         : "Send message"}
                     >
-                      <span>${isQueueFull ? "Full" : "Send"}</span>
+                      ${isQueueFull
+                        ? html`
+                            <!-- Queue full icon -->
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                            </svg>
+                          `
+                        : html`
+                            <!-- Paper plane / send arrow pointing RIGHT (like WhatsApp) -->
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                          `}
                     </button>
                   `}
             ${hasPrompts &&
-            !isStreaming &&
             html`
+              <!-- Prompts dropdown toggle - uses action-toolbar-btn style -->
               <button
                 type="button"
                 onClick=${handleTogglePrompts}
                 disabled=${isFullyDisabled || isReadOnly}
-                class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white px-2 py-2 border-l border-blue-500 transition-colors"
+                class="action-toolbar-btn"
+                style="opacity: 1; transform: none;"
                 title="Insert predefined prompt"
               >
                 <svg
-                  class="w-4 h-4 transition-transform ${showDropup
-                    ? "rotate-180"
-                    : ""}"
+                  class="w-5 h-5 transition-transform ${showDropup ? "rotate-180" : ""}"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
                 >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M5 15l7-7 7 7"
-                  />
-                </svg>
-              </button>
-            `}
-            ${hasPrompts &&
-            isStreaming &&
-            html`
-              <button
-                type="button"
-                onClick=${handleTogglePrompts}
-                disabled=${isFullyDisabled || isReadOnly}
-                class="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-2 py-2 border-l border-slate-600 transition-colors"
-                title="Insert predefined prompt"
-              >
-                <svg
-                  class="w-4 h-4 transition-transform ${showDropup
-                    ? "rotate-180"
-                    : ""}"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M5 15l7-7 7 7"
-                  />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
                 </svg>
               </button>
             `}
           </div>
 
-          <div class="flex gap-1.5">
+          <!-- Queue button group (bottom) - uses action-toolbar-btn style -->
+          <div class="flex gap-1">
+            <!-- Add to Queue button -->
             <button
               type="button"
-              onClick=${handleAttachClick}
-              disabled=${isFullyDisabled || isReadOnly || isImproving}
-              class="flex-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl transition-colors flex items-center justify-center"
-              title="Attach image"
+              onClick=${() => onAddToQueue && text.trim() && onAddToQueue()}
+              disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
+              class="action-toolbar-btn"
+              style="opacity: 1; transform: none;"
+              title="Add to queue (⌘/Ctrl+Enter)"
             >
-              <svg
-                class="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                />
+              <!-- Plus icon -->
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
               </svg>
             </button>
+            <!-- Toggle Queue Panel button -->
             <button
               type="button"
-              onClick=${handleImprovePrompt}
-              disabled=${isFullyDisabled ||
-              !text.trim() ||
-              isReadOnly ||
-              isStreaming ||
-              isImproving}
-              class="flex-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-2 rounded-xl transition-colors flex items-center justify-center"
-              title="Improve prompt with AI"
+              onClick=${() => { console.log('[DEBUG] Queue toggle button clicked, onToggleQueue=', typeof onToggleQueue); if (onToggleQueue) onToggleQueue(); }}
+              data-queue-toggle
+              class="action-toolbar-btn relative"
+              style="${showQueueDropdown
+                ? "background: #2563eb !important; border-color: #3b82f6 !important; color: white !important; opacity: 1; transform: none;"
+                : "opacity: 1; transform: none;"}"
+              title="${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue"
             >
-              ${isImproving
-                ? html`
-                    <svg
-                      class="w-5 h-5 animate-spin"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        class="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        stroke-width="4"
-                      ></circle>
-                      <path
-                        class="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      ></path>
-                    </svg>
-                  `
-                : html`
-                    <svg
-                      class="w-5 h-5"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
-                      />
-                    </svg>
-                  `}
+              <!-- Queue/list icon -->
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+              </svg>
+              ${queueLength > 0 && html`
+                <span class="queue-badge">${queueLength}</span>
+              `}
             </button>
           </div>
         </div>
