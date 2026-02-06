@@ -167,63 +167,21 @@ prompts:
     prompt: |
       Please help me create a new release with the following workflow:
 
-      ## Step 1: Format Code
+      ## Step 1: Determine Version
 
-      Run code formatters to ensure consistent style:
-      ```bash
-      make fmt
-      ```
-
-      Report any formatting changes made.
-
-      ## Step 2: Analyze & Commit Changes
-
-      1. Run `git status --porcelain` to list all uncommitted changes
-      2. If there are uncommitted changes, group them logically by:
-         - Feature or component they belong to
-         - Type of change (feature, fix, refactor, test, docs, chore)
-         - File path patterns
-      3. Propose commits using conventional commit prefixes:
-         - `feat:` for new features
-         - `fix:` for bug fixes
-         - `docs:` for documentation changes
-         - `refactor:` for code refactoring
-         - `test:` for test additions or modifications
-         - `chore:` for maintenance tasks
-      4. Present a table with the proposed commits:
-
-         | SEQUENCE | COMMIT MESSAGE | FILES | REASON |
-         |----------|----------------|-------|--------|
-         | 1 | feat: add new feature | file1.go, file2.go | Related feature files |
-         | ... | ... | ... | ... |
-
-      5. **WAIT FOR MY APPROVAL** before making any commits
-      6. After approval, execute the commits in sequence
-
-      ## Step 3: Verify CI
-
-      Run CI checks to ensure they will pass:
-      ```bash
-      make ci
-      ```
-
-      Report any failures and fix them before proceeding.
-
-      ## Step 4: Determine Version
-
-      7. Get the latest tag: `git describe --tags --abbrev=0`
-      8. Analyze commits since the last tag using conventional commit prefixes:
+      1. Get the latest tag: `git describe --tags --abbrev=0`
+      2. Analyze commits since the last tag using conventional commit prefixes:
          - `feat:` commits → suggest MINOR version bump
          - `fix:` commits → suggest PATCH version bump
          - Breaking changes (indicated by `!` or `BREAKING CHANGE:`) → suggest MAJOR version bump
-      9. Present the suggested version with reasoning:
+      3. Present the suggested version with reasoning:
          - Current version: vX.Y.Z
          - Suggested version: vX.Y.Z
          - Reason: List of relevant commits
 
-      10. **WAIT FOR MY APPROVAL** of the version number
+      4.  **WAIT FOR MY APPROVAL** of the version number
 
-      ## Step 5: Create & Push Tag
+      ## Step 2: Create & Push Tag
 
       After version approval:
       ```bash

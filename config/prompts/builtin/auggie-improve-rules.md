@@ -5,6 +5,8 @@ acps: auggie
 backgroundColor: "#1b0bc693"
 ---
 
+# General instructions
+
 Review and update the Augment rules in `.augment/rules` based on all insights,
 patterns, and lessons learned from our recent conversations and code changes.
 Specifically:
@@ -17,3 +19,23 @@ Specifically:
 
 Focus on actionable guidance that will help future development sessions.
 Do not remove existing valid content - only add or update information.
+
+# Reorganize rules files
+
+Once you have a good understanding of the existin rules files, reorganize
+the .augment/rules/ files to optimize automatic context inclusion.
+Specifically:
+
+* Analyze each existing rules file and identify sections that could
+  be split into separate, more focused files
+* Split large rules files into smaller, scope-specific files
+  (e.g., separate files for different packages, features, or concerns)
+* Update each file's trigger description (the "If the user prompt matches..."
+  condition) to be specific and targeted, ensuring rules are only included when truly relevant
+* Keep related content together but ensure no single file is excessively long
+* Update the global rules file to reflect any new file structure
+* Ensure file naming follows a logical numbering/naming convention
+
+The goal is to have focused rules files that are automatically loaded
+only when their specific topic is being worked on, reducing context noise
+and improving relevance.
