@@ -81,9 +81,15 @@ my-project/
 └── ...
 ```
 
-## Sample Configuration
+## Creating a Configuration File
 
-See [sample.mittorc](../../sample.mittorc) for a complete configuration example.
+To create a default configuration file, run:
+
+```bash
+mitto config create
+```
+
+This creates `~/.mittorc` with sensible defaults. Review and customize it for your environment.
 
 ## Related Documentation
 

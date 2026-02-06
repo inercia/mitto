@@ -15,7 +15,7 @@ Communication Protocol (ACP).
 ### Getting Started
 
 - See the main [README.md](../README.md) for installation and basic usage
-- See [sample.mittorc](../config/config.default.yaml) for a complete configuration example
+- Run `mitto config create` to create a default configuration file (`~/.mittorc`)
 
 ### Configuration
 
