@@ -22,29 +22,36 @@ const (
 // MarkdownBuffer accumulates streaming text and converts to HTML intelligently.
 // It buffers chunks until semantic boundaries (lines, code blocks, paragraphs)
 // are detected, then converts to HTML and sends via callback.
+//
+// Sequence numbers (seq) are tracked through the buffer to maintain correct
+// event ordering. When content is buffered, the seq from the first chunk is
+// preserved and passed to the onFlush callback when the content is flushed.
 type MarkdownBuffer struct {
 	mu           sync.Mutex
 	buffer       strings.Builder
 	converter    *conversion.Converter
-	onFlush      func(html string)
+	onFlush      func(seq int64, html string)
 	flushTimer   *time.Timer
 	flushTimeout time.Duration
 	inCodeBlock  bool
-	inList       bool // Track if we're inside a list
-	inTable      bool // Track if we're inside a table
+	inList       bool  // Track if we're inside a list
+	inTable      bool  // Track if we're inside a table
+	pendingSeq   int64 // Seq for buffered content (from first chunk)
 }
 
 // MarkdownBufferConfig holds configuration for creating a MarkdownBuffer.
 type MarkdownBufferConfig struct {
 	// OnFlush is called when HTML content is ready to be sent.
-	OnFlush func(html string)
+	// The seq parameter is the sequence number from when the content was received.
+	OnFlush func(seq int64, html string)
 	// FileLinksConfig configures file path detection and linking.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
 }
 
 // NewMarkdownBuffer creates a new streaming Markdown buffer.
-func NewMarkdownBuffer(onFlush func(html string)) *MarkdownBuffer {
+// Deprecated: Use NewMarkdownBufferWithConfig instead for seq support.
+func NewMarkdownBuffer(onFlush func(seq int64, html string)) *MarkdownBuffer {
 	return &MarkdownBuffer{
 		converter:    conversion.DefaultConverter(),
 		onFlush:      onFlush,
@@ -72,13 +79,21 @@ func NewMarkdownBufferWithConfig(cfg MarkdownBufferConfig) *MarkdownBuffer {
 }
 
 // Write adds a chunk of text to the buffer and triggers smart flushing.
-func (mb *MarkdownBuffer) Write(chunk string) {
+// The seq parameter is the sequence number assigned when this content was received
+// from ACP. If the buffer is empty, this seq becomes the pendingSeq for the buffered
+// content. If content is already buffered, the original seq is preserved (first wins).
+func (mb *MarkdownBuffer) Write(seq int64, chunk string) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
 	// Cancel any pending timeout flush
 	if mb.flushTimer != nil {
 		mb.flushTimer.Stop()
+	}
+
+	// Track seq for buffered content (first chunk's seq wins)
+	if mb.buffer.Len() == 0 {
+		mb.pendingSeq = seq
 	}
 
 	// Process chunk character by character for code block detection
@@ -220,12 +235,14 @@ func (mb *MarkdownBuffer) flushLocked() {
 	}
 
 	content := mb.buffer.String()
+	seq := mb.pendingSeq // Capture seq before reset
 	mb.buffer.Reset()
+	mb.pendingSeq = 0
 
 	// Convert to HTML using the converter (which handles sanitization)
 	htmlStr := mb.converter.ConvertToSafeHTML(content)
 	if htmlStr != "" && mb.onFlush != nil {
-		mb.onFlush(htmlStr)
+		mb.onFlush(seq, htmlStr)
 	}
 }
 
@@ -250,4 +267,5 @@ func (mb *MarkdownBuffer) Reset() {
 	mb.inCodeBlock = false
 	mb.inList = false
 	mb.inTable = false
+	mb.pendingSeq = 0
 }

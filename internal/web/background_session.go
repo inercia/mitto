@@ -324,6 +324,12 @@ func (bs *BackgroundSession) getNextSeq() int64 {
 	return seq
 }
 
+// GetNextSeq implements the SeqProvider interface.
+// It returns the next sequence number for event ordering.
+func (bs *BackgroundSession) GetNextSeq() int64 {
+	return bs.getNextSeq()
+}
+
 // refreshNextSeq updates nextSeq from the current event count.
 // This should be called after events are persisted outside the normal buffer flow
 // (e.g., after user prompts are persisted directly).
@@ -581,9 +587,11 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 
 	bs.acpCmd = cmd
 
-	// Create web client with callbacks that route to attached client or persist
+	// Create web client with callbacks that route to attached client or persist.
+	// BackgroundSession implements SeqProvider, so seq is assigned at ACP receive time.
 	webClientConfig := WebClientConfig{
 		AutoApprove:    bs.autoApprove,
+		SeqProvider:    bs, // BackgroundSession implements SeqProvider
 		OnAgentMessage: bs.onAgentMessage,
 		OnAgentThought: bs.onAgentThought,
 		OnToolCall:     bs.onToolCall,
@@ -649,8 +657,7 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 			if bs.logger != nil {
 				bs.logger.Info("Resumed ACP session",
 					"acp_session_id", acpSessionID,
-					"modes", loadResp.Modes,
-					"models", loadResp.Models)
+					"modes", loadResp.Modes)
 			}
 			return nil
 		}
@@ -1431,35 +1438,19 @@ func (bs *BackgroundSession) NotifyQueueReordered(messages []session.QueuedMessa
 
 // --- Callback methods for WebClient ---
 
-func (bs *BackgroundSession) onAgentMessage(html string) {
+func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 	if bs.IsClosed() {
 		return
 	}
 
-	// Get next seq for potential new event
-	candidateSeq := bs.getNextSeq()
-
 	// Buffer for persistence (protected by mutex)
-	// AppendAgentMessage returns the actual seq used (may be existing if appending)
-	// and whether a new event was created (if not, we need to "return" the seq)
+	// AppendAgentMessage handles coalescing messages with the same seq.
+	// The seq was already assigned at ACP receive time by WebClient.
 	bs.bufferMu.Lock()
-	var seq int64
-	var isNew bool
 	if bs.eventBuffer != nil {
-		seq, isNew = bs.eventBuffer.AppendAgentMessage(candidateSeq, html)
-	} else {
-		seq = candidateSeq
-		isNew = true
+		bs.eventBuffer.AppendAgentMessage(seq, html)
 	}
 	bs.bufferMu.Unlock()
-
-	// If we didn't create a new event, we need to "return" the seq we got
-	// by decrementing nextSeq (since we incremented it but didn't use it)
-	if !isNew {
-		bs.seqMu.Lock()
-		bs.nextSeq--
-		bs.seqMu.Unlock()
-	}
 
 	// Notify all observers
 	observerCount := bs.ObserverCount()
@@ -1474,32 +1465,19 @@ func (bs *BackgroundSession) onAgentMessage(html string) {
 	})
 }
 
-func (bs *BackgroundSession) onAgentThought(text string) {
+func (bs *BackgroundSession) onAgentThought(seq int64, text string) {
 	if bs.IsClosed() {
 		return
 	}
 
-	// Get next seq for potential new event
-	candidateSeq := bs.getNextSeq()
-
 	// Buffer for persistence (protected by mutex)
+	// AppendAgentThought handles coalescing thoughts with the same seq.
+	// The seq was already assigned at ACP receive time by WebClient.
 	bs.bufferMu.Lock()
-	var seq int64
-	var isNew bool
 	if bs.eventBuffer != nil {
-		seq, isNew = bs.eventBuffer.AppendAgentThought(candidateSeq, text)
-	} else {
-		seq = candidateSeq
-		isNew = true
+		bs.eventBuffer.AppendAgentThought(seq, text)
 	}
 	bs.bufferMu.Unlock()
-
-	// If we didn't create a new event, return the unused seq
-	if !isNew {
-		bs.seqMu.Lock()
-		bs.nextSeq--
-		bs.seqMu.Unlock()
-	}
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1507,15 +1485,13 @@ func (bs *BackgroundSession) onAgentThought(text string) {
 	})
 }
 
-func (bs *BackgroundSession) onToolCall(id, title, status string) {
+func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 	if bs.IsClosed() {
 		return
 	}
 
-	// Get next seq - tool calls always create new events
-	seq := bs.getNextSeq()
-
 	// Buffer for persistence (protected by mutex)
+	// The seq was already assigned at ACP receive time by WebClient.
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
 		bs.eventBuffer.AppendToolCall(seq, id, title, status)
@@ -1528,13 +1504,10 @@ func (bs *BackgroundSession) onToolCall(id, title, status string) {
 	})
 }
 
-func (bs *BackgroundSession) onToolUpdate(id string, status *string) {
+func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) {
 	if bs.IsClosed() {
 		return
 	}
-
-	// Get next seq - tool updates always create new events
-	seq := bs.getNextSeq()
 
 	// Buffer for persistence (protected by mutex)
 	bs.bufferMu.Lock()
@@ -1549,15 +1522,13 @@ func (bs *BackgroundSession) onToolUpdate(id string, status *string) {
 	})
 }
 
-func (bs *BackgroundSession) onPlan() {
+func (bs *BackgroundSession) onPlan(seq int64) {
 	if bs.IsClosed() {
 		return
 	}
 
-	// Get next seq - plan events always create new events
-	seq := bs.getNextSeq()
-
 	// Buffer for persistence (protected by mutex)
+	// The seq was already assigned at ACP receive time by WebClient.
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
 		bs.eventBuffer.AppendPlan(seq)
@@ -1570,15 +1541,13 @@ func (bs *BackgroundSession) onPlan() {
 	})
 }
 
-func (bs *BackgroundSession) onFileWrite(path string, size int) {
+func (bs *BackgroundSession) onFileWrite(seq int64, path string, size int) {
 	if bs.IsClosed() {
 		return
 	}
 
-	// Get next seq - file write events always create new events
-	seq := bs.getNextSeq()
-
 	// Buffer for persistence (protected by mutex)
+	// The seq was already assigned at ACP receive time by WebClient.
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
 		bs.eventBuffer.AppendFileWrite(seq, path, size)
@@ -1591,15 +1560,13 @@ func (bs *BackgroundSession) onFileWrite(path string, size int) {
 	})
 }
 
-func (bs *BackgroundSession) onFileRead(path string, size int) {
+func (bs *BackgroundSession) onFileRead(seq int64, path string, size int) {
 	if bs.IsClosed() {
 		return
 	}
 
-	// Get next seq - file read events always create new events
-	seq := bs.getNextSeq()
-
 	// Buffer for persistence (protected by mutex)
+	// The seq was already assigned at ACP receive time by WebClient.
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
 		bs.eventBuffer.AppendFileRead(seq, path, size)

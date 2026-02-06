@@ -14,7 +14,7 @@ import (
 func TestNewWebClient(t *testing.T) {
 	client := NewWebClient(WebClientConfig{
 		AutoApprove: true,
-		OnAgentMessage: func(html string) {
+		OnAgentMessage: func(seq int64, html string) {
 			// callback for testing
 		},
 	})
@@ -40,7 +40,7 @@ func TestWebClient_SessionUpdate_AgentMessageChunk(t *testing.T) {
 	var mu sync.Mutex
 
 	client := NewWebClient(WebClientConfig{
-		OnAgentMessage: func(html string) {
+		OnAgentMessage: func(seq int64, html string) {
 			mu.Lock()
 			messages = append(messages, html)
 			mu.Unlock()
@@ -76,7 +76,7 @@ func TestWebClient_SessionUpdate_AgentThought(t *testing.T) {
 	var thought string
 
 	client := NewWebClient(WebClientConfig{
-		OnAgentThought: func(text string) {
+		OnAgentThought: func(seq int64, text string) {
 			thought = text
 		},
 	})
@@ -103,7 +103,7 @@ func TestWebClient_SessionUpdate_ToolCall(t *testing.T) {
 	var toolID, toolTitle, toolStatus string
 
 	client := NewWebClient(WebClientConfig{
-		OnToolCall: func(id, title, status string) {
+		OnToolCall: func(seq int64, id, title, status string) {
 			toolID = id
 			toolTitle = title
 			toolStatus = status
@@ -141,7 +141,7 @@ func TestWebClient_SessionUpdate_ToolUpdate(t *testing.T) {
 	var updateStatus *string
 
 	client := NewWebClient(WebClientConfig{
-		OnToolUpdate: func(id string, status *string) {
+		OnToolUpdate: func(seq int64, id string, status *string) {
 			updateID = id
 			updateStatus = status
 		},
@@ -174,7 +174,7 @@ func TestWebClient_SessionUpdate_Plan(t *testing.T) {
 	planCalled := false
 
 	client := NewWebClient(WebClientConfig{
-		OnPlan: func() {
+		OnPlan: func(seq int64) {
 			planCalled = true
 		},
 	})
@@ -278,7 +278,7 @@ func TestWebClient_WriteTextFile(t *testing.T) {
 	var writeSize int
 
 	client := NewWebClient(WebClientConfig{
-		OnFileWrite: func(p string, size int) {
+		OnFileWrite: func(seq int64, p string, size int) {
 			writePath = p
 			writeSize = size
 		},
@@ -362,7 +362,7 @@ func TestWebClient_ReadTextFile(t *testing.T) {
 	var readSize int
 
 	client := NewWebClient(WebClientConfig{
-		OnFileRead: func(p string, size int) {
+		OnFileRead: func(seq int64, p string, size int) {
 			readPath = p
 			readSize = size
 		},
@@ -450,7 +450,7 @@ func TestWebClient_FlushMarkdown(t *testing.T) {
 	var mu sync.Mutex
 
 	client := NewWebClient(WebClientConfig{
-		OnAgentMessage: func(html string) {
+		OnAgentMessage: func(seq int64, html string) {
 			mu.Lock()
 			messages = append(messages, html)
 			mu.Unlock()
@@ -458,8 +458,8 @@ func TestWebClient_FlushMarkdown(t *testing.T) {
 	})
 	defer client.Close()
 
-	// Write some content
-	client.mdBuffer.Write("test content")
+	// Write some content (seq=1 for testing)
+	client.mdBuffer.Write(1, "test content")
 
 	// Flush should trigger callback
 	client.FlushMarkdown()

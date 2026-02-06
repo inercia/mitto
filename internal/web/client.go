@@ -9,19 +9,28 @@ import (
 	"github.com/inercia/mitto/internal/conversion"
 )
 
+// SeqProvider provides sequence numbers for event ordering.
+// Sequence numbers are assigned when events are received from ACP,
+// ensuring correct ordering even when content is buffered (e.g., in MarkdownBuffer).
+type SeqProvider interface {
+	// GetNextSeq returns the next sequence number and increments the counter.
+	GetNextSeq() int64
+}
+
 // WebClient implements acp.Client for web-based interaction.
 // It sends streaming updates via callbacks instead of printing to terminal.
 type WebClient struct {
 	autoApprove bool
+	seqProvider SeqProvider
 
-	// Callbacks for different event types
-	onAgentMessage func(html string)
-	onAgentThought func(text string)
-	onToolCall     func(id, title, status string)
-	onToolUpdate   func(id string, status *string)
-	onPlan         func()
-	onFileWrite    func(path string, size int)
-	onFileRead     func(path string, size int)
+	// Callbacks for different event types (all include seq for ordering)
+	onAgentMessage func(seq int64, html string)
+	onAgentThought func(seq int64, text string)
+	onToolCall     func(seq int64, id, title, status string)
+	onToolUpdate   func(seq int64, id string, status *string)
+	onPlan         func(seq int64)
+	onFileWrite    func(seq int64, path string, size int)
+	onFileRead     func(seq int64, path string, size int)
 	onPermission   func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
 
 	// Markdown buffer for streaming conversion
@@ -33,14 +42,18 @@ var _ acp.Client = (*WebClient)(nil)
 
 // WebClientConfig holds configuration for creating a WebClient.
 type WebClientConfig struct {
-	AutoApprove    bool
-	OnAgentMessage func(html string)
-	OnAgentThought func(text string)
-	OnToolCall     func(id, title, status string)
-	OnToolUpdate   func(id string, status *string)
-	OnPlan         func()
-	OnFileWrite    func(path string, size int)
-	OnFileRead     func(path string, size int)
+	AutoApprove bool
+	// SeqProvider provides sequence numbers for event ordering.
+	// Required for correct ordering of events when content is buffered.
+	SeqProvider SeqProvider
+	// Callbacks for different event types (all include seq for ordering)
+	OnAgentMessage func(seq int64, html string)
+	OnAgentThought func(seq int64, text string)
+	OnToolCall     func(seq int64, id, title, status string)
+	OnToolUpdate   func(seq int64, id string, status *string)
+	OnPlan         func(seq int64)
+	OnFileWrite    func(seq int64, path string, size int)
+	OnFileRead     func(seq int64, path string, size int)
 	OnPermission   func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
 	// FileLinksConfig configures file path detection and linking in agent messages.
 	// If nil, file linking is disabled.
@@ -51,6 +64,7 @@ type WebClientConfig struct {
 func NewWebClient(config WebClientConfig) *WebClient {
 	c := &WebClient{
 		autoApprove:    config.AutoApprove,
+		seqProvider:    config.SeqProvider,
 		onAgentMessage: config.OnAgentMessage,
 		onAgentThought: config.OnAgentThought,
 		onToolCall:     config.OnToolCall,
@@ -61,11 +75,12 @@ func NewWebClient(config WebClientConfig) *WebClient {
 		onPermission:   config.OnPermission,
 	}
 
-	// Create markdown buffer that sends HTML via callback
+	// Create markdown buffer that sends HTML via callback.
+	// The seq is passed through the buffer to maintain correct ordering.
 	c.mdBuffer = NewMarkdownBufferWithConfig(MarkdownBufferConfig{
-		OnFlush: func(html string) {
+		OnFlush: func(seq int64, html string) {
 			if c.onAgentMessage != nil {
-				c.onAgentMessage(html)
+				c.onAgentMessage(seq, html)
 			}
 		},
 		FileLinksConfig: config.FileLinksConfig,
@@ -75,18 +90,24 @@ func NewWebClient(config WebClientConfig) *WebClient {
 }
 
 // SessionUpdate handles streaming updates from the agent.
+// Sequence numbers are assigned at receive time to ensure correct ordering,
+// even when content is buffered (e.g., in MarkdownBuffer).
 func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
 	u := params.Update
 
 	switch {
 	case u.AgentMessageChunk != nil:
-		// Stream text through markdown buffer
+		// Assign seq NOW at receive time, before buffering.
+		// This ensures correct ordering even if the buffer delays flushing.
+		seq := c.getNextSeq()
 		content := u.AgentMessageChunk.Content
 		if content.Text != nil {
-			c.mdBuffer.Write(content.Text.Text)
+			c.mdBuffer.Write(seq, content.Text.Text)
 		}
 
 	case u.AgentThoughtChunk != nil:
+		// Assign seq NOW at receive time.
+		seq := c.getNextSeq()
 		// Try to flush any buffered message before thought to maintain event order.
 		// Use SafeFlush to avoid breaking tables/lists/code blocks - if we're in
 		// the middle of one, the thought will appear after the structure completes.
@@ -94,35 +115,50 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		// Thoughts are sent as-is (not markdown)
 		thought := u.AgentThoughtChunk.Content
 		if thought.Text != nil && c.onAgentThought != nil {
-			c.onAgentThought(thought.Text.Text)
+			c.onAgentThought(seq, thought.Text.Text)
 		}
 
 	case u.ToolCall != nil:
+		// Assign seq NOW at receive time.
+		seq := c.getNextSeq()
 		// Try to flush any buffered message before tool call to maintain event order.
 		// Use SafeFlush to avoid breaking tables/lists/code blocks - if we're in
 		// the middle of one, the tool call will appear after the structure completes.
 		c.mdBuffer.SafeFlush()
 		if c.onToolCall != nil {
-			c.onToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, string(u.ToolCall.Status))
+			c.onToolCall(seq, string(u.ToolCall.ToolCallId), u.ToolCall.Title, string(u.ToolCall.Status))
 		}
 
 	case u.ToolCallUpdate != nil:
+		// Assign seq NOW at receive time.
+		seq := c.getNextSeq()
 		if c.onToolUpdate != nil {
 			var status *string
 			if u.ToolCallUpdate.Status != nil {
 				s := string(*u.ToolCallUpdate.Status)
 				status = &s
 			}
-			c.onToolUpdate(string(u.ToolCallUpdate.ToolCallId), status)
+			c.onToolUpdate(seq, string(u.ToolCallUpdate.ToolCallId), status)
 		}
 
 	case u.Plan != nil:
+		// Assign seq NOW at receive time.
+		seq := c.getNextSeq()
 		if c.onPlan != nil {
-			c.onPlan()
+			c.onPlan(seq)
 		}
 	}
 
 	return nil
+}
+
+// getNextSeq returns the next sequence number from the provider.
+// Returns 0 if no provider is configured (for backward compatibility in tests).
+func (c *WebClient) getNextSeq() int64 {
+	if c.seqProvider == nil {
+		return 0
+	}
+	return c.seqProvider.GetNextSeq()
 }
 
 // RequestPermission handles permission requests from the agent.
@@ -153,23 +189,27 @@ func (c *WebClient) autoApprovePermission(params acp.RequestPermissionRequest) (
 
 // WriteTextFile handles file write requests from the agent.
 func (c *WebClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
+	// Assign seq NOW at receive time.
+	seq := c.getNextSeq()
 	if err := mittoAcp.DefaultFileSystem.WriteTextFile(params.Path, params.Content); err != nil {
 		return acp.WriteTextFileResponse{}, err
 	}
 	if c.onFileWrite != nil {
-		c.onFileWrite(params.Path, len(params.Content))
+		c.onFileWrite(seq, params.Path, len(params.Content))
 	}
 	return acp.WriteTextFileResponse{}, nil
 }
 
 // ReadTextFile handles file read requests from the agent.
 func (c *WebClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
+	// Assign seq NOW at receive time.
+	seq := c.getNextSeq()
 	content, err := mittoAcp.DefaultFileSystem.ReadTextFile(params.Path, params.Line, params.Limit)
 	if err != nil {
 		return acp.ReadTextFileResponse{}, err
 	}
 	if c.onFileRead != nil {
-		c.onFileRead(params.Path, len(content))
+		c.onFileRead(seq, params.Path, len(content))
 	}
 	return acp.ReadTextFileResponse{Content: content}, nil
 }
