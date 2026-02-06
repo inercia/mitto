@@ -57,10 +57,35 @@ This separation allows:
 The ACP agent sends responses as text chunks via `SessionUpdate` callbacks. The web interface maintains real-time streaming while converting Markdown to HTML:
 
 1. **Chunk Reception**: `WebClient.SessionUpdate()` receives `AgentMessageChunk` events
-2. **Smart Buffering**: `MarkdownBuffer` accumulates chunks until semantic boundaries
-3. **HTML Conversion**: Goldmark converts buffered Markdown to HTML
-4. **WebSocket Delivery**: HTML chunks sent immediately to browser
-5. **Frontend Rendering**: Preact renders HTML via `dangerouslySetInnerHTML`
+2. **Sequence Assignment**: `WebClient` obtains `seq` from `SeqProvider` immediately at receive time
+3. **Smart Buffering**: `MarkdownBuffer` accumulates chunks with their `seq` until semantic boundaries
+4. **HTML Conversion**: Goldmark converts buffered Markdown to HTML
+5. **WebSocket Delivery**: HTML chunks sent with preserved `seq` to browser
+6. **Frontend Rendering**: Preact renders HTML via `dangerouslySetInnerHTML`, sorted by `seq`
+
+### Sequence Number Assignment
+
+Sequence numbers are assigned **at ACP receive time**, not when content is emitted from buffers. This ensures correct ordering even when:
+
+- Agent messages are buffered in `MarkdownBuffer` for markdown rendering
+- Tool calls arrive while text is still buffered
+- Multiple text chunks are coalesced into a single message
+
+The `WebClient` uses a `SeqProvider` interface (implemented by `BackgroundSession`) to obtain sequence numbers:
+
+```go
+// In WebClient.SessionUpdate()
+case u.AgentMessageChunk != nil:
+    seq := c.seqProvider.GetNextSeq()  // Assign seq NOW
+    c.mdBuffer.Write(seq, content)      // Pass seq through buffer
+
+case u.ToolCall != nil:
+    seq := c.seqProvider.GetNextSeq()  // Assign seq NOW
+    c.mdBuffer.SafeFlush()              // Try to flush pending content
+    c.onToolCall(seq, id, title, status)
+```
+
+See [WebSocket Messaging](websocket-messaging.md) for detailed documentation on sequence numbers and message ordering.
 
 ## Markdown Buffer Strategy
 
@@ -73,6 +98,8 @@ The `MarkdownBuffer` balances real-time streaming with correct Markdown renderin
 | Paragraph break | `\n\n`          | Natural semantic boundary       |
 | Timeout         | 200ms idle      | Ensure eventual delivery        |
 | Buffer limit    | 4KB accumulated | Prevent memory issues           |
+
+The buffer also tracks `pendingSeq` - the sequence number from the first chunk of buffered content. When the buffer flushes, this seq is passed to the callback, ensuring correct ordering even after buffering delays.
 
 ## Frontend Technology
 

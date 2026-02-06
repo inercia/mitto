@@ -138,6 +138,28 @@ See [Session Management](session-management.md) for detailed documentation.
 
 Provides a browser-based UI for ACP communication via HTTP and WebSocket.
 
+**Key Components:**
+
+- **Server**: HTTP server with static file serving and REST API endpoints
+- **BackgroundSession**: Manages ACP sessions that run independently of WebSocket connections
+- **WebClient**: Implements `acp.Client` for web-based interaction, handles streaming events
+- **MarkdownBuffer**: Buffers streaming markdown and converts to HTML with smart flushing
+- **SessionWSClient**: WebSocket handler for real-time communication with browser clients
+
+**Event Flow and Sequence Numbers:**
+
+Events from ACP are assigned sequence numbers (`seq`) at receive time to ensure correct ordering:
+
+```
+ACP Agent → WebClient → MarkdownBuffer → BackgroundSession → WebSocket Clients
+                ↓              ↓                  ↓
+           GetNextSeq()   Preserves seq    Broadcasts with seq
+```
+
+The `WebClient` uses a `SeqProvider` interface (implemented by `BackgroundSession`) to obtain sequence numbers immediately when events arrive from ACP. This ensures correct ordering even when content is buffered in `MarkdownBuffer` for markdown rendering.
+
+See [WebSocket Messaging](websocket-messaging.md) for detailed documentation on message ordering and sequence numbers.
+
 ## Design Decisions
 
 ### 1. Separation of Store, Recorder, and Player

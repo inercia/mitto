@@ -42,58 +42,103 @@ This ensures events are persisted in the correct streaming order, preserving the
 
 ### Sequence Number Assignment
 
-Every event is assigned a monotonically increasing sequence number (`seq`) **when it is received from the ACP**, not at persistence time. This ensures streaming and persisted events have the same `seq`, enabling proper deduplication and ordering across WebSocket reconnections.
+Every event is assigned a monotonically increasing sequence number (`seq`) **when it is received from the ACP**, not at persistence time or when content is emitted from buffers. This ensures streaming and persisted events have the same `seq`, enabling proper deduplication and ordering across WebSocket reconnections.
 
 **Key properties:**
 
 - `seq` starts at 1 for each session
-- `seq` is assigned immediately when the event is received from ACP (in `BackgroundSession`)
+- `seq` is assigned immediately when the event is received from ACP (in `WebClient.SessionUpdate()`)
+- `seq` is passed through the `MarkdownBuffer` for agent messages (preserving receive-time ordering)
 - `seq` is included in WebSocket messages to observers
 - `seq` is preserved when events are persisted to `events.jsonl`
 - `seq` is never reused or reassigned
 - For coalescing events (agent messages, thoughts), multiple chunks share the same `seq`
+
+**Architecture: SeqProvider Interface**
+
+The `WebClient` uses a `SeqProvider` interface to obtain sequence numbers. `BackgroundSession` implements this interface:
+
+```go
+// SeqProvider provides sequence numbers for event ordering.
+type SeqProvider interface {
+    GetNextSeq() int64
+}
+
+// BackgroundSession implements SeqProvider
+func (bs *BackgroundSession) GetNextSeq() int64 {
+    return bs.getNextSeq()
+}
+```
+
+This decoupling allows `WebClient` to assign seq at ACP receive time while `BackgroundSession` manages the sequence counter.
 
 **Sequence number flow:**
 
 ```mermaid
 sequenceDiagram
     participant ACP as ACP Agent
+    participant WC as WebClient
+    participant MD as MarkdownBuffer
     participant BS as BackgroundSession
     participant Buffer as EventBuffer
     participant WS as WebSocket Clients
-    participant Store as Session Store
 
-    Note over BS: nextSeq = EventCount + 1
+    Note over BS: Implements SeqProvider
 
-    ACP->>BS: AgentMessage("Hello...")
-    BS->>BS: seq = getNextSeq() → 5
-    BS->>Buffer: AppendAgentMessage(seq=5, "Hello...")
-    BS->>WS: OnAgentMessage(seq=5, "Hello...")
+    ACP->>WC: AgentMessageChunk("Hello...")
+    WC->>BS: GetNextSeq() → 5
+    WC->>MD: Write(seq=5, "Hello...")
+    Note over MD: Buffers content, stores pendingSeq=5
+    MD->>MD: Timer/flush triggers
+    MD->>BS: onAgentMessage(seq=5, html)
+    BS->>Buffer: AppendAgentMessage(seq=5, html)
+    BS->>WS: OnAgentMessage(seq=5, html)
 
-    ACP->>BS: AgentMessage(" world!") [continuation]
-    BS->>BS: seq = getNextSeq() → 6
-    BS->>Buffer: AppendAgentMessage(seq=6, " world!")
-    Note over Buffer: Appends to existing event, returns seq=5
-    BS->>BS: Return unused seq (nextSeq--)
-    BS->>WS: OnAgentMessage(seq=5, " world!")
-
-    ACP->>BS: ToolCall(read file)
-    BS->>BS: seq = getNextSeq() → 6
+    ACP->>WC: ToolCall(read file)
+    WC->>BS: GetNextSeq() → 6
+    WC->>MD: SafeFlush() [may not flush if mid-table]
+    WC->>BS: onToolCall(seq=6, id, title, status)
     BS->>Buffer: AppendToolCall(seq=6, ...)
     BS->>WS: OnToolCall(seq=6, ...)
 
-    ACP->>BS: PromptComplete
-    BS->>Buffer: Flush()
-    Buffer-->>BS: Events with seq [5, 6]
-    BS->>Store: Persist events (seq preserved)
+    Note over WC: Tool call has seq=6, text has seq=5
+    Note over WS: UI sorts by seq → text appears before tool call ✓
 ```
 
-**Why assign seq at receive time (not persistence time)?**
+**Why assign seq at receive time (not emit time)?**
 
-1. **Streaming and sync use same seq**: Clients can deduplicate by `(session_id, seq)`
-2. **Correct ordering after reconnect**: Sort by `seq` gives correct order
-3. **No race conditions**: Seq is assigned once, upfront, before any notification
-4. **Coalescing works correctly**: Multiple chunks of the same message share the same seq
+1. **Correct ordering with buffered content**: Agent messages are buffered in `MarkdownBuffer` for markdown rendering. If seq were assigned when the buffer flushes, tool calls could "leapfrog" text that was received earlier but buffered.
+
+2. **Streaming and sync use same seq**: Clients can deduplicate by `(session_id, seq)`
+
+3. **Correct ordering after reconnect**: Sort by `seq` gives correct order
+
+4. **No race conditions**: Seq is assigned once, upfront, before any buffering or notification
+
+**MarkdownBuffer and Seq Tracking**
+
+The `MarkdownBuffer` tracks the sequence number for buffered content:
+
+```go
+// Write accepts seq when content is received
+func (mb *MarkdownBuffer) Write(seq int64, chunk string) {
+    // First chunk's seq becomes pendingSeq
+    if mb.buffer.Len() == 0 {
+        mb.pendingSeq = seq
+    }
+    // ... buffer content ...
+}
+
+// Flush passes the preserved seq to callback
+func (mb *MarkdownBuffer) flushLocked() {
+    seq := mb.pendingSeq  // Capture before reset
+    mb.pendingSeq = 0
+    // ... convert to HTML ...
+    mb.onFlush(seq, htmlStr)
+}
+```
+
+This ensures that even if multiple text chunks are buffered together, the seq from the first chunk is preserved and used when the content is eventually flushed.
 
 ### Frontend Ordering Strategy
 
