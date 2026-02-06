@@ -30,6 +30,7 @@ go.work.sum
 # Build output directories
 /bin/
 /dist/
+/build/
 
 # -----------------------------------------------------------------------------
 # Go Test and Coverage

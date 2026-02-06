@@ -31,13 +31,16 @@ cask "mitto" do
   ]
 
   caveats <<~EOS
-    Mitto.app provides a native macOS interface for ACP communication.
+    The Mitto.app provides a native MacOS application for interacting
+    with AI coding agents (ACP Servers).
 
     The CLI tool is also installed and available as 'mitto'.
 
     Supported ACP servers:
       - Auggie (auggie)
       - Claude Code (claude-code)
+      - GitHub Copilot (copilot)
+      - and many more... check https://agentclientprotocol.com/get-started/agents
 
     For more information, visit:
       https://github.com/inercia/mitto
