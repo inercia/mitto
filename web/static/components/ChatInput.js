@@ -743,7 +743,7 @@ export function ChatInput({
       onDrop=${handleDrop}
       onDragOver=${handleDragOver}
       onDragLeave=${handleDragLeave}
-      class="p-4 bg-mitto-input border-t border-slate-700 flex-shrink-0 relative ${isDragOver
+      class="px-4 pt-2 pb-3 bg-mitto-input border-t border-slate-700 flex-shrink-0 relative ${isDragOver
         ? "ring-2 ring-blue-500 ring-inset"
         : ""}"
     >
@@ -962,7 +962,7 @@ export function ChatInput({
         </button>
       </div>
 
-      <div class="flex gap-2 max-w-4xl mx-auto chat-input-container">
+      <div class="flex gap-2 items-end max-w-4xl mx-auto chat-input-container">
         <!-- Textarea container -->
         <div class="relative flex-1">
           <textarea
@@ -974,7 +974,7 @@ export function ChatInput({
             onFocus=${handleTextareaFocus}
             onBlur=${handleTextareaBlur}
             placeholder=${getPlaceholder()}
-            rows="2"
+            rows="3"
             class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
             isReadOnly ||
             isImproving
