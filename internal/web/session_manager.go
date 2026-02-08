@@ -8,6 +8,7 @@ import (
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/msghooks"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -53,12 +54,21 @@ type SessionManager struct {
 	// globalConversations contains global conversation processing configuration.
 	globalConversations *config.ConversationsConfig
 
+	// globalRestrictedRunners contains per-runner-type global configuration.
+	globalRestrictedRunners map[string]*config.WorkspaceRunnerConfig
+
+	// mittoConfig contains the full Mitto configuration (for looking up agent configs).
+	mittoConfig *config.Config
+
 	// hookManager manages external command hooks for message transformation.
 	hookManager *msghooks.Manager
 
 	// apiPrefix is the URL prefix for API endpoints (e.g., "/mitto").
 	// Used to generate HTTP file links for web browser access.
 	apiPrefix string
+
+	// eventsManager is used to broadcast global events to all connected clients.
+	eventsManager *GlobalEventsManager
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -427,6 +437,73 @@ func (sm *SessionManager) SetStore(store *session.Store) {
 	sm.store = store
 }
 
+// SetGlobalRestrictedRunners sets the per-runner-type global configuration.
+func (sm *SessionManager) SetGlobalRestrictedRunners(runners map[string]*config.WorkspaceRunnerConfig) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.globalRestrictedRunners = runners
+}
+
+// SetEventsManager sets the global events manager for broadcasting events.
+func (sm *SessionManager) SetEventsManager(eventsManager *GlobalEventsManager) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.eventsManager = eventsManager
+}
+
+// SetMittoConfig sets the full Mitto configuration.
+// This is used to look up agent-specific runner configurations.
+func (sm *SessionManager) SetMittoConfig(cfg *config.Config) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.mittoConfig = cfg
+}
+
+// createRunner creates a restricted runner for the given workspace and agent.
+// Returns nil if no runner configuration is found (direct execution).
+func (sm *SessionManager) createRunner(workingDir, acpServer string) (*runner.Runner, error) {
+	// Get workspace-specific runner configs from .mittorc (by runner type)
+	var workspaceRunnerConfigByType map[string]*config.WorkspaceRunnerConfig
+	if workingDir != "" && sm.workspaceRCCache != nil {
+		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
+			workspaceRunnerConfigByType = rc.RestrictedRunners
+		}
+	}
+
+	// Get global and agent-specific configs
+	sm.mu.RLock()
+	globalRunnersByType := sm.globalRestrictedRunners
+	mittoConfig := sm.mittoConfig
+	sm.mu.RUnlock()
+
+	// Get agent-specific runner config from MittoConfig
+	var agentRunnersByType map[string]*config.WorkspaceRunnerConfig
+	if mittoConfig != nil && acpServer != "" {
+		if server, err := mittoConfig.GetServer(acpServer); err == nil && server != nil {
+			agentRunnersByType = server.RestrictedRunners
+		}
+	}
+
+	// If no configuration at any level, return nil (direct execution)
+	if globalRunnersByType == nil && agentRunnersByType == nil && workspaceRunnerConfigByType == nil {
+		return nil, nil
+	}
+
+	// Create runner with configuration hierarchy
+	r, err := runner.NewRunner(
+		globalRunnersByType,
+		agentRunnersByType,
+		workspaceRunnerConfigByType,
+		workingDir,
+		sm.logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
 // CreateSession creates a new background session and registers it.
 // Returns ErrTooManySessions if the session limit is reached.
 // Uses the workspace configuration for the given working directory, or the default if not found.
@@ -500,6 +577,18 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		fileLinksConfig = globalConv.FileLinks
 	}
 
+	// Create restricted runner if configured
+	r, err := sm.createRunner(workingDir, acpServer)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if runner fallback occurred and notify clients
+	var runnerFallbackInfo *runner.FallbackInfo
+	if r != nil && r.FallbackInfo != nil {
+		runnerFallbackInfo = r.FallbackInfo
+	}
+
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:          acpCommand,
 		ACPServer:           acpServer,
@@ -511,6 +600,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		Processors:          processors,
 		HookManager:         hookMgr,
 		QueueConfig:         queueConfig,
+		Runner:              r,
 		ActionButtonsConfig: actionButtonsConfig,
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
@@ -543,6 +633,16 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 			"acp_server", acpServer,
 			"working_dir", workingDir,
 			"total_sessions", len(sm.sessions))
+	}
+
+	// Notify about runner fallback if it occurred
+	if runnerFallbackInfo != nil && sm.eventsManager != nil {
+		sm.eventsManager.Broadcast(WSMsgTypeRunnerFallback, map[string]interface{}{
+			"session_id":     bs.GetSessionID(),
+			"requested_type": runnerFallbackInfo.RequestedType,
+			"fallback_type":  runnerFallbackInfo.FallbackType,
+			"reason":         runnerFallbackInfo.Reason,
+		})
 	}
 
 	return bs, nil
@@ -690,6 +790,12 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		fileLinksConfig = globalConv.FileLinks
 	}
 
+	// Create restricted runner if configured
+	r, err := sm.createRunner(workingDir, acpServer)
+	if err != nil {
+		return nil, err
+	}
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
@@ -705,6 +811,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		Processors:          processors,
 		HookManager:         hookMgr,
 		QueueConfig:         queueConfig,
+		Runner:              r,
 		ActionButtonsConfig: actionButtonsConfig,
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,

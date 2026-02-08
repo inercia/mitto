@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/runner"
 )
 
 // Connection manages an ACP server process and its communication channel.
@@ -19,30 +20,82 @@ type Connection struct {
 	client       *Client
 	logger       *slog.Logger
 	capabilities *acp.AgentCapabilities
+	wait         func() error // cleanup function from runner.RunWithPipes or cmd.Wait
 }
 
 // NewConnection starts an ACP server process and establishes a connection.
-func NewConnection(ctx context.Context, command string, autoApprove bool, output func(string), logger *slog.Logger) (*Connection, error) {
+//
+// If r is provided, the process is started through the restricted runner.
+// If r is nil, the process is started directly (no restrictions).
+func NewConnection(
+	ctx context.Context,
+	command string,
+	autoApprove bool,
+	output func(string),
+	logger *slog.Logger,
+	r *runner.Runner, // optional restricted runner
+) (*Connection, error) {
 	// Parse command into args
 	args := strings.Fields(command)
 	if len(args) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
 
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Stderr = os.Stderr
+	var stdin runner.WriteCloser
+	var stdout runner.ReadCloser
+	var stderr runner.ReadCloser
+	var wait func() error
+	var cmd *exec.Cmd
+	var err error
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe error: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe error: %w", err)
-	}
+	// Create command through runner or directly
+	if r != nil {
+		// Use restricted runner with RunWithPipes
+		if logger != nil {
+			logger.Info("starting ACP process through restricted runner",
+				"runner_type", r.Type(),
+				"command", command)
+		}
+		stdin, stdout, stderr, wait, err = r.RunWithPipes(ctx, args[0], args[1:], os.Environ())
+		if err != nil {
+			return nil, fmt.Errorf("failed to start with runner: %w", err)
+		}
 
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start ACP server: %w", err)
+		// Monitor stderr in background
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, err := stderr.Read(buf)
+				if n > 0 {
+					os.Stderr.Write(buf[:n])
+				}
+				if err != nil {
+					break
+				}
+			}
+		}()
+	} else {
+		// Direct execution (no restrictions)
+		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd.Stderr = os.Stderr
+
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return nil, fmt.Errorf("stdin pipe error: %w", err)
+		}
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return nil, fmt.Errorf("stdout pipe error: %w", err)
+		}
+
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start ACP server: %w", err)
+		}
+
+		// Create wait function for direct execution
+		wait = func() error {
+			return cmd.Wait()
+		}
 	}
 
 	client := NewClient(autoApprove, output)
@@ -56,6 +109,7 @@ func NewConnection(ctx context.Context, command string, autoApprove bool, output
 		conn:   conn,
 		client: client,
 		logger: logger,
+		wait:   wait,
 	}
 
 	return c, nil
@@ -125,11 +179,19 @@ func (c *Connection) Cancel(ctx context.Context) error {
 	return c.conn.Cancel(ctx, acp.CancelNotification{SessionId: c.session.SessionId})
 }
 
-// Close terminates the ACP server process.
+// Close terminates the ACP server process and cleans up resources.
 func (c *Connection) Close() error {
+	// Kill the process first
 	if c.cmd != nil && c.cmd.Process != nil {
-		return c.cmd.Process.Kill()
+		c.cmd.Process.Kill()
 	}
+
+	// Call wait() to clean up resources (from runner.RunWithPipes or cmd.Wait)
+	if c.wait != nil {
+		// Ignore error from wait() since we already killed the process
+		c.wait()
+	}
+
 	return nil
 }
 

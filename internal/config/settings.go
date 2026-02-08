@@ -56,6 +56,8 @@ type Settings struct {
 	Session *SessionConfig `json:"session,omitempty"`
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
+	// RestrictedRunners contains per-runner-type global configuration
+	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
 }
 
 // SessionConfig represents session storage configuration.
@@ -77,18 +79,21 @@ type ACPServerSettings struct {
 	Command string `json:"command"`
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt `json:"prompts,omitempty"`
+	// RestrictedRunners contains per-runner-type configuration for this agent
+	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
 }
 
 // ToConfig converts Settings to the internal Config struct.
 func (s *Settings) ToConfig() *Config {
 	cfg := &Config{
-		ACPServers:    make([]ACPServer, len(s.ACPServers)),
-		Prompts:       s.Prompts,
-		PromptsDirs:   s.PromptsDirs,
-		Web:           s.Web,
-		UI:            s.UI,
-		Session:       s.Session,
-		Conversations: s.Conversations,
+		ACPServers:        make([]ACPServer, len(s.ACPServers)),
+		Prompts:           s.Prompts,
+		PromptsDirs:       s.PromptsDirs,
+		Web:               s.Web,
+		UI:                s.UI,
+		Session:           s.Session,
+		Conversations:     s.Conversations,
+		RestrictedRunners: s.RestrictedRunners,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -99,13 +104,14 @@ func (s *Settings) ToConfig() *Config {
 // ConfigToSettings converts a Config to Settings for persistence.
 func ConfigToSettings(cfg *Config) *Settings {
 	s := &Settings{
-		ACPServers:    make([]ACPServerSettings, len(cfg.ACPServers)),
-		Prompts:       cfg.Prompts,
-		PromptsDirs:   cfg.PromptsDirs,
-		Web:           cfg.Web,
-		UI:            cfg.UI,
-		Session:       cfg.Session,
-		Conversations: cfg.Conversations,
+		ACPServers:        make([]ACPServerSettings, len(cfg.ACPServers)),
+		Prompts:           cfg.Prompts,
+		PromptsDirs:       cfg.PromptsDirs,
+		Web:               cfg.Web,
+		UI:                cfg.UI,
+		Session:           cfg.Session,
+		Conversations:     cfg.Conversations,
+		RestrictedRunners: cfg.RestrictedRunners,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)

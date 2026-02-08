@@ -203,6 +203,18 @@ func NewServer(config Config) (*Server, error) {
 		sessionMgr.SetGlobalConversations(config.MittoConfig.Conversations)
 	}
 
+	// Set full MittoConfig for agent-specific lookups
+	if config.MittoConfig != nil {
+		sessionMgr.SetMittoConfig(config.MittoConfig)
+	}
+
+	// Set global restricted runner config for sandboxed execution
+	if config.MittoConfig != nil && config.MittoConfig.RestrictedRunners != nil {
+		sessionMgr.SetGlobalRestrictedRunners(config.MittoConfig.RestrictedRunners)
+		logger.Info("Global restricted runners configured",
+			"runner_types", len(config.MittoConfig.RestrictedRunners))
+	}
+
 	// Load and set hooks from hooks directory
 	if hooksDir, err := appdir.HooksDir(); err == nil {
 		hookMgr := msghooks.NewManager(hooksDir, logger)
@@ -286,11 +298,13 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
+	eventsManager := NewGlobalEventsManager()
+
 	s := &Server{
 		config:            config,
 		logger:            logger,
 		apiPrefix:         apiPrefix,
-		eventsManager:     NewGlobalEventsManager(),
+		eventsManager:     eventsManager,
 		sessionManager:    sessionMgr,
 		store:             store,
 		authManager:       authMgr,
@@ -301,6 +315,9 @@ func NewServer(config Config) (*Server, error) {
 		proxyChecker:      proxyChecker,
 		accessLogger:      accessLogger,
 	}
+
+	// Set events manager in session manager for broadcasting
+	sessionMgr.SetEventsManager(eventsManager)
 
 	// Initialize queue title worker
 	s.queueTitleWorker = NewQueueTitleWorker(store, logger)
@@ -333,6 +350,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
+	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
@@ -541,6 +559,19 @@ func (s *Server) BroadcastSessionRenamed(sessionID, newName string) {
 
 	if s.logger != nil {
 		s.logger.Debug("Broadcast session renamed", "session_id", sessionID, "name", newName,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastSessionPinned notifies all connected clients that a session's pinned state changed.
+func (s *Server) BroadcastSessionPinned(sessionID string, pinned bool) {
+	s.eventsManager.Broadcast(WSMsgTypeSessionPinned, map[string]interface{}{
+		"session_id": sessionID,
+		"pinned":     pinned,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session pinned", "session_id", sessionID, "pinned", pinned,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

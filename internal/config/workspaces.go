@@ -9,6 +9,22 @@ import (
 	"github.com/inercia/mitto/internal/fileutil"
 )
 
+// Valid runner types supported by go-restricted-runner
+const (
+	RunnerTypeExec        = "exec"
+	RunnerTypeSandboxExec = "sandbox-exec"
+	RunnerTypeFirejail    = "firejail"
+	RunnerTypeDocker      = "docker"
+)
+
+// ValidRunnerTypes is the list of all valid runner types
+var ValidRunnerTypes = []string{
+	RunnerTypeExec,
+	RunnerTypeSandboxExec,
+	RunnerTypeFirejail,
+	RunnerTypeDocker,
+}
+
 // WorkspacesFile represents the persisted workspaces in JSON format.
 // This is stored in the Mitto data directory as workspaces.json.
 type WorkspacesFile struct {
@@ -29,6 +45,10 @@ type WorkspaceSettings struct {
 	ACPCommand string `json:"acp_command"`
 	// WorkingDir is the absolute path to the working directory
 	WorkingDir string `json:"working_dir"`
+	// RestrictedRunner is the runner type to use for this workspace.
+	// Options: "exec" (default), "sandbox-exec", "firejail", "docker"
+	// This determines which runner type is used when creating sessions in this workspace.
+	RestrictedRunner string `json:"restricted_runner,omitempty"`
 	// Name is the optional friendly display name for the workspace
 	// If not set, the UI should fall back to displaying the directory basename
 	Name string `json:"name,omitempty"`
@@ -60,6 +80,31 @@ func (w *WorkspaceSettings) EnsureUUID() bool {
 	return false
 }
 
+// GetRestrictedRunner returns the runner type for this workspace.
+// Returns "exec" if not set or empty (default).
+func (w *WorkspaceSettings) GetRestrictedRunner() string {
+	if w.RestrictedRunner == "" {
+		return RunnerTypeExec
+	}
+	return w.RestrictedRunner
+}
+
+// ValidateRestrictedRunner validates the restricted_runner field.
+// Returns an error if the runner type is invalid.
+func (w *WorkspaceSettings) ValidateRestrictedRunner() error {
+	if w.RestrictedRunner == "" {
+		return nil // Empty is valid (defaults to exec)
+	}
+
+	for _, validType := range ValidRunnerTypes {
+		if w.RestrictedRunner == validType {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("invalid restricted_runner %q: must be one of %v", w.RestrictedRunner, ValidRunnerTypes)
+}
+
 // LoadWorkspaces loads workspaces from the Mitto data directory.
 // Returns nil (not an error) if workspaces.json doesn't exist.
 // This allows callers to distinguish between "no file" and "file with errors".
@@ -82,11 +127,16 @@ func LoadWorkspaces() ([]WorkspaceSettings, error) {
 		return nil, fmt.Errorf("failed to read workspaces file %s: %w", workspacesPath, err)
 	}
 
-	// Ensure all workspaces have UUIDs
+	// Ensure all workspaces have UUIDs and validate runner types
 	needsSave := false
 	for i := range file.Workspaces {
 		if file.Workspaces[i].EnsureUUID() {
 			needsSave = true
+		}
+
+		// Validate restricted_runner field
+		if err := file.Workspaces[i].ValidateRestrictedRunner(); err != nil {
+			return nil, fmt.Errorf("workspace %q: %w", file.Workspaces[i].WorkspaceID(), err)
 		}
 	}
 

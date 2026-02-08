@@ -18,6 +18,7 @@ import (
 	"github.com/inercia/mitto/internal/conversion"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/msghooks"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -33,6 +34,7 @@ type BackgroundSession struct {
 	acpCmd    *exec.Cmd
 	acpConn   *acp.ClientSideConnection
 	acpClient *WebClient
+	acpWait   func() error // cleanup function from runner.RunWithPipes or cmd.Wait
 
 	// Session persistence
 	recorder    *session.Recorder
@@ -92,6 +94,9 @@ type BackgroundSession struct {
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
 	apiPrefix       string                  // URL prefix for API endpoints (for HTTP file links)
 	workspaceUUID   string                  // Workspace UUID for secure file links
+
+	// Restricted runner for sandboxed execution
+	runner *runner.Runner // Optional runner for restricted execution (nil = direct execution)
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -108,6 +113,7 @@ type BackgroundSessionConfig struct {
 	Processors   []config.MessageProcessor // Merged processors for message transformation
 	HookManager  *msghooks.Manager         // External command hooks for message transformation
 	QueueConfig  *config.QueueConfig       // Queue processing configuration
+	Runner       *runner.Runner            // Optional restricted runner for sandboxed execution
 
 	ActionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration
 	FileLinksConfig     *config.FileLinksConfig     // File path linking configuration
@@ -136,6 +142,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		fileLinksConfig:     cfg.FileLinksConfig,
 		apiPrefix:           cfg.APIPrefix,
 		workspaceUUID:       cfg.WorkspaceUUID,
+		runner:              cfg.Runner,
 	}
 
 	// Create recorder for persistence
@@ -148,12 +155,20 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			cancel()
 			return nil, err
 		}
-		// Update session name
-		if cfg.SessionName != "" {
-			cfg.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
-				meta.Name = cfg.SessionName
-			})
+		// Update session name and runner info
+		runnerType := "exec"
+		isRestricted := false
+		if cfg.Runner != nil {
+			runnerType = cfg.Runner.Type()
+			isRestricted = cfg.Runner.IsRestricted()
 		}
+		cfg.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
+			if cfg.SessionName != "" {
+				meta.Name = cfg.SessionName
+			}
+			meta.RunnerType = runnerType
+			meta.RunnerRestricted = isRestricted
+		})
 
 		// Initialize nextSeq from current event count (new session starts at 1)
 		bs.nextSeq = int64(bs.recorder.EventCount()) + 1
@@ -162,6 +177,22 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		if bs.logger != nil {
 			bs.logger = logging.WithSessionContext(bs.logger, bs.persistedID, cfg.WorkingDir, cfg.ACPServer)
 		}
+	}
+
+	// Log runner information
+	if bs.logger != nil {
+		runnerType := "exec"
+		isRestricted := false
+		if cfg.Runner != nil {
+			runnerType = cfg.Runner.Type()
+			isRestricted = cfg.Runner.IsRestricted()
+		}
+		bs.logger.Info("session created",
+			"session_id", bs.persistedID,
+			"workspace", cfg.WorkingDir,
+			"acp_server", cfg.ACPServer,
+			"runner_type", runnerType,
+			"runner_restricted", isRestricted)
 	}
 
 	// Start ACP process (no ACP session ID for new sessions)
@@ -222,6 +253,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		fileLinksConfig:     config.FileLinksConfig,
 		apiPrefix:           config.APIPrefix,
 		workspaceUUID:       config.WorkspaceUUID,
+		runner:              config.Runner,
 	}
 
 	// Resume recorder for the existing session
@@ -231,15 +263,39 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			cancel()
 			return nil, &sessionError{"failed to resume session recording: " + err.Error()}
 		}
-		// Update the metadata to mark it as active again
+		// Update the metadata to mark it as active again and store runner info
+		runnerType := "exec"
+		isRestricted := false
+		if config.Runner != nil {
+			runnerType = config.Runner.Type()
+			isRestricted = config.Runner.IsRestricted()
+		}
 		if err := config.Store.UpdateMetadata(config.PersistedID, func(m *session.Metadata) {
 			m.Status = "active"
+			m.RunnerType = runnerType
+			m.RunnerRestricted = isRestricted
 		}); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to update session status", "error", err)
 		}
 
 		// Initialize nextSeq from current event count
 		bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+	}
+
+	// Log runner information
+	if bs.logger != nil {
+		runnerType := "exec"
+		isRestricted := false
+		if config.Runner != nil {
+			runnerType = config.Runner.Type()
+			isRestricted = config.Runner.IsRestricted()
+		}
+		bs.logger.Info("session resumed",
+			"session_id", config.PersistedID,
+			"workspace", config.WorkingDir,
+			"acp_server", config.ACPServer,
+			"runner_type", runnerType,
+			"runner_restricted", isRestricted)
 	}
 
 	// Start ACP process, passing the ACP session ID for potential resumption
@@ -393,8 +449,20 @@ func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 	}
 }
 
+// GetBufferedEvents returns a copy of all buffered events.
+// This is used by SessionWSClient to replay events with deduplication.
+func (bs *BackgroundSession) GetBufferedEvents() []BufferedEvent {
+	bs.bufferMu.Lock()
+	defer bs.bufferMu.Unlock()
+	if bs.eventBuffer == nil {
+		return nil
+	}
+	return bs.eventBuffer.Events() // Returns a copy
+}
+
 // replayBufferedEventsTo sends all buffered events to a single observer in order.
 // This is used to catch up newly connected observers on in-progress streaming.
+// DEPRECATED: Use GetBufferedEvents() with client-side deduplication instead.
 func (bs *BackgroundSession) replayBufferedEventsTo(observer SessionObserver) {
 	bs.bufferMu.Lock()
 	var events []BufferedEvent
@@ -490,6 +558,12 @@ func (bs *BackgroundSession) Close(reason string) {
 		bs.acpCmd.Process.Kill()
 	}
 
+	// Call wait() to clean up resources (from runner.RunWithPipes or cmd.Wait)
+	if bs.acpWait != nil {
+		// Ignore error from wait() since we already killed the process
+		bs.acpWait()
+	}
+
 	// End recording
 	if bs.recorder != nil {
 		bs.recorder.End(reason)
@@ -573,6 +647,58 @@ func (bs *BackgroundSession) flushAndPersistMessages() {
 	}
 }
 
+// flushPendingCoalescedEvents flushes and persists any pending coalesced events
+// (agent messages and thoughts) from the buffer. This is called before persisting
+// discrete events (tool calls, file ops) to ensure correct ordering.
+//
+// This implements the "flush-on-type-change" pattern: when a discrete event arrives,
+// we first persist any pending coalesced content, then persist the discrete event.
+// This makes storage the single source of truth for all events.
+func (bs *BackgroundSession) flushPendingCoalescedEvents() {
+	if bs.recorder == nil {
+		return
+	}
+
+	bs.bufferMu.Lock()
+	var events []BufferedEvent
+	if bs.eventBuffer != nil {
+		events = bs.eventBuffer.Flush()
+	}
+	bs.bufferMu.Unlock()
+
+	if len(events) == 0 {
+		return
+	}
+
+	// Sort by seq to ensure correct order
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Seq < events[j].Seq
+	})
+
+	// Persist each event
+	for _, event := range events {
+		if err := event.PersistTo(bs.recorder); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist coalesced event", "type", event.Type, "error", err)
+		}
+	}
+}
+
+// persistDiscreteEvent persists a discrete event (tool call, file op, etc.) immediately.
+// This first flushes any pending coalesced events to ensure correct ordering.
+func (bs *BackgroundSession) persistDiscreteEvent(event BufferedEvent) {
+	if bs.recorder == nil {
+		return
+	}
+
+	// First flush any pending coalesced events (agent messages, thoughts)
+	bs.flushPendingCoalescedEvents()
+
+	// Then persist this discrete event
+	if err := event.PersistTo(bs.recorder); err != nil && bs.logger != nil {
+		bs.logger.Error("Failed to persist discrete event", "type", event.Type, "error", err)
+	}
+}
+
 // startACPProcess starts the ACP server process and initializes the connection.
 // If acpSessionID is provided and the agent supports session loading, it attempts
 // to resume that session. Otherwise, it creates a new session.
@@ -582,22 +708,70 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 		return &sessionError{"empty ACP command"}
 	}
 
-	cmd := exec.CommandContext(bs.ctx, args[0], args[1:]...)
+	var stdin runner.WriteCloser
+	var stdout runner.ReadCloser
+	var stderr runner.ReadCloser
+	var wait func() error
+	var cmd *exec.Cmd
+	var err error
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return &sessionError{"failed to create stdin pipe: " + err.Error()}
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return &sessionError{"failed to create stdout pipe: " + err.Error()}
+	// Use runner if configured, otherwise direct execution
+	if bs.runner != nil {
+		// Use restricted runner with RunWithPipes
+		if bs.logger != nil {
+			bs.logger.Info("starting ACP process through restricted runner",
+				"runner_type", bs.runner.Type(),
+				"command", acpCommand)
+		}
+		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], nil)
+		if err != nil {
+			return &sessionError{"failed to start with runner: " + err.Error()}
+		}
+
+		// Monitor stderr in background
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, readErr := stderr.Read(buf)
+				if n > 0 && bs.logger != nil {
+					bs.logger.Debug("agent stderr", "output", string(buf[:n]))
+				}
+				if readErr != nil {
+					break
+				}
+			}
+		}()
+
+		// Store wait function for cleanup
+		// We'll call it in Close() method
+		bs.acpCmd = nil // No cmd when using runner
+	} else {
+		// Direct execution (no restrictions)
+		cmd = exec.CommandContext(bs.ctx, args[0], args[1:]...)
+
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return &sessionError{"failed to create stdin pipe: " + err.Error()}
+		}
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return &sessionError{"failed to create stdout pipe: " + err.Error()}
+		}
+
+		if err := cmd.Start(); err != nil {
+			return &sessionError{"failed to start ACP server: " + err.Error()}
+		}
+
+		bs.acpCmd = cmd
+
+		// Create wait function for direct execution
+		wait = func() error {
+			return cmd.Wait()
+		}
 	}
 
-	if err := cmd.Start(); err != nil {
-		return &sessionError{"failed to start ACP server: " + err.Error()}
-	}
-
-	bs.acpCmd = cmd
+	// Store wait function for cleanup
+	bs.acpWait = wait
 
 	// Create web client with callbacks that route to attached client or persist.
 	// BackgroundSession implements SeqProvider, so seq is assigned at ACP receive time.
@@ -1455,9 +1629,12 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
+	// Buffer for coalescing (protected by mutex)
 	// AppendAgentMessage handles coalescing messages with the same seq.
 	// The seq was already assigned at ACP receive time by WebClient.
+	// Note: We don't persist immediately because agent messages stream in chunks.
+	// They are persisted when a different event type arrives (flush-on-type-change)
+	// or when the prompt completes.
 	bs.bufferMu.Lock()
 	if bs.eventBuffer != nil {
 		bs.eventBuffer.AppendAgentMessage(seq, html)
@@ -1502,13 +1679,13 @@ func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendToolCall(seq, id, title, status)
-	}
-	bs.bufferMu.Unlock()
+	// Immediate persistence: flush any pending coalesced events, then persist this tool call
+	// This makes storage the single source of truth for all events.
+	bs.persistDiscreteEvent(BufferedEvent{
+		Type: BufferedEventToolCall,
+		Seq:  seq,
+		Data: &ToolCallData{ID: id, Title: title, Status: status},
+	})
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1521,12 +1698,12 @@ func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) 
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendToolCallUpdate(seq, id, status)
-	}
-	bs.bufferMu.Unlock()
+	// Immediate persistence: flush any pending coalesced events, then persist this update
+	bs.persistDiscreteEvent(BufferedEvent{
+		Type: BufferedEventToolCallUpdate,
+		Seq:  seq,
+		Data: &ToolCallUpdateData{ID: id, Status: status},
+	})
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1539,13 +1716,12 @@ func (bs *BackgroundSession) onPlan(seq int64) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendPlan(seq)
-	}
-	bs.bufferMu.Unlock()
+	// Immediate persistence: flush any pending coalesced events, then persist this plan
+	bs.persistDiscreteEvent(BufferedEvent{
+		Type: BufferedEventPlan,
+		Seq:  seq,
+		Data: &PlanData{},
+	})
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1558,13 +1734,12 @@ func (bs *BackgroundSession) onFileWrite(seq int64, path string, size int) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendFileWrite(seq, path, size)
-	}
-	bs.bufferMu.Unlock()
+	// Immediate persistence: flush any pending coalesced events, then persist this file write
+	bs.persistDiscreteEvent(BufferedEvent{
+		Type: BufferedEventFileWrite,
+		Seq:  seq,
+		Data: &FileOperationData{Path: path, Size: size},
+	})
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1577,13 +1752,12 @@ func (bs *BackgroundSession) onFileRead(seq int64, path string, size int) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendFileRead(seq, path, size)
-	}
-	bs.bufferMu.Unlock()
+	// Immediate persistence: flush any pending coalesced events, then persist this file read
+	bs.persistDiscreteEvent(BufferedEvent{
+		Type: BufferedEventFileRead,
+		Seq:  seq,
+		Data: &FileOperationData{Path: path, Size: size},
+	})
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {

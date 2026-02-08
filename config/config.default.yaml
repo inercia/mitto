@@ -151,3 +151,160 @@ web:
 conversations:
   action_buttons:
     enabled: true  # Enable follow-up suggestions by default
+
+# Restricted Runner Configuration (Advanced)
+# By default, agents run with no restrictions (exec runner).
+# You can configure per-runner-type restrictions that apply when a workspace
+# uses that specific runner type.
+# See docs/config/restricted.md for detailed documentation.
+#
+# WARNING: Restricted execution can break MCP server access.
+# Only enable if you understand the implications.
+#
+# Global per-runner-type configuration with reasonable defaults:
+restricted_runners:
+  # exec: Direct execution with no restrictions (default, recommended for most users)
+  # Uncomment to add restrictions even to exec runner (not recommended)
+  # exec:
+  #   restrictions:
+  #     allow_networking: true
+  #     allow_read_folders:
+  #       - "$WORKSPACE"
+  #     allow_write_folders:
+  #       - "$WORKSPACE"
+
+  # sandbox-exec: macOS sandbox with reasonable defaults for MCP server compatibility
+  sandbox-exec:
+    restrictions:
+      # Allow network access (required for network-based MCP servers)
+      allow_networking: true
+
+      # Folders the agent can read from
+      # These paths ensure MCP servers can be found and executed
+      allow_read_folders:
+        - "$WORKSPACE"              # Current workspace
+        - "$HOME/.config"           # MCP server configs
+        - "$HOME/.local/bin"        # Local executables
+        - "$HOME/.local/share"      # Local data files
+        - "$HOME/.npm"              # npm global packages (npx-based MCP)
+        - "$HOME/.cargo/bin"        # Rust-based MCP servers
+        - "$HOME/.cache"            # Cache directory (MCP servers may need this)
+        - "/usr/local/bin"          # System-wide executables
+        - "/opt/homebrew/bin"       # Homebrew (macOS Apple Silicon)
+        - "/opt/homebrew/lib"       # Homebrew libraries
+        - "$TMPDIR"                 # Temporary files
+
+      # Folders the agent can write to
+      allow_write_folders:
+        - "$WORKSPACE"              # Current workspace
+        - "$HOME/.cache"            # Cache directory
+        - "$TMPDIR"                 # Temporary files
+
+      # Folders to explicitly deny access to (security)
+      deny_folders:
+        - "$HOME/.ssh"              # SSH keys
+        - "$HOME/.aws"              # AWS credentials
+        - "$HOME/.gnupg"            # GPG keys
+
+    # Merge strategy: extend (merge with agent/workspace configs)
+    merge_strategy: "extend"
+
+  # firejail: Linux namespace isolation with reasonable defaults
+  firejail:
+    restrictions:
+      # Allow network access (required for network-based MCP servers)
+      allow_networking: true
+
+      # Folders the agent can read from
+      allow_read_folders:
+        - "$WORKSPACE"              # Current workspace
+        - "$HOME/.config"           # MCP server configs
+        - "$HOME/.local/bin"        # Local executables
+        - "$HOME/.local/share"      # Local data files
+        - "$HOME/.npm"              # npm global packages
+        - "$HOME/.cargo/bin"        # Rust-based MCP servers
+        - "$HOME/.cache"            # Cache directory
+        - "/usr/local/bin"          # System-wide executables
+        - "/usr/bin"                # System binaries
+        - "/bin"                    # Essential binaries
+        - "$TMPDIR"                 # Temporary files
+        - "/tmp"                    # Temporary files (fallback)
+
+      # Folders the agent can write to
+      allow_write_folders:
+        - "$WORKSPACE"              # Current workspace
+        - "$HOME/.cache"            # Cache directory
+        - "$TMPDIR"                 # Temporary files
+        - "/tmp"                    # Temporary files (fallback)
+
+      # Folders to explicitly deny access to (security)
+      deny_folders:
+        - "$HOME/.ssh"              # SSH keys
+        - "$HOME/.aws"              # AWS credentials
+        - "$HOME/.gnupg"            # GPG keys
+
+    # Merge strategy: extend (merge with agent/workspace configs)
+    merge_strategy: "extend"
+
+  # docker: Container execution (requires Docker to be installed and running)
+  # Note: For Docker, the agent must be installed in the container image
+  docker:
+    restrictions:
+      # Allow network access (required for network-based MCP servers)
+      allow_networking: true
+
+      # Docker-specific configuration
+      docker:
+        # Default image (users should override this with their own image)
+        # The image must contain the ACP agent executable
+        image: "ubuntu:22.04"
+
+        # Resource limits (optional but recommended)
+        memory_limit: "2g"          # 2GB RAM limit
+        cpu_limit: "2.0"            # 2 CPU cores
+
+        # Additional volumes to mount (optional)
+        # The workspace is automatically mounted at the same path
+        # volumes:
+        #   - "$HOME/.config:/root/.config:ro"  # Mount config as read-only
+
+      # Note: For Docker, allow_read_folders and allow_write_folders are less relevant
+      # because the container has its own filesystem. The workspace is auto-mounted.
+      # However, you can still use them to restrict access within the container.
+      allow_read_folders:
+        - "$WORKSPACE"
+
+      allow_write_folders:
+        - "$WORKSPACE"
+
+    # Merge strategy: replace (don't merge with agent/workspace configs for Docker)
+    # This is because Docker configuration is typically very specific
+    merge_strategy: "replace"
+
+# Per-agent restricted runner configuration example:
+# You can override the global defaults for specific agents
+# acp_servers:
+#   - name: auggie
+#     command: auggie --allow-indexing --acp
+#     # No restricted_runners = uses global defaults
+#
+#   - name: experimental
+#     command: experimental-agent --acp
+#     restricted_runners:
+#       sandbox-exec:
+#         # Override global sandbox-exec config for this agent
+#         restrictions:
+#           allow_networking: false  # WARNING: Breaks network-based MCP servers
+#           allow_read_folders:
+#             - "$WORKSPACE"
+#         merge_strategy: "replace"  # Don't merge with global config
+#
+#   - name: docker-agent
+#     command: my-agent --acp
+#     restricted_runners:
+#       docker:
+#         restrictions:
+#           docker:
+#             image: "my-custom-agent:latest"  # Must contain agent + MCP servers
+#             memory_limit: "4g"
+#         merge_strategy: "replace"

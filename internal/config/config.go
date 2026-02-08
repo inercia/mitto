@@ -19,6 +19,8 @@ type ACPServer struct {
 	Command string
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt
+	// RestrictedRunners contains per-runner-type configuration for this agent.
+	RestrictedRunners map[string]*WorkspaceRunnerConfig
 }
 
 // PromptSource indicates where a prompt originated from.
@@ -679,6 +681,67 @@ func MergePrompts(globalFilePrompts, settingsPrompts, workspacePrompts []WebProm
 	return result
 }
 
+// ============================================================================
+// Restricted Runner Types
+//
+// Restricted runners provide sandboxed execution for ACP agents.
+// By default, agents run with no restrictions (exec runner).
+// Users can opt-in to sandboxing by configuring restricted_runners settings.
+//
+// Configuration is per-runner-type using WorkspaceRunnerConfig.
+// See docs/config/restricted.md for user documentation.
+// ============================================================================
+
+// RunnerRestrictions defines the restrictions for a runner.
+type RunnerRestrictions struct {
+	// AllowNetworking controls network access.
+	// WARNING: Setting to false will break network-based MCP servers.
+	AllowNetworking *bool `json:"allow_networking,omitempty" yaml:"allow_networking,omitempty"`
+
+	// AllowReadFolders lists folders that can be read (supports variables like $WORKSPACE, $HOME).
+	AllowReadFolders []string `json:"allow_read_folders,omitempty" yaml:"allow_read_folders,omitempty"`
+
+	// AllowWriteFolders lists folders that can be written (supports variables).
+	AllowWriteFolders []string `json:"allow_write_folders,omitempty" yaml:"allow_write_folders,omitempty"`
+
+	// DenyFolders lists folders that are explicitly denied (supports variables).
+	// These override allow lists.
+	DenyFolders []string `json:"deny_folders,omitempty" yaml:"deny_folders,omitempty"`
+
+	// MergeWithDefaults controls whether to merge with default restrictions.
+	MergeWithDefaults *bool `json:"merge_with_defaults,omitempty" yaml:"merge_with_defaults,omitempty"`
+
+	// Docker contains Docker-specific options.
+	Docker *DockerRestrictions `json:"docker,omitempty" yaml:"docker,omitempty"`
+}
+
+// DockerRestrictions defines Docker-specific restrictions.
+type DockerRestrictions struct {
+	// Image is the Docker image to use (required for docker runner).
+	// The image must contain the agent executable and any MCP servers.
+	Image string `json:"image,omitempty" yaml:"image,omitempty"`
+
+	// MemoryLimit is the maximum memory the container can use (e.g., "2g").
+	MemoryLimit string `json:"memory_limit,omitempty" yaml:"memory_limit,omitempty"`
+
+	// CPULimit is the maximum CPU cores the container can use (e.g., "2.0").
+	CPULimit string `json:"cpu_limit,omitempty" yaml:"cpu_limit,omitempty"`
+}
+
+// WorkspaceRunnerConfig represents per-runner-type configuration for restricted runners.
+// This type is used at all levels: global, per-agent, and per-workspace.
+type WorkspaceRunnerConfig struct {
+	// Type overrides the runner type for this workspace.
+	Type string `json:"type,omitempty" yaml:"type,omitempty"`
+
+	// Restrictions are workspace-specific restrictions.
+	Restrictions *RunnerRestrictions `json:"restrictions,omitempty" yaml:"restrictions,omitempty"`
+
+	// MergeStrategy controls how to merge with agent/global config.
+	// Options: "extend" (default) - merge with parent config, "replace" - ignore parent config
+	MergeStrategy string `json:"merge_strategy,omitempty" yaml:"merge_strategy,omitempty"`
+}
+
 // Config represents the complete Mitto configuration.
 type Config struct {
 	// ACPServers is the list of configured ACP servers (order matters - first is default)
@@ -697,6 +760,9 @@ type Config struct {
 	Session *SessionConfig
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig
+	// RestrictedRunners contains per-runner-type global configuration.
+	// Key is the runner type (e.g., "exec", "sandbox-exec", "firejail", "docker").
+	RestrictedRunners map[string]*WorkspaceRunnerConfig
 }
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
@@ -707,6 +773,7 @@ type rawACPServerConfig struct {
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
 	} `yaml:"prompts"`
+	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 }
 
 // rawConfig is used for YAML unmarshaling to handle the map-based format.
@@ -800,6 +867,8 @@ type rawConfig struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"action_buttons"`
 	} `yaml:"conversations"`
+	// RestrictedRunners is the top-level per-runner-type configuration
+	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 }
 
 // Load reads and parses the configuration file from the given path.
@@ -852,8 +921,9 @@ func Parse(data []byte) (*Config, error) {
 	for _, entry := range raw.ACP {
 		for name, server := range entry {
 			acpServer := ACPServer{
-				Name:    name,
-				Command: server.Command,
+				Name:              name,
+				Command:           server.Command,
+				RestrictedRunners: server.RestrictedRunners,
 			}
 			// Copy server-specific prompts
 			for _, p := range server.Prompts {
@@ -1020,6 +1090,9 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations = nil
 		}
 	}
+
+	// Copy restricted runners (top-level per-runner-type config)
+	cfg.RestrictedRunners = raw.RestrictedRunners
 
 	return cfg, nil
 }
