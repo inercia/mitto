@@ -127,6 +127,7 @@ func TestNewConnection_EmptyCommand(t *testing.T) {
 
 | Package | Target | Notes |
 |---------|--------|-------|
+| `internal/conversion` | 90%+ | Markdown conversion, link detection |
 | `internal/config` | 80%+ | Configuration loading |
 | `internal/fileutil` | 80%+ | File utilities |
 | `internal/session` | 70%+ | Session management |
@@ -135,4 +136,107 @@ func TestNewConnection_EmptyCommand(t *testing.T) {
 | `internal/cmd` | 30%+ | CLI (hard to unit test) |
 
 Run coverage: `go test -cover ./internal/...`
+
+## Testing Text Processing Features
+
+For features that process text/HTML (like link detection):
+
+### Three-Level Testing Strategy
+
+1. **Unit Tests** - Test core logic with HTML input/output:
+   ```go
+   func TestFileLinker_URLsInBackticks(t *testing.T) {
+       linker := NewFileLinker(FileLinkerConfig{...})
+
+       tests := []struct {
+           name     string
+           input    string
+           contains []string  // Expected substrings
+           excludes []string  // Should NOT contain
+       }{
+           {
+               name:  "URL in backticks",
+               input: "<code>https://example.com</code>",
+               contains: []string{
+                   `<a href="https://example.com"`,
+                   `<code>https://example.com</code></a>`,
+               },
+           },
+       }
+
+       for _, tt := range tests {
+           t.Run(tt.name, func(t *testing.T) {
+               result := linker.LinkFilePaths(tt.input)
+               for _, expected := range tt.contains {
+                   if !strings.Contains(result, expected) {
+                       t.Errorf("Expected %q in output", expected)
+                   }
+               }
+           })
+       }
+   }
+   ```
+
+2. **Integration Tests** - Test full pipeline (markdown → HTML):
+   ```go
+   func TestURLsInBackticks_Integration(t *testing.T) {
+       converter := NewConverter(WithFileLinks(...))
+
+       html, err := converter.Convert("Check `https://example.com`")
+       if err != nil {
+           t.Fatalf("Conversion failed: %v", err)
+       }
+
+       if !strings.Contains(html, `<a href="https://example.com"`) {
+           t.Errorf("URL not linkified in output")
+       }
+   }
+   ```
+
+3. **Example Tests** - Demonstrate usage and serve as documentation:
+   ```go
+   func Example_urlDetection() {
+       converter := NewConverter(WithFileLinks(...))
+       html, _ := converter.Convert("Visit `https://example.com`")
+       fmt.Println(strings.Contains(html, "<a href="))
+       // Output: true
+   }
+   ```
+
+### Edge Case Testing
+
+Always test edge cases for text processing:
+
+```go
+tests := []struct {
+    name     string
+    input    string
+    excludes string  // Should NOT be in output
+}{
+    {
+        name:     "URL in code block should not be linked",
+        input:    "<pre><code>https://example.com</code></pre>",
+        excludes: `<a href=`,
+    },
+    {
+        name:     "partial URL should not be linked",
+        input:    "<code>example.com</code>",
+        excludes: `<a href=`,
+    },
+    {
+        name:     "URL with surrounding text should not be linked",
+        input:    "<code>see https://example.com here</code>",
+        excludes: `<a href=`,
+    },
+}
+```
+
+### Testing with Race Detector
+
+Always run tests with race detector for concurrent code:
+
+```bash
+go test -race ./internal/conversion/...
+go test -race -count=2 ./internal/conversion/...  # Run twice to catch flaky tests
+```
 

@@ -32,6 +32,7 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `04-acp.md` | Working on `internal/acp/` |
 | `05-msghooks.md` | Working on message hooks (`internal/msghooks/`) |
 | `06-conversion.md` | Markdown-to-HTML conversion (`internal/conversion/`) |
+| `07-regex-patterns.md` | Regular expressions, pattern matching, text processing |
 | `08-config.md` | Working on configuration (`internal/config/`, YAML/JSON) |
 | `09-macos-app.md` | Working on macOS app (`cmd/mitto-app/`, `*.m`, `*.h`) |
 | **Web Backend (10-12)** | |
@@ -46,11 +47,12 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `24-web-frontend-lib.md` | lib.js utilities, markdown rendering |
 | `25-web-frontend-components.md` | UI components (ChatInput, QueueDropdown, Icons) |
 | `26-web-frontend-hooks.md` | Custom hooks (useResizeHandle, useSwipeNavigation) |
-| **Testing (30-33)** | |
+| **Testing (30-34)** | |
 | `30-testing-unit.md` | Go unit tests (`*_test.go`) |
 | `31-testing-integration.md` | Integration tests, mock ACP server |
 | `32-testing-playwright.md` | Playwright UI tests |
 | `33-testing-js.md` | JavaScript unit tests (lib.test.js) |
+| `34-anti-patterns.md` | Common anti-patterns, lessons learned, best practices |
 | `99-local.md` | Local development notes (not committed) |
 
 ## Package Structure
@@ -114,4 +116,18 @@ When adding new features:
 1. Update `docs/devel/` (see [README](../docs/devel/README.md) for which file)
 2. Add Mermaid diagrams for complex flows
 3. Document design decisions and rationale
+4. Update relevant `.augment/rules/` files with new patterns and conventions
+
+## Rules File Organization
+
+Rules files are automatically loaded based on:
+- **globs**: File path patterns (e.g., `internal/conversion/**/*`)
+- **keywords**: Specific terms in prompts (e.g., "regex", "URL detection")
+- **alwaysApply**: Always loaded (only `00-overview.md`)
+
+When adding new patterns:
+1. Add to existing rules file if closely related
+2. Create new focused file if it's a distinct topic
+3. Update `00-overview.md` rules reference table
+4. Use specific globs and keywords for targeted loading
 
