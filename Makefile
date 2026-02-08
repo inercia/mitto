@@ -81,6 +81,11 @@ test-integration-client: build build-mock-acp
 	@echo "Running client integration tests..."
 	$(GOTEST) -v -tags=integration ./tests/integration/client/...
 
+# Run runner integration tests (platform-specific)
+test-integration-runner: build
+	@echo "Running runner integration tests..."
+	$(GOTEST) -v ./internal/runner/... -run TestRunnerFallback
+
 # Run all integration tests (Go-based, uses mock ACP)
 test-integration: test-integration-go
 
