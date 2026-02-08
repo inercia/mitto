@@ -1,10 +1,10 @@
 ---
 name: "Create PR"
-description: "Guide through creating a pull request"
+description: "Guide through creating a pull/merge request"
 backgroundColor: "#B2DFDB"
 ---
 
-Guide me through creating a pull request for the committed changes.
+Guide me through creating a pull request (GitHub) or merge request (GitLab) for the committed changes.
 
 ### 1. Prepare the Code
 
@@ -85,32 +85,39 @@ Fixes #123, Relates to #456 (if any issue references found in commits/branch)
 
 Present the proposed title and description for approval before creating the PR.
 
-### 5. Push and Create Pull Request
+### 5. Push and Create Pull/Merge Request
 
-After approval, push the branch and create the PR:
+After approval, push the branch and create the PR/MR:
 
 ```bash
 git push --force-with-lease -u origin HEAD
+
+# GitHub:
 gh pr create --title "<approved-title>" --body "<approved-description>"
+
+# GitLab:
+glab mr create --title "<approved-title>" --description "<approved-description>"
 ```
 
-### 6. Report PR Link
+### 6. Report PR/MR Link
 
-After the PR is created, prominently display:
+After the PR/MR is created, prominently display:
 
 ```console
-✅ Pull Request Created Successfully!
+✅ Pull/Merge Request Created Successfully!
 
-🔗 PR URL: <the-pr-url>
+🔗 URL: <the-pr-or-mr-url>
 
 Share this link to request reviews and approvals.
 ```
 
-Also show how to view the PR in browser: `gh pr view --web`
+Also show how to view in browser:
+- GitHub: `gh pr view --web`
+- GitLab: `glab mr view --web`
 
 ## Rules
 
-- Always run formatters and tests before creating the PR
+- Always run formatters and tests before creating the PR/MR
 - Respect `.gitignore`
 - Never force push without explicit permission
 - Assume commits are already created (use "Create commits" prompt if needed first)

@@ -18,8 +18,9 @@ Write comprehensive tests for the code we created or modified.
 - Use descriptive test names that explain the scenario
 - Follow Arrange-Act-Assert pattern
 - One assertion per test when possible
-- Use table-driven tests for multiple similar cases
+- Use parameterized/data-driven tests for multiple similar cases
 - Mock external dependencies appropriately
+- Follow the project's existing testing conventions and patterns
 
 ### After writing:
 - Run the tests and verify they pass

@@ -27,18 +27,21 @@ git status
 
 ### 2. Identify Target Branch
 
-First, check if there's an open Pull Request for the current branch to determine the real merge target:
+First, check if there's an open Pull/Merge Request for the current branch to determine the real merge target:
 
 ```bash
-# Check if gh CLI is available and if there's an open PR for this branch
+# GitHub: Check for open PR
 gh pr view --json baseRefName,number,title 2>/dev/null
+
+# GitLab: Check for open MR
+glab mr view --json targetBranch 2>/dev/null
 ```
 
-**If a Pull Request exists:**
-- Use the `baseRefName` from the PR response as the target branch
-- This ensures we rebase onto the actual branch where the PR will be merged
+**If a Pull/Merge Request exists:**
+- Use the target branch from the response as the rebase target
+- This ensures we rebase onto the actual branch where the PR/MR will be merged
 
-**If no Pull Request exists or gh is not available:**
+**If no Pull/Merge Request exists or CLI is not available:**
 - Fall back to detecting the default branch:
 
 ```bash

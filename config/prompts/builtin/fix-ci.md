@@ -1,7 +1,7 @@
 ---
 name: "Fix CI"
 description: "Diagnose and fix CI pipeline failures"
-backgroundColor: "#FFE0B2"
+backgroundColor: "#B2DFDB"
 ---
 
 Diagnose and fix CI pipeline failures for the current branch.
@@ -126,4 +126,3 @@ If CI still fails, run this prompt again to diagnose any remaining issues.
 - If the failure is in a flaky test, report it rather than retrying blindly
 - If the failure is infrastructure-related (CI service issues), inform the user
 - Group related fixes in a single commit when possible
-

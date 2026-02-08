@@ -8,7 +8,14 @@ Run the project's test suite and report results.
 
 ### 1. Discover and Run Tests
 
-- Identify the test framework used (e.g., `go test`, `pytest`, `jest`, `cargo test`)
+- Identify the test framework used by checking project configuration files:
+  - Go: `go test`
+  - Python: `pytest`, `unittest`
+  - JavaScript/TypeScript: `jest`, `mocha`, `vitest`
+  - Rust: `cargo test`
+  - Java: `mvn test`, `gradle test`
+  - Ruby: `rspec`, `rake test`
+  - Check for Makefile targets, package.json scripts, or similar
 - Run all tests or tests related to recent changes
 - Capture the full output
 

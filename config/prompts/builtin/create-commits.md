@@ -6,6 +6,26 @@ backgroundColor: "#B2DFDB"
 
 Follow this workflow to create Git commits for the changes that we have in this repository:
 
+### 0. Prerequisites
+
+Before analyzing changes, verify the codebase is in a good state:
+
+**Formatting:**
+
+1. Identify the project's formatters (check for Makefile targets, package.json scripts, or common tools)
+2. Run the appropriate formatters for code and documentation
+3. If any files are modified by the formatters, report which files were changed and include them in the commit analysis
+
+**Tests:**
+
+1. Check if tests were run recently in this session
+2. If tests have not been run, or if code has changed since the last test run:
+   - ⚠️ Warn the user: "Tests have not been run recently. Consider running tests before committing to ensure the changes work correctly."
+   - Ask if they want to proceed anyway or run tests first
+3. If tests were run and failed:
+   - ⚠️ Warn the user: "Tests are currently failing. Committing with failing tests is not recommended."
+   - Ask if they want to fix the tests first or proceed anyway
+
 ### 1. Analyze Changes
 
 - Run `git status --porcelain` to list all changes
@@ -55,4 +75,3 @@ Report success or errors after execution.
 - Respect `.gitignore`
 - Skip empty commits
 - Handle binary/large files appropriately
-
