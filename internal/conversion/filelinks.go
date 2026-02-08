@@ -111,15 +111,27 @@ var preTagPattern = regexp.MustCompile(`(?s)<pre[^>]*>.*?</pre>`)
 // anchorTagPattern matches content inside <a> tags.
 var anchorTagPattern = regexp.MustCompile(`(?s)<a[^>]*>.*?</a>`)
 
+// urlPattern matches URLs in text.
+// Matches http://, https://, ftp://, and mailto: URLs.
+// Similar to the pattern used in web/static/lib.js but adapted for Go.
+var urlPattern = regexp.MustCompile(
+	`\b((?:https?://|ftp://|mailto:)[^\s<>"\[\]{}|\\^` + "`" + `]+)`,
+)
+
 // LinkFilePaths scans HTML content for file path patterns and converts them to file:// links.
 // Only paths that exist on the filesystem and pass security checks are converted.
-// This also processes inline <code> tags (backtick-enclosed text in markdown).
+// This also processes inline <code> tags (backtick-enclosed text in markdown) for both
+// file paths and URLs.
 func (fl *FileLinker) LinkFilePaths(html string) string {
 	if !fl.config.Enabled || html == "" {
 		return html
 	}
 
-	// First pass: process inline <code> tags that contain file paths
+	// First pass: process inline <code> tags that contain URLs
+	// These come from backtick-enclosed text in markdown (e.g., `https://example.com`)
+	html = fl.processInlineCodeURLs(html)
+
+	// Second pass: process inline <code> tags that contain file paths
 	// These come from backtick-enclosed text in markdown (e.g., `src/main.go`)
 	html = fl.processInlineCodeTags(html)
 
@@ -161,6 +173,84 @@ func (fl *FileLinker) LinkFilePaths(html string) string {
 		if replacement != "" {
 			result = result[:pathStart] + replacement + result[pathEnd:]
 		}
+	}
+
+	return result
+}
+
+// processInlineCodeURLs finds inline <code> tags containing URLs and wraps them in links.
+// Only processes <code> tags that are NOT inside <pre> tags (i.e., inline code, not code blocks).
+// This handles URLs in backtick-enclosed text like `https://example.com`.
+func (fl *FileLinker) processInlineCodeURLs(html string) string {
+	// Find all <pre> tag regions to skip
+	preRegions := fl.findPreRegions(html)
+
+	// Find all inline <code> tags
+	matches := inlineCodePattern.FindAllStringSubmatchIndex(html, -1)
+	if len(matches) == 0 {
+		return html
+	}
+
+	// Process matches in reverse order to preserve indices
+	result := html
+	for i := len(matches) - 1; i >= 0; i-- {
+		match := matches[i]
+		if len(match) < 4 {
+			continue
+		}
+
+		// Full match indices
+		fullStart, fullEnd := match[0], match[1]
+		// Captured content indices
+		contentStart, contentEnd := match[2], match[3]
+
+		// Skip if inside a <pre> tag (code block)
+		if fl.isInSkipRegion(fullStart, fullEnd, preRegions) {
+			continue
+		}
+
+		content := html[contentStart:contentEnd]
+
+		// Check if content is a URL
+		if !urlPattern.MatchString(content) {
+			continue
+		}
+
+		// Extract the URL (trim any trailing punctuation that might have been captured)
+		urlMatch := urlPattern.FindStringSubmatch(content)
+		if len(urlMatch) < 2 {
+			continue
+		}
+		urlStr := urlMatch[1]
+
+		// Clean up trailing punctuation
+		cleanedURL := cleanURLTrailingPunctuation(urlStr)
+
+		// Only linkify if the entire content is the URL (possibly with trailing punctuation)
+		// This prevents linkifying things like "see https://example.com for details"
+		// where the URL is part of a larger sentence
+		trimmedContent := strings.TrimSpace(content)
+		cleanedContent := cleanURLTrailingPunctuation(trimmedContent)
+		if cleanedContent != cleanedURL {
+			continue
+		}
+
+		// Use the cleaned URL for the link
+		urlStr = cleanedURL
+
+		// Determine link attributes based on scheme
+		isMailto := strings.HasPrefix(strings.ToLower(urlStr), "mailto:")
+		var attrs string
+		if isMailto {
+			attrs = fmt.Sprintf(`href="%s" class="url-link mailto-link"`, urlStr)
+		} else {
+			attrs = fmt.Sprintf(`href="%s" target="_blank" rel="noopener noreferrer" class="url-link"`, urlStr)
+		}
+
+		// Replace <code>URL</code> with <a href="..."><code>URL</code></a>
+		codeTag := html[fullStart:fullEnd]
+		replacement := fmt.Sprintf(`<a %s>%s</a>`, attrs, codeTag)
+		result = result[:fullStart] + replacement + result[fullEnd:]
 	}
 
 	return result
@@ -403,4 +493,36 @@ func (fl *FileLinker) createLink(displayPath, realPath string, isDir bool) strin
 	}
 
 	return fmt.Sprintf(`<a href="%s" class="%s">%s</a>`, linkURL, class, escapedDisplay)
+}
+
+// cleanURLTrailingPunctuation removes trailing punctuation from URLs.
+// This handles cases where punctuation at the end of a sentence gets captured in the URL.
+func cleanURLTrailingPunctuation(urlStr string) string {
+	// Remove trailing punctuation that's unlikely to be part of the URL
+	for len(urlStr) > 0 {
+		lastChar := urlStr[len(urlStr)-1]
+		if lastChar == '.' || lastChar == ',' || lastChar == ';' || lastChar == ':' ||
+			lastChar == '!' || lastChar == '?' || lastChar == ')' || lastChar == ']' ||
+			lastChar == '}' || lastChar == '>' {
+			// Keep closing brackets/parens if they're balanced
+			if lastChar == ')' {
+				openCount := strings.Count(urlStr, "(")
+				closeCount := strings.Count(urlStr, ")")
+				if openCount >= closeCount {
+					break
+				}
+			}
+			if lastChar == ']' {
+				openCount := strings.Count(urlStr, "[")
+				closeCount := strings.Count(urlStr, "]")
+				if openCount >= closeCount {
+					break
+				}
+			}
+			urlStr = urlStr[:len(urlStr)-1]
+		} else {
+			break
+		}
+	}
+	return urlStr
 }
