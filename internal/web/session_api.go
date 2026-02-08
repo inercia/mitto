@@ -312,6 +312,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessio
 type SessionUpdateRequest struct {
 	Name        *string `json:"name,omitempty"`
 	Description *string `json:"description,omitempty"`
+	Pinned      *bool   `json:"pinned,omitempty"`
 }
 
 // handleUpdateSession handles PATCH /api/sessions/{id}
@@ -334,6 +335,9 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		}
 		if req.Description != nil {
 			meta.Description = *req.Description
+		}
+		if req.Pinned != nil {
+			meta.Pinned = *req.Pinned
 		}
 	})
 	if err != nil {
@@ -358,6 +362,11 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 	// Broadcast the rename to all connected WebSocket clients
 	if req.Name != nil {
 		s.BroadcastSessionRenamed(sessionID, *req.Name)
+	}
+
+	// Broadcast the pinned state change to all connected WebSocket clients
+	if req.Pinned != nil {
+		s.BroadcastSessionPinned(sessionID, *req.Pinned)
 	}
 
 	writeJSONOK(w, meta)

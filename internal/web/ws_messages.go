@@ -66,7 +66,17 @@ const (
 	// WSMsgTypeSyncSession requests incremental sync of events missed while disconnected.
 	// Used by mobile clients that may have been suspended.
 	// Data: { "session_id": string, "after_seq": int }
+	// DEPRECATED: Use WSMsgTypeLoadEvents instead for unified event loading.
 	WSMsgTypeSyncSession = "sync_session"
+
+	// WSMsgTypeLoadEvents requests events from the session with pagination support.
+	// This is the unified message type for initial load, pagination, and sync.
+	// Data: { "limit": int (optional), "before_seq": int (optional), "after_seq": int (optional) }
+	// - limit: Maximum events to return (default: 50)
+	// - before_seq: Load events with seq < before_seq (for "load more" pagination)
+	// - after_seq: Load events with seq > after_seq (for sync after reconnect)
+	// Note: before_seq and after_seq are mutually exclusive.
+	WSMsgTypeLoadEvents = "load_events"
 
 	// WSMsgTypeKeepalive is an application-level keepalive with timestamp.
 	// Used to detect stale connections and measure latency.
@@ -98,6 +108,11 @@ const (
 	// Sent on both /api/events (broadcast) and session WebSocket.
 	// Data: { "session_id": string, "name": string }
 	WSMsgTypeSessionRenamed = "session_renamed"
+
+	// WSMsgTypeSessionPinned notifies that a session's pinned state changed.
+	// Sent on /api/events to all connected clients.
+	// Data: { "session_id": string, "pinned": bool }
+	WSMsgTypeSessionPinned = "session_pinned"
 
 	// WSMsgTypeSessionDeleted notifies that a session was deleted.
 	// Sent on /api/events to all connected clients.
@@ -162,11 +177,26 @@ const (
 
 	// WSMsgTypeSessionSync responds to a sync_session request with missed events.
 	// Data: { "session_id": string, "events": []object }
+	// DEPRECATED: Use WSMsgTypeEventsLoaded instead for unified event loading.
 	WSMsgTypeSessionSync = "session_sync"
+
+	// WSMsgTypeEventsLoaded responds to a load_events request with events.
+	// Data: { "events": []object, "has_more": bool, "first_seq": int, "last_seq": int, "total_count": int }
+	// - events: Array of event objects
+	// - has_more: True if more older events exist (for pagination)
+	// - first_seq: Lowest seq in returned events
+	// - last_seq: Highest seq in returned events
+	// - total_count: Total events in session (from metadata)
+	// - prepend: True if these are older events to prepend (for "load more")
+	WSMsgTypeEventsLoaded = "events_loaded"
 
 	// WSMsgTypeKeepaliveAck responds to a keepalive with server timestamp.
 	// Data: { "client_timestamp": int64, "server_timestamp": int64 }
 	WSMsgTypeKeepaliveAck = "keepalive_ack"
+
+	// WSMsgTypeRunnerFallback notifies that a configured runner is not supported and fell back to exec.
+	// Data: { "session_id": string, "requested_type": string, "fallback_type": string, "reason": string }
+	WSMsgTypeRunnerFallback = "runner_fallback"
 
 	// WSMsgTypeQueueUpdated notifies that the message queue state changed.
 	// Sent when messages are added, removed, or the queue is cleared.

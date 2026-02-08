@@ -598,8 +598,9 @@ var publicStaticPaths = map[string]bool{
 
 // publicAPIPaths are API paths (without prefix) that don't require authentication.
 var publicAPIPaths = map[string]bool{
-	"/api/login":      true,
-	"/api/csrf-token": true, // CSRF token endpoint must be accessible before login
+	"/api/login":             true,
+	"/api/csrf-token":        true, // CSRF token endpoint must be accessible before login
+	"/api/supported-runners": true, // Platform information endpoint (no sensitive data)
 }
 
 // isPublicPath checks if a path is public (no auth required).

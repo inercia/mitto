@@ -184,6 +184,9 @@ type Metadata struct {
 	EventCount        int           `json:"event_count"`
 	Status            SessionStatus `json:"status"`
 	Description       string        `json:"description,omitempty"`
+	Pinned            bool          `json:"pinned,omitempty"`            // If true, session cannot be deleted
+	RunnerType        string        `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted  bool          `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
 }
 
 // LockStatus represents the current activity status of a locked session.

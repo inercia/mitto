@@ -50,6 +50,16 @@ type SessionWSClient struct {
 	// Permission handling
 	permissionChan chan acp.RequestPermissionResponse
 	permissionMu   sync.Mutex
+
+	// Seq tracking for deduplication - prevents sending the same event twice
+	// This is the core of the WebSocket-only architecture: the server guarantees
+	// no duplicates by tracking what has been sent to each client.
+	lastSentSeq int64      // Highest seq sent to this client
+	seqMu       sync.Mutex // Protects lastSentSeq
+
+	// Track the seq of the message currently being streamed (for coalescing chunks)
+	// This allows multiple chunks with the same seq to be sent (they're continuations)
+	currentStreamingSeq int64
 }
 
 // handleSessionWS handles WebSocket connections for a specific session.
@@ -198,6 +208,8 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			data["working_dir"] = meta.WorkingDir
 			data["created_at"] = meta.CreatedAt.Format(time.RFC3339)
 			data["status"] = meta.Status
+			data["runner_type"] = meta.RunnerType
+			data["runner_restricted"] = meta.RunnerRestricted
 			if c.logger != nil {
 				c.logger.Debug("Sending connected message", "working_dir", meta.WorkingDir)
 			}
@@ -301,6 +313,7 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 		c.handlePermissionAnswer(data.OptionID, data.Cancel)
 
 	case WSMsgTypeSyncSession:
+		// DEPRECATED: Use load_events instead
 		var data struct {
 			AfterSeq int64 `json:"after_seq"`
 		}
@@ -309,6 +322,18 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			return
 		}
 		c.handleSync(data.AfterSeq)
+
+	case WSMsgTypeLoadEvents:
+		var data struct {
+			Limit     int   `json:"limit,omitempty"`
+			BeforeSeq int64 `json:"before_seq,omitempty"`
+			AfterSeq  int64 `json:"after_seq,omitempty"`
+		}
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
+		c.handleLoadEvents(data.Limit, data.BeforeSeq, data.AfterSeq)
 
 	case WSMsgTypeKeepalive:
 		var data struct {
@@ -387,6 +412,7 @@ func (c *SessionWSClient) handlePermissionAnswer(optionID string, cancel bool) {
 }
 
 func (c *SessionWSClient) handleSync(afterSeq int64) {
+	// DEPRECATED: Use handleLoadEvents instead
 	if c.store == nil {
 		c.sendError("Session store not available")
 		return
@@ -412,6 +438,167 @@ func (c *SessionWSClient) handleSync(afterSeq int64) {
 		"is_running":   isRunning,
 		"is_prompting": isPrompting,
 	})
+}
+
+// handleLoadEvents handles the unified load_events message for initial load, pagination, and sync.
+// This is the core of the WebSocket-only architecture for event loading.
+//
+// Parameters:
+//   - limit: Maximum events to return (default: 50)
+//   - beforeSeq: Load events with seq < beforeSeq (for "load more" pagination)
+//   - afterSeq: Load events with seq > afterSeq (for sync after reconnect)
+//
+// The server tracks lastSentSeq to prevent sending duplicates. After loading events,
+// lastSentSeq is updated to the highest seq in the response.
+func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64) {
+	if c.store == nil {
+		c.sendError("Session store not available")
+		return
+	}
+
+	// Default limit
+	if limit <= 0 {
+		limit = 50
+	}
+	// Cap limit to prevent abuse
+	if limit > 500 {
+		limit = 500
+	}
+
+	// Validate mutually exclusive parameters
+	if beforeSeq > 0 && afterSeq > 0 {
+		c.sendError("before_seq and after_seq are mutually exclusive")
+		return
+	}
+
+	var events []session.Event
+	var err error
+	var isPrepend bool // True if loading older events (for "load more")
+
+	if afterSeq > 0 {
+		// Sync mode: load events after a specific seq
+		// Update lastSentSeq to afterSeq before loading to prevent duplicates
+		c.seqMu.Lock()
+		if afterSeq > c.lastSentSeq {
+			c.lastSentSeq = afterSeq
+		}
+		c.seqMu.Unlock()
+
+		events, err = c.store.ReadEventsFrom(c.sessionID, afterSeq)
+		isPrepend = false
+	} else if beforeSeq > 0 {
+		// Pagination mode: load older events before a specific seq
+		events, err = c.store.ReadEventsLast(c.sessionID, limit, beforeSeq)
+		isPrepend = true
+	} else {
+		// Initial load: load last N events
+		events, err = c.store.ReadEventsLast(c.sessionID, limit, 0)
+		isPrepend = false
+	}
+
+	if err != nil {
+		if err == session.ErrSessionNotFound {
+			c.sendError("Session not found")
+			return
+		}
+		c.sendError("Failed to read session events: " + err.Error())
+		return
+	}
+
+	// Get metadata for total count
+	meta, _ := c.store.GetMetadata(c.sessionID)
+
+	// Calculate first_seq, last_seq, and has_more
+	var firstSeq, lastSeq int64
+	hasMore := false
+
+	if len(events) > 0 {
+		firstSeq = events[0].Seq
+		lastSeq = events[len(events)-1].Seq
+
+		// Check if there are more older events
+		if firstSeq > 1 {
+			hasMore = true
+		}
+	}
+
+	// Update lastSentSeq for non-prepend loads (initial load and sync)
+	// For prepend (load more), we don't update lastSentSeq because these are
+	// historical events that don't affect streaming deduplication
+	if !isPrepend && lastSeq > 0 {
+		c.seqMu.Lock()
+		if lastSeq > c.lastSentSeq {
+			c.lastSentSeq = lastSeq
+		}
+		c.seqMu.Unlock()
+	}
+
+	// Get session status
+	isRunning := c.bgSession != nil && !c.bgSession.IsClosed()
+	isPrompting := isRunning && c.bgSession.IsPrompting()
+
+	c.sendMessage(WSMsgTypeEventsLoaded, map[string]interface{}{
+		"events":       events,
+		"has_more":     hasMore,
+		"first_seq":    firstSeq,
+		"last_seq":     lastSeq,
+		"total_count":  meta.EventCount,
+		"prepend":      isPrepend,
+		"is_running":   isRunning,
+		"is_prompting": isPrompting,
+	})
+
+	// If this is an initial load (not prepend, not sync) and session is prompting,
+	// we need to replay any buffered events that haven't been persisted yet.
+	// This handles the case where a client connects mid-stream while agent messages
+	// are still being coalesced in the buffer.
+	//
+	// Note: With immediate persistence for discrete events, only agent messages and
+	// thoughts remain in the buffer (they need coalescing). These are the only events
+	// that might not be in storage yet.
+	if !isPrepend && afterSeq == 0 && isPrompting && c.bgSession != nil {
+		c.replayBufferedEventsWithDedup()
+	}
+}
+
+// replayBufferedEventsWithDedup replays buffered events to this client,
+// but only events with seq > lastSentSeq to prevent duplicates.
+//
+// This is only needed for agent messages and thoughts that are still being
+// coalesced in the buffer. Discrete events (tool calls, file ops) are persisted
+// immediately and will be in storage.
+func (c *SessionWSClient) replayBufferedEventsWithDedup() {
+	if c.bgSession == nil {
+		return
+	}
+
+	events := c.bgSession.GetBufferedEvents()
+	if len(events) == 0 {
+		return
+	}
+
+	c.seqMu.Lock()
+	lastSent := c.lastSentSeq
+	c.seqMu.Unlock()
+
+	if c.logger != nil {
+		c.logger.Debug("Replaying buffered events with dedup",
+			"event_count", len(events),
+			"last_sent_seq", lastSent)
+	}
+
+	for _, event := range events {
+		// Only replay events with seq > lastSentSeq
+		if event.Seq > lastSent {
+			event.ReplayTo(c)
+			// Update lastSentSeq after each event
+			c.seqMu.Lock()
+			if event.Seq > c.lastSentSeq {
+				c.lastSentSeq = event.Seq
+			}
+			c.seqMu.Unlock()
+		}
+	}
 }
 
 // handleKeepalive responds to application-level keepalive messages.
@@ -471,6 +658,21 @@ func (c *SessionWSClient) sendError(message string) {
 // OnAgentMessage is called when the agent sends a message chunk.
 // seq is the sequence number for this logical message (chunks of the same message share the same seq).
 func (c *SessionWSClient) OnAgentMessage(seq int64, html string) {
+	// Check if this is a new message or continuation of current streaming message
+	c.seqMu.Lock()
+	if seq < c.lastSentSeq {
+		// Old message - skip entirely (already sent)
+		c.seqMu.Unlock()
+		return
+	}
+	if seq > c.lastSentSeq {
+		// New message - update tracking
+		c.lastSentSeq = seq
+		c.currentStreamingSeq = seq
+	}
+	// seq == lastSentSeq means continuation of current message - always send
+	c.seqMu.Unlock()
+
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	// or an unsolicited agent message (e.g., "indexing workspace" notifications).
 	isPrompting := false
@@ -489,6 +691,21 @@ func (c *SessionWSClient) OnAgentMessage(seq int64, html string) {
 // OnAgentThought is called when the agent sends a thought chunk.
 // seq is the sequence number for this logical thought (chunks share the same seq).
 func (c *SessionWSClient) OnAgentThought(seq int64, text string) {
+	// Check if this is a new thought or continuation of current streaming thought
+	c.seqMu.Lock()
+	if seq < c.lastSentSeq {
+		// Old thought - skip entirely (already sent)
+		c.seqMu.Unlock()
+		return
+	}
+	if seq > c.lastSentSeq {
+		// New thought - update tracking
+		c.lastSentSeq = seq
+		c.currentStreamingSeq = seq
+	}
+	// seq == lastSentSeq means continuation of current thought - always send
+	c.seqMu.Unlock()
+
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	isPrompting := false
 	if c.bgSession != nil {
@@ -505,6 +722,18 @@ func (c *SessionWSClient) OnAgentThought(seq int64, text string) {
 // OnToolCall is called when a tool call starts.
 // seq is the sequence number for this tool call event.
 func (c *SessionWSClient) OnToolCall(seq int64, id, title, status string) {
+	// Check seq tracking - tool calls are discrete events, not streamed
+	c.seqMu.Lock()
+	if seq > 0 && seq <= c.lastSentSeq {
+		// Already sent this tool call - skip
+		c.seqMu.Unlock()
+		return
+	}
+	if seq > c.lastSentSeq {
+		c.lastSentSeq = seq
+	}
+	c.seqMu.Unlock()
+
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	isPrompting := false
 	if c.bgSession != nil {
@@ -523,6 +752,18 @@ func (c *SessionWSClient) OnToolCall(seq int64, id, title, status string) {
 // OnToolUpdate is called when a tool call status is updated.
 // seq is the sequence number for this tool update event.
 func (c *SessionWSClient) OnToolUpdate(seq int64, id string, status *string) {
+	// Check seq tracking - tool updates are discrete events
+	c.seqMu.Lock()
+	if seq > 0 && seq <= c.lastSentSeq {
+		// Already sent this update - skip
+		c.seqMu.Unlock()
+		return
+	}
+	if seq > c.lastSentSeq {
+		c.lastSentSeq = seq
+	}
+	c.seqMu.Unlock()
+
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	isPrompting := false
 	if c.bgSession != nil {
@@ -543,6 +784,17 @@ func (c *SessionWSClient) OnToolUpdate(seq int64, id string, status *string) {
 // OnPlan is called when a plan update occurs.
 // seq is the sequence number for this plan event.
 func (c *SessionWSClient) OnPlan(seq int64) {
+	// Check seq tracking
+	c.seqMu.Lock()
+	if seq > 0 && seq <= c.lastSentSeq {
+		c.seqMu.Unlock()
+		return
+	}
+	if seq > c.lastSentSeq {
+		c.lastSentSeq = seq
+	}
+	c.seqMu.Unlock()
+
 	c.sendMessage(WSMsgTypePlan, map[string]interface{}{
 		"seq":        seq,
 		"session_id": c.sessionID,
@@ -552,6 +804,17 @@ func (c *SessionWSClient) OnPlan(seq int64) {
 // OnFileWrite is called when a file is written.
 // seq is the sequence number for this file write event.
 func (c *SessionWSClient) OnFileWrite(seq int64, path string, size int) {
+	// Check seq tracking
+	c.seqMu.Lock()
+	if seq > 0 && seq <= c.lastSentSeq {
+		c.seqMu.Unlock()
+		return
+	}
+	if seq > c.lastSentSeq {
+		c.lastSentSeq = seq
+	}
+	c.seqMu.Unlock()
+
 	c.sendMessage(WSMsgTypeFileWrite, map[string]interface{}{
 		"seq":        seq,
 		"path":       path,
@@ -563,6 +826,17 @@ func (c *SessionWSClient) OnFileWrite(seq int64, path string, size int) {
 // OnFileRead is called when a file is read.
 // seq is the sequence number for this file read event.
 func (c *SessionWSClient) OnFileRead(seq int64, path string, size int) {
+	// Check seq tracking
+	c.seqMu.Lock()
+	if seq > 0 && seq <= c.lastSentSeq {
+		c.seqMu.Unlock()
+		return
+	}
+	if seq > c.lastSentSeq {
+		c.lastSentSeq = seq
+	}
+	c.seqMu.Unlock()
+
 	c.sendMessage(WSMsgTypeFileRead, map[string]interface{}{
 		"seq":        seq,
 		"path":       path,
@@ -643,6 +917,17 @@ func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 // senderID identifies which client sent the prompt (for deduplication).
 // seq is the sequence number for this user prompt event.
 func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string) {
+	// Check seq tracking
+	c.seqMu.Lock()
+	if seq > 0 && seq <= c.lastSentSeq {
+		c.seqMu.Unlock()
+		return
+	}
+	if seq > c.lastSentSeq {
+		c.lastSentSeq = seq
+	}
+	c.seqMu.Unlock()
+
 	c.sendMessage(WSMsgTypeUserPrompt, map[string]interface{}{
 		"seq":          seq,
 		"session_id":   c.sessionID,
