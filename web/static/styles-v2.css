@@ -1189,3 +1189,31 @@ a:hover {
 .dark .v2-theme .font-size-toggle__option:not(.active):hover {
   color: #d4d4d8;
 }
+
+/* =============================================================================
+ * Swipe-to-Delete V2 Theme Styles
+ * ============================================================================= */
+
+/* Session item container border - light theme */
+.v2-theme:not(.dark) .session-item-container {
+  border-bottom: 1px solid #e4e4e7 !important;
+}
+
+/* Session item container border - dark theme */
+.v2-theme.dark .session-item-container {
+  border-bottom: 1px solid #334155 !important;
+}
+
+/* Swipe delete background - light theme (softer red) */
+.v2-theme:not(.dark) .session-item-container .bg-red-600 {
+  background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%) !important;
+}
+
+/* Swipe delete button - light theme */
+.v2-theme:not(.dark) .session-item-container .bg-red-700 {
+  background: #dc2626 !important;
+}
+
+.v2-theme:not(.dark) .session-item-container .bg-red-700:hover {
+  background: #b91c1c !important;
+}

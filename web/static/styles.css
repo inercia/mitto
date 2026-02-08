@@ -744,7 +744,7 @@ a.mailto-link:hover {
    ============================================================================= */
 
 .scroll-to-bottom-btn {
-  position: fixed;
+  position: absolute;
   bottom: 100px;
   left: 50%;
   transform: translateX(-50%);
@@ -814,11 +814,11 @@ a.mailto-link:hover {
 @keyframes slideUp {
   from {
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateX(-50%) translateY(20px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateX(-50%) translateY(0);
   }
 }
 
@@ -1087,6 +1087,24 @@ mitto-action {
   color: white;
 }
 
+/* Textarea improving overlay */
+.textarea-improving-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.85);
+  border-radius: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 10;
+  backdrop-filter: blur(2px);
+}
+
 /* Light theme */
 .light .action-toolbar-btn {
   background: #e2e8f0;
@@ -1104,6 +1122,18 @@ mitto-action {
 .light .action-toolbar-btn:disabled {
   background: #f1f5f9;
   color: #94a3b8;
+}
+
+.light .textarea-improving-overlay {
+  background: rgba(241, 245, 249, 0.9);
+}
+
+.light .textarea-improving-overlay .text-blue-300 {
+  color: #1e40af;
+}
+
+.light .textarea-improving-overlay .text-blue-400 {
+  color: #2563eb;
 }
 
 /* Chat input button container - smaller buttons aligned with textarea bottom */
@@ -1213,4 +1243,30 @@ mitto-action {
   background-color: #6b7280 !important; /* gray-500 */
   color: #000000 !important;
   transform: scale(0.98);
+}
+
+/* =============================================================================
+ * Swipe-to-Delete Styles
+ * ============================================================================= */
+
+/* Container needs touch-action for proper swipe handling */
+.session-item-container {
+  touch-action: pan-y pinch-zoom;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Prevent text selection during swipe */
+.session-item-container * {
+  -webkit-user-drag: none;
+}
+
+/* Delete background styles */
+.session-item-container .bg-red-600 {
+  background: linear-gradient(90deg, #dc2626 0%, #b91c1c 100%);
+}
+
+/* Light theme adjustments for swipe delete */
+.light .session-item-container .bg-red-600 {
+  background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
 }

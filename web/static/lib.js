@@ -264,16 +264,6 @@ export function parseToolTitlePaths(title) {
   return segments;
 }
 
-/**
- * Checks if a tool title contains a file path.
- * @param {string} title - The tool title
- * @returns {boolean} True if the title contains a file path
- */
-export function toolTitleHasPath(title) {
-  const segments = parseToolTitlePaths(title);
-  return segments.some((s) => s.type === "path");
-}
-
 // =============================================================================
 // Session State Management
 // =============================================================================
@@ -1227,17 +1217,4 @@ export function linkifyUrls(text) {
   }
 
   return parts.join("");
-}
-
-/**
- * Checks if a text contains any URLs that would be linkified.
- * @param {string} text - The text to check
- * @returns {boolean} True if the text contains URLs
- */
-export function hasUrls(text) {
-  if (!text || typeof text !== "string") {
-    return false;
-  }
-  URL_PATTERN.lastIndex = 0;
-  return URL_PATTERN.test(text);
 }

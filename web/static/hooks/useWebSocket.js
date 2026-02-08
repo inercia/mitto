@@ -12,10 +12,7 @@ import {
   ROLE_SYSTEM,
   INITIAL_EVENTS_LIMIT,
   convertEventsToMessages,
-  getMinSeq,
-  getMaxSeq,
   limitMessages,
-  getMessageHash,
   mergeMessagesWithSync,
   updateGlobalWorkingDir,
   getGlobalWorkingDir,
@@ -554,6 +551,8 @@ export function useWebSocket() {
                 working_dir: newWorkingDir,
                 created_at: msg.data.created_at || session.info?.created_at,
                 status: msg.data.status || "active",
+                runner_type: msg.data.runner_type || session.info?.runner_type,
+                runner_restricted: msg.data.runner_restricted ?? session.info?.runner_restricted,
               },
               isStreaming: msg.data.is_prompting || false,
             },
@@ -571,40 +570,36 @@ export function useWebSocket() {
           "seq:",
           msg.data.seq,
         );
+        // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
+        // Frontend only needs to coalesce chunks with the same seq (streaming continuation).
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
           let messages = [...session.messages];
           const last = messages[messages.length - 1];
+          const msgSeq = msg.data.seq;
+
           // Check if we should append to existing message:
           // - Same seq means it's a continuation of the same logical message
           // - Or if last message is incomplete agent message (backward compat)
-          const sameSeq = msg.data.seq && last?.seq === msg.data.seq;
-          if (last && last.role === ROLE_AGENT && !last.complete && (sameSeq || !msg.data.seq)) {
+          const sameSeq = msgSeq && last?.seq === msgSeq;
+          if (last && last.role === ROLE_AGENT && !last.complete && (sameSeq || !msgSeq)) {
             messages[messages.length - 1] = {
               ...last,
               html: (last.html || "") + msg.data.html,
             };
           } else {
-            console.log(
-              "Creating new agent message, total messages:",
-              messages.length + 1,
-              "seq:",
-              msg.data.seq,
-            );
+            // New message - server guarantees this is not a duplicate
             messages.push({
               role: ROLE_AGENT,
               html: msg.data.html,
               complete: false,
               timestamp: Date.now(),
-              seq: msg.data.seq, // Include seq for ordering and deduplication
+              seq: msgSeq,
             });
             messages = limitMessages(messages);
           }
-          // Only set isStreaming if is_prompting is true (agent is responding to a user prompt).
-          // This prevents unsolicited agent messages (e.g., "indexing workspace" notifications)
-          // from showing the Stop button.
-          const isPrompting = msg.data.is_prompting ?? true; // Default to true for backward compat
+          const isPrompting = msg.data.is_prompting ?? true;
           return {
             ...prev,
             [sessionId]: { ...session, messages, isStreaming: isPrompting },
@@ -613,31 +608,34 @@ export function useWebSocket() {
         break;
 
       case "agent_thought":
+        // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
           let messages = [...session.messages];
           const last = messages[messages.length - 1];
+          const msgSeq = msg.data.seq;
+
           // Check if we should append to existing thought:
           // - Same seq means it's a continuation of the same logical thought
           // - Or if last message is incomplete thought (backward compat)
-          const sameSeq = msg.data.seq && last?.seq === msg.data.seq;
-          if (last && last.role === ROLE_THOUGHT && !last.complete && (sameSeq || !msg.data.seq)) {
+          const sameSeq = msgSeq && last?.seq === msgSeq;
+          if (last && last.role === ROLE_THOUGHT && !last.complete && (sameSeq || !msgSeq)) {
             messages[messages.length - 1] = {
               ...last,
               text: (last.text || "") + msg.data.text,
             };
           } else {
+            // New thought - server guarantees this is not a duplicate
             messages.push({
               role: ROLE_THOUGHT,
               text: msg.data.text,
               complete: false,
               timestamp: Date.now(),
-              seq: msg.data.seq, // Include seq for ordering and deduplication
+              seq: msgSeq,
             });
             messages = limitMessages(messages);
           }
-          // Only set isStreaming if is_prompting is true (agent is responding to a user prompt)
           const isPrompting = msg.data.is_prompting ?? true;
           return {
             ...prev,
@@ -647,9 +645,12 @@ export function useWebSocket() {
         break;
 
       case "tool_call":
+        // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
+        // Just append the tool call - no deduplication needed.
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
+
           const messages = limitMessages([
             ...session.messages,
             {
@@ -658,10 +659,9 @@ export function useWebSocket() {
               title: msg.data.title,
               status: msg.data.status,
               timestamp: Date.now(),
-              seq: msg.data.seq, // Include seq for ordering and deduplication
+              seq: msg.data.seq,
             },
           ]);
-          // Only set isStreaming if is_prompting is true (agent is responding to a user prompt)
           const isPrompting = msg.data.is_prompting ?? true;
           return {
             ...prev,
@@ -836,26 +836,20 @@ export function useWebSocket() {
         break;
 
       case "session_sync": {
-        // Handle incremental sync response
-        // IMPORTANT: This can be called on reconnection after streaming messages were already
-        // added to the UI. We need to deduplicate to avoid showing the same messages twice,
-        // and ensure proper chronological ordering.
+        // DEPRECATED: Use events_loaded instead
+        // Handle incremental sync response (kept for backward compatibility)
         const events = msg.data.events || [];
         const newMessages = convertEventsToMessages(events, { sessionId, apiPrefix: getApiPrefix() });
         const lastSeq =
           events.length > 0
             ? Math.max(...events.map((e) => e.seq || 0))
             : msg.data.after_seq;
-        // Use is_prompting (not is_running) to determine streaming state
-        // A session can be "running" (has ACP connection) but not "prompting" (waiting for response)
         const isPrompting = msg.data.is_prompting || false;
 
-        console.log("session_sync received:", {
+        console.log("session_sync received (deprecated):", {
           sessionId,
           afterSeq: msg.data.after_seq,
           eventCount: events.length,
-          newMessageCount: newMessages.length,
-          lastSeq,
         });
 
         setLastSeenSeq(sessionId, lastSeq);
@@ -863,21 +857,10 @@ export function useWebSocket() {
         setSessions((prev) => {
           const session = prev[sessionId] || { messages: [], info: {} };
           const existingMessages = session.messages;
-
-          // Use mergeMessagesWithSync to properly deduplicate and order messages
-          // This handles:
-          // 1. Tool messages (which have id/title instead of text/html)
-          // 2. Proper chronological ordering by seq/timestamp
           const mergedMessages = mergeMessagesWithSync(
             existingMessages,
             newMessages,
           );
-
-          console.log("session_sync applying:", {
-            existingMessages: existingMessages.length,
-            newMessages: newMessages.length,
-            mergedMessages: mergedMessages.length,
-          });
 
           return {
             ...prev,
@@ -891,6 +874,70 @@ export function useWebSocket() {
                 name: msg.data.name || session.info?.name,
                 status: msg.data.status || session.info?.status,
               },
+            },
+          };
+        });
+        break;
+      }
+
+      case "events_loaded": {
+        // Handle events_loaded response from load_events request
+        // This is the new WebSocket-only approach for loading events
+        const events = msg.data.events || [];
+        const isPrepend = msg.data.prepend || false;
+        const hasMore = msg.data.has_more || false;
+        const firstSeq = msg.data.first_seq || 0;
+        const lastSeq = msg.data.last_seq || 0;
+        const isPrompting = msg.data.is_prompting || false;
+
+        console.log("events_loaded received:", {
+          sessionId,
+          eventCount: events.length,
+          isPrepend,
+          hasMore,
+          firstSeq,
+          lastSeq,
+          isPrompting,
+        });
+
+        // Convert events to messages
+        const newMessages = convertEventsToMessages(events, {
+          sessionId,
+          apiPrefix: getApiPrefix(),
+        });
+
+        // Update lastSeenSeq for non-prepend loads (initial load and sync)
+        if (!isPrepend && lastSeq > 0) {
+          setLastSeenSeq(sessionId, lastSeq);
+        }
+
+        setSessions((prev) => {
+          const session = prev[sessionId] || { messages: [], info: {} };
+          let messages;
+
+          if (isPrepend) {
+            // Load more (older events) - prepend to existing messages
+            // No deduplication needed - server guarantees no duplicates
+            messages = [...newMessages, ...session.messages];
+          } else if (session.messages.length === 0) {
+            // Initial load - just use the new messages
+            messages = newMessages;
+          } else {
+            // Sync after reconnect - append new messages
+            // Server guarantees no duplicates via seq tracking
+            messages = [...session.messages, ...newMessages];
+          }
+
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              messages: limitMessages(messages),
+              isStreaming: isPrompting,
+              hasMoreMessages: hasMore,
+              firstLoadedSeq: isPrepend ? firstSeq : session.firstLoadedSeq || firstSeq,
+              // Flag to indicate this is a fresh load - used for instant scroll positioning
+              justLoaded: !isPrepend && session.messages.length === 0,
             },
           };
         });
@@ -1052,6 +1099,17 @@ export function useWebSocket() {
         }
         break;
 
+      case "runner_fallback":
+        // Server notifies that a configured runner is not supported and fell back to exec
+        console.log("Runner fallback:", msg.data);
+        if (msg.data) {
+          // Dispatch event for toast notification
+          window.dispatchEvent(
+            new CustomEvent("mitto:runner_fallback", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "queue_message_titled":
         // Server notifies us that a queued message received an auto-generated title
         if (msg.data?.message_id && msg.data?.title) {
@@ -1101,15 +1159,25 @@ export function useWebSocket() {
       ws.onopen = () => {
         console.log(`Session WebSocket connected: ${sessionId} (ws: ${wsId})`);
 
-        // Sync events we may have missed while disconnected (e.g., phone sleep)
-        // This uses the lastSeenSeq stored in localStorage to request only new events
+        // Use the new WebSocket-only approach for loading events
+        // Check if we have a lastSeenSeq (reconnection) or need initial load
         const lastSeq = getLastSeenSeq(sessionId);
         if (lastSeq > 0) {
-          console.log(`Syncing session ${sessionId} from seq ${lastSeq}`);
+          // Reconnection: sync events after lastSeq
+          console.log(`Syncing session ${sessionId} from seq ${lastSeq} (WebSocket-only)`);
           ws.send(
             JSON.stringify({
-              type: "sync_session",
-              data: { session_id: sessionId, after_seq: lastSeq },
+              type: "load_events",
+              data: { after_seq: lastSeq },
+            }),
+          );
+        } else {
+          // Initial load: load last N events
+          console.log(`Loading session ${sessionId} events (WebSocket-only)`);
+          ws.send(
+            JSON.stringify({
+              type: "load_events",
+              data: { limit: INITIAL_EVENTS_LIMIT },
             }),
           );
         }
@@ -1272,38 +1340,10 @@ export function useWebSocket() {
           return;
         }
 
-        // Load only the last N events initially, in reverse order (newest first)
-        // This allows the UI to render the most recent messages immediately
-        const eventsResponse = await authFetch(
-          apiUrl(
-            `/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}&order=desc`,
-          ),
-        );
-        if (!eventsResponse.ok) {
-          console.error("Failed to load session events");
-          return;
-        }
-        const events = await eventsResponse.json();
+        // WebSocket-only architecture: Connect to WebSocket first, then load events via WebSocket
+        // This eliminates race conditions between REST and WebSocket and simplifies deduplication
 
-        // Convert events to messages (events are in reverse order, so we reverse them back)
-        const messages = convertEventsToMessages(events, {
-          reverseInput: true,
-          sessionId,
-          apiPrefix: getApiPrefix(),
-        });
-
-        // Determine if there are more messages to load
-        // With reverse order, the last event in the array has the lowest seq (oldest loaded)
-        const firstSeq = events.length > 0 ? getMinSeq(events) : 0;
-        const lastSeq = events.length > 0 ? getMaxSeq(events) : 0;
-        const hasMoreMessages = firstSeq > 1;
-
-        // Store lastSeenSeq for sync on reconnect (e.g., after phone sleep)
-        if (lastSeq > 0) {
-          setLastSeenSeq(sessionId, lastSeq);
-        }
-
-        // Store working_dir in both ref and state
+        // Store working_dir in both ref and state (from metadata)
         if (meta.working_dir) {
           workingDirMapRef.current[sessionId] = meta.working_dir;
           setWorkingDirMap((prev) => ({
@@ -1312,27 +1352,14 @@ export function useWebSocket() {
           }));
         }
 
-        // Initialize session state (merge with any existing state from WebSocket)
-        // IMPORTANT: We merge REST API messages with any existing streaming messages
-        // to handle the case where WebSocket messages arrived during the async REST call.
-        // Then we sort by seq to ensure consistent ordering across all clients.
+        // Initialize session state with metadata (messages will be loaded via WebSocket)
         setSessions((prev) => {
           const existing = prev[sessionId] || {};
-          const existingMessages = existing.messages || [];
-
-          // Merge REST API messages with any existing streaming messages
-          // This handles the race condition where WebSocket messages arrive
-          // during the async REST API call
-          const mergedMessages = mergeMessagesWithSync(
-            messages,
-            existingMessages,
-          );
-
           return {
             ...prev,
             [sessionId]: {
               ...existing,
-              messages: mergedMessages,
+              messages: existing.messages || [],
               info: {
                 ...existing.info,
                 session_id: sessionId,
@@ -1343,15 +1370,12 @@ export function useWebSocket() {
                 status: meta.status || "active",
               },
               isStreaming: existing.isStreaming || false,
-              hasMoreMessages,
-              firstLoadedSeq: firstSeq,
-              // Flag to indicate this is a fresh load - used for instant scroll positioning
-              justLoaded: true,
             },
           };
         });
 
-        // Connect to the session WebSocket (if not already connected)
+        // Connect to the session WebSocket - this will trigger load_events on open
+        // The events_loaded handler will populate the messages
         connectToSession(sessionId);
         setActiveSessionId(sessionId);
       } catch (err) {
@@ -1406,6 +1430,29 @@ export function useWebSocket() {
             [msg.data.session_id]: {
               ...session,
               info: { ...session.info, name: msg.data.name },
+            },
+          };
+        });
+        break;
+
+      case "session_pinned":
+        // Update session pinned state in stored sessions
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, pinned: msg.data.pinned }
+              : s,
+          ),
+        );
+        // Also update in active sessions
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              info: { ...session.info, pinned: msg.data.pinned },
             },
           };
         });
@@ -1905,7 +1952,8 @@ export function useWebSocket() {
   );
 
   // Load more (older) messages for a session
-  const loadMoreMessages = useCallback(async (sessionId) => {
+  // Uses WebSocket-only architecture: sends load_events with before_seq
+  const loadMoreMessages = useCallback((sessionId) => {
     // Use sessionsRef to get current sessions state and avoid stale closures
     const currentSessions = sessionsRef.current;
     const session = currentSessions[sessionId];
@@ -1913,53 +1961,25 @@ export function useWebSocket() {
       return;
     }
 
-    try {
-      // Load events before the first currently loaded sequence
-      // Use chronological order (oldest first) since we're prepending to existing messages
-      const eventsResponse = await authFetch(
-        apiUrl(
-          `/api/sessions/${sessionId}/events?limit=${INITIAL_EVENTS_LIMIT}&before=${session.firstLoadedSeq}`,
-        ),
-      );
-      if (!eventsResponse.ok) {
-        console.error("Failed to load more events");
-        return;
-      }
-      const events = await eventsResponse.json();
-
-      if (events.length === 0) {
-        // No more events to load
-        setSessions((prev) => ({
-          ...prev,
-          [sessionId]: { ...prev[sessionId], hasMoreMessages: false },
-        }));
-        return;
-      }
-
-      // Convert events to messages (events are in chronological order)
-      const olderMessages = convertEventsToMessages(events, { sessionId, apiPrefix: getApiPrefix() });
-
-      // Determine if there are still more messages
-      const newFirstSeq = getMinSeq(events);
-      const hasMoreMessages = newFirstSeq > 1;
-
-      // Prepend older messages to existing messages
-      setSessions((prev) => {
-        const currentSession = prev[sessionId];
-        if (!currentSession) return prev;
-        return {
-          ...prev,
-          [sessionId]: {
-            ...currentSession,
-            messages: [...olderMessages, ...currentSession.messages],
-            hasMoreMessages,
-            firstLoadedSeq: newFirstSeq,
-          },
-        };
-      });
-    } catch (err) {
-      console.error("Failed to load more messages:", err);
+    // Get the WebSocket for this session
+    const ws = sessionWsRefs.current[sessionId];
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.error("WebSocket not connected for session:", sessionId);
+      return;
     }
+
+    // Send load_events request with before_seq for pagination
+    console.log(`Loading more messages for ${sessionId} before seq ${session.firstLoadedSeq}`);
+    ws.send(
+      JSON.stringify({
+        type: "load_events",
+        data: {
+          limit: INITIAL_EVENTS_LIMIT,
+          before_seq: session.firstLoadedSeq,
+        },
+      }),
+    );
+    // The events_loaded handler will process the response and prepend messages
   }, []);
 
   const updateSessionName = useCallback((sessionId, name) => {
@@ -2004,6 +2024,39 @@ export function useWebSocket() {
     },
     [updateSessionName],
   );
+
+  // Pin/unpin a session via REST API
+  const pinSession = useCallback(async (sessionId, pinned) => {
+    try {
+      const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned }),
+      });
+      if (!response.ok) {
+        console.error("Failed to pin/unpin session");
+        return;
+      }
+      // Update local state for stored sessions
+      setStoredSessions((prev) =>
+        prev.map((s) => (s.session_id === sessionId ? { ...s, pinned } : s)),
+      );
+      // Update local state for active sessions
+      setSessions((prev) => {
+        const session = prev[sessionId];
+        if (!session) return prev;
+        return {
+          ...prev,
+          [sessionId]: {
+            ...session,
+            info: { ...session.info, pinned },
+          },
+        };
+      });
+    } catch (err) {
+      console.error("Failed to pin/unpin session:", err);
+    }
+  }, []);
 
   const removeSession = useCallback(
     async (sessionId) => {
@@ -2196,6 +2249,7 @@ export function useWebSocket() {
     loadMoreMessages,
     updateSessionName,
     renameSession,
+    pinSession,
     removeSession,
     isStreaming,
     hasMoreMessages,

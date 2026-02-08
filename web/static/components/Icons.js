@@ -551,3 +551,39 @@ export function GripIcon({ className = "w-8 h-1" }) {
     </svg>
   `;
 }
+
+/**
+ * Pin icon (outline) for unpinned state
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PinIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M16 3.5l-4 4-5-1.5-1.5 1.5 4 4-5 6.5 6.5-5 4 4 1.5-1.5-1.5-5 4-4-3-3z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Pin filled icon for pinned state
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PinFilledIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
+      <path
+        d="M16 3.5l-4 4-5-1.5-1.5 1.5 4 4-5 6.5 6.5-5 4 4 1.5-1.5-1.5-5 4-4-3-3z"
+      />
+    </svg>
+  `;
+}

@@ -262,10 +262,14 @@ export function SettingsDialog({
   // Stored sessions for checking workspace usage
   const [storedSessions, setStoredSessions] = useState([]);
 
+  // Supported runners (fetched from server based on platform)
+  const [supportedRunners, setSupportedRunners] = useState([]);
+
   // Form state for adding new items
   const [showAddWorkspace, setShowAddWorkspace] = useState(false);
   const [newWorkspacePath, setNewWorkspacePath] = useState("");
   const [newWorkspaceServer, setNewWorkspaceServer] = useState("");
+  const [newWorkspaceRunner, setNewWorkspaceRunner] = useState("exec");
 
   const [showAddServer, setShowAddServer] = useState(false);
   const [newServerName, setNewServerName] = useState("");
@@ -340,6 +344,7 @@ export function SettingsDialog({
       setSuccess("");
       loadConfig();
       loadStoredSessions();
+      loadSupportedRunners();
     }
   }, [isOpen]);
 
@@ -355,6 +360,32 @@ export function SettingsDialog({
       }
     } catch (err) {
       console.error("Failed to load stored sessions:", err);
+    }
+  };
+
+  // Load supported runners from server
+  const loadSupportedRunners = async () => {
+    try {
+      const res = await fetch(apiUrl("/api/supported-runners"), {
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        const runners = await res.json();
+        setSupportedRunners(runners || []);
+      }
+    } catch (err) {
+      console.error("Failed to load supported runners:", err);
+      // Fallback to all runners if fetch fails
+      setSupportedRunners([
+        { type: "exec", label: "exec (no restrictions)", supported: true },
+        {
+          type: "sandbox-exec",
+          label: "sandbox-exec (macOS)",
+          supported: false,
+        },
+        { type: "firejail", label: "firejail (Linux)", supported: false },
+        { type: "docker", label: "docker (all platforms)", supported: true },
+      ]);
     }
   };
 
@@ -838,9 +869,11 @@ export function SettingsDialog({
         working_dir: newWorkspacePath.trim(),
         acp_server: newWorkspaceServer,
         acp_command: server.command,
+        restricted_runner: newWorkspaceRunner,
       },
     ]);
     setNewWorkspacePath("");
+    setNewWorkspaceRunner("exec");
     setShowAddWorkspace(false);
     setError("");
   };
@@ -893,6 +926,17 @@ export function SettingsDialog({
       workspaces.map((ws) =>
         ws.working_dir === workingDir
           ? { ...ws, code: sanitizedCode || undefined } // undefined to omit from JSON if empty
+          : ws,
+      ),
+    );
+  };
+
+  // Update workspace restricted runner
+  const updateWorkspaceRunner = (workingDir, runner) => {
+    setWorkspaces(
+      workspaces.map((ws) =>
+        ws.working_dir === workingDir
+          ? { ...ws, restricted_runner: runner || "exec" }
           : ws,
       ),
     );
@@ -1187,11 +1231,34 @@ export function SettingsDialog({
                             )}
                           </select>
                         </div>
+                        <div>
+                          <label class="block text-sm text-gray-400 mb-1"
+                            >Sandbox Type</label
+                          >
+                          <select
+                            value=${newWorkspaceRunner}
+                            onChange=${(e) =>
+                              setNewWorkspaceRunner(e.target.value)}
+                            class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            title="Choose the runner type for sandboxing agent execution"
+                          >
+                            ${supportedRunners
+                              .filter((r) => r.supported)
+                              .map(
+                                (r) =>
+                                  html`<option value=${r.type}>${r.label}</option>`,
+                              )}
+                          </select>
+                          <p class="text-xs text-gray-500 mt-1">
+                            Controls how the agent is sandboxed. "exec" runs with no restrictions (recommended for most users).
+                          </p>
+                        </div>
                         <div class="flex justify-end gap-2">
                           <button
                             onClick=${() => {
                               setShowAddWorkspace(false);
                               setNewWorkspacePath("");
+                              setNewWorkspaceRunner("exec");
                             }}
                             class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
                           >
@@ -1248,6 +1315,12 @@ export function SettingsDialog({
                                     >
                                       ${ws.acp_server}
                                     </span>
+                                    <span
+                                      class="px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-xs flex-shrink-0"
+                                      title="Sandbox type"
+                                    >
+                                      ${ws.restricted_runner || "exec"}
+                                    </span>
                                     <button
                                       onClick=${() =>
                                         removeWorkspace(ws.working_dir)}
@@ -1275,6 +1348,25 @@ export function SettingsDialog({
                                       />
                                     </div>
                                     <div class="flex items-center gap-2">
+                                      <select
+                                        value=${ws.restricted_runner || "exec"}
+                                        onChange=${(e) =>
+                                          updateWorkspaceRunner(
+                                            ws.working_dir,
+                                            e.target.value,
+                                          )}
+                                        class="px-2 py-1 bg-gray-100 dark:bg-slate-700/50 rounded text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                        title="Sandbox type"
+                                      >
+                                        ${supportedRunners
+                                          .filter((r) => r.supported)
+                                          .map(
+                                            (r) =>
+                                              html`<option value=${r.type}>
+                                                ${r.type}
+                                              </option>`,
+                                          )}
+                                      </select>
                                       <input
                                         type="text"
                                         value=${ws.code || ""}

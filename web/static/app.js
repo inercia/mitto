@@ -22,8 +22,6 @@ import {
   INITIAL_EVENTS_LIMIT,
   computeAllSessions,
   convertEventsToMessages,
-  getMinSeq,
-  getMaxSeq,
   safeJsonParse,
   limitMessages,
   getWorkspaceVisualInfo,
@@ -62,7 +60,7 @@ import {
 } from "./utils/index.js";
 
 // Import hooks
-import { useWebSocket, useSwipeNavigation } from "./hooks/index.js";
+import { useWebSocket, useSwipeNavigation, useSwipeToDelete } from "./hooks/index.js";
 
 // Import components
 import { Message } from "./components/Message.js";
@@ -88,6 +86,8 @@ import {
   MoonIcon,
   LightningIcon,
   QueueIcon,
+  PinIcon,
+  PinFilledIcon,
 } from "./components/Icons.js";
 
 // Import constants
@@ -861,12 +861,17 @@ function ContextMenu({ x, y, items, onClose }) {
             key=${item.label}
             onClick=${(e) => {
               e.stopPropagation();
-              item.onClick();
-              onClose();
+              if (!item.disabled) {
+                item.onClick();
+                onClose();
+              }
             }}
-            class="w-full px-3 py-2 text-left text-sm hover:bg-slate-700 transition-colors flex items-center gap-2 ${item.danger
-              ? "text-red-400 hover:text-red-300"
-              : "text-gray-200"}"
+            disabled=${item.disabled}
+            class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${item.disabled
+              ? "text-gray-500 cursor-not-allowed"
+              : item.danger
+                ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
+                : "text-gray-200 hover:bg-slate-700"}"
           >
             ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
             ${item.label}
@@ -887,6 +892,7 @@ function SessionItem({
   onSelect,
   onRename,
   onDelete,
+  onPin,
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
@@ -896,6 +902,55 @@ function SessionItem({
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
 
+  // Check if session is pinned
+  const isPinned = session.pinned || false;
+
+  // Build tooltip with session metadata
+  const buildTooltip = () => {
+    const parts = [];
+
+    // Message/event count
+    if (session.messageCount !== undefined) {
+      parts.push(`Messages: ${session.messageCount}`);
+    } else if (session.event_count !== undefined) {
+      parts.push(`Events: ${session.event_count}`);
+    }
+
+    // Creation time
+    if (session.created_at) {
+      const createdDate = new Date(session.created_at);
+      parts.push(`Created: ${createdDate.toLocaleString()}`);
+    }
+
+    // Last activity time
+    if (session.updated_at) {
+      const updatedDate = new Date(session.updated_at);
+      parts.push(`Last activity: ${updatedDate.toLocaleString()}`);
+    } else if (session.last_user_message_at) {
+      const lastMsgDate = new Date(session.last_user_message_at);
+      parts.push(`Last message: ${lastMsgDate.toLocaleString()}`);
+    }
+
+    // Runner type
+    if (session.runner_type) {
+      const runnerInfo = session.runner_restricted
+        ? `${session.runner_type} (restricted)`
+        : `${session.runner_type} (unrestricted)`;
+      parts.push(`Runner: ${runnerInfo}`);
+    }
+
+    return parts.join('\n');
+  };
+
+  // Swipe-to-delete hook - disabled when pinned
+  const { swipeOffset, isSwiping, isSwipingRef, isRevealed, containerProps, reset, triggerDelete } =
+    useSwipeToDelete({
+      onDelete: () => onDelete(session),
+      threshold: 0.5,
+      revealWidth: 80,
+      disabled: isPinned,
+    });
+
   const handleRename = (e) => {
     if (e) e.stopPropagation();
     onRename(session);
@@ -903,7 +958,13 @@ function SessionItem({
 
   const handleDelete = (e) => {
     if (e) e.stopPropagation();
+    if (isPinned) return; // Prevent delete if pinned
     onDelete(session);
+  };
+
+  const handlePin = (e) => {
+    if (e) e.stopPropagation();
+    onPin(session, !isPinned);
   };
 
   const handleContextMenu = (e) => {
@@ -916,6 +977,17 @@ function SessionItem({
     setContextMenu(null);
   };
 
+  // Handle click - only select if not swiping/revealed
+  // Use ref for isSwiping to avoid stale closure issues
+  const handleClick = useCallback(() => {
+    if (isSwipingRef.current) return;
+    if (isRevealed) {
+      reset();
+      return;
+    }
+    onSelect(session.session_id);
+  }, [isSwipingRef, isRevealed, reset, onSelect, session.session_id]);
+
   const displayName = session.name || session.description || "Untitled";
   const isActiveSession = session.isActive || session.status === "active";
   const isStreaming = session.isStreaming || false;
@@ -927,6 +999,11 @@ function SessionItem({
 
   const contextMenuItems = [
     {
+      label: isPinned ? "Unpin" : "Pin",
+      icon: isPinned ? html`<${PinFilledIcon} />` : html`<${PinIcon} />`,
+      onClick: () => handlePin(),
+    },
+    {
       label: "Rename",
       icon: html`<${EditIcon} />`,
       onClick: () => handleRename(),
@@ -936,19 +1013,48 @@ function SessionItem({
       icon: html`<${TrashIcon} />`,
       onClick: () => handleDelete(),
       danger: true,
+      disabled: isPinned,
     },
   ];
 
+  // Calculate visual feedback intensity based on swipe progress
+  const absOffset = Math.abs(swipeOffset);
+  const deleteProgress = Math.min(absOffset / 160, 1); // Max at 160px
+
   return html`
     <div
-      onClick=${() => onSelect(session.session_id)}
-      onContextMenu=${handleContextMenu}
-      onMouseEnter=${() => setShowActions(true)}
-      onMouseLeave=${() => setShowActions(false)}
-      class="p-3 border-b border-slate-700 cursor-pointer hover:bg-slate-700/50 transition-colors relative ${isActive
-        ? "bg-blue-900/30 border-l-2 border-l-blue-500"
-        : ""}"
+      class="session-item-container relative overflow-hidden border-b border-slate-700"
+      ...${containerProps}
     >
+      <!-- Delete background (revealed when swiping left) -->
+      <div
+        class="absolute inset-0 bg-red-600 flex items-center justify-end pr-6 transition-opacity"
+        style="opacity: ${isRevealed || absOffset > 20 ? 1 : 0}"
+      >
+        <button
+          onClick=${(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            triggerDelete();
+          }}
+          class="p-3 rounded-full bg-red-700 hover:bg-red-800 transition-colors"
+          title="Delete"
+        >
+          <${TrashIcon} className="w-5 h-5 text-white" />
+        </button>
+      </div>
+      <!-- Swipeable content -->
+      <div
+        onClick=${handleClick}
+        onContextMenu=${handleContextMenu}
+        onMouseEnter=${() => setShowActions(true)}
+        onMouseLeave=${() => setShowActions(false)}
+        class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar ${isActive
+          ? "bg-blue-900/30 border-l-2 border-l-blue-500"
+          : ""} ${isSwiping ? "" : "transition-transform duration-200"}"
+        style="transform: translateX(${swipeOffset}px)"
+        title=${buildTooltip()}
+      >
       ${contextMenu &&
       html`
         <${ContextMenu}
@@ -987,24 +1093,46 @@ function SessionItem({
           </div>
         </div>
         <div
-          class="flex items-center gap-1 ${showActions
+          class="flex items-center gap-1 ${showActions || isPinned
             ? "opacity-100"
             : "opacity-0"} transition-opacity flex-shrink-0"
         >
-          <button
-            onClick=${handleRename}
-            class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
-            title="Rename"
-          >
-            <${EditIcon} className="w-4 h-4" />
-          </button>
-          <button
-            onClick=${handleDelete}
-            class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
-            title="Delete"
-          >
-            <${TrashIcon} className="w-4 h-4" />
-          </button>
+          ${isPinned && !showActions
+            ? html`
+                <span class="text-amber-400" title="Pinned">
+                  <${PinFilledIcon} className="w-4 h-4" />
+                </span>
+              `
+            : html`
+                <button
+                  onClick=${handlePin}
+                  class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors ${isPinned
+                    ? "text-amber-400"
+                    : "text-gray-300 hover:text-white"}"
+                  title="${isPinned ? "Unpin" : "Pin"}"
+                >
+                  ${isPinned
+                    ? html`<${PinFilledIcon} className="w-4 h-4" />`
+                    : html`<${PinIcon} className="w-4 h-4" />`}
+                </button>
+                <button
+                  onClick=${handleRename}
+                  class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
+                  title="Rename"
+                >
+                  <${EditIcon} className="w-4 h-4" />
+                </button>
+                <button
+                  onClick=${handleDelete}
+                  class="p-1.5 bg-slate-700 rounded transition-colors ${isPinned
+                    ? "text-gray-500 cursor-not-allowed"
+                    : "hover:bg-red-600 text-gray-300 hover:text-white"}"
+                  title="${isPinned ? "Unpin to delete" : "Delete"}"
+                  disabled=${isPinned}
+                >
+                  <${TrashIcon} className="w-4 h-4" />
+                </button>
+              `}
         </div>
       </div>
       <!-- Bottom row: message count, saved/stored badge, and workspace pill -->
@@ -1049,6 +1177,7 @@ function SessionItem({
           />
         `}
       </div>
+      </div>
     </div>
   `;
 }
@@ -1065,6 +1194,7 @@ function SessionList({
   onNewSession,
   onRename,
   onDelete,
+  onPin,
   onClose,
   workspaces,
   theme,
@@ -1143,6 +1273,7 @@ function SessionList({
               onSelect=${onSelect}
               onRename=${onRename}
               onDelete=${onDelete}
+              onPin=${onPin}
               workspaceColor=${workspace?.color || null}
               workspaceCode=${workspace?.code || null}
               workspaceName=${workspace?.name || null}
@@ -1252,6 +1383,7 @@ function App() {
     loadMoreMessages,
     updateSessionName,
     renameSession,
+    pinSession,
     removeSession,
     isStreaming,
     hasMoreMessages,
@@ -1313,6 +1445,7 @@ function App() {
   const [swipeArrow, setSwipeArrow] = useState(null); // 'left' or 'right' for arrow indicator
   const [toastVisible, setToastVisible] = useState(false);
   const [toastData, setToastData] = useState(null); // { sessionId, sessionName }
+  const [runnerFallbackWarning, setRunnerFallbackWarning] = useState(null); // { requestedType, fallbackType, reason }
   const [loadingMore, setLoadingMore] = useState(false);
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
@@ -1479,6 +1612,24 @@ function App() {
       return () => clearTimeout(clearTimer);
     }
   }, [toastVisible, toastData]);
+
+  // Listen for runner fallback events
+  useEffect(() => {
+    const handleRunnerFallback = (event) => {
+      const data = event.detail;
+      if (data) {
+        setRunnerFallbackWarning(data);
+        // Auto-hide after 10 seconds
+        setTimeout(() => {
+          setRunnerFallbackWarning(null);
+        }, 10000);
+      }
+    };
+    window.addEventListener("mitto:runner_fallback", handleRunnerFallback);
+    return () => {
+      window.removeEventListener("mitto:runner_fallback", handleRunnerFallback);
+    };
+  }, []);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -2590,6 +2741,10 @@ function App() {
     fetchStoredSessions();
   };
 
+  const handlePinSession = async (session, pinned) => {
+    await pinSession(session.session_id, pinned);
+  };
+
   return html`
     <div class="h-screen-safe flex">
       <!-- Session Properties Dialog -->
@@ -2700,6 +2855,39 @@ function App() {
         </div>
       `}
 
+      <!-- Runner fallback warning toast -->
+      ${runnerFallbackWarning &&
+      html`
+        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
+          <div
+            class="flex flex-col gap-1 px-4 py-3 bg-yellow-600 text-white rounded-lg shadow-lg max-w-md"
+          >
+            <div class="flex items-center gap-2">
+              <span class="text-lg">⚠️</span>
+              <span class="text-sm font-medium">Runner Not Supported</span>
+              <button
+                onClick=${() => setRunnerFallbackWarning(null)}
+                class="ml-auto text-white/80 hover:text-white"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+            <div class="text-xs opacity-90 ml-7">
+              <div>
+                Requested: <strong>${runnerFallbackWarning.requested_type}</strong>
+              </div>
+              <div>
+                Using: <strong>${runnerFallbackWarning.fallback_type}</strong> (no restrictions)
+              </div>
+              <div class="mt-1 text-white/70">
+                ${runnerFallbackWarning.reason}
+              </div>
+            </div>
+          </div>
+        </div>
+      `}
+
       <!-- Sidebar (hidden on mobile by default) -->
       <div
         class="hidden md:block w-80 bg-mitto-sidebar border-r border-slate-700 flex-shrink-0"
@@ -2712,6 +2900,7 @@ function App() {
           onNewSession=${handleNewSession}
           onRename=${handleRenameSession}
           onDelete=${handleDeleteSession}
+          onPin=${handlePinSession}
           workspaces=${workspaces}
           theme=${theme}
           onToggleTheme=${toggleTheme}
@@ -2739,6 +2928,7 @@ function App() {
               onNewSession=${handleNewSession}
               onRename=${handleRenameSession}
               onDelete=${handleDeleteSession}
+              onPin=${handlePinSession}
               onClose=${() => setShowSidebar(false)}
               workspaces=${workspaces}
               theme=${theme}
