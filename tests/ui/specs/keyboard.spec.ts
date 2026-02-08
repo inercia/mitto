@@ -100,7 +100,7 @@ test.describe("Accessibility", () => {
   });
 
   test("should have accessible buttons", async ({ page, selectors }) => {
-    // Send button should have text
+    // Send button should be visible (icon-only button)
     const sendButton = page.locator(selectors.sendButton);
     await expect(sendButton).toBeVisible();
 
