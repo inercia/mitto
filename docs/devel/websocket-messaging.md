@@ -154,30 +154,32 @@ All WebSocket messages use a JSON envelope format with `type` and optional `data
 
 ### Frontend → Backend Messages
 
-| Type                | Data                               | Description                          |
-| ------------------- | ---------------------------------- | ------------------------------------ |
-| `prompt`            | `{message, image_ids?, prompt_id}` | Send user message to agent           |
-| `cancel`            | `{}`                               | Cancel current agent operation       |
-| `permission_answer` | `{request_id, approved}`           | Respond to permission request        |
-| `sync_session`      | `{after_seq}`                      | Request events after sequence number |
-| `keepalive`         | `{client_time}`                    | Application-level keepalive          |
-| `rename_session`    | `{name}`                           | Rename the current session           |
+| Type                | Data                                | Description                                |
+| ------------------- | ----------------------------------- | ------------------------------------------ |
+| `prompt`            | `{message, image_ids?, prompt_id}`  | Send user message to agent                 |
+| `cancel`            | `{}`                                | Cancel current agent operation             |
+| `permission_answer` | `{request_id, approved}`            | Respond to permission request              |
+| `load_events`       | `{limit?, before_seq?, after_seq?}` | Load events (initial, pagination, or sync) |
+| `sync_session`      | `{after_seq}`                       | (DEPRECATED) Request events after seq      |
+| `keepalive`         | `{client_time}`                     | Application-level keepalive                |
+| `rename_session`    | `{name}`                            | Rename the current session                 |
 
 ### Backend → Frontend Messages
 
-| Type              | Data                                              | Description                                |
-| ----------------- | ------------------------------------------------- | ------------------------------------------ |
-| `connected`       | `{session_id, client_id, acp_server, is_running}` | Connection established                     |
-| `prompt_received` | `{prompt_id}`                                     | ACK that prompt was received and persisted |
-| `user_prompt`     | `{seq, sender_id, prompt_id, message, is_mine}`   | Broadcast of user prompt to all clients    |
-| `agent_message`   | `{seq, html, is_prompting}`                       | HTML-rendered agent response chunk         |
-| `agent_thought`   | `{seq, text, is_prompting}`                       | Agent thinking/reasoning (plain text)      |
-| `tool_call`       | `{seq, id, title, status, is_prompting}`          | Tool invocation notification               |
-| `tool_update`     | `{seq, id, status, is_prompting}`                 | Tool status update                         |
-| `permission`      | `{request_id, title, description, options}`       | Permission request                         |
-| `prompt_complete` | `{event_count}`                                   | Agent finished responding                  |
-| `session_sync`    | `{events, event_count, is_running, is_prompting}` | Response to sync request                   |
-| `error`           | `{message, code?}`                                | Error notification                         |
+| Type              | Data                                                                          | Description                                |
+| ----------------- | ----------------------------------------------------------------------------- | ------------------------------------------ |
+| `connected`       | `{session_id, client_id, acp_server, is_running}`                             | Connection established                     |
+| `prompt_received` | `{prompt_id}`                                                                 | ACK that prompt was received and persisted |
+| `user_prompt`     | `{seq, sender_id, prompt_id, message, is_mine}`                               | Broadcast of user prompt to all clients    |
+| `agent_message`   | `{seq, html, is_prompting}`                                                   | HTML-rendered agent response chunk         |
+| `agent_thought`   | `{seq, text, is_prompting}`                                                   | Agent thinking/reasoning (plain text)      |
+| `tool_call`       | `{seq, id, title, status, is_prompting}`                                      | Tool invocation notification               |
+| `tool_update`     | `{seq, id, status, is_prompting}`                                             | Tool status update                         |
+| `permission`      | `{request_id, title, description, options}`                                   | Permission request                         |
+| `prompt_complete` | `{event_count}`                                                               | Agent finished responding                  |
+| `events_loaded`   | `{events, has_more, first_seq, last_seq, total_count, prepend, is_prompting}` | Response to load_events request            |
+| `session_sync`    | `{events, event_count, is_running, is_prompting}`                             | (DEPRECATED) Response to sync_session      |
+| `error`           | `{message, code?}`                                                            | Error notification                         |
 
 **Note on `seq`**: All event messages (`user_prompt`, `agent_message`, `agent_thought`, `tool_call`, `tool_update`) include a sequence number for ordering and deduplication. Multiple chunks of the same logical message (e.g., streaming agent message) share the same `seq`.
 
@@ -236,19 +238,44 @@ When a new observer connects to a `BackgroundSession`, the session checks if it'
 
 This ensures all clients see the same content, regardless of when they connect.
 
-## Resync Mechanism
+## WebSocket-Only Event Loading
 
-The resync mechanism allows clients to catch up on events they missed while disconnected (e.g., phone sleep, network loss).
+The frontend uses a **WebSocket-only architecture** for loading events. This eliminates race conditions between REST and WebSocket, simplifies deduplication, and provides a unified approach for initial load, pagination, and sync.
 
-### Sequence Number Tracking
+### Server-Side Deduplication
 
-The frontend tracks the last seen sequence number in localStorage. This is updated when:
+The server tracks `lastSentSeq` per WebSocket client to guarantee no duplicate events are sent:
 
-- Loading a session (set to highest `seq` from loaded events)
-- Receiving `prompt_complete` (updated from `event_count` field)
-- Receiving `session_sync` (updated after merge)
+```go
+type SessionWSClient struct {
+    // Seq tracking for deduplication - prevents sending the same event twice
+    lastSentSeq int64      // Highest seq sent to this client
+    seqMu       sync.Mutex // Protects lastSentSeq
+}
+```
 
-### Sync Request Flow
+**Key properties:**
+
+- Each observer callback checks `seq > lastSentSeq` before sending
+- For streaming events (agent_message, agent_thought), chunks with the same seq are allowed (continuations)
+- After `load_events` response, `lastSentSeq` is updated to the highest seq returned
+- This guarantees the frontend never receives duplicate events
+
+### load_events Message
+
+The `load_events` message is the unified approach for all event loading:
+
+| Parameter    | Type  | Description                                      |
+| ------------ | ----- | ------------------------------------------------ |
+| `limit`      | int   | Maximum events to return (default: 50, max: 500) |
+| `before_seq` | int64 | Load events with seq < before_seq (pagination)   |
+| `after_seq`  | int64 | Load events with seq > after_seq (sync)          |
+
+**Note:** `before_seq` and `after_seq` are mutually exclusive.
+
+### Event Loading Flows
+
+**Initial Load (on WebSocket connect):**
 
 ```mermaid
 sequenceDiagram
@@ -258,41 +285,101 @@ sequenceDiagram
     participant Store as Session Store
 
     Note over Client: WebSocket connects
-    Client->>Client: Read lastSeenSeq from localStorage
-    Client->>WS: sync_session {after_seq: 42}
-    WS->>Handler: handleSync(afterSeq=42)
-    Handler->>Store: ReadEventsFrom(sessionID, 42)
-    Store-->>Handler: Events where seq > 42
-    Handler->>Handler: Get session metadata & status
-    Handler-->>WS: session_sync {events, event_count, is_running, is_prompting}
-    WS-->>Client: Receive sync response
-    Client->>Client: mergeMessagesWithSync(existing, new)
-    Client->>Client: sortMessagesBySeq(merged)
+    Client->>WS: load_events {limit: 50}
+    WS->>Handler: handleLoadEvents(limit=50)
+    Handler->>Store: ReadEventsLast(sessionID, 50, 0)
+    Store-->>Handler: Last 50 events
+    Handler->>Handler: Update lastSentSeq = lastSeq
+    Handler-->>WS: events_loaded {events, has_more, first_seq, last_seq, ...}
+    WS-->>Client: Receive events
+    Client->>Client: Set messages (no dedup needed)
     Client->>Client: Update lastSeenSeq in localStorage
 ```
 
-### Merge and Deduplication
+**Pagination (load more older events):**
 
-When sync events arrive, they're merged with existing messages using `mergeMessagesWithSync()` which:
+```mermaid
+sequenceDiagram
+    participant Client as Frontend
+    participant WS as Session WebSocket
+    participant Handler as SessionWSClient
+    participant Store as Session Store
 
-1. Creates a map of existing messages by `seq` for fast lookup
-2. Deduplicates by `seq` (preferred) or content hash (fallback)
-3. Combines all messages and sorts by `seq` for correct ordering
+    Note over Client: User scrolls to top
+    Client->>WS: load_events {limit: 50, before_seq: 42}
+    WS->>Handler: handleLoadEvents(limit=50, beforeSeq=42)
+    Handler->>Store: ReadEventsLast(sessionID, 50, 42)
+    Store-->>Handler: Events with seq < 42
+    Handler-->>WS: events_loaded {events, has_more, prepend: true, ...}
+    WS-->>Client: Receive events
+    Client->>Client: Prepend messages (no dedup needed)
+```
 
-Since streaming messages now include `seq`, deduplication is straightforward:
+**Sync (after reconnect):**
 
-- Same `(session_id, seq)` = same event
-- Content hash is used as fallback for messages without `seq` (backward compatibility)
+```mermaid
+sequenceDiagram
+    participant Client as Frontend
+    participant WS as Session WebSocket
+    participant Handler as SessionWSClient
+    participant Store as Session Store
 
-**Why sorting by seq is now safe:**
+    Note over Client: WebSocket reconnects
+    Client->>Client: Read lastSeenSeq from localStorage
+    Client->>WS: load_events {after_seq: 42}
+    WS->>Handler: handleLoadEvents(afterSeq=42)
+    Handler->>Handler: Update lastSentSeq = 42
+    Handler->>Store: ReadEventsFrom(sessionID, 42)
+    Store-->>Handler: Events with seq > 42
+    Handler-->>WS: events_loaded {events, ...}
+    WS-->>Client: Receive events
+    Client->>Client: Append messages (no dedup needed)
+    Client->>Client: Update lastSeenSeq in localStorage
+```
 
-Previously, sorting by `seq` caused incorrect ordering because tool calls were persisted immediately (early seq) while agent messages were buffered (late seq). Now that:
+### Frontend Simplification
 
-1. All events are buffered together during streaming
-2. `seq` is assigned when the event is received (not at persistence)
-3. Streaming messages include `seq`
+With server-side deduplication, the frontend no longer needs complex merge logic:
 
-...sorting by `seq` gives the correct chronological order.
+```javascript
+case "events_loaded": {
+  const events = msg.data.events || [];
+  const isPrepend = msg.data.prepend || false;
+  const newMessages = convertEventsToMessages(events, {...});
+
+  setSessions((prev) => {
+    const session = prev[sessionId] || { messages: [] };
+    let messages;
+
+    if (isPrepend) {
+      // Load more - prepend older events
+      messages = [...newMessages, ...session.messages];
+    } else if (session.messages.length === 0) {
+      // Initial load
+      messages = newMessages;
+    } else {
+      // Sync - append new events
+      messages = [...session.messages, ...newMessages];
+    }
+
+    return { ...prev, [sessionId]: { ...session, messages } };
+  });
+}
+```
+
+No deduplication is needed because the server guarantees no duplicates via `lastSentSeq` tracking.
+
+### Sequence Number Tracking
+
+The frontend tracks the last seen sequence number in localStorage. This is updated when:
+
+- Loading a session (set to highest `seq` from loaded events)
+- Receiving `prompt_complete` (updated from `event_count` field)
+- Receiving `events_loaded` (updated from `last_seq` field)
+
+### Legacy Sync (Deprecated)
+
+The `sync_session` message type is deprecated but still supported for backward compatibility. New code should use `load_events` with `after_seq` instead.
 
 ## Reconnection Handling
 

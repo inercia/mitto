@@ -192,13 +192,18 @@ sequenceDiagram
 The `lastSeenSeq` is updated in these scenarios:
 - **Session load**: Set to highest sequence number from loaded events
 - **Receiving `prompt_complete`**: Updated from `event_count` in server response
-- **Receiving `session_sync`**: Updated after receiving sync response
+- **Receiving `events_loaded`**: Updated from `last_seq` in server response
 
 ### Backend Support
 
-The `handleSyncSession` function in `session_ws.go` handles incremental sync:
+The `handleLoadEvents` function in `session_ws.go` handles event loading via WebSocket:
 
 ```go
-// Client sends: {"type": "sync_session", "data": {"session_id": "...", "after_seq": 42}}
-// Server responds with events where seq > 42
+// Client sends: {"type": "load_events", "data": {"limit": 50}}           // Initial load
+// Client sends: {"type": "load_events", "data": {"after_seq": 42}}       // Sync after reconnect
+// Client sends: {"type": "load_events", "data": {"before_seq": 10, "limit": 50}}  // Load more
+// Server responds with events_loaded message
+```
+
+See [websocket-messaging.md](websocket-messaging.md) for details on the WebSocket-only architecture.
 ````
