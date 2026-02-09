@@ -325,12 +325,23 @@ func (fl *FileLinker) buildLinkURL(displayPath, realPath string) string {
 		// Generate HTTP URL for web browser access
 		relativePath := strings.TrimPrefix(displayPath, "./")
 		// Use workspace UUID for secure file links
-		return fl.config.APIPrefix + "/api/files?ws=" + url.QueryEscape(fl.config.WorkspaceUUID) + "&path=" + url.QueryEscape(relativePath)
+		linkURL := fl.config.APIPrefix + "/api/files?ws=" + url.QueryEscape(fl.config.WorkspaceUUID) + "&path=" + url.QueryEscape(relativePath)
+		// Auto-render Markdown files as HTML for better viewing
+		if isMarkdownFile(relativePath) {
+			linkURL += "&render=html"
+		}
+		return linkURL
 	}
 	// Create file:// URL for native app
 	linkURL := "file://" + url.PathEscape(realPath)
 	// PathEscape encodes slashes, but we want to keep them for file URLs
 	return strings.ReplaceAll(linkURL, "%2F", "/")
+}
+
+// isMarkdownFile checks if a file has a Markdown extension.
+func isMarkdownFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".md" || ext == ".markdown"
 }
 
 // findSkipRegions returns a list of [start, end] pairs for regions to skip.

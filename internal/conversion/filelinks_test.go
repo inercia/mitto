@@ -434,6 +434,57 @@ func TestFileLinker_InlineCodeHTTPLinks(t *testing.T) {
 	}
 }
 
+func TestFileLinker_MarkdownAutoRender(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create test files in docs subdirectory
+	docsDir := filepath.Join(tmpDir, "docs")
+	if err := os.MkdirAll(docsDir, 0755); err != nil {
+		t.Fatalf("Failed to create docs directory: %v", err)
+	}
+	mdFile := filepath.Join(docsDir, "README.md")
+	if err := os.WriteFile(mdFile, []byte("# Title"), 0644); err != nil {
+		t.Fatalf("Failed to create .md test file: %v", err)
+	}
+	markdownFile := filepath.Join(docsDir, "guide.markdown")
+	if err := os.WriteFile(markdownFile, []byte("# Guide"), 0644); err != nil {
+		t.Fatalf("Failed to create .markdown test file: %v", err)
+	}
+	goFile := filepath.Join(docsDir, "main.go")
+	if err := os.WriteFile(goFile, []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create .go test file: %v", err)
+	}
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-uuid-md",
+		Enabled:       true,
+		UseHTTPLinks:  true,
+		APIPrefix:     "/mitto",
+	})
+
+	// Test .md file gets render=html
+	result := linker.LinkFilePaths("See <code>docs/README.md</code> for info")
+	if !containsString(result, `path=docs%2FREADME.md&render=html`) {
+		t.Errorf("Markdown file should have render=html: %s", result)
+	}
+
+	// Test .markdown file gets render=html
+	result = linker.LinkFilePaths("See <code>docs/guide.markdown</code> for info")
+	if !containsString(result, `path=docs%2Fguide.markdown&render=html`) {
+		t.Errorf(".markdown file should have render=html: %s", result)
+	}
+
+	// Test non-markdown file does NOT get render=html
+	result = linker.LinkFilePaths("See <code>docs/main.go</code> for code")
+	if containsString(result, "render=html") {
+		t.Errorf("Non-markdown file should NOT have render=html: %s", result)
+	}
+	if !containsString(result, `path=docs%2Fmain.go"`) {
+		t.Errorf("Non-markdown file should still have path param: %s", result)
+	}
+}
+
 func TestFileLinker_URLsInBackticks(t *testing.T) {
 	tmpDir := t.TempDir()
 
