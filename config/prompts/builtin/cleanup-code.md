@@ -12,6 +12,12 @@ Analyze the codebase for cleanup opportunities and propose a prioritized list of
 
 Investigate the following areas:
 
+**Opportunities for improved modularity:**
+
+- Identify code that is duplicated across modules
+- Find modules that have grown too large and could be split
+- Look for cohesive groups of functions that could be extracted into a new module
+
 **Unused Imports:**
 
 Use the project's tools to detect unused imports:
@@ -37,6 +43,7 @@ Use static analysis tools to find unused code:
 | Java | IDE inspections, `spotbugs` |
 
 Look for:
+
 - Private/unexported functions never called within the module
 - Public/exported functions with no references in the codebase
 - Constants and variables defined but never used
@@ -49,7 +56,9 @@ Search for large blocks of commented-out code that should be removed.
 
 **Outdated Documentation:**
 
-Find documentation referencing non-existent code, deleted features, or old APIs.
+- Find documentation referencing non-existent code,
+  deleted features, or old APIs.
+- Check if existing comments in the code are still relevant or accurate.
 
 **Obsolete Test Code:**
 
@@ -67,11 +76,13 @@ Present a prioritized table of proposed cleanup items:
 | ... | ... | ... | ... | ... | ... |
 
 **Priority levels:**
+
 - **1 (High)**: Clear dead code, no risk of breaking anything
 - **2 (Medium)**: Likely unused, low risk
 - **3 (Low)**: Potentially unused, needs careful verification
 
 **Risk levels:**
+
 - **Low**: Clearly unused, safe to remove
 - **Medium**: Appears unused but verify before removing
 - **High**: Public API or widely referenced, needs careful analysis
@@ -79,6 +90,7 @@ Present a prioritized table of proposed cleanup items:
 ### 3. Wait for Approval
 
 Ask the user to:
+
 - **Approve all** - proceed with all cleanup items
 - **Approve selected** - specify which items to proceed with (by priority number)
 - **Investigate** - get more details on specific items before deciding
@@ -121,4 +133,3 @@ After completing approved changes:
 - **Run tests after changes**: Catch issues early
 - **Be conservative with public APIs**: They might be used by external code
 - **Update related documentation**: Keep docs in sync with code changes
-

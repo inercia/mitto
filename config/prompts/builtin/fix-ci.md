@@ -84,26 +84,9 @@ For each identified issue:
 
 Fix issues in dependency order (fix causes before symptoms).
 
-### 6. Commit and Push
+### 6. Report and Guide User
 
-After all fixes are implemented:
-
-```bash
-# Stage changes
-git add <fixed-files>
-
-# Commit with descriptive message
-git commit -m "fix: resolve CI failures
-
-- <brief description of each fix>"
-
-# Push to trigger CI
-git push
-```
-
-### 7. Report and Guide User
-
-After pushing:
+Show a summary of the fixes implemented:
 
 ```console
 ✅ Fixes pushed successfully!
@@ -117,6 +100,11 @@ To check the status:
 Check back in a few minutes to verify the fixes resolved the issues.
 If CI still fails, run this prompt again to diagnose any remaining issues.
 ```
+
+### 7. Commit and Push
+
+After all fixes are implemented, suggest the user to commit
+and push the changes.
 
 ## Rules
 

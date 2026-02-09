@@ -89,6 +89,8 @@ For each comment, determine the appropriate action:
 - Explain: "This was addressed in [commit/line], where..."
 - Ask if the resolution is satisfactory
 
+If any question arises, please ask me for confirmation before proceeding.
+
 ### 5. Group and Prioritize
 
 **Organize comments strategically:**
@@ -99,6 +101,15 @@ For each comment, determine the appropriate action:
    - Critical/blocking issues first
    - Related changes together (avoid multiple commits for same area)
    - Independent changes can be done in parallel
+
+Summarize the analysis in a table, formatted as Markdown:
+
+| Comment | Type | Validity | Priority | Action |
+|---------|------|----------|----------|--------|
+| ...     | ...  | ...      | ...      | ...    |
+
+Show it to the user. Ask for confirmation before proceeding
+(the user could have some comments about this analysis).
 
 ### 6. Implement Changes
 
@@ -129,26 +140,9 @@ For each required code change:
 - Include commit references when applicable
 - Ask for re-review if significant changes were made
 
-### 8. Push Changes and Request Re-review
-
-After all changes are implemented and responses are ready:
-
-```bash
-# Ensure code is formatted (run project's formatters)
-
-# Run tests to verify nothing broke
-
-# Push changes
-git push
-
-# Request re-review
-# GitHub: gh pr ready && gh pr comment --body "Ready for re-review"
-# GitLab: glab mr update --ready
-```
-
 ### 9. Summary Report
 
-Provide a clear summary:
+Prepare a clear summary:
 
 ```console
 ✅ PR Review Comments Addressed
@@ -165,6 +159,26 @@ Provide a clear summary:
 🔗 PR: <pr-url>
 
 All comments have been responded to. The PR is ready for re-review.
+```
+
+Show this summary to the user and ask for confirmation before pushing changes.
+
+### 8. Push Changes and Request Re-review
+
+After all changes are implemented and responses are ready and
+the user has approved, do:
+
+```bash
+# Ensure code is formatted (run project's formatters)
+
+# Run tests to verify nothing broke
+
+# Push changes
+git push
+
+# Request re-review
+# GitHub: gh pr ready && gh pr comment --body "Ready for re-review"
+# GitLab: glab mr update --ready
 ```
 
 ## Rules

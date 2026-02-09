@@ -1,10 +1,11 @@
 ---
-name: "Create commits"
+name: "Commit changes"
 description: "Stage and commit changes with descriptive messages"
 backgroundColor: "#B2DFDB"
 ---
 
-Follow this workflow to create Git commits for the changes that we have in this repository:
+Follow this workflow to create Git commits for the
+changes that we have in this repository:
 
 ### 0. Prerequisites
 

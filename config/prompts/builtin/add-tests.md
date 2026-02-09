@@ -15,6 +15,7 @@ Write comprehensive tests for the code we created or modified.
 5. **Integration**: Interaction with dependencies
 
 ### Test structure:
+
 - Use descriptive test names that explain the scenario
 - Follow Arrange-Act-Assert pattern
 - One assertion per test when possible
@@ -23,6 +24,6 @@ Write comprehensive tests for the code we created or modified.
 - Follow the project's existing testing conventions and patterns
 
 ### After writing:
+
 - Run the tests and verify they pass
 - Check coverage of the new/modified code
-

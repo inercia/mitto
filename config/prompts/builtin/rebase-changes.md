@@ -4,7 +4,8 @@ description: "Rebase changes on top of main"
 backgroundColor: "#B2DFDB"
 ---
 
-Rebase the current branch onto the target branch, resolving conflicts and pushing the result.
+Rebase the current branch onto the target branch,
+resolving conflicts and pushing the result.
 
 ### 1. Check Repository Status
 
@@ -22,6 +23,7 @@ git status
 ```
 
 **If there are uncommitted changes:**
+
 - Ask the user whether to stash, commit, or discard them before proceeding
 - Do not proceed with rebase until working directory is clean
 
@@ -137,14 +139,7 @@ git rebase --continue
 
 **Iterate** through this process until all conflicts are resolved and the rebase completes.
 
-### 6. Push Changes
-
-Once the rebase completes successfully:
-
-```bash
-# Force push with lease for safety (prevents overwriting others' changes)
-git push --force-with-lease origin HEAD
-```
+### 6. Report
 
 Report the result:
 
@@ -158,6 +153,11 @@ To verify the result:
 - View commit history: git log --oneline -10
 - Compare with remote: git diff origin/<current-branch>
 ```
+
+### 7. Submit changes
+
+Suggest the user to submit changes, for example by
+pushing to the current, remote branch with `git push`.
 
 ## Rules
 
