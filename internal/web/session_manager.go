@@ -626,6 +626,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
+					"session_id":   sessionID,
+					"is_streaming": isStreaming,
+				})
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -865,6 +873,14 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
+					"session_id":   sessionID,
+					"is_streaming": isStreaming,
+				})
+			}
+		},
 	})
 	if err != nil {
 		return nil, err

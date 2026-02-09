@@ -107,6 +107,9 @@ type BackgroundSession struct {
 
 	// Restricted runner for sandboxed execution
 	runner *runner.Runner // Optional runner for restricted execution (nil = direct execution)
+
+	// onStreamingStateChanged is called when the session's streaming state changes.
+	onStreamingStateChanged func(sessionID string, isStreaming bool)
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -129,6 +132,10 @@ type BackgroundSessionConfig struct {
 	FileLinksConfig     *config.FileLinksConfig     // File path linking configuration
 	APIPrefix           string                      // URL prefix for API endpoints (for HTTP file links)
 	WorkspaceUUID       string                      // Workspace UUID for secure file links
+
+	// OnStreamingStateChanged is called when the session's streaming state changes.
+	// It's called with true when streaming starts (user sends prompt) and false when it ends.
+	OnStreamingStateChanged func(sessionID string, isStreaming bool)
 }
 
 // NewBackgroundSession creates a new background session.
@@ -137,23 +144,24 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bs := &BackgroundSession{
-		ctx:                 ctx,
-		cancel:              cancel,
-		autoApprove:         cfg.AutoApprove,
-		logger:              cfg.Logger,
-		eventBuffer:         NewEventBuffer(),
-		observers:           make(map[SessionObserver]struct{}),
-		processors:          cfg.Processors,
-		hookManager:         cfg.HookManager,
-		workingDir:          cfg.WorkingDir,
-		isFirstPrompt:       true, // New session starts with first prompt pending
-		queueConfig:         cfg.QueueConfig,
-		actionButtonsConfig: cfg.ActionButtonsConfig,
-		fileLinksConfig:     cfg.FileLinksConfig,
-		apiPrefix:           cfg.APIPrefix,
-		workspaceUUID:       cfg.WorkspaceUUID,
-		runner:              cfg.Runner,
-		persistInterval:     defaultPersistInterval, // H3 fix: periodic persistence
+		ctx:                     ctx,
+		cancel:                  cancel,
+		autoApprove:             cfg.AutoApprove,
+		logger:                  cfg.Logger,
+		eventBuffer:             NewEventBuffer(),
+		observers:               make(map[SessionObserver]struct{}),
+		processors:              cfg.Processors,
+		hookManager:             cfg.HookManager,
+		workingDir:              cfg.WorkingDir,
+		isFirstPrompt:           true, // New session starts with first prompt pending
+		queueConfig:             cfg.QueueConfig,
+		actionButtonsConfig:     cfg.ActionButtonsConfig,
+		fileLinksConfig:         cfg.FileLinksConfig,
+		apiPrefix:               cfg.APIPrefix,
+		workspaceUUID:           cfg.WorkspaceUUID,
+		runner:                  cfg.Runner,
+		persistInterval:         defaultPersistInterval, // H3 fix: periodic persistence
+		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 	}
 
 	// Create recorder for persistence
@@ -246,26 +254,27 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	bs := &BackgroundSession{
-		persistedID:         config.PersistedID,
-		ctx:                 ctx,
-		cancel:              cancel,
-		autoApprove:         config.AutoApprove,
-		logger:              sessionLogger,
-		eventBuffer:         NewEventBuffer(),
-		observers:           make(map[SessionObserver]struct{}),
-		isResumed:           true, // Mark as resumed session
-		store:               config.Store,
-		processors:          config.Processors,
-		hookManager:         config.HookManager,
-		workingDir:          config.WorkingDir,
-		isFirstPrompt:       false, // Resumed session = first prompt already sent
-		queueConfig:         config.QueueConfig,
-		actionButtonsConfig: config.ActionButtonsConfig,
-		fileLinksConfig:     config.FileLinksConfig,
-		apiPrefix:           config.APIPrefix,
-		workspaceUUID:       config.WorkspaceUUID,
-		runner:              config.Runner,
-		persistInterval:     defaultPersistInterval, // H3 fix: periodic persistence
+		persistedID:             config.PersistedID,
+		ctx:                     ctx,
+		cancel:                  cancel,
+		autoApprove:             config.AutoApprove,
+		logger:                  sessionLogger,
+		eventBuffer:             NewEventBuffer(),
+		observers:               make(map[SessionObserver]struct{}),
+		isResumed:               true, // Mark as resumed session
+		store:                   config.Store,
+		processors:              config.Processors,
+		hookManager:             config.HookManager,
+		workingDir:              config.WorkingDir,
+		isFirstPrompt:           false, // Resumed session = first prompt already sent
+		queueConfig:             config.QueueConfig,
+		actionButtonsConfig:     config.ActionButtonsConfig,
+		fileLinksConfig:         config.FileLinksConfig,
+		apiPrefix:               config.APIPrefix,
+		workspaceUUID:           config.WorkspaceUUID,
+		runner:                  config.Runner,
+		persistInterval:         defaultPersistInterval, // H3 fix: periodic persistence
+		onStreamingStateChanged: config.OnStreamingStateChanged,
 	}
 
 	// Resume recorder for the existing session
@@ -1054,6 +1063,11 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	}
 	bs.promptMu.Unlock()
 
+	// Notify about streaming state change (prompt started)
+	if bs.onStreamingStateChanged != nil {
+		bs.onStreamingStateChanged(bs.persistedID, true)
+	}
+
 	// Start periodic persistence for crash recovery (H3 fix)
 	bs.startPeriodicPersistence()
 
@@ -1102,12 +1116,13 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	// This ensures suggestions are tied to the latest agent response
 	bs.clearActionButtons()
 
-	// Persist user prompt with image references
+	// Persist user prompt with image references and prompt ID
 	// User prompts are persisted immediately (not buffered), so we need to
 	// refresh nextSeq after persistence to get the correct seq for the prompt
+	// The prompt ID is included so clients can clear pending prompts on reconnect
 	var userPromptSeq int64
 	if bs.recorder != nil {
-		if err := bs.recorder.RecordUserPromptWithImages(message, imageRefs); err != nil && bs.logger != nil {
+		if err := bs.recorder.RecordUserPromptFull(message, imageRefs, meta.PromptID); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 		// Get the seq that was assigned to the user prompt (it's the current event count)
@@ -1188,6 +1203,11 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		bs.lastResponseComplete = time.Now()
 		bs.promptMu.Unlock()
 
+		// Notify about streaming state change (prompt completed)
+		if bs.onStreamingStateChanged != nil {
+			bs.onStreamingStateChanged(bs.persistedID, false)
+		}
+
 		// Stop periodic persistence (H3 fix)
 		bs.stopPeriodicPersistence()
 
@@ -1216,11 +1236,26 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 		// Notify all observers
 		eventCount := bs.GetEventCount()
+		observerCount := bs.ObserverCount()
+
 		if err != nil {
+			if bs.logger != nil {
+				bs.logger.Error("prompt_failed",
+					"session_id", bs.persistedID,
+					"error", err.Error(),
+					"observer_count", observerCount)
+			}
 			bs.notifyObservers(func(o SessionObserver) {
 				o.OnError("Prompt failed: " + err.Error())
 			})
 		} else {
+			if bs.logger != nil {
+				bs.logger.Info("prompt_complete",
+					"session_id", bs.persistedID,
+					"event_count", eventCount,
+					"observer_count", observerCount,
+					"stop_reason", promptResp.StopReason)
+			}
 			bs.notifyObservers(func(o SessionObserver) {
 				o.OnPromptComplete(eventCount)
 			})
@@ -1478,6 +1513,11 @@ func (bs *BackgroundSession) Cancel() error {
 	bs.lastResponseComplete = time.Now()
 	bs.promptMu.Unlock()
 
+	// Notify about streaming state change if we were prompting
+	if wasPrompting && bs.onStreamingStateChanged != nil {
+		bs.onStreamingStateChanged(bs.persistedID, false)
+	}
+
 	// Stop periodic persistence (H3 fix)
 	bs.stopPeriodicPersistence()
 
@@ -1519,6 +1559,11 @@ func (bs *BackgroundSession) ForceReset() {
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
 	bs.promptMu.Unlock()
+
+	// Notify about streaming state change if we were prompting
+	if wasPrompting && bs.onStreamingStateChanged != nil {
+		bs.onStreamingStateChanged(bs.persistedID, false)
+	}
 
 	// Stop periodic persistence (H3 fix)
 	bs.stopPeriodicPersistence()
@@ -1736,6 +1781,8 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 		return
 	}
 
+	htmlLen := len(html)
+
 	// Buffer for coalescing (protected by mutex)
 	// AppendAgentMessage handles coalescing messages with the same seq.
 	// The seq was already assigned at ACP receive time by WebClient.
@@ -1750,12 +1797,29 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 
 	// Notify all observers
 	observerCount := bs.ObserverCount()
-	if bs.logger != nil && observerCount > 1 {
-		bs.logger.Debug("Notifying multiple observers of agent message",
-			"observer_count", observerCount,
-			"html_len", len(html),
-			"seq", seq)
+
+	// Enhanced logging for debugging message content issues
+	if bs.logger != nil {
+		if htmlLen > 1000 {
+			// Large message - log at INFO level with preview
+			preview := html
+			if len(preview) > 200 {
+				preview = html[:100] + "..." + html[htmlLen-100:]
+			}
+			bs.logger.Info("agent_message_to_observers_large",
+				"seq", seq,
+				"html_len", htmlLen,
+				"observer_count", observerCount,
+				"session_id", bs.persistedID,
+				"preview", preview)
+		} else if observerCount > 1 {
+			bs.logger.Debug("Notifying multiple observers of agent message",
+				"observer_count", observerCount,
+				"html_len", htmlLen,
+				"seq", seq)
+		}
 	}
+
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnAgentMessage(seq, html)
 	})
