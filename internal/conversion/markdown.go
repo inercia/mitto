@@ -12,6 +12,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
+	"go.abhg.dev/goldmark/mermaid"
 )
 
 // Converter handles markdown-to-HTML conversion with configurable options.
@@ -33,6 +34,12 @@ func WithHighlighting(style string) Option {
 				highlighting.NewHighlighting(
 					highlighting.WithStyle(style),
 				),
+				// Mermaid extension renders ```mermaid blocks as <pre class="mermaid">
+				// for client-side rendering by Mermaid.js
+				&mermaid.Extender{
+					RenderMode: mermaid.RenderModeClient,
+					NoScript:   true, // We load Mermaid.js ourselves in the frontend
+				},
 			),
 			goldmark.WithParserOptions(
 				parser.WithAutoHeadingID(),
@@ -66,6 +73,12 @@ func NewConverter(opts ...Option) *Converter {
 		md: goldmark.New(
 			goldmark.WithExtensions(
 				extension.GFM,
+				// Mermaid extension renders ```mermaid blocks as <pre class="mermaid">
+				// for client-side rendering by Mermaid.js
+				&mermaid.Extender{
+					RenderMode: mermaid.RenderModeClient,
+					NoScript:   true, // We load Mermaid.js ourselves in the frontend
+				},
 			),
 			goldmark.WithParserOptions(
 				parser.WithAutoHeadingID(),
