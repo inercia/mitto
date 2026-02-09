@@ -78,6 +78,10 @@ export const selectors = {
   queueDropdownList: '.queue-dropdown-list',
   queueDropdownItem: '.queue-dropdown-item',
   queueDropdownEmpty: '.queue-dropdown-empty',
+
+  // Scroll to bottom button
+  scrollToBottomWrapper: '.scroll-to-bottom-wrapper',
+  scrollToBottomButton: '.scroll-to-bottom-btn',
 } as const;
 
 /**

@@ -429,3 +429,148 @@ test.describe("Message Send Error Handling", () => {
     await expect(textarea).toBeEnabled({ timeout: timeouts.shortAction });
   });
 });
+
+test.describe("Scroll to Bottom Button", () => {
+  test.beforeEach(async ({ page, helpers }) => {
+    await helpers.navigateAndEnsureSession(page);
+  });
+
+  test("should stay fixed at the bottom of the viewport when scrolling", async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    const textarea = page.locator(selectors.chatInput);
+    const sendButton = page.locator(selectors.sendButton);
+
+    // Send many messages to ensure scrollable content at default viewport
+    for (let i = 0; i < 10; i++) {
+      const msg = helpers.uniqueMessage(`Scroll position test message number ${i + 1} with extra text to make it longer`);
+      await textarea.fill(msg);
+      await sendButton.click();
+      await helpers.waitForAgentResponse(page);
+      await page.waitForTimeout(200);
+    }
+
+    // Wait for streaming to complete
+    await page.waitForTimeout(500);
+
+    // Scroll up to trigger the scroll-to-bottom button
+    // Find the messages container (the one containing .message-enter elements)
+    await page.evaluate(() => {
+      const containers = document.querySelectorAll(".overflow-y-auto");
+      for (const c of containers) {
+        if (c.querySelector(".message-enter")) {
+          const container = c as HTMLElement;
+          container.style.scrollBehavior = "auto";
+          container.scrollTop = 0;
+          container.dispatchEvent(new Event("scroll", { bubbles: true }));
+          break;
+        }
+      }
+    });
+    await page.waitForTimeout(300);
+
+    // Wait for the button to appear
+    const scrollButton = page.locator(selectors.scrollToBottomButton);
+    await expect(scrollButton).toBeVisible({ timeout: timeouts.shortAction });
+
+    // Get the button's position relative to the viewport
+    const initialBoundingBox = await scrollButton.boundingBox();
+    expect(initialBoundingBox).not.toBeNull();
+
+    // Scroll to middle position
+    await page.evaluate(() => {
+      const containers = document.querySelectorAll(".overflow-y-auto");
+      for (const c of containers) {
+        if (c.querySelector(".message-enter")) {
+          c.scrollTop = c.scrollHeight / 2;
+          break;
+        }
+      }
+    });
+
+    // Wait for any animation to settle
+    await page.waitForTimeout(100);
+
+    // Get the button's position again
+    const middleBoundingBox = await scrollButton.boundingBox();
+    expect(middleBoundingBox).not.toBeNull();
+
+    // The button's Y position relative to viewport should remain approximately the same
+    // (allowing for small variations due to animation/rendering)
+    const tolerance = 10; // pixels
+    expect(Math.abs(initialBoundingBox!.y - middleBoundingBox!.y)).toBeLessThan(
+      tolerance,
+    );
+
+    // Also verify the button is positioned near the bottom of the viewport
+    const viewportHeight = await page.evaluate(() => window.innerHeight);
+    // Button should be in the lower half of the viewport
+    expect(middleBoundingBox!.y).toBeGreaterThan(viewportHeight / 2);
+  });
+
+  test("should scroll to bottom when clicked", async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    const textarea = page.locator(selectors.chatInput);
+    const sendButton = page.locator(selectors.sendButton);
+
+    // Send many messages to ensure scrollable content at default viewport
+    for (let i = 0; i < 15; i++) {
+      const msg = helpers.uniqueMessage(`Click scroll test ${i + 1}`);
+      await textarea.fill(msg);
+      await sendButton.click();
+      await helpers.waitForAgentResponse(page);
+      await page.waitForTimeout(200);
+    }
+
+    // Wait for streaming to complete
+    await page.waitForTimeout(500);
+
+    // Scroll up to trigger the scroll-to-bottom button
+    // Find the messages container (the one containing .message-enter elements)
+    await page.evaluate(() => {
+      const containers = document.querySelectorAll(".overflow-y-auto");
+      for (const c of containers) {
+        if (c.querySelector(".message-enter")) {
+          const container = c as HTMLElement;
+          container.style.scrollBehavior = "auto";
+          container.scrollTop = 0;
+          container.dispatchEvent(new Event("scroll", { bubbles: true }));
+          break;
+        }
+      }
+    });
+    await page.waitForTimeout(300);
+
+    // Wait for the button to appear
+    const scrollButton = page.locator(selectors.scrollToBottomButton);
+    await expect(scrollButton).toBeVisible({ timeout: timeouts.shortAction });
+
+    // Click the button
+    await scrollButton.click();
+
+    // Wait for scroll animation
+    await page.waitForTimeout(500);
+
+    // Verify we're at the bottom (button should be hidden now)
+    await expect(scrollButton).not.toBeVisible({ timeout: timeouts.shortAction });
+
+    // Verify scroll position is at bottom
+    const isAtBottom = await page.evaluate(() => {
+      const container = document.querySelector(".overflow-y-auto");
+      if (!container) return false;
+      const threshold = 100;
+      return (
+        container.scrollHeight - container.scrollTop - container.clientHeight <=
+        threshold
+      );
+    });
+    expect(isAtBottom).toBe(true);
+  });
+});
