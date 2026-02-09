@@ -174,6 +174,16 @@ func NewServer(config Config) (*Server, error) {
 		logger.Info("Cleaned up old images on startup", "removed_count", removed)
 	}
 
+	// Cleanup archived sessions on startup based on retention policy
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		retentionPeriod := config.MittoConfig.Session.GetArchiveRetentionPeriod()
+		if removed, err := store.CleanupArchivedSessions(retentionPeriod); err != nil {
+			logger.Warn("Failed to cleanup archived sessions", "error", err)
+		} else if removed > 0 {
+			logger.Info("Cleaned up archived sessions on startup", "removed_count", removed, "retention_period", retentionPeriod)
+		}
+	}
+
 	// Get API prefix early (needed by session manager for HTTP file links)
 	apiPrefix := configPkg.DefaultAPIPrefix
 	if config.MittoConfig != nil && config.MittoConfig.Web.APIPrefix != "" {
@@ -356,6 +366,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
+	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.handleUIPreferences)
 
 	// M3: Health check endpoint for load balancer integration and monitoring
 	// This endpoint is intentionally NOT behind auth to allow health checks
@@ -632,6 +643,19 @@ func (s *Server) BroadcastSessionPinned(sessionID string, pinned bool) {
 	}
 }
 
+// BroadcastSessionArchived notifies all connected clients that a session's archived state changed.
+func (s *Server) BroadcastSessionArchived(sessionID string, archived bool) {
+	s.eventsManager.Broadcast(WSMsgTypeSessionArchived, map[string]interface{}{
+		"session_id": sessionID,
+		"archived":   archived,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session archived", "session_id", sessionID, "archived", archived,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	s.eventsManager.Broadcast(WSMsgTypeSessionDeleted, map[string]string{
@@ -640,6 +664,20 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 
 	if s.logger != nil {
 		s.logger.Debug("Broadcast session deleted", "session_id", sessionID,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastSessionStreaming notifies all connected clients that a session's streaming state changed.
+// This is called when a session starts (user sends a prompt) or stops streaming (agent completes).
+func (s *Server) BroadcastSessionStreaming(sessionID string, isStreaming bool) {
+	s.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
+		"session_id":   sessionID,
+		"is_streaming": isStreaming,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session streaming", "session_id", sessionID, "is_streaming", isStreaming,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
