@@ -16,6 +16,11 @@ rm -rf "$MITTO_DIR"
 mkdir -p "$MITTO_DIR/sessions"
 
 # Create settings.json with mock-acp configuration
+# CRITICAL: This config MUST have:
+#   - external_port: -1 (disable external access, no 0.0.0.0 binding)
+#   - NO web.auth section (prevents keychain access on macOS)
+#   - host: 127.0.0.1 (localhost only)
+# These settings ensure tests run in isolation without external access or auth prompts.
 cat > "$MITTO_DIR/settings.json" << EOF
 {
   "acp_servers": [
@@ -27,6 +32,7 @@ cat > "$MITTO_DIR/settings.json" << EOF
   "web": {
     "host": "127.0.0.1",
     "port": 8089,
+    "external_port": -1,
     "theme": "v2"
   }
 }
