@@ -1,16 +1,6 @@
 ---
-description: Playwright UI tests, test fixtures, selectors, 'mitto web' setup, and browser testing patterns
-globs:
-  - "tests/ui/**/*"
-  - "playwright.config.ts"
-keywords:
-  - Playwright
-  - UI test
-  - browser test
-  - e2e
-  - end-to-end
-  - selector
-  - test fixture
+type: "agent_requested"
+description: "Playwright UI tests, test fixtures, selectors, 'mitto web' setup, and browser testing patternsrying or testing "
 ---
 
 # Playwright UI Testing

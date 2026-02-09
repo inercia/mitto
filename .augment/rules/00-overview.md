@@ -98,6 +98,7 @@ Platform-native directories: `MITTO_DIR` env var, or `~/Library/Application Supp
 appdir.Dir()           // Data directory path
 appdir.SessionsDir()   // sessions/ subdirectory
 appdir.SettingsPath()  // settings.json path
+appdir.LogsDir()       // Logs directory (~/Library/Logs/Mitto on macOS)
 ```
 
 ### Logging
@@ -108,6 +109,19 @@ logger := logging.WithSessionContext(base, sessionID, workingDir, acpServer)
 
 // Client-scoped (auto-includes client_id, session_id)
 logger := logging.WithClient(base, clientID, sessionID)
+```
+
+### Log Files (macOS App)
+
+When debugging issues, check these log files in `~/Library/Logs/Mitto/`:
+
+| File | Content |
+|------|---------|
+| `mitto.log` | Go application logs (server, ACP, sessions) |
+| `access.log` | Security events (auth, unauthorized access) |
+| `webview.log` | JavaScript console output from WKWebView |
+
+See `09-macos-app.md` for detailed debugging instructions.
 ```
 
 ## Documentation Standards

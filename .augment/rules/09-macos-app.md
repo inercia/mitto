@@ -13,6 +13,20 @@ keywords:
   - keyboard shortcut
   - trackpad gesture
   - localStorage sync
+  - webview.log
+  - webview log
+  - mitto.log
+  - access.log
+  - log file
+  - log files
+  - debug logs
+  - debugging
+  - console log
+  - UI crash
+  - UI freeze
+  - app crash
+  - rendering issue
+  - Library/Logs/Mitto
 ---
 
 # macOS App Development
@@ -259,3 +273,295 @@ Then: Safari → Develop → Your Mac → Mitto window
 | WebSocket zombie | "Connected" but no messages | Keepalive mechanism detects |
 | Different behavior | Works in browser, not in app | Check Web Inspector console |
 
+## WebView Console Log File
+
+The macOS app captures JavaScript console output to a log file for debugging UI issues.
+
+### Log File Location
+
+```
+~/Library/Logs/Mitto/webview.log
+```
+
+Rotated backups: `webview.log.1`, `webview.log.2`, `webview.log.3` (max 10MB per file, 3 backups)
+
+### When to Check the Log File
+
+**Always inspect `webview.log` when:**
+
+1. **Users report macOS app UI problems**:
+   - App crashes or freezes
+   - Rendering issues (blank screen, missing elements)
+   - UI not responding to clicks/input
+
+2. **WebView-related issues**:
+   - Page not loading or showing errors
+   - JavaScript errors in the frontend
+   - WebSocket connection problems
+   - localStorage sync issues
+
+3. **Native integration problems**:
+   - Keyboard shortcuts not working
+   - Trackpad gestures not responding
+   - Native folder picker failures
+   - Menu actions not triggering
+
+### Log Format
+
+Each log entry follows this format:
+```
+[2024-01-15T10:30:45.123-08:00] [LEVEL] message content
+```
+
+Log levels: `LOG`, `WARN`, `ERROR`, `DEBUG`, `INFO`
+
+### What to Look For
+
+| Pattern | Indicates |
+|---------|-----------|
+| `[ERROR]` entries | JavaScript errors, failed operations |
+| `WebSocket` errors | Connection issues, reconnection failures |
+| `localStorage` errors | State persistence problems |
+| `mittoPickFolder` / `mittoOpenExternalURL` | Native bridge failures |
+| `undefined` or `null` errors | Missing data or uninitialized state |
+| `CORS` or `fetch` errors | Network/API issues |
+| Stack traces | JavaScript exceptions with source location |
+
+### Debugging Workflow
+
+1. **Reproduce the issue** in the macOS app
+
+2. **Read recent log entries**:
+   ```bash
+   # View last 100 lines
+   tail -100 ~/Library/Logs/Mitto/webview.log
+
+   # Follow log in real-time while reproducing
+   tail -f ~/Library/Logs/Mitto/webview.log
+
+   # Search for errors
+   grep -i error ~/Library/Logs/Mitto/webview.log | tail -50
+
+   # Search for specific session
+   grep "SESSION_ID" ~/Library/Logs/Mitto/webview.log
+   ```
+
+3. **Check for patterns**:
+   ```bash
+   # Count errors by type
+   grep '\[ERROR\]' ~/Library/Logs/Mitto/webview.log | sort | uniq -c | sort -rn
+
+   # Find WebSocket issues
+   grep -i websocket ~/Library/Logs/Mitto/webview.log | tail -20
+
+   # Check for native bridge calls
+   grep -E 'mitto(PickFolder|OpenExternalURL|LogConsole)' ~/Library/Logs/Mitto/webview.log
+   ```
+
+4. **Cross-reference with Safari Web Inspector**:
+   - Open Safari → Develop → Your Mac → Mitto window
+   - Compare console output with log file
+   - Check Network tab for failed requests
+
+5. **Check rotated logs** if issue occurred earlier:
+   ```bash
+   # Search all log files
+   grep -i error ~/Library/Logs/Mitto/webview.log*
+   ```
+
+### Common Error Patterns
+
+| Error Pattern | Likely Cause | Solution |
+|---------------|--------------|----------|
+| `TypeError: Cannot read property 'X' of undefined` | Missing data, race condition | Check data loading order |
+| `WebSocket connection failed` | Server not running, network issue | Verify server is running |
+| `localStorage.getItem returned null` | First run or cleared storage | Handle null case in code |
+| `mittoPickFolder is not a function` | Code running in browser, not app | Check `isMacApp` detection |
+| `Failed to fetch` | API endpoint unreachable | Check server logs |
+| `Maximum call stack exceeded` | Infinite loop/recursion | Check useEffect dependencies |
+
+### Adding Console Logging for Debugging
+
+When debugging issues, add strategic console logs:
+
+```javascript
+// These will appear in ~/Library/Logs/Mitto/webview.log
+console.log('[Component] State:', { sessionId, messages: messages.length });
+console.warn('[Component] Unexpected condition:', condition);
+console.error('[Component] Failed to load:', error);
+```
+
+Use prefixes like `[ComponentName]` to make log entries searchable.
+
+## Debugging with Log Files
+
+The macOS app writes to multiple log files for comprehensive debugging. **Always check these logs when investigating issues.**
+
+### Log File Locations
+
+All logs are stored in `~/Library/Logs/Mitto/`:
+
+| Log File | Purpose | Rotation |
+|----------|---------|----------|
+| `mitto.log` | Go application logs (server, ACP, sessions) | 10MB, 3 backups |
+| `access.log` | Security events (auth, unauthorized access) | 10MB, 1 backup |
+| `webview.log` | JavaScript console output from WKWebView | 10MB, 3 backups |
+
+### Quick Commands for Debugging
+
+```bash
+# View all log files
+ls -la ~/Library/Logs/Mitto/
+
+# Tail all logs simultaneously (in separate terminals or use multitail)
+tail -f ~/Library/Logs/Mitto/mitto.log
+tail -f ~/Library/Logs/Mitto/access.log
+tail -f ~/Library/Logs/Mitto/webview.log
+
+# Search across all logs
+grep -r "error" ~/Library/Logs/Mitto/
+
+# View recent entries from all logs
+tail -50 ~/Library/Logs/Mitto/*.log
+```
+
+### Which Log to Check
+
+| Issue Type | Primary Log | Secondary Log |
+|------------|-------------|---------------|
+| **App startup failures** | `mitto.log` | - |
+| **Server/API errors** | `mitto.log` | `access.log` |
+| **Authentication issues** | `access.log` | `mitto.log` |
+| **Unauthorized access attempts** | `access.log` | - |
+| **UI rendering problems** | `webview.log` | - |
+| **JavaScript errors** | `webview.log` | - |
+| **WebSocket connection issues** | `mitto.log` | `webview.log` |
+| **Session loading/saving** | `mitto.log` | - |
+| **ACP communication** | `mitto.log` | - |
+| **Rate limiting triggers** | `access.log` | `mitto.log` |
+
+### mitto.log - Go Application Logs
+
+Contains all Go-level logging from the server, ACP client, session management, etc.
+
+```bash
+# View recent application logs
+tail -100 ~/Library/Logs/Mitto/mitto.log
+
+# Search for errors
+grep -i "level=ERROR" ~/Library/Logs/Mitto/mitto.log
+
+# Search for specific session
+grep "session_id=SESSION_ID" ~/Library/Logs/Mitto/mitto.log
+
+# Search for ACP-related logs
+grep "component=acp" ~/Library/Logs/Mitto/mitto.log
+
+# Search for WebSocket events
+grep -i "websocket\|ws\|client" ~/Library/Logs/Mitto/mitto.log
+```
+
+**Key patterns to look for:**
+
+| Pattern | Indicates |
+|---------|-----------|
+| `level=ERROR` | Application errors |
+| `level=WARN` | Warnings that may indicate issues |
+| `component=web` | Web server events |
+| `component=auth` | Authentication events |
+| `component=session` | Session management |
+| `session_id=` | Session-specific events |
+| `client_id=` | WebSocket client events |
+
+### access.log - Security Events
+
+Contains security-focused events for auditing and debugging auth issues.
+
+```bash
+# View recent security events
+tail -50 ~/Library/Logs/Mitto/access.log
+
+# Find failed login attempts
+grep "login_failed\|unauthorized" ~/Library/Logs/Mitto/access.log
+
+# Find rate limiting events
+grep "rate_limit" ~/Library/Logs/Mitto/access.log
+
+# Find external access attempts
+grep "external" ~/Library/Logs/Mitto/access.log
+```
+
+**Event types logged:**
+
+| Event | Description |
+|-------|-------------|
+| `login_success` | Successful authentication |
+| `login_failed` | Failed login attempt |
+| `unauthorized` | Access without valid session |
+| `session_validated` | Session cookie validated |
+| `rate_limited` | Request blocked by rate limiter |
+| `external_connection` | Connection from non-localhost |
+
+### Comprehensive Debugging Workflow
+
+1. **Reproduce the issue** while tailing logs:
+   ```bash
+   # In one terminal
+   tail -f ~/Library/Logs/Mitto/mitto.log ~/Library/Logs/Mitto/webview.log
+   ```
+
+2. **Identify the timeframe** of the issue
+
+3. **Search for errors around that time**:
+   ```bash
+   # Search all logs for errors in the last hour
+   find ~/Library/Logs/Mitto -name "*.log" -exec grep -l "ERROR\|error" {} \;
+   ```
+
+4. **Correlate across logs**:
+   - Find session ID in `mitto.log`
+   - Search for same session in `webview.log`
+   - Check `access.log` for auth-related events
+
+5. **Check rotated logs** if issue occurred earlier:
+   ```bash
+   # Search all log files including rotated ones
+   grep -r "pattern" ~/Library/Logs/Mitto/
+   ```
+
+### Log Levels
+
+The macOS app defaults to `INFO` level. To enable debug logging:
+
+```bash
+# Set environment variable before launching
+export MITTO_LOG_LEVEL=debug
+open /Applications/Mitto.app
+
+# Or launch from terminal
+MITTO_LOG_LEVEL=debug /Applications/Mitto.app/Contents/MacOS/mitto-app
+```
+
+### CLI vs macOS App Logging
+
+| Feature | `mitto web` CLI | macOS App |
+|---------|-----------------|-----------|
+| Console output | ✅ Always | ✅ Always (for Console.app) |
+| `mitto.log` file | ❌ Disabled by default | ✅ Enabled |
+| `access.log` file | ❌ Disabled by default | ✅ Enabled |
+| `webview.log` file | N/A | ✅ Enabled |
+
+To enable file logging for CLI:
+```bash
+# Via settings.json
+{
+  "web": {
+    "access_log": {
+      "enabled": true
+    }
+  }
+}
+
+# Or via command line flag
+mitto web --access-log ~/Library/Logs/Mitto/access.log
+```

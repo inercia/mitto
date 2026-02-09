@@ -100,6 +100,38 @@ useEffect(() => {
 }, [fetchStoredSessions, forceReconnectActiveSession]);
 ```
 
+## Additional Resilience Mechanisms
+
+Beyond visibility change, the frontend uses multiple event sources for resilience:
+
+| Event | Purpose | Response Time |
+|-------|---------|---------------|
+| `visibilitychange` | Tab switch, phone wake | ~300ms |
+| `online`/`offline` | Network loss/restore | ~500ms |
+| `navigator.connection.change` | WiFi ↔ Cellular | ~500ms |
+| `freeze`/`resume` | iOS Safari page freeze | ~300ms |
+
+```javascript
+// Online/offline events
+window.addEventListener("online", () => {
+    setTimeout(() => forceReconnectActiveSession(), 500);
+});
+
+// Network Information API (Chrome, Edge)
+navigator.connection?.addEventListener("change", () => {
+    setTimeout(() => forceReconnectActiveSession(), 500);
+});
+
+// Page Lifecycle API (iOS Safari)
+document.addEventListener("freeze", () => {
+    // Close WebSocket cleanly before freeze
+    ws?.close();
+});
+document.addEventListener("resume", () => {
+    setTimeout(() => forceReconnectActiveSession(), 300);
+});
+```
+
 ## Session Staleness Detection
 
 When a phone has been locked overnight, the server-side auth session may have expired (24-hour duration):
