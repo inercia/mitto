@@ -130,6 +130,12 @@ func (c *Client) promptAndWaitInternal(ctx context.Context, sessionID, message s
 		return nil, ctx.Err()
 	}
 
+	// Register as observer by loading events
+	// This is required by the server before we can receive streaming events
+	if err := sess.LoadEvents(50, 0, 0); err != nil {
+		return nil, fmt.Errorf("load events: %w", err)
+	}
+
 	// Send the prompt
 	if imageIDs != nil {
 		err = sess.SendPromptWithImages(message, imageIDs)

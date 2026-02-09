@@ -51,6 +51,15 @@ type SessionCallbacks struct {
 	// events contains the missed events, eventCount is the total event count.
 	OnSessionSync func(events []SyncEvent, eventCount int)
 
+	// OnEventsLoaded is called when events are loaded from storage.
+	// events contains the loaded events, hasMore indicates if there are more events,
+	// isPrompting indicates if the agent is currently responding.
+	OnEventsLoaded func(events []SyncEvent, hasMore bool, isPrompting bool)
+
+	// OnEventsLoadedWithMeta is called when events are loaded, with additional metadata.
+	// totalCount is the total number of events in the session (useful for detecting stale sync).
+	OnEventsLoadedWithMeta func(events []SyncEvent, hasMore bool, isPrompting bool, totalCount int)
+
 	// OnQueueUpdated is called when the message queue state changes.
 	// action is one of: "added", "removed", "cleared"
 	OnQueueUpdated func(queueLength int, action, messageID string)
@@ -69,6 +78,10 @@ type SessionCallbacks struct {
 
 	// OnDisconnected is called when the WebSocket connection is closed.
 	OnDisconnected func(err error)
+
+	// OnRawMessage is called for every WebSocket message received (for debugging).
+	// If set, this is called before any other callback.
+	OnRawMessage func(msgType string, data []byte)
 }
 
 // SyncEvent represents an event returned from a sync request.
@@ -77,6 +90,7 @@ type SyncEvent struct {
 	Type      string      `json:"type"`
 	Timestamp string      `json:"timestamp"`
 	Data      interface{} `json:"data"`
+	HTML      string      `json:"html,omitempty"` // For agent_message events
 }
 
 // Session represents an active WebSocket connection to a Mitto session.
@@ -189,6 +203,23 @@ func (s *Session) Sync(afterSeq int) error {
 	})
 }
 
+// LoadEvents requests events from storage.
+// limit is the maximum number of events to load.
+// afterSeq loads events after this sequence number (for sync).
+// beforeSeq loads events before this sequence number (for pagination).
+func (s *Session) LoadEvents(limit, afterSeq, beforeSeq int64) error {
+	data := map[string]interface{}{
+		"limit": limit,
+	}
+	if afterSeq > 0 {
+		data["after_seq"] = afterSeq
+	}
+	if beforeSeq > 0 {
+		data["before_seq"] = beforeSeq
+	}
+	return s.sendMessage("load_events", data)
+}
+
 // Keepalive sends a keepalive message.
 func (s *Session) Keepalive(timestamp int64) error {
 	return s.sendMessage("keepalive", map[string]interface{}{
@@ -264,6 +295,11 @@ func (s *Session) readLoop() {
 
 // handleMessage processes a received WebSocket message.
 func (s *Session) handleMessage(msg wsMessage) {
+	// Call debug callback if set
+	if s.callbacks.OnRawMessage != nil {
+		s.callbacks.OnRawMessage(msg.Type, msg.Data)
+	}
+
 	switch msg.Type {
 	case "connected":
 		var data struct {
@@ -376,6 +412,22 @@ func (s *Session) handleMessage(msg wsMessage) {
 		}
 		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnSessionSync != nil {
 			s.callbacks.OnSessionSync(data.Events, data.EventCount)
+		}
+
+	case "events_loaded":
+		var data struct {
+			Events      []SyncEvent `json:"events"`
+			HasMore     bool        `json:"has_more"`
+			IsPrompting bool        `json:"is_prompting"`
+			TotalCount  int         `json:"total_count"`
+		}
+		if json.Unmarshal(msg.Data, &data) == nil {
+			if s.callbacks.OnEventsLoaded != nil {
+				s.callbacks.OnEventsLoaded(data.Events, data.HasMore, data.IsPrompting)
+			}
+			if s.callbacks.OnEventsLoadedWithMeta != nil {
+				s.callbacks.OnEventsLoadedWithMeta(data.Events, data.HasMore, data.IsPrompting, data.TotalCount)
+			}
 		}
 
 	case "queue_updated":
