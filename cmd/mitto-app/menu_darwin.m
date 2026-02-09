@@ -158,6 +158,7 @@ extern void goAppDidBecomeActiveCallback(void);
 // This is used to trigger a WebSocket reconnect/sync in the frontend since WKWebView
 // doesn't fire visibilitychange events when the app is hidden/shown.
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
+    NSLog(@"[Mitto] applicationDidBecomeActive called");
     goAppDidBecomeActiveCallback();
 }
 

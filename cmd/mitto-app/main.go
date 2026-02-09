@@ -24,6 +24,7 @@ package main
 #include "menu_darwin.h"
 #include "loginitem_darwin.h"
 #include "notifications_darwin.h"
+#include "webviewlog_darwin.h"
 
 // Global hotkey reference (static to avoid duplicate symbols)
 static EventHotKeyRef gHotKeyRef = NULL;
@@ -328,8 +329,11 @@ func goAppDidBecomeActiveCallback() {
 	globalWebViewMu.Unlock()
 
 	if w == nil {
+		slog.Debug("[Mitto] goAppDidBecomeActiveCallback: webview is nil, skipping")
 		return
 	}
+
+	slog.Debug("[Mitto] goAppDidBecomeActiveCallback: triggering frontend reconnect")
 
 	// When the app becomes active, trigger a visibility change in the frontend.
 	// WKWebView doesn't fire visibilitychange events when the macOS app is hidden/shown,
@@ -458,6 +462,43 @@ func removeNotificationsForSession(sessionId string) {
 	cSessionId := C.CString(sessionId)
 	defer C.free(unsafe.Pointer(cSessionId))
 	C.removeNotificationsForSession(cSessionId)
+}
+
+// initWebViewLogger initializes the WebView console logger.
+// Logs are written to ~/Library/Logs/Mitto/webview.log with rotation.
+// Returns nil on success, error on failure.
+func initWebViewLogger() error {
+	config := C.WebViewLogConfig{
+		logDir:       nil,              // Use default ~/Library/Logs/Mitto
+		maxSizeBytes: 10 * 1024 * 1024, // 10MB
+		maxBackups:   3,
+	}
+	result := C.initWebViewLog(config)
+	if result != 0 {
+		return fmt.Errorf("failed to initialize WebView console logger (code: %d)", result)
+	}
+	return nil
+}
+
+// closeWebViewLogger closes the WebView console logger.
+// Should be called during app shutdown.
+func closeWebViewLogger() {
+	C.closeWebViewLog()
+}
+
+// logConsoleMessage logs a console message from the WebView.
+// This is exposed to JavaScript via webview.Bind as window.mittoLogConsole.
+func logConsoleMessage(level, message string) {
+	cLevel := C.CString(level)
+	defer C.free(unsafe.Pointer(cLevel))
+	cMessage := C.CString(message)
+	defer C.free(unsafe.Pointer(cMessage))
+	C.logWebViewConsole(cLevel, cMessage)
+}
+
+// getConsoleHookScript returns the JavaScript to inject for console hooking.
+func getConsoleHookScript() string {
+	return C.GoString(C.getConsoleHookScript())
 }
 
 // setupMenu creates the native macOS menu bar with standard items.
@@ -670,22 +711,54 @@ func main() {
 }
 
 func run() error {
-	// Initialize logging (minimal for desktop app)
+	// Ensure Mitto directories exist first (needed for file logging)
+	if err := appdir.EnsureDir(); err != nil {
+		return fmt.Errorf("failed to create Mitto directory: %w", err)
+	}
+	if err := appdir.EnsureLogsDir(); err != nil {
+		// Non-fatal: we can still log to console
+		fmt.Fprintf(os.Stderr, "Warning: failed to create logs directory: %v\n", err)
+	}
+
+	// Initialize logging with file output for macOS app
+	// Logs go to both console (for Console.app) and file (for persistence)
 	// Default to INFO level, but allow override via MITTO_LOG_LEVEL environment variable
 	logLevel := "info"
 	if envLevel := os.Getenv("MITTO_LOG_LEVEL"); envLevel != "" {
 		logLevel = envLevel
 	}
-	if err := logging.Initialize(logging.Config{
+
+	// Configure file logging with rotation
+	logConfig := logging.Config{
 		Level: logLevel,
-	}); err != nil {
+	}
+	if logsDir, err := appdir.LogsDir(); err == nil {
+		logConfig.FileLog = &logging.FileLogConfig{
+			Path:       filepath.Join(logsDir, "mitto.log"),
+			MaxSizeMB:  10,
+			MaxBackups: 3,
+			Compress:   false,
+		}
+	}
+
+	if err := logging.Initialize(logConfig); err != nil {
 		return fmt.Errorf("failed to initialize logging: %w", err)
 	}
 	defer logging.Close()
 
-	// Ensure Mitto directory exists
-	if err := appdir.EnsureDir(); err != nil {
-		return fmt.Errorf("failed to create Mitto directory: %w", err)
+	// Log startup info including log file location
+	if logConfig.FileLog != nil {
+		slog.Info("Mitto starting", "log_file", logConfig.FileLog.Path)
+	}
+
+	// Initialize WebView console logger for debugging
+	// Logs are written to ~/Library/Logs/Mitto/webview.log with automatic rotation
+	if err := initWebViewLogger(); err != nil {
+		// Log warning but don't fail - console logging is optional
+		slog.Warn("Failed to initialize WebView console logger", "error", err)
+	} else {
+		slog.Info("WebView console logging enabled", "path", "~/Library/Logs/Mitto/webview.log")
+		defer closeWebViewLogger()
 	}
 
 	// Deploy builtin prompts on first run
@@ -799,15 +872,8 @@ func run() error {
 	}
 
 	// Configure access logging (enabled by default for macOS app)
-	// Writes to $MITTO_DIR/access.log with size-based rotation
-	accessLogConfig := web.DefaultAccessLogConfig()
-	mittoDir, err := appdir.Dir()
-	if err != nil {
-		slog.Warn("Failed to get Mitto directory for access log", "error", err)
-	} else {
-		accessLogConfig.Path = filepath.Join(mittoDir, "access.log")
-		slog.Info("Access logging enabled", "path", accessLogConfig.Path)
-	}
+	// Writes to ~/Library/Logs/Mitto/access.log with size-based rotation
+	accessLogConfig := resolveAccessLogConfigApp(cfg)
 
 	webConfig := web.Config{
 		Workspaces:      workspaces,
@@ -922,6 +988,16 @@ func run() error {
 
 	// Bind quit confirmation setting function
 	w.Bind("mittoSetQuitConfirmEnabled", setQuitConfirmEnabled)
+
+	// Bind console logging function for WebView debugging
+	// This captures JavaScript console output and writes to ~/Library/Logs/Mitto/webview.log
+	w.Bind("mittoLogConsole", logConsoleMessage)
+
+	// Inject console hook script to capture console.log/warn/error/debug/info
+	// This must be done via Init to run before the page JavaScript
+	consoleHookScript := getConsoleHookScript()
+	w.Init(consoleHookScript)
+	slog.Debug("Console hook script injected")
 
 	// Initialize notification center (must be done after app is running)
 	initNotifications()
@@ -1092,4 +1168,57 @@ func getHotkeyConfig(cfg *config.Config) (hotkey string, enabled bool) {
 
 	// Default
 	return config.DefaultShowHideHotkey, true
+}
+
+// resolveAccessLogConfigApp determines the access log configuration for the macOS app.
+// Priority: settings.json > default (enabled with platform-specific path)
+func resolveAccessLogConfigApp(cfg *config.Config) web.AccessLogConfig {
+	accessLogConfig := web.DefaultAccessLogConfig()
+
+	// Check settings from config file
+	if cfg != nil && cfg.Web.AccessLog != nil {
+		alCfg := cfg.Web.AccessLog
+
+		// Check if explicitly disabled
+		if alCfg.Enabled != nil && !*alCfg.Enabled {
+			slog.Info("Access logging disabled via settings")
+			return web.AccessLogConfig{} // Disabled
+		}
+
+		// Use custom path if specified
+		if alCfg.Path != "" {
+			accessLogConfig.Path = alCfg.Path
+			slog.Info("Access logging enabled", "path", accessLogConfig.Path, "source", "settings")
+		}
+
+		// Apply custom settings
+		if alCfg.MaxSizeMB > 0 {
+			accessLogConfig.MaxSizeMB = alCfg.MaxSizeMB
+		}
+		if alCfg.MaxBackups > 0 {
+			accessLogConfig.MaxBackups = alCfg.MaxBackups
+		}
+
+		// If path is already set from settings, return
+		if accessLogConfig.Path != "" {
+			return accessLogConfig
+		}
+	}
+
+	// Default for macOS app: enabled with platform-specific path
+	logsDir, err := appdir.LogsDir()
+	if err != nil {
+		slog.Warn("Failed to get logs directory for access log", "error", err)
+		return accessLogConfig
+	}
+
+	// Ensure the logs directory exists
+	if err := appdir.EnsureLogsDir(); err != nil {
+		slog.Warn("Failed to create logs directory", "error", err)
+		return accessLogConfig
+	}
+
+	accessLogConfig.Path = filepath.Join(logsDir, "access.log")
+	slog.Info("Access logging enabled", "path", accessLogConfig.Path)
+	return accessLogConfig
 }

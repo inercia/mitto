@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint deps-go deps-js deps build-mac-app clean-mac-app test-webviewlog build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -265,6 +265,19 @@ build-mac-app: deps-go
 # Clean macOS app bundle
 clean-mac-app:
 	rm -rf "$(APP_BUNDLE)"
+	rm -f webviewlog_test
+
+# Test WebView console logging (macOS only)
+# Compiles and runs the Objective-C unit tests for webviewlog_darwin.m
+test-webviewlog:
+	@echo "Compiling WebView logger tests..."
+	@clang -framework Foundation \
+		-o webviewlog_test \
+		cmd/mitto-app/webviewlog_darwin.m \
+		platform/mac/tests/webviewlog_darwin_test.m
+	@echo "Running tests..."
+	@./webviewlog_test
+	@rm -f webviewlog_test
 
 # =============================================================================
 # Homebrew Packaging
