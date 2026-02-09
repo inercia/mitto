@@ -37,6 +37,7 @@ type ConfigSaveRequest struct {
 	} `json:"web"`
 	UI            *configPkg.UIConfig            `json:"ui,omitempty"`
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
+	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
 }
 
 // handleConfig handles GET and POST /api/config.
@@ -76,6 +77,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if s.config.MittoConfig != nil {
 		response["web"] = s.config.MittoConfig.Web
 		response["ui"] = s.config.MittoConfig.UI
+		response["session"] = s.config.MittoConfig.Session
 		response["conversations"] = s.config.MittoConfig.Conversations
 
 		// Merge prompts from global files and settings
@@ -368,9 +370,11 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		newUIConfig = *req.UI
 	}
 
-	// Preserve Session config (not exposed in web UI)
+	// Use Session from request if provided, otherwise preserve existing
 	var sessionConfig *configPkg.SessionConfig
-	if s.config.MittoConfig != nil {
+	if req.Session != nil {
+		sessionConfig = req.Session
+	} else if s.config.MittoConfig != nil {
 		sessionConfig = s.config.MittoConfig.Session
 	}
 
@@ -420,12 +424,13 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		}
 	}
 
-	// Update ACP servers, prompts, web config, UI config, and conversations config
+	// Update ACP servers, prompts, web config, UI config, session config, and conversations config
 	if s.config.MittoConfig != nil {
 		s.config.MittoConfig.ACPServers = newACPServers
 		s.config.MittoConfig.Prompts = settings.Prompts
 		s.config.MittoConfig.Web = runtimeWebConfig
 		s.config.MittoConfig.UI = settings.UI
+		s.config.MittoConfig.Session = settings.Session
 		s.config.MittoConfig.Conversations = settings.Conversations
 
 		// Update session manager's global conversations config so new sessions use the updated settings

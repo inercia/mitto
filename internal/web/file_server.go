@@ -418,9 +418,9 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 	// Set headers
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// Permissive CSP for styled HTML with syntax highlighting
+	// Permissive CSP for styled HTML with syntax highlighting and Mermaid.js CDN
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'self' 'unsafe-inline'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'")
+		"default-src 'self' 'unsafe-inline'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net")
 
 	w.Write([]byte(fullHTML))
 }
@@ -517,10 +517,74 @@ func wrapMarkdownHTML(content, filename string) string {
             .chroma .m, .chroma .mb, .chroma .mf, .chroma .mh, .chroma .mi, .chroma .il, .chroma .mo { color: #005cc5; }
             .chroma .c, .chroma .ch, .chroma .cm, .chroma .c1, .chroma .cs, .chroma .cp, .chroma .cpf { color: #6a737d; }
         }
+        /* Mermaid diagram styling */
+        .mermaid-diagram {
+            display: flex;
+            justify-content: center;
+            margin: 1em 0;
+            overflow-x: auto;
+        }
+        .mermaid-diagram svg {
+            max-width: 100%%;
+        }
+        pre.mermaid {
+            text-align: center;
+            background: transparent;
+            border: none;
+            padding: 0;
+        }
+        .mermaid-error {
+            color: var(--text-muted);
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
     <article>%s</article>
+    <script type="module">
+        // Check if there are any mermaid blocks to render
+        const mermaidBlocks = document.querySelectorAll('pre.mermaid');
+        if (mermaidBlocks.length > 0) {
+            // Dynamically load and initialize Mermaid.js
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+            script.onload = function() {
+                // Detect theme
+                const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                const theme = isDark ? 'dark' : 'default';
+
+                // Initialize Mermaid
+                mermaid.initialize({
+                    startOnLoad: false,
+                    theme: theme,
+                    securityLevel: 'strict',
+                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
+                });
+
+                // Render each mermaid block
+                mermaidBlocks.forEach(async (block, index) => {
+                    try {
+                        const diagramDef = block.textContent || '';
+                        if (!diagramDef.trim()) return;
+
+                        const { svg } = await mermaid.render('mermaid-' + index, diagramDef);
+                        const wrapper = document.createElement('div');
+                        wrapper.className = 'mermaid-diagram';
+                        wrapper.innerHTML = svg;
+                        block.replaceWith(wrapper);
+                    } catch (err) {
+                        console.error('Failed to render mermaid diagram:', err);
+                        block.classList.add('mermaid-error');
+                        block.textContent = '⚠️ Failed to render diagram: ' + err.message;
+                    }
+                });
+            };
+            script.onerror = function(err) {
+                console.error('Failed to load Mermaid.js:', err);
+            };
+            document.head.appendChild(script);
+        }
+    </script>
 </body>
 </html>`, title, content)
 }

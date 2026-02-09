@@ -561,8 +561,8 @@ func (a *AuthManager) GetSessionFromRequest(r *http.Request) (*AuthSession, bool
 
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		// Log at INFO level to help debug auth issues
-		logger.Info("AUTH: No session cookie found",
+		// Log at DEBUG level - routine check on every request
+		logger.Debug("AUTH: No session cookie found",
 			"error", err,
 			"cookie_name", sessionCookieName,
 			"path", r.URL.Path,
@@ -572,12 +572,12 @@ func (a *AuthManager) GetSessionFromRequest(r *http.Request) (*AuthSession, bool
 
 	session, valid := a.ValidateSession(cookie.Value)
 	if !valid {
-		logger.Info("AUTH: Session cookie invalid or expired",
+		logger.Debug("AUTH: Session cookie invalid or expired",
 			"token_prefix", cookie.Value[:min(8, len(cookie.Value))]+"...",
 			"path", r.URL.Path,
 		)
 	} else {
-		logger.Info("AUTH: Session cookie valid",
+		logger.Debug("AUTH: Session cookie valid",
 			"username", session.Username,
 			"expires_at", session.ExpiresAt,
 			"path", r.URL.Path,
@@ -610,7 +610,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 
 	// Check static paths (exact match) - at root level
 	if publicStaticPaths[path] {
-		logger.Info("AUTH: isPublicPath: MATCHED static path", "path", path)
+		logger.Debug("AUTH: isPublicPath: MATCHED static path", "path", path)
 		return true
 	}
 
@@ -618,7 +618,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	if a.apiPrefix != "" {
 		for staticPath := range publicStaticPaths {
 			if path == a.apiPrefix+staticPath {
-				logger.Info("AUTH: isPublicPath: MATCHED prefixed static path", "path", path)
+				logger.Debug("AUTH: isPublicPath: MATCHED prefixed static path", "path", path)
 				return true
 			}
 		}
@@ -628,7 +628,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	for apiPath := range publicAPIPaths {
 		fullAPIPath := a.apiPrefix + apiPath
 		if path == fullAPIPath {
-			logger.Info("AUTH: isPublicPath: MATCHED API path", "path", path, "api_path", fullAPIPath)
+			logger.Debug("AUTH: isPublicPath: MATCHED API path", "path", path, "api_path", fullAPIPath)
 			return true
 		}
 	}
@@ -638,7 +638,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	for p := range publicStaticPaths {
 		staticPathsList = append(staticPathsList, p)
 	}
-	logger.Info("AUTH: isPublicPath: NO MATCH",
+	logger.Debug("AUTH: isPublicPath: NO MATCH",
 		"path", path,
 		"api_prefix", a.apiPrefix,
 		"known_static_paths", staticPathsList,
@@ -722,9 +722,9 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 
 		// Allow public paths without authentication
 		isPublic := a.isPublicPath(r.URL.Path)
-		// Log ALL public path checks to help debug auth issues
+		// Log public path checks at DEBUG level - routine checks
 		if isPublic {
-			logger.Info("AUTH: Bypass - public path",
+			logger.Debug("AUTH: Bypass - public path",
 				"path", r.URL.Path,
 				"raw_uri", r.RequestURI,
 				"client_ip", clientIP,
@@ -732,8 +732,8 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Log when we're NOT treating something as public
-		logger.Info("AUTH: Required for path",
+		// Log when we're NOT treating something as public (DEBUG - routine check)
+		logger.Debug("AUTH: Required for path",
 			"path", r.URL.Path,
 			"raw_uri", r.RequestURI,
 			"client_ip", clientIP,
@@ -777,7 +777,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		logger.Info("AUTH: Session validated",
+		logger.Debug("AUTH: Session validated",
 			"path", r.URL.Path,
 			"client_ip", clientIP,
 			"username", session.Username,
