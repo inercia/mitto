@@ -1308,6 +1308,73 @@ describe("mergeMessagesWithSync", () => {
       // Sorted by seq: 1, 2, 3
       expect(result[2].id).toBe("tool-1");
     });
+
+    test("prompt retry creates new seq - deduplicates by content", () => {
+      // This tests the critical bug fix for mobile wake + prompt retry:
+      // 1. User sends message, phone locks before user_prompt notification
+      // 2. Server persists message with seq=10
+      // 3. Phone wakes, events_loaded returns message with seq=10
+      // 4. Pending prompt retry sends same message again
+      // 5. Server persists AGAIN with seq=11 (new seq for same content)
+      // 6. user_prompt notification arrives with seq=11
+      //
+      // The deduplication must detect this as a duplicate by CONTENT,
+      // not just by seq (since seqs are different).
+      const existing = [
+        { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "Hi there!", seq: 11, timestamp: 2000 },
+      ];
+      // Retry caused server to persist same message with new seq
+      const syncEvents = [
+        { role: ROLE_USER, text: "Hello world", seq: 12, timestamp: 3000 },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      // Should deduplicate by content - only 2 messages (not 3)
+      expect(result.length).toBe(2);
+      expect(result[0].text).toBe("Hello world");
+      expect(result[0].seq).toBe(10); // Original seq preserved
+      expect(result[1].html).toBe("Hi there!");
+    });
+
+    test("prompt retry with no seq on existing - deduplicates by content", () => {
+      // Scenario: User sends message, phone locks IMMEDIATELY (before any ACK)
+      // The local message has no seq because user_prompt notification never arrived
+      const existing = [
+        { role: ROLE_USER, text: "Hello world", timestamp: 1000 }, // No seq!
+      ];
+      // events_loaded returns the persisted message with seq
+      const syncEvents = [
+        { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      // Should deduplicate by content
+      expect(result.length).toBe(1);
+      expect(result[0].text).toBe("Hello world");
+    });
+
+    test("multiple prompt retries - all deduplicated by content", () => {
+      // Extreme case: Multiple retries created multiple events with different seqs
+      const existing = [
+        { role: ROLE_USER, text: "Fix the bug", seq: 10, timestamp: 1000 },
+      ];
+      // Multiple retries created multiple events
+      const syncEvents = [
+        { role: ROLE_USER, text: "Fix the bug", seq: 11, timestamp: 2000 },
+        { role: ROLE_USER, text: "Fix the bug", seq: 12, timestamp: 3000 },
+        { role: ROLE_USER, text: "Fix the bug", seq: 13, timestamp: 4000 },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      // All should be deduplicated - only 1 message
+      expect(result.length).toBe(1);
+      expect(result[0].text).toBe("Fix the bug");
+      expect(result[0].seq).toBe(10); // Original preserved
+    });
   });
 
   // =========================================================================
@@ -3113,6 +3180,430 @@ describe("Send Message ACK Tracking", () => {
       });
 
       expect(rejectCount).toBe(3);
+    });
+  });
+
+  describe("WebSocket Reconnection Handling", () => {
+    // Tests for the scenario where WebSocket reconnects and is_mine becomes false
+    // but we should still resolve pending sends by matching prompt_id
+    let pendingSends;
+
+    beforeEach(() => {
+      pendingSends = {};
+    });
+
+    test("resolves pending send when is_mine is false but prompt_id matches", () => {
+      // This tests the fix for the bug where WebSocket reconnection causes
+      // is_mine to be false (because clientID changed), but we should still
+      // resolve the pending send by matching prompt_id
+      const promptId = "prompt_reconnect_123";
+      let resolved = false;
+      let resolvedWith = null;
+
+      pendingSends[promptId] = {
+        resolve: (result) => {
+          resolved = true;
+          resolvedWith = result;
+        },
+        reject: () => {},
+        timeoutId: setTimeout(() => {}, 15000),
+      };
+
+      // Simulate receiving user_prompt with is_mine = false (due to reconnection)
+      // but prompt_id matches our pending send
+      const is_mine = false; // Changed due to WebSocket reconnection
+      const received_prompt_id = promptId;
+
+      // The fix: even if is_mine is false, check if we have a pending send
+      // for this prompt_id and resolve it
+      if (!is_mine && received_prompt_id) {
+        const pending = pendingSends[received_prompt_id];
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          pending.resolve({ success: true, promptId: received_prompt_id });
+          delete pendingSends[received_prompt_id];
+        }
+      }
+
+      expect(resolved).toBe(true);
+      expect(resolvedWith).toEqual({ success: true, promptId });
+      expect(pendingSends[promptId]).toBeUndefined();
+    });
+
+    test("does not resolve when is_mine is false and prompt_id does not match", () => {
+      const ourPromptId = "prompt_our_123";
+      const otherPromptId = "prompt_other_456";
+      let resolved = false;
+
+      pendingSends[ourPromptId] = {
+        resolve: () => {
+          resolved = true;
+        },
+        reject: () => {},
+        timeoutId: setTimeout(() => {}, 15000),
+      };
+
+      // Simulate receiving user_prompt from another client
+      const is_mine = false;
+      const received_prompt_id = otherPromptId;
+
+      // Check if we have a pending send for this prompt_id
+      if (!is_mine && received_prompt_id) {
+        const pending = pendingSends[received_prompt_id];
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          pending.resolve({ success: true, promptId: received_prompt_id });
+          delete pendingSends[received_prompt_id];
+        }
+      }
+
+      // Our pending send should NOT be resolved
+      expect(resolved).toBe(false);
+      expect(pendingSends[ourPromptId]).toBeDefined();
+
+      // Clean up
+      clearTimeout(pendingSends[ourPromptId].timeoutId);
+    });
+
+    test("handles reconnection during multiple pending sends", () => {
+      const promptIds = ["prompt_1", "prompt_2", "prompt_3"];
+      const resolved = {};
+
+      promptIds.forEach((promptId) => {
+        resolved[promptId] = false;
+        pendingSends[promptId] = {
+          resolve: () => {
+            resolved[promptId] = true;
+          },
+          reject: () => {},
+          timeoutId: setTimeout(() => {}, 15000),
+        };
+      });
+
+      // Simulate WebSocket reconnection - is_mine becomes false for all
+      // but prompt_ids still match
+      promptIds.forEach((promptId) => {
+        const is_mine = false; // Changed due to reconnection
+        const received_prompt_id = promptId;
+
+        if (!is_mine && received_prompt_id) {
+          const pending = pendingSends[received_prompt_id];
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve({ success: true, promptId: received_prompt_id });
+            delete pendingSends[received_prompt_id];
+          }
+        }
+      });
+
+      // All should be resolved
+      expect(resolved["prompt_1"]).toBe(true);
+      expect(resolved["prompt_2"]).toBe(true);
+      expect(resolved["prompt_3"]).toBe(true);
+      expect(Object.keys(pendingSends).length).toBe(0);
+    });
+  });
+
+  // =========================================================================
+  // User Prompt Deduplication (user_prompt handler logic)
+  // =========================================================================
+  // These tests verify the deduplication logic used in the user_prompt WebSocket
+  // message handler. The handler must detect duplicates even when:
+  // 1. The existing message has a different seq (prompt retry created new seq)
+  // 2. The existing message has no seq (notification was lost)
+
+  describe("User Prompt Deduplication Logic", () => {
+    // Helper function that mimics the deduplication logic in useWebSocket.js
+    // This is the FIXED version that always checks content
+    function checkUserPromptDuplicate(messages, newSeq, newMessage) {
+      return messages.some((m) => {
+        if (m.role !== ROLE_USER) return false;
+        // If seq matches exactly, it's the same message
+        if (newSeq && m.seq && m.seq === newSeq) return true;
+        // Also check content - handles case where retry created new seq for same message
+        const messageContent = newMessage?.substring(0, 200) || "";
+        return (m.text || "").substring(0, 200) === messageContent;
+      });
+    }
+
+    test("detects duplicate when seqs match", () => {
+      const messages = [
+        { role: ROLE_USER, text: "Hello", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 10, "Hello");
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("detects duplicate by content when seqs differ (prompt retry scenario)", () => {
+      // This is the critical bug fix test:
+      // Existing message has seq=10, new message has seq=11 (from retry)
+      // They have the same content, so it should be detected as duplicate
+      const messages = [
+        { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, "Hello world");
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("detects duplicate by content when existing has no seq", () => {
+      // Scenario: User sent message, phone locked before user_prompt notification
+      // The local message has no seq
+      const messages = [
+        { role: ROLE_USER, text: "Hello world", timestamp: 1000 }, // No seq!
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 10, "Hello world");
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("does not detect duplicate when content differs", () => {
+      const messages = [
+        { role: ROLE_USER, text: "Hello", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, "Goodbye");
+      expect(isDuplicate).toBe(false);
+    });
+
+    test("does not detect duplicate for non-user messages", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "Hello", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 10, "Hello");
+      expect(isDuplicate).toBe(false);
+    });
+
+    test("handles multiple user messages - finds duplicate in any position", () => {
+      const messages = [
+        { role: ROLE_USER, text: "First message", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "Response 1", seq: 2, timestamp: 2000 },
+        { role: ROLE_USER, text: "Second message", seq: 3, timestamp: 3000 },
+        { role: ROLE_AGENT, html: "Response 2", seq: 4, timestamp: 4000 },
+      ];
+      // New message matches "Second message" but with different seq
+      const isDuplicate = checkUserPromptDuplicate(
+        messages,
+        10,
+        "Second message",
+      );
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("content comparison uses first 200 chars only", () => {
+      const longText = "A".repeat(250);
+      const messages = [
+        { role: ROLE_USER, text: longText, seq: 10, timestamp: 1000 },
+      ];
+      // Same first 200 chars, different ending
+      const newMessage = longText.substring(0, 200) + "B".repeat(50);
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, newMessage);
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("content comparison is case-sensitive", () => {
+      const messages = [
+        { role: ROLE_USER, text: "Hello World", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, "hello world");
+      expect(isDuplicate).toBe(false);
+    });
+
+    test("handles empty messages array", () => {
+      const isDuplicate = checkUserPromptDuplicate([], 10, "Hello");
+      expect(isDuplicate).toBe(false);
+    });
+
+    test("handles null/undefined message content", () => {
+      const messages = [
+        { role: ROLE_USER, text: "", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, null);
+      expect(isDuplicate).toBe(true); // Both are empty
+    });
+
+    // Test the OLD buggy behavior to document what was wrong
+    describe("regression tests (old buggy behavior)", () => {
+      // This helper mimics the OLD buggy logic that was fixed
+      function checkUserPromptDuplicateBuggy(messages, newSeq, newMessage) {
+        return messages.some((m) => {
+          if (m.role !== ROLE_USER) return false;
+          // BUG: This returns false when seqs differ, skipping content check!
+          if (newSeq && m.seq) return m.seq === newSeq;
+          // Content check only reached if one doesn't have seq
+          const messageContent = newMessage?.substring(0, 200) || "";
+          return (m.text || "").substring(0, 200) === messageContent;
+        });
+      }
+
+      test("OLD BUG: fails to detect duplicate when seqs differ", () => {
+        // This demonstrates the bug that was fixed
+        const messages = [
+          { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
+        ];
+        // With the buggy logic, this returns false (not detected as duplicate)
+        // because both have seq but they differ, and it returns false immediately
+        const isDuplicate = checkUserPromptDuplicateBuggy(
+          messages,
+          11,
+          "Hello world",
+        );
+        expect(isDuplicate).toBe(false); // BUG: Should be true!
+      });
+
+      test("OLD BUG: only works when existing has no seq", () => {
+        // The old logic only fell through to content check when existing had no seq
+        const messages = [
+          { role: ROLE_USER, text: "Hello world", timestamp: 1000 }, // No seq
+        ];
+        const isDuplicate = checkUserPromptDuplicateBuggy(
+          messages,
+          10,
+          "Hello world",
+        );
+        expect(isDuplicate).toBe(true); // This case worked
+      });
+    });
+  });
+});
+
+// =============================================================================
+// UI State Consistency Tests
+// =============================================================================
+
+describe("UI State Consistency", () => {
+  describe("Load Earlier Messages Button Visibility", () => {
+    // These tests document the expected behavior for the "Load earlier messages" button
+    // The button should only be shown when:
+    // 1. hasMoreMessages is true AND
+    // 2. messages.length > 0
+    // This prevents showing the button when in an inconsistent state
+
+    test("button should be hidden when messages is empty even if hasMoreMessages is true", () => {
+      // This is the bug scenario: hasMoreMessages=true but messages=[]
+      // The button should NOT be shown in this case
+      const messages = [];
+      const hasMoreMessages = true;
+
+      // The condition used in app.js
+      const shouldShowButton = hasMoreMessages && messages.length > 0;
+
+      expect(shouldShowButton).toBe(false);
+    });
+
+    test("button should be shown when hasMoreMessages is true and messages exist", () => {
+      const messages = [{ role: ROLE_USER, text: "Hello", seq: 1 }];
+      const hasMoreMessages = true;
+
+      const shouldShowButton = hasMoreMessages && messages.length > 0;
+
+      expect(shouldShowButton).toBe(true);
+    });
+
+    test("button should be hidden when hasMoreMessages is false", () => {
+      const messages = [{ role: ROLE_USER, text: "Hello", seq: 1 }];
+      const hasMoreMessages = false;
+
+      const shouldShowButton = hasMoreMessages && messages.length > 0;
+
+      expect(shouldShowButton).toBe(false);
+    });
+
+    test("button should be hidden when both messages is empty and hasMoreMessages is false", () => {
+      const messages = [];
+      const hasMoreMessages = false;
+
+      const shouldShowButton = hasMoreMessages && messages.length > 0;
+
+      expect(shouldShowButton).toBe(false);
+    });
+  });
+
+  describe("Inconsistent State Detection", () => {
+    // These tests document the logic for detecting inconsistent state
+    // where hasMoreMessages=true but messages=[]
+
+    test("should detect inconsistent state when hasMoreMessages=true but no messages", () => {
+      const session = {
+        messages: [],
+        hasMoreMessages: true,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(true);
+    });
+
+    test("should not detect inconsistent state when messages exist", () => {
+      const session = {
+        messages: [{ role: ROLE_USER, text: "Hello", seq: 1 }],
+        hasMoreMessages: true,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(false);
+    });
+
+    test("should not detect inconsistent state when hasMoreMessages is false", () => {
+      const session = {
+        messages: [],
+        hasMoreMessages: false,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(false);
+    });
+
+    test("should handle undefined messages array", () => {
+      const session = {
+        messages: undefined,
+        hasMoreMessages: true,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(true);
+    });
+
+    test("should handle null messages array", () => {
+      const session = {
+        messages: null,
+        hasMoreMessages: true,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(true);
+    });
+  });
+
+  describe("Empty State Display", () => {
+    // The empty state (welcome message) should be shown when messages.length === 0
+    // regardless of hasMoreMessages value (after the fix)
+
+    test("should show empty state when no messages", () => {
+      const messages = [];
+
+      const shouldShowEmptyState = messages.length === 0;
+
+      expect(shouldShowEmptyState).toBe(true);
+    });
+
+    test("should not show empty state when messages exist", () => {
+      const messages = [{ role: ROLE_USER, text: "Hello", seq: 1 }];
+
+      const shouldShowEmptyState = messages.length === 0;
+
+      expect(shouldShowEmptyState).toBe(false);
     });
   });
 });

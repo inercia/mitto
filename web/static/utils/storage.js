@@ -119,3 +119,111 @@ export function getQueueHeightConstraints() {
     default: DEFAULT_QUEUE_HEIGHT,
   };
 }
+
+// =============================================================================
+// Conversation Grouping Persistence (localStorage)
+// =============================================================================
+
+// Grouping modes: 'none' | 'server' | 'folder'
+const GROUPING_MODE_KEY = "mitto_conversation_grouping_mode";
+const EXPANDED_GROUPS_KEY = "mitto_conversation_expanded_groups";
+
+/**
+ * Get the current conversation grouping mode from localStorage
+ * @returns {'none' | 'server' | 'folder'} The current grouping mode
+ */
+export function getGroupingMode() {
+  try {
+    const value = localStorage.getItem(GROUPING_MODE_KEY);
+    if (value === "server" || value === "folder") {
+      return value;
+    }
+    return "none";
+  } catch (e) {
+    console.warn("Failed to read grouping mode from localStorage:", e);
+    return "none";
+  }
+}
+
+/**
+ * Save the conversation grouping mode to localStorage
+ * @param {'none' | 'server' | 'folder'} mode - The grouping mode to save
+ */
+export function setGroupingMode(mode) {
+  try {
+    if (mode === "server" || mode === "folder") {
+      localStorage.setItem(GROUPING_MODE_KEY, mode);
+    } else {
+      localStorage.removeItem(GROUPING_MODE_KEY);
+    }
+  } catch (e) {
+    console.warn("Failed to save grouping mode to localStorage:", e);
+  }
+}
+
+/**
+ * Cycle to the next grouping mode
+ * @returns {'none' | 'server' | 'folder'} The new grouping mode
+ */
+export function cycleGroupingMode() {
+  const current = getGroupingMode();
+  let next;
+  switch (current) {
+    case "none":
+      next = "server";
+      break;
+    case "server":
+      next = "folder";
+      break;
+    case "folder":
+      next = "none";
+      break;
+    default:
+      next = "none";
+  }
+  setGroupingMode(next);
+  return next;
+}
+
+/**
+ * Get the expanded/collapsed state of groups from localStorage
+ * @returns {Object} Map of group keys to boolean (true = expanded)
+ */
+export function getExpandedGroups() {
+  try {
+    const value = localStorage.getItem(EXPANDED_GROUPS_KEY);
+    if (value) {
+      return JSON.parse(value);
+    }
+    return {};
+  } catch (e) {
+    console.warn("Failed to read expanded groups from localStorage:", e);
+    return {};
+  }
+}
+
+/**
+ * Save the expanded/collapsed state of a group to localStorage
+ * @param {string} groupKey - The unique key for the group (server name or folder path)
+ * @param {boolean} expanded - Whether the group is expanded
+ */
+export function setGroupExpanded(groupKey, expanded) {
+  try {
+    const groups = getExpandedGroups();
+    groups[groupKey] = expanded;
+    localStorage.setItem(EXPANDED_GROUPS_KEY, JSON.stringify(groups));
+  } catch (e) {
+    console.warn("Failed to save expanded group state to localStorage:", e);
+  }
+}
+
+/**
+ * Check if a group is expanded (defaults to true for groups not yet tracked)
+ * @param {string} groupKey - The unique key for the group
+ * @returns {boolean} Whether the group is expanded
+ */
+export function isGroupExpanded(groupKey) {
+  const groups = getExpandedGroups();
+  // Default to expanded (true) if not yet tracked
+  return groups[groupKey] !== false;
+}

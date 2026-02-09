@@ -6,6 +6,9 @@ const { useState, useEffect, useRef, useCallback } = window.preact;
 // Dead zone in pixels - movement below this is considered a tap, not a swipe
 const DEAD_ZONE = 10;
 
+// Animation duration in milliseconds
+const DELETE_ANIMATION_DURATION = 400;
+
 /**
  * Hook for handling swipe-to-delete gestures
  *
@@ -14,7 +17,7 @@ const DEAD_ZONE = 10;
  * @param {number} options.threshold - Percentage of width to trigger auto-delete (default: 0.5 = 50%)
  * @param {number} options.revealWidth - Width in pixels to reveal delete button (default: 80)
  * @param {boolean} options.disabled - Whether swipe is disabled (default: false)
- * @returns {Object} { swipeOffset, isSwiping, isSwipingRef, isRevealed, containerProps, reset, triggerDelete }
+ * @returns {Object} { swipeOffset, isSwiping, isSwipingRef, isRevealed, isDeleting, containerProps, reset, triggerDelete }
  */
 export function useSwipeToDelete(options = {}) {
   const {
@@ -27,30 +30,46 @@ export function useSwipeToDelete(options = {}) {
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
   const [isRevealed, setIsRevealed] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const containerRef = useRef(null);
   const dragStartRef = useRef(null);
   // Track if swipe has been "confirmed" (passed dead zone with horizontal intent)
   const swipeConfirmedRef = useRef(false);
   // Track isSwiping state in a ref for synchronous access in click handlers
   const isSwipingRef = useRef(false);
+  // Track delete timeout for cleanup
+  const deleteTimeoutRef = useRef(null);
 
   // Reset the swipe state
   const reset = useCallback(() => {
     setSwipeOffset(0);
     setIsRevealed(false);
     setIsSwiping(false);
+    setIsDeleting(false);
     isSwipingRef.current = false;
     dragStartRef.current = null;
     swipeConfirmedRef.current = false;
+    if (deleteTimeoutRef.current) {
+      clearTimeout(deleteTimeoutRef.current);
+      deleteTimeoutRef.current = null;
+    }
   }, []);
 
-  // Handle delete action
+  // Handle delete action with animation delay
   const triggerDelete = useCallback(() => {
-    if (onDelete) {
-      onDelete();
-    }
-    reset();
-  }, [onDelete, reset]);
+    if (isDeleting) return; // Prevent double-trigger
+
+    // Start delete animation
+    setIsDeleting(true);
+
+    // After animation completes, call onDelete and reset
+    deleteTimeoutRef.current = setTimeout(() => {
+      if (onDelete) {
+        onDelete();
+      }
+      reset();
+    }, DELETE_ANIMATION_DURATION);
+  }, [onDelete, reset, isDeleting]);
 
   // Calculate swipe offset from movement
   const calculateOffset = useCallback(
@@ -67,6 +86,10 @@ export function useSwipeToDelete(options = {}) {
   );
 
   // Handle start of drag (mouse or touch)
+  // Note: We don't set isSwipingRef.current = true here because we don't know
+  // yet if this is a tap or a swipe. We only set it to true when the swipe
+  // is confirmed (movement exceeds dead zone). This fixes iOS Safari issues
+  // where click events fire before touchend, causing taps to be ignored.
   const handleDragStart = useCallback(
     (clientX, clientY) => {
       if (disabled) return;
@@ -78,7 +101,8 @@ export function useSwipeToDelete(options = {}) {
       }
 
       setIsSwiping(true);
-      isSwipingRef.current = true;
+      // Don't set isSwipingRef.current = true here - wait until swipe is confirmed
+      // This allows click events to work for taps on iOS Safari
       swipeConfirmedRef.current = false;
       dragStartRef.current = {
         startX: clientX,
@@ -109,6 +133,9 @@ export function useSwipeToDelete(options = {}) {
         // If horizontal movement exceeds dead zone and is leftward, confirm swipe
         if (absX > DEAD_ZONE && deltaX < 0) {
           swipeConfirmedRef.current = true;
+          // NOW we set isSwipingRef.current = true because we've confirmed this is a swipe
+          // This prevents click events from firing for confirmed swipes
+          isSwipingRef.current = true;
         } else {
           // Still in dead zone, don't update offset yet
           return false;
@@ -291,6 +318,15 @@ export function useSwipeToDelete(options = {}) {
     };
   }, [isRevealed, reset]);
 
+  // Cleanup delete timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (deleteTimeoutRef.current) {
+        clearTimeout(deleteTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // Props to spread on the swipeable container element
   const containerProps = {
     ref: containerRef,
@@ -303,6 +339,7 @@ export function useSwipeToDelete(options = {}) {
     isSwiping,
     isSwipingRef,
     isRevealed,
+    isDeleting,
     containerProps,
     reset,
     triggerDelete,

@@ -39,12 +39,27 @@ import {
   redirectToLogin,
 } from "../utils/csrf.js";
 
+import { apiUrl, wsUrl, getApiPrefix } from "../utils/api.js";
+
+// Import WebSocket utilities (H1, M1, M2 implementations)
+import {
+  updateLastSeenSeqIfHigher,
+  createSeqTracker,
+  isSeqDuplicate as isSeqDuplicateUtil,
+  markSeqSeen as markSeqSeenUtil,
+  calculateReconnectDelay,
+} from "../utils/websocket.js";
+
 // Time threshold (in ms) for considering the session potentially stale
 // If the page has been hidden for longer than this, we do an explicit auth check
 // before trying to reconnect. The server session expires after 24 hours.
 const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 
-import { apiUrl, wsUrl, getApiPrefix } from "../utils/api.js";
+// Keepalive configuration for detecting zombie WebSocket connections
+// On mobile, connections can appear open but be dead (zombie connections)
+const KEEPALIVE_INTERVAL_MS = 25000; // Send keepalive every 25 seconds
+const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
+const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
 
 /**
  * Check if the user is authenticated.
@@ -165,15 +180,72 @@ export function useWebSocket() {
   const sessionsRef = useRef(sessions); // For accessing sessions in callbacks
   const workspacesRef = useRef(workspaces); // For accessing workspaces in callbacks
   const retryPendingPromptsRef = useRef(null); // Ref to retry function (set later to avoid circular deps)
+  const resolvePendingSendsRef = useRef(null); // Ref to resolve function (set later to avoid circular deps)
   // Track pending send operations for ACK handling
   // { promptId: { resolve, reject, timeoutId } }
   const pendingSendsRef = useRef({});
+
+  // M2: Track reconnection attempts for exponential backoff
+  // { sessionId: attemptCount } for session WebSockets
+  const sessionReconnectAttemptsRef = useRef({});
+  // Attempt count for global events WebSocket
+  const eventsReconnectAttemptRef = useRef(0);
+
+  // M1 fix: Track seen sequence numbers per session for client-side deduplication
+  // { sessionId: { highestSeq: number, recentSeqs: Set<number> } }
+  // Uses utility functions from utils/websocket.js for testability
+  const seenSeqsRef = useRef({});
+
+  /**
+   * Get or create a seq tracker for a session.
+   * @param {string} sessionId - The session ID
+   * @returns {{highestSeq: number, recentSeqs: Set<number>}}
+   */
+  const getSeqTracker = useCallback((sessionId) => {
+    if (!seenSeqsRef.current[sessionId]) {
+      seenSeqsRef.current[sessionId] = createSeqTracker();
+    }
+    return seenSeqsRef.current[sessionId];
+  }, []);
+
+  /**
+   * Check if a sequence number has already been seen for a session.
+   * Wrapper around utility function that manages per-session state.
+   */
+  const isSeqDuplicate = useCallback((sessionId, seq, lastMessageSeq) => {
+    const tracker = getSeqTracker(sessionId);
+    const isDuplicate = isSeqDuplicateUtil(tracker, seq, lastMessageSeq);
+    if (isDuplicate) {
+      console.log(`M1 dedup: Skipping duplicate seq ${seq} for session ${sessionId}`);
+    }
+    return isDuplicate;
+  }, [getSeqTracker]);
+
+  /**
+   * Mark a sequence number as seen for a session.
+   * Wrapper around utility function that manages per-session state.
+   */
+  const markSeqSeen = useCallback((sessionId, seq) => {
+    const tracker = getSeqTracker(sessionId);
+    markSeqSeenUtil(tracker, seq);
+  }, [getSeqTracker]);
+
+  /**
+   * Clear seen sequences for a session (e.g., when session is deleted or reset).
+   */
+  const clearSeenSeqs = useCallback((sessionId) => {
+    delete seenSeqsRef.current[sessionId];
+  }, []);
 
   // Track if this is a reconnection (vs initial connection)
   const wasConnectedRef = useRef(false);
 
   // Track when the page was last hidden (for staleness detection on mobile)
   const lastHiddenTimeRef = useRef(null);
+
+  // Keepalive tracking for detecting zombie connections
+  // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
+  const keepaliveRef = useRef({});
 
   // Fetch workspaces and ACP servers
   const fetchWorkspaces = useCallback(async () => {
@@ -333,9 +405,11 @@ export function useWebSocket() {
           },
         );
         if (response.ok || response.status === 201) {
+          // Parse response to get the message ID
+          const data = await response.json().catch(() => ({}));
           // Refresh queue messages after addition
           await fetchQueueMessages();
-          return { success: true };
+          return { success: true, messageId: data.id };
         }
         // Handle queue full error
         if (response.status === 409) {
@@ -560,7 +634,8 @@ export function useWebSocket() {
         });
         break;
 
-      case "agent_message":
+      case "agent_message": {
+        const msgSeq = msg.data.seq;
         console.log(
           "agent_message received:",
           sessionId,
@@ -568,8 +643,19 @@ export function useWebSocket() {
           "is_prompting:",
           msg.data.is_prompting,
           "seq:",
-          msg.data.seq,
+          msgSeq,
         );
+
+        // Agent is responding - this proves any pending prompts were received.
+        // Resolve pending sends to prevent false "delivery not confirmed" errors on mobile.
+        if (resolvePendingSendsRef.current) {
+          resolvePendingSendsRef.current(sessionId);
+        }
+
+        // Update lastSeenSeq immediately so reconnection sync is up-to-date
+        // even if client disconnects mid-stream (H1 fix)
+        updateLastSeenSeqIfHigher(sessionId, msgSeq);
+
         // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
         // Frontend only needs to coalesce chunks with the same seq (streaming continuation).
         setSessions((prev) => {
@@ -577,7 +663,11 @@ export function useWebSocket() {
           if (!session) return prev;
           let messages = [...session.messages];
           const last = messages[messages.length - 1];
-          const msgSeq = msg.data.seq;
+
+          // M1 fix: Check for duplicate events (but allow same-seq for coalescing)
+          if (isSeqDuplicate(sessionId, msgSeq, last?.seq)) {
+            return prev; // Skip duplicate
+          }
 
           // Check if we should append to existing message:
           // - Same seq means it's a continuation of the same logical message
@@ -589,7 +679,8 @@ export function useWebSocket() {
               html: (last.html || "") + msg.data.html,
             };
           } else {
-            // New message - server guarantees this is not a duplicate
+            // New message - mark seq as seen
+            markSeqSeen(sessionId, msgSeq);
             messages.push({
               role: ROLE_AGENT,
               html: msg.data.html,
@@ -606,15 +697,31 @@ export function useWebSocket() {
           };
         });
         break;
+      }
 
-      case "agent_thought":
+      case "agent_thought": {
+        const msgSeq = msg.data.seq;
+
+        // Agent is responding - this proves any pending prompts were received.
+        // Resolve pending sends to prevent false "delivery not confirmed" errors on mobile.
+        if (resolvePendingSendsRef.current) {
+          resolvePendingSendsRef.current(sessionId);
+        }
+
+        // Update lastSeenSeq immediately so reconnection sync is up-to-date (H1 fix)
+        updateLastSeenSeqIfHigher(sessionId, msgSeq);
+
         // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
           let messages = [...session.messages];
           const last = messages[messages.length - 1];
-          const msgSeq = msg.data.seq;
+
+          // M1 fix: Check for duplicate events (but allow same-seq for coalescing)
+          if (isSeqDuplicate(sessionId, msgSeq, last?.seq)) {
+            return prev; // Skip duplicate
+          }
 
           // Check if we should append to existing thought:
           // - Same seq means it's a continuation of the same logical thought
@@ -626,7 +733,8 @@ export function useWebSocket() {
               text: (last.text || "") + msg.data.text,
             };
           } else {
-            // New thought - server guarantees this is not a duplicate
+            // New thought - mark seq as seen
+            markSeqSeen(sessionId, msgSeq);
             messages.push({
               role: ROLE_THOUGHT,
               text: msg.data.text,
@@ -643,10 +751,22 @@ export function useWebSocket() {
           };
         });
         break;
+      }
 
-      case "tool_call":
+      case "tool_call": {
+        const msgSeq = msg.data.seq;
+        // Update lastSeenSeq immediately so reconnection sync is up-to-date (H1 fix)
+        updateLastSeenSeqIfHigher(sessionId, msgSeq);
+
+        // M1 fix: Check for duplicate events
+        if (isSeqDuplicate(sessionId, msgSeq, null)) {
+          break; // Skip duplicate
+        }
+
+        // Mark seq as seen
+        markSeqSeen(sessionId, msgSeq);
+
         // WebSocket-only architecture: Server guarantees no duplicate events via seq tracking.
-        // Just append the tool call - no deduplication needed.
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -659,7 +779,7 @@ export function useWebSocket() {
               title: msg.data.title,
               status: msg.data.status,
               timestamp: Date.now(),
-              seq: msg.data.seq,
+              seq: msgSeq,
             },
           ]);
           const isPrompting = msg.data.is_prompting ?? true;
@@ -669,6 +789,7 @@ export function useWebSocket() {
           };
         });
         break;
+      }
 
       case "tool_update":
         setSessions((prev) => {
@@ -774,7 +895,21 @@ export function useWebSocket() {
         break;
       }
 
-      case "error":
+      case "error": {
+        // If this error includes a prompt_id, reject the pending send for that prompt
+        // This cancels the send timeout and prevents duplicate error messages
+        const errorPromptId = msg.data.prompt_id;
+        if (errorPromptId) {
+          const pending = pendingSendsRef.current[errorPromptId];
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.reject(new Error(msg.data.message));
+            delete pendingSendsRef.current[errorPromptId];
+            // Remove from pending prompts in localStorage
+            removePendingPrompt(errorPromptId);
+          }
+        }
+
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -792,6 +927,18 @@ export function useWebSocket() {
           };
         });
         break;
+      }
+
+      case "keepalive_ack": {
+        // Server responded to our keepalive - connection is healthy
+        const keepalive = keepaliveRef.current[sessionId];
+        if (keepalive) {
+          keepalive.lastAckTime = Date.now();
+          keepalive.missedCount = 0;
+          keepalive.pendingKeepalive = false;
+        }
+        break;
+      }
 
       case "session_renamed":
         setSessions((prev) => {
@@ -889,6 +1036,7 @@ export function useWebSocket() {
         const firstSeq = msg.data.first_seq || 0;
         const lastSeq = msg.data.last_seq || 0;
         const isPrompting = msg.data.is_prompting || false;
+        const totalCount = msg.data.total_count || 0;
 
         console.log("events_loaded received:", {
           sessionId,
@@ -898,7 +1046,36 @@ export function useWebSocket() {
           firstSeq,
           lastSeq,
           isPrompting,
+          totalCount,
         });
+
+        // Check if this was a stale sync request that returned no events
+        // but the session has events on the server. This happens when:
+        // 1. localStorage has a stale lastSeenSeq (higher than current event count)
+        // 2. Sync request with after_seq returns 0 events
+        // 3. But session actually has events (total_count > 0)
+        // In this case, clear the stale seq and request a fresh initial load.
+        const storedSeq = getLastSeenSeq(sessionId);
+        const isStaleSync = !isPrepend && events.length === 0 && totalCount > 0 && storedSeq > 0;
+
+        if (isStaleSync) {
+          console.log(`Stale sync detected for ${sessionId}: stored seq ${storedSeq}, but session has ${totalCount} events. Requesting fresh load.`);
+          // Clear stale seq
+          setLastSeenSeq(sessionId, 0);
+
+          // Request fresh initial load
+          const ws = sessionWsRefs.current[sessionId];
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                type: "load_events",
+                data: { limit: INITIAL_EVENTS_LIMIT },
+              }),
+            );
+          }
+          // Don't update state - wait for the fresh load response
+          break;
+        }
 
         // Convert events to messages
         const newMessages = convertEventsToMessages(events, {
@@ -909,6 +1086,15 @@ export function useWebSocket() {
         // Update lastSeenSeq for non-prepend loads (initial load and sync)
         if (!isPrepend && lastSeq > 0) {
           setLastSeenSeq(sessionId, lastSeq);
+        }
+
+        // M1 fix: Mark all loaded event seqs as seen to prevent duplicates
+        // This is important for sync after reconnect where we might receive
+        // events that overlap with what we already have
+        for (const event of events) {
+          if (event.seq) {
+            markSeqSeen(sessionId, event.seq);
+          }
         }
 
         setSessions((prev) => {
@@ -923,9 +1109,12 @@ export function useWebSocket() {
             // Initial load - just use the new messages
             messages = newMessages;
           } else {
-            // Sync after reconnect - append new messages
-            // Server guarantees no duplicates via seq tracking
-            messages = [...session.messages, ...newMessages];
+            // Sync after reconnect - merge with deduplication
+            // Use mergeMessagesWithSync to handle cases where:
+            // 1. lastSeenSeq in localStorage is stale (visibility change during streaming)
+            // 2. Messages already in UI have seq values from streaming
+            // 3. Server returns events that overlap with what's already displayed
+            messages = mergeMessagesWithSync(session.messages, newMessages);
           }
 
           return {
@@ -981,6 +1170,19 @@ export function useWebSocket() {
           message: message?.substring(0, 50),
         });
 
+        // Update lastSeenSeq immediately so reconnection sync is up-to-date (H1 fix)
+        updateLastSeenSeqIfHigher(sessionId, seq);
+
+        // M1 fix: Mark seq as seen (for our own prompts, we mark after confirmation)
+        if (!is_mine && seq) {
+          // For other clients' prompts, check for duplicates
+          if (isSeqDuplicate(sessionId, seq, null)) {
+            console.log("M1 dedup: Skipping duplicate user_prompt seq", seq);
+            break; // Skip duplicate
+          }
+          markSeqSeen(sessionId, seq);
+        }
+
         // Set isStreaming = true immediately when a prompt is sent
         // This shows the Stop button right away, not waiting for agent response
         if (is_prompting) {
@@ -1002,6 +1204,10 @@ export function useWebSocket() {
           if (prompt_id) {
             removePendingPrompt(prompt_id);
             console.log("Own prompt confirmed:", prompt_id, "seq:", seq);
+            // M1 fix: Mark seq as seen now that it's confirmed
+            if (seq) {
+              markSeqSeen(sessionId, seq);
+            }
             // Update the seq on the existing user message
             if (seq) {
               setSessions((prev) => {
@@ -1027,17 +1233,55 @@ export function useWebSocket() {
           }
         } else {
           // Another client sent this prompt - add to our UI
-          // But first check if we already have this message (by seq or content)
+          // But first check if we have a pending send for this prompt_id
+          // This can happen if the WebSocket reconnected and got a new clientID,
+          // causing is_mine to be false even though we sent the prompt
+          if (prompt_id) {
+            const pending = pendingSendsRef.current[prompt_id];
+            if (pending) {
+              // This is actually our prompt, but is_mine is false due to WebSocket reconnection
+              console.log(
+                "Own prompt confirmed (after reconnect):",
+                prompt_id,
+                "seq:",
+                seq,
+              );
+              removePendingPrompt(prompt_id);
+              clearTimeout(pending.timeoutId);
+              pending.resolve({ success: true, promptId: prompt_id });
+              delete pendingSendsRef.current[prompt_id];
+              // Update the seq on the existing user message
+              if (seq) {
+                setSessions((prev) => {
+                  const session = prev[sessionId];
+                  if (!session) return prev;
+                  const messages = session.messages.map((m) => {
+                    // Find the user message we just sent (by content match)
+                    if (m.role === ROLE_USER && !m.seq && m.text === message) {
+                      return { ...m, seq };
+                    }
+                    return m;
+                  });
+                  return { ...prev, [sessionId]: { ...session, messages } };
+                });
+              }
+              break; // Don't add duplicate message
+            }
+          }
+
+          // Check if this message already exists (by seq or content)
           setSessions((prev) => {
             const session = prev[sessionId];
             if (!session) return prev;
 
             // Check if this message already exists (by seq if available, or by content)
+            // Note: We always check content because a prompt retry can result in a new seq
+            // for the same message content (server assigns new seq on each persist).
             const alreadyExists = session.messages.some((m) => {
               if (m.role !== ROLE_USER) return false;
-              // If both have seq, compare by seq
-              if (seq && m.seq) return m.seq === seq;
-              // Otherwise compare by content
+              // If seq matches exactly, it's the same message
+              if (seq && m.seq && m.seq === seq) return true;
+              // Also check content - handles case where retry created new seq for same message
               const messageContent = message?.substring(0, 200) || "";
               return (m.text || "").substring(0, 200) === messageContent;
             });
@@ -1096,6 +1340,33 @@ export function useWebSocket() {
           );
           // Dispatch event for queue dropdown to refresh
           window.dispatchEvent(new CustomEvent("mitto:queue_updated"));
+        }
+        break;
+
+      case "queue_message_sending":
+        // Server notifies that a queued message is about to be sent to the agent
+        // This happens when the agent is idle and auto-processes the queue
+        if (msg.data?.message_id) {
+          console.log(`Queue message sending: ${msg.data.message_id}`);
+          // Dispatch event so UI can show "sending" state
+          window.dispatchEvent(
+            new CustomEvent("mitto:queue_message_sending", {
+              detail: { messageId: msg.data.message_id },
+            }),
+          );
+        }
+        break;
+
+      case "queue_message_sent":
+        // Server notifies that a queued message was delivered to the agent
+        if (msg.data?.message_id) {
+          console.log(`Queue message sent: ${msg.data.message_id}`);
+          // Dispatch event so UI can update
+          window.dispatchEvent(
+            new CustomEvent("mitto:queue_message_sent", {
+              detail: { messageId: msg.data.message_id },
+            }),
+          );
         }
         break;
 
@@ -1159,6 +1430,9 @@ export function useWebSocket() {
       ws.onopen = () => {
         console.log(`Session WebSocket connected: ${sessionId} (ws: ${wsId})`);
 
+        // M2: Reset reconnection attempt counter on successful connection
+        delete sessionReconnectAttemptsRef.current[sessionId];
+
         // Use the new WebSocket-only approach for loading events
         // Check if we have a lastSeenSeq (reconnection) or need initial load
         const lastSeq = getLastSeenSeq(sessionId);
@@ -1188,6 +1462,64 @@ export function useWebSocket() {
             retryPendingPromptsRef.current(sessionId);
           }
         }, 500);
+
+        // Start keepalive interval to detect zombie connections
+        // Clear any existing keepalive for this session first
+        if (keepaliveRef.current[sessionId]?.intervalId) {
+          clearInterval(keepaliveRef.current[sessionId].intervalId);
+        }
+
+        const intervalId = setInterval(() => {
+          const currentWs = sessionWsRefs.current[sessionId];
+          if (!currentWs || currentWs.readyState !== WebSocket.OPEN) {
+            // WebSocket is not open, clear the interval
+            clearInterval(intervalId);
+            delete keepaliveRef.current[sessionId];
+            return;
+          }
+
+          const keepalive = keepaliveRef.current[sessionId];
+          if (keepalive?.pendingKeepalive) {
+            // Previous keepalive didn't get a response
+            keepalive.missedCount = (keepalive.missedCount || 0) + 1;
+            console.log(
+              `Keepalive missed for session ${sessionId}, count: ${keepalive.missedCount}`,
+            );
+
+            if (keepalive.missedCount >= KEEPALIVE_MAX_MISSED) {
+              // Connection is likely dead, force close to trigger reconnect
+              console.log(
+                `Too many missed keepalives for session ${sessionId}, forcing reconnect`,
+              );
+              clearInterval(intervalId);
+              delete keepaliveRef.current[sessionId];
+              currentWs.close();
+              return;
+            }
+          }
+
+          // Send keepalive
+          keepaliveRef.current[sessionId] = {
+            ...keepaliveRef.current[sessionId],
+            intervalId,
+            pendingKeepalive: true,
+            lastSentTime: Date.now(),
+          };
+
+          currentWs.send(
+            JSON.stringify({
+              type: "keepalive",
+              data: { client_time: Date.now() },
+            }),
+          );
+        }, KEEPALIVE_INTERVAL_MS);
+
+        keepaliveRef.current[sessionId] = {
+          intervalId,
+          lastAckTime: Date.now(),
+          missedCount: 0,
+          pendingKeepalive: false,
+        };
       };
 
       ws.onmessage = (event) => {
@@ -1212,6 +1544,13 @@ export function useWebSocket() {
 
       ws.onclose = async () => {
         console.log(`Session WebSocket closed: ${sessionId} (ws: ${wsId})`);
+
+        // Clean up keepalive interval for this session
+        if (keepaliveRef.current[sessionId]?.intervalId) {
+          clearInterval(keepaliveRef.current[sessionId].intervalId);
+          delete keepaliveRef.current[sessionId];
+        }
+
         // Only delete the ref if it still points to this WebSocket (not a newer one)
         if (sessionWsRefs.current[sessionId] === ws) {
           delete sessionWsRefs.current[sessionId];
@@ -1242,15 +1581,21 @@ export function useWebSocket() {
           activeSessionIdRef.current === sessionId &&
           !sessionWsRefs.current[sessionId]
         ) {
-          console.log(`Scheduling reconnect for active session: ${sessionId}`);
+          // M2: Use exponential backoff for reconnection
+          const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
+          const delay = calculateReconnectDelay(attempt);
+          console.log(`Scheduling reconnect for session ${sessionId} (attempt ${attempt + 1}, delay ${delay}ms)`);
+
           sessionReconnectRefs.current[sessionId] = setTimeout(() => {
             delete sessionReconnectRefs.current[sessionId];
             // Double-check the session is still active before reconnecting
             if (activeSessionIdRef.current === sessionId) {
+              // Increment attempt counter before reconnecting
+              sessionReconnectAttemptsRef.current[sessionId] = attempt + 1;
               console.log(`Reconnecting to session: ${sessionId}`);
               connectToSession(sessionId);
             }
-          }, 2000);
+          }, delay);
         }
       };
 
@@ -1302,6 +1647,20 @@ export function useWebSocket() {
       if (hasLoadedMessages && hasWorkingDir) {
         // Session already has messages and working_dir, just set it active
         setActiveSessionId(sessionId);
+
+        // Ensure WebSocket is connected and synced
+        // On mobile, the WebSocket may have died while the phone slept
+        // If not connected, connect now - the onopen handler will sync events
+        const existingWs = sessionWsRefs.current[sessionId];
+        if (!existingWs || existingWs.readyState !== WebSocket.OPEN) {
+          console.log(`Session ${sessionId} has messages but WebSocket is not connected, reconnecting...`);
+          // Remove stale WebSocket reference if any
+          if (existingWs) {
+            delete sessionWsRefs.current[sessionId];
+            existingWs.close();
+          }
+          connectToSession(sessionId);
+        }
         return;
       }
 
@@ -1353,6 +1712,8 @@ export function useWebSocket() {
         }
 
         // Initialize session state with metadata (messages will be loaded via WebSocket)
+        // Important: Reset hasMoreMessages and firstLoadedSeq when starting a fresh load
+        // to prevent stale values from showing incorrect UI state while loading
         setSessions((prev) => {
           const existing = prev[sessionId] || {};
           return {
@@ -1370,6 +1731,9 @@ export function useWebSocket() {
                 status: meta.status || "active",
               },
               isStreaming: existing.isStreaming || false,
+              // Reset these to prevent stale UI state while loading
+              hasMoreMessages: existing.messages?.length > 0 ? existing.hasMoreMessages : false,
+              firstLoadedSeq: existing.messages?.length > 0 ? existing.firstLoadedSeq : undefined,
             },
           };
         });
@@ -1489,6 +1853,10 @@ export function useWebSocket() {
           sessionWsRefs.current[deletedId].close();
           delete sessionWsRefs.current[deletedId];
         }
+        // M1 fix: Clear seen seqs for deleted session
+        clearSeenSeqs(deletedId);
+        // M2: Clear reconnection attempt counter for deleted session
+        delete sessionReconnectAttemptsRef.current[deletedId];
         break;
       }
     }
@@ -1500,6 +1868,9 @@ export function useWebSocket() {
 
     socket.onopen = () => {
       setEventsConnected(true);
+      // M2: Reset reconnection attempt counter on successful connection
+      eventsReconnectAttemptRef.current = 0;
+
       const isReconnect = wasConnectedRef.current;
       console.log(
         "Global events WebSocket connected",
@@ -1558,8 +1929,12 @@ export function useWebSocket() {
         return;
       }
 
-      // Reconnect after delay
-      reconnectRef.current = setTimeout(connectToEvents, 2000);
+      // M2: Use exponential backoff for reconnection
+      const attempt = eventsReconnectAttemptRef.current;
+      const delay = calculateReconnectDelay(attempt);
+      console.log(`Scheduling global events reconnect (attempt ${attempt + 1}, delay ${delay}ms)`);
+      eventsReconnectAttemptRef.current = attempt + 1;
+      reconnectRef.current = setTimeout(connectToEvents, delay);
     };
 
     socket.onerror = (err) => {
@@ -1689,10 +2064,46 @@ export function useWebSocket() {
   }, []);
 
   // Default timeout for waiting on message ACK (in milliseconds)
-  const SEND_ACK_TIMEOUT = 15000;
+  // Use longer timeout on mobile devices due to slower/flakier networks
+  const isMobileDevice = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
+      ua,
+    );
+  }, []);
+  const SEND_ACK_TIMEOUT = isMobileDevice ? 30000 : 15000;
 
   // Timeout for waiting for WebSocket to connect (in milliseconds)
   const WS_CONNECT_TIMEOUT = 5000;
+
+  /**
+   * Resolve all pending sends for a session as successful.
+   * Called when we receive agent response, which proves the prompt was received.
+   * @param {string} sessionId - The session ID
+   */
+  const resolvePendingSendsForSession = useCallback((sessionId) => {
+    // Find all pending sends for this session and resolve them
+    for (const [promptId, pending] of Object.entries(pendingSendsRef.current)) {
+      // We don't track sessionId in pendingSendsRef, but we can check localStorage
+      // For simplicity, resolve all pending sends when agent responds
+      // (there should typically only be one pending send at a time)
+      if (pending) {
+        console.log(
+          `Resolving pending send ${promptId} - agent response received`,
+        );
+        clearTimeout(pending.timeoutId);
+        pending.resolve({ success: true, promptId });
+        delete pendingSendsRef.current[promptId];
+        removePendingPrompt(promptId);
+      }
+    }
+  }, []);
+
+  // Keep the ref in sync with the callback
+  useEffect(() => {
+    resolvePendingSendsRef.current = resolvePendingSendsForSession;
+  }, [resolvePendingSendsForSession]);
 
   /**
    * Wait for the session WebSocket to be connected.
@@ -1794,9 +2205,34 @@ export function useWebSocket() {
   );
 
   /**
+   * Check if the WebSocket connection for a session is healthy.
+   * A connection is considered healthy if we've received a keepalive_ack recently.
+   * @param {string} sessionId - The session ID
+   * @returns {boolean} True if connection is healthy
+   */
+  const isConnectionHealthy = useCallback((sessionId) => {
+    const keepalive = keepaliveRef.current[sessionId];
+    if (!keepalive) return true; // No keepalive tracking yet, assume healthy
+
+    const timeSinceLastAck = Date.now() - (keepalive.lastAckTime || 0);
+    // Consider unhealthy if we haven't received an ACK in 2x the keepalive interval
+    // or if we have missed keepalives
+    const isHealthy =
+      timeSinceLastAck < KEEPALIVE_INTERVAL_MS * 2 &&
+      (keepalive.missedCount || 0) === 0;
+
+    if (!isHealthy) {
+      console.log(
+        `Connection unhealthy for session ${sessionId}: timeSinceLastAck=${timeSinceLastAck}ms, missedCount=${keepalive.missedCount}`,
+      );
+    }
+    return isHealthy;
+  }, []);
+
+  /**
    * Send a prompt to the active session.
    * Returns a Promise that resolves on ACK or rejects on timeout/failure.
-   * If WebSocket is not connected, automatically triggers reconnection and waits.
+   * If WebSocket is not connected or unhealthy, automatically triggers reconnection and waits.
    * @param {string} message - The message text
    * @param {Array} images - Optional array of images
    * @param {Object} options - Optional settings: { timeout: number, skipMessageAdd: boolean }
@@ -1810,10 +2246,23 @@ export function useWebSocket() {
         throw new Error("No active session");
       }
 
-      // Check if WebSocket is connected, if not wait for reconnection
+      // Check if WebSocket is connected and healthy
       let ws = sessionWsRefs.current[activeSessionId];
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        // Wait for connection (this will trigger reconnect if needed)
+      const needsReconnect =
+        !ws ||
+        ws.readyState !== WebSocket.OPEN ||
+        !isConnectionHealthy(activeSessionId);
+
+      if (needsReconnect) {
+        console.log(
+          `Connection needs reconnect before sending (ws=${!!ws}, readyState=${ws?.readyState}, healthy=${isConnectionHealthy(activeSessionId)})`,
+        );
+        // Force close any existing zombie connection
+        if (ws) {
+          delete sessionWsRefs.current[activeSessionId];
+          ws.close();
+        }
+        // Wait for fresh connection
         ws = await waitForSessionConnection(activeSessionId);
       }
 
@@ -1847,13 +2296,31 @@ export function useWebSocket() {
         // Save to pending queue BEFORE sending (for mobile reliability)
         savePendingPrompt(activeSessionId, promptId, message, imageIds);
 
-        // Set up timeout for ACK
-        const timeoutId = setTimeout(() => {
+        // Set up timeout for ACK with improved handling
+        const timeoutId = setTimeout(async () => {
           const pending = pendingSendsRef.current[promptId];
-          if (pending) {
-            delete pendingSendsRef.current[promptId];
-            reject(new Error("Message send timed out. Please try again."));
+          if (!pending) return; // Already resolved
+
+          console.log(
+            `Send timeout for prompt ${promptId}, forcing reconnect to check status`,
+          );
+
+          // Force reconnect to get a fresh connection
+          const currentWs = sessionWsRefs.current[activeSessionId];
+          if (currentWs) {
+            delete sessionWsRefs.current[activeSessionId];
+            currentWs.close();
           }
+
+          // The pending prompt is still in localStorage, so when we reconnect
+          // and sync, we'll see if the message was actually received.
+          // For now, reject with a more helpful message.
+          delete pendingSendsRef.current[promptId];
+          reject(
+            new Error(
+              "Message delivery could not be confirmed. The message may have been sent - please check after the page reconnects.",
+            ),
+          );
         }, timeout);
 
         // Track the pending send
@@ -1880,6 +2347,7 @@ export function useWebSocket() {
       sendToSession,
       waitForSessionConnection,
       clearActionButtons,
+      isConnectionHealthy,
     ],
   );
 
@@ -2150,6 +2618,56 @@ export function useWebSocket() {
     connectToSession(currentSessionId);
   }, [connectToSession]);
 
+  // Ref to track which sessions we've already attempted to recover from inconsistent state
+  // This prevents infinite loops where recovery triggers state change which triggers recovery
+  const recoveryAttemptedRef = useRef({});
+
+  // Auto-recovery for inconsistent state: hasMoreMessages=true but messages=[]
+  // This can happen due to race conditions during session loading.
+  // If detected, trigger a fresh load.
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const session = sessions[activeSessionId];
+    if (!session) return;
+
+    const hasMessages = session.messages && session.messages.length > 0;
+    const hasMoreFlag = session.hasMoreMessages;
+
+    // Check if we've already attempted recovery for this session
+    if (recoveryAttemptedRef.current[activeSessionId]) {
+      // If messages are now loaded, clear the recovery flag
+      if (hasMessages) {
+        delete recoveryAttemptedRef.current[activeSessionId];
+      }
+      return;
+    }
+
+    // Inconsistent state: server said there's more but we have no messages
+    if (hasMoreFlag && !hasMessages) {
+      console.log(`Detected inconsistent state for ${activeSessionId}: hasMoreMessages=true but messages=[], triggering reload...`);
+
+      // Mark that we've attempted recovery to prevent infinite loops
+      recoveryAttemptedRef.current[activeSessionId] = true;
+
+      // Clear the stale state
+      setLastSeenSeq(activeSessionId, 0);
+
+      // Trigger a fresh load via WebSocket
+      const ws = sessionWsRefs.current[activeSessionId];
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({
+            type: "load_events",
+            data: { limit: INITIAL_EVENTS_LIMIT },
+          }),
+        );
+      } else {
+        // WebSocket not connected, reconnect
+        forceReconnectActiveSession();
+      }
+    }
+  }, [activeSessionId, sessions, forceReconnectActiveSession]);
+
   // Refresh session list, force reconnect session WebSocket, and retry pending prompts when app becomes visible
   // On mobile, when the phone sleeps, WebSocket connections can become "zombie" connections
   // that appear open but are actually dead. The safest approach is to force a fresh reconnection.
@@ -2200,10 +2718,31 @@ export function useWebSocket() {
                 }
                 // Either authenticated or still network error - proceed with normal reconnect
                 // If still network error, the WebSocket reconnect will handle retries
-                fetchStoredSessions();
-                setTimeout(() => {
-                  forceReconnectActiveSession();
-                }, 300);
+                const retrySessions = await fetchStoredSessions();
+
+                // Check if the active session still exists
+                const retryCurrentSessionId = activeSessionIdRef.current;
+                const retrySessionExists =
+                  retryCurrentSessionId &&
+                  retrySessions.some(
+                    (s) => s.session_id === retryCurrentSessionId,
+                  );
+
+                if (retryCurrentSessionId && !retrySessionExists) {
+                  // Active session was deleted
+                  console.log(
+                    `Active session ${retryCurrentSessionId} no longer exists, switching...`,
+                  );
+                  if (retrySessions.length > 0) {
+                    switchSession(retrySessions[0].session_id);
+                  } else {
+                    setActiveSessionId(null);
+                  }
+                } else {
+                  setTimeout(() => {
+                    forceReconnectActiveSession();
+                  }, 300);
+                }
               }, 2000);
               return;
             }
@@ -2214,15 +2753,36 @@ export function useWebSocket() {
         }
 
         // Fetch stored sessions (updates the session list in sidebar)
-        fetchStoredSessions();
+        // We await this to ensure we have the latest session list before reconnecting
+        const sessions = await fetchStoredSessions();
 
-        // Force reconnect the active session WebSocket
-        // This is more reliable than trying to sync over a stale connection
-        // The reconnect will trigger sync in the ws.onopen handler
-        // Use a small delay to allow the network stack to stabilize after wake
-        setTimeout(() => {
-          forceReconnectActiveSession();
-        }, 300);
+        // Check if the active session still exists (it may have been deleted while phone was sleeping)
+        const currentSessionId = activeSessionIdRef.current;
+        const activeSessionExists =
+          currentSessionId &&
+          sessions.some((s) => s.session_id === currentSessionId);
+
+        if (currentSessionId && !activeSessionExists) {
+          // Active session was deleted while phone was sleeping
+          console.log(
+            `Active session ${currentSessionId} no longer exists, switching...`,
+          );
+          if (sessions.length > 0) {
+            // Switch to the most recent session
+            switchSession(sessions[0].session_id);
+          } else {
+            // No sessions left
+            setActiveSessionId(null);
+          }
+        } else {
+          // Force reconnect the active session WebSocket
+          // This is more reliable than trying to sync over a stale connection
+          // The reconnect will trigger sync in the ws.onopen handler
+          // Use a small delay to allow the network stack to stabilize after wake
+          setTimeout(() => {
+            forceReconnectActiveSession();
+          }, 300);
+        }
       }
     };
 
@@ -2230,7 +2790,7 @@ export function useWebSocket() {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [fetchStoredSessions, forceReconnectActiveSession]);
+  }, [fetchStoredSessions, forceReconnectActiveSession, switchSession]);
 
   // Clear background completion notification
   const clearBackgroundCompletion = useCallback(() => {
@@ -2273,5 +2833,6 @@ export function useWebSocket() {
     addWorkspace,
     removeWorkspace,
     refreshWorkspaces: fetchWorkspaces,
+    forceReconnectActiveSession,
   };
 }

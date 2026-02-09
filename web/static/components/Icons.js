@@ -587,3 +587,47 @@ export function PinFilledIcon({ className = "w-4 h-4" }) {
     </svg>
   `;
 }
+
+/**
+ * List/no-grouping icon (horizontal lines)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function ListIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M4 6h16M4 12h16M4 18h16"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Chevron right icon (for collapsed groups)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ChevronRightIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M9 5l7 7-7 7"
+      />
+    </svg>
+  `;
+}

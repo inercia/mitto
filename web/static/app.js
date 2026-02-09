@@ -2991,37 +2991,39 @@ function App() {
           </div>
         </div>
 
-        <!-- Messages -->
-        <div
-          ref=${messagesContainerRef}
-          class="flex-1 overflow-y-auto scroll-smooth scrollbar-hide p-4 relative"
-        >
-          ${swipeDirection &&
-          html`
-            <div
-              key=${`flash-${activeSessionId}`}
-              class="swipe-flash swipe-flash-${swipeDirection}"
-            />
-          `}
-          ${swipeArrow &&
-          html`
-            <div
-              key=${`arrow-${activeSessionId}-${swipeArrow}`}
-              class="swipe-arrow-indicator"
-            >
-              <div class="swipe-arrow-indicator__content">
-                <span class="swipe-arrow-indicator__arrow"
-                  >${swipeArrow === "left" ? "→" : "←"}</span
-                >
-              </div>
-            </div>
-          `}
+        <!-- Messages wrapper (for positioning scroll-to-bottom button) -->
+        <div class="flex-1 relative min-h-0 overflow-hidden">
+          <!-- Messages (scrollable) -->
           <div
-            key=${activeSessionId}
-            class="max-w-2xl mx-auto ${swipeDirection
-              ? `swipe-slide-${swipeDirection}`
-              : ""}"
+            ref=${messagesContainerRef}
+            class="absolute inset-0 overflow-y-auto scroll-smooth scrollbar-hide p-4"
           >
+            ${swipeDirection &&
+            html`
+              <div
+                key=${`flash-${activeSessionId}`}
+                class="swipe-flash swipe-flash-${swipeDirection}"
+              />
+            `}
+            ${swipeArrow &&
+            html`
+              <div
+                key=${`arrow-${activeSessionId}-${swipeArrow}`}
+                class="swipe-arrow-indicator"
+              >
+                <div class="swipe-arrow-indicator__content">
+                  <span class="swipe-arrow-indicator__arrow"
+                    >${swipeArrow === "left" ? "→" : "←"}</span
+                  >
+                </div>
+              </div>
+            `}
+            <div
+              key=${activeSessionId}
+              class="max-w-2xl mx-auto ${swipeDirection
+                ? `swipe-slide-${swipeDirection}`
+                : ""}"
+            >
             ${hasMoreMessages &&
             html`
               <div class="flex justify-center mb-4">
@@ -3112,22 +3114,25 @@ function App() {
             )}
             <div ref=${messagesEndRef} />
           </div>
+          </div><!-- End of scrollable messages container -->
 
-          <!-- Scroll to bottom button -->
+          <!-- Scroll to bottom button (positioned relative to wrapper, not scrollable container) -->
           ${(!isUserAtBottom || hasNewMessages) &&
           messages.length > 0 &&
           html`
-            <button
-              onClick=${() => scrollToBottom(true)}
-              class="scroll-to-bottom-btn ${hasNewMessages ? "has-new" : ""}"
-              title="Scroll to bottom"
-            >
-              <${ArrowDownIcon} className="w-5 h-5" />
-              ${hasNewMessages &&
-              html` <span class="new-messages-indicator"></span> `}
-            </button>
+            <div class="scroll-to-bottom-wrapper">
+              <button
+                onClick=${() => scrollToBottom(true)}
+                class="scroll-to-bottom-btn ${hasNewMessages ? "has-new" : ""}"
+                title="Scroll to bottom"
+              >
+                <${ArrowDownIcon} className="w-5 h-5" />
+                ${hasNewMessages &&
+                html` <span class="new-messages-indicator"></span> `}
+              </button>
+            </div>
           `}
-        </div>
+        </div><!-- End of messages wrapper -->
 
         <!-- Input Area Container (relative for QueueDropdown positioning) -->
         <div class="relative flex-shrink-0">

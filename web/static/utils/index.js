@@ -24,6 +24,11 @@ export {
   getQueueDropdownHeight,
   setQueueDropdownHeight,
   getQueueHeightConstraints,
+  getGroupingMode,
+  setGroupingMode,
+  cycleGroupingMode,
+  isGroupExpanded,
+  setGroupExpanded,
 } from "./storage.js";
 
 export { playAgentCompletedSound } from "./audio.js";
