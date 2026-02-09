@@ -321,6 +321,28 @@ func goQuitCallback() {
 	}()
 }
 
+//export goAppDidBecomeActiveCallback
+func goAppDidBecomeActiveCallback() {
+	globalWebViewMu.Lock()
+	w := globalWebView
+	globalWebViewMu.Unlock()
+
+	if w == nil {
+		return
+	}
+
+	// When the app becomes active, trigger a visibility change in the frontend.
+	// WKWebView doesn't fire visibilitychange events when the macOS app is hidden/shown,
+	// so we need to manually trigger the reconnect/sync logic.
+	// We call the global function that handles app activation, which will:
+	// 1. Force reconnect the active session WebSocket
+	// 2. Sync any missed events
+	// 3. Retry pending prompts
+	w.Dispatch(func() {
+		w.Eval("if (window.mittoAppDidBecomeActive) window.mittoAppDidBecomeActive();")
+	})
+}
+
 //export goSwipeNavigationCallback
 func goSwipeNavigationCallback(direction *C.char) {
 	globalWebViewMu.Lock()

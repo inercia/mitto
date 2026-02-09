@@ -6,6 +6,7 @@
 // Forward declaration of Go callback functions
 extern void goMenuActionCallback(char* action);
 extern void goQuitCallback(void);
+extern void goAppDidBecomeActiveCallback(void);
 
 // Custom menu action handler
 @interface MittoMenuHandler : NSObject
@@ -151,6 +152,13 @@ extern void goQuitCallback(void);
 
     // Return NSTerminateLater to defer termination until cleanup is complete
     return NSTerminateLater;
+}
+
+// Called when the app becomes active (user switches to it, clicks on dock icon, etc.)
+// This is used to trigger a WebSocket reconnect/sync in the frontend since WKWebView
+// doesn't fire visibilitychange events when the app is hidden/shown.
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    goAppDidBecomeActiveCallback();
 }
 
 @end
