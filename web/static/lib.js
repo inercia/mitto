@@ -9,6 +9,11 @@ export const MAX_MESSAGES = 100;
 // This provides a faster initial load while allowing users to load more history.
 export const INITIAL_EVENTS_LIMIT = 50;
 
+// Number of events to load in the fast initial phase (two-phase loading).
+// This small batch loads quickly to show the user the latest messages immediately,
+// then the remaining history is loaded in the background.
+export const FAST_INITIAL_LOAD_LIMIT = 10;
+
 // Message roles
 export const ROLE_USER = "user";
 export const ROLE_AGENT = "agent";
@@ -301,12 +306,31 @@ export function computeAllSessions(activeSessions, storedSessions) {
   // Create a map of stored sessions for quick lookup
   const storedMap = new Map(storedSessions.map((s) => [s.session_id, s]));
 
-  // Merge working_dir from storedSessions (or global map) into activeSessions
+  // Merge properties from storedSessions into activeSessions
+  // Properties like archived, name, pinned, isStreaming are shared between active and stored sessions
   const mergedActive = activeSessions.map((s) => {
     const stored = storedMap.get(s.session_id);
     const globalWd = globalWorkingDirMap.get(s.session_id);
     // Get working_dir from: stored session, global map, or existing value
     const workingDir = stored?.working_dir || globalWd || s.working_dir || "";
+
+    // Always merge stored properties (archived, name, pinned, isStreaming) if stored session exists
+    if (stored) {
+      return {
+        ...s,
+        working_dir: workingDir || s.working_dir,
+        // Merge these properties from stored session (they don't exist in active sessions)
+        // For name: active session takes precedence if it has one, otherwise use stored
+        archived: stored.archived,
+        name: s.name || stored.name,
+        pinned: stored.pinned,
+        // For isStreaming: active session takes precedence (it has real-time state),
+        // but also consider stored session's value from global events
+        isStreaming: s.isStreaming || stored.isStreaming || false,
+      };
+    }
+
+    // No stored session, just update working_dir if needed
     if (workingDir && workingDir !== s.working_dir) {
       return { ...s, working_dir: workingDir };
     }
@@ -490,24 +514,69 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     existingHashes.add(getMessageHash(m));
   }
 
-  // Filter out duplicates from new messages
-  // Prefer seq-based deduplication, fall back to content hash
-  const filteredNewMessages = newMessages.filter((m) => {
-    // If both have seq, deduplicate by seq
+  // M2 fix: Filter out duplicates from new messages, preferring complete messages
+  // When a message with matching seq is found, compare content to keep the longer/complete version
+  const filteredNewMessages = [];
+  const seqsToUpdate = new Map(); // seq -> newMessage (for messages that should replace existing)
+
+  for (const m of newMessages) {
+    // If both have seq, check if we should prefer the new message
     if (m.seq && existingBySeq.has(m.seq)) {
-      return false;
+      const existing = existingBySeq.get(m.seq);
+
+      // Prefer the more complete message:
+      // For agent messages, compare html length
+      // For thoughts, compare text length
+      // For other types, prefer the new one if existing is marked incomplete
+      let shouldReplace = false;
+      if (m.role === ROLE_AGENT || existing.role === ROLE_AGENT) {
+        const newLen = (m.html || "").length;
+        const existingLen = (existing.html || "").length;
+        // Prefer complete message, or longer message if both have same complete status
+        shouldReplace =
+          (m.complete && !existing.complete) ||
+          (m.complete === existing.complete && newLen > existingLen);
+      } else if (m.role === ROLE_THOUGHT || existing.role === ROLE_THOUGHT) {
+        const newLen = (m.text || "").length;
+        const existingLen = (existing.text || "").length;
+        shouldReplace =
+          (m.complete && !existing.complete) ||
+          (m.complete === existing.complete && newLen > existingLen);
+      } else {
+        // For tools and other types, prefer complete over incomplete
+        shouldReplace = m.complete && !existing.complete;
+      }
+
+      if (shouldReplace) {
+        seqsToUpdate.set(m.seq, m);
+      }
+      // Either way, don't add to filteredNewMessages (we'll handle updates separately)
+      continue;
     }
+
     // Fall back to content hash for messages without seq
     const hash = getMessageHash(m);
-    return !existingHashes.has(hash);
+    if (!existingHashes.has(hash)) {
+      filteredNewMessages.push(m);
+    }
+  }
+
+  // Apply replacements for messages where new version is more complete
+  let allMessages = existingMessages.map((m) => {
+    if (m.seq && seqsToUpdate.has(m.seq)) {
+      return seqsToUpdate.get(m.seq);
+    }
+    return m;
   });
 
-  if (filteredNewMessages.length === 0) {
+  // Add filtered new messages
+  if (filteredNewMessages.length === 0 && seqsToUpdate.size === 0) {
     return existingMessages;
   }
 
-  // Combine all messages
-  const allMessages = [...existingMessages, ...filteredNewMessages];
+  if (filteredNewMessages.length > 0) {
+    allMessages = [...allMessages, ...filteredNewMessages];
+  }
 
   // Sort by seq if available
   // Messages with seq are sorted by seq
@@ -1111,6 +1180,40 @@ export function cleanupExpiredPrompts() {
     }
   } catch (err) {
     console.warn("Failed to cleanup expired prompts:", err);
+  }
+}
+
+/**
+ * Clears pending prompts that have been persisted in loaded events.
+ * This is called when events are loaded on reconnect to prevent duplicate sends.
+ * @param {Array} events - Array of loaded events from the server
+ */
+export function clearPendingPromptsFromEvents(events) {
+  if (!events || events.length === 0) return;
+
+  try {
+    const pending = getPendingPrompts();
+    if (Object.keys(pending).length === 0) return;
+
+    let changed = false;
+    for (const event of events) {
+      if (event.type === "user_prompt" && event.data?.prompt_id) {
+        const promptId = event.data.prompt_id;
+        if (pending[promptId]) {
+          console.log(
+            `Clearing pending prompt ${promptId} - found in loaded events`,
+          );
+          delete pending[promptId];
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+    }
+  } catch (err) {
+    console.warn("Failed to clear pending prompts from events:", err);
   }
 }
 

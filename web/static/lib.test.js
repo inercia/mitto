@@ -44,6 +44,7 @@ import {
   getPendingPrompts,
   getPendingPromptsForSession,
   cleanupExpiredPrompts,
+  clearPendingPromptsFromEvents,
   hasMarkdownContent,
   renderUserMarkdown,
 } from "./lib.js";
@@ -128,6 +129,63 @@ describe("computeAllSessions", () => {
     const result = computeAllSessions(sessions, []);
     // Session 2 created later, so it should be first despite older last_user_message_at
     expect(result.map((s) => s.session_id)).toEqual(["2", "1"]);
+  });
+
+  test("merges archived flag from stored session to active session", () => {
+    const active = [
+      {
+        session_id: "1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        archived: true,
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].archived).toBe(true);
+  });
+
+  test("merges pinned flag from stored session to active session", () => {
+    const active = [
+      {
+        session_id: "1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        pinned: true,
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].pinned).toBe(true);
+  });
+
+  test("merges name from stored session when active has no name", () => {
+    const active = [
+      {
+        session_id: "1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        name: "My Custom Name",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("My Custom Name");
   });
 });
 
@@ -1564,6 +1622,259 @@ describe("mergeMessagesWithSync", () => {
       expect(result.length).toBe(1);
     });
   });
+
+  // =========================================================================
+  // M2 Fix: Prefer Complete Messages Over Partial
+  // =========================================================================
+
+  describe("M2 - prefer complete messages", () => {
+    test("replaces partial agent message with complete one from sync", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "Let me",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Let me explain everything in detail.",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].html).toBe("Let me explain everything in detail.");
+      expect(result[0].complete).toBe(true);
+    });
+
+    test("replaces partial thought with complete one from sync", () => {
+      const existing = [
+        {
+          role: ROLE_THOUGHT,
+          text: "Thinking...",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_THOUGHT,
+          text: "Thinking... I should analyze this carefully.",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].text).toBe("Thinking... I should analyze this carefully.");
+      expect(result[0].complete).toBe(true);
+    });
+
+    test("keeps longer agent message even if both are incomplete", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "Short",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "This is a much longer message",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].html).toBe("This is a much longer message");
+    });
+
+    test("keeps existing message if it is longer than sync message", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "This is a longer complete message",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Short",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].html).toBe("This is a longer complete message");
+    });
+
+    test("prefers complete message over longer incomplete message", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "This is a very long incomplete streaming message that goes on and on",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Short but complete",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      // Complete message is preferred even if shorter
+      expect(result[0].html).toBe("Short but complete");
+      expect(result[0].complete).toBe(true);
+    });
+
+    test("handles tool messages with complete flag", () => {
+      const existing = [
+        {
+          role: ROLE_TOOL,
+          id: "tool-1",
+          title: "Read File",
+          status: "running",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_TOOL,
+          id: "tool-1",
+          title: "Read File",
+          status: "completed",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].complete).toBe(true);
+      expect(result[0].status).toBe("completed");
+    });
+
+    test("does not replace when both have same complete status and same length", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "Same content",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Same content",
+          complete: true,
+          seq: 1,
+          timestamp: 2000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      // Existing is kept (no replacement needed)
+      expect(result[0].timestamp).toBe(1000);
+    });
+
+    test("handles multiple messages with some needing replacement", () => {
+      const existing = [
+        {
+          role: ROLE_USER,
+          text: "Hello",
+          seq: 1,
+          timestamp: 1000,
+        },
+        {
+          role: ROLE_AGENT,
+          html: "Partial...",
+          complete: false,
+          seq: 2,
+          timestamp: 2000,
+        },
+        {
+          role: ROLE_TOOL,
+          id: "tool-1",
+          title: "Read",
+          complete: true,
+          seq: 3,
+          timestamp: 3000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Partial... now complete!",
+          complete: true,
+          seq: 2,
+          timestamp: 2000,
+        },
+        {
+          role: ROLE_AGENT,
+          html: "New message",
+          complete: true,
+          seq: 4,
+          timestamp: 4000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(4);
+      // User message unchanged
+      expect(result[0].text).toBe("Hello");
+      // Agent message replaced with complete version
+      expect(result[1].html).toBe("Partial... now complete!");
+      expect(result[1].complete).toBe(true);
+      // Tool message unchanged
+      expect(result[2].id).toBe("tool-1");
+      // New message added
+      expect(result[3].html).toBe("New message");
+    });
+  });
 });
 
 // =============================================================================
@@ -2491,6 +2802,94 @@ describe("cleanupExpiredPrompts", () => {
 
     const pending = getPendingPrompts();
     expect(Object.keys(pending).length).toBe(2);
+  });
+});
+
+describe("clearPendingPromptsFromEvents", () => {
+  beforeEach(() => {
+    localStorageMock.clear();
+  });
+
+  test("clears pending prompts that match loaded events", () => {
+    // Save some pending prompts
+    savePendingPrompt("session1", "prompt1", "First message", []);
+    savePendingPrompt("session1", "prompt2", "Second message", []);
+    savePendingPrompt("session1", "prompt3", "Third message", []);
+
+    // Simulate loaded events with prompt_id
+    const events = [
+      { type: "user_prompt", data: { message: "First message", prompt_id: "prompt1" } },
+      { type: "agent_message", data: { text: "Response" } },
+      { type: "user_prompt", data: { message: "Second message", prompt_id: "prompt2" } },
+    ];
+
+    clearPendingPromptsFromEvents(events);
+
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeUndefined();
+    expect(pending["prompt2"]).toBeUndefined();
+    expect(pending["prompt3"]).toBeDefined(); // Not in events, should remain
+  });
+
+  test("handles events without prompt_id", () => {
+    savePendingPrompt("session1", "prompt1", "Message", []);
+
+    // Events without prompt_id (old format)
+    const events = [
+      { type: "user_prompt", data: { message: "Message" } },
+    ];
+
+    clearPendingPromptsFromEvents(events);
+
+    // Should not be cleared since there's no prompt_id to match
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeDefined();
+  });
+
+  test("handles empty events array", () => {
+    savePendingPrompt("session1", "prompt1", "Message", []);
+
+    clearPendingPromptsFromEvents([]);
+
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeDefined();
+  });
+
+  test("handles null/undefined events", () => {
+    savePendingPrompt("session1", "prompt1", "Message", []);
+
+    clearPendingPromptsFromEvents(null);
+    clearPendingPromptsFromEvents(undefined);
+
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeDefined();
+  });
+
+  test("handles no pending prompts", () => {
+    const events = [
+      { type: "user_prompt", data: { message: "Message", prompt_id: "prompt1" } },
+    ];
+
+    // Should not throw
+    clearPendingPromptsFromEvents(events);
+
+    expect(getPendingPrompts()).toEqual({});
+  });
+
+  test("only processes user_prompt events", () => {
+    savePendingPrompt("session1", "prompt1", "Message", []);
+
+    // Events with prompt_id but wrong type
+    const events = [
+      { type: "agent_message", data: { text: "Response", prompt_id: "prompt1" } },
+      { type: "tool_call", data: { name: "test", prompt_id: "prompt1" } },
+    ];
+
+    clearPendingPromptsFromEvents(events);
+
+    // Should not be cleared since they're not user_prompt events
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeDefined();
   });
 });
 

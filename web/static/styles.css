@@ -68,6 +68,21 @@
   overflow-x: hidden;
 }
 
+/* Messages container styles for progressive loading.
+   Note: The actual column-reverse is applied inline to the inner messages wrapper
+   (the div with class="max-w-2xl mx-auto flex flex-col-reverse") so that:
+   - First DOM child (newest message) appears at visual BOTTOM
+   - Last DOM child (oldest message) appears at visual TOP
+   - New messages added to DOM start appear at visual bottom
+   - Older messages loaded for infinite scroll appear at visual top
+
+   We use justify-end to push content to the bottom when there are few messages. */
+.messages-container-reverse {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
 /* Message animation */
 @keyframes fadeIn {
   from {
@@ -360,6 +375,48 @@
   color: #f472b6;
 }
 
+/* Mermaid diagrams */
+.markdown-content .mermaid-diagram {
+  margin: 1em 0;
+  padding: 1rem;
+  background: #1e293b;
+  border-radius: 0.5rem;
+  border: 1px solid #334155;
+  overflow-x: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.markdown-content .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Mermaid source block (before rendering) */
+.markdown-content pre.mermaid {
+  background: #1e293b;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin: 0.75em 0;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  font-size: 0.875em;
+  line-height: 1.5;
+}
+
+/* Error state for failed mermaid diagrams */
+.markdown-content pre.mermaid.mermaid-error {
+  border-color: #991b1b;
+  background: #1f1b1b;
+}
+
+.markdown-content .mermaid-error-message {
+  color: #f87171;
+  font-size: 0.75em;
+  margin-top: 0.5em;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
 /* Links */
 .markdown-content a {
   color: #60a5fa;
@@ -537,6 +594,27 @@ a.mailto-link:hover {
 
 .light .markdown-content em {
   color: #475569;
+}
+
+/* Light theme mermaid diagrams */
+.light .markdown-content .mermaid-diagram {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.light .markdown-content pre.mermaid {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #64748b;
+}
+
+.light .markdown-content pre.mermaid.mermaid-error {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+.light .markdown-content .mermaid-error-message {
+  color: #dc2626;
 }
 
 /* =============================================================================
