@@ -90,6 +90,12 @@ func TestSendPromptAndReceiveResponse(t *testing.T) {
 		return connected
 	}, "connection")
 
+	// Client must send load_events to register as an observer
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
 	// Send a prompt
 	err = ws.SendPrompt("Hello, this is a test message")
 	if err != nil {
