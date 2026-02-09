@@ -160,6 +160,14 @@ func (s *Store) AppendEvent(sessionID string, event Event) error {
 		return fmt.Errorf("failed to write event: %w", err)
 	}
 
+	// L1: Structured logging for event persistence
+	log := logging.Session()
+	log.Debug("event_persisted",
+		"session_id", sessionID,
+		"seq", event.Seq,
+		"event_type", event.Type,
+		"event_count", meta.EventCount+1)
+
 	// Update metadata
 	meta.EventCount++
 	meta.UpdatedAt = time.Now()
@@ -409,6 +417,34 @@ func (s *Store) Exists(sessionID string) bool {
 
 	_, err := os.Stat(s.metadataPath(sessionID))
 	return err == nil
+}
+
+// CountSessions returns the number of stored sessions.
+// M3: This is used by the health check endpoint.
+func (s *Store) CountSessions() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return 0, ErrStoreClosed
+	}
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read sessions directory: %w", err)
+	}
+
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			// Check if it has a metadata file (valid session)
+			metaPath := filepath.Join(s.baseDir, entry.Name(), "metadata.json")
+			if _, err := os.Stat(metaPath); err == nil {
+				count++
+			}
+		}
+	}
+	return count, nil
 }
 
 // Close closes the store.

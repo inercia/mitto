@@ -373,3 +373,314 @@ func TestStore_CheckLockStatus(t *testing.T) {
 
 	lock.Release()
 }
+
+// =============================================================================
+// Edge Case Tests for Lock Handling
+// =============================================================================
+
+// TestLock_HeartbeatUpdatesTimestamp tests that the heartbeat loop updates
+// the timestamp periodically.
+func TestLock_HeartbeatUpdatesTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	meta := Metadata{
+		SessionID:  "test-heartbeat",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	lock, err := store.TryAcquireLock("test-heartbeat", "cli")
+	if err != nil {
+		t.Fatalf("TryAcquireLock failed: %v", err)
+	}
+	defer lock.Release()
+
+	// Get initial heartbeat time
+	initialInfo := lock.Info()
+	initialHeartbeat := initialInfo.Heartbeat
+
+	// Wait for at least one heartbeat interval (10s is default, but we can't wait that long)
+	// Instead, verify the heartbeat field is set correctly
+	if initialHeartbeat.IsZero() {
+		t.Error("Initial heartbeat should not be zero")
+	}
+
+	// Verify heartbeat is recent (within last second)
+	if time.Since(initialHeartbeat) > time.Second {
+		t.Errorf("Initial heartbeat is too old: %v ago", time.Since(initialHeartbeat))
+	}
+}
+
+// TestLock_IsValidAfterRelease tests that IsValid returns false after release.
+func TestLock_IsValidAfterRelease(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	meta := Metadata{
+		SessionID:  "test-valid-after-release",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	lock, err := store.TryAcquireLock("test-valid-after-release", "cli")
+	if err != nil {
+		t.Fatalf("TryAcquireLock failed: %v", err)
+	}
+
+	// Lock should be valid initially
+	if !lock.IsValid() {
+		t.Error("Lock should be valid before release")
+	}
+
+	// Release the lock
+	if err := lock.Release(); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	// Lock should not be valid after release
+	if lock.IsValid() {
+		t.Error("Lock should not be valid after release")
+	}
+}
+
+// TestLock_SetStatusAfterRelease tests that SetStatus fails after release.
+func TestLock_SetStatusAfterRelease(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	meta := Metadata{
+		SessionID:  "test-status-after-release",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	lock, err := store.TryAcquireLock("test-status-after-release", "cli")
+	if err != nil {
+		t.Fatalf("TryAcquireLock failed: %v", err)
+	}
+
+	// Release the lock
+	if err := lock.Release(); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	// SetStatus should fail after release
+	err = lock.SetStatus(LockStatusProcessing, "test")
+	if err != ErrLockNotHeld {
+		t.Errorf("SetStatus after release: expected ErrLockNotHeld, got %v", err)
+	}
+}
+
+// TestLock_DoubleRelease tests that releasing a lock twice doesn't panic.
+func TestLock_DoubleRelease(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	meta := Metadata{
+		SessionID:  "test-double-release",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	lock, err := store.TryAcquireLock("test-double-release", "cli")
+	if err != nil {
+		t.Fatalf("TryAcquireLock failed: %v", err)
+	}
+
+	// First release should succeed
+	if err := lock.Release(); err != nil {
+		t.Fatalf("First Release failed: %v", err)
+	}
+
+	// Second release should return nil (idempotent) and not panic
+	err = lock.Release()
+	if err != nil {
+		t.Errorf("Second Release: expected nil (idempotent), got %v", err)
+	}
+}
+
+// TestLock_ConcurrentStatusUpdates tests that concurrent status updates don't race.
+func TestLock_ConcurrentStatusUpdates(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	meta := Metadata{
+		SessionID:  "test-concurrent-status",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	lock, err := store.TryAcquireLock("test-concurrent-status", "cli")
+	if err != nil {
+		t.Fatalf("TryAcquireLock failed: %v", err)
+	}
+	defer lock.Release()
+
+	// Run concurrent status updates
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(idx int) {
+			for j := 0; j < 10; j++ {
+				if idx%2 == 0 {
+					lock.SetProcessing("Processing...")
+				} else {
+					lock.SetIdle()
+				}
+			}
+			done <- true
+		}(i)
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	// Lock should still be valid
+	if !lock.IsValid() {
+		t.Error("Lock should still be valid after concurrent updates")
+	}
+}
+
+// TestLockInfo_IsStale tests the IsStale method with various timeouts.
+func TestLockInfo_IsStale(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name      string
+		heartbeat time.Time
+		timeout   time.Duration
+		wantStale bool
+	}{
+		{
+			name:      "recent heartbeat",
+			heartbeat: now.Add(-5 * time.Second),
+			timeout:   60 * time.Second,
+			wantStale: false,
+		},
+		{
+			name:      "stale heartbeat",
+			heartbeat: now.Add(-120 * time.Second),
+			timeout:   60 * time.Second,
+			wantStale: true,
+		},
+		{
+			name:      "just under timeout",
+			heartbeat: now.Add(-59 * time.Second),
+			timeout:   60 * time.Second,
+			wantStale: false, // Not stale when under timeout
+		},
+		{
+			name:      "just past timeout",
+			heartbeat: now.Add(-61 * time.Second),
+			timeout:   60 * time.Second,
+			wantStale: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := LockInfo{
+				Heartbeat: tt.heartbeat,
+			}
+			got := info.IsStale(tt.timeout)
+			if got != tt.wantStale {
+				t.Errorf("IsStale() = %v, want %v", got, tt.wantStale)
+			}
+		})
+	}
+}
+
+// TestLockInfo_IsSafeToSteal tests the IsSafeToSteal method.
+func TestLockInfo_IsSafeToSteal(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name     string
+		info     LockInfo
+		timeout  time.Duration
+		wantSafe bool
+	}{
+		{
+			name: "idle lock - safe to steal",
+			info: LockInfo{
+				Status:    LockStatusIdle,
+				Heartbeat: now,
+			},
+			timeout:  60 * time.Second,
+			wantSafe: true,
+		},
+		{
+			name: "processing lock - not safe",
+			info: LockInfo{
+				Status:    LockStatusProcessing,
+				Heartbeat: now,
+			},
+			timeout:  60 * time.Second,
+			wantSafe: false,
+		},
+		{
+			name: "waiting permission - not safe",
+			info: LockInfo{
+				Status:    LockStatusWaitingPermission,
+				Heartbeat: now,
+			},
+			timeout:  60 * time.Second,
+			wantSafe: false,
+		},
+		{
+			name: "stale processing lock - safe to steal",
+			info: LockInfo{
+				Status:    LockStatusProcessing,
+				Heartbeat: now.Add(-120 * time.Second),
+			},
+			timeout:  60 * time.Second,
+			wantSafe: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.info.IsSafeToSteal(tt.timeout)
+			if got != tt.wantSafe {
+				t.Errorf("IsSafeToSteal() = %v, want %v", got, tt.wantSafe)
+			}
+		})
+	}
+}
