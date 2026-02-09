@@ -94,13 +94,17 @@ type Event struct {
 
 // UserPromptData contains data for a user prompt event.
 type UserPromptData struct {
-	Message string     `json:"message"`
-	Images  []ImageRef `json:"images,omitempty"`
+	Message  string     `json:"message"`
+	Images   []ImageRef `json:"images,omitempty"`
+	PromptID string     `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
 }
 
 // AgentMessageData contains data for an agent message event.
+// Note: The field is named "Text" for historical reasons but actually contains
+// HTML (converted from markdown by the web layer's MarkdownBuffer).
+// The JSON field name "html" is used for consistency with frontend expectations.
 type AgentMessageData struct {
-	Text string `json:"text"`
+	Text string `json:"html"` // Contains HTML content (despite field name)
 }
 
 // AgentThoughtData contains data for an agent thought event.
@@ -184,7 +188,9 @@ type Metadata struct {
 	EventCount        int           `json:"event_count"`
 	Status            SessionStatus `json:"status"`
 	Description       string        `json:"description,omitempty"`
-	Pinned            bool          `json:"pinned,omitempty"`            // If true, session cannot be deleted
+	Pinned            bool          `json:"pinned,omitempty"`            // Deprecated: use Archived instead. If true, session cannot be deleted
+	Archived          bool          `json:"archived,omitempty"`          // If true, session is archived (hidden from main list by default)
+	ArchivedAt        time.Time     `json:"archived_at,omitempty"`       // Time when session was archived (cleared when unarchived)
 	RunnerType        string        `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
 	RunnerRestricted  bool          `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
 }
