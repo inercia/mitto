@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
@@ -355,6 +357,10 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
 
+	// M3: Health check endpoint for load balancer integration and monitoring
+	// This endpoint is intentionally NOT behind auth to allow health checks
+	mux.HandleFunc(apiPrefix+"/api/health", s.handleHealthCheck)
+
 	// File server endpoint - serves files from workspace directories (for web browser access)
 	fileServer := NewFileServer(sessionMgr, logger)
 	mux.Handle(apiPrefix+"/api/files", fileServer)
@@ -520,6 +526,56 @@ func (s *Server) Logger() *slog.Logger {
 // This store is owned by the server and should not be closed by callers.
 func (s *Server) Store() *session.Store {
 	return s.store
+}
+
+// handleHealthCheck handles the health check endpoint for load balancer integration.
+// M3: This endpoint returns server health status and basic metrics.
+// It is intentionally NOT behind authentication to allow health checks from load balancers.
+func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if server is shutting down
+	if s.IsShutdown() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "unhealthy",
+			"reason":  "server_shutting_down",
+			"message": "Server is shutting down",
+		})
+		return
+	}
+
+	// Gather health metrics
+	response := map[string]interface{}{
+		"status":    "healthy",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Add session metrics if session manager is available
+	if s.sessionManager != nil {
+		activeSessions := s.sessionManager.ActiveSessionCount()
+		promptingSessions := s.sessionManager.PromptingSessionCount()
+		response["sessions"] = map[string]interface{}{
+			"active":    activeSessions,
+			"prompting": promptingSessions,
+		}
+	}
+
+	// Add store metrics if available
+	if s.store != nil {
+		storedCount, err := s.store.CountSessions()
+		if err == nil {
+			response["stored_sessions"] = storedCount
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 // loggingMiddleware logs HTTP requests.

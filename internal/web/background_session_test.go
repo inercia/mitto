@@ -1228,3 +1228,203 @@ func TestBackgroundSession_FlushAndPersistMessages_SortsEventsBySeq(t *testing.T
 		}
 	}
 }
+
+// =============================================================================
+// H3: Periodic Persistence Tests
+// =============================================================================
+
+// TestPeriodicPersistence_StartStop tests that periodic persistence can be
+// started and stopped without errors.
+func TestPeriodicPersistence_StartStop(t *testing.T) {
+	bs := &BackgroundSession{
+		persistInterval: 100 * time.Millisecond,
+	}
+
+	// Start should not panic
+	bs.startPeriodicPersistence()
+
+	// Timer should be set
+	bs.promptMu.Lock()
+	hasTimer := bs.persistTimer != nil
+	bs.promptMu.Unlock()
+
+	if !hasTimer {
+		t.Error("Expected persistTimer to be set after startPeriodicPersistence")
+	}
+
+	// Stop should not panic
+	bs.stopPeriodicPersistence()
+
+	// Timer should be nil
+	bs.promptMu.Lock()
+	hasTimer = bs.persistTimer != nil
+	bs.promptMu.Unlock()
+
+	if hasTimer {
+		t.Error("Expected persistTimer to be nil after stopPeriodicPersistence")
+	}
+}
+
+// TestPeriodicPersistence_ZeroInterval tests that periodic persistence is
+// disabled when interval is zero.
+func TestPeriodicPersistence_ZeroInterval(t *testing.T) {
+	bs := &BackgroundSession{
+		persistInterval: 0, // Disabled
+	}
+
+	// Start should not create a timer
+	bs.startPeriodicPersistence()
+
+	bs.promptMu.Lock()
+	hasTimer := bs.persistTimer != nil
+	bs.promptMu.Unlock()
+
+	if hasTimer {
+		t.Error("Expected no timer when persistInterval is 0")
+	}
+}
+
+// TestPeriodicPersistence_NegativeInterval tests that periodic persistence is
+// disabled when interval is negative.
+func TestPeriodicPersistence_NegativeInterval(t *testing.T) {
+	bs := &BackgroundSession{
+		persistInterval: -1 * time.Second, // Invalid
+	}
+
+	// Start should not create a timer
+	bs.startPeriodicPersistence()
+
+	bs.promptMu.Lock()
+	hasTimer := bs.persistTimer != nil
+	bs.promptMu.Unlock()
+
+	if hasTimer {
+		t.Error("Expected no timer when persistInterval is negative")
+	}
+}
+
+// TestPeriodicPersistence_DoubleStart tests that starting twice replaces the timer.
+func TestPeriodicPersistence_DoubleStart(t *testing.T) {
+	bs := &BackgroundSession{
+		persistInterval: 100 * time.Millisecond,
+	}
+
+	// Start first timer
+	bs.startPeriodicPersistence()
+
+	bs.promptMu.Lock()
+	firstTimer := bs.persistTimer
+	bs.promptMu.Unlock()
+
+	// Start second timer (should replace first)
+	bs.startPeriodicPersistence()
+
+	bs.promptMu.Lock()
+	secondTimer := bs.persistTimer
+	bs.promptMu.Unlock()
+
+	// Timers should be different (first was stopped, new one created)
+	if firstTimer == secondTimer {
+		t.Error("Expected new timer after second startPeriodicPersistence")
+	}
+
+	// Cleanup
+	bs.stopPeriodicPersistence()
+}
+
+// TestPeriodicPersistence_DoubleStop tests that stopping twice is safe.
+func TestPeriodicPersistence_DoubleStop(t *testing.T) {
+	bs := &BackgroundSession{
+		persistInterval: 100 * time.Millisecond,
+	}
+
+	bs.startPeriodicPersistence()
+	bs.stopPeriodicPersistence()
+
+	// Second stop should not panic
+	bs.stopPeriodicPersistence()
+
+	bs.promptMu.Lock()
+	hasTimer := bs.persistTimer != nil
+	bs.promptMu.Unlock()
+
+	if hasTimer {
+		t.Error("Expected no timer after double stop")
+	}
+}
+
+// TestPeriodicPersistTick_NotPrompting tests that the tick does nothing
+// when not prompting.
+func TestPeriodicPersistTick_NotPrompting(t *testing.T) {
+	bs := &BackgroundSession{
+		persistInterval: 100 * time.Millisecond,
+		isPrompting:     false,
+	}
+
+	// Should not panic and should not reschedule
+	bs.periodicPersistTick()
+
+	bs.promptMu.Lock()
+	hasTimer := bs.persistTimer != nil
+	bs.promptMu.Unlock()
+
+	if hasTimer {
+		t.Error("Expected no timer when not prompting")
+	}
+}
+
+// TestPeriodicPersistTick_Prompting tests that the tick reschedules when prompting.
+func TestPeriodicPersistTick_Prompting(t *testing.T) {
+	bs := &BackgroundSession{
+		persistInterval: 50 * time.Millisecond,
+		isPrompting:     true,
+	}
+
+	// Call tick - should reschedule
+	bs.periodicPersistTick()
+
+	// Wait a bit for the timer to be set
+	time.Sleep(10 * time.Millisecond)
+
+	bs.promptMu.Lock()
+	hasTimer := bs.persistTimer != nil
+	bs.promptMu.Unlock()
+
+	if !hasTimer {
+		t.Error("Expected timer to be rescheduled when prompting")
+	}
+
+	// Cleanup
+	bs.stopPeriodicPersistence()
+}
+
+// TestPeriodicPersistence_Integration tests the full lifecycle of periodic persistence.
+func TestPeriodicPersistence_Integration(t *testing.T) {
+	bs := &BackgroundSession{
+		persistInterval: 20 * time.Millisecond,
+		isPrompting:     true,
+	}
+
+	// Start periodic persistence - timer should be started
+	bs.startPeriodicPersistence()
+
+	// Wait for a few ticks
+	time.Sleep(100 * time.Millisecond)
+
+	// Stop prompting
+	bs.promptMu.Lock()
+	bs.isPrompting = false
+	bs.promptMu.Unlock()
+
+	// Stop the timer
+	bs.stopPeriodicPersistence()
+
+	// Verify timer is stopped
+	bs.promptMu.Lock()
+	hasTimer := bs.persistTimer != nil
+	bs.promptMu.Unlock()
+
+	if hasTimer {
+		t.Error("Expected timer to be stopped")
+	}
+}

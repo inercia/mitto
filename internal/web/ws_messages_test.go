@@ -632,4 +632,194 @@ func TestEventBuffer_LastSeq(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Edge Case Tests for Event Buffer
+// =============================================================================
+
+// TestEventBuffer_OutOfOrderSeqPreserved tests that events added out of order
+// preserve their original sequence numbers.
+func TestEventBuffer_OutOfOrderSeqPreserved(t *testing.T) {
+	buf := NewEventBuffer()
+
+	// Add events out of order (simulating markdown buffering scenario)
+	buf.AppendToolCall(3, "tool-1", "Read file", "running")
+	buf.AppendAgentMessage(1, "Let me read that file")
+	buf.AppendToolCallUpdate(4, "tool-1", ptr("completed"))
+	buf.AppendAgentMessage(2, " for you.")
+
+	events := buf.Events()
+
+	// Events should be in insertion order, not seq order
+	// (sorting happens during persistence, not in buffer)
+	if len(events) != 4 {
+		t.Fatalf("Expected 4 events, got %d", len(events))
+	}
+
+	// Verify seq numbers are preserved
+	expectedSeqs := []int64{3, 1, 4, 2}
+	for i, e := range events {
+		if e.Seq != expectedSeqs[i] {
+			t.Errorf("events[%d].Seq = %d, want %d", i, e.Seq, expectedSeqs[i])
+		}
+	}
+}
+
+// TestEventBuffer_CoalescingPreservesFirstSeq tests that when agent messages
+// are coalesced, the first chunk's seq is preserved.
+func TestEventBuffer_CoalescingPreservesFirstSeq(t *testing.T) {
+	buf := NewEventBuffer()
+
+	// First chunk with seq=5
+	seq1, isNew1 := buf.AppendAgentMessage(5, "Hello ")
+	if !isNew1 || seq1 != 5 {
+		t.Errorf("First chunk: seq=%d, isNew=%v, want seq=5, isNew=true", seq1, isNew1)
+	}
+
+	// Second chunk with seq=6 should coalesce and return seq=5
+	seq2, isNew2 := buf.AppendAgentMessage(6, "World")
+	if isNew2 || seq2 != 5 {
+		t.Errorf("Second chunk: seq=%d, isNew=%v, want seq=5, isNew=false", seq2, isNew2)
+	}
+
+	// Third chunk with seq=7 should also coalesce
+	seq3, isNew3 := buf.AppendAgentMessage(7, "!")
+	if isNew3 || seq3 != 5 {
+		t.Errorf("Third chunk: seq=%d, isNew=%v, want seq=5, isNew=false", seq3, isNew3)
+	}
+
+	// Buffer should have only one event with seq=5
+	events := buf.Events()
+	if len(events) != 1 {
+		t.Fatalf("Expected 1 event, got %d", len(events))
+	}
+	if events[0].Seq != 5 {
+		t.Errorf("Coalesced event seq = %d, want 5", events[0].Seq)
+	}
+
+	// Content should be concatenated
+	if data, ok := events[0].Data.(*AgentMessageData); ok {
+		if data.HTML != "Hello World!" {
+			t.Errorf("Coalesced content = %q, want %q", data.HTML, "Hello World!")
+		}
+	}
+}
+
+// TestEventBuffer_FlushClearsBuffer tests that Flush returns all events and clears the buffer.
+func TestEventBuffer_FlushClearsBuffer(t *testing.T) {
+	buf := NewEventBuffer()
+
+	buf.AppendAgentMessage(1, "Hello")
+	buf.AppendToolCall(2, "tool-1", "Test", "done")
+
+	// Flush should return events
+	events := buf.Flush()
+	if len(events) != 2 {
+		t.Errorf("Flush returned %d events, want 2", len(events))
+	}
+
+	// Buffer should be empty after flush
+	if !buf.IsEmpty() {
+		t.Error("Buffer should be empty after Flush")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("Buffer Len = %d after Flush, want 0", buf.Len())
+	}
+
+	// Second flush should return empty
+	events2 := buf.Flush()
+	if len(events2) != 0 {
+		t.Errorf("Second Flush returned %d events, want 0", len(events2))
+	}
+}
+
+// TestEventBuffer_EventsDoesNotClearBuffer tests that Events() returns a copy
+// without modifying the buffer.
+func TestEventBuffer_EventsDoesNotClearBuffer(t *testing.T) {
+	buf := NewEventBuffer()
+
+	buf.AppendAgentMessage(1, "Hello")
+
+	// Get events
+	events1 := buf.Events()
+	if len(events1) != 1 {
+		t.Fatalf("First Events() returned %d events, want 1", len(events1))
+	}
+
+	// Buffer should still have the event
+	if buf.IsEmpty() {
+		t.Error("Buffer should not be empty after Events()")
+	}
+
+	// Get events again
+	events2 := buf.Events()
+	if len(events2) != 1 {
+		t.Errorf("Second Events() returned %d events, want 1", len(events2))
+	}
+}
+
+// TestEventBuffer_ReplayToObserver tests that ReplayTo correctly sends events to an observer.
+func TestEventBuffer_ReplayToObserver(t *testing.T) {
+	buf := NewEventBuffer()
+
+	buf.AppendAgentThought(1, "Thinking...")
+	buf.AppendAgentMessage(2, "<p>Hello</p>")
+	buf.AppendToolCall(3, "tool-1", "Read file", "running")
+
+	// Create a mock observer to capture replayed events
+	observer := &testReplayObserver{}
+
+	events := buf.Events()
+	for _, e := range events {
+		e.ReplayTo(observer)
+	}
+
+	// Verify observer received all events
+	if len(observer.thoughts) != 1 || observer.thoughts[0] != "Thinking..." {
+		t.Errorf("Observer thoughts = %v, want [Thinking...]", observer.thoughts)
+	}
+	if len(observer.messages) != 1 || observer.messages[0] != "<p>Hello</p>" {
+		t.Errorf("Observer messages = %v, want [<p>Hello</p>]", observer.messages)
+	}
+	if len(observer.toolCalls) != 1 || observer.toolCalls[0] != "tool-1" {
+		t.Errorf("Observer toolCalls = %v, want [tool-1]", observer.toolCalls)
+	}
+}
+
+// testReplayObserver is a minimal observer for testing ReplayTo.
+type testReplayObserver struct {
+	thoughts  []string
+	messages  []string
+	toolCalls []string
+}
+
+func (o *testReplayObserver) OnAgentThought(seq int64, text string) {
+	o.thoughts = append(o.thoughts, text)
+}
+
+func (o *testReplayObserver) OnAgentMessage(seq int64, html string) {
+	o.messages = append(o.messages, html)
+}
+
+func (o *testReplayObserver) OnToolCall(seq int64, id, title, status string) {
+	o.toolCalls = append(o.toolCalls, id)
+}
+
+func (o *testReplayObserver) OnToolUpdate(seq int64, id string, status *string) {}
+func (o *testReplayObserver) OnPlan(seq int64)                                  {}
+func (o *testReplayObserver) OnFileWrite(seq int64, path string, size int)      {}
+func (o *testReplayObserver) OnFileRead(seq int64, path string, size int)       {}
+func (o *testReplayObserver) OnPromptComplete(eventCount int)                   {}
+func (o *testReplayObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string) {
+}
+func (o *testReplayObserver) OnError(message string) {}
+func (o *testReplayObserver) OnQueueUpdated(queueLength int, action string, messageID string) {
+}
+func (o *testReplayObserver) OnQueueMessageSending(messageID string)            {}
+func (o *testReplayObserver) OnQueueMessageSent(messageID string)               {}
+func (o *testReplayObserver) OnQueueReordered(messages []session.QueuedMessage) {}
+func (o *testReplayObserver) OnActionButtons(buttons []ActionButton)            {}
+func (o *testReplayObserver) OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+	return acp.RequestPermissionResponse{}, nil
+}
+
 func ptr(s string) *string { return &s }

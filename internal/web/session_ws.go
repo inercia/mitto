@@ -60,6 +60,12 @@ type SessionWSClient struct {
 	// Track the seq of the message currently being streamed (for coalescing chunks)
 	// This allows multiple chunks with the same seq to be sent (they're continuations)
 	currentStreamingSeq int64
+
+	// Track whether the initial load has been done. The client is not added as an
+	// observer until after the initial load to prevent race conditions where events
+	// are sent via observer callbacks before the client has loaded historical events.
+	initialLoadDone bool
+	initialLoadMu   sync.Mutex
 }
 
 // handleSessionWS handles WebSocket connections for a specific session.
@@ -164,13 +170,17 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Attach to background session if available
+	// Store reference to background session if available.
+	// Note: We do NOT add the client as an observer yet. The observer is added
+	// after the initial load_events request is processed to prevent race conditions
+	// where events are sent via observer callbacks before the client has loaded
+	// historical events from storage.
 	if bs != nil {
 		client.bgSession = bs
-		bs.AddObserver(client)
+		// Observer will be added in handleLoadEvents after initial load
 		if clientLogger != nil {
-			clientLogger.Debug("SessionWSClient attached to session",
-				"observer_count", bs.ObserverCount())
+			clientLogger.Debug("SessionWSClient has background session, observer will be added after initial load",
+				"acp_id", bs.GetACPID())
 		}
 	}
 
@@ -349,7 +359,7 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 
 func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, imageIDs []string) {
 	if c.bgSession == nil {
-		c.sendError("Session not running. Create or resume the session first.")
+		c.sendPromptError("Session not running. Create or resume the session first.", promptID)
 		return
 	}
 
@@ -364,7 +374,7 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, 
 		ImageIDs: imageIDs,
 	}
 	if err := c.bgSession.PromptWithMeta(message, meta); err != nil {
-		c.sendError("Failed to send prompt: " + err.Error())
+		c.sendPromptError("Failed to send prompt: "+err.Error(), promptID)
 		return
 	}
 
@@ -548,6 +558,31 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		"is_prompting": isPrompting,
 	})
 
+	// For initial load (not prepend, not sync), add the client as an observer now.
+	// This is done AFTER sending events_loaded to prevent race conditions where
+	// events are sent via observer callbacks before the client has loaded historical
+	// events from storage.
+	if !isPrepend && afterSeq == 0 {
+		c.initialLoadMu.Lock()
+		if !c.initialLoadDone && c.bgSession != nil {
+			c.bgSession.AddObserver(c)
+			c.initialLoadDone = true
+			if c.logger != nil {
+				c.logger.Debug("Added client as observer after initial load",
+					"session_id", c.sessionID,
+					"observer_count", c.bgSession.ObserverCount())
+			}
+		}
+		c.initialLoadMu.Unlock()
+
+		// H2 fix: Check for events that were persisted between the initial load
+		// and observer registration. This handles the race window where events
+		// arrive after we read from storage but before we're registered as an observer.
+		if lastSeq > 0 {
+			c.syncMissedEventsDuringRegistration(lastSeq)
+		}
+	}
+
 	// If this is an initial load (not prepend, not sync) and session is prompting,
 	// we need to replay any buffered events that haven't been persisted yet.
 	// This handles the case where a client connects mid-stream while agent messages
@@ -559,6 +594,64 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 	if !isPrepend && afterSeq == 0 && isPrompting && c.bgSession != nil {
 		c.replayBufferedEventsWithDedup()
 	}
+}
+
+// syncMissedEventsDuringRegistration checks for events that were persisted
+// between the initial load and observer registration, and sends them to the client.
+// This handles the H2 race window where events arrive after we read from storage
+// but before we're registered as an observer.
+func (c *SessionWSClient) syncMissedEventsDuringRegistration(lastLoadedSeq int64) {
+	if c.store == nil {
+		return
+	}
+
+	// Read any events that were persisted after our initial load
+	events, err := c.store.ReadEventsFrom(c.sessionID, lastLoadedSeq)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Debug("Failed to read missed events during registration",
+				"error", err,
+				"last_loaded_seq", lastLoadedSeq)
+		}
+		return
+	}
+
+	if len(events) == 0 {
+		return
+	}
+
+	firstSeq := events[0].Seq
+	lastSeq := events[len(events)-1].Seq
+
+	// L1: Structured logging for missed events sync
+	if c.logger != nil {
+		c.logger.Debug("seq_sync_missed_events",
+			"event_count", len(events),
+			"last_loaded_seq", lastLoadedSeq,
+			"first_seq", firstSeq,
+			"last_seq", lastSeq,
+			"client_id", c.clientID,
+			"session_id", c.sessionID)
+	}
+
+	// Send these events to the client
+	// The client's deduplication will handle any overlap
+	c.sendMessage(WSMsgTypeEventsLoaded, map[string]interface{}{
+		"events":       events,
+		"has_more":     false,
+		"first_seq":    firstSeq,
+		"last_seq":     lastSeq,
+		"prepend":      false,
+		"is_running":   c.bgSession != nil && !c.bgSession.IsClosed(),
+		"is_prompting": c.bgSession != nil && c.bgSession.IsPrompting(),
+	})
+
+	// Update lastSentSeq
+	c.seqMu.Lock()
+	if lastSeq > c.lastSentSeq {
+		c.lastSentSeq = lastSeq
+	}
+	c.seqMu.Unlock()
 }
 
 // replayBufferedEventsWithDedup replays buffered events to this client,
@@ -653,6 +746,16 @@ func (c *SessionWSClient) sendError(message string) {
 	})
 }
 
+// sendPromptError sends an error message that includes the prompt_id for proper tracking.
+// This allows the frontend to cancel pending send timeouts for this specific prompt.
+func (c *SessionWSClient) sendPromptError(message string, promptID string) {
+	c.wsConn.SendMessage(WSMsgTypeError, map[string]interface{}{
+		"message":    message,
+		"session_id": c.sessionID,
+		"prompt_id":  promptID,
+	})
+}
+
 // --- SessionObserver interface implementation ---
 
 // OnAgentMessage is called when the agent sends a message chunk.
@@ -662,6 +765,14 @@ func (c *SessionWSClient) OnAgentMessage(seq int64, html string) {
 	c.seqMu.Lock()
 	if seq < c.lastSentSeq {
 		// Old message - skip entirely (already sent)
+		// L1: Log skipped duplicate
+		if c.logger != nil {
+			c.logger.Debug("seq_skipped_duplicate",
+				"seq", seq,
+				"last_sent_seq", c.lastSentSeq,
+				"event_type", "agent_message",
+				"client_id", c.clientID)
+		}
 		c.seqMu.Unlock()
 		return
 	}
@@ -672,6 +783,15 @@ func (c *SessionWSClient) OnAgentMessage(seq int64, html string) {
 	}
 	// seq == lastSentSeq means continuation of current message - always send
 	c.seqMu.Unlock()
+
+	// L1: Log event delivery
+	if c.logger != nil {
+		c.logger.Debug("seq_delivered",
+			"seq", seq,
+			"event_type", "agent_message",
+			"client_id", c.clientID,
+			"html_len", len(html))
+	}
 
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	// or an unsolicited agent message (e.g., "indexing workspace" notifications).
@@ -726,6 +846,15 @@ func (c *SessionWSClient) OnToolCall(seq int64, id, title, status string) {
 	c.seqMu.Lock()
 	if seq > 0 && seq <= c.lastSentSeq {
 		// Already sent this tool call - skip
+		// L1: Log skipped duplicate
+		if c.logger != nil {
+			c.logger.Debug("seq_skipped_duplicate",
+				"seq", seq,
+				"last_sent_seq", c.lastSentSeq,
+				"event_type", "tool_call",
+				"tool_id", id,
+				"client_id", c.clientID)
+		}
 		c.seqMu.Unlock()
 		return
 	}
@@ -733,6 +862,16 @@ func (c *SessionWSClient) OnToolCall(seq int64, id, title, status string) {
 		c.lastSentSeq = seq
 	}
 	c.seqMu.Unlock()
+
+	// L1: Log event delivery
+	if c.logger != nil {
+		c.logger.Debug("seq_delivered",
+			"seq", seq,
+			"event_type", "tool_call",
+			"tool_id", id,
+			"tool_title", title,
+			"client_id", c.clientID)
+	}
 
 	// Include is_prompting so the frontend knows if this is part of a user prompt response
 	isPrompting := false
@@ -920,6 +1059,15 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 	// Check seq tracking
 	c.seqMu.Lock()
 	if seq > 0 && seq <= c.lastSentSeq {
+		// L1: Log skipped duplicate
+		if c.logger != nil {
+			c.logger.Debug("seq_skipped_duplicate",
+				"seq", seq,
+				"last_sent_seq", c.lastSentSeq,
+				"event_type", "user_prompt",
+				"prompt_id", promptID,
+				"client_id", c.clientID)
+		}
 		c.seqMu.Unlock()
 		return
 	}
@@ -927,6 +1075,17 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 		c.lastSentSeq = seq
 	}
 	c.seqMu.Unlock()
+
+	// L1: Log event delivery
+	if c.logger != nil {
+		c.logger.Debug("seq_delivered",
+			"seq", seq,
+			"event_type", "user_prompt",
+			"prompt_id", promptID,
+			"sender_id", senderID,
+			"is_mine", senderID == c.clientID,
+			"client_id", c.clientID)
+	}
 
 	c.sendMessage(WSMsgTypeUserPrompt, map[string]interface{}{
 		"seq":          seq,

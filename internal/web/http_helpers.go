@@ -6,9 +6,11 @@ import (
 )
 
 // writeJSON writes a JSON response with the given status code.
-// It sets the Content-Type header to application/json.
+// It sets the Content-Type header to application/json and disables caching.
+// API responses should never be cached to ensure clients always get fresh data.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }

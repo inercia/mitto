@@ -22,6 +22,10 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
+// defaultPersistInterval is the default interval for periodic persistence of buffered
+// agent messages during streaming. This reduces data loss if the server crashes mid-stream.
+const defaultPersistInterval = 5 * time.Second
+
 // BackgroundSession manages an ACP session that runs independently of WebSocket connections.
 // It continues running even when no client is connected, persisting all events to disk.
 // Multiple observers can subscribe to receive real-time updates.
@@ -63,6 +67,12 @@ type BackgroundSession struct {
 	promptCount          int
 	promptStartTime      time.Time // When the current prompt started (for stuck detection)
 	lastResponseComplete time.Time // When the agent last completed a response (for queue delay)
+
+	// Periodic persistence for crash recovery (H3 fix)
+	// This timer periodically persists buffered agent messages during streaming
+	// to reduce data loss if the server crashes mid-stream.
+	persistTimer    *time.Timer
+	persistInterval time.Duration
 
 	// Configuration
 	autoApprove bool
@@ -143,6 +153,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		apiPrefix:           cfg.APIPrefix,
 		workspaceUUID:       cfg.WorkspaceUUID,
 		runner:              cfg.Runner,
+		persistInterval:     defaultPersistInterval, // H3 fix: periodic persistence
 	}
 
 	// Create recorder for persistence
@@ -254,6 +265,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		apiPrefix:           config.APIPrefix,
 		workspaceUUID:       config.WorkspaceUUID,
 		runner:              config.Runner,
+		persistInterval:     defaultPersistInterval, // H3 fix: periodic persistence
 	}
 
 	// Resume recorder for the existing session
@@ -378,6 +390,15 @@ func (bs *BackgroundSession) getNextSeq() int64 {
 	defer bs.seqMu.Unlock()
 	seq := bs.nextSeq
 	bs.nextSeq++
+
+	// L1: Structured logging for seq assignment
+	if bs.logger != nil {
+		bs.logger.Debug("seq_assigned",
+			"seq", seq,
+			"next_seq", bs.nextSeq,
+			"session_id", bs.persistedID)
+	}
+
 	return seq
 }
 
@@ -396,7 +417,17 @@ func (bs *BackgroundSession) refreshNextSeq() {
 	}
 	bs.seqMu.Lock()
 	defer bs.seqMu.Unlock()
+	oldSeq := bs.nextSeq
 	bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+
+	// L1: Log seq refresh
+	if bs.logger != nil && oldSeq != bs.nextSeq {
+		bs.logger.Debug("seq_refreshed",
+			"old_next_seq", oldSeq,
+			"new_next_seq", bs.nextSeq,
+			"event_count", bs.recorder.EventCount(),
+			"session_id", bs.persistedID)
+	}
 }
 
 // CreatedAt returns when the session was created.
@@ -544,6 +575,9 @@ func (bs *BackgroundSession) Close(reason string) {
 
 	// Cancel context to stop any ongoing operations
 	bs.cancel()
+
+	// Stop periodic persistence timer (H3 fix)
+	bs.stopPeriodicPersistence()
 
 	// Flush and persist any buffered messages
 	bs.flushAndPersistMessages()
@@ -697,6 +731,67 @@ func (bs *BackgroundSession) persistDiscreteEvent(event BufferedEvent) {
 	if err := event.PersistTo(bs.recorder); err != nil && bs.logger != nil {
 		bs.logger.Error("Failed to persist discrete event", "type", event.Type, "error", err)
 	}
+}
+
+// startPeriodicPersistence starts a timer that periodically persists buffered
+// agent messages during streaming. This reduces data loss if the server crashes
+// mid-stream (H3 fix).
+func (bs *BackgroundSession) startPeriodicPersistence() {
+	bs.promptMu.Lock()
+	defer bs.promptMu.Unlock()
+
+	// Stop any existing timer
+	if bs.persistTimer != nil {
+		bs.persistTimer.Stop()
+	}
+
+	if bs.persistInterval <= 0 {
+		return
+	}
+
+	// Create a new timer that fires periodically
+	bs.persistTimer = time.AfterFunc(bs.persistInterval, func() {
+		bs.periodicPersistTick()
+	})
+}
+
+// stopPeriodicPersistence stops the periodic persistence timer.
+func (bs *BackgroundSession) stopPeriodicPersistence() {
+	bs.promptMu.Lock()
+	defer bs.promptMu.Unlock()
+
+	if bs.persistTimer != nil {
+		bs.persistTimer.Stop()
+		bs.persistTimer = nil
+	}
+}
+
+// periodicPersistTick is called by the periodic persistence timer.
+// It persists any buffered agent messages and reschedules the timer.
+func (bs *BackgroundSession) periodicPersistTick() {
+	// Check if we're still prompting
+	bs.promptMu.Lock()
+	if !bs.isPrompting {
+		bs.promptMu.Unlock()
+		return
+	}
+	bs.promptMu.Unlock()
+
+	// Persist any buffered coalesced events
+	bs.flushPendingCoalescedEvents()
+
+	if bs.logger != nil {
+		bs.logger.Debug("Periodic persistence tick completed")
+	}
+
+	// Reschedule the timer
+	bs.promptMu.Lock()
+	if bs.isPrompting && bs.persistInterval > 0 {
+		bs.persistTimer = time.AfterFunc(bs.persistInterval, func() {
+			bs.periodicPersistTick()
+		})
+	}
+	bs.promptMu.Unlock()
 }
 
 // startACPProcess starts the ACP server process and initializes the connection.
@@ -959,6 +1054,9 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	}
 	bs.promptMu.Unlock()
 
+	// Start periodic persistence for crash recovery (H3 fix)
+	bs.startPeriodicPersistence()
+
 	// Load images and build content blocks
 	var imageRefs []session.ImageRef
 	var contentBlocks []acp.ContentBlock
@@ -1089,6 +1187,9 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		bs.promptStartTime = time.Time{}
 		bs.lastResponseComplete = time.Now()
 		bs.promptMu.Unlock()
+
+		// Stop periodic persistence (H3 fix)
+		bs.stopPeriodicPersistence()
 
 		if bs.IsClosed() {
 			return
@@ -1377,6 +1478,9 @@ func (bs *BackgroundSession) Cancel() error {
 	bs.lastResponseComplete = time.Now()
 	bs.promptMu.Unlock()
 
+	// Stop periodic persistence (H3 fix)
+	bs.stopPeriodicPersistence()
+
 	if wasPrompting {
 		// Flush any buffered content before notifying completion
 		if bs.acpClient != nil {
@@ -1415,6 +1519,9 @@ func (bs *BackgroundSession) ForceReset() {
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
 	bs.promptMu.Unlock()
+
+	// Stop periodic persistence (H3 fix)
+	bs.stopPeriodicPersistence()
 
 	if !wasPrompting {
 		if bs.logger != nil {

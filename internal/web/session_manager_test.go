@@ -544,6 +544,68 @@ func TestSessionManager_GetActiveWorkingDirs(t *testing.T) {
 	}
 }
 
+func TestSessionManager_ResolveWorkspaceIdentifier(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", false, nil)
+
+	// Get the default workspace UUID
+	defaultWS := sm.GetDefaultWorkspace()
+	if defaultWS == nil {
+		t.Fatal("Expected default workspace")
+	}
+	defaultUUID := defaultWS.UUID
+
+	// Initially, the default workspace has empty WorkingDir
+	workingDir, found := sm.ResolveWorkspaceIdentifier(defaultUUID)
+	if !found {
+		t.Error("ResolveWorkspaceIdentifier should find default workspace UUID")
+	}
+	if workingDir != "" {
+		t.Errorf("Expected empty WorkingDir for default workspace, got %q", workingDir)
+	}
+
+	// Add an active session with the default workspace UUID but a specific working dir
+	sm.mu.Lock()
+	sm.sessions["test-session"] = &BackgroundSession{
+		persistedID:   "test-session",
+		workingDir:    "/my/project/dir",
+		workspaceUUID: defaultUUID,
+	}
+	sm.mu.Unlock()
+
+	// Now ResolveWorkspaceIdentifier should return the session's working dir
+	workingDir, found = sm.ResolveWorkspaceIdentifier(defaultUUID)
+	if !found {
+		t.Error("ResolveWorkspaceIdentifier should find UUID from active session")
+	}
+	if workingDir != "/my/project/dir" {
+		t.Errorf("Expected /my/project/dir, got %q", workingDir)
+	}
+
+	// Test with a registered workspace (should prefer workspace over session)
+	wsUUID := "registered-ws-uuid"
+	sm.mu.Lock()
+	sm.workspaces["/registered/workspace"] = &config.WorkspaceSettings{
+		UUID:       wsUUID,
+		WorkingDir: "/registered/workspace",
+		ACPServer:  "test",
+	}
+	sm.mu.Unlock()
+
+	workingDir, found = sm.ResolveWorkspaceIdentifier(wsUUID)
+	if !found {
+		t.Error("ResolveWorkspaceIdentifier should find registered workspace UUID")
+	}
+	if workingDir != "/registered/workspace" {
+		t.Errorf("Expected /registered/workspace, got %q", workingDir)
+	}
+
+	// Test with unknown UUID
+	_, found = sm.ResolveWorkspaceIdentifier("unknown-uuid")
+	if found {
+		t.Error("ResolveWorkspaceIdentifier should not find unknown UUID")
+	}
+}
+
 func TestSessionManager_SetWorkspaces(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 
@@ -614,5 +676,118 @@ func TestSessionManager_AddWorkspace_Duplicate(t *testing.T) {
 	workspaces := sm.GetWorkspaces()
 	if len(workspaces) != 1 {
 		t.Errorf("GetWorkspaces() = %d, want 1", len(workspaces))
+	}
+}
+
+// =============================================================================
+// M3: Health Check Helper Methods Tests
+// =============================================================================
+
+// TestSessionManager_ActiveSessionCount tests the ActiveSessionCount method.
+func TestSessionManager_ActiveSessionCount(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	// Initially should be 0
+	if count := sm.ActiveSessionCount(); count != 0 {
+		t.Errorf("ActiveSessionCount() = %d, want 0", count)
+	}
+
+	// Add a mock session
+	mockSession := &BackgroundSession{
+		persistedID: "test-session-1",
+	}
+	sm.mu.Lock()
+	sm.sessions["test-session-1"] = mockSession
+	sm.mu.Unlock()
+
+	// Should be 1 (not closed)
+	if count := sm.ActiveSessionCount(); count != 1 {
+		t.Errorf("ActiveSessionCount() = %d, want 1", count)
+	}
+
+	// Close the session (using atomic store)
+	mockSession.closed.Store(1)
+
+	// Should be 0 (closed)
+	if count := sm.ActiveSessionCount(); count != 0 {
+		t.Errorf("ActiveSessionCount() after close = %d, want 0", count)
+	}
+}
+
+// TestSessionManager_PromptingSessionCount tests the PromptingSessionCount method.
+func TestSessionManager_PromptingSessionCount(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	// Initially should be 0
+	if count := sm.PromptingSessionCount(); count != 0 {
+		t.Errorf("PromptingSessionCount() = %d, want 0", count)
+	}
+
+	// Add a mock session that is prompting
+	mockSession := &BackgroundSession{
+		persistedID: "test-session-1",
+		isPrompting: true,
+	}
+	sm.mu.Lock()
+	sm.sessions["test-session-1"] = mockSession
+	sm.mu.Unlock()
+
+	// Should be 1
+	if count := sm.PromptingSessionCount(); count != 1 {
+		t.Errorf("PromptingSessionCount() = %d, want 1", count)
+	}
+
+	// Stop prompting
+	mockSession.promptMu.Lock()
+	mockSession.isPrompting = false
+	mockSession.promptMu.Unlock()
+
+	// Should be 0
+	if count := sm.PromptingSessionCount(); count != 0 {
+		t.Errorf("PromptingSessionCount() after stop = %d, want 0", count)
+	}
+}
+
+// TestSessionManager_ActiveAndPromptingCounts tests both counts together.
+func TestSessionManager_ActiveAndPromptingCounts(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	// Add multiple sessions with different states
+	session1 := &BackgroundSession{persistedID: "s1", isPrompting: true}
+	session2 := &BackgroundSession{persistedID: "s2", isPrompting: false}
+	session3 := &BackgroundSession{persistedID: "s3", isPrompting: true}
+
+	sm.mu.Lock()
+	sm.sessions["s1"] = session1
+	sm.sessions["s2"] = session2
+	sm.sessions["s3"] = session3
+	sm.mu.Unlock()
+
+	// 3 active, 2 prompting
+	if count := sm.ActiveSessionCount(); count != 3 {
+		t.Errorf("ActiveSessionCount() = %d, want 3", count)
+	}
+	if count := sm.PromptingSessionCount(); count != 2 {
+		t.Errorf("PromptingSessionCount() = %d, want 2", count)
+	}
+
+	// Close one session (using atomic store)
+	session1.closed.Store(1)
+
+	// 2 active (s1 is closed so not counted in active)
+	// Note: PromptingSessionCount still counts s1 because it only checks isPrompting,
+	// not whether the session is closed. In practice, closed sessions shouldn't be prompting.
+	if count := sm.ActiveSessionCount(); count != 2 {
+		t.Errorf("ActiveSessionCount() after close = %d, want 2", count)
+	}
+
+	// Also stop prompting on s1 to simulate proper cleanup
+	session1.promptMu.Lock()
+	session1.isPrompting = false
+	session1.promptMu.Unlock()
+
+	// Now only 1 prompting (s3)
+	if count := sm.PromptingSessionCount(); count != 1 {
+		t.Errorf("PromptingSessionCount() after close = %d, want 1", count)
 	}
 }

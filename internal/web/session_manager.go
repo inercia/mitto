@@ -244,13 +244,34 @@ func (sm *SessionManager) ResolveWorkspaceIdentifier(uuid string) (string, bool)
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	// Find workspace by UUID
+	// Find workspace by UUID - prefer workspaces with non-empty WorkingDir
+	for _, ws := range sm.workspaces {
+		if ws.UUID == uuid && ws.WorkingDir != "" {
+			return ws.WorkingDir, true
+		}
+	}
+
+	// Check default workspace if it has a non-empty WorkingDir
+	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid && sm.defaultWorkspace.WorkingDir != "" {
+		return sm.defaultWorkspace.WorkingDir, true
+	}
+
+	// Fall back to active sessions - this handles the case where sessions are created
+	// with a working directory that's not a registered workspace (e.g., CLI usage).
+	// The session inherits the default workspace's UUID but has its own working directory.
+	for _, bs := range sm.sessions {
+		if bs.workspaceUUID == uuid && bs.workingDir != "" {
+			return bs.workingDir, true
+		}
+	}
+
+	// If we found the UUID but all working dirs are empty, still return success
+	// to indicate the UUID is valid (even if we can't resolve to a directory)
 	for _, ws := range sm.workspaces {
 		if ws.UUID == uuid {
 			return ws.WorkingDir, true
 		}
 	}
-	// Check default workspace
 	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
 		return sm.defaultWorkspace.WorkingDir, true
 	}
@@ -653,6 +674,34 @@ func (sm *SessionManager) SessionCount() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return len(sm.sessions)
+}
+
+// ActiveSessionCount returns the number of active (running) sessions.
+// M3: This is used by the health check endpoint.
+func (sm *SessionManager) ActiveSessionCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	count := 0
+	for _, bs := range sm.sessions {
+		if !bs.IsClosed() {
+			count++
+		}
+	}
+	return count
+}
+
+// PromptingSessionCount returns the number of sessions currently processing prompts.
+// M3: This is used by the health check endpoint.
+func (sm *SessionManager) PromptingSessionCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	count := 0
+	for _, bs := range sm.sessions {
+		if bs.IsPrompting() {
+			count++
+		}
+	}
+	return count
 }
 
 // GetSession returns a running session by ID, or nil if not found.
