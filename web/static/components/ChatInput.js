@@ -119,6 +119,7 @@ function sortPromptsByColor(prompts) {
  * @param {boolean} props.disabled - Whether input is disabled
  * @param {boolean} props.isStreaming - Whether agent is currently streaming
  * @param {boolean} props.isReadOnly - Whether session is read-only
+ * @param {boolean} props.isArchived - Whether session is archived (disables input)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts
  * @param {Object} props.inputRef - Ref for external focus control
  * @param {boolean} props.noSession - Whether there's no active session
@@ -139,6 +140,7 @@ export function ChatInput({
   disabled,
   isStreaming,
   isReadOnly,
+  isArchived = false,
   predefinedPrompts = [],
   inputRef,
   noSession = false,
@@ -228,8 +230,8 @@ export function ChatInput({
     setImproveError(null);
   }, [sessionId]);
 
-  // Determine if input should be fully disabled (no session or explicitly disabled)
-  const isFullyDisabled = disabled || noSession || isSending;
+  // Determine if input should be fully disabled (no session, explicitly disabled, or archived)
+  const isFullyDisabled = disabled || noSession || isSending || isArchived;
 
   // Expose focus method via inputRef for native menu integration
   useEffect(() => {
@@ -478,6 +480,8 @@ export function ChatInput({
 
   const getPlaceholder = () => {
     if (noSession) return "Create a new conversation to start chatting...";
+    if (isArchived)
+      return "This conversation is archived. Unarchive to send messages.";
     if (isReadOnly)
       return "This is a read-only session. Create a new session to chat.";
     if (isSending) return "Sending message...";

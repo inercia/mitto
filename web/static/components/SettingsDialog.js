@@ -308,6 +308,9 @@ export function SettingsDialog({
   const [confirmQuitWithRunningSessions, setConfirmQuitWithRunningSessions] =
     useState(true);
 
+  // Archive retention period setting
+  const [archiveRetentionPeriod, setArchiveRetentionPeriod] = useState("never");
+
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
 
@@ -596,6 +599,11 @@ export function SettingsDialog({
         config.ui?.confirmations?.quit_with_running_sessions !== false,
       );
 
+      // Load archive retention period setting (default to "never")
+      setArchiveRetentionPeriod(
+        config.session?.archive_retention_period || "never",
+      );
+
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
         config.conversations?.action_buttons?.enabled !== false,
@@ -710,6 +718,11 @@ export function SettingsDialog({
         },
       };
 
+      // Build session config with archive retention period
+      const sessionConfig = {
+        archive_retention_period: archiveRetentionPeriod,
+      };
+
       // Filter prompts to only save settings-based prompts (not file-based ones)
       // Prompts with source='settings' or no source (new prompts) should be saved
       // Prompts with source='file' or source='workspace' should not be saved to settings.json
@@ -730,6 +743,7 @@ export function SettingsDialog({
         web: webConfig,
         ui: uiConfig,
         conversations: conversationsConfig,
+        session: sessionConfig,
       };
 
       // DEBUG: Log config being saved
@@ -2090,6 +2104,36 @@ export function SettingsDialog({
                           </div>
                         </label>
                       `}
+                    </div>
+
+                    <!-- Archive Settings -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-gray-300">
+                        Archive Settings
+                      </h4>
+                      <div class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Auto-delete archived conversations
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Automatically delete archived conversations after the specified period
+                            </div>
+                          </div>
+                          <select
+                            value=${archiveRetentionPeriod}
+                            onChange=${(e) => setArchiveRetentionPeriod(e.target.value)}
+                            class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                          >
+                            <option value="never">Never</option>
+                            <option value="1d">After 1 day</option>
+                            <option value="1w">After 1 week</option>
+                            <option value="1m">After 1 month</option>
+                            <option value="3m">After 3 months</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
 
                     <!-- macOS-specific settings -->

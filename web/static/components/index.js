@@ -34,4 +34,6 @@ export {
   MoonIcon,
   QueueIcon,
   ListIcon,
+  ArchiveIcon,
+  ArchiveFilledIcon,
 } from "./Icons.js";

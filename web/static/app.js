@@ -47,8 +47,6 @@ import {
   pickImages,
   hasNativeImagePicker,
   isNativeApp,
-  getLastSeenSeq,
-  setLastSeenSeq,
   getLastActiveSessionId,
   setLastActiveSessionId,
   playAgentCompletedSound,
@@ -57,10 +55,17 @@ import {
   apiUrl,
   authFetch,
   fixViewerURLIfNeeded,
+  getGroupingMode,
+  cycleGroupingMode,
+  isGroupExpanded,
+  setGroupExpanded,
+  getAPIPrefix,
+  initUIPreferences,
+  onUIPreferencesLoaded,
 } from "./utils/index.js";
 
 // Import hooks
-import { useWebSocket, useSwipeNavigation, useSwipeToDelete } from "./hooks/index.js";
+import { useWebSocket, useSwipeNavigation, useSwipeToDelete, useInfiniteScroll } from "./hooks/index.js";
 
 // Import components
 import { Message } from "./components/Message.js";
@@ -72,7 +77,8 @@ import {
   CloseIcon,
   SettingsIcon,
   PlusIcon,
-  ChevronUpIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   MenuIcon,
   TrashIcon,
   EditIcon,
@@ -88,10 +94,52 @@ import {
   QueueIcon,
   PinIcon,
   PinFilledIcon,
+  ArchiveIcon,
+  ArchiveFilledIcon,
+  ListIcon,
 } from "./components/Icons.js";
 
 // Import constants
 import { KEYBOARD_SHORTCUTS } from "./constants.js";
+
+// =============================================================================
+// File Link Helpers
+// =============================================================================
+
+/**
+ * Determines if a file link should open directly (browser renders it) or in the viewer.
+ * HTML files and Markdown with render=html should open directly since the browser renders them.
+ * Other files should open in the syntax-highlighted viewer.
+ * @param {string} href - The file API URL (e.g., /mitto/api/files?ws=...&path=...)
+ * @returns {boolean} True if the file should open directly, false if it should open in viewer
+ */
+function shouldOpenFileDirectly(href) {
+  try {
+    // Parse the URL to extract the path parameter
+    const url = new URL(href, window.location.origin);
+    const path = url.searchParams.get("path") || "";
+    const renderHtml = url.searchParams.get("render") === "html";
+
+    // Get file extension
+    const ext = path.split(".").pop()?.toLowerCase() || "";
+
+    // HTML files should always open directly (browser renders them)
+    if (ext === "html" || ext === "htm") {
+      return true;
+    }
+
+    // Markdown files with render=html should open directly (server renders them as HTML)
+    if ((ext === "md" || ext === "markdown") && renderHtml) {
+      return true;
+    }
+
+    // All other files should open in the viewer (syntax highlighting)
+    return false;
+  } catch (e) {
+    console.error("[Mitto] Error checking file type:", e);
+    return false;
+  }
+}
 
 // =============================================================================
 // Global Link Click Handler
@@ -135,11 +183,28 @@ document.addEventListener("click", (e) => {
         openFileURL(fileUrl);
       }
     } else {
-      // Web browser - open in viewer page with syntax highlighting
-      const viewerUrl = convertHTTPFileURLToViewer(href);
-      console.log("[Mitto] Converted to viewer URL:", viewerUrl);
-      if (viewerUrl) {
-        window.open(viewerUrl, "_blank", "noopener,noreferrer");
+      // Web browser - determine how to open the file
+      // HTML files and Markdown with render=html should open directly (browser renders them)
+      // Other files should open in the syntax-highlighted viewer
+      const shouldOpenDirectly = shouldOpenFileDirectly(href);
+      if (shouldOpenDirectly) {
+        // Open directly via API - browser will render HTML/Markdown
+        // Fix old links missing API prefix
+        const apiPrefix = getAPIPrefix();
+        let finalUrl = href;
+        if (apiPrefix && !href.includes(apiPrefix)) {
+          // Old link without prefix - add the current prefix
+          finalUrl = href.replace("/api/files?", apiPrefix + "/api/files?");
+          console.log("[Mitto] Fixed old API link:", href, "->", finalUrl);
+        }
+        window.open(finalUrl, "_blank", "noopener,noreferrer");
+      } else {
+        // Open in viewer page with syntax highlighting
+        const viewerUrl = convertHTTPFileURLToViewer(href);
+        console.log("[Mitto] Converted to viewer URL:", viewerUrl);
+        if (viewerUrl) {
+          window.open(viewerUrl, "_blank", "noopener,noreferrer");
+        }
       }
     }
     return;
@@ -892,22 +957,50 @@ function SessionItem({
   onSelect,
   onRename,
   onDelete,
-  onPin,
+  onArchive,
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
   badgeClickEnabled = false,
   onBadgeClick,
+  hasQueuedMessages = false,
 }) {
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
 
-  // Check if session is pinned
-  const isPinned = session.pinned || false;
+  // Check if session is archived
+  const isArchived = session.archived || false;
+
+  // Archive button should be disabled if there are queued messages (can't archive with pending messages)
+  const canArchive = !hasQueuedMessages;
+
+  // Get working_dir from session, or fall back to global map
+  const workingDir =
+    session.working_dir || getGlobalWorkingDir(session.session_id) || "";
+  // Get acp_server from session
+  const acpServer = session.acp_server || "";
 
   // Build tooltip with session metadata
   const buildTooltip = () => {
     const parts = [];
+
+    // Workspace folder
+    if (workingDir) {
+      parts.push(`Folder: ${workingDir}`);
+    }
+
+    // ACP server
+    if (acpServer) {
+      parts.push(`Server: ${acpServer}`);
+    }
+
+    // Runner type
+    if (session.runner_type) {
+      const runnerInfo = session.runner_restricted
+        ? `${session.runner_type} (restricted)`
+        : `${session.runner_type} (unrestricted)`;
+      parts.push(`Runner: ${runnerInfo}`);
+    }
 
     // Message/event count
     if (session.messageCount !== undefined) {
@@ -931,24 +1024,16 @@ function SessionItem({
       parts.push(`Last message: ${lastMsgDate.toLocaleString()}`);
     }
 
-    // Runner type
-    if (session.runner_type) {
-      const runnerInfo = session.runner_restricted
-        ? `${session.runner_type} (restricted)`
-        : `${session.runner_type} (unrestricted)`;
-      parts.push(`Runner: ${runnerInfo}`);
-    }
-
     return parts.join('\n');
   };
 
-  // Swipe-to-delete hook - disabled when pinned
+  // Swipe-to-delete hook
   const { swipeOffset, isSwiping, isSwipingRef, isRevealed, containerProps, reset, triggerDelete } =
     useSwipeToDelete({
       onDelete: () => onDelete(session),
       threshold: 0.5,
       revealWidth: 80,
-      disabled: isPinned,
+      disabled: false,
     });
 
   const handleRename = (e) => {
@@ -958,13 +1043,12 @@ function SessionItem({
 
   const handleDelete = (e) => {
     if (e) e.stopPropagation();
-    if (isPinned) return; // Prevent delete if pinned
     onDelete(session);
   };
 
-  const handlePin = (e) => {
+  const handleArchive = (e) => {
     if (e) e.stopPropagation();
-    onPin(session, !isPinned);
+    onArchive(session, !isArchived);
   };
 
   const handleContextMenu = (e) => {
@@ -991,17 +1075,17 @@ function SessionItem({
   const displayName = session.name || session.description || "Untitled";
   const isActiveSession = session.isActive || session.status === "active";
   const isStreaming = session.isStreaming || false;
-  // Get working_dir from session, or fall back to global map
-  const workingDir =
-    session.working_dir || getGlobalWorkingDir(session.session_id) || "";
-  // Get acp_server from session
-  const acpServer = session.acp_server || "";
 
   const contextMenuItems = [
     {
-      label: isPinned ? "Unpin" : "Pin",
-      icon: isPinned ? html`<${PinFilledIcon} />` : html`<${PinIcon} />`,
-      onClick: () => handlePin(),
+      label: !canArchive
+        ? "Clear queue to archive"
+        : isArchived
+          ? "Unarchive"
+          : "Archive",
+      icon: isArchived ? html`<${ArchiveFilledIcon} />` : html`<${ArchiveIcon} />`,
+      onClick: canArchive ? () => handleArchive() : undefined,
+      disabled: !canArchive,
     },
     {
       label: "Rename",
@@ -1013,7 +1097,6 @@ function SessionItem({
       icon: html`<${TrashIcon} />`,
       onClick: () => handleDelete(),
       danger: true,
-      disabled: isPinned,
     },
   ];
 
@@ -1093,27 +1176,34 @@ function SessionItem({
           </div>
         </div>
         <div
-          class="flex items-center gap-1 ${showActions || isPinned
+          class="flex items-center gap-1 ${showActions || isArchived
             ? "opacity-100"
             : "opacity-0"} transition-opacity flex-shrink-0"
         >
-          ${isPinned && !showActions
+          ${isArchived && !showActions
             ? html`
-                <span class="text-amber-400" title="Pinned">
-                  <${PinFilledIcon} className="w-4 h-4" />
+                <span class="text-gray-500" title="Archived">
+                  <${ArchiveFilledIcon} className="w-4 h-4" />
                 </span>
               `
             : html`
                 <button
-                  onClick=${handlePin}
-                  class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors ${isPinned
-                    ? "text-amber-400"
-                    : "text-gray-300 hover:text-white"}"
-                  title="${isPinned ? "Unpin" : "Pin"}"
+                  onClick=${canArchive ? handleArchive : undefined}
+                  disabled=${!canArchive}
+                  class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
+                    ? "opacity-50 cursor-not-allowed text-gray-500"
+                    : isArchived
+                      ? "hover:bg-slate-600 text-gray-500"
+                      : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
+                  title="${!canArchive
+                    ? "Clear queue before archiving"
+                    : isArchived
+                      ? "Unarchive"
+                      : "Archive"}"
                 >
-                  ${isPinned
-                    ? html`<${PinFilledIcon} className="w-4 h-4" />`
-                    : html`<${PinIcon} className="w-4 h-4" />`}
+                  ${isArchived
+                    ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
+                    : html`<${ArchiveIcon} className="w-4 h-4" />`}
                 </button>
                 <button
                   onClick=${handleRename}
@@ -1124,11 +1214,8 @@ function SessionItem({
                 </button>
                 <button
                   onClick=${handleDelete}
-                  class="p-1.5 bg-slate-700 rounded transition-colors ${isPinned
-                    ? "text-gray-500 cursor-not-allowed"
-                    : "hover:bg-red-600 text-gray-300 hover:text-white"}"
-                  title="${isPinned ? "Unpin to delete" : "Delete"}"
-                  disabled=${isPinned}
+                  class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
+                  title="Delete"
                 >
                   <${TrashIcon} className="w-4 h-4" />
                 </button>
@@ -1194,7 +1281,7 @@ function SessionList({
   onNewSession,
   onRename,
   onDelete,
-  onPin,
+  onArchive,
   onClose,
   workspaces,
   theme,
@@ -1207,6 +1294,7 @@ function SessionList({
   rcFilePath = null,
   badgeClickEnabled = false,
   onBadgeClick,
+  queueLength = 0,
 }) {
   // Combine active and stored sessions using shared helper function
   // Note: Not using useMemo to ensure working_dir is always up-to-date
@@ -1215,6 +1303,307 @@ function SessionList({
   const isLight = theme === "light";
   const isLargeFont = fontSize === "large";
 
+  // Grouping state - initialized from localStorage
+  const [groupingMode, setGroupingModeState] = useState(() => getGroupingMode());
+  // Track expanded groups - use a counter to force re-render when localStorage changes
+  const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
+
+  // Subscribe to UI preferences loaded from server (for macOS app where localStorage doesn't persist)
+  useEffect(() => {
+    const unsubscribe = onUIPreferencesLoaded((prefs) => {
+      // Re-read grouping mode from localStorage (which was just synced from server)
+      const newMode = getGroupingMode();
+      setGroupingModeState(newMode);
+      // Force re-render for expanded groups
+      setExpandedGroupsVersion((v) => v + 1);
+      console.debug("[Mitto] SessionList: UI preferences synced from server, mode:", newMode);
+    });
+    return unsubscribe;
+  }, []);
+
+  // Handle grouping mode toggle
+  const handleToggleGrouping = useCallback(() => {
+    const newMode = cycleGroupingMode();
+    setGroupingModeState(newMode);
+  }, []);
+
+  // Handle group expand/collapse toggle
+  const handleToggleGroup = useCallback((groupKey) => {
+    const currentlyExpanded = isGroupExpanded(groupKey);
+    setGroupExpanded(groupKey, !currentlyExpanded);
+    setExpandedGroupsVersion((v) => v + 1); // Force re-render
+  }, []);
+
+  // Get grouping icon based on current mode
+  const getGroupingIcon = () => {
+    switch (groupingMode) {
+      case "server":
+        return html`<${ServerIcon} className="w-5 h-5" />`;
+      case "folder":
+        return html`<${FolderIcon} className="w-5 h-5" />`;
+      default:
+        return html`<${ListIcon} className="w-5 h-5" />`;
+    }
+  };
+
+  // Get grouping tooltip based on current mode
+  const getGroupingTooltip = () => {
+    switch (groupingMode) {
+      case "server":
+        return "Grouped by ACP server (click to group by folder)";
+      case "folder":
+        return "Grouped by workspace folder (click to disable grouping)";
+      default:
+        return "No grouping (click to group by server)";
+    }
+  };
+
+  // Helper to get session's working directory
+  const getSessionWorkingDir = (session) => {
+    const storedSession = storedSessions.find(
+      (s) => s.session_id === session.session_id,
+    );
+    return (
+      session.working_dir ||
+      storedSession?.working_dir ||
+      getGlobalWorkingDir(session.session_id) ||
+      ""
+    );
+  };
+
+  // Helper to get session's ACP server
+  const getSessionServer = (session) => {
+    const storedSession = storedSessions.find(
+      (s) => s.session_id === session.session_id,
+    );
+    return session.acp_server || storedSession?.acp_server || "Unknown";
+  };
+
+  // Separate archived and non-archived sessions
+  const { nonArchivedSessions, archivedSessions } = useMemo(() => {
+    const nonArchived = [];
+    const archived = [];
+    allSessions.forEach((session) => {
+      if (session.archived) {
+        archived.push(session);
+      } else {
+        nonArchived.push(session);
+      }
+    });
+    return { nonArchivedSessions: nonArchived, archivedSessions: archived };
+  }, [allSessions]);
+
+  // Group sessions based on current mode (only non-archived sessions)
+  const groupedSessions = useMemo(() => {
+    if (groupingMode === "none") {
+      return null; // No grouping, render flat list with sections
+    }
+
+    const groups = new Map();
+
+    // Only group non-archived sessions
+    nonArchivedSessions.forEach((session) => {
+      let groupKey;
+      let groupLabel;
+
+      if (groupingMode === "server") {
+        // Inline getSessionServer logic to avoid stale closure
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        groupKey = session.acp_server || storedSession?.acp_server || "Unknown";
+        groupLabel = groupKey;
+      } else {
+        // folder mode - inline getSessionWorkingDir logic
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        const workingDir =
+          session.working_dir ||
+          storedSession?.working_dir ||
+          getGlobalWorkingDir(session.session_id) ||
+          "";
+        groupKey = workingDir || "Unknown";
+        // Use basename for display
+        groupLabel = workingDir ? getBasename(workingDir) : "Unknown";
+      }
+
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, { label: groupLabel, sessions: [] });
+      }
+      groups.get(groupKey).sessions.push(session);
+    });
+
+    // Convert to array and sort by label
+    return Array.from(groups.entries())
+      .map(([key, value]) => ({ key, ...value }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [nonArchivedSessions, groupingMode, storedSessions]);
+
+  // Render a single session item
+  const renderSessionItem = (session) => {
+    const workingDir = getSessionWorkingDir(session);
+    const finalSession = workingDir
+      ? { ...session, working_dir: workingDir }
+      : session;
+    const workspace = workspaces.find((ws) => ws.working_dir === workingDir);
+    // Only the active session can have queued messages
+    const hasQueuedMessages =
+      session.session_id === activeSessionId && queueLength > 0;
+
+    return html`
+      <${SessionItem}
+        key=${session.session_id}
+        session=${finalSession}
+        isActive=${activeSessionId === session.session_id}
+        onSelect=${onSelect}
+        onRename=${onRename}
+        onDelete=${onDelete}
+        onArchive=${onArchive}
+        workspaceColor=${workspace?.color || null}
+        workspaceCode=${workspace?.code || null}
+        workspaceName=${workspace?.name || null}
+        badgeClickEnabled=${badgeClickEnabled}
+        onBadgeClick=${onBadgeClick}
+        hasQueuedMessages=${hasQueuedMessages}
+      />
+    `;
+  };
+
+  // Handle creating a new session in a specific workspace group
+  const handleNewSessionInGroup = useCallback(
+    (groupKey, e) => {
+      // Prevent the click from toggling the group
+      e.stopPropagation();
+
+      // Find the workspace that matches this group key
+      // For folder mode, groupKey is the working_dir
+      // For server mode, groupKey is the acp_server
+      let workspace = null;
+      if (groupingMode === "folder") {
+        workspace = workspaces.find((ws) => ws.working_dir === groupKey);
+      } else if (groupingMode === "server") {
+        // For server mode, find first workspace with matching acp_server
+        workspace = workspaces.find((ws) => ws.acp_server === groupKey);
+      }
+
+      if (workspace) {
+        onNewSession(workspace);
+      } else {
+        // Fallback to default new session behavior
+        onNewSession();
+      }
+    },
+    [groupingMode, workspaces, onNewSession],
+  );
+
+  // Special key for the archived section (used for localStorage persistence)
+  const ARCHIVED_GROUP_KEY = "__archived__";
+
+  // Render the archived section (used by both grouped and non-grouped modes)
+  const renderArchivedSection = () => {
+    if (archivedSessions.length === 0) return null;
+
+    // Archived section is collapsed by default (check localStorage, default to false)
+    const expanded = isGroupExpanded(ARCHIVED_GROUP_KEY);
+
+    return html`
+      <div key=${ARCHIVED_GROUP_KEY} class="group-section">
+        <div
+          class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer"
+          onClick=${() => handleToggleGroup(ARCHIVED_GROUP_KEY)}
+        >
+          <span class="transition-transform ${expanded ? "" : "-rotate-90"}">
+            <${ChevronDownIcon} className="w-4 h-4" />
+          </span>
+          <${ArchiveIcon} className="w-4 h-4" />
+          <span class="flex-1 text-left">Archived</span>
+          <span class="text-xs text-gray-500">${archivedSessions.length}</span>
+        </div>
+        ${expanded && archivedSessions.map((session) => renderSessionItem(session))}
+      </div>
+    `;
+  };
+
+  // Render grouped sessions with collapsible headers
+  const renderGroupedSessions = () => {
+    if (!groupedSessions) return null;
+
+    return html`
+      ${groupedSessions.map((group) => {
+        const expanded = isGroupExpanded(group.key);
+        const sessionCount = group.sessions.length;
+        // Check if any session in this group is actively streaming
+        const hasStreamingSession = group.sessions.some((s) => s.isStreaming);
+
+        return html`
+          <div key=${group.key} class="group-section">
+            <div
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer group/header"
+              onClick=${() => handleToggleGroup(group.key)}
+            >
+              <span class="transition-transform ${expanded ? "" : "-rotate-90"}">
+                <${ChevronDownIcon} className="w-4 h-4" />
+              </span>
+              ${groupingMode === "server"
+                ? html`<${ServerIcon} className="w-4 h-4" />`
+                : html`<${FolderIcon} className="w-4 h-4" />`}
+              <span class="flex-1 text-left truncate">${group.label}</span>
+              ${!expanded && hasStreamingSession && html`
+                <span
+                  class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
+                  title="Agent responding in this group"
+                ></span>
+              `}
+              ${groupingMode === "folder" && html`
+                <button
+                  onClick=${(e) => handleNewSessionInGroup(group.key, e)}
+                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                  title="New conversation in ${group.label}"
+                >
+                  <${PlusIcon} className="w-3.5 h-3.5" />
+                </button>
+              `}
+              <span class="text-xs text-gray-500">${sessionCount}</span>
+            </div>
+            ${expanded && group.sessions.map((session) => renderSessionItem(session))}
+          </div>
+        `;
+      })}
+      ${renderArchivedSection()}
+    `;
+  };
+
+  // Render sessions in "none" grouping mode with "All" and "Archived" sections
+  const renderUngroupedSessions = () => {
+    // If there are no archived sessions, just render the flat list without section headers
+    if (archivedSessions.length === 0) {
+      return nonArchivedSessions.map((session) => renderSessionItem(session));
+    }
+
+    // Otherwise, show "All" section for non-archived and "Archived" section
+    const allExpanded = isGroupExpanded("__all__");
+
+    return html`
+      <!-- All (non-archived) section -->
+      <div key="__all__" class="group-section">
+        <div
+          class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer"
+          onClick=${() => handleToggleGroup("__all__")}
+        >
+          <span class="transition-transform ${allExpanded ? "" : "-rotate-90"}">
+            <${ChevronDownIcon} className="w-4 h-4" />
+          </span>
+          <${ListIcon} className="w-4 h-4" />
+          <span class="flex-1 text-left">All</span>
+          <span class="text-xs text-gray-500">${nonArchivedSessions.length}</span>
+        </div>
+        ${allExpanded && nonArchivedSessions.map((session) => renderSessionItem(session))}
+      </div>
+      ${renderArchivedSection()}
+    `;
+  };
+
   return html`
     <div class="h-full flex flex-col">
       <div
@@ -1222,6 +1611,13 @@ function SessionList({
       >
         <h2 class="font-semibold text-lg">Conversations</h2>
         <div class="flex items-center gap-2">
+          <button
+            onClick=${handleToggleGrouping}
+            class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
+            title=${getGroupingTooltip()}
+          >
+            ${getGroupingIcon()}
+          </button>
           <button
             onClick=${() => onNewSession()}
             class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
@@ -1248,40 +1644,9 @@ function SessionList({
             No conversations yet
           </div>
         `}
-        ${allSessions.map((session) => {
-          // Ensure working_dir is available by looking up in storedSessions or global map
-          const storedSession = storedSessions.find(
-            (s) => s.session_id === session.session_id,
-          );
-          const workingDir =
-            session.working_dir ||
-            storedSession?.working_dir ||
-            getGlobalWorkingDir(session.session_id) ||
-            "";
-          const finalSession = workingDir
-            ? { ...session, working_dir: workingDir }
-            : session;
-          // Look up workspace for customization
-          const workspace = workspaces.find(
-            (ws) => ws.working_dir === workingDir,
-          );
-          return html`
-            <${SessionItem}
-              key=${session.session_id}
-              session=${finalSession}
-              isActive=${activeSessionId === session.session_id}
-              onSelect=${onSelect}
-              onRename=${onRename}
-              onDelete=${onDelete}
-              onPin=${onPin}
-              workspaceColor=${workspace?.color || null}
-              workspaceCode=${workspace?.code || null}
-              workspaceName=${workspace?.name || null}
-              badgeClickEnabled=${badgeClickEnabled}
-              onBadgeClick=${onBadgeClick}
-            />
-          `;
-        })}
+        ${groupingMode === "none"
+          ? renderUngroupedSessions()
+          : renderGroupedSessions()}
       </div>
       <!-- Footer with settings, theme and font size toggles -->
       <div class="p-4 border-t border-slate-700">
@@ -1384,9 +1749,11 @@ function App() {
     updateSessionName,
     renameSession,
     pinSession,
+    archiveSession,
     removeSession,
     isStreaming,
     hasMoreMessages,
+    isLoadingMore,
     actionButtons,
     sessionInfo,
     activeSessionId,
@@ -1407,6 +1774,7 @@ function App() {
     addWorkspace,
     removeWorkspace,
     refreshWorkspaces,
+    forceReconnectActiveSession,
   } = useWebSocket();
 
   const [showSidebar, setShowSidebar] = useState(false);
@@ -1446,7 +1814,6 @@ function App() {
   const [toastVisible, setToastVisible] = useState(false);
   const [toastData, setToastData] = useState(null); // { sessionId, sessionName }
   const [runnerFallbackWarning, setRunnerFallbackWarning] = useState(null); // { requestedType, fallbackType, reason }
-  const [loadingMore, setLoadingMore] = useState(false);
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   // Per-session draft text: { sessionId: draftText } - null key for "no session" state
@@ -1543,10 +1910,12 @@ function App() {
     workspacePrompts,
   ]);
 
-  // Initialize CSRF protection on mount
+  // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected
+  // Also loads UI preferences from server (for macOS app where localStorage doesn't persist)
   useEffect(() => {
     initCSRF();
+    initUIPreferences();
   }, []);
 
   // Clear swipe direction after animation completes
@@ -1667,72 +2036,83 @@ function App() {
   }, []);
 
   // Handle loading more messages
-  const handleLoadMore = useCallback(async () => {
-    if (loadingMore || !activeSessionId || !hasMoreMessages) return;
+  // Note: isLoadingMore state is managed by useWebSocket hook, not locally.
+  // The hook sets isLoadingMore=true when sending load_events request,
+  // and clears it when events_loaded response is received.
+  const handleLoadMore = useCallback(() => {
+    if (isLoadingMore || !activeSessionId || !hasMoreMessages) return;
+    loadMoreMessages(activeSessionId);
+  }, [isLoadingMore, activeSessionId, hasMoreMessages, loadMoreMessages]);
 
-    // Remember scroll position to maintain it after loading
-    const container = messagesContainerRef.current;
-    const scrollHeightBefore = container?.scrollHeight || 0;
+  // Infinite scroll for loading earlier messages
+  // Uses IntersectionObserver to detect when user scrolls near the top
+  // Scroll position restoration is handled by the useInfiniteScroll hook
+  const { sentinelRef } = useInfiniteScroll({
+    hasMoreMessages,
+    isLoading: isLoadingMore,
+    onLoadMore: handleLoadMore,
+    containerRef: messagesContainerRef,
+    rootMargin: "300px", // Trigger 300px before reaching top for smooth experience
+    debounceMs: 500, // Prevent rapid-fire loading
+  });
 
-    setLoadingMore(true);
-    await loadMoreMessages(activeSessionId);
-    setLoadingMore(false);
-
-    // Restore scroll position (keep user at same visual position)
-    if (container) {
-      const scrollHeightAfter = container.scrollHeight;
-      container.scrollTop = scrollHeightAfter - scrollHeightBefore;
-    }
-  }, [loadingMore, activeSessionId, hasMoreMessages, loadMoreMessages]);
+  // Sessions available for navigation (excludes archived sessions)
+  // Navigation via keyboard shortcuts and swipe gestures should skip archived conversations
+  const navigableSessions = useMemo(() => {
+    return allSessions.filter((s) => !s.archived);
+  }, [allSessions]);
 
   // Navigate to previous/next session with animation direction (wraps around for swipe gestures)
+  // Skips archived sessions
   const navigateToPreviousSession = useCallback(() => {
-    if (allSessions.length <= 1) return;
-    const currentIndex = allSessions.findIndex(
+    if (navigableSessions.length <= 1) return;
+    const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
     if (currentIndex === -1) return;
     const prevIndex =
-      currentIndex === 0 ? allSessions.length - 1 : currentIndex - 1;
+      currentIndex === 0 ? navigableSessions.length - 1 : currentIndex - 1;
     setSwipeDirection("right"); // Content slides in from left
     setSwipeArrow("right"); // Show right arrow (user swiped right)
-    switchSession(allSessions[prevIndex].session_id);
-  }, [allSessions, activeSessionId, switchSession]);
+    switchSession(navigableSessions[prevIndex].session_id);
+  }, [navigableSessions, activeSessionId, switchSession]);
 
   const navigateToNextSession = useCallback(() => {
-    if (allSessions.length <= 1) return;
-    const currentIndex = allSessions.findIndex(
+    if (navigableSessions.length <= 1) return;
+    const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
     if (currentIndex === -1) return;
     const nextIndex =
-      currentIndex === allSessions.length - 1 ? 0 : currentIndex + 1;
+      currentIndex === navigableSessions.length - 1 ? 0 : currentIndex + 1;
     setSwipeDirection("left"); // Content slides in from right
     setSwipeArrow("left"); // Show left arrow (user swiped left)
-    switchSession(allSessions[nextIndex].session_id);
-  }, [allSessions, activeSessionId, switchSession]);
+    switchSession(navigableSessions[nextIndex].session_id);
+  }, [navigableSessions, activeSessionId, switchSession]);
 
   // Navigate to session above in the list (no wrap-around, for keyboard shortcuts)
   // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
+  // Skips archived sessions
   const navigateToSessionAbove = useCallback(() => {
-    if (allSessions.length <= 1) return;
-    const currentIndex = allSessions.findIndex(
+    if (navigableSessions.length <= 1) return;
+    const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
     if (currentIndex === -1 || currentIndex === 0) return; // Already at top or not found
-    switchSession(allSessions[currentIndex - 1].session_id);
-  }, [allSessions, activeSessionId, switchSession]);
+    switchSession(navigableSessions[currentIndex - 1].session_id);
+  }, [navigableSessions, activeSessionId, switchSession]);
 
   // Navigate to session below in the list (no wrap-around, for keyboard shortcuts)
   // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
+  // Skips archived sessions
   const navigateToSessionBelow = useCallback(() => {
-    if (allSessions.length <= 1) return;
-    const currentIndex = allSessions.findIndex(
+    if (navigableSessions.length <= 1) return;
+    const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
-    if (currentIndex === -1 || currentIndex === allSessions.length - 1) return; // Already at bottom or not found
-    switchSession(allSessions[currentIndex + 1].session_id);
-  }, [allSessions, activeSessionId, switchSession]);
+    if (currentIndex === -1 || currentIndex === navigableSessions.length - 1) return; // Already at bottom or not found
+    switchSession(navigableSessions[currentIndex + 1].session_id);
+  }, [navigableSessions, activeSessionId, switchSession]);
 
   // Open sidebar handler for edge swipe
   const openSidebar = useCallback(() => {
@@ -1755,16 +2135,17 @@ function App() {
   );
 
   // Navigate to session by index (0-based) for keyboard shortcuts
+  // Uses navigableSessions to skip archived conversations
   const navigateToSessionByIndex = useCallback(
     (index) => {
-      if (index >= 0 && index < allSessions.length) {
-        const targetSession = allSessions[index];
+      if (index >= 0 && index < navigableSessions.length) {
+        const targetSession = navigableSessions[index];
         if (targetSession.session_id !== activeSessionId) {
           switchSession(targetSession.session_id);
         }
       }
     },
-    [allSessions, activeSessionId, switchSession],
+    [navigableSessions, activeSessionId, switchSession],
   );
 
   // Global keyboard shortcuts for Command+1-9 to switch sessions and Command+, for settings
@@ -2135,6 +2516,10 @@ function App() {
       document.body.classList.remove("light");
     }
     localStorage.setItem("mitto-theme", theme);
+    // Update Mermaid.js theme for new diagrams
+    if (typeof window.updateMermaidTheme === "function") {
+      window.updateMermaidTheme(theme);
+    }
   }, [theme]);
 
   const toggleTheme = useCallback(() => {
@@ -2200,17 +2585,32 @@ function App() {
   const SCROLL_THRESHOLD = 100;
 
   // Check if the user is at the bottom of the messages container
+  // With flex-col-reverse on the INNER wrapper (not the scrollable container):
+  // - scrollTop=0 means we're at the visual TOP (oldest messages)
+  // - scrollTop=scrollHeight-clientHeight means we're at the visual BOTTOM (newest messages)
   const checkIfAtBottom = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container) return true;
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    return scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
+    const maxScroll = container.scrollHeight - container.clientHeight;
+    const atBottom = container.scrollTop >= maxScroll - SCROLL_THRESHOLD;
+    console.log("[scroll] checkIfAtBottom:", {
+      scrollTop: container.scrollTop,
+      scrollHeight: container.scrollHeight,
+      clientHeight: container.clientHeight,
+      maxScroll,
+      threshold: SCROLL_THRESHOLD,
+      atBottom,
+    });
+    return atBottom;
   }, []);
 
   // Scroll to bottom handler
+  // With flex-col-reverse on inner wrapper, scrollHeight is the visual bottom
   const scrollToBottom = useCallback((smooth = true) => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
         behavior: smooth ? "smooth" : "auto",
       });
       setIsUserAtBottom(true);
@@ -2223,8 +2623,9 @@ function App() {
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    const handleScroll = () => {
+    const handleScroll = (source = "scroll") => {
       const atBottom = checkIfAtBottom();
+      console.log(`[scroll] handleScroll(${source}):`, { atBottom });
       setIsUserAtBottom(atBottom);
       // Clear new messages indicator when user scrolls to bottom
       if (atBottom) {
@@ -2232,14 +2633,26 @@ function App() {
       }
     };
 
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    return () => container.removeEventListener("scroll", handleScroll);
+    // Check initial scroll position on mount
+    // This handles cases where content fits in viewport (no scroll event fires)
+    // Use requestAnimationFrame to ensure layout is complete before checking
+    requestAnimationFrame(() => {
+      handleScroll("initial-raf");
+    });
+
+    const onScroll = () => handleScroll("event");
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
   }, [checkIfAtBottom]);
 
   // Track the active session to detect when we switch sessions
   const prevActiveSessionIdRef = useRef(activeSessionId);
   // Track if we're still in the initial load phase after a session switch
   const sessionJustSwitchedRef = useRef(false);
+  // Track previous isLoadingMore state to detect when a "load more" completes
+  const prevIsLoadingMoreRef = useRef(false);
+  // Track if we just finished loading more (prepend) - skip auto-scroll in this case
+  const justLoadedMoreRef = useRef(false);
 
   // Position at bottom synchronously BEFORE paint when switching sessions
   // This prevents any visible "jump" - the content appears already at the bottom
@@ -2248,14 +2661,25 @@ function App() {
     const container = messagesContainerRef.current;
 
     // Helper to scroll to bottom instantly (bypassing CSS scroll-behavior: smooth)
+    // With flex-col-reverse on inner wrapper, scrollHeight is the visual bottom
     const scrollToBottomInstant = () => {
       if (!container) return;
       // Temporarily disable smooth scrolling to make scroll instant
       const originalBehavior = container.style.scrollBehavior;
       container.style.scrollBehavior = "auto";
-      container.scrollTop = container.scrollHeight;
+      const beforeScrollTop = container.scrollTop;
+      container.scrollTop = container.scrollHeight; // scrollHeight = visual bottom
+      console.log("[scroll] scrollToBottomInstant:", {
+        beforeScrollTop,
+        afterScrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+        clientHeight: container.clientHeight,
+      });
       // Restore original behavior after the scroll completes
       container.style.scrollBehavior = originalBehavior;
+      // Explicitly set state since scroll event may not fire if position doesn't change
+      setIsUserAtBottom(true);
+      setHasNewMessages(false);
     };
 
     // Detect session switch (activeSessionId changed)
@@ -2284,6 +2708,18 @@ function App() {
     }
   }, [messages, activeSessionId]);
 
+  // Detect when "load more" (prepend) completes - set flag to skip auto-scroll
+  // This must run BEFORE the auto-scroll effect below
+  useEffect(() => {
+    // Detect transition from isLoadingMore=true to isLoadingMore=false
+    if (prevIsLoadingMoreRef.current && !isLoadingMore) {
+      // Load more just completed - set flag to skip auto-scroll for prepended content
+      justLoadedMoreRef.current = true;
+      console.log("[Scroll] Load more completed, will skip auto-scroll");
+    }
+    prevIsLoadingMoreRef.current = isLoadingMore;
+  }, [isLoadingMore]);
+
   // Smart auto-scroll for new content during active conversation
   useEffect(() => {
     const currentLength = messages.length;
@@ -2296,6 +2732,15 @@ function App() {
 
     // Skip if this is initial load after session switch (handled by useLayoutEffect above)
     if (sessionJustSwitchedRef.current) {
+      return;
+    }
+
+    // Skip auto-scroll if we just loaded older messages (prepend)
+    // The useInfiniteScroll hook handles scroll position restoration for this case
+    if (justLoadedMoreRef.current) {
+      console.log("[Scroll] Skipping auto-scroll - just loaded older messages");
+      justLoadedMoreRef.current = false;
+      prevMessagesLengthRef.current = currentLength;
       return;
     }
 
@@ -2421,6 +2866,16 @@ function App() {
       }
     };
 
+    // App Did Become Active - called from native macOS when app becomes visible
+    // WKWebView doesn't fire visibilitychange events, so the native app calls this
+    // to trigger WebSocket reconnection and sync any missed messages
+    window.mittoAppDidBecomeActive = () => {
+      console.log("[macOS] App became active, triggering reconnect and sync");
+      forceReconnectActiveSession();
+      // Also refresh session list in case there were changes
+      fetchStoredSessions();
+    };
+
     // Cleanup on unmount
     return () => {
       delete window.mittoNewConversation;
@@ -2431,6 +2886,7 @@ function App() {
       delete window.mittoNextConversation;
       delete window.mittoPrevConversation;
       delete window.mittoSwitchToSession;
+      delete window.mittoAppDidBecomeActive;
     };
   }, [
     newSession,
@@ -2445,9 +2901,31 @@ function App() {
     navigateToNextSession,
     navigateToPreviousSession,
     switchSession,
+    forceReconnectActiveSession,
   ]);
 
-  const handleNewSession = async () => {
+  const handleNewSession = async (workspace = null) => {
+    // If a specific workspace is provided, create session directly in that workspace
+    if (workspace) {
+      setShowSidebar(false);
+      const result = await newSession({
+        workingDir: workspace.working_dir,
+        acpServer: workspace.acp_server,
+      });
+      // If session creation failed due to no workspace configured, open settings
+      if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+        setSettingsDialog({ isOpen: true, forceOpen: true });
+      } else {
+        // Focus the input after creating new session
+        setTimeout(() => {
+          if (chatInputRef.current) {
+            chatInputRef.current.focus();
+          }
+        }, 100);
+      }
+      return;
+    }
+
     // If no workspaces configured, open settings dialog (unless config is read-only)
     if (workspaces.length === 0) {
       if (!configReadonly) {
@@ -2745,6 +3223,10 @@ function App() {
     await pinSession(session.session_id, pinned);
   };
 
+  const handleArchiveSession = async (session, archived) => {
+    await archiveSession(session.session_id, archived);
+  };
+
   return html`
     <div class="h-screen-safe flex">
       <!-- Session Properties Dialog -->
@@ -2900,7 +3382,7 @@ function App() {
           onNewSession=${handleNewSession}
           onRename=${handleRenameSession}
           onDelete=${handleDeleteSession}
-          onPin=${handlePinSession}
+          onArchive=${handleArchiveSession}
           workspaces=${workspaces}
           theme=${theme}
           onToggleTheme=${toggleTheme}
@@ -2912,6 +3394,7 @@ function App() {
           rcFilePath=${rcFilePath}
           badgeClickEnabled=${badgeClickEnabled}
           onBadgeClick=${handleBadgeClick}
+          queueLength=${queueLength}
         />
       </div>
 
@@ -2928,7 +3411,7 @@ function App() {
               onNewSession=${handleNewSession}
               onRename=${handleRenameSession}
               onDelete=${handleDeleteSession}
-              onPin=${handlePinSession}
+              onArchive=${handleArchiveSession}
               onClose=${() => setShowSidebar(false)}
               workspaces=${workspaces}
               theme=${theme}
@@ -2941,6 +3424,7 @@ function App() {
               rcFilePath=${rcFilePath}
               badgeClickEnabled=${badgeClickEnabled}
               onBadgeClick=${handleBadgeClick}
+              queueLength=${queueLength}
             />
           </div>
           <div
@@ -2993,10 +3477,11 @@ function App() {
 
         <!-- Messages wrapper (for positioning scroll-to-bottom button) -->
         <div class="flex-1 relative min-h-0 overflow-hidden">
-          <!-- Messages (scrollable) -->
+          <!-- Messages (scrollable container with normal scroll) -->
+          <!-- The inner wrapper uses flex-col-reverse for message ordering -->
           <div
             ref=${messagesContainerRef}
-            class="absolute inset-0 overflow-y-auto scroll-smooth scrollbar-hide p-4"
+            class="absolute inset-0 overflow-y-auto scroll-smooth scrollbar-hide p-4 messages-container-reverse"
           >
             ${swipeDirection &&
             html`
@@ -3020,33 +3505,13 @@ function App() {
             `}
             <div
               key=${activeSessionId}
-              class="max-w-2xl mx-auto ${swipeDirection
+              class="max-w-2xl mx-auto flex flex-col-reverse ${swipeDirection
                 ? `swipe-slide-${swipeDirection}`
                 : ""}"
             >
-            ${hasMoreMessages &&
-            html`
-              <div class="flex justify-center mb-4">
-                ${loadingMore
-                  ? html`
-                      <div
-                        class="px-4 py-2 text-sm text-gray-400 flex items-center gap-2"
-                      >
-                        <${SpinnerIcon} className="w-4 h-4" />
-                        <span>Loading earlier messages...</span>
-                      </div>
-                    `
-                  : html`
-                      <button
-                        onClick=${handleLoadMore}
-                        class="px-4 py-2 text-sm text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-full transition-colors flex items-center gap-2"
-                      >
-                        <${ChevronUpIcon} className="w-4 h-4" />
-                        <span>Load earlier messages</span>
-                      </button>
-                    `}
-              </div>
-            `}
+            ${/* With column-reverse: first in DOM = visual bottom, last in DOM = visual top
+                So we render messages in reverse order (newest first in DOM = visual bottom)
+                and put the infinite scroll sentinel at the DOM end (= visual top) */ ""}
             ${messages.length === 0 &&
             !hasMoreMessages &&
             html`
@@ -3102,17 +3567,38 @@ function App() {
                 </div>
               </div>
             `}
-            ${messages.map(
-              (msg, i) => html`
+            ${/* Render messages in reverse order for column-reverse:
+                newest (last in array) becomes first in DOM = visual bottom */ ""}
+            ${[...messages].reverse().map(
+              (msg, i, arr) => html`
                 <${Message}
-                  key=${msg.timestamp + "-" + i}
+                  key=${msg.timestamp + "-" + (arr.length - 1 - i)}
                   message=${msg}
-                  isLast=${i === messages.length - 1}
+                  isLast=${i === 0}
                   isStreaming=${isStreaming}
                 />
               `,
             )}
-            <div ref=${messagesEndRef} />
+            ${/* Infinite scroll sentinel - at DOM end = visual top (for loading older messages) */ ""}
+            ${hasMoreMessages && isLoadingMore &&
+            html`
+              <div class="flex justify-center my-4">
+                <div
+                  class="px-4 py-2 text-sm text-gray-400 flex items-center gap-2"
+                >
+                  <${SpinnerIcon} className="w-4 h-4" />
+                  <span>Loading earlier messages...</span>
+                </div>
+              </div>
+            `}
+            ${html`
+              <!-- Infinite scroll sentinel: at DOM end = visual top (triggers when scrolling up) -->
+              <div
+                ref=${sentinelRef}
+                class="h-1 w-full"
+                aria-hidden="true"
+              />
+            `}
           </div>
           </div><!-- End of scrollable messages container -->
 
@@ -3156,6 +3642,7 @@ function App() {
           disabled=${!connected || !activeSessionId}
           isStreaming=${isStreaming}
           isReadOnly=${sessionInfo?.isReadOnly}
+          isArchived=${sessionInfo?.archived || false}
           predefinedPrompts=${predefinedPrompts}
           inputRef=${chatInputRef}
           noSession=${!activeSessionId}
