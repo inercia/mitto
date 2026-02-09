@@ -2,7 +2,14 @@
 description: Go unit test conventions, table-driven tests, test isolation, and mocking patterns
 globs:
   - "internal/**/*_test.go"
-  - "**/*_test.go"
+keywords:
+  - unit test
+  - table-driven
+  - t.TempDir
+  - t.Setenv
+  - test coverage
+  - httptest
+  - mocking
 ---
 
 # Go Unit Test Conventions

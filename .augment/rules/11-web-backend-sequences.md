@@ -1,10 +1,18 @@
 ---
-description: Sequence number assignment, observer pattern, WebSocket message ordering, MarkdownBuffer flushing, and SeqProvider
+description: Sequence number assignment, observer pattern, WebSocket message ordering, MarkdownBuffer flushing, prompt ACK, and SeqProvider
 globs:
   - "internal/web/client.go"
   - "internal/web/markdown.go"
   - "internal/web/background_session.go"
   - "internal/web/session_ws.go"
+keywords:
+  - sequence number
+  - seq
+  - observer
+  - MarkdownBuffer
+  - prompt_received
+  - ACK
+  - message ordering
 ---
 
 # Sequence Numbers and Observer Pattern
@@ -152,14 +160,91 @@ func (mb *MarkdownBuffer) flushLocked() {
 }
 ```
 
+## Prompt ACK Handling
+
+The prompt flow uses acknowledgment to ensure reliable delivery:
+
+```
+Frontend                    Backend
+    |                          |
+    |--- prompt {prompt_id} -->|
+    |                          | Validate & persist
+    |<-- prompt_received ------|  (or error if rejected)
+    |                          |
+    |<-- agent_message --------|
+    |<-- tool_call ------------|
+    |<-- prompt_complete ------|
+```
+
+### Backend Response Types
+
+| Response | When | Frontend Action |
+|----------|------|-----------------|
+| `prompt_received` | Prompt accepted, processing started | Clear pending, show streaming |
+| `error` | Prompt rejected (e.g., already prompting) | Show error, preserve input |
+
+### Error Before ACK
+
+When backend rejects prompt synchronously (e.g., "prompt already in progress"):
+
+```go
+// Backend sends error message, NOT prompt_received
+if bs.isPrompting {
+    c.sendError("Failed to send prompt: prompt already in progress")
+    return
+}
+```
+
+Frontend must handle this gracefully - see [34-anti-patterns.md](./34-anti-patterns.md) for timeout vs error handling.
+
+### Prompt Already In Progress
+
+The `isPrompting` flag prevents concurrent prompts:
+
+```go
+func (bs *BackgroundSession) handlePrompt(clientID, promptID, message string) error {
+    bs.mu.Lock()
+    if bs.isPrompting {
+        bs.mu.Unlock()
+        return fmt.Errorf("prompt already in progress")
+    }
+    bs.isPrompting = true
+    bs.mu.Unlock()
+    // ...
+}
+```
+
+## Sequence Number Contract
+
+See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#sequence-number-contract) for the complete formal specification.
+
+### Key Guarantees
+
+| Property | Guarantee |
+|----------|-----------|
+| **Uniqueness** | Each event has a unique `seq` (except coalescing chunks) |
+| **Monotonicity** | `seq` values are strictly increasing |
+| **Assignment Time** | `seq` is assigned at ACP receive time, not persistence |
+| **Coalescing** | Multiple chunks of same message share the same `seq` |
+
+### Recent Fixes
+
+**H1: Stale lastSeenSeq** - Frontend now updates `lastSeenSeq` immediately during streaming, not just at `prompt_complete`.
+
+**H2: Observer Registration Race** - Server syncs missed events after observer registration to handle the race window.
+
+**M1: Client-Side Deduplication** - Frontend tracks seen `seq` values and skips duplicates as defense-in-depth.
+
 ## WebSocket Message Types
 
 See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md) for complete list.
 
 **Key messages:**
 - `prompt` / `prompt_received` - Prompt with ACK
+- `error` - Error response (including prompt rejection)
 - `agent_message` - Streaming HTML (includes `seq` for ordering)
-- `sync_session` / `session_sync` - Mobile wake resync
+- `load_events` / `events_loaded` - Event loading and sync
+- `keepalive` / `keepalive_ack` - Connection health check
 - `queue_message_titled` - Queue title generated
 
 ## Testing with SeqProvider

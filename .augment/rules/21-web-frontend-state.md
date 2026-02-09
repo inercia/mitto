@@ -2,6 +2,15 @@
 description: Frontend state management, refs vs state, useCallback patterns, stale closure prevention, useEffect vs useLayoutEffect
 globs:
   - "web/static/app.js"
+keywords:
+  - useState
+  - useEffect
+  - useLayoutEffect
+  - useCallback
+  - useRef
+  - stale closure
+  - ref vs state
+  - scroll
 ---
 
 # Frontend State Management

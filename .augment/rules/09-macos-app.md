@@ -1,11 +1,18 @@
 ---
-description: macOS native app with WKWebView, keyboard shortcuts, trackpad gestures, icon generation, and native folder picker
+description: macOS native app with WKWebView, keyboard shortcuts, trackpad gestures, icon generation, native folder picker, and WebView debugging
 globs:
   - "cmd/mitto-app/**/*"
   - "platform/mac/**/*"
   - "web/static/utils/native.js"
   - "**/*.m"
   - "**/*.h"
+keywords:
+  - WKWebView
+  - macOS app
+  - native app
+  - keyboard shortcut
+  - trackpad gesture
+  - localStorage sync
 ---
 
 # macOS App Development
@@ -188,4 +195,67 @@ NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Action Name"
 3. Add handler method in `MittoMenuHandler`
 4. Add Go callback in `main.go`
 5. Expose JavaScript function via `window.mittoActionName`
+
+## WKWebView Debugging
+
+### localStorage Synchronization Issues
+
+**Symptom**: macOS app shows stale/missing messages while browser shows correct state.
+
+**Root Cause**: WKWebView's localStorage can become desynchronized from the process data store. This manifests as:
+- `lastSeenSeq` values being stale or missing
+- Messages appearing in browser but not in native app
+- Reconnect syncs not loading new events
+
+**Debugging Steps**:
+
+1. **Check localStorage values in WKWebView**:
+   ```javascript
+   // In Safari Web Inspector (Develop → Mac → Mitto window)
+   Object.keys(localStorage).filter(k => k.includes('mitto'))
+   localStorage.getItem('mitto_last_seen_seq_SESSION_ID')
+   ```
+
+2. **Compare with browser**:
+   - Open same URL in Safari browser
+   - Compare localStorage values
+   - If different, WKWebView has stale state
+
+3. **Force localStorage clear**:
+   ```javascript
+   // Clear all Mitto keys
+   Object.keys(localStorage)
+     .filter(k => k.startsWith('mitto_'))
+     .forEach(k => localStorage.removeItem(k));
+   location.reload();
+   ```
+
+### WKWebView vs Browser Differences
+
+| Aspect | Browser | WKWebView |
+|--------|---------|-----------|
+| localStorage persistence | Standard | Process-bound, can desync |
+| Cache behavior | Standard | More aggressive caching |
+| Network handling | Standard | May differ for WebSocket |
+| Dev tools | Built-in | Safari → Develop menu |
+
+### Enabling Safari Web Inspector for WKWebView
+
+In `main.go`, development builds enable Web Inspector:
+
+```go
+// Enable Web Inspector for debugging (development only)
+webView.SetDeveloperExtrasEnabled(true)
+```
+
+Then: Safari → Develop → Your Mac → Mitto window
+
+### Common WKWebView Issues
+
+| Issue | Symptom | Solution |
+|-------|---------|----------|
+| Stale localStorage | Missing messages | Clear localStorage, reload |
+| Cached JavaScript | Old behavior after code change | Clear WKWebView cache |
+| WebSocket zombie | "Connected" but no messages | Keepalive mechanism detects |
+| Different behavior | Works in browser, not in app | Check Web Inspector console |
 

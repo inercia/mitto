@@ -7,6 +7,13 @@ globs:
   - "web/static/preact-loader.js"
   - "web/static/theme-loader.js"
   - "web/static/tailwind-config*.js"
+keywords:
+  - Preact
+  - HTM
+  - Tailwind
+  - CDN
+  - frontend structure
+  - component hierarchy
 ---
 
 # Web Frontend Core Patterns

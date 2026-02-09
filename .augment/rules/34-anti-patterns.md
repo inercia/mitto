@@ -1,8 +1,17 @@
 ---
 description: Common anti-patterns to avoid, lessons learned, and best practices from past implementations
-globs:
-  - "**/*.go"
-  - "**/*.js"
+keywords:
+  - anti-pattern
+  - best practice
+  - lessons learned
+  - pitfall
+  - mistake
+  - wrong
+  - don't
+  - avoid
+  - race condition
+  - zombie connection
+  - timeout
 alwaysApply: false
 ---
 
@@ -228,6 +237,103 @@ func convertMarkdown(md string) string {
 }
 ```
 
+## WebSocket and Async Anti-Patterns
+
+### ❌ Don't: Show Timeout Warning for Synchronous Errors
+
+```javascript
+// BAD: Backend returns error immediately, but frontend still shows timeout warning
+const handleSubmit = async () => {
+    const timeoutId = setTimeout(() => {
+        showWarning("Message delivery could not be confirmed");  // Wrong!
+    }, 5000);
+
+    try {
+        await sendPrompt(message);  // Backend returns error synchronously
+        clearTimeout(timeoutId);
+    } catch (err) {
+        // Error is shown, but timeout warning ALSO shows because clearTimeout
+        // wasn't called before the error handler runs
+        showError(err.message);
+    }
+};
+```
+
+**Problem**: User sees BOTH the error AND a confusing timeout warning.
+
+### ✅ Do: Clear Timeout on ANY Promise Settlement
+
+```javascript
+// GOOD: Clear timeout before handling result
+const handleSubmit = async () => {
+    const timeoutId = setTimeout(() => {
+        showWarning("Message delivery could not be confirmed");
+    }, 5000);
+
+    try {
+        await sendPrompt(message);
+    } catch (err) {
+        showError(err.message);
+    } finally {
+        clearTimeout(timeoutId);  // Always clear, regardless of success/failure
+    }
+};
+```
+
+### ❌ Don't: Assume WebSocket State from `readyState`
+
+```javascript
+// BAD: readyState can be OPEN even for zombie connections
+if (ws.readyState === WebSocket.OPEN) {
+    ws.send(message);  // May silently fail!
+}
+```
+
+### ✅ Do: Use Application-Level Keepalive
+
+```javascript
+// GOOD: Track actual message delivery
+if (ws.readyState === WebSocket.OPEN && isConnectionHealthy(sessionId)) {
+    ws.send(message);
+}
+
+// isConnectionHealthy checks keepalive_ack responses
+const isConnectionHealthy = (sessionId) => {
+    const keepalive = keepaliveRef.current[sessionId];
+    return keepalive && keepalive.missedCount === 0;
+};
+```
+
+## WKWebView Anti-Patterns
+
+### ❌ Don't: Assume localStorage Consistency
+
+```javascript
+// BAD: Assuming localStorage in WKWebView matches browser
+const lastSeq = localStorage.getItem(`mitto_last_seen_seq_${sessionId}`);
+// This value can be stale in WKWebView!
+```
+
+**Problem**: WKWebView's localStorage can desynchronize from the actual data store.
+
+### ✅ Do: Validate State on Reconnect
+
+```javascript
+// GOOD: Request fresh state from server on reconnect
+ws.onopen = () => {
+    // Don't trust localStorage lastSeenSeq completely
+    // Request events and merge with deduplication
+    ws.send(JSON.stringify({
+        type: 'load_events',
+        data: { after_seq: getLastSeenSeq(sessionId) || 0 }
+    }));
+};
+
+// Use mergeMessagesWithSync to handle duplicates
+case "events_loaded":
+    messages = mergeMessagesWithSync(session.messages, newMessages);
+```
+
 ## Lessons Learned
 
 ### 1. Order Matters in Processing Pipelines
@@ -264,4 +370,19 @@ Catches:
 - Concurrent map access
 - Shared state without locks
 - Goroutine leaks
+
+### 5. Mobile/WKWebView Requires Extra Validation
+
+Don't trust browser state in mobile contexts:
+- Connections can be "zombie" (OPEN but dead)
+- localStorage can be stale in WKWebView
+- Always validate with server on reconnect
+- Use keepalive to detect unhealthy connections
+
+### 6. Synchronous Errors Need Different Handling Than Timeouts
+
+When an operation can fail either synchronously (error) or asynchronously (timeout):
+- Use `finally` to clean up timeout handlers
+- Don't show timeout warnings for synchronous errors
+- Clear pending state on both success AND failure
 

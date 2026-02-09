@@ -1,8 +1,17 @@
 ---
-description: Session Store, Recorder, Player, Lock, Queue, and auxiliary package for title generation
+description: Session Store, Recorder, Player, Lock, Queue, ActionButtonsStore, and auxiliary package for title generation
 globs:
   - "internal/session/**/*"
   - "internal/auxiliary/**/*"
+keywords:
+  - session
+  - recorder
+  - player
+  - store
+  - lock
+  - queue
+  - action buttons
+  - title generation
 ---
 
 # Session Package Patterns

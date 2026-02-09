@@ -32,18 +32,18 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `04-acp.md` | Working on `internal/acp/` |
 | `05-msghooks.md` | Working on message hooks (`internal/msghooks/`) |
 | `06-conversion.md` | Markdown-to-HTML conversion (`internal/conversion/`) |
-| `07-regex-patterns.md` | Regular expressions, pattern matching, text processing |
-| `08-config.md` | Working on configuration (`internal/config/`, YAML/JSON) |
-| `09-macos-app.md` | Working on macOS app (`cmd/mitto-app/`, `*.m`, `*.h`) |
+| `07-regex-patterns.md` | Keywords: regex, regexp, pattern, URL detection, linkify |
+| `08-config.md` | Working on configuration (`internal/config/`) |
+| `09-macos-app.md` | macOS app, WKWebView, keyboard shortcuts, `*.m`, `*.h` |
 | **Web Backend (10-12)** | |
-| `10-web-backend-core.md` | Server, routing, HTTP handlers |
-| `11-web-backend-sequences.md` | Sequence numbers, observers, message ordering, MarkdownBuffer flushing |
+| `10-web-backend-core.md` | Server, routing, HTTP handlers (`internal/web/server.go`) |
+| `11-web-backend-sequences.md` | Sequences, observers, prompt ACK, MarkdownBuffer |
 | `12-web-backend-actions.md` | Follow-up suggestions, action buttons |
 | **Web Frontend (20-26)** | |
-| `20-web-frontend-core.md` | Component structure, Preact/HTM basics |
-| `21-web-frontend-state.md` | State management, refs, useCallback |
-| `22-web-frontend-websocket.md` | WebSocket, message handling, reconnection |
-| `23-web-frontend-mobile.md` | Mobile wake resync, visibility change, localStorage |
+| `20-web-frontend-core.md` | Component structure, Preact/HTM, CDN setup |
+| `21-web-frontend-state.md` | State management, refs, useCallback, useLayoutEffect |
+| `22-web-frontend-websocket.md` | WebSocket, reconnection, keepalive, ACK handling |
+| `23-web-frontend-mobile.md` | Mobile wake resync, zombie connections, localStorage |
 | `24-web-frontend-lib.md` | lib.js utilities, markdown rendering |
 | `25-web-frontend-components.md` | UI components (ChatInput, QueueDropdown, Icons) |
 | `26-web-frontend-hooks.md` | Custom hooks (useResizeHandle, useSwipeNavigation) |

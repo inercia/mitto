@@ -3,11 +3,69 @@ description: Playwright UI tests, test fixtures, selectors, 'mitto web' setup, a
 globs:
   - "tests/ui/**/*"
   - "playwright.config.ts"
+keywords:
+  - Playwright
+  - UI test
+  - browser test
+  - e2e
+  - end-to-end
+  - selector
+  - test fixture
 ---
 
 # Playwright UI Testing
 
+## ⚠️ MANDATORY: Test Configuration Requirements
+
+**ALL Playwright tests MUST use a test configuration with these properties:**
+
+| Property | Required Value | Reason |
+|----------|----------------|--------|
+| `external_port` | `-1` | **MANDATORY** - Disables external access, no 0.0.0.0 binding |
+| `host` | `127.0.0.1` | **MANDATORY** - Localhost only |
+| `web.auth` | **OMIT ENTIRELY** | **MANDATORY** - Prevents keychain access on macOS |
+| ACP server | `mock-acp` | **MANDATORY** - Deterministic testing |
+
+### ❌ NEVER DO THIS
+
+```yaml
+# WRONG: Missing external_port, has auth
+web:
+  host: 127.0.0.1
+  port: 8089
+  auth:
+    simple: "password"  # ❌ Will trigger keychain access!
+```
+
+```bash
+# WRONG: Using real ACP or no config
+mitto web                                    # ❌ No config!
+mitto web --port 8089                        # ❌ No config!
+mitto web --config /path/to/normal/config    # ❌ May have auth!
+```
+
+### ✅ ALWAYS DO THIS
+
+```yaml
+# CORRECT: Proper test configuration
+web:
+  host: 127.0.0.1
+  port: 8089
+  external_port: -1    # ✅ Disable external access
+  theme: v2
+  # NO auth section!   # ✅ No keychain access
+```
+
+```bash
+# CORRECT: Use test config with mock ACP
+mitto web --config $TEST_DIR/.mittorc --dir $TEST_DIR/workspace
+```
+
+---
+
 ## Running UI Tests
+
+The automated test setup (`make test-ui`) handles configuration automatically via `tests/ui/start-test-server.sh`.
 
 ```bash
 make test-ui           # Headless
@@ -21,7 +79,10 @@ make test-ui-debug     # Debug mode with inspector
 tests/ui/
 ├── specs/                   # Test specifications
 ├── fixtures/                # Playwright fixtures
-└── utils/                   # Test utilities
+├── utils/                   # Test utilities
+├── start-test-server.sh     # Creates test config and starts mitto
+├── global-setup.ts          # Playwright global setup
+└── global-teardown.ts       # Playwright global teardown
 ```
 
 ## Playwright Test Conventions
@@ -58,19 +119,28 @@ export const timeouts = {
 };
 ```
 
-## ⚠️ CRITICAL: Running Mitto Web for Testing
+---
 
-**NEVER run `mitto web` without a config file!** Without proper configuration, the process **blocks indefinitely** with no output.
+## Manual Testing Workflow
 
-### MANDATORY: Create a Test Config File First
+When running tests manually (not via `make test-ui`), you MUST create a proper test config:
+
+### Step 1: Build Dependencies
 
 ```bash
-# 1. Build the mock ACP server
 make build-mock-acp
+```
 
-# 2. Create test directory and config
+### Step 2: Create Test Config (MANDATORY FORMAT)
+
+```bash
 TEST_DIR=/tmp/mitto-test-$$
 mkdir -p "$TEST_DIR/workspace"
+
+# CRITICAL: This config MUST have:
+#   - external_port: -1 (disable external access)
+#   - NO web.auth section (prevents keychain access)
+#   - host: 127.0.0.1 (localhost only)
 cat > "$TEST_DIR/.mittorc" << 'EOF'
 acp:
   - mock-acp:
@@ -79,71 +149,59 @@ acp:
 web:
   host: 127.0.0.1
   port: 8089
+  external_port: -1
   theme: v2
-  external_port: -1  # DISABLED
-  # NO auth section - prevents keychain access on macOS
+  # NO auth section - this is intentional!
 EOF
-
-# 3. Start Mitto
-mitto web --config $TEST_DIR/.mittorc --dir $TEST_DIR/workspace --debug &
-
-# 4. Wait and run tests
-sleep 2
-npx playwright test --headed
 ```
 
-### Why This Configuration
+### Step 3: Start Server and Run Tests
 
-1. **`external_port: -1`** - Disables external access, no 0.0.0.0 binding
-2. **No `web.auth` section** - Avoids keychain prompts on macOS
-3. **`--config` flag** - Makes config read-only, disables Settings dialog
-4. **Mock ACP server** - Deterministic testing without real AI
+```bash
+mitto web --config $TEST_DIR/.mittorc --dir $TEST_DIR/workspace --debug &
+sleep 2
+curl -s http://127.0.0.1:8089/api/config > /dev/null && echo "Ready!"
 
-### Keychain Access Behavior
+npx playwright test --headed
+# or interactive mode:
+npx playwright codegen http://127.0.0.1:8089
+```
 
-Mitto only accesses macOS Keychain when:
-- `web.auth.simple` is configured
-- External Access is enabled
+---
 
-**For testing without keychain:** Omit `web.auth` section and set `external_port: -1`.
+## Why These Requirements?
+
+### `external_port: -1`
+- Disables binding to `0.0.0.0`
+- Tests run in complete isolation
+- No network exposure during tests
+
+### No `web.auth` Section
+- Mitto accesses macOS Keychain when auth is configured
+- This causes prompts during tests
+- Omitting auth = no keychain access
+
+### Mock ACP Server
+- Deterministic, repeatable test responses
+- No dependency on external AI services
+- Fast execution
+
+### `--config` Flag
+- Makes configuration read-only
+- Disables Settings dialog in UI
+- Prevents accidental config changes during tests
+
+---
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `MITTO_TEST_URL` | Base URL for tests (default: `http://127.0.0.1:8089`) |
+| `MITTO_DIR` | Data directory for test (default: `/tmp/mitto-test`) |
+| `MITTO_TEST_MODE` | Set to `1` when running Playwright tests |
 
-## Complete Testing Workflow
-
-```bash
-# 1. Build mock ACP
-make build-mock-acp
-
-# 2. Create config (no auth = no keychain)
-mkdir -p /tmp/mitto-test/workspace
-cat > /tmp/mitto-test/.mittorc << 'EOF'
-acp:
-  - mock-acp:
-      command: ./tests/mocks/acp-server/mock-acp-server
-web:
-  host: 127.0.0.1
-  port: 8089
-  theme: v2
-  external_port: -1
-EOF
-
-# 3. Start server
-mitto web --config /tmp/mitto-test/.mittorc --dir /tmp/mitto-test/workspace --debug &
-
-# 4. Wait for ready
-sleep 2
-curl -s http://127.0.0.1:8089/api/config > /dev/null && echo "Ready!"
-
-# 5. Run tests
-npx playwright test --headed
-# or interactive mode:
-npx playwright codegen http://127.0.0.1:8089
-```
+---
 
 ## Important Notes
 
@@ -151,3 +209,4 @@ npx playwright codegen http://127.0.0.1:8089
 - **Always use `--dir`** - Ensures a workspace is configured
 - **Port 8089** - Recommended to avoid conflicts with dev server on 8080
 - **Mock ACP** - For deterministic testing
+- **Never use auth in test configs** - Will trigger keychain prompts

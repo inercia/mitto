@@ -4,6 +4,12 @@ globs:
   - "tests/integration/**/*"
   - "tests/mocks/**/*"
   - "internal/client/**/*"
+keywords:
+  - integration test
+  - mock ACP
+  - httptest
+  - in-process
+  - SetupTestServer
 ---
 
 # Integration Testing

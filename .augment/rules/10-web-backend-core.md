@@ -4,6 +4,13 @@ globs:
   - "internal/web/server.go"
   - "internal/web/routes.go"
   - "internal/web/http_*.go"
+  - "internal/web/session_manager.go"
+keywords:
+  - HTTP handler
+  - routing
+  - web server
+  - httptest
+  - writeJSON
 ---
 
 # Web Backend Core Patterns

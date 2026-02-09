@@ -1,9 +1,18 @@
 ---
-description: Mobile browser handling, visibility change, wake resync, session staleness, localStorage, and iOS Safari debugging
+description: Mobile browser handling, visibility change, wake resync, session staleness, localStorage, zombie connection detection, and iOS Safari debugging
 globs:
   - "web/static/hooks/useWebSocket.js"
   - "web/static/hooks/useSwipeNavigation.js"
   - "web/static/utils/storage.js"
+keywords:
+  - mobile
+  - visibility change
+  - wake
+  - sleep
+  - zombie connection
+  - keepalive
+  - iOS Safari
+  - Android Chrome
 ---
 
 # Mobile Wake Resync and Browser Handling
@@ -18,7 +27,25 @@ Mobile browsers (iOS Safari, Android Chrome) suspend WebSocket connections when 
 4. Agent continues processing in the background (server-side)
 5. User wakes phone - UI shows stale messages
 
-## Solution: Sequence Number Tracking
+**Additionally**: Connections can enter "zombie state" - appearing open but actually dead.
+
+## Two-Part Solution
+
+### 1. Keepalive for Zombie Connection Detection
+
+See [22-web-frontend-websocket.md](./22-web-frontend-websocket.md) for full keepalive mechanism.
+
+Mobile browsers can leave WebSockets in "zombie" state - appearing open but dead. The keepalive mechanism detects this:
+
+```javascript
+const KEEPALIVE_INTERVAL_MS = 25000;  // Every 25 seconds
+const KEEPALIVE_MAX_MISSED = 2;       // Force reconnect after 2 missed
+
+// If keepalive_ack not received, increment missedCount
+// If missedCount >= 2, force close WebSocket → triggers reconnect
+```
+
+### 2. Sequence Number Tracking
 
 Track the last seen event sequence number in localStorage:
 
@@ -38,19 +65,21 @@ case 'prompt_complete': {
 
 ## Sync on WebSocket Reconnect
 
-When per-session WebSocket connects, request missed events:
+When per-session WebSocket connects, request missed events using `load_events`:
 
 ```javascript
 ws.onopen = () => {
     const lastSeq = getLastSeenSeq(sessionId);
     if (lastSeq > 0) {
         ws.send(JSON.stringify({
-            type: 'sync_session',
-            data: { session_id: sessionId, after_seq: lastSeq }
+            type: 'load_events',
+            data: { after_seq: lastSeq }
         }));
     }
 };
 ```
+
+**Important:** The `lastSeenSeq` is only updated at specific points (`prompt_complete`, `events_loaded`), not during streaming. If a visibility change occurs during active streaming, the `lastSeenSeq` may be stale. This is why the frontend uses `mergeMessagesWithSync` for client-side deduplication when handling `events_loaded` responses.
 
 ## Force Reconnect on Visibility Change
 
@@ -134,8 +163,25 @@ setQueueDropdownHeight(300);  // Persists to localStorage
 
 | Direction | Type | Data | Purpose |
 |-----------|------|------|---------|
-| Frontend → Backend | `sync_session` | `{session_id, after_seq}` | Request events after sequence |
-| Backend → Frontend | `session_sync` | `{events, last_seq}` | Response with missed events |
+| Frontend → Backend | `load_events` | `{after_seq}` | Request events after sequence |
+| Backend → Frontend | `events_loaded` | `{events, last_seq, ...}` | Response with missed events |
+
+**Note:** The deprecated `sync_session`/`session_sync` messages are still supported for backward compatibility, but new code should use `load_events`/`events_loaded`.
+
+## Client-Side Deduplication
+
+When handling `events_loaded` for sync (not initial load or pagination), use `mergeMessagesWithSync`:
+
+```javascript
+case "events_loaded": {
+  if (session.messages.length > 0 && !isPrepend) {
+    // Sync after reconnect - merge with deduplication
+    messages = mergeMessagesWithSync(session.messages, newMessages);
+  }
+}
+```
+
+This handles cases where `lastSeenSeq` is stale (visibility change during streaming).
 
 ## Buffered Content for New Observers
 
