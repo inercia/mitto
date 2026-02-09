@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
@@ -15,21 +17,54 @@ var (
 	globalLogger *slog.Logger
 	globalMu     sync.RWMutex
 
-	// logFile holds the open log file (if any) for cleanup
-	logFile   *os.File
-	logFileMu sync.Mutex
+	// logWriter holds the log file writer (if any) for cleanup
+	// Can be *os.File or *lumberjack.Logger
+	logWriter   io.WriteCloser
+	logWriterMu sync.Mutex
 
 	// allowedComponents stores the set of components to log (empty means all)
 	allowedComponents map[string]bool
 	componentsMu      sync.RWMutex
 )
 
+// FileLogConfig holds configuration for file-based logging with rotation.
+type FileLogConfig struct {
+	// Path is the file path for the log file.
+	// Empty string disables file logging.
+	Path string
+
+	// MaxSizeMB is the maximum size of the log file in megabytes before rotation.
+	// Default: 10MB
+	MaxSizeMB int
+
+	// MaxBackups is the maximum number of old log files to retain.
+	// Default: 3
+	MaxBackups int
+
+	// Compress determines if rotated log files should be compressed.
+	// Default: false
+	Compress bool
+}
+
+// DefaultFileLogConfig returns the default file log configuration.
+func DefaultFileLogConfig() FileLogConfig {
+	return FileLogConfig{
+		MaxSizeMB:  10,
+		MaxBackups: 3,
+		Compress:   false,
+	}
+}
+
 // Config holds logging configuration.
 type Config struct {
 	// Level is the minimum log level (debug, info, warn, error)
 	Level string
 	// LogFile is an optional file path to write logs to (in addition to console)
+	// Deprecated: Use FileLog for rotation support
 	LogFile string
+	// FileLog is the configuration for file-based logging with rotation.
+	// Takes precedence over LogFile if both are specified.
+	FileLog *FileLogConfig
 	// JSON enables JSON output format
 	JSON bool
 	// Components is a list of component names to include in logs (empty means all)
@@ -37,7 +72,8 @@ type Config struct {
 }
 
 // Initialize sets up the global logger with the given configuration.
-// If logFile is specified, logs are written to both console and file.
+// If FileLog or LogFile is specified, logs are written to both console and file.
+// FileLog takes precedence and supports log rotation via lumberjack.
 func Initialize(cfg Config) error {
 	level := parseLevel(cfg.Level)
 
@@ -56,16 +92,38 @@ func Initialize(cfg Config) error {
 	var writers []io.Writer
 	writers = append(writers, os.Stderr)
 
-	// Open log file if specified
-	if cfg.LogFile != "" {
-		logFileMu.Lock()
-		defer logFileMu.Unlock()
+	logWriterMu.Lock()
+	defer logWriterMu.Unlock()
 
+	// FileLog with rotation takes precedence over legacy LogFile
+	if cfg.FileLog != nil && cfg.FileLog.Path != "" {
+		// Apply defaults
+		maxSize := cfg.FileLog.MaxSizeMB
+		if maxSize <= 0 {
+			maxSize = 10
+		}
+		maxBackups := cfg.FileLog.MaxBackups
+		if maxBackups < 0 {
+			maxBackups = 3
+		}
+
+		// Create lumberjack logger for rotation
+		lj := &lumberjack.Logger{
+			Filename:   cfg.FileLog.Path,
+			MaxSize:    maxSize,    // megabytes
+			MaxBackups: maxBackups, // number of backups
+			MaxAge:     0,          // don't delete old files based on age
+			Compress:   cfg.FileLog.Compress,
+		}
+		logWriter = lj
+		writers = append(writers, lj)
+	} else if cfg.LogFile != "" {
+		// Legacy: simple file logging without rotation
 		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			return fmt.Errorf("failed to open log file %s: %w", cfg.LogFile, err)
 		}
-		logFile = f
+		logWriter = f
 		writers = append(writers, f)
 	}
 
@@ -110,12 +168,12 @@ func Get() *slog.Logger {
 
 // Close cleans up logging resources (closes log file if open).
 func Close() error {
-	logFileMu.Lock()
-	defer logFileMu.Unlock()
+	logWriterMu.Lock()
+	defer logWriterMu.Unlock()
 
-	if logFile != nil {
-		err := logFile.Close()
-		logFile = nil
+	if logWriter != nil {
+		err := logWriter.Close()
+		logWriter = nil
 		return err
 	}
 	return nil

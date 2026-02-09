@@ -86,12 +86,12 @@ func resetGlobalState() {
 	globalLogger = nil
 	globalMu.Unlock()
 
-	logFileMu.Lock()
-	if logFile != nil {
-		logFile.Close()
-		logFile = nil
+	logWriterMu.Lock()
+	if logWriter != nil {
+		logWriter.Close()
+		logWriter = nil
 	}
-	logFileMu.Unlock()
+	logWriterMu.Unlock()
 
 	componentsMu.Lock()
 	allowedComponents = nil
@@ -344,5 +344,168 @@ func TestComponentShortcuts(t *testing.T) {
 				t.Errorf("%s() returned nil", s.name)
 			}
 		})
+	}
+}
+
+func TestDefaultFileLogConfig(t *testing.T) {
+	cfg := DefaultFileLogConfig()
+
+	if cfg.MaxSizeMB != 10 {
+		t.Errorf("MaxSizeMB = %d, want 10", cfg.MaxSizeMB)
+	}
+	if cfg.MaxBackups != 3 {
+		t.Errorf("MaxBackups = %d, want 3", cfg.MaxBackups)
+	}
+	if cfg.Compress != false {
+		t.Error("Compress should be false by default")
+	}
+	if cfg.Path != "" {
+		t.Errorf("Path = %q, want empty", cfg.Path)
+	}
+}
+
+func TestInitialize_WithFileLog(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	err := Initialize(Config{
+		Level: "info",
+		FileLog: &FileLogConfig{
+			Path:       logPath,
+			MaxSizeMB:  5,
+			MaxBackups: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Log something
+	logger := Get()
+	logger.Info("test file log message")
+
+	// Verify file was created
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("Log file was not created")
+	}
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "test file log message") {
+		t.Errorf("Log file should contain 'test file log message', got: %s", content)
+	}
+}
+
+func TestInitialize_FileLogTakesPrecedence(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	legacyPath := filepath.Join(tmpDir, "legacy.log")
+	fileLogPath := filepath.Join(tmpDir, "filelog.log")
+
+	// Both LogFile and FileLog specified - FileLog should take precedence
+	err := Initialize(Config{
+		Level:   "info",
+		LogFile: legacyPath,
+		FileLog: &FileLogConfig{
+			Path: fileLogPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	logger := Get()
+	logger.Info("precedence test message")
+
+	Close()
+
+	// FileLog path should exist
+	if _, err := os.Stat(fileLogPath); os.IsNotExist(err) {
+		t.Error("FileLog path should exist")
+	}
+
+	// Legacy path should NOT exist (FileLog takes precedence)
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Error("Legacy LogFile path should NOT exist when FileLog is specified")
+	}
+
+	// Verify content in FileLog
+	content, err := os.ReadFile(fileLogPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	if !strings.Contains(string(content), "precedence test message") {
+		t.Errorf("FileLog should contain message, got: %s", content)
+	}
+}
+
+func TestInitialize_FileLogWithDefaults(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "defaults.log")
+
+	// Use zero/negative values - should use defaults
+	err := Initialize(Config{
+		Level: "info",
+		FileLog: &FileLogConfig{
+			Path:       logPath,
+			MaxSizeMB:  0,  // Should default to 10
+			MaxBackups: -1, // Should default to 3
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Just verify it works
+	logger := Get()
+	logger.Info("defaults test")
+
+	Close()
+
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("Log file was not created")
+	}
+}
+
+func TestInitialize_FileLogEmptyPath(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	// FileLog with empty path should be ignored
+	err := Initialize(Config{
+		Level: "info",
+		FileLog: &FileLogConfig{
+			Path: "", // Empty - should be ignored
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Should still work, just without file logging
+	logger := Get()
+	if logger == nil {
+		t.Error("Logger should not be nil")
 	}
 }
