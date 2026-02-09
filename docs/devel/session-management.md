@@ -131,6 +131,86 @@ Multiple `SessionWSClient` instances can observe the same `BackgroundSession`, e
 - Session continues running when all clients disconnect
 - Clients can reconnect and sync via incremental updates
 
+## Message Processing and Deduplication
+
+The system uses a **two-tier deduplication** strategy to ensure messages are never duplicated in the UI:
+
+### Server-Side Deduplication
+
+Each `SessionWSClient` tracks `lastSentSeq` - the highest sequence number sent to that client. Before sending any event, the server checks `seq > lastSentSeq`:
+
+```go
+type SessionWSClient struct {
+    lastSentSeq int64      // Highest seq sent to this client
+    seqMu       sync.Mutex // Protects lastSentSeq
+}
+```
+
+This prevents duplicates during normal streaming operations.
+
+### Client-Side Deduplication
+
+When syncing after reconnect (e.g., phone wake), the frontend uses `mergeMessagesWithSync` to handle cases where:
+
+1. **Stale `lastSeenSeq`**: The `lastSeenSeq` in localStorage is only updated at specific points (`prompt_complete`, `events_loaded`). If a visibility change occurs during streaming, it may be stale.
+
+2. **Overlapping events**: The server returns events that are already displayed in the UI.
+
+The `mergeMessagesWithSync` function deduplicates by:
+
+- **Sequence number** (preferred): Same `seq` = same event
+- **Content hash** (fallback): For messages without `seq`
+
+```mermaid
+flowchart TB
+    subgraph "Sync After Reconnect"
+        WAKE[Phone Wakes] --> READ[Read lastSeenSeq from localStorage]
+        READ --> LOAD[load_events after_seq: lastSeenSeq]
+        LOAD --> EVENTS[Server returns events]
+        EVENTS --> MERGE[mergeMessagesWithSync]
+        MERGE --> DEDUP{Deduplicate}
+        DEDUP --> |By seq| SEQ[Filter by seq match]
+        DEDUP --> |Fallback| HASH[Filter by content hash]
+        SEQ --> SORT[Sort by seq]
+        HASH --> SORT
+        SORT --> UI[Update UI]
+    end
+```
+
+### When `lastSeenSeq` is Updated
+
+The `lastSeenSeq` is updated at these specific points:
+
+| Event                       | Update Source                   |
+| --------------------------- | ------------------------------- |
+| `events_loaded`             | `last_seq` field in response    |
+| `prompt_complete`           | `event_count` field in response |
+| `session_sync` (deprecated) | `event_count` field in response |
+
+**Important:** `lastSeenSeq` is NOT updated during streaming. This is intentional - it ensures that if a reconnect happens mid-stream, the client can request all events from the last known checkpoint.
+
+For detailed documentation on WebSocket message handling and ordering, see [WebSocket Messaging](websocket-messaging.md).
+
+## Mobile Considerations
+
+Mobile clients face unique challenges due to network variability and browser behavior. The system includes several mitigations:
+
+### Extended Timeouts
+
+- **Prompt ACK timeout**: 30 seconds on mobile (vs 15 seconds on desktop)
+- Mobile networks have higher latency and more variability
+- iOS Safari may suspend WebSocket activity during app transitions
+
+### Agent Response as Implicit ACK
+
+If the agent starts responding (`agent_message` or `agent_thought`), pending sends are automatically resolved. This handles cases where:
+
+1. The `prompt_received` ACK was lost due to a network hiccup
+2. The prompt was received but ACK timing was disrupted
+3. Mobile network transitions caused ACK delivery issues
+
+For detailed documentation on these mechanisms, see [WebSocket Messaging - Send Timeout](websocket-messaging.md#corner-case-send-timeout-with-uncertain-delivery).
+
 ## Message Queue
 
 Each session has an optional message queue that allows users to queue messages while the agent is processing. Queued messages are automatically delivered when the agent becomes idle.
