@@ -485,6 +485,59 @@ func TestFileLinker_MarkdownAutoRender(t *testing.T) {
 	}
 }
 
+func TestFileLinker_HiddenDirectoryPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create hidden directory structure: .augment/rules/imported/
+	augmentDir := filepath.Join(tmpDir, ".augment", "rules", "imported")
+	if err := os.MkdirAll(augmentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .augment directory: %v", err)
+	}
+	testFile := filepath.Join(augmentDir, "test.md")
+	if err := os.WriteFile(testFile, []byte("# Test"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Create .github/workflows/
+	githubDir := filepath.Join(tmpDir, ".github", "workflows")
+	if err := os.MkdirAll(githubDir, 0755); err != nil {
+		t.Fatalf("Failed to create .github directory: %v", err)
+	}
+	ciFile := filepath.Join(githubDir, "ci.yml")
+	if err := os.WriteFile(ciFile, []byte("name: CI"), 0644); err != nil {
+		t.Fatalf("Failed to create ci.yml file: %v", err)
+	}
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-uuid-hidden",
+		Enabled:       true,
+		UseHTTPLinks:  true,
+		APIPrefix:     "/mitto",
+	})
+
+	// Test .augment/ path in plain text
+	result := linker.LinkFilePaths("See .augment/rules/imported/test.md for details")
+	if !containsString(result, `path=.augment%2Frules%2Fimported%2Ftest.md`) {
+		t.Errorf("Hidden directory path should be linked: %s", result)
+	}
+	if !containsString(result, "render=html") {
+		t.Errorf("Markdown file in hidden dir should have render=html: %s", result)
+	}
+
+	// Test .augment/ path in backticks
+	result = linker.LinkFilePaths("Check <code>.augment/rules/imported/test.md</code>")
+	if !containsString(result, `path=.augment%2Frules%2Fimported%2Ftest.md`) {
+		t.Errorf("Hidden directory path in backticks should be linked: %s", result)
+	}
+
+	// Test .github/ path
+	result = linker.LinkFilePaths("See <code>.github/workflows/ci.yml</code>")
+	if !containsString(result, `path=.github%2Fworkflows%2Fci.yml`) {
+		t.Errorf(".github path should be linked: %s", result)
+	}
+}
+
 func TestFileLinker_URLsInBackticks(t *testing.T) {
 	tmpDir := t.TempDir()
 

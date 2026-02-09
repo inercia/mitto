@@ -84,6 +84,7 @@ var sensitivePatterns = []string{
 // filePathPattern matches potential file paths in text.
 // Matches:
 // - Relative paths: src/main.go, ./config.yaml, ../utils/helper.js
+// - Hidden directory paths: .augment/rules/test.md, .github/workflows/ci.yml
 // - Absolute paths: /Users/foo/project/file.txt
 // - Must have at least one path separator or start with ./ or ../
 var filePathPattern = regexp.MustCompile(
@@ -92,6 +93,8 @@ var filePathPattern = regexp.MustCompile(
 		`\.{1,2}/[^\s<>"'\x60]+` + // Relative: ./ or ../
 		`|` +
 		`/[^\s<>"'\x60]+` + // Absolute: /path/to/file
+		`|` +
+		`\.[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_.\-]+)+` + // Hidden dir: .augment/rules/file.md
 		`|` +
 		`[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_.\-]+)+` + // Relative without ./: src/main.go
 		`)` +
