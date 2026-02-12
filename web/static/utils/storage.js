@@ -8,6 +8,7 @@
 // - On changes, we update both localStorage and server
 
 import { apiUrl } from "./api.js";
+import { secureFetch, authFetch } from "./csrf.js";
 
 // =============================================================================
 // UI Preferences Server Sync
@@ -45,7 +46,8 @@ export async function initUIPreferences() {
 
   uiPreferencesSyncPromise = (async () => {
     try {
-      const response = await fetch(apiUrl("/api/ui-preferences"));
+      // Use authFetch to include credentials for cross-origin requests
+      const response = await authFetch(apiUrl("/api/ui-preferences"));
       if (response.ok) {
         const prefs = await response.json();
         uiPreferencesCache = prefs;
@@ -98,7 +100,8 @@ function saveUIPreferencesToServer(prefs) {
 
   saveTimeout = setTimeout(async () => {
     try {
-      const response = await fetch(apiUrl("/api/ui-preferences"), {
+      // Use secureFetch to include CSRF token and credentials for cross-origin requests
+      const response = await secureFetch(apiUrl("/api/ui-preferences"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(prefs),
@@ -129,6 +132,44 @@ function getCurrentUIPreferences() {
 // =============================================================================
 // Sync State Persistence (localStorage)
 // =============================================================================
+
+/**
+ * Get the last seen sequence number for a session from localStorage.
+ * Used for tracking sync state and reconnection.
+ * @param {string} sessionId - The session ID
+ * @returns {number} The last seen sequence number, or 0 if not found
+ */
+export function getLastSeenSeq(sessionId) {
+  try {
+    const value = localStorage.getItem(`mitto_last_seen_seq_${sessionId}`);
+    if (value) {
+      const seq = parseInt(value, 10);
+      return isNaN(seq) ? 0 : seq;
+    }
+    return 0;
+  } catch (e) {
+    console.warn("Failed to read last seen seq from localStorage:", e);
+    return 0;
+  }
+}
+
+/**
+ * Save the last seen sequence number for a session to localStorage.
+ * Used for tracking sync state and reconnection.
+ * @param {string} sessionId - The session ID
+ * @param {number} seq - The sequence number to save
+ */
+export function setLastSeenSeq(sessionId, seq) {
+  try {
+    if (seq > 0) {
+      localStorage.setItem(`mitto_last_seen_seq_${sessionId}`, String(seq));
+    } else {
+      localStorage.removeItem(`mitto_last_seen_seq_${sessionId}`);
+    }
+  } catch (e) {
+    console.warn("Failed to save last seen seq to localStorage:", e);
+  }
+}
 
 /**
  * Get the last active session ID from localStorage
@@ -212,6 +253,64 @@ export function getQueueHeightConstraints() {
     min: MIN_QUEUE_HEIGHT,
     max: MAX_QUEUE_HEIGHT,
     default: DEFAULT_QUEUE_HEIGHT,
+  };
+}
+
+// =============================================================================
+// Agent Plan Panel Height Persistence (localStorage)
+// =============================================================================
+
+const AGENT_PLAN_HEIGHT_KEY = "mitto_agent_plan_height";
+const DEFAULT_AGENT_PLAN_HEIGHT = 200;
+const MIN_AGENT_PLAN_HEIGHT = 100;
+const MAX_AGENT_PLAN_HEIGHT = 400;
+
+/**
+ * Get the user's preferred agent plan panel height from localStorage
+ * @returns {number} The height in pixels, or default if not set
+ */
+export function getAgentPlanHeight() {
+  try {
+    const value = localStorage.getItem(AGENT_PLAN_HEIGHT_KEY);
+    if (value) {
+      const height = parseInt(value, 10);
+      return Math.max(
+        MIN_AGENT_PLAN_HEIGHT,
+        Math.min(MAX_AGENT_PLAN_HEIGHT, height),
+      );
+    }
+    return DEFAULT_AGENT_PLAN_HEIGHT;
+  } catch (e) {
+    console.warn("Failed to read agent plan height from localStorage:", e);
+    return DEFAULT_AGENT_PLAN_HEIGHT;
+  }
+}
+
+/**
+ * Save the user's preferred agent plan panel height to localStorage
+ * @param {number} height - The height in pixels
+ */
+export function setAgentPlanHeight(height) {
+  try {
+    const clampedHeight = Math.max(
+      MIN_AGENT_PLAN_HEIGHT,
+      Math.min(MAX_AGENT_PLAN_HEIGHT, height),
+    );
+    localStorage.setItem(AGENT_PLAN_HEIGHT_KEY, String(clampedHeight));
+  } catch (e) {
+    console.warn("Failed to save agent plan height to localStorage:", e);
+  }
+}
+
+/**
+ * Get the constraints for agent plan panel height
+ * @returns {{min: number, max: number, default: number}}
+ */
+export function getAgentPlanHeightConstraints() {
+  return {
+    min: MIN_AGENT_PLAN_HEIGHT,
+    max: MAX_AGENT_PLAN_HEIGHT,
+    default: DEFAULT_AGENT_PLAN_HEIGHT,
   };
 }
 

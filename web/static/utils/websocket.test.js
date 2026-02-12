@@ -172,6 +172,32 @@ describe("isSeqDuplicate", () => {
     // New seq within the window
     expect(isSeqDuplicate(tracker, 101, undefined)).toBe(false);
   });
+
+  // This test documents the stale client reconnection bug that was fixed
+  // by clearing the seq tracker when isStaleClient is detected in events_loaded
+  test("BUG: stale tracker rejects fresh events from server (MUST reset tracker)", () => {
+    // Scenario: Client had highestSeq=200 from previous session
+    // Server was restarted, now has lastSeq=50
+    // Client detects stale state (clientLastSeq > serverLastSeq)
+    // Server sends events with seqs 1-50
+    // Without resetting tracker, all these events are wrongly rejected!
+    const tracker = createSeqTracker();
+    tracker.highestSeq = 200; // Stale state from before server restart
+
+    // Fresh events from server after restart have lower seq values
+    // These should NOT be duplicates, but without reset they are!
+    expect(isSeqDuplicate(tracker, 50, undefined)).toBe(true); // WRONG: rejected as "very old"
+    expect(isSeqDuplicate(tracker, 30, undefined)).toBe(true); // WRONG: rejected as "very old"
+    expect(isSeqDuplicate(tracker, 1, undefined)).toBe(true);  // WRONG: rejected as "very old"
+
+    // The fix: When isStaleClient is detected in events_loaded handler,
+    // clearSeenSeqs(sessionId) is called BEFORE processing events.
+    // This resets the tracker, so fresh events are accepted:
+    const freshTracker = createSeqTracker();
+    expect(isSeqDuplicate(freshTracker, 50, undefined)).toBe(false); // CORRECT: accepted
+    expect(isSeqDuplicate(freshTracker, 30, undefined)).toBe(false); // CORRECT: accepted
+    expect(isSeqDuplicate(freshTracker, 1, undefined)).toBe(false);  // CORRECT: accepted
+  });
 });
 
 describe("markSeqSeen", () => {
@@ -306,3 +332,111 @@ describe("calculateReconnectDelay", () => {
   });
 });
 
+// =============================================================================
+// Available Commands Message Tests
+// =============================================================================
+
+describe("Available Commands WebSocket message handling", () => {
+  /**
+   * Parse available commands from WebSocket connected message.
+   * This mirrors the logic in useWebSocket.js handleSessionMessage.
+   */
+  function parseAvailableCommands(msgData) {
+    if (msgData?.available_commands) {
+      return msgData.available_commands;
+    }
+    return [];
+  }
+
+  test("extracts commands from connected message with available_commands", () => {
+    const msgData = {
+      session_id: "test-session",
+      available_commands: [
+        { name: "test", description: "Test command", input_hint: "Enter test" },
+        { name: "help", description: "Get help" },
+      ],
+    };
+    const commands = parseAvailableCommands(msgData);
+    expect(commands).toHaveLength(2);
+    expect(commands[0].name).toBe("test");
+    expect(commands[0].input_hint).toBe("Enter test");
+    expect(commands[1].name).toBe("help");
+    expect(commands[1].input_hint).toBeUndefined();
+  });
+
+  test("returns empty array when no available_commands field", () => {
+    const msgData = {
+      session_id: "test-session",
+    };
+    const commands = parseAvailableCommands(msgData);
+    expect(commands).toHaveLength(0);
+  });
+
+  test("returns empty array when available_commands is empty", () => {
+    const msgData = {
+      session_id: "test-session",
+      available_commands: [],
+    };
+    const commands = parseAvailableCommands(msgData);
+    expect(commands).toHaveLength(0);
+  });
+
+  test("returns empty array for null msgData", () => {
+    const commands = parseAvailableCommands(null);
+    expect(commands).toHaveLength(0);
+  });
+
+  test("returns empty array for undefined msgData", () => {
+    const commands = parseAvailableCommands(undefined);
+    expect(commands).toHaveLength(0);
+  });
+
+  /**
+   * Parse available commands from available_commands_updated message.
+   * This mirrors the logic in useWebSocket.js handleSessionMessage.
+   */
+  function parseCommandsUpdateMessage(msg) {
+    if (msg.type === "available_commands_updated" && msg.data?.commands) {
+      return msg.data.commands;
+    }
+    return null;
+  }
+
+  test("parses available_commands_updated message", () => {
+    const msg = {
+      type: "available_commands_updated",
+      data: {
+        session_id: "test-session",
+        commands: [
+          { name: "new-cmd", description: "New command" },
+        ],
+      },
+    };
+    const commands = parseCommandsUpdateMessage(msg);
+    expect(commands).toHaveLength(1);
+    expect(commands[0].name).toBe("new-cmd");
+  });
+
+  test("returns null for other message types", () => {
+    const msg = {
+      type: "agent_message",
+      data: {
+        html: "<p>Hello</p>",
+      },
+    };
+    const commands = parseCommandsUpdateMessage(msg);
+    expect(commands).toBeNull();
+  });
+
+  test("returns null when commands field is missing", () => {
+    const msg = {
+      type: "available_commands_updated",
+      data: {
+        session_id: "test-session",
+        // missing commands field
+      },
+    };
+    const commands = parseCommandsUpdateMessage(msg);
+    expect(commands).toBeNull();
+  });
+});

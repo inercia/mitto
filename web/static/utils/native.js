@@ -339,6 +339,36 @@ export function hasNativeImagePicker() {
 }
 
 // =============================================================================
+// File Picker Helper
+// =============================================================================
+
+/**
+ * Opens a native file picker dialog and returns the selected file paths.
+ * In the native macOS app, uses the bound native function.
+ * Returns a Promise that resolves to an array of file paths or empty array if cancelled.
+ * @returns {Promise<string[]|null>} Array of paths, or null if native picker unavailable
+ */
+export async function pickFiles() {
+  if (typeof window.mittoPickFiles === "function") {
+    // Native macOS app - use bound function
+    // The webview binding returns a Promise
+    const result = await window.mittoPickFiles();
+    return result || [];
+  }
+  // Web browser - no native file picker available
+  // The caller should use a file input as fallback
+  return null; // null indicates native picker is not available
+}
+
+/**
+ * Check if the native file picker is available (running in macOS app)
+ * @returns {boolean}
+ */
+export function hasNativeFilePicker() {
+  return typeof window.mittoPickFiles === "function";
+}
+
+// =============================================================================
 // Context Menu Helper
 // =============================================================================
 
