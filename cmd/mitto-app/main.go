@@ -16,7 +16,7 @@ package main
 
 /*
 #cgo darwin CFLAGS: -x objective-c
-#cgo darwin LDFLAGS: -framework Cocoa -framework Carbon -framework UniformTypeIdentifiers -framework UserNotifications
+#cgo darwin LDFLAGS: -framework Cocoa -framework Carbon -framework UniformTypeIdentifiers -framework UserNotifications -framework WebKit
 
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
@@ -25,6 +25,7 @@ package main
 #include "loginitem_darwin.h"
 #include "notifications_darwin.h"
 #include "webviewlog_darwin.h"
+#include "cache_darwin.h"
 
 // Global hotkey reference (static to avoid duplicate symbols)
 static EventHotKeyRef gHotKeyRef = NULL;
@@ -212,6 +213,58 @@ static inline char* openImagePicker(void) {
 
     return result;
 }
+
+// openFilePicker opens a native file picker dialog for selecting any file type.
+// Returns a JSON array of selected file paths, or NULL if cancelled.
+// The caller is responsible for freeing the returned string.
+// Note: This function is called from webview binding callbacks which already run on the main thread.
+static inline char* openFilePicker(void) {
+    char* result = NULL;
+
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        [panel setCanChooseFiles:YES];
+        [panel setCanChooseDirectories:NO];
+        [panel setAllowsMultipleSelection:YES];
+        [panel setMessage:@"Select files to attach"];
+        [panel setPrompt:@"Attach"];
+
+        // Allow all file types - no restrictions
+        // This enables users to attach any file type (text, code, documents, etc.)
+
+        // Run the panel modally - we're already on the main thread from the webview callback
+        NSModalResponse response = [panel runModal];
+
+        if (response == NSModalResponseOK) {
+            NSArray *urls = [panel URLs];
+            if (urls != nil && [urls count] > 0) {
+                // Build a JSON array of file paths
+                NSMutableArray *paths = [NSMutableArray arrayWithCapacity:[urls count]];
+                for (NSURL *url in urls) {
+                    NSString *path = [url path];
+                    if (path != nil) {
+                        [paths addObject:path];
+                    }
+                }
+
+                // Convert to JSON
+                NSError *error = nil;
+                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:paths
+                                                                   options:0
+                                                                     error:&error];
+                if (jsonData != nil && error == nil) {
+                    NSString *jsonString = [[NSString alloc] initWithData:jsonData
+                                                                 encoding:NSUTF8StringEncoding];
+                    if (jsonString != nil) {
+                        result = strdup([jsonString UTF8String]);
+                    }
+                }
+            }
+        }
+    }
+
+    return result;
+}
 */
 import "C"
 
@@ -277,6 +330,9 @@ func goMenuActionCallback(action *C.char) {
 	case "show_settings":
 		// Open the settings dialog
 		js = "if (window.mittoShowSettings) window.mittoShowSettings();"
+	case "reload_webview":
+		// Reload the entire webview
+		js = "window.location.reload();"
 	default:
 		slog.Warn("Unknown menu action", "action", actionStr)
 		return
@@ -501,6 +557,13 @@ func getConsoleHookScript() string {
 	return C.GoString(C.getConsoleHookScript())
 }
 
+// clearWebViewCache clears WKWebView's disk and memory cache.
+// This ensures fresh content is loaded on app startup.
+// Should be called before creating the webview.
+func clearWebViewCache() {
+	C.clearWebViewCache()
+}
+
 // setupMenu creates the native macOS menu bar with standard items.
 func setupMenu(appName string) {
 	cAppName := C.CString(appName)
@@ -571,6 +634,24 @@ func pickFolder() string {
 // This is exposed to JavaScript via webview.Bind.
 func pickImages() []string {
 	cJSON := C.openImagePicker()
+	if cJSON == nil {
+		return []string{}
+	}
+	defer C.free(unsafe.Pointer(cJSON))
+
+	jsonStr := C.GoString(cJSON)
+	var paths []string
+	if err := json.Unmarshal([]byte(jsonStr), &paths); err != nil {
+		return []string{}
+	}
+	return paths
+}
+
+// pickFiles opens a native file picker dialog for selecting any file type.
+// Returns a JSON array of file paths, or an empty array if cancelled.
+// This is exposed to JavaScript via webview.Bind as window.mittoPickFiles.
+func pickFiles() []string {
+	cJSON := C.openFilePicker()
 	if cJSON == nil {
 		return []string{}
 	}
@@ -722,15 +803,21 @@ func run() error {
 
 	// Initialize logging with file output for macOS app
 	// Logs go to both console (for Console.app) and file (for persistence)
-	// Default to INFO level, but allow override via MITTO_LOG_LEVEL environment variable
-	logLevel := "info"
+	// Console defaults to INFO level, file defaults to DEBUG for detailed diagnostics
+	// Override via MITTO_LOG_LEVEL (console) and MITTO_FILE_LOG_LEVEL (file) environment variables
+	consoleLevel := "info"
 	if envLevel := os.Getenv("MITTO_LOG_LEVEL"); envLevel != "" {
-		logLevel = envLevel
+		consoleLevel = envLevel
+	}
+	fileLevel := "debug"
+	if envLevel := os.Getenv("MITTO_FILE_LOG_LEVEL"); envLevel != "" {
+		fileLevel = envLevel
 	}
 
 	// Configure file logging with rotation
 	logConfig := logging.Config{
-		Level: logLevel,
+		Level:     consoleLevel,
+		FileLevel: fileLevel,
 	}
 	if logsDir, err := appdir.LogsDir(); err == nil {
 		logConfig.FileLog = &logging.FileLogConfig{
@@ -913,6 +1000,7 @@ func run() error {
 		return fmt.Errorf("failed to create localhost listener: %w", err)
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
+	slog.Info("Local listener started", "address", fmt.Sprintf("127.0.0.1:%d", port), "port", port)
 
 	// Start web server in background
 	serverErr := make(chan error, 1)
@@ -925,20 +1013,32 @@ func run() error {
 
 	// Start external listener if auth is configured and external port is not disabled
 	// External port: -1 = disabled, 0 = random, >0 = specific port
+	// Track the actual external port for the up hook
+	var actualExternalPort int
 	if cfg != nil && cfg.Web.Auth != nil && cfg.Web.ExternalPort >= 0 {
-		externalPort, err := srv.StartExternalListener(cfg.Web.ExternalPort)
+		var err error
+		actualExternalPort, err = srv.StartExternalListener(cfg.Web.ExternalPort)
 		if err != nil {
 			slog.Error("Failed to start external listener", "error", err)
-		} else {
-			slog.Info("External listener started", "port", externalPort)
 		}
+		// Note: StartExternalListener already logs success
 	}
 
 	// Run the up hook if configured
+	// Use external port if available (for tunneling services like Tailscale/ngrok),
+	// otherwise fall back to local port
 	var upHook *hooks.Process
 	if cfg != nil {
-		upHook = hooks.StartUp(cfg.Web.Hooks.Up, port)
+		hookPort := port
+		if actualExternalPort > 0 {
+			hookPort = actualExternalPort
+		}
+		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort)
 	}
+
+	// Clear WKWebView cache before creating the webview
+	// This ensures fresh content is loaded, avoiding stale cached JavaScript/CSS
+	clearWebViewCache()
 
 	// Create and run WebView
 	w := webview.New(false)
@@ -974,6 +1074,7 @@ func run() error {
 	w.Bind("mittoOpenFileURL", openFileURL)
 	w.Bind("mittoPickFolder", pickFolder)
 	w.Bind("mittoPickImages", pickImages)
+	w.Bind("mittoPickFiles", pickFiles)
 
 	// Bind login item functions (start at login)
 	w.Bind("mittoIsLoginItemSupported", isLoginItemSupported)

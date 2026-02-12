@@ -16,6 +16,7 @@ extern void goAppDidBecomeActiveCallback(void);
 - (void)focusInput:(id)sender;
 - (void)toggleSidebar:(id)sender;
 - (void)showSettings:(id)sender;
+- (void)reloadWebView:(id)sender;
 @end
 
 @implementation MittoMenuHandler
@@ -47,6 +48,10 @@ extern void goAppDidBecomeActiveCallback(void);
 
 - (void)showSettings:(id)sender {
     goMenuActionCallback((char*)"show_settings");
+}
+
+- (void)reloadWebView:(id)sender {
+    goMenuActionCallback((char*)"reload_webview");
 }
 
 @end
@@ -328,6 +333,15 @@ void setupMacOSMenu(const char* appName) {
                                                          keyEquivalent:@"l"];
         [focusInputItem setTarget:handler];
         [viewMenu addItem:focusInputItem];
+
+        [viewMenu addItem:[NSMenuItem separatorItem]];
+
+        // Add "Reload" menu item with Cmd+R shortcut (standard browser reload)
+        NSMenuItem *reloadItem = [[NSMenuItem alloc] initWithTitle:@"Reload"
+                                                            action:@selector(reloadWebView:)
+                                                     keyEquivalent:@"r"];
+        [reloadItem setTarget:handler];
+        [viewMenu addItem:reloadItem];
 
         // Create Window menu
         NSMenuItem *windowMenuItem = [[NSMenuItem alloc] init];
