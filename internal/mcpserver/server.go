@@ -80,7 +80,7 @@ type SessionManager interface {
 type BackgroundSession interface {
 	IsPrompting() bool
 	GetEventCount() int
-	GetMaxBufferedSeq() int64
+	GetMaxAssignedSeq() int64
 }
 
 // Config holds the configuration for the MCP server.
@@ -398,7 +398,7 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				if bs := sm.GetSession(meta.SessionID); bs != nil {
 					info.IsRunning = true
 					info.IsPrompting = bs.IsPrompting()
-					info.LastSeq = bs.GetMaxBufferedSeq()
+					info.LastSeq = bs.GetMaxAssignedSeq()
 				}
 			}
 

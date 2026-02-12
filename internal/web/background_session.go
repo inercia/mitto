@@ -22,13 +22,12 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
-// defaultPersistInterval is the default interval for periodic persistence of buffered
-// agent messages during streaming. This reduces data loss if the server crashes mid-stream.
-const defaultPersistInterval = 5 * time.Second
-
 // BackgroundSession manages an ACP session that runs independently of WebSocket connections.
 // It continues running even when no client is connected, persisting all events to disk.
 // Multiple observers can subscribe to receive real-time updates.
+//
+// Events are persisted immediately when received from ACP, preserving the sequence numbers
+// assigned at streaming time. This ensures streaming and persisted events have identical seq.
 type BackgroundSession struct {
 	// Immutable identifiers
 	persistedID string // Session ID for persistence and routing
@@ -41,9 +40,7 @@ type BackgroundSession struct {
 	acpWait   func() error // cleanup function from runner.RunWithPipes or cmd.Wait
 
 	// Session persistence
-	recorder    *session.Recorder
-	eventBuffer *EventBuffer // Unified buffer for all streaming events
-	bufferMu    sync.Mutex   // Protects eventBuffer
+	recorder *session.Recorder
 
 	// Sequence number tracking for event ordering
 	// nextSeq is the next sequence number to assign to a new event.
@@ -66,14 +63,8 @@ type BackgroundSession struct {
 	promptCond           *sync.Cond // Condition variable for waiting on prompt completion
 	isPrompting          bool
 	promptCount          int
-	promptStartTime      time.Time // When the current prompt started (for stuck detection)
+	promptStartTime      time.Time // When the current prompt started (for logging)
 	lastResponseComplete time.Time // When the agent last completed a response (for queue delay)
-
-	// Periodic persistence for crash recovery (H3 fix)
-	// This timer periodically persists buffered agent messages during streaming
-	// to reduce data loss if the server crashes mid-stream.
-	persistTimer    *time.Timer
-	persistInterval time.Duration
 
 	// Configuration
 	autoApprove bool
@@ -161,7 +152,6 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		cancel:                  cancel,
 		autoApprove:             cfg.AutoApprove,
 		logger:                  cfg.Logger,
-		eventBuffer:             NewEventBuffer(),
 		observers:               make(map[SessionObserver]struct{}),
 		processors:              cfg.Processors,
 		hookManager:             cfg.HookManager,
@@ -173,7 +163,6 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		apiPrefix:               cfg.APIPrefix,
 		workspaceUUID:           cfg.WorkspaceUUID,
 		runner:                  cfg.Runner,
-		persistInterval:         defaultPersistInterval, // H3 fix: periodic persistence
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 	}
@@ -274,7 +263,6 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		cancel:                  cancel,
 		autoApprove:             config.AutoApprove,
 		logger:                  sessionLogger,
-		eventBuffer:             NewEventBuffer(),
 		observers:               make(map[SessionObserver]struct{}),
 		isResumed:               true, // Mark as resumed session
 		store:                   config.Store,
@@ -288,7 +276,6 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		apiPrefix:               config.APIPrefix,
 		workspaceUUID:           config.WorkspaceUUID,
 		runner:                  config.Runner,
-		persistInterval:         defaultPersistInterval, // H3 fix: periodic persistence
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 	}
@@ -539,68 +526,30 @@ func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 	isPrompting := bs.isPrompting
 	bs.promptMu.Unlock()
 
-	if isPrompting {
-		bs.replayBufferedEventsTo(observer)
-	} else {
-		// If not prompting, send cached action buttons to the new observer
-		// This ensures new clients see the follow-up suggestions
+	// If not prompting, send cached action buttons to the new observer
+	// This ensures new clients see the follow-up suggestions
+	// Note: Events are persisted immediately, so clients can get them from the store
+	// via the load_events WebSocket message. No need to replay buffered events.
+	if !isPrompting {
 		bs.sendCachedActionButtonsTo(observer)
 	}
 }
 
-// GetBufferedEvents returns a copy of all buffered events.
-// This is used by SessionWSClient to replay events with deduplication.
-func (bs *BackgroundSession) GetBufferedEvents() []BufferedEvent {
-	bs.bufferMu.Lock()
-	defer bs.bufferMu.Unlock()
-	if bs.eventBuffer == nil {
-		return nil
-	}
-	return bs.eventBuffer.Events() // Returns a copy
-}
-
-// GetMaxBufferedSeq returns the highest sequence number in the event buffer.
-// Returns 0 if the buffer is empty or not initialized.
-// This is used by keepalive to report the server's current max seq.
-func (bs *BackgroundSession) GetMaxBufferedSeq() int64 {
-	bs.bufferMu.Lock()
-	defer bs.bufferMu.Unlock()
-	if bs.eventBuffer == nil {
+// GetMaxAssignedSeq returns the highest sequence number that has been assigned
+// to any event in this session. This is nextSeq - 1, since nextSeq is the NEXT
+// seq to be assigned.
+//
+// This is used for keepalive reporting and to determine the server's max seq
+// for client synchronization.
+//
+// Returns 0 if no events have been assigned yet.
+func (bs *BackgroundSession) GetMaxAssignedSeq() int64 {
+	bs.seqMu.Lock()
+	defer bs.seqMu.Unlock()
+	if bs.nextSeq <= 1 {
 		return 0
 	}
-	// Find the maximum seq in all buffered events
-	// (usually the last one, but we check all to be safe)
-	var maxSeq int64
-	for _, event := range bs.eventBuffer.Events() {
-		if event.Seq > maxSeq {
-			maxSeq = event.Seq
-		}
-	}
-	return maxSeq
-}
-
-// replayBufferedEventsTo sends all buffered events to a single observer in order.
-// This is used to catch up newly connected observers on in-progress streaming.
-// DEPRECATED: Use GetBufferedEvents() with client-side deduplication instead.
-func (bs *BackgroundSession) replayBufferedEventsTo(observer SessionObserver) {
-	bs.bufferMu.Lock()
-	var events []BufferedEvent
-	if bs.eventBuffer != nil {
-		events = bs.eventBuffer.Events() // Get a copy, don't flush
-	}
-	bs.bufferMu.Unlock()
-
-	if len(events) == 0 {
-		return
-	}
-
-	if bs.logger != nil {
-		bs.logger.Debug("Replaying buffered events to new observer", "event_count", len(events))
-	}
-
-	for _, event := range events {
-		event.ReplayTo(observer)
-	}
+	return bs.nextSeq - 1
 }
 
 // sendCachedActionButtonsTo sends cached action buttons to a single observer.
@@ -673,12 +622,6 @@ func (bs *BackgroundSession) Close(reason string) {
 	// Cancel context to stop any ongoing operations
 	bs.cancel()
 
-	// Stop periodic persistence timer (H3 fix)
-	bs.stopPeriodicPersistence()
-
-	// Flush and persist any buffered messages
-	bs.flushAndPersistMessages()
-
 	// Close ACP client
 	if bs.acpClient != nil {
 		bs.acpClient.Close()
@@ -695,9 +638,6 @@ func (bs *BackgroundSession) Close(reason string) {
 
 // Suspend suspends the session without ending it (for temporary disconnects).
 func (bs *BackgroundSession) Suspend() {
-	// Flush and persist any buffered messages
-	bs.flushAndPersistMessages()
-
 	// Suspend recording (keeps status as "active")
 	if bs.recorder != nil {
 		bs.recorder.Suspend()
@@ -728,159 +668,11 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 	}
 
 	if bs.logger != nil {
-		bs.logger.Info("Injecting conversation history into resumed session",
+		bs.logger.Debug("Injecting conversation history into resumed session",
 			"history_length", len(history))
 	}
 
 	return history + message
-}
-
-// flushAndPersistMessages persists all buffered events in streaming order.
-// Events are sorted by their streaming sequence number before persistence,
-// ensuring correct interleaving even when events arrive out of order due to
-// buffering (e.g., MarkdownBuffer holding agent messages while tool calls arrive).
-func (bs *BackgroundSession) flushAndPersistMessages() {
-	if bs.recorder == nil {
-		return
-	}
-
-	// Lock buffer access and flush all events
-	bs.bufferMu.Lock()
-	var events []BufferedEvent
-	if bs.eventBuffer != nil {
-		events = bs.eventBuffer.Flush()
-	}
-	bs.bufferMu.Unlock()
-
-	// Sort events by streaming sequence number before persistence.
-	// This is critical because events may arrive out of order in the buffer:
-	// - Agent message chunks are buffered in MarkdownBuffer until complete
-	// - Tool calls are added to EventBuffer immediately when SafeFlush fails
-	// - This can cause tool calls to appear before the agent message explaining them
-	// Sorting ensures events are persisted (and later replayed) in the correct order.
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].Seq < events[j].Seq
-	})
-
-	// Persist each event in order
-	for _, event := range events {
-		if err := event.PersistTo(bs.recorder); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist event", "type", event.Type, "error", err)
-		}
-	}
-}
-
-// flushPendingCoalescedEvents flushes and persists any pending coalesced events
-// (agent messages and thoughts) from the buffer. This is called before persisting
-// discrete events (tool calls, file ops) to ensure correct ordering.
-//
-// This implements the "flush-on-type-change" pattern: when a discrete event arrives,
-// we first persist any pending coalesced content, then persist the discrete event.
-// This makes storage the single source of truth for all events.
-func (bs *BackgroundSession) flushPendingCoalescedEvents() {
-	if bs.recorder == nil {
-		return
-	}
-
-	bs.bufferMu.Lock()
-	var events []BufferedEvent
-	if bs.eventBuffer != nil {
-		events = bs.eventBuffer.Flush()
-	}
-	bs.bufferMu.Unlock()
-
-	if len(events) == 0 {
-		return
-	}
-
-	// Sort by seq to ensure correct order
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].Seq < events[j].Seq
-	})
-
-	// Persist each event
-	for _, event := range events {
-		if err := event.PersistTo(bs.recorder); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist coalesced event", "type", event.Type, "error", err)
-		}
-	}
-}
-
-// persistDiscreteEvent persists a discrete event (tool call, file op, etc.) immediately.
-// This first flushes any pending coalesced events to ensure correct ordering.
-func (bs *BackgroundSession) persistDiscreteEvent(event BufferedEvent) {
-	if bs.recorder == nil {
-		return
-	}
-
-	// First flush any pending coalesced events (agent messages, thoughts)
-	bs.flushPendingCoalescedEvents()
-
-	// Then persist this discrete event
-	if err := event.PersistTo(bs.recorder); err != nil && bs.logger != nil {
-		bs.logger.Error("Failed to persist discrete event", "type", event.Type, "error", err)
-	}
-}
-
-// startPeriodicPersistence starts a timer that periodically persists buffered
-// agent messages during streaming. This reduces data loss if the server crashes
-// mid-stream (H3 fix).
-func (bs *BackgroundSession) startPeriodicPersistence() {
-	bs.promptMu.Lock()
-	defer bs.promptMu.Unlock()
-
-	// Stop any existing timer
-	if bs.persistTimer != nil {
-		bs.persistTimer.Stop()
-	}
-
-	if bs.persistInterval <= 0 {
-		return
-	}
-
-	// Create a new timer that fires periodically
-	bs.persistTimer = time.AfterFunc(bs.persistInterval, func() {
-		bs.periodicPersistTick()
-	})
-}
-
-// stopPeriodicPersistence stops the periodic persistence timer.
-func (bs *BackgroundSession) stopPeriodicPersistence() {
-	bs.promptMu.Lock()
-	defer bs.promptMu.Unlock()
-
-	if bs.persistTimer != nil {
-		bs.persistTimer.Stop()
-		bs.persistTimer = nil
-	}
-}
-
-// periodicPersistTick is called by the periodic persistence timer.
-// It persists any buffered agent messages and reschedules the timer.
-func (bs *BackgroundSession) periodicPersistTick() {
-	// Check if we're still prompting
-	bs.promptMu.Lock()
-	if !bs.isPrompting {
-		bs.promptMu.Unlock()
-		return
-	}
-	bs.promptMu.Unlock()
-
-	// Persist any buffered coalesced events
-	bs.flushPendingCoalescedEvents()
-
-	if bs.logger != nil {
-		bs.logger.Debug("Periodic persistence tick completed")
-	}
-
-	// Reschedule the timer
-	bs.promptMu.Lock()
-	if bs.isPrompting && bs.persistInterval > 0 {
-		bs.persistTimer = time.AfterFunc(bs.persistInterval, func() {
-			bs.periodicPersistTick()
-		})
-	}
-	bs.promptMu.Unlock()
 }
 
 // killACPProcess terminates the ACP process and cleans up resources.
@@ -1135,7 +927,10 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, workingDir, acpSessio
 	// Create ACP connection with filtered stdout
 	bs.acpConn = acp.NewClientSideConnection(bs.acpClient, stdin, filteredStdout)
 	if bs.logger != nil {
-		bs.acpConn.SetLogger(bs.logger)
+		// Use a downgraded logger for the SDK to convert INFO to DEBUG
+		// This prevents verbose SDK logs (e.g., "peer connection closed") from
+		// appearing in stdout when log level is INFO.
+		bs.acpConn.SetLogger(logging.DowngradeInfoToDebug(bs.logger))
 	}
 
 	// Initialize and get agent capabilities
@@ -1369,18 +1164,40 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	bs.promptMu.Lock()
 	if bs.isPrompting {
-		// Check if the current prompt is stuck (running for too long without activity)
-		// If it's been more than 5 minutes, auto-recover by resetting the state
-		const stuckPromptTimeout = 5 * time.Minute
-		if !bs.promptStartTime.IsZero() && time.Since(bs.promptStartTime) > stuckPromptTimeout {
+		// Check if the ACP connection is dead (process crashed)
+		// We use a non-blocking check on the Done() channel to detect this.
+		// This is more reliable than a timeout because legitimate operations
+		// (like running tests) can take a very long time.
+		acpDead := false
+		if bs.acpConn != nil {
+			select {
+			case <-bs.acpConn.Done():
+				acpDead = true
+			default:
+				// Connection still alive
+			}
+		} else {
+			acpDead = true // No connection at all
+		}
+
+		if acpDead {
+			elapsed := time.Since(bs.promptStartTime)
 			if bs.logger != nil {
-				bs.logger.Warn("Auto-recovering stuck prompt",
+				bs.logger.Warn("Detected dead ACP connection",
 					"prompt_start_time", bs.promptStartTime,
-					"elapsed", time.Since(bs.promptStartTime))
+					"elapsed", elapsed)
 			}
 			bs.isPrompting = false
 			bs.lastResponseComplete = time.Now()
-			// Fall through to process the new prompt
+			bs.promptMu.Unlock()
+
+			// Notify observers about the dead connection
+			// The user will need to switch away and back to restart the session
+			bs.notifyObservers(func(o SessionObserver) {
+				o.OnError("The AI agent process has stopped unexpectedly. Please switch to another conversation and back to restart.")
+			})
+
+			return &sessionError{"ACP process died unexpectedly - switch conversations to restart"}
 		} else {
 			bs.promptMu.Unlock()
 			return &sessionError{"prompt already in progress"}
@@ -1407,9 +1224,6 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	if bs.onStreamingStateChanged != nil {
 		bs.onStreamingStateChanged(bs.persistedID, true)
 	}
-
-	// Start periodic persistence for crash recovery (H3 fix)
-	bs.startPeriodicPersistence()
 
 	// Load images and build content blocks
 	var imageRefs []session.ImageRef
@@ -1608,9 +1422,6 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			bs.onStreamingStateChanged(bs.persistedID, false)
 		}
 
-		// Stop periodic persistence (H3 fix)
-		bs.stopPeriodicPersistence()
-
 		if bs.IsClosed() {
 			return
 		}
@@ -1634,28 +1445,6 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				bs.logger.Debug("prompt_completion_flush_markdown_done",
 					"session_id", bs.persistedID)
 			}
-		}
-
-		// Get the agent message for async analysis (before flushing)
-		var agentMessage string
-		isEndTurn := err == nil && promptResp.StopReason == acp.StopReasonEndTurn
-		if bs.actionButtonsConfig.IsEnabled() && isEndTurn {
-			bs.bufferMu.Lock()
-			if bs.eventBuffer != nil {
-				agentMessage = bs.eventBuffer.GetAgentMessage()
-			}
-			bs.bufferMu.Unlock()
-		}
-
-		// Persist buffered messages
-		if bs.logger != nil {
-			bs.logger.Debug("prompt_completion_persist_start",
-				"session_id", bs.persistedID)
-		}
-		bs.flushAndPersistMessages()
-		if bs.logger != nil {
-			bs.logger.Debug("prompt_completion_persist_done",
-				"session_id", bs.persistedID)
 		}
 
 		// Notify all observers
@@ -1696,13 +1485,23 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			// Async follow-up analysis (non-blocking)
 			// This runs after prompt_complete so the user sees the response immediately
 			// Note: 'message' is captured from the outer function scope (the user's prompt)
-			if agentMessage != "" {
-				// Skip follow-up analysis if there are queued messages that will be processed immediately
-				// (no delay configured). The suggestions would be stale by the time they arrive.
-				if bs.hasImmediateQueuedMessages() {
-					bs.logger.Debug("follow-up analysis: skipped due to pending immediate queue messages")
-				} else {
-					go bs.analyzeFollowUpQuestions(message, agentMessage)
+			isEndTurn := promptResp.StopReason == acp.StopReasonEndTurn
+			if bs.actionButtonsConfig.IsEnabled() && isEndTurn {
+				// Get the agent message from stored events (events are persisted immediately)
+				var agentMessage string
+				if bs.store != nil {
+					if events, err := bs.store.ReadEvents(bs.persistedID); err == nil {
+						agentMessage = session.GetLastAgentMessage(events)
+					}
+				}
+				if agentMessage != "" {
+					// Skip follow-up analysis if there are queued messages that will be processed immediately
+					// (no delay configured). The suggestions would be stale by the time they arrive.
+					if bs.hasImmediateQueuedMessages() {
+						bs.logger.Debug("follow-up analysis: skipped due to pending immediate queue messages")
+					} else {
+						go bs.analyzeFollowUpQuestions(message, agentMessage)
+					}
 				}
 			}
 		}
@@ -1784,7 +1583,7 @@ func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage s
 		}
 	}
 
-	bs.logger.Info("follow-up analysis: sending buttons to observers", "count", len(buttons))
+	bs.logger.Debug("follow-up analysis: sending buttons to observers", "count", len(buttons))
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnActionButtons(buttons)
 	})
@@ -1949,15 +1748,11 @@ func (bs *BackgroundSession) Cancel() error {
 		bs.onStreamingStateChanged(bs.persistedID, false)
 	}
 
-	// Stop periodic persistence (H3 fix)
-	bs.stopPeriodicPersistence()
-
 	if wasPrompting {
 		// Flush any buffered content before notifying completion
 		if bs.acpClient != nil {
 			bs.acpClient.FlushMarkdown()
 		}
-		bs.flushAndPersistMessages()
 
 		// Notify observers that the prompt was cancelled
 		eventCount := bs.GetEventCount()
@@ -1997,9 +1792,6 @@ func (bs *BackgroundSession) ForceReset() {
 		bs.onStreamingStateChanged(bs.persistedID, false)
 	}
 
-	// Stop periodic persistence (H3 fix)
-	bs.stopPeriodicPersistence()
-
 	if !wasPrompting {
 		if bs.logger != nil {
 			bs.logger.Debug("ForceReset called but session was not prompting")
@@ -2011,7 +1803,6 @@ func (bs *BackgroundSession) ForceReset() {
 	if bs.acpClient != nil {
 		bs.acpClient.FlushMarkdown()
 	}
-	bs.flushAndPersistMessages()
 
 	// Notify observers that the prompt was forcefully reset
 	eventCount := bs.GetEventCount()
@@ -2215,17 +2006,18 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 
 	htmlLen := len(html)
 
-	// Buffer for coalescing (protected by mutex)
-	// AppendAgentMessage handles coalescing messages with the same seq.
-	// The seq was already assigned at ACP receive time by WebClient.
-	// Note: We don't persist immediately because agent messages stream in chunks.
-	// They are persisted when a different event type arrives (flush-on-type-change)
-	// or when the prompt completes.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendAgentMessage(seq, html)
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeAgentMessage,
+			Timestamp: time.Now(),
+			Data:      session.AgentMessageData{Text: html},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist agent message", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	observerCount := bs.ObserverCount()
@@ -2262,14 +2054,18 @@ func (bs *BackgroundSession) onAgentThought(seq int64, text string) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// AppendAgentThought handles coalescing thoughts with the same seq.
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendAgentThought(seq, text)
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeAgentThought,
+			Timestamp: time.Now(),
+			Data:      session.AgentThoughtData{Text: text},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist agent thought", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -2282,13 +2078,22 @@ func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 		return
 	}
 
-	// Immediate persistence: flush any pending coalesced events, then persist this tool call
-	// This makes storage the single source of truth for all events.
-	bs.persistDiscreteEvent(BufferedEvent{
-		Type: BufferedEventToolCall,
-		Seq:  seq,
-		Data: &ToolCallData{ID: id, Title: title, Status: status},
-	})
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeToolCall,
+			Timestamp: time.Now(),
+			Data: session.ToolCallData{
+				ToolCallID: id,
+				Title:      title,
+				Status:     status,
+			},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist tool call", "seq", seq, "error", err)
+		}
+	}
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -2301,12 +2106,21 @@ func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) 
 		return
 	}
 
-	// Immediate persistence: flush any pending coalesced events, then persist this update
-	bs.persistDiscreteEvent(BufferedEvent{
-		Type: BufferedEventToolCallUpdate,
-		Seq:  seq,
-		Data: &ToolCallUpdateData{ID: id, Status: status},
-	})
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeToolCallUpdate,
+			Timestamp: time.Now(),
+			Data: session.ToolCallUpdateData{
+				ToolCallID: id,
+				Status:     status,
+			},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist tool call update", "seq", seq, "error", err)
+		}
+	}
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -2319,12 +2133,27 @@ func (bs *BackgroundSession) onPlan(seq int64, entries []PlanEntry) {
 		return
 	}
 
-	// Immediate persistence: flush any pending coalesced events, then persist this plan
-	bs.persistDiscreteEvent(BufferedEvent{
-		Type: BufferedEventPlan,
-		Seq:  seq,
-		Data: &PlanData{Entries: entries},
-	})
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		// Convert web.PlanEntry to session.PlanEntry
+		sessionEntries := make([]session.PlanEntry, len(entries))
+		for i, entry := range entries {
+			sessionEntries[i] = session.PlanEntry{
+				Content:  entry.Content,
+				Priority: entry.Priority,
+				Status:   entry.Status,
+			}
+		}
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypePlan,
+			Timestamp: time.Now(),
+			Data:      session.PlanData{Entries: sessionEntries},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist plan", "seq", seq, "error", err)
+		}
+	}
 
 	// Cache plan state in SessionManager for restoration on conversation switch
 	if bs.onPlanStateChanged != nil {
@@ -2342,12 +2171,18 @@ func (bs *BackgroundSession) onFileWrite(seq int64, path string, size int) {
 		return
 	}
 
-	// Immediate persistence: flush any pending coalesced events, then persist this file write
-	bs.persistDiscreteEvent(BufferedEvent{
-		Type: BufferedEventFileWrite,
-		Seq:  seq,
-		Data: &FileOperationData{Path: path, Size: size},
-	})
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeFileWrite,
+			Timestamp: time.Now(),
+			Data:      session.FileOperationData{Path: path, Size: size},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist file write", "seq", seq, "error", err)
+		}
+	}
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -2360,12 +2195,18 @@ func (bs *BackgroundSession) onFileRead(seq int64, path string, size int) {
 		return
 	}
 
-	// Immediate persistence: flush any pending coalesced events, then persist this file read
-	bs.persistDiscreteEvent(BufferedEvent{
-		Type: BufferedEventFileRead,
-		Seq:  seq,
-		Data: &FileOperationData{Path: path, Size: size},
-	})
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeFileRead,
+			Timestamp: time.Now(),
+			Data:      session.FileOperationData{Path: path, Size: size},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist file read", "seq", seq, "error", err)
+		}
+	}
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {

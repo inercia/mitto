@@ -19,7 +19,7 @@ keywords:
 
 # Sequence Numbers and Observer Pattern
 
-> **📖 Full Protocol Documentation**: See [docs/devel/websocket-messaging.md](../../docs/devel/websocket-messaging.md) for complete WebSocket protocol specification, message formats, sequence number contract, and communication flows.
+> **📖 Full Protocol Documentation**: See [docs/devel/websockets/](../../docs/devel/websockets/) for complete WebSocket protocol specification, message formats, sequence number contract, and communication flows.
 
 This file covers **backend implementation patterns** for sequence numbers and observers. For protocol details and message formats, refer to the main documentation.
 
@@ -104,12 +104,12 @@ Agent → "I found the following..." (AgentMessageChunk after tool completes)
 
 ### Flushing Strategy
 
-| Event Type | Action | Why |
-|------------|--------|-----|
+| Event Type          | Action                             | Why                         |
+| ------------------- | ---------------------------------- | --------------------------- |
 | `AgentMessageChunk` | Buffer (smart flush on boundaries) | Preserve markdown structure |
-| `AgentThoughtChunk` | **Force flush** buffer first | Text block is complete |
-| `ToolCall` | **Force flush** buffer first | Text block is complete |
-| Prompt complete | **Force flush** buffer | Session is done streaming |
+| `AgentThoughtChunk` | **Force flush** buffer first       | Text block is complete      |
+| `ToolCall`          | **Force flush** buffer first       | Text block is complete      |
+| Prompt complete     | **Force flush** buffer             | Session is done streaming   |
 
 ```go
 case u.ToolCall != nil:
@@ -123,10 +123,10 @@ case u.ToolCall != nil:
 
 ### Flush() vs SafeFlush()
 
-| Method | Behavior | When to Use |
-|--------|----------|-------------|
-| `Flush()` | Force flush, ignores markdown state | Tool calls, thoughts, prompt complete |
-| `SafeFlush()` | Only flush if not in table/list/code | Periodic/timeout flushes |
+| Method        | Behavior                             | When to Use                           |
+| ------------- | ------------------------------------ | ------------------------------------- |
+| `Flush()`     | Force flush, ignores markdown state  | Tool calls, thoughts, prompt complete |
+| `SafeFlush()` | Only flush if not in table/list/code | Periodic/timeout flushes              |
 
 **Avoid SafeFlush for tool calls**: SafeFlush() can return false (not flushed) if we're mid-table. But if a tool call arrives, the agent is done with that table - flush it anyway.
 
@@ -184,10 +184,10 @@ Frontend                    Backend
 
 ### Backend Response Types
 
-| Response | When | Frontend Action |
-|----------|------|-----------------|
-| `prompt_received` | Prompt accepted, processing started | Clear pending, show streaming |
-| `error` | Prompt rejected (e.g., already prompting) | Show error, preserve input |
+| Response          | When                                      | Frontend Action               |
+| ----------------- | ----------------------------------------- | ----------------------------- |
+| `prompt_received` | Prompt accepted, processing started       | Clear pending, show streaming |
+| `error`           | Prompt rejected (e.g., already prompting) | Show error, preserve input    |
 
 ### Delivery Verification via Connected Message
 
@@ -204,7 +204,7 @@ if events, err := c.store.ReadEventsLast(c.sessionID, 50, 0); err == nil {
 }
 ```
 
-> **📖 See**: [Send Timeout with Delivery Verification](../../docs/devel/websocket-messaging.md#corner-case-send-timeout-with-delivery-verification) for the complete flow.
+> **📖 See**: [Communication Flows](../../docs/devel/websockets/communication-flows.md) for the complete flow diagrams.
 
 ### Error Before ACK
 
@@ -239,16 +239,16 @@ func (bs *BackgroundSession) handlePrompt(clientID, promptID, message string) er
 
 ## Sequence Number Contract
 
-See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#sequence-number-contract) for the complete formal specification.
+See [docs/devel/websockets/sequence-numbers.md](../../docs/devel/websockets/sequence-numbers.md) for the complete formal specification.
 
 ### Key Guarantees
 
-| Property | Guarantee |
-|----------|-----------|
-| **Uniqueness** | Each event has a unique `seq` (except coalescing chunks) |
-| **Monotonicity** | `seq` values are strictly increasing |
-| **Assignment Time** | `seq` is assigned at ACP receive time, not persistence |
-| **Coalescing** | Multiple chunks of same message share the same `seq` |
+| Property            | Guarantee                                                |
+| ------------------- | -------------------------------------------------------- |
+| **Uniqueness**      | Each event has a unique `seq` (except coalescing chunks) |
+| **Monotonicity**    | `seq` values are strictly increasing                     |
+| **Assignment Time** | `seq` is assigned at ACP receive time, not persistence   |
+| **Coalescing**      | Multiple chunks of same message share the same `seq`     |
 
 ### Recent Fixes
 
@@ -256,15 +256,16 @@ See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#seq
 
 **H2: Observer Registration Race** - Server syncs missed events after observer registration to handle the race window.
 
-**H3: Keepalive Sync with Buffered Events** - When `load_events` is called with `after_seq` (keepalive sync), the server now also replays buffered events, not just persisted ones. This is critical because `getServerMaxSeq()` includes buffer events.
+**H3: Immediate Persistence** - Events are now persisted immediately when received from ACP, preserving the sequence numbers assigned at streaming time. This eliminates the need for periodic persistence timers and buffer flushing.
 
 **M1: Client-Side Deduplication** - Frontend tracks seen `seq` values and skips duplicates as defense-in-depth.
 
 ## WebSocket Message Types
 
-See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md) for complete list.
+See [docs/devel/websockets/protocol-spec.md](../../docs/devel/websockets/protocol-spec.md) for complete list.
 
 **Key messages:**
+
 - `prompt` / `prompt_received` - Prompt with ACK
 - `error` - Error response (including prompt rejection)
 - `agent_message` - Streaming HTML (includes `seq` for ordering)
@@ -307,3 +308,65 @@ func TestWebClient_SeqAssignment(t *testing.T) {
 }
 ```
 
+## max_seq Piggybacking
+
+All streaming messages include `max_seq` to enable **immediate gap detection**. This allows clients to detect missed events without waiting for the next keepalive.
+
+### Server-Side Implementation
+
+```go
+// getServerMaxSeq returns the highest seq for this session
+func (c *SessionWSClient) getServerMaxSeq() int64 {
+    var maxSeq int64
+
+    // Check persisted events
+    if c.store != nil {
+        meta, err := c.store.GetMetadata(c.sessionID)
+        if err == nil {
+            maxSeq = int64(meta.EventCount)
+        }
+    }
+
+    // Check assigned seq (includes events not yet persisted)
+    if c.bgSession != nil {
+        assignedSeq := c.bgSession.GetMaxAssignedSeq()
+        if assignedSeq > maxSeq {
+            maxSeq = assignedSeq
+        }
+    }
+
+    return maxSeq
+}
+
+// GetMaxAssignedSeq returns highest seq ever assigned (nextSeq - 1)
+func (bs *BackgroundSession) GetMaxAssignedSeq() int64 {
+    bs.seqMu.Lock()
+    defer bs.seqMu.Unlock()
+    if bs.nextSeq <= 1 {
+        return 0
+    }
+    return bs.nextSeq - 1
+}
+```
+
+### Including max_seq in Messages
+
+All streaming messages must include `max_seq`:
+
+```go
+c.sendMessage(WSMsgTypeAgentMessage, map[string]interface{}{
+    "seq":          seq,
+    "max_seq":      c.getServerMaxSeq(),  // Always include
+    "html":         html,
+    "session_id":   c.sessionID,
+    "is_prompting": isPrompting,
+})
+```
+
+### Why GetMaxAssignedSeq
+
+`GetMaxAssignedSeq()` returns `nextSeq - 1` (highest seq ever assigned). This is used for `max_seq` because:
+
+1. It includes events that have been assigned but may not yet be reflected in store metadata
+2. It's always accurate during streaming (no buffer flush timing issues)
+3. It prevents false "stale client" detection during active streaming

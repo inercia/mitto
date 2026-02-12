@@ -16,6 +16,12 @@ type SessionStore interface {
 	// The event's Seq field is automatically assigned based on the current event count.
 	AppendEvent(sessionID string, event Event) error
 
+	// RecordEvent persists an event with its pre-assigned sequence number.
+	// Unlike AppendEvent, this method does NOT reassign the seq field.
+	// The event.Seq must be > 0 (assigned by the caller).
+	// This is used for immediate persistence where seq is assigned at streaming time.
+	RecordEvent(sessionID string, event Event) error
+
 	// GetMetadata retrieves the metadata for a session.
 	GetMetadata(sessionID string) (Metadata, error)
 
@@ -189,6 +195,7 @@ type Metadata struct {
 	UpdatedAt         time.Time     `json:"updated_at"`
 	LastUserMessageAt time.Time     `json:"last_user_message_at,omitempty"` // Time of last user prompt
 	EventCount        int           `json:"event_count"`
+	MaxSeq            int64         `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
 	Status            SessionStatus `json:"status"`
 	Description       string        `json:"description,omitempty"`
 	Pinned            bool          `json:"pinned,omitempty"`            // Deprecated: use Archived instead. If true, session cannot be deleted

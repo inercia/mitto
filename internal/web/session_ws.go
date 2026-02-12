@@ -538,10 +538,10 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 			// Fall back to initial load - load last N events
 			events, err = c.store.ReadEventsLast(c.sessionID, limit, 0)
 			isPrepend = false
-			// Reset lastSentSeq since we're doing a fresh load
-			c.seqMu.Lock()
-			c.lastSentSeq = 0
-			c.seqMu.Unlock()
+			// NOTE: We intentionally do NOT reset lastSentSeq here.
+			// The observer path may have already delivered events with higher seq numbers.
+			// The lastSentSeq will be updated below based on the loaded events,
+			// but only if the loaded events have higher seq than what was already sent.
 		} else {
 			// Normal sync: update lastSentSeq to afterSeq before loading to prevent duplicates
 			c.seqMu.Lock()
@@ -567,6 +567,17 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		isPrepend = true
 	} else {
 		// Initial load: load last N events
+		// This happens on:
+		// 1. Fresh page load (client has no stored state)
+		// 2. After stale client detection (see keepalive "stale_detected" message)
+		// 3. After mismatch fallback (client_after_seq > server_max_seq)
+		if c.logger != nil {
+			c.logger.Debug("load_events_initial_load",
+				"limit", limit,
+				"session_id", c.sessionID,
+				"client_id", c.clientID,
+				"reason", "no_after_seq_or_before_seq")
+		}
 		events, err = c.store.ReadEventsLast(c.sessionID, limit, 0)
 		isPrepend = false
 	}
@@ -633,6 +644,7 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		"has_more":     hasMore,
 		"first_seq":    firstSeq,
 		"last_seq":     lastSeq,
+		"max_seq":      c.getServerMaxSeq(),
 		"total_count":  meta.EventCount,
 		"prepend":      isPrepend,
 		"is_running":   isRunning,
@@ -692,22 +704,9 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 	// 1. Initial load (afterSeq == 0): Client connects mid-stream while agent messages
 	//    are still being coalesced in the buffer.
 	//
-	// 2. Sync after keepalive (afterSeq > 0): Keepalive detected client is behind,
-	//    but the missing events might still be in the buffer (not persisted yet).
-	//    The server's getServerMaxSeq() includes buffer events, so load_events must too.
-	//
-	// 3. Just after prompting ends: The agent completed, isPrompting is false, but
-	//    events might still be in the buffer briefly before they're fully persisted.
-	//
-	// Note: With immediate persistence for discrete events, only agent messages and
-	// thoughts remain in the buffer (they need coalescing). These are the only events
-	// that might not be in storage yet.
-	//
-	// We check the buffer regardless of isPrompting because there's a race window
-	// after prompting ends but before the buffer is fully flushed/cleared.
-	if !isPrepend && c.bgSession != nil {
-		c.replayBufferedEventsWithDedup()
-	}
+	// Note: With immediate persistence, all events are persisted as soon as they're
+	// received from ACP. There's no buffer to replay from. Events are available in
+	// storage immediately after they're assigned a sequence number.
 }
 
 // syncMissedEventsDuringRegistration checks for events that were persisted
@@ -755,6 +754,7 @@ func (c *SessionWSClient) syncMissedEventsDuringRegistration(lastLoadedSeq int64
 		"has_more":     false,
 		"first_seq":    firstSeq,
 		"last_seq":     lastSeq,
+		"max_seq":      c.getServerMaxSeq(),
 		"prepend":      false,
 		"is_running":   c.bgSession != nil && !c.bgSession.IsClosed(),
 		"is_prompting": c.bgSession != nil && c.bgSession.IsPrompting(),
@@ -766,64 +766,6 @@ func (c *SessionWSClient) syncMissedEventsDuringRegistration(lastLoadedSeq int64
 		c.lastSentSeq = lastSeq
 	}
 	c.seqMu.Unlock()
-}
-
-// replayBufferedEventsWithDedup replays buffered events to this client,
-// but only events with seq > lastSentSeq to prevent duplicates.
-//
-// This is only needed for agent messages and thoughts that are still being
-// coalesced in the buffer. Discrete events (tool calls, file ops) are persisted
-// immediately and will be in storage.
-//
-// This is called on every load_events request (not just when isPrompting) because
-// there's a race window after the agent completes where events may still be in
-// the buffer waiting to be flushed.
-func (c *SessionWSClient) replayBufferedEventsWithDedup() {
-	if c.bgSession == nil {
-		return
-	}
-
-	events := c.bgSession.GetBufferedEvents()
-	if len(events) == 0 {
-		return
-	}
-
-	c.seqMu.Lock()
-	lastSent := c.lastSentSeq
-	c.seqMu.Unlock()
-
-	// Count how many events we'll actually send
-	sentCount := 0
-	var maxBufferedSeq int64
-	for _, event := range events {
-		if event.Seq > maxBufferedSeq {
-			maxBufferedSeq = event.Seq
-		}
-		if event.Seq > lastSent {
-			sentCount++
-		}
-	}
-
-	if c.logger != nil {
-		c.logger.Debug("replayBufferedEventsWithDedup",
-			"buffer_event_count", len(events),
-			"events_to_send", sentCount,
-			"last_sent_seq", lastSent,
-			"max_buffered_seq", maxBufferedSeq)
-	}
-
-	for _, event := range events {
-		// Only replay events with seq > lastSentSeq
-		if event.Seq > lastSent {
-			event.ReplayTo(c)
-			// Update lastSentSeq after each event
-			c.seqMu.Lock()
-			if event.Seq > c.lastSentSeq {
-				c.lastSentSeq = event.Seq
-			}
-			c.seqMu.Unlock()
-		}
-	}
 }
 
 // handleKeepalive responds to application-level keepalive messages.
@@ -883,10 +825,12 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 	// Send keepalive acknowledgment with timestamps, sequence info, and session state
 	// The is_prompting flag allows the UI to sync its streaming state with the server
 	// Additional fields allow the UI to stay in sync without separate API calls
+	// Note: max_seq is included for consistency with other messages (also sent as server_max_seq for backward compat)
 	c.sendMessage(WSMsgTypeKeepaliveAck, map[string]interface{}{
 		"client_time":    clientTime,
 		"server_time":    serverTime,
-		"server_max_seq": serverMaxSeq,
+		"max_seq":        serverMaxSeq,
+		"server_max_seq": serverMaxSeq, // Deprecated: use max_seq instead
 		"is_prompting":   isPrompting,
 		"is_running":     isRunning,
 		"queue_length":   queueLength,
@@ -896,7 +840,7 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 
 // getServerMaxSeq returns the highest sequence number for this session.
 // This considers both persisted events (from storage) and in-flight events
-// (from the streaming buffer if a BackgroundSession is active).
+// (from the BackgroundSession's sequence counter if active).
 func (c *SessionWSClient) getServerMaxSeq() int64 {
 	var maxSeq int64
 
@@ -908,12 +852,14 @@ func (c *SessionWSClient) getServerMaxSeq() int64 {
 		}
 	}
 
-	// If there's an active background session, check its buffer for higher seq
-	// (events in buffer might not be persisted yet)
+	// If there's an active background session, check its assigned seq counter.
+	// This includes events that have been assigned but may not yet be reflected
+	// in the store metadata (small window between assign and persist).
+	// This prevents false "stale client" detection during active streaming.
 	if c.bgSession != nil {
-		bufferSeq := c.bgSession.GetMaxBufferedSeq()
-		if bufferSeq > maxSeq {
-			maxSeq = bufferSeq
+		assignedSeq := c.bgSession.GetMaxAssignedSeq()
+		if assignedSeq > maxSeq {
+			maxSeq = assignedSeq
 		}
 	}
 
@@ -1034,6 +980,7 @@ func (c *SessionWSClient) OnAgentMessage(seq int64, html string) {
 
 	c.sendMessage(WSMsgTypeAgentMessage, map[string]interface{}{
 		"seq":          seq,
+		"max_seq":      c.getServerMaxSeq(),
 		"html":         html,
 		"format":       "html",
 		"session_id":   c.sessionID,
@@ -1083,6 +1030,7 @@ func (c *SessionWSClient) OnAgentThought(seq int64, text string) {
 	}
 	c.sendMessage(WSMsgTypeAgentThought, map[string]interface{}{
 		"seq":          seq,
+		"max_seq":      c.getServerMaxSeq(),
 		"text":         text,
 		"session_id":   c.sessionID,
 		"is_prompting": isPrompting,
@@ -1130,6 +1078,7 @@ func (c *SessionWSClient) OnToolCall(seq int64, id, title, status string) {
 	}
 	c.sendMessage(WSMsgTypeToolCall, map[string]interface{}{
 		"seq":          seq,
+		"max_seq":      c.getServerMaxSeq(),
 		"id":           id,
 		"title":        title,
 		"status":       status,
@@ -1183,6 +1132,7 @@ func (c *SessionWSClient) OnToolUpdate(seq int64, id string, status *string) {
 	}
 	data := map[string]interface{}{
 		"seq":          seq,
+		"max_seq":      c.getServerMaxSeq(),
 		"id":           id,
 		"session_id":   c.sessionID,
 		"is_prompting": isPrompting,
@@ -1227,6 +1177,7 @@ func (c *SessionWSClient) OnPlan(seq int64, entries []PlanEntry) {
 
 	c.sendMessage(WSMsgTypePlan, map[string]interface{}{
 		"seq":        seq,
+		"max_seq":    c.getServerMaxSeq(),
 		"session_id": c.sessionID,
 		"entries":    entries,
 	})
@@ -1267,6 +1218,7 @@ func (c *SessionWSClient) OnFileWrite(seq int64, path string, size int) {
 
 	c.sendMessage(WSMsgTypeFileWrite, map[string]interface{}{
 		"seq":        seq,
+		"max_seq":    c.getServerMaxSeq(),
 		"path":       path,
 		"size":       size,
 		"session_id": c.sessionID,
@@ -1308,6 +1260,7 @@ func (c *SessionWSClient) OnFileRead(seq int64, path string, size int) {
 
 	c.sendMessage(WSMsgTypeFileRead, map[string]interface{}{
 		"seq":        seq,
+		"max_seq":    c.getServerMaxSeq(),
 		"path":       path,
 		"size":       size,
 		"session_id": c.sessionID,
@@ -1368,6 +1321,7 @@ func (c *SessionWSClient) OnPromptComplete(eventCount int) {
 	c.sendMessage(WSMsgTypePromptComplete, map[string]interface{}{
 		"session_id":  c.sessionID,
 		"event_count": eventCount,
+		"max_seq":     c.getServerMaxSeq(),
 	})
 }
 
@@ -1427,6 +1381,7 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 
 	c.sendMessage(WSMsgTypeUserPrompt, map[string]interface{}{
 		"seq":          seq,
+		"max_seq":      c.getServerMaxSeq(),
 		"session_id":   c.sessionID,
 		"sender_id":    senderID,
 		"prompt_id":    promptID,
@@ -1495,7 +1450,7 @@ func (c *SessionWSClient) OnAvailableCommandsUpdated(commands []AvailableCommand
 // preventing further prompts and allowing the UI to update accordingly.
 func (c *SessionWSClient) OnACPStopped(reason string) {
 	if c.logger != nil {
-		c.logger.Info("ACP stopped notification sent to client",
+		c.logger.Debug("ACP stopped notification sent to client",
 			"session_id", c.sessionID,
 			"client_id", c.clientID,
 			"reason", reason)

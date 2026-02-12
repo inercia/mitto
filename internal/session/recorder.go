@@ -343,6 +343,35 @@ func (r *Recorder) recordEvent(event Event) error {
 	return nil
 }
 
+// RecordEventWithSeq records an event with a pre-assigned sequence number.
+// This is used for immediate persistence where seq is assigned at streaming time.
+// Unlike recordEvent, this method uses Store.RecordEvent which preserves the seq.
+func (r *Recorder) RecordEventWithSeq(event Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.started {
+		return fmt.Errorf("session not started")
+	}
+
+	if err := r.store.RecordEvent(r.sessionID, event); err != nil {
+		return err
+	}
+
+	// Prune if configured and limits are exceeded
+	if r.pruneConfig != nil && r.pruneConfig.IsEnabled() {
+		// Pruning is best-effort; log errors but don't fail the recording
+		if _, err := r.store.PruneIfNeeded(r.sessionID, r.pruneConfig); err != nil {
+			log := logging.Session()
+			log.Warn("failed to prune session after recording event",
+				"session_id", r.sessionID,
+				"error", err)
+		}
+	}
+
+	return nil
+}
+
 // IsStarted returns whether the session has been started.
 func (r *Recorder) IsStarted() bool {
 	r.mu.Lock()

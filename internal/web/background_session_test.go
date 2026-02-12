@@ -1165,303 +1165,6 @@ func TestQueueTitleWorker_UpdateTitleSuccess(t *testing.T) {
 	}
 }
 
-// TestBackgroundSession_FlushAndPersistMessages_SortsEventsBySeq verifies that events
-// are sorted by sequence number before persistence. This is critical because:
-// - Agent messages are buffered in MarkdownBuffer and may flush late
-// - Tool calls are added to EventBuffer immediately when SafeFlush fails
-// - Without sorting, tool calls would appear before agent messages in the persisted log
-func TestBackgroundSession_FlushAndPersistMessages_SortsEventsBySeq(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	sessionID := "test-session-sort"
-	meta := session.Metadata{
-		SessionID:  sessionID,
-		ACPServer:  "test-server",
-		WorkingDir: tmpDir,
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	recorder := session.NewRecorderWithID(store, sessionID)
-	if err := recorder.Resume(); err != nil {
-		t.Fatalf("Resume failed: %v", err)
-	}
-
-	// Create a session with an event buffer
-	bs := &BackgroundSession{
-		persistedID: sessionID,
-		store:       store,
-		recorder:    recorder,
-		eventBuffer: NewEventBuffer(),
-	}
-
-	// Simulate the out-of-order scenario that happens with markdown buffering:
-	// - Agent message arrives first (seq 1) but gets buffered in MarkdownBuffer
-	// - Tool call arrives (seq 2) and is added to EventBuffer immediately
-	// - Tool call update arrives (seq 3)
-	// - Agent message finally flushes from MarkdownBuffer (still seq 1)
-	//
-	// The EventBuffer would receive them in this order: [tool call (2), tool update (3), agent (1)]
-	// But we want them persisted in seq order: [agent (1), tool call (2), tool update (3)]
-
-	// Add events OUT OF ORDER (simulating what happens with markdown buffering)
-	bs.eventBuffer.AppendToolCall(2, "tool-1", "Read file", "running")
-	bs.eventBuffer.AppendToolCallUpdate(3, "tool-1", ptr("completed"))
-	bs.eventBuffer.AppendAgentMessage(1, "<p>Let me read the file</p>")
-
-	// Verify buffer order is out of sequence
-	bufferEvents := bs.eventBuffer.Events()
-	if len(bufferEvents) != 3 {
-		t.Fatalf("Expected 3 buffered events, got %d", len(bufferEvents))
-	}
-	if bufferEvents[0].Seq != 2 || bufferEvents[1].Seq != 3 || bufferEvents[2].Seq != 1 {
-		t.Errorf("Expected buffer in order [2,3,1], got [%d,%d,%d]",
-			bufferEvents[0].Seq, bufferEvents[1].Seq, bufferEvents[2].Seq)
-	}
-
-	// Flush and persist
-	bs.flushAndPersistMessages()
-
-	// Read persisted events and verify they are in seq order
-	events, err := store.ReadEvents(sessionID)
-	if err != nil {
-		t.Fatalf("ReadEvents failed: %v", err)
-	}
-
-	// Filter out session_start event
-	var filteredEvents []session.Event
-	for _, e := range events {
-		if e.Type != session.EventTypeSessionStart {
-			filteredEvents = append(filteredEvents, e)
-		}
-	}
-
-	if len(filteredEvents) != 3 {
-		t.Fatalf("Expected 3 persisted events (excluding session_start), got %d", len(filteredEvents))
-	}
-
-	// Events should be persisted in seq order, so their types should be:
-	// 1. agent_message (originally seq 1, now persisted first)
-	// 2. tool_call (originally seq 2, now persisted second)
-	// 3. tool_call_update (originally seq 3, now persisted third)
-	expectedTypes := []session.EventType{
-		session.EventTypeAgentMessage,
-		session.EventTypeToolCall,
-		session.EventTypeToolCallUpdate,
-	}
-	for i, e := range filteredEvents {
-		if e.Type != expectedTypes[i] {
-			t.Errorf("Event %d: type = %s, want %s", i, e.Type, expectedTypes[i])
-		}
-	}
-}
-
-// =============================================================================
-// H3: Periodic Persistence Tests
-// =============================================================================
-
-// TestPeriodicPersistence_StartStop tests that periodic persistence can be
-// started and stopped without errors.
-func TestPeriodicPersistence_StartStop(t *testing.T) {
-	bs := &BackgroundSession{
-		persistInterval: 100 * time.Millisecond,
-	}
-
-	// Start should not panic
-	bs.startPeriodicPersistence()
-
-	// Timer should be set
-	bs.promptMu.Lock()
-	hasTimer := bs.persistTimer != nil
-	bs.promptMu.Unlock()
-
-	if !hasTimer {
-		t.Error("Expected persistTimer to be set after startPeriodicPersistence")
-	}
-
-	// Stop should not panic
-	bs.stopPeriodicPersistence()
-
-	// Timer should be nil
-	bs.promptMu.Lock()
-	hasTimer = bs.persistTimer != nil
-	bs.promptMu.Unlock()
-
-	if hasTimer {
-		t.Error("Expected persistTimer to be nil after stopPeriodicPersistence")
-	}
-}
-
-// TestPeriodicPersistence_ZeroInterval tests that periodic persistence is
-// disabled when interval is zero.
-func TestPeriodicPersistence_ZeroInterval(t *testing.T) {
-	bs := &BackgroundSession{
-		persistInterval: 0, // Disabled
-	}
-
-	// Start should not create a timer
-	bs.startPeriodicPersistence()
-
-	bs.promptMu.Lock()
-	hasTimer := bs.persistTimer != nil
-	bs.promptMu.Unlock()
-
-	if hasTimer {
-		t.Error("Expected no timer when persistInterval is 0")
-	}
-}
-
-// TestPeriodicPersistence_NegativeInterval tests that periodic persistence is
-// disabled when interval is negative.
-func TestPeriodicPersistence_NegativeInterval(t *testing.T) {
-	bs := &BackgroundSession{
-		persistInterval: -1 * time.Second, // Invalid
-	}
-
-	// Start should not create a timer
-	bs.startPeriodicPersistence()
-
-	bs.promptMu.Lock()
-	hasTimer := bs.persistTimer != nil
-	bs.promptMu.Unlock()
-
-	if hasTimer {
-		t.Error("Expected no timer when persistInterval is negative")
-	}
-}
-
-// TestPeriodicPersistence_DoubleStart tests that starting twice replaces the timer.
-func TestPeriodicPersistence_DoubleStart(t *testing.T) {
-	bs := &BackgroundSession{
-		persistInterval: 100 * time.Millisecond,
-	}
-
-	// Start first timer
-	bs.startPeriodicPersistence()
-
-	bs.promptMu.Lock()
-	firstTimer := bs.persistTimer
-	bs.promptMu.Unlock()
-
-	// Start second timer (should replace first)
-	bs.startPeriodicPersistence()
-
-	bs.promptMu.Lock()
-	secondTimer := bs.persistTimer
-	bs.promptMu.Unlock()
-
-	// Timers should be different (first was stopped, new one created)
-	if firstTimer == secondTimer {
-		t.Error("Expected new timer after second startPeriodicPersistence")
-	}
-
-	// Cleanup
-	bs.stopPeriodicPersistence()
-}
-
-// TestPeriodicPersistence_DoubleStop tests that stopping twice is safe.
-func TestPeriodicPersistence_DoubleStop(t *testing.T) {
-	bs := &BackgroundSession{
-		persistInterval: 100 * time.Millisecond,
-	}
-
-	bs.startPeriodicPersistence()
-	bs.stopPeriodicPersistence()
-
-	// Second stop should not panic
-	bs.stopPeriodicPersistence()
-
-	bs.promptMu.Lock()
-	hasTimer := bs.persistTimer != nil
-	bs.promptMu.Unlock()
-
-	if hasTimer {
-		t.Error("Expected no timer after double stop")
-	}
-}
-
-// TestPeriodicPersistTick_NotPrompting tests that the tick does nothing
-// when not prompting.
-func TestPeriodicPersistTick_NotPrompting(t *testing.T) {
-	bs := &BackgroundSession{
-		persistInterval: 100 * time.Millisecond,
-		isPrompting:     false,
-	}
-
-	// Should not panic and should not reschedule
-	bs.periodicPersistTick()
-
-	bs.promptMu.Lock()
-	hasTimer := bs.persistTimer != nil
-	bs.promptMu.Unlock()
-
-	if hasTimer {
-		t.Error("Expected no timer when not prompting")
-	}
-}
-
-// TestPeriodicPersistTick_Prompting tests that the tick reschedules when prompting.
-func TestPeriodicPersistTick_Prompting(t *testing.T) {
-	bs := &BackgroundSession{
-		persistInterval: 50 * time.Millisecond,
-		isPrompting:     true,
-	}
-
-	// Call tick - should reschedule
-	bs.periodicPersistTick()
-
-	// Wait a bit for the timer to be set
-	time.Sleep(10 * time.Millisecond)
-
-	bs.promptMu.Lock()
-	hasTimer := bs.persistTimer != nil
-	bs.promptMu.Unlock()
-
-	if !hasTimer {
-		t.Error("Expected timer to be rescheduled when prompting")
-	}
-
-	// Cleanup
-	bs.stopPeriodicPersistence()
-}
-
-// TestPeriodicPersistence_Integration tests the full lifecycle of periodic persistence.
-func TestPeriodicPersistence_Integration(t *testing.T) {
-	bs := &BackgroundSession{
-		persistInterval: 20 * time.Millisecond,
-		isPrompting:     true,
-	}
-
-	// Start periodic persistence - timer should be started
-	bs.startPeriodicPersistence()
-
-	// Wait for a few ticks
-	time.Sleep(100 * time.Millisecond)
-
-	// Stop prompting
-	bs.promptMu.Lock()
-	bs.isPrompting = false
-	bs.promptMu.Unlock()
-
-	// Stop the timer
-	bs.stopPeriodicPersistence()
-
-	// Verify timer is stopped
-	bs.promptMu.Lock()
-	hasTimer := bs.persistTimer != nil
-	bs.promptMu.Unlock()
-
-	if hasTimer {
-		t.Error("Expected timer to be stopped")
-	}
-}
-
 // =============================================================================
 // WaitForResponseComplete Tests
 // =============================================================================
@@ -1998,4 +1701,98 @@ func (o *trackingObserver) OnACPStopped(reason string) {
 }
 func (o *trackingObserver) OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
+}
+
+// =============================================================================
+// GetMaxAssignedSeq Tests
+// =============================================================================
+
+// TestGetMaxAssignedSeq_Initial tests that GetMaxAssignedSeq returns 0 initially.
+func TestGetMaxAssignedSeq_Initial(t *testing.T) {
+	bs := &BackgroundSession{
+		nextSeq: 1, // Initial state: nextSeq starts at 1
+	}
+
+	maxSeq := bs.GetMaxAssignedSeq()
+	if maxSeq != 0 {
+		t.Errorf("GetMaxAssignedSeq() = %d, want 0 (no events assigned yet)", maxSeq)
+	}
+}
+
+// TestGetMaxAssignedSeq_AfterAssignment tests that GetMaxAssignedSeq returns
+// the correct value after sequence numbers have been assigned.
+func TestGetMaxAssignedSeq_AfterAssignment(t *testing.T) {
+	tests := []struct {
+		name    string
+		nextSeq int64
+		want    int64
+	}{
+		{
+			name:    "after first assignment",
+			nextSeq: 2, // First event was assigned seq=1
+			want:    1,
+		},
+		{
+			name:    "after 10 assignments",
+			nextSeq: 11, // Events 1-10 were assigned
+			want:    10,
+		},
+		{
+			name:    "after 100 assignments",
+			nextSeq: 101,
+			want:    100,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bs := &BackgroundSession{
+				nextSeq: tt.nextSeq,
+			}
+
+			got := bs.GetMaxAssignedSeq()
+			if got != tt.want {
+				t.Errorf("GetMaxAssignedSeq() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGetMaxAssignedSeq_Concurrent tests that GetMaxAssignedSeq is safe
+// for concurrent access.
+func TestGetMaxAssignedSeq_Concurrent(t *testing.T) {
+	bs := &BackgroundSession{
+		nextSeq: 1,
+	}
+
+	var wg sync.WaitGroup
+	const numGoroutines = 100
+
+	// Start multiple goroutines reading and incrementing
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(2)
+
+		// Reader
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = bs.GetMaxAssignedSeq()
+				time.Sleep(time.Microsecond)
+			}
+		}()
+
+		// Writer (simulating AssignSeq)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				bs.seqMu.Lock()
+				bs.nextSeq++
+				bs.seqMu.Unlock()
+				time.Sleep(time.Microsecond)
+			}
+		}()
+	}
+
+	wg.Wait()
+	// If we get here without a race condition, the test passes
 }

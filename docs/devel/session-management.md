@@ -84,7 +84,7 @@ graph TB
 | Component           | Owns                                                       | Does NOT Own                               |
 | ------------------- | ---------------------------------------------------------- | ------------------------------------------ |
 | `session.Store`     | Persisted metadata, event log, file I/O                    | Runtime state, ACP connection              |
-| `BackgroundSession` | ACP process, observers, prompt state, message buffers      | Persistence (delegates to Store), UI state |
+| `BackgroundSession` | ACP process, observers, prompt state, immediate persistence | UI state                                   |
 | `SessionManager`    | Running session registry, workspace config, session limits | Individual session state, persistence      |
 | `SessionWSClient`   | WebSocket connection, permission response channel          | Session lifecycle, persistence             |
 | Frontend            | UI state, active session selection, message display        | Backend state, persistence                 |
@@ -189,7 +189,7 @@ The `lastSeenSeq` is updated at these specific points:
 
 **Important:** `lastSeenSeq` is NOT updated during streaming. This is intentional - it ensures that if a reconnect happens mid-stream, the client can request all events from the last known checkpoint.
 
-For detailed documentation on WebSocket message handling and ordering, see [WebSocket Messaging](websocket-messaging.md).
+For detailed documentation on WebSocket message handling and ordering, see [WebSocket Documentation](websockets/).
 
 ## Mobile Considerations
 
@@ -209,7 +209,7 @@ If the agent starts responding (`agent_message` or `agent_thought`), pending sen
 2. The prompt was received but ACK timing was disrupted
 3. Mobile network transitions caused ACK delivery issues
 
-For detailed documentation on these mechanisms, see [WebSocket Messaging - Send Timeout](websocket-messaging.md#corner-case-send-timeout-with-uncertain-delivery).
+For detailed documentation on these mechanisms, see [Communication Flows](websockets/communication-flows.md).
 
 ## Message Queue
 

@@ -183,6 +183,87 @@ func (s *Store) AppendEvent(sessionID string, event Event) error {
 	return s.writeMetadata(meta)
 }
 
+// RecordEvent persists an event with its pre-assigned sequence number.
+// Unlike AppendEvent, this method does NOT reassign the seq field.
+// The event.Seq must be > 0 (assigned by the caller).
+// This is used for immediate persistence where seq is assigned at streaming time.
+func (s *Store) RecordEvent(sessionID string, event Event) error {
+	log := logging.Session()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	// Validate seq is pre-assigned
+	if event.Seq <= 0 {
+		return fmt.Errorf("event.Seq must be > 0, got %d", event.Seq)
+	}
+
+	// Read metadata to validate seq ordering
+	meta, err := s.readMetadata(sessionID)
+	if err != nil {
+		return err
+	}
+
+	// Validate monotonic ordering: event.Seq should be EventCount + 1
+	// This is a warning, not an error, because the streaming seq is authoritative
+	expectedSeq := int64(meta.EventCount + 1)
+	if event.Seq != expectedSeq {
+		log.Warn("seq_mismatch_on_persist",
+			"session_id", sessionID,
+			"event_seq", event.Seq,
+			"expected_seq", expectedSeq,
+			"event_type", event.Type)
+		// Continue anyway - the event has the seq assigned at streaming time
+	}
+
+	eventsPath := s.eventsPath(sessionID)
+	f, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("failed to open events file: %w", err)
+	}
+	defer f.Close()
+
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+
+	// Note: We do NOT reassign event.Seq - it's already set by the caller
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("failed to write event: %w", err)
+	}
+
+	log.Debug("event_recorded",
+		"session_id", sessionID,
+		"seq", event.Seq,
+		"event_type", event.Type,
+		"event_count", meta.EventCount+1)
+
+	// Update metadata
+	meta.EventCount++
+	meta.UpdatedAt = time.Now()
+	// Track the highest seq seen (for immediate persistence)
+	if event.Seq > meta.MaxSeq {
+		meta.MaxSeq = event.Seq
+	}
+	// Track last user message time for sorting conversations
+	if event.Type == EventTypeUserPrompt {
+		meta.LastUserMessageAt = event.Timestamp
+	}
+	return s.writeMetadata(meta)
+}
+
 // GetMetadata retrieves the metadata for a session.
 func (s *Store) GetMetadata(sessionID string) (Metadata, error) {
 	s.mu.RLock()

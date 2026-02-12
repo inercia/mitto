@@ -353,11 +353,11 @@ type FileOperationData struct {
 	Size int
 }
 
-// EventBuffer accumulates streaming events in order for later persistence.
-// Events are buffered during a prompt and persisted together when the prompt completes.
-// This ensures events are persisted in the correct streaming order, not the order
-// they would be persisted if done immediately (which would put tool calls before
-// agent messages due to buffering of agent message chunks).
+// EventBuffer accumulates streaming events for coalescing and replay.
+// This is primarily used for coalescing agent message chunks that arrive
+// in rapid succession. With immediate persistence, events are persisted
+// as they arrive, but this buffer can still be useful for observer replay
+// and testing purposes.
 type EventBuffer struct {
 	events []BufferedEvent
 }
