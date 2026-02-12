@@ -12,7 +12,9 @@
     "test:ui:headed": "npx playwright test --config=tests/ui/playwright.config.ts --headed",
     "test:ui:debug": "npx playwright test --config=tests/ui/playwright.config.ts --debug",
     "test:ui:report": "npx playwright show-report tests/ui/playwright-report",
-    "test:ui:legacy": "npx playwright test --config=tests/ui/playwright.config.js"
+    "test:ui:legacy": "npx playwright test --config=tests/ui/playwright.config.js",
+    "tailwind": "tailwindcss -i web/static/tailwind.src.css -o web/static/tailwind.css --minify",
+    "tailwind:watch": "tailwindcss -i web/static/tailwind.src.css -o web/static/tailwind.css --watch"
   },
   "devDependencies": {
     "@playwright/test": "^1.50.1",
@@ -20,6 +22,7 @@
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
     "prettier": "^3.8.1",
+    "tailwindcss": "^3.4.17",
     "typescript": "^5.4.0"
   },
   "jest": {
