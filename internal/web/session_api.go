@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -106,6 +107,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if s.logger != nil {
 			s.logger.Error("Failed to create session", "error", err)
 		}
+		// Broadcast ACP start failure to all clients (use empty session_id since session wasn't created)
+		s.BroadcastACPStartFailed("", err.Error())
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -182,6 +185,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isEventsRequest := len(parts) > 1 && parts[1] == "events"
 	isWSRequest := len(parts) > 1 && parts[1] == "ws"
 	isImagesRequest := len(parts) > 1 && parts[1] == "images"
+	isFilesRequest := len(parts) > 1 && parts[1] == "files"
 	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
 
 	// Handle WebSocket upgrade for per-session connections
@@ -198,6 +202,17 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			imagePath = parts[2]
 		}
 		s.handleSessionImages(w, r, sessionID, imagePath)
+		return
+	}
+
+	// Handle file operations
+	if isFilesRequest {
+		// Extract file ID if present: /api/sessions/{id}/files/{fileId}
+		filePath := ""
+		if len(parts) > 2 {
+			filePath = parts[2]
+		}
+		s.handleSessionFiles(w, r, sessionID, filePath)
 		return
 	}
 
@@ -312,8 +327,12 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessio
 type SessionUpdateRequest struct {
 	Name        *string `json:"name,omitempty"`
 	Description *string `json:"description,omitempty"`
-	Pinned      *bool   `json:"pinned,omitempty"`
+	Pinned      *bool   `json:"pinned,omitempty"`   // Deprecated: use Archived instead
+	Archived    *bool   `json:"archived,omitempty"` // If true, session is archived
 }
+
+// archiveWaitTimeout is the maximum time to wait for a response to complete when archiving.
+const archiveWaitTimeout = 5 * time.Minute
 
 // handleUpdateSession handles PATCH /api/sessions/{id}
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -329,6 +348,27 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	// Handle archive lifecycle: wait for response and stop ACP
+	if req.Archived != nil && *req.Archived {
+		if s.sessionManager != nil {
+			// Wait for any active response to complete before archiving
+			// This ensures we don't interrupt an in-progress agent response
+			reason := "archived"
+			if !s.sessionManager.CloseSessionGracefully(sessionID, reason, archiveWaitTimeout) {
+				// Timeout waiting for response - still proceed with archive but log warning
+				if s.logger != nil {
+					s.logger.Warn("Timeout waiting for response before archiving, proceeding anyway",
+						"session_id", sessionID)
+				}
+				// Force close the session
+				reason = "archived_timeout"
+				s.sessionManager.CloseSession(sessionID, reason)
+			}
+			// Broadcast that ACP was stopped
+			s.BroadcastACPStopped(sessionID, reason)
+		}
+	}
+
 	err := store.UpdateMetadata(sessionID, func(meta *session.Metadata) {
 		if req.Name != nil {
 			meta.Name = *req.Name
@@ -338,6 +378,16 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		}
 		if req.Pinned != nil {
 			meta.Pinned = *req.Pinned
+		}
+		if req.Archived != nil {
+			meta.Archived = *req.Archived
+			if *req.Archived {
+				// Set archived timestamp when archiving
+				meta.ArchivedAt = time.Now()
+			} else {
+				// Clear archived timestamp when unarchiving
+				meta.ArchivedAt = time.Time{}
+			}
 		}
 	})
 	if err != nil {
@@ -367,6 +417,37 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 	// Broadcast the pinned state change to all connected WebSocket clients
 	if req.Pinned != nil {
 		s.BroadcastSessionPinned(sessionID, *req.Pinned)
+	}
+
+	// Broadcast the archived state change to all connected WebSocket clients
+	if req.Archived != nil {
+		s.BroadcastSessionArchived(sessionID, *req.Archived)
+	}
+
+	// Handle unarchive lifecycle: restart ACP session
+	if req.Archived != nil && !*req.Archived {
+		if s.sessionManager != nil {
+			// Resume the session to restart the ACP connection
+			_, err := s.sessionManager.ResumeSession(sessionID, meta.Name, meta.WorkingDir)
+			if err != nil {
+				// Log the error but don't fail the request - the session is unarchived
+				// The ACP will be started when the user sends a message
+				if s.logger != nil {
+					s.logger.Warn("Failed to resume ACP session after unarchive",
+						"session_id", sessionID,
+						"error", err)
+				}
+				// Broadcast ACP start failure to all clients
+				s.BroadcastACPStartFailed(sessionID, err.Error())
+			} else {
+				if s.logger != nil {
+					s.logger.Info("Resumed ACP session after unarchive",
+						"session_id", sessionID)
+				}
+				// Broadcast that ACP was started
+				s.BroadcastACPStarted(sessionID)
+			}
+		}
 	}
 
 	writeJSONOK(w, meta)
@@ -687,14 +768,23 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Get prompts from workspace prompts_dirs (if any)
-	var dirPrompts []config.WebPrompt
-	promptsDirs := s.sessionManager.GetWorkspacePromptsDirs(workingDir)
-	if len(promptsDirs) > 0 {
-		dirPrompts = s.loadPromptsFromDirs(workingDir, promptsDirs, acpServer)
-	}
+	// Build the list of workspace prompt directories to search (in priority order):
+	// 1. Default .mitto/prompts directory (lowest priority among workspace dirs)
+	// 2. prompts_dirs from .mittorc (higher priority)
+	var workspacePromptsDirs []string
 
-	// Get inline prompts from .mittorc (higher priority than prompts_dirs)
+	// Add the default .mitto/prompts directory (always searched first)
+	defaultWorkspacePromptsDir := appdir.WorkspacePromptsDir(workingDir)
+	workspacePromptsDirs = append(workspacePromptsDirs, defaultWorkspacePromptsDir)
+
+	// Add prompts_dirs from .mittorc (higher priority, overrides default)
+	promptsDirs := s.sessionManager.GetWorkspacePromptsDirs(workingDir)
+	workspacePromptsDirs = append(workspacePromptsDirs, promptsDirs...)
+
+	// Load prompts from all workspace directories
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs, acpServer)
+
+	// Get inline prompts from .mittorc (highest priority)
 	inlinePrompts := s.sessionManager.GetWorkspacePrompts(workingDir)
 
 	// Merge: inline prompts override dir prompts by name
@@ -707,6 +797,7 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 			"prompt_count", len(prompts),
 			"dir_prompt_count", len(dirPrompts),
 			"inline_prompt_count", len(inlinePrompts),
+			"prompts_dirs", workspacePromptsDirs,
 			"last_modified", lastModified)
 	}
 

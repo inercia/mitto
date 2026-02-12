@@ -35,7 +35,7 @@ func (m *mockObserver) OnToolUpdate(seq int64, id string, status *string) {
 	// no-op for testing
 }
 
-func (m *mockObserver) OnPlan(seq int64) {
+func (m *mockObserver) OnPlan(seq int64, entries []PlanEntry) {
 	m.planCalls++
 }
 
@@ -55,7 +55,7 @@ func (m *mockObserver) OnPromptComplete(eventCount int) {
 	m.promptsDone++
 }
 
-func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string) {
+func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string) {
 	m.userPrompts = append(m.userPrompts, message)
 }
 
@@ -80,6 +80,14 @@ func (m *mockObserver) OnQueueReordered(messages []session.QueuedMessage) {
 }
 
 func (m *mockObserver) OnActionButtons(buttons []ActionButton) {
+	// no-op for testing
+}
+
+func (m *mockObserver) OnAvailableCommandsUpdated(commands []AvailableCommand) {
+	// no-op for testing
+}
+
+func (m *mockObserver) OnACPStopped(reason string) {
 	// no-op for testing
 }
 

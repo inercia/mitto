@@ -1,13 +1,17 @@
 package web
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
@@ -509,6 +513,138 @@ func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
 	lastModified := w2.Header().Get("Last-Modified")
 	if lastModified != "" {
 		t.Errorf("Expected no Last-Modified header after file deletion, got %q", lastModified)
+	}
+}
+
+func TestHandleWorkspacePrompts_DefaultMittoPromptsDir(t *testing.T) {
+	// Create a temp directory to act as the workspace
+	tmpDir := t.TempDir()
+
+	// Create the default .mitto/prompts directory with a prompt file
+	mittoPromptsDir := tmpDir + "/.mitto/prompts"
+	if err := os.MkdirAll(mittoPromptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create .mitto/prompts dir: %v", err)
+	}
+
+	// Create a prompt file in the default workspace prompts directory
+	promptContent := `---
+name: "Default Workspace Prompt"
+description: "A prompt from the default .mitto/prompts directory"
+---
+This is the prompt content from the default workspace prompts directory.
+`
+	if err := os.WriteFile(mittoPromptsDir+"/test-prompt.md", []byte(promptContent), 0644); err != nil {
+		t.Fatalf("Failed to create prompt file: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+	}
+
+	// Request workspace prompts - should include the prompt from .mitto/prompts
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	w := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Parse response to verify the prompt is included
+	var response struct {
+		Prompts    []config.WebPrompt `json:"prompts"`
+		WorkingDir string             `json:"working_dir"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// Should have one prompt
+	if len(response.Prompts) != 1 {
+		t.Errorf("Expected 1 prompt, got %d", len(response.Prompts))
+	}
+
+	if len(response.Prompts) > 0 && response.Prompts[0].Name != "Default Workspace Prompt" {
+		t.Errorf("Expected prompt name 'Default Workspace Prompt', got %q", response.Prompts[0].Name)
+	}
+}
+
+func TestHandleWorkspacePrompts_MittoDirOverriddenByPromptsDirs(t *testing.T) {
+	// Create a temp directory to act as the workspace
+	tmpDir := t.TempDir()
+
+	// Create the default .mitto/prompts directory with a prompt file
+	mittoPromptsDir := tmpDir + "/.mitto/prompts"
+	if err := os.MkdirAll(mittoPromptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create .mitto/prompts dir: %v", err)
+	}
+
+	// Create a prompt file in the default workspace prompts directory
+	defaultPromptContent := `---
+name: "Shared Prompt"
+description: "From default .mitto/prompts"
+---
+Default version
+`
+	if err := os.WriteFile(mittoPromptsDir+"/shared.md", []byte(defaultPromptContent), 0644); err != nil {
+		t.Fatalf("Failed to create default prompt file: %v", err)
+	}
+
+	// Create a custom prompts directory defined via prompts_dirs in .mittorc
+	customPromptsDir := tmpDir + "/custom-prompts"
+	if err := os.MkdirAll(customPromptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create custom prompts dir: %v", err)
+	}
+
+	// Create a prompt with the same name in the custom directory (should override)
+	customPromptContent := `---
+name: "Shared Prompt"
+description: "From custom prompts_dirs"
+---
+Custom version from prompts_dirs
+`
+	if err := os.WriteFile(customPromptsDir+"/shared.md", []byte(customPromptContent), 0644); err != nil {
+		t.Fatalf("Failed to create custom prompt file: %v", err)
+	}
+
+	// Create .mittorc file with prompts_dirs pointing to custom directory
+	rcContent := `prompts_dirs:
+  - "custom-prompts"
+`
+	if err := os.WriteFile(tmpDir+"/.mittorc", []byte(rcContent), 0644); err != nil {
+		t.Fatalf("Failed to create .mittorc: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+	}
+
+	// Request workspace prompts
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	w := httptest.NewRecorder()
+	server.handleWorkspacePrompts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Parse response
+	var response struct {
+		Prompts    []config.WebPrompt `json:"prompts"`
+		WorkingDir string             `json:"working_dir"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// Should have one prompt (the custom one should override the default)
+	if len(response.Prompts) != 1 {
+		t.Errorf("Expected 1 prompt, got %d", len(response.Prompts))
+	}
+
+	// The custom version should win (prompts_dirs overrides default .mitto/prompts)
+	if len(response.Prompts) > 0 && response.Prompts[0].Prompt != "Custom version from prompts_dirs" {
+		t.Errorf("Expected custom prompt content, got %q", response.Prompts[0].Prompt)
 	}
 }
 
@@ -1358,4 +1494,218 @@ func TestHandleListSessions_InvalidOffset(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
+}
+
+// =============================================================================
+// Archive Lifecycle Tests
+// =============================================================================
+
+// TestHandleUpdateSession_ArchiveStopsACP tests that archiving a session
+// stops the ACP connection.
+func TestHandleUpdateSession_ArchiveStopsACP(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-archive",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Test Session",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Create session manager with a mock running session
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	mockSession := &BackgroundSession{
+		persistedID: "test-session-archive",
+		isPrompting: false,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
+	sm.mu.Lock()
+	sm.sessions["test-session-archive"] = mockSession
+	sm.mu.Unlock()
+
+	server := &Server{
+		sessionManager: sm,
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	// Archive the session
+	archived := true
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/test-session-archive", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleUpdateSession(w, req, "test-session-archive")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Session should be removed from session manager (ACP stopped)
+	if sm.GetSession("test-session-archive") != nil {
+		t.Error("Session should be removed from session manager after archiving")
+	}
+
+	// Metadata should be updated
+	updatedMeta, err := store.GetMetadata("test-session-archive")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if !updatedMeta.Archived {
+		t.Error("Session should be marked as archived")
+	}
+	if updatedMeta.ArchivedAt.IsZero() {
+		t.Error("ArchivedAt should be set")
+	}
+}
+
+// TestHandleUpdateSession_ArchiveWaitsForPrompt tests that archiving waits
+// for an in-progress prompt to complete.
+func TestHandleUpdateSession_ArchiveWaitsForPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-archive-wait",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Test Session",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Create session manager with a mock running session that is prompting
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	mockSession := &BackgroundSession{
+		persistedID: "test-session-archive-wait",
+		isPrompting: true,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
+	sm.mu.Lock()
+	sm.sessions["test-session-archive-wait"] = mockSession
+	sm.mu.Unlock()
+
+	server := &Server{
+		sessionManager: sm,
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	// Simulate prompt completion after 100ms
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		mockSession.promptMu.Lock()
+		mockSession.isPrompting = false
+		mockSession.promptCond.Broadcast()
+		mockSession.promptMu.Unlock()
+	}()
+
+	// Archive the session
+	archived := true
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/test-session-archive-wait", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	start := time.Now()
+	server.handleUpdateSession(w, req, "test-session-archive-wait")
+	elapsed := time.Since(start)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Should have waited for prompt to complete (~100ms)
+	if elapsed < 50*time.Millisecond {
+		t.Errorf("Archive took %v, expected to wait for prompt completion (~100ms)", elapsed)
+	}
+
+	// Session should be removed from session manager
+	if sm.GetSession("test-session-archive-wait") != nil {
+		t.Error("Session should be removed from session manager after archiving")
+	}
+}
+
+// TestHandleUpdateSession_UnarchiveDoesNotStartACP tests that unarchiving
+// attempts to resume the ACP session (but doesn't fail if it can't).
+func TestHandleUpdateSession_UnarchiveDoesNotStartACP(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create an archived session
+	meta := session.Metadata{
+		SessionID:  "test-session-unarchive",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Test Session",
+		Archived:   true,
+		ArchivedAt: time.Now(),
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Create session manager (no running sessions)
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm.SetStore(store)
+
+	server := &Server{
+		sessionManager: sm,
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	// Unarchive the session
+	archived := false
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/test-session-unarchive", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleUpdateSession(w, req, "test-session-unarchive")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Metadata should be updated
+	updatedMeta, err := store.GetMetadata("test-session-unarchive")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updatedMeta.Archived {
+		t.Error("Session should not be marked as archived")
+	}
+	if !updatedMeta.ArchivedAt.IsZero() {
+		t.Error("ArchivedAt should be cleared")
+	}
+
+	// Note: We don't check if ACP was started because ResumeSession will fail
+	// without a valid ACP command. The important thing is that the request succeeds.
 }

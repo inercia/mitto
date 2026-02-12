@@ -1,7 +1,10 @@
 package web
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
@@ -371,7 +374,7 @@ func TestSessionManager_RemoveWorkspace_NonExistent(t *testing.T) {
 	}
 }
 
-func TestSessionManager_ResumeSession_UsesMetadataACPCommand(t *testing.T) {
+func TestSessionManager_ResumeSession_UsesGlobalConfigACPCommand(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -384,11 +387,18 @@ func TestSessionManager_ResumeSession_UsesMetadataACPCommand(t *testing.T) {
 	sm := NewSessionManager("", "", true, nil)
 	sm.SetStore(store)
 
-	// Create a session in the store with an ACP command stored in metadata
+	// Set up a global config with the ACP server
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "test-server", Command: "echo hello"},
+		},
+	})
+
+	// Create a session in the store with only the ACP server name (no command)
+	// The command should be looked up from global config
 	meta := session.Metadata{
-		SessionID:  "test-session-with-cmd",
+		SessionID:  "test-session-with-server",
 		ACPServer:  "test-server",
-		ACPCommand: "echo hello", // This is the key - the command is stored in metadata
 		WorkingDir: "/tmp",
 		Name:       "Test Session",
 	}
@@ -396,16 +406,16 @@ func TestSessionManager_ResumeSession_UsesMetadataACPCommand(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	// Try to resume the session - it should use the ACP command from metadata
+	// Try to resume the session - it should use the ACP command from global config
 	// Note: This will fail to actually start the ACP process (echo is not a valid ACP server)
-	// but we're testing that the command is retrieved from metadata
-	_, err = sm.ResumeSession("test-session-with-cmd", "Test Session", "/tmp")
+	// but we're testing that the command is retrieved from global config
+	_, err = sm.ResumeSession("test-session-with-server", "Test Session", "/tmp")
 
 	// The error should be about failing to start the ACP server, NOT "empty ACP command"
 	if err != nil {
 		errStr := err.Error()
 		if errStr == "empty ACP command" {
-			t.Error("ResumeSession should have used ACP command from metadata, but got 'empty ACP command' error")
+			t.Error("ResumeSession should have used ACP command from global config, but got 'empty ACP command' error")
 		}
 		// Other errors (like "failed to start ACP server") are expected since "echo hello" is not a valid ACP server
 	}
@@ -789,5 +799,437 @@ func TestSessionManager_ActiveAndPromptingCounts(t *testing.T) {
 	// Now only 1 prompting (s3)
 	if count := sm.PromptingSessionCount(); count != 1 {
 		t.Errorf("PromptingSessionCount() after close = %d, want 1", count)
+	}
+}
+
+// =============================================================================
+// CloseSessionGracefully Tests
+// =============================================================================
+
+// TestSessionManager_CloseSessionGracefully_NotRunning tests that CloseSessionGracefully
+// returns true immediately when the session is not running.
+func TestSessionManager_CloseSessionGracefully_NotRunning(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	start := time.Now()
+	result := sm.CloseSessionGracefully("non-existent-session", "test", 5*time.Second)
+	elapsed := time.Since(start)
+
+	if !result {
+		t.Error("CloseSessionGracefully should return true for non-existent session")
+	}
+
+	// Should return almost immediately
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("CloseSessionGracefully took %v, expected < 100ms for non-existent session", elapsed)
+	}
+}
+
+// TestSessionManager_CloseSessionGracefully_NotPrompting tests that CloseSessionGracefully
+// returns true immediately when the session is not prompting.
+func TestSessionManager_CloseSessionGracefully_NotPrompting(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	// Add a mock session that is not prompting
+	ctx, cancel := context.WithCancel(context.Background())
+	mockSession := &BackgroundSession{
+		persistedID: "test-session",
+		isPrompting: false,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
+
+	sm.mu.Lock()
+	sm.sessions["test-session"] = mockSession
+	sm.mu.Unlock()
+
+	start := time.Now()
+	result := sm.CloseSessionGracefully("test-session", "test", 5*time.Second)
+	elapsed := time.Since(start)
+
+	if !result {
+		t.Error("CloseSessionGracefully should return true when not prompting")
+	}
+
+	// Should return almost immediately
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("CloseSessionGracefully took %v, expected < 100ms when not prompting", elapsed)
+	}
+
+	// Session should be removed
+	if sm.GetSession("test-session") != nil {
+		t.Error("Session should be removed after CloseSessionGracefully")
+	}
+}
+
+// TestSessionManager_CloseSessionGracefully_WaitsForPrompt tests that CloseSessionGracefully
+// waits for the prompt to complete before closing.
+func TestSessionManager_CloseSessionGracefully_WaitsForPrompt(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	// Add a mock session that is prompting
+	ctx, cancel := context.WithCancel(context.Background())
+	mockSession := &BackgroundSession{
+		persistedID: "test-session",
+		isPrompting: true,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
+
+	sm.mu.Lock()
+	sm.sessions["test-session"] = mockSession
+	sm.mu.Unlock()
+
+	// Simulate prompt completion after 100ms
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		mockSession.promptMu.Lock()
+		mockSession.isPrompting = false
+		mockSession.promptCond.Broadcast()
+		mockSession.promptMu.Unlock()
+	}()
+
+	start := time.Now()
+	result := sm.CloseSessionGracefully("test-session", "test", 5*time.Second)
+	elapsed := time.Since(start)
+
+	if !result {
+		t.Error("CloseSessionGracefully should return true when prompt completes")
+	}
+
+	// Should wait for prompt to complete (~100ms)
+	if elapsed < 50*time.Millisecond || elapsed > 500*time.Millisecond {
+		t.Errorf("CloseSessionGracefully took %v, expected ~100ms", elapsed)
+	}
+
+	// Session should be removed
+	if sm.GetSession("test-session") != nil {
+		t.Error("Session should be removed after CloseSessionGracefully")
+	}
+}
+
+// TestSessionManager_CloseSessionGracefully_Timeout tests that CloseSessionGracefully
+// returns false when the timeout expires.
+func TestSessionManager_CloseSessionGracefully_Timeout(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	// Add a mock session that is prompting and won't complete
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // Clean up
+	mockSession := &BackgroundSession{
+		persistedID: "test-session",
+		isPrompting: true,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
+
+	sm.mu.Lock()
+	sm.sessions["test-session"] = mockSession
+	sm.mu.Unlock()
+
+	start := time.Now()
+	result := sm.CloseSessionGracefully("test-session", "test", 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if result {
+		t.Error("CloseSessionGracefully should return false on timeout")
+	}
+
+	// Should timeout around 100ms
+	if elapsed < 80*time.Millisecond || elapsed > 300*time.Millisecond {
+		t.Errorf("CloseSessionGracefully took %v, expected ~100ms", elapsed)
+	}
+
+	// Session should NOT be removed (timeout means we didn't close it)
+	if sm.GetSession("test-session") == nil {
+		t.Error("Session should NOT be removed after CloseSessionGracefully timeout")
+	}
+}
+
+// =============================================================================
+// ProcessPendingQueues Archive Tests
+// =============================================================================
+
+// TestSessionManager_ProcessPendingQueues_SkipsArchivedSessions tests that
+// ProcessPendingQueues does not resume archived sessions even if they have
+// pending queue items.
+func TestSessionManager_ProcessPendingQueues_SkipsArchivedSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create an archived session with a queued message
+	meta := session.Metadata{
+		SessionID:  "archived-session",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Archived Session",
+		Archived:   true,
+		ArchivedAt: time.Now(),
+		Status:     session.SessionStatusActive, // Still "active" status but archived
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Add a message to the queue
+	queue := store.Queue("archived-session")
+	_, err = queue.Add("Test message", nil, nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Create a non-archived session with a queued message for comparison
+	meta2 := session.Metadata{
+		SessionID:  "active-session",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Active Session",
+		Archived:   false,
+		Status:     session.SessionStatusActive,
+	}
+	if err := store.Create(meta2); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	queue2 := store.Queue("active-session")
+	_, err = queue2.Add("Test message 2", nil, nil, "client1", 0)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Create session manager
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm.SetStore(store)
+
+	// ProcessPendingQueues should skip the archived session
+	// Note: This will try to resume the active session but fail because
+	// the ACP command is just "echo test". That's fine - we just want to
+	// verify the archived session is skipped.
+	sm.ProcessPendingQueues()
+
+	// The archived session should NOT be in the running sessions
+	if sm.GetSession("archived-session") != nil {
+		t.Error("Archived session should not be resumed by ProcessPendingQueues")
+	}
+
+	// Note: The active session might or might not be running depending on
+	// whether ResumeSession succeeded. We don't check that here.
+}
+
+// Tests for plan state cache
+
+func TestSessionManager_PlanStateCache_SetAndGet(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	sessionID := "test-session-123"
+	entries := []PlanEntry{
+		{Content: "Task 1", Priority: "high", Status: "completed"},
+		{Content: "Task 2", Priority: "medium", Status: "in_progress"},
+		{Content: "Task 3", Priority: "low", Status: "pending"},
+	}
+
+	// Initially should be nil
+	result := sm.GetCachedPlanState(sessionID)
+	if result != nil {
+		t.Errorf("GetCachedPlanState should return nil for non-existent session, got %v", result)
+	}
+
+	// Set plan state
+	sm.SetCachedPlanState(sessionID, entries)
+
+	// Get should return the entries
+	result = sm.GetCachedPlanState(sessionID)
+	if result == nil {
+		t.Fatal("GetCachedPlanState returned nil after SetCachedPlanState")
+	}
+	if len(result) != len(entries) {
+		t.Errorf("GetCachedPlanState returned %d entries, want %d", len(result), len(entries))
+	}
+
+	// Verify entries match
+	for i, entry := range result {
+		if entry.Content != entries[i].Content {
+			t.Errorf("entry[%d].Content = %q, want %q", i, entry.Content, entries[i].Content)
+		}
+		if entry.Priority != entries[i].Priority {
+			t.Errorf("entry[%d].Priority = %q, want %q", i, entry.Priority, entries[i].Priority)
+		}
+		if entry.Status != entries[i].Status {
+			t.Errorf("entry[%d].Status = %q, want %q", i, entry.Status, entries[i].Status)
+		}
+	}
+}
+
+func TestSessionManager_PlanStateCache_ReturnsCopy(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	sessionID := "test-session-123"
+	entries := []PlanEntry{
+		{Content: "Task 1", Priority: "high", Status: "pending"},
+	}
+
+	sm.SetCachedPlanState(sessionID, entries)
+
+	// Get the result and modify it
+	result := sm.GetCachedPlanState(sessionID)
+	result[0].Content = "Modified"
+
+	// Get again - should still have original value
+	result2 := sm.GetCachedPlanState(sessionID)
+	if result2[0].Content != "Task 1" {
+		t.Errorf("GetCachedPlanState should return a copy, but modification affected original: got %q", result2[0].Content)
+	}
+}
+
+func TestSessionManager_PlanStateCache_Clear(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	sessionID := "test-session-123"
+	entries := []PlanEntry{
+		{Content: "Task 1", Priority: "high", Status: "pending"},
+	}
+
+	sm.SetCachedPlanState(sessionID, entries)
+
+	// Verify it's set
+	if sm.GetCachedPlanState(sessionID) == nil {
+		t.Fatal("Plan state should be set")
+	}
+
+	// Clear it
+	sm.ClearCachedPlanState(sessionID)
+
+	// Should be nil now
+	result := sm.GetCachedPlanState(sessionID)
+	if result != nil {
+		t.Errorf("GetCachedPlanState should return nil after ClearCachedPlanState, got %v", result)
+	}
+}
+
+func TestSessionManager_PlanStateCache_SetEmptyClears(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	sessionID := "test-session-123"
+	entries := []PlanEntry{
+		{Content: "Task 1", Priority: "high", Status: "pending"},
+	}
+
+	sm.SetCachedPlanState(sessionID, entries)
+
+	// Setting empty slice should clear
+	sm.SetCachedPlanState(sessionID, []PlanEntry{})
+
+	result := sm.GetCachedPlanState(sessionID)
+	if result != nil {
+		t.Errorf("GetCachedPlanState should return nil after setting empty slice, got %v", result)
+	}
+
+	// Setting nil should also clear
+	sm.SetCachedPlanState(sessionID, entries)
+	sm.SetCachedPlanState(sessionID, nil)
+
+	result = sm.GetCachedPlanState(sessionID)
+	if result != nil {
+		t.Errorf("GetCachedPlanState should return nil after setting nil, got %v", result)
+	}
+}
+
+func TestSessionManager_PlanStateCache_MultipleSessions(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	session1 := "session-1"
+	session2 := "session-2"
+
+	entries1 := []PlanEntry{{Content: "Session 1 Task", Priority: "high", Status: "pending"}}
+	entries2 := []PlanEntry{{Content: "Session 2 Task", Priority: "low", Status: "completed"}}
+
+	sm.SetCachedPlanState(session1, entries1)
+	sm.SetCachedPlanState(session2, entries2)
+
+	// Each session should have its own state
+	result1 := sm.GetCachedPlanState(session1)
+	result2 := sm.GetCachedPlanState(session2)
+
+	if result1[0].Content != "Session 1 Task" {
+		t.Errorf("Session 1 has wrong content: %q", result1[0].Content)
+	}
+	if result2[0].Content != "Session 2 Task" {
+		t.Errorf("Session 2 has wrong content: %q", result2[0].Content)
+	}
+
+	// Clearing one shouldn't affect the other
+	sm.ClearCachedPlanState(session1)
+
+	if sm.GetCachedPlanState(session1) != nil {
+		t.Error("Session 1 should be cleared")
+	}
+	if sm.GetCachedPlanState(session2) == nil {
+		t.Error("Session 2 should still have state")
+	}
+}
+
+func TestSessionManager_PlanStateCache_ConcurrentAccess(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	sessionID := "test-session-123"
+	entries := []PlanEntry{
+		{Content: "Task 1", Priority: "high", Status: "pending"},
+	}
+
+	// Run concurrent operations
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(3)
+
+		go func() {
+			defer wg.Done()
+			sm.SetCachedPlanState(sessionID, entries)
+		}()
+
+		go func() {
+			defer wg.Done()
+			sm.GetCachedPlanState(sessionID)
+		}()
+
+		go func() {
+			defer wg.Done()
+			sm.ClearCachedPlanState(sessionID)
+		}()
+	}
+
+	wg.Wait()
+	// Test passes if no race conditions or panics occurred
+}
+
+func TestSessionManager_CloseSession_ClearsPlanState(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	sessionID := "test-session-123"
+	entries := []PlanEntry{
+		{Content: "Task 1", Priority: "high", Status: "pending"},
+	}
+
+	// Set plan state
+	sm.SetCachedPlanState(sessionID, entries)
+
+	// Verify it's set
+	if sm.GetCachedPlanState(sessionID) == nil {
+		t.Fatal("Plan state should be set")
+	}
+
+	// Close the session (even if it doesn't exist as a running session)
+	sm.CloseSession(sessionID, "test")
+
+	// Plan state should be cleared
+	result := sm.GetCachedPlanState(sessionID)
+	if result != nil {
+		t.Errorf("CloseSession should clear plan state, got %v", result)
 	}
 }

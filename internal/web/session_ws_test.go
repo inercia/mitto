@@ -542,3 +542,249 @@ func TestSyncMissedEventsDuringRegistration_NonexistentSession(t *testing.T) {
 		// Expected - no message
 	}
 }
+
+// TestHandleLoadEvents_SeqMismatchProtection tests that when a client sends afterSeq
+// higher than the server's max seq (event count), we fall back to initial load instead
+// of setting lastSentSeq to the bogus value. This protects against UI freezes when
+// streaming seq numbers diverge from persistence seq numbers.
+func TestHandleLoadEvents_SeqMismatchProtection(t *testing.T) {
+	// Create a temp store with a session that has a few events
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with some events
+	sessionID := "test-seq-mismatch"
+	meta := session.Metadata{
+		SessionID: sessionID,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	// Add 5 events (seq 1-5)
+	for i := 0; i < 5; i++ {
+		event := session.Event{
+			Type: session.EventTypeAgentMessage,
+			Data: map[string]interface{}{
+				"html": "<p>Message content</p>",
+			},
+		}
+		if err := store.AppendEvent(sessionID, event); err != nil {
+			t.Fatalf("Failed to append event %d: %v", i, err)
+		}
+	}
+
+	// Verify event count
+	storedMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("Failed to get metadata: %v", err)
+	}
+	if storedMeta.EventCount != 5 {
+		t.Fatalf("Expected 5 events, got %d", storedMeta.EventCount)
+	}
+
+	tests := []struct {
+		name            string
+		afterSeq        int64
+		expectedReset   bool // whether lastSentSeq should be reset to 0
+		expectedInitial bool // whether it should fall back to initial load
+	}{
+		{
+			name:            "normal sync - afterSeq within range",
+			afterSeq:        3,
+			expectedReset:   false,
+			expectedInitial: false,
+		},
+		{
+			name:            "edge case - afterSeq equals event count",
+			afterSeq:        5,
+			expectedReset:   false,
+			expectedInitial: false,
+		},
+		{
+			name:            "stale client - afterSeq higher than event count",
+			afterSeq:        374, // way higher than 5 events
+			expectedReset:   true,
+			expectedInitial: true,
+		},
+		{
+			name:            "slightly stale - afterSeq just above event count",
+			afterSeq:        10,
+			expectedReset:   true,
+			expectedInitial: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockWS := newMockWSConn()
+			client := &SessionWSClient{
+				sessionID: sessionID,
+				wsConn:    &WSConn{send: mockWS.send},
+				store:     store,
+			}
+
+			// Set initial lastSentSeq to something non-zero
+			client.lastSentSeq = 100
+
+			// Call handleLoadEvents with the test afterSeq
+			client.handleLoadEvents(50, 0, tt.afterSeq)
+
+			// Check lastSentSeq state
+			client.seqMu.Lock()
+			currentLastSent := client.lastSentSeq
+			client.seqMu.Unlock()
+
+			if tt.expectedReset {
+				// For stale clients, lastSentSeq should be reset to 0 (or stay at initial)
+				// Then updated to the highest seq from the initial load
+				if currentLastSent == tt.afterSeq {
+					t.Errorf("lastSentSeq was incorrectly set to stale afterSeq %d", tt.afterSeq)
+				}
+			} else {
+				// For normal sync, lastSentSeq should be updated to afterSeq
+				if tt.afterSeq > 100 && currentLastSent != tt.afterSeq {
+					t.Errorf("lastSentSeq = %d, want %d", currentLastSent, tt.afterSeq)
+				}
+			}
+
+			// Drain the send channel to get the response
+			select {
+			case msg := <-mockWS.send:
+				// Parse the message to verify it's an events_loaded response
+				var wsMsg struct {
+					Type string                 `json:"type"`
+					Data map[string]interface{} `json:"data"`
+				}
+				if err := json.Unmarshal(msg, &wsMsg); err != nil {
+					t.Fatalf("Failed to unmarshal message: %v", err)
+				}
+
+				if wsMsg.Type != "events_loaded" {
+					t.Errorf("Expected events_loaded message, got %s", wsMsg.Type)
+				}
+
+				// For initial load fallback, we should get all 5 events
+				if tt.expectedInitial {
+					eventsData, ok := wsMsg.Data["events"].([]interface{})
+					if ok && len(eventsData) != 5 {
+						t.Errorf("Expected 5 events for initial load fallback, got %d", len(eventsData))
+					}
+				}
+
+			case <-time.After(100 * time.Millisecond):
+				t.Error("Expected events_loaded message but got none")
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Available Commands Tests
+// =============================================================================
+
+func TestSessionWSClient_OnAvailableCommandsUpdated(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		wsConn:    &WSConn{send: mockWS.send},
+	}
+
+	// Call OnAvailableCommandsUpdated
+	commands := []AvailableCommand{
+		{Name: "test", Description: "Test command", InputHint: "Enter test"},
+		{Name: "help", Description: "Get help"},
+	}
+	client.OnAvailableCommandsUpdated(commands)
+
+	// Read the message from the channel
+	select {
+	case msgBytes := <-mockWS.send:
+		var msg struct {
+			Type string                 `json:"type"`
+			Data map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal message: %v", err)
+		}
+
+		if msg.Type != WSMsgTypeAvailableCommandsUpdated {
+			t.Errorf("Expected message type %s, got %s", WSMsgTypeAvailableCommandsUpdated, msg.Type)
+		}
+
+		// Verify session_id is included
+		if sessionID, ok := msg.Data["session_id"].(string); !ok || sessionID != "test-session" {
+			t.Errorf("Expected session_id 'test-session', got %v", msg.Data["session_id"])
+		}
+
+		// Verify commands are included
+		commandsData, ok := msg.Data["commands"].([]interface{})
+		if !ok {
+			t.Fatalf("Expected commands array in message data")
+		}
+		if len(commandsData) != 2 {
+			t.Errorf("Expected 2 commands, got %d", len(commandsData))
+		}
+
+		// Verify first command
+		cmd1, ok := commandsData[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("Expected first command to be a map")
+		}
+		if cmd1["name"] != "test" {
+			t.Errorf("Expected first command name 'test', got %v", cmd1["name"])
+		}
+		if cmd1["description"] != "Test command" {
+			t.Errorf("Expected first command description 'Test command', got %v", cmd1["description"])
+		}
+		if cmd1["input_hint"] != "Enter test" {
+			t.Errorf("Expected first command input_hint 'Enter test', got %v", cmd1["input_hint"])
+		}
+
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected available_commands_updated message but got none")
+	}
+}
+
+func TestSessionWSClient_OnAvailableCommandsUpdated_Empty(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		wsConn:    &WSConn{send: mockWS.send},
+	}
+
+	// Call with empty commands
+	client.OnAvailableCommandsUpdated([]AvailableCommand{})
+
+	// Read the message from the channel
+	select {
+	case msgBytes := <-mockWS.send:
+		var msg struct {
+			Type string                 `json:"type"`
+			Data map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal message: %v", err)
+		}
+
+		if msg.Type != WSMsgTypeAvailableCommandsUpdated {
+			t.Errorf("Expected message type %s, got %s", WSMsgTypeAvailableCommandsUpdated, msg.Type)
+		}
+
+		// Verify empty commands array
+		commandsData, ok := msg.Data["commands"].([]interface{})
+		if !ok {
+			t.Fatalf("Expected commands array in message data")
+		}
+		if len(commandsData) != 0 {
+			t.Errorf("Expected 0 commands, got %d", len(commandsData))
+		}
+
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected available_commands_updated message but got none")
+	}
+}

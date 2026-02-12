@@ -69,6 +69,14 @@ type SessionManager struct {
 
 	// eventsManager is used to broadcast global events to all connected clients.
 	eventsManager *GlobalEventsManager
+
+	// planStateMu protects planState map.
+	planStateMu sync.RWMutex
+	// planState caches the last known agent plan entries per session.
+	// This is in-memory only (not persisted to disk) and survives conversation switches
+	// within the same server session. Automatically cleared on server restart.
+	// Used to restore the agent plan panel when switching back to a conversation.
+	planState map[string][]PlanEntry
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -87,6 +95,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		defaultWorkspace: defaultWS,
 		autoApprove:      autoApprove,
 		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
+		planState:        make(map[string][]PlanEntry),
 	}
 }
 
@@ -120,6 +129,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		onWorkspaceSave:  opts.OnWorkspaceSave,
 		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
 		apiPrefix:        opts.APIPrefix,
+		planState:        make(map[string][]PlanEntry),
 	}
 
 	for i := range opts.Workspaces {
@@ -634,6 +644,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 				})
 			}
 		},
+		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
+			sm.SetCachedPlanState(sessionID, entries)
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -656,7 +669,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	sm.mu.Unlock()
 
 	if sm.logger != nil {
-		sm.logger.Info("Created background session",
+		sm.logger.Debug("Created background session",
 			"session_id", bs.GetSessionID(),
 			"acp_id", bs.GetACPID(),
 			"acp_server", acpServer,
@@ -788,26 +801,30 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		workspaceUUID = sm.defaultWorkspace.UUID
 	}
 
-	// Get session metadata for ACP command and ACP session ID
+	// Get session metadata for ACP session ID and server name
 	var acpSessionID string
 	if store != nil {
 		if meta, err := store.GetMetadata(sessionID); err == nil {
 			// Get ACP session ID for potential resumption
 			acpSessionID = meta.ACPSessionID
 
-			// If still no ACP command, try to get it from session metadata
-			// This handles the case where the workspace configuration is not available
-			// (e.g., server restarted without the same --dir flags)
-			if acpCommand == "" && meta.ACPCommand != "" {
-				acpCommand = meta.ACPCommand
-				if sm.logger != nil {
-					sm.logger.Info("Using ACP command from session metadata",
-						"session_id", sessionID,
-						"acp_command", acpCommand)
-				}
-			}
+			// Use ACP server from metadata if not available from workspace config
 			if acpServer == "" && meta.ACPServer != "" {
 				acpServer = meta.ACPServer
+			}
+		}
+	}
+
+	// If we have an ACP server name but no command, look it up from global config
+	// This ensures we always use the current global config for the ACP command
+	if acpCommand == "" && acpServer != "" && sm.mittoConfig != nil {
+		if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+			acpCommand = server.Command
+			if sm.logger != nil {
+				sm.logger.Debug("Using ACP command from global config",
+					"session_id", sessionID,
+					"acp_server", acpServer,
+					"acp_command", acpCommand)
 			}
 		}
 	}
@@ -881,6 +898,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				})
 			}
 		},
+		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
+			sm.SetCachedPlanState(sessionID, entries)
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -922,20 +942,59 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 }
 
 // CloseSession closes a session and removes it from the manager.
+// Also clears any cached plan state for the session.
 func (sm *SessionManager) CloseSession(sessionID, reason string) {
 	sm.mu.Lock()
 	bs := sm.sessions[sessionID]
 	delete(sm.sessions, sessionID)
 	sm.mu.Unlock()
 
+	// Clear cached plan state when session is closed/deleted
+	sm.ClearCachedPlanState(sessionID)
+
 	if bs != nil {
 		bs.Close(reason)
 		if sm.logger != nil {
-			sm.logger.Info("Closed background session",
+			sm.logger.Debug("Closed background session",
 				"session_id", sessionID,
 				"reason", reason)
 		}
 	}
+}
+
+// CloseSessionGracefully waits for any active response to complete before closing the session.
+// This is used when archiving a conversation to avoid interrupting an in-progress response.
+// Returns true if the session was closed, false if the timeout expired while waiting.
+func (sm *SessionManager) CloseSessionGracefully(sessionID, reason string, timeout time.Duration) bool {
+	sm.mu.Lock()
+	bs := sm.sessions[sessionID]
+	sm.mu.Unlock()
+
+	if bs == nil {
+		// Session not running, nothing to close
+		return true
+	}
+
+	// Wait for any active response to complete
+	if bs.IsPrompting() {
+		if sm.logger != nil {
+			sm.logger.Info("Waiting for response to complete before closing session",
+				"session_id", sessionID,
+				"timeout", timeout)
+		}
+		if !bs.WaitForResponseComplete(timeout) {
+			if sm.logger != nil {
+				sm.logger.Warn("Timeout waiting for response to complete",
+					"session_id", sessionID,
+					"timeout", timeout)
+			}
+			return false
+		}
+	}
+
+	// Now close the session
+	sm.CloseSession(sessionID, reason)
+	return true
 }
 
 // ListRunningSessions returns the IDs of all running sessions.
@@ -971,6 +1030,74 @@ func (sm *SessionManager) CloseAll(reason string) {
 	}
 }
 
+// SetCachedPlanState stores the last known agent plan entries for a session.
+// This is used to restore the agent plan panel when switching back to a conversation.
+// The state is in-memory only and does not persist across server restarts.
+func (sm *SessionManager) SetCachedPlanState(sessionID string, entries []PlanEntry) {
+	sm.planStateMu.Lock()
+	defer sm.planStateMu.Unlock()
+
+	if sm.planState == nil {
+		sm.planState = make(map[string][]PlanEntry)
+	}
+
+	if len(entries) == 0 {
+		// Clear the entry if empty
+		delete(sm.planState, sessionID)
+		return
+	}
+
+	// Make a copy to avoid external modification
+	entriesCopy := make([]PlanEntry, len(entries))
+	copy(entriesCopy, entries)
+	sm.planState[sessionID] = entriesCopy
+
+	if sm.logger != nil {
+		sm.logger.Debug("Cached plan state",
+			"session_id", sessionID,
+			"entry_count", len(entries))
+	}
+}
+
+// GetCachedPlanState returns the cached agent plan entries for a session.
+// Returns nil if no plan state is cached for the session.
+// The returned slice is a copy, safe to modify.
+func (sm *SessionManager) GetCachedPlanState(sessionID string) []PlanEntry {
+	sm.planStateMu.RLock()
+	defer sm.planStateMu.RUnlock()
+
+	if sm.planState == nil {
+		return nil
+	}
+
+	entries, ok := sm.planState[sessionID]
+	if !ok || len(entries) == 0 {
+		return nil
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]PlanEntry, len(entries))
+	copy(result, entries)
+	return result
+}
+
+// ClearCachedPlanState removes the cached plan state for a session.
+// Called when a session is deleted or when a new prompt starts (plan becomes stale).
+func (sm *SessionManager) ClearCachedPlanState(sessionID string) {
+	sm.planStateMu.Lock()
+	defer sm.planStateMu.Unlock()
+
+	if sm.planState == nil {
+		return
+	}
+
+	delete(sm.planState, sessionID)
+
+	if sm.logger != nil {
+		sm.logger.Debug("Cleared cached plan state", "session_id", sessionID)
+	}
+}
+
 // ProcessPendingQueues checks all persisted sessions for queued messages and
 // auto-resumes sessions that have pending queue items and meet the criteria
 // for dequeuing (agent idle, delay elapsed). This is called on server startup.
@@ -997,6 +1124,11 @@ func (sm *SessionManager) ProcessPendingQueues() {
 	for _, meta := range sessions {
 		// Skip non-active sessions
 		if meta.Status != session.SessionStatusActive && meta.Status != "" {
+			continue
+		}
+
+		// Skip archived sessions - they should not have their ACP started automatically
+		if meta.Archived {
 			continue
 		}
 
@@ -1048,7 +1180,8 @@ func (sm *SessionManager) ProcessPendingQueues() {
 			continue
 		}
 
-		// Try to process the queued message (this respects the delay)
+		// Try to process the queued message immediately
+		// Note: On startup, the delay is skipped because lastResponseComplete is zero
 		// Run in a goroutine so we don't block startup
 		go func(session *BackgroundSession, sessionID string) {
 			if session.TryProcessQueuedMessage() {

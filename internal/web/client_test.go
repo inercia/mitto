@@ -28,9 +28,9 @@ func TestNewWebClient(t *testing.T) {
 		t.Error("autoApprove should be true")
 	}
 
-	// Verify markdown buffer is initialized
-	if client.mdBuffer == nil {
-		t.Error("mdBuffer should be initialized")
+	// Verify stream buffer is initialized
+	if client.streamBuffer == nil {
+		t.Error("streamBuffer should be initialized")
 	}
 
 	client.Close()
@@ -173,17 +173,24 @@ func TestWebClient_SessionUpdate_ToolUpdate(t *testing.T) {
 
 func TestWebClient_SessionUpdate_Plan(t *testing.T) {
 	planCalled := false
+	var receivedEntries []PlanEntry
 
 	client := NewWebClient(WebClientConfig{
-		OnPlan: func(seq int64) {
+		OnPlan: func(seq int64, entries []PlanEntry) {
 			planCalled = true
+			receivedEntries = entries
 		},
 	})
 	defer client.Close()
 
 	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
 		Update: acp.SessionUpdate{
-			Plan: &acp.SessionUpdatePlan{},
+			Plan: &acp.SessionUpdatePlan{
+				Entries: []acp.PlanEntry{
+					{Content: "Task 1", Priority: acp.PlanEntryPriorityHigh, Status: acp.PlanEntryStatusInProgress},
+					{Content: "Task 2", Priority: acp.PlanEntryPriorityMedium, Status: acp.PlanEntryStatusPending},
+				},
+			},
 		},
 	})
 
@@ -193,6 +200,16 @@ func TestWebClient_SessionUpdate_Plan(t *testing.T) {
 
 	if !planCalled {
 		t.Error("OnPlan callback was not called")
+	}
+
+	if len(receivedEntries) != 2 {
+		t.Errorf("Expected 2 entries, got %d", len(receivedEntries))
+	}
+	if receivedEntries[0].Content != "Task 1" {
+		t.Errorf("Expected first entry content 'Task 1', got %q", receivedEntries[0].Content)
+	}
+	if receivedEntries[0].Status != "in_progress" {
+		t.Errorf("Expected first entry status 'in_progress', got %q", receivedEntries[0].Status)
 	}
 }
 
@@ -459,8 +476,15 @@ func TestWebClient_FlushMarkdown(t *testing.T) {
 	})
 	defer client.Close()
 
-	// Write some content (seq=1 for testing)
-	client.mdBuffer.Write(1, "test content")
+	// Write some content via SessionUpdate (seq assigned internally)
+	ctx := context.Background()
+	_ = client.SessionUpdate(ctx, acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "test content"}},
+			},
+		},
+	})
 
 	// Flush should trigger callback
 	client.FlushMarkdown()
@@ -625,4 +649,168 @@ type testSeqProvider struct {
 func (p *testSeqProvider) GetNextSeq() int64 {
 	*p.counter++
 	return *p.counter
+}
+
+// =============================================================================
+// AvailableCommandsUpdate Tests
+// =============================================================================
+
+func TestWebClient_SessionUpdate_AvailableCommandsUpdate(t *testing.T) {
+	var receivedCommands []AvailableCommand
+
+	client := NewWebClient(WebClientConfig{
+		OnAvailableCommands: func(commands []AvailableCommand) {
+			receivedCommands = commands
+		},
+	})
+	defer client.Close()
+
+	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+				AvailableCommands: []acp.AvailableCommand{
+					{
+						Name:        "test",
+						Description: "Test command description",
+						Input:       &acp.AvailableCommandInput{Unstructured: &acp.UnstructuredCommandInput{Hint: "Enter test input"}},
+					},
+					{
+						Name:        "help",
+						Description: "Get help",
+						// No input hint
+					},
+				},
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("SessionUpdate failed: %v", err)
+	}
+
+	if len(receivedCommands) != 2 {
+		t.Fatalf("Expected 2 commands, got %d", len(receivedCommands))
+	}
+
+	// First command with input hint
+	if receivedCommands[0].Name != "test" {
+		t.Errorf("Expected first command name 'test', got %q", receivedCommands[0].Name)
+	}
+	if receivedCommands[0].Description != "Test command description" {
+		t.Errorf("Expected first command description 'Test command description', got %q", receivedCommands[0].Description)
+	}
+	if receivedCommands[0].InputHint != "Enter test input" {
+		t.Errorf("Expected first command input hint 'Enter test input', got %q", receivedCommands[0].InputHint)
+	}
+
+	// Second command without input hint
+	if receivedCommands[1].Name != "help" {
+		t.Errorf("Expected second command name 'help', got %q", receivedCommands[1].Name)
+	}
+	if receivedCommands[1].Description != "Get help" {
+		t.Errorf("Expected second command description 'Get help', got %q", receivedCommands[1].Description)
+	}
+	if receivedCommands[1].InputHint != "" {
+		t.Errorf("Expected second command input hint to be empty, got %q", receivedCommands[1].InputHint)
+	}
+}
+
+func TestWebClient_SessionUpdate_AvailableCommandsUpdate_NoCallback(t *testing.T) {
+	// Test that it doesn't panic when no callback is set
+	client := NewWebClient(WebClientConfig{
+		// No OnAvailableCommands callback
+	})
+	defer client.Close()
+
+	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+				AvailableCommands: []acp.AvailableCommand{
+					{Name: "test", Description: "Test"},
+				},
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("SessionUpdate should not fail when no callback is set: %v", err)
+	}
+}
+
+func TestWebClient_SessionUpdate_AvailableCommandsUpdate_Empty(t *testing.T) {
+	var receivedCommands []AvailableCommand
+
+	client := NewWebClient(WebClientConfig{
+		OnAvailableCommands: func(commands []AvailableCommand) {
+			receivedCommands = commands
+		},
+	})
+	defer client.Close()
+
+	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+				AvailableCommands: []acp.AvailableCommand{},
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("SessionUpdate failed: %v", err)
+	}
+
+	if len(receivedCommands) != 0 {
+		t.Errorf("Expected 0 commands, got %d", len(receivedCommands))
+	}
+}
+
+// =============================================================================
+// CurrentModeUpdate Tests
+// =============================================================================
+
+func TestWebClient_SessionUpdate_CurrentModeUpdate(t *testing.T) {
+	var receivedModeID string
+
+	client := NewWebClient(WebClientConfig{
+		OnCurrentModeChanged: func(modeID string) {
+			receivedModeID = modeID
+		},
+	})
+	defer client.Close()
+
+	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
+				CurrentModeId: "code",
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("SessionUpdate failed: %v", err)
+	}
+
+	if receivedModeID != "code" {
+		t.Errorf("Expected mode ID 'code', got %q", receivedModeID)
+	}
+}
+
+func TestWebClient_SessionUpdate_CurrentModeUpdate_NoCallback(t *testing.T) {
+	// Test that it doesn't panic when no callback is set
+	client := NewWebClient(WebClientConfig{
+		// No OnCurrentModeChanged callback
+	})
+	defer client.Close()
+
+	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
+				CurrentModeId: "ask",
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("SessionUpdate should not fail when no callback is set: %v", err)
+	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
+	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/msghooks"
 	"github.com/inercia/mitto/internal/session"
 	mittoWeb "github.com/inercia/mitto/web"
@@ -148,6 +149,9 @@ type Server struct {
 
 	// Access logger for security-relevant events (nil if disabled)
 	accessLogger *AccessLogger
+
+	// MCP debug server for exposing debugging tools
+	mcpServer *mcpserver.Server
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -172,6 +176,13 @@ func NewServer(config Config) (*Server, error) {
 		logger.Warn("Failed to cleanup old images", "error", err)
 	} else if removed > 0 {
 		logger.Info("Cleaned up old images on startup", "removed_count", removed)
+	}
+
+	// Cleanup old files on startup
+	if removed, err := store.CleanupOldFiles(session.FileCleanupAge, session.FilePreserveRecent); err != nil {
+		logger.Warn("Failed to cleanup old files", "error", err)
+	} else if removed > 0 {
+		logger.Info("Cleaned up old files on startup", "removed_count", removed)
 	}
 
 	// Cleanup archived sessions on startup based on retention policy
@@ -330,6 +341,26 @@ func NewServer(config Config) (*Server, error) {
 
 	// Set events manager in session manager for broadcasting
 	sessionMgr.SetEventsManager(eventsManager)
+
+	// Initialize MCP debug server (always on 127.0.0.1 for security)
+	mcpSrv, err := mcpserver.NewServer(
+		mcpserver.Config{Port: mcpserver.DefaultPort},
+		mcpserver.Dependencies{
+			Store:          store,
+			Config:         config.MittoConfig,
+			SessionManager: &sessionManagerAdapter{sm: sessionMgr},
+		},
+	)
+	if err != nil {
+		logger.Warn("Failed to create MCP debug server", "error", err)
+	} else {
+		s.mcpServer = mcpSrv
+		if err := mcpSrv.Start(context.Background()); err != nil {
+			logger.Warn("Failed to start MCP debug server", "error", err)
+		} else {
+			logger.Info("MCP debug server started", "port", mcpSrv.Port())
+		}
+	}
 
 	// Initialize queue title worker
 	s.queueTitleWorker = NewQueueTitleWorker(store, logger)
@@ -518,6 +549,11 @@ func (s *Server) Shutdown() error {
 		s.accessLogger.Close()
 	}
 
+	// Stop MCP debug server
+	if s.mcpServer != nil {
+		s.mcpServer.Stop()
+	}
+
 	return s.httpServer.Shutdown(context.Background())
 }
 
@@ -680,4 +716,61 @@ func (s *Server) BroadcastSessionStreaming(sessionID string, isStreaming bool) {
 		s.logger.Debug("Broadcast session streaming", "session_id", sessionID, "is_streaming", isStreaming,
 			"clients", s.eventsManager.ClientCount())
 	}
+}
+
+// BroadcastACPStopped notifies all connected clients that an ACP connection was stopped.
+func (s *Server) BroadcastACPStopped(sessionID, reason string) {
+	s.eventsManager.Broadcast(WSMsgTypeACPStopped, map[string]string{
+		"session_id": sessionID,
+		"reason":     reason,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast ACP stopped", "session_id", sessionID, "reason", reason,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastACPStarted notifies all connected clients that an ACP connection was started.
+func (s *Server) BroadcastACPStarted(sessionID string) {
+	s.eventsManager.Broadcast(WSMsgTypeACPStarted, map[string]string{
+		"session_id": sessionID,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast ACP started", "session_id", sessionID,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
+func (s *Server) BroadcastACPStartFailed(sessionID, errorMsg string) {
+	s.eventsManager.Broadcast(WSMsgTypeACPStartFailed, map[string]string{
+		"session_id": sessionID,
+		"error":      errorMsg,
+	})
+
+	if s.logger != nil {
+		s.logger.Warn("Broadcast ACP start failed", "session_id", sessionID, "error", errorMsg,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// sessionManagerAdapter adapts SessionManager to mcpserver.SessionManager interface.
+type sessionManagerAdapter struct {
+	sm *SessionManager
+}
+
+// GetSession returns a running session by ID.
+func (a *sessionManagerAdapter) GetSession(sessionID string) mcpserver.BackgroundSession {
+	bs := a.sm.GetSession(sessionID)
+	if bs == nil {
+		return nil
+	}
+	return bs
+}
+
+// ListRunningSessions returns the IDs of all running sessions.
+func (a *sessionManagerAdapter) ListRunningSessions() []string {
+	return a.sm.ListRunningSessions()
 }

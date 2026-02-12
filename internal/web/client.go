@@ -23,22 +23,31 @@ type WebClient struct {
 	autoApprove bool
 	seqProvider SeqProvider
 
-	// Callbacks for different event types (all include seq for ordering)
-	onAgentMessage func(seq int64, html string)
-	onAgentThought func(seq int64, text string)
-	onToolCall     func(seq int64, id, title, status string)
-	onToolUpdate   func(seq int64, id string, status *string)
-	onPlan         func(seq int64)
-	onFileWrite    func(seq int64, path string, size int)
-	onFileRead     func(seq int64, path string, size int)
-	onPermission   func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+	// Callbacks for file operations (not buffered)
+	onFileWrite          func(seq int64, path string, size int)
+	onFileRead           func(seq int64, path string, size int)
+	onPermission         func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+	onAvailableCommands  func(commands []AvailableCommand)
+	onCurrentModeChanged func(modeID string)
 
-	// Markdown buffer for streaming conversion
-	mdBuffer *MarkdownBuffer
+	// Stream buffer for all streaming events (markdown, thoughts, tool calls, etc.)
+	// This ensures correct ordering even when markdown content is buffered.
+	streamBuffer *StreamBuffer
 }
 
 // Ensure WebClient implements acp.Client
 var _ acp.Client = (*WebClient)(nil)
+
+// AvailableCommand represents a slash command that the agent can execute.
+// This mirrors the ACP protocol's AvailableCommand structure.
+type AvailableCommand struct {
+	// Name is the command name (e.g., "web", "test", "plan").
+	Name string `json:"name"`
+	// Description is a human-readable description of what the command does.
+	Description string `json:"description"`
+	// InputHint is an optional hint to display when the input hasn't been provided yet.
+	InputHint string `json:"input_hint,omitempty"`
+}
 
 // WebClientConfig holds configuration for creating a WebClient.
 type WebClientConfig struct {
@@ -47,14 +56,16 @@ type WebClientConfig struct {
 	// Required for correct ordering of events when content is buffered.
 	SeqProvider SeqProvider
 	// Callbacks for different event types (all include seq for ordering)
-	OnAgentMessage func(seq int64, html string)
-	OnAgentThought func(seq int64, text string)
-	OnToolCall     func(seq int64, id, title, status string)
-	OnToolUpdate   func(seq int64, id string, status *string)
-	OnPlan         func(seq int64)
-	OnFileWrite    func(seq int64, path string, size int)
-	OnFileRead     func(seq int64, path string, size int)
-	OnPermission   func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+	OnAgentMessage       func(seq int64, html string)
+	OnAgentThought       func(seq int64, text string)
+	OnToolCall           func(seq int64, id, title, status string)
+	OnToolUpdate         func(seq int64, id string, status *string)
+	OnPlan               func(seq int64, entries []PlanEntry)
+	OnFileWrite          func(seq int64, path string, size int)
+	OnFileRead           func(seq int64, path string, size int)
+	OnPermission         func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+	OnAvailableCommands  func(commands []AvailableCommand)
+	OnCurrentModeChanged func(modeID string)
 	// FileLinksConfig configures file path detection and linking in agent messages.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
@@ -63,25 +74,27 @@ type WebClientConfig struct {
 // NewWebClient creates a new web-based ACP client.
 func NewWebClient(config WebClientConfig) *WebClient {
 	c := &WebClient{
-		autoApprove:    config.AutoApprove,
-		seqProvider:    config.SeqProvider,
-		onAgentMessage: config.OnAgentMessage,
-		onAgentThought: config.OnAgentThought,
-		onToolCall:     config.OnToolCall,
-		onToolUpdate:   config.OnToolUpdate,
-		onPlan:         config.OnPlan,
-		onFileWrite:    config.OnFileWrite,
-		onFileRead:     config.OnFileRead,
-		onPermission:   config.OnPermission,
+		autoApprove:          config.AutoApprove,
+		seqProvider:          config.SeqProvider,
+		onFileWrite:          config.OnFileWrite,
+		onFileRead:           config.OnFileRead,
+		onPermission:         config.OnPermission,
+		onAvailableCommands:  config.OnAvailableCommands,
+		onCurrentModeChanged: config.OnCurrentModeChanged,
 	}
 
-	// Create markdown buffer that sends HTML via callback.
-	// The seq is passed through the buffer to maintain correct ordering.
-	c.mdBuffer = NewMarkdownBufferWithConfig(MarkdownBufferConfig{
-		OnFlush: func(seq int64, html string) {
-			if c.onAgentMessage != nil {
-				c.onAgentMessage(seq, html)
-			}
+	// Create stream buffer that handles all streaming events.
+	// This ensures correct ordering even when markdown content is buffered.
+	// Non-markdown events (tool calls, thoughts) are buffered when we're in
+	// the middle of a markdown block (list, table, code block) and emitted
+	// after the block completes.
+	c.streamBuffer = NewStreamBuffer(StreamBufferConfig{
+		Callbacks: StreamBufferCallbacks{
+			OnAgentMessage: config.OnAgentMessage,
+			OnAgentThought: config.OnAgentThought,
+			OnToolCall:     config.OnToolCall,
+			OnToolUpdate:   config.OnToolUpdate,
+			OnPlan:         config.OnPlan,
 		},
 		FileLinksConfig: config.FileLinksConfig,
 	})
@@ -91,7 +104,11 @@ func NewWebClient(config WebClientConfig) *WebClient {
 
 // SessionUpdate handles streaming updates from the agent.
 // Sequence numbers are assigned at receive time to ensure correct ordering,
-// even when content is buffered (e.g., in MarkdownBuffer).
+// even when content is buffered (e.g., in MarkdownBuffer or StreamBuffer).
+//
+// Non-markdown events (tool calls, thoughts, plans) are buffered when we're
+// in the middle of a markdown block (list, table, code block) and emitted
+// after the block completes. This prevents tool calls from breaking lists.
 func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
 	u := params.Update
 
@@ -102,46 +119,71 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		seq := c.getNextSeq()
 		content := u.AgentMessageChunk.Content
 		if content.Text != nil {
-			c.mdBuffer.Write(seq, content.Text.Text)
+			c.streamBuffer.WriteMarkdown(seq, content.Text.Text)
 		}
 
 	case u.AgentThoughtChunk != nil:
 		// Assign seq NOW at receive time.
 		seq := c.getNextSeq()
-		// A thought signals the agent has finished its current text block.
-		c.mdBuffer.Flush()
-		// Thoughts are sent as-is (not markdown)
+		// Thoughts are buffered if we're in a markdown block, otherwise emitted immediately.
 		thought := u.AgentThoughtChunk.Content
-		if thought.Text != nil && c.onAgentThought != nil {
-			c.onAgentThought(seq, thought.Text.Text)
+		if thought.Text != nil {
+			c.streamBuffer.AddThought(seq, thought.Text.Text)
 		}
 
 	case u.ToolCall != nil:
 		// Assign seq NOW at receive time.
 		seq := c.getNextSeq()
-		// A tool call signals the agent has finished its current text block.
-		c.mdBuffer.Flush()
-		if c.onToolCall != nil {
-			c.onToolCall(seq, string(u.ToolCall.ToolCallId), u.ToolCall.Title, string(u.ToolCall.Status))
-		}
+		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
+		status := string(u.ToolCall.Status)
+		c.streamBuffer.AddToolCall(seq, string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
 
 	case u.ToolCallUpdate != nil:
 		// Assign seq NOW at receive time.
 		seq := c.getNextSeq()
-		if c.onToolUpdate != nil {
-			var status *string
-			if u.ToolCallUpdate.Status != nil {
-				s := string(*u.ToolCallUpdate.Status)
-				status = &s
-			}
-			c.onToolUpdate(seq, string(u.ToolCallUpdate.ToolCallId), status)
+		var status *string
+		if u.ToolCallUpdate.Status != nil {
+			s := string(*u.ToolCallUpdate.Status)
+			status = &s
 		}
+		c.streamBuffer.AddToolUpdate(seq, string(u.ToolCallUpdate.ToolCallId), status)
 
 	case u.Plan != nil:
 		// Assign seq NOW at receive time.
 		seq := c.getNextSeq()
-		if c.onPlan != nil {
-			c.onPlan(seq)
+		// Convert ACP plan entries to our PlanEntry type
+		entries := make([]PlanEntry, len(u.Plan.Entries))
+		for i, e := range u.Plan.Entries {
+			entries[i] = PlanEntry{
+				Content:  e.Content,
+				Priority: string(e.Priority),
+				Status:   string(e.Status),
+			}
+		}
+		c.streamBuffer.AddPlan(seq, entries)
+
+	case u.AvailableCommandsUpdate != nil:
+		// Available commands are not sequence-dependent; notify immediately.
+		if c.onAvailableCommands != nil {
+			commands := make([]AvailableCommand, len(u.AvailableCommandsUpdate.AvailableCommands))
+			for i, cmd := range u.AvailableCommandsUpdate.AvailableCommands {
+				inputHint := ""
+				if cmd.Input != nil && cmd.Input.Unstructured != nil {
+					inputHint = cmd.Input.Unstructured.Hint
+				}
+				commands[i] = AvailableCommand{
+					Name:        cmd.Name,
+					Description: cmd.Description,
+					InputHint:   inputHint,
+				}
+			}
+			c.onAvailableCommands(commands)
+		}
+
+	case u.CurrentModeUpdate != nil:
+		// Current mode changed; notify immediately.
+		if c.onCurrentModeChanged != nil {
+			c.onCurrentModeChanged(string(u.CurrentModeUpdate.CurrentModeId))
 		}
 	}
 
@@ -159,9 +201,9 @@ func (c *WebClient) getNextSeq() int64 {
 
 // RequestPermission handles permission requests from the agent.
 func (c *WebClient) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	// Try to flush any pending markdown before showing permission dialog.
-	// Use SafeFlush to avoid breaking tables/lists/code blocks.
-	c.mdBuffer.SafeFlush()
+	// Force flush all buffered content before showing permission dialog.
+	// Permission dialogs are blocking, so we need to show all content first.
+	c.streamBuffer.Flush()
 
 	if c.autoApprove {
 		return c.autoApprovePermission(params)
@@ -238,12 +280,12 @@ func (c *WebClient) KillTerminalCommand(ctx context.Context, params acp.KillTerm
 	return webTerminalStub.KillTerminalCommand(ctx, params)
 }
 
-// FlushMarkdown forces a flush of any buffered markdown content.
+// FlushMarkdown forces a flush of any buffered content (markdown and pending events).
 func (c *WebClient) FlushMarkdown() {
-	c.mdBuffer.Flush()
+	c.streamBuffer.Flush()
 }
 
 // Close cleans up resources.
 func (c *WebClient) Close() {
-	c.mdBuffer.Close()
+	c.streamBuffer.Close()
 }

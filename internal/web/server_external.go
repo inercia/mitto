@@ -81,7 +81,7 @@ func (s *Server) StartExternalListener(port int) (int, error) {
 	}()
 
 	if s.logger != nil {
-		s.logger.Info("External access enabled", "address", fmt.Sprintf("0.0.0.0:%d", actualPort))
+		s.logger.Info("External listener started", "address", fmt.Sprintf("0.0.0.0:%d", actualPort), "port", actualPort)
 	}
 
 	return actualPort, nil
