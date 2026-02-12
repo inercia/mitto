@@ -63,6 +63,74 @@ test.describe("Markdown Rendering", () => {
   });
 });
 
+test.describe("Mermaid Diagram Rendering", () => {
+  test.beforeEach(async ({ page, helpers }) => {
+    await helpers.navigateAndWait(page);
+    await helpers.ensureActiveSession(page);
+  });
+
+  test("should render mermaid diagrams during streaming", async ({
+    page,
+    selectors,
+    timeouts,
+  }) => {
+    // Send a message that triggers the mermaid-diagram scenario
+    const textarea = page.locator(selectors.chatInput);
+    await expect(textarea).toBeEnabled({ timeout: timeouts.shortAction });
+    await textarea.fill("Show mermaid test");
+    await page.locator(selectors.sendButton).click();
+
+    // Wait for mermaid.js to load and render the diagram
+    // The diagram should be rendered as an SVG inside a .mermaid-diagram wrapper
+    // (pre.mermaid gets replaced by div.mermaid-diagram containing SVG)
+    const mermaidDiagram = page.locator(".mermaid-diagram");
+    await expect(mermaidDiagram.first()).toBeVisible({
+      timeout: timeouts.agentResponse,
+    });
+
+    // Verify the SVG is present inside the mermaid diagram
+    const svg = mermaidDiagram.first().locator("svg");
+    await expect(svg).toBeVisible({ timeout: timeouts.shortAction });
+
+    // Verify the SVG has content (nodes from the flowchart)
+    // Mermaid creates various elements including g.nodes, g.edges, etc.
+    const svgContent = await svg.innerHTML();
+    expect(svgContent.length).toBeGreaterThan(100); // SVG should have substantial content
+
+    // Verify the diagram contains the expected flowchart elements
+    // Look for text content from our test diagram
+    const diagramText = await mermaidDiagram.first().textContent();
+    // The rendered diagram should contain our node labels
+    expect(diagramText).toContain("Start");
+    expect(diagramText).toContain("Decision");
+    expect(diagramText).toContain("End");
+  });
+
+  test("should render mermaid diagram SVG without showing raw code", async ({
+    page,
+    selectors,
+    timeouts,
+  }) => {
+    // Send a message that triggers the mermaid-diagram scenario
+    const textarea = page.locator(selectors.chatInput);
+    await expect(textarea).toBeEnabled({ timeout: timeouts.shortAction });
+    await textarea.fill("Show mermaid diagram");
+    await page.locator(selectors.sendButton).click();
+
+    // Wait for mermaid to render
+    const mermaidDiagram = page.locator(".mermaid-diagram");
+    await expect(mermaidDiagram.first()).toBeVisible({
+      timeout: timeouts.agentResponse,
+    });
+
+    // The raw mermaid code block should NOT be visible
+    // (it should have been replaced by the rendered SVG)
+    const rawMermaidBlock = page.locator('pre.mermaid:not([data-mermaid-processed="true"])');
+    const count = await rawMermaidBlock.count();
+    expect(count).toBe(0);
+  });
+});
+
 test.describe("Message Styling", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);

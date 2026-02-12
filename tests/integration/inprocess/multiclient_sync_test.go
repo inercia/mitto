@@ -235,9 +235,12 @@ func TestMultiClientSync_LateJoinerSeesHistory(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Client 2 should see the same messages as client 1
-	if len(client2Messages) != client1MsgCount {
-		t.Errorf("Late joiner received %d messages, expected %d", len(client2Messages), client1MsgCount)
+	// Client 2 should see at least 1 agent message from the loaded events.
+	// Note: Client 1 counts streaming callbacks (multiple chunks per message),
+	// while Client 2 counts persisted events (coalesced into 1 event per message).
+	// So we can't directly compare counts - we just verify Client 2 got the history.
+	if len(client2Messages) < 1 {
+		t.Errorf("Late joiner received %d messages, expected at least 1", len(client2Messages))
 	}
 
 	t.Logf("Late joiner successfully received %d historical messages", len(client2Messages))
@@ -531,13 +534,17 @@ func TestMultiClientSync_ReconnectSeesAllMessages(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Client 2 after reconnect should see all messages including those sent while disconnected
-	t.Logf("Client 1 total messages: %d", len(client1Messages))
-	t.Logf("Client 2 after reconnect: %d messages", len(client2MessagesAfterReconnect))
+	// Client 2 after reconnect should see agent messages from the loaded events.
+	// Note: Client 1 counts streaming callbacks (multiple chunks per message),
+	// while Client 2 counts persisted events (coalesced into 1 event per message).
+	// We sent 2 prompts, so we expect at least 2 agent message events.
+	t.Logf("Client 1 total streaming callbacks: %d", len(client1Messages))
+	t.Logf("Client 2 after reconnect: %d agent_message events", len(client2MessagesAfterReconnect))
 
-	if len(client2MessagesAfterReconnect) < len(client1Messages) {
-		t.Errorf("Client 2 after reconnect has fewer messages (%d) than client 1 (%d)",
-			len(client2MessagesAfterReconnect), len(client1Messages))
+	// We sent 2 prompts, so there should be at least 2 agent messages
+	if len(client2MessagesAfterReconnect) < 2 {
+		t.Errorf("Client 2 after reconnect has fewer messages (%d) than expected (at least 2)",
+			len(client2MessagesAfterReconnect))
 	}
 }
 
@@ -854,16 +861,20 @@ func TestMultiClientSync_StaleSyncRecovery(t *testing.T) {
 	staleTotalCount := staleSyncTotalCount
 	mu.Unlock()
 
-	// With a stale seq, we should get 0 events (nothing after seq 99999)
-	// But total_count should still indicate there are events in the session
-	if staleEventCount != 0 {
-		t.Errorf("Stale sync returned %d events, expected 0", staleEventCount)
+	// With a stale seq (client's after_seq > server's max seq), the server now
+	// falls back to initial load instead of returning 0 events. This is the
+	// "server is always right" principle - when client has stale state, server
+	// provides fresh data.
+	//
+	// The server detects: client_after_seq=99999 > server_max_seq=1
+	// And falls back to: ReadEventsLast(limit=50) instead of ReadEventsFrom(99999)
+	if staleEventCount != initialEventCount {
+		t.Errorf("Stale sync returned %d events, expected %d (same as initial load due to fallback)", staleEventCount, initialEventCount)
 	} else {
-		t.Log("Stale sync correctly returned 0 events")
+		t.Logf("Stale sync correctly fell back to initial load: %d events", staleEventCount)
 	}
 
-	// The key insight: total_count should still be > 0 even when sync returns 0 events
-	// This allows the client to detect the stale sync and do a fresh load
+	// total_count should match initial total_count
 	t.Logf("Stale sync total_count=%d (should match initial total_count=%d)", staleTotalCount, totalCount)
 
 	// Now do a fresh load (simulating what the client should do after detecting stale sync)

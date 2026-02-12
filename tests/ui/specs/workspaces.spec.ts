@@ -1,4 +1,4 @@
-import { test, expect } from "../fixtures/test-fixtures";
+import { test, testWithCleanup, expect } from "../fixtures/test-fixtures";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -57,12 +57,15 @@ test.describe("Workspace API", () => {
   });
 });
 
-test.describe("Multi-Workspace Sessions", () => {
-  test.beforeEach(async ({ page, helpers }) => {
+testWithCleanup.describe("Multi-Workspace Sessions", () => {
+  testWithCleanup.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
   });
 
-  test("should create session with workspace", async ({ request, apiUrl }) => {
+  testWithCleanup("should create session with workspace", async ({ request, apiUrl, cleanupSessions }) => {
+    // Cleanup is triggered by including cleanupSessions in params
+    void cleanupSessions; // Mark as used
+
     // Ensure workspace is configured
     await request.post(apiUrl("/api/workspaces"), {
       data: { acp_server: "mock-acp", working_dir: WORKSPACE_ALPHA },
@@ -82,13 +85,16 @@ test.describe("Multi-Workspace Sessions", () => {
     expect(session.working_dir).toBe(WORKSPACE_ALPHA);
   });
 
-  test("should show session in sidebar after creation", async ({
+  testWithCleanup("should show session in sidebar after creation", async ({
     page,
     request,
     selectors,
     timeouts,
     apiUrl,
+    cleanupSessions,
   }) => {
+    // Cleanup is triggered by including cleanupSessions in params
+    void cleanupSessions; // Mark as used
     const sessionName = `UI Workspace Test ${Date.now()}`;
 
     // Create session via API
@@ -113,11 +119,15 @@ test.describe("Multi-Workspace Sessions", () => {
   });
 });
 
-test.describe("Workspace Session Isolation", () => {
-  test("should maintain separate sessions per workspace", async ({
+testWithCleanup.describe("Workspace Session Isolation", () => {
+  testWithCleanup("should maintain separate sessions per workspace", async ({
     request,
     apiUrl,
+    cleanupSessions,
   }) => {
+    // Cleanup is triggered by including cleanupSessions in params
+    void cleanupSessions; // Mark as used
+
     // Create sessions for different workspaces
     const session1 = await request.post(apiUrl("/api/sessions"), {
       data: {
@@ -147,10 +157,13 @@ test.describe("Workspace Session Isolation", () => {
     expect(data2.working_dir).toBe(WORKSPACE_BETA);
   });
 
-  test("should verify session working directory via API", async ({
+  testWithCleanup("should verify session working directory via API", async ({
     request,
     apiUrl,
+    cleanupSessions,
   }) => {
+    // Cleanup is triggered by including cleanupSessions in params
+    void cleanupSessions; // Mark as used
     // Create a session
     const createResponse = await request.post(apiUrl("/api/sessions"), {
       data: {

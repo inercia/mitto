@@ -198,8 +198,10 @@ test.describe("WebSocket Reconnection During Send", () => {
 
     // The app should recover - either the message was sent before close,
     // or it will be retried after reconnect
-    // Wait for the message to appear (may take longer due to reconnect)
-    await expect(page.locator(`text=${testMessage}`)).toBeVisible({
+    // Wait for the message to appear in the user message area (may take longer due to reconnect)
+    await expect(
+      page.locator(selectors.userMessage).filter({ hasText: testMessage }),
+    ).toBeVisible({
       timeout: timeouts.agentResponse,
     });
 
@@ -392,7 +394,10 @@ test.describe("Pending Send Recovery", () => {
     await expect(textarea).toHaveValue("", { timeout: timeouts.shortAction });
 
     // Message should appear
-    await expect(page.locator(`text=${testMessage}`)).toBeVisible({
+    // Use exact text match with getByText to avoid matching agent response containing the message
+    await expect(
+      page.getByText(testMessage, { exact: true }).first()
+    ).toBeVisible({
       timeout: timeouts.shortAction,
     });
 

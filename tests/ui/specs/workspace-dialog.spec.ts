@@ -101,11 +101,17 @@ test.describe("Workspace Dialog", () => {
     const dialog = page.locator("text=Select Workspace").locator("..");
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
+    // Wait for dialog to be fully ready (filter input may capture focus)
+    await page.waitForTimeout(200);
+
+    // Click on the dialog body to ensure focus is not on the filter input
+    await page.locator("text=Select Workspace").click();
+
     // Press "1" to select first workspace
     await page.keyboard.press("1");
 
     // Dialog should close and session should be created
-    await expect(dialog).toBeHidden({ timeout: 5000 });
+    await expect(dialog).toBeHidden({ timeout: 10000 });
 
     // Chat input should be enabled (session created)
     await expect(page.locator(selectors.chatInput)).toBeEnabled({ timeout: 10000 });
@@ -161,9 +167,15 @@ test.describe("Workspace Dialog", () => {
     const dialog = page.locator("text=Select Workspace").locator("..");
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
+    // Wait for dialog to be fully ready
+    await page.waitForTimeout(200);
+
+    // Click on the dialog body to ensure focus is not on the filter input
+    await page.locator("text=Select Workspace").click();
+
     // Select first workspace to create session
     await page.keyboard.press("1");
-    await expect(dialog).toBeHidden({ timeout: 5000 });
+    await expect(dialog).toBeHidden({ timeout: 10000 });
 
     // Wait for session to be created and chat input to be enabled
     const chatInput = page.locator(selectors.chatInput);

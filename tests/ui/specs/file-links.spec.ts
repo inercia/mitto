@@ -169,6 +169,54 @@ test.describe("File Link Handling", () => {
     await newPage.close();
   });
 
+  test("Markdown files without render=html should have it added automatically (backward compatibility)", async ({
+    page,
+    context,
+  }) => {
+    // Get the workspace UUID from the API
+    const response = await page.request.get("/mitto/api/workspaces");
+    const data = await response.json();
+    const workspaceUUID = data.workspaces?.[0]?.uuid;
+    expect(workspaceUUID).toBeTruthy();
+
+    // Inject a test link for a Markdown file WITHOUT render=html
+    // (simulating an old recording that predates the render=html feature)
+    await page.evaluate((wsUUID) => {
+      const testDiv = document.createElement("div");
+      testDiv.id = "test-file-links";
+      testDiv.style.cssText =
+        "position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); background: #333; padding: 20px; border-radius: 8px; z-index: 9999;";
+      // Old URL format without render=html
+      testDiv.innerHTML = `
+        <a id="old-md-file-link" href="/mitto/api/files?ws=${wsUUID}&path=README.md" class="file-link" style="color: #4af;">Old Markdown Link</a>
+      `;
+      document.body.appendChild(testDiv);
+    }, workspaceUUID);
+
+    // Wait for a new page to open when clicking the Markdown link
+    const [newPage] = await Promise.all([
+      context.waitForEvent("page"),
+      page.click("#old-md-file-link"),
+    ]);
+
+    // Wait for the new page to load
+    await newPage.waitForLoadState("domcontentloaded");
+
+    // Verify the URL had render=html added automatically
+    const url = newPage.url();
+    expect(url).toContain("/api/files?");
+    expect(url).toContain("path=README.md");
+    expect(url).toContain("render=html");
+    expect(url).not.toContain("viewer.html");
+
+    // Verify the Markdown is rendered as HTML (should contain h1 header)
+    // README.md contains "# Project Alpha"
+    await expect(newPage.locator("h1")).toBeVisible();
+    await expect(newPage.locator("h1")).toContainText("Project Alpha");
+
+    await newPage.close();
+  });
+
   test("Markdown API endpoint with render=html returns rendered HTML", async ({
     page,
   }) => {
@@ -192,6 +240,49 @@ test.describe("File Link Handling", () => {
     // README.md contains "- `main.go` - Entry point" which should become <li>
     await expect(page.locator("li").first()).toBeVisible();
     await expect(page.locator("li").first()).toContainText("main.go");
+  });
+
+  test("Old links without API prefix should be fixed (backward compatibility)", async ({
+    page,
+    context,
+  }) => {
+    // Get the workspace UUID from the API
+    const response = await page.request.get("/mitto/api/workspaces");
+    const data = await response.json();
+    const workspaceUUID = data.workspaces?.[0]?.uuid;
+    expect(workspaceUUID).toBeTruthy();
+
+    // Inject a test link for a Go file WITHOUT the /mitto prefix
+    // This simulates old recordings that may have links without the API prefix
+    await page.evaluate((wsUUID) => {
+      const testDiv = document.createElement("div");
+      testDiv.id = "test-file-links";
+      testDiv.style.cssText =
+        "position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); background: #333; padding: 20px; border-radius: 8px; z-index: 9999;";
+      testDiv.innerHTML = `
+        <a id="old-go-file-link" href="/api/files?ws=${wsUUID}&path=main.go" class="file-link" style="color: #4af;">Old Go File Link</a>
+      `;
+      document.body.appendChild(testDiv);
+    }, workspaceUUID);
+
+    // Wait for a new page to open when clicking the Go file link
+    const [newPage] = await Promise.all([
+      context.waitForEvent("page"),
+      page.click("#old-go-file-link"),
+    ]);
+
+    // Wait for the new page to load
+    await newPage.waitForLoadState("domcontentloaded");
+
+    // Verify the URL is the viewer page WITH the /mitto prefix (fixed)
+    const url = newPage.url();
+    expect(url).toContain("/mitto/viewer.html");
+    expect(url).toContain("path=main.go");
+
+    // Verify the viewer page loaded (it has a file-path element)
+    await expect(newPage.locator("#filePath")).toBeVisible();
+
+    await newPage.close();
   });
 });
 
