@@ -21,7 +21,7 @@ func TestQueue_AddAndList(t *testing.T) {
 	}
 
 	// Add first message (0 = no limit)
-	msg1, err := q.Add("Hello", nil, "client1", 0)
+	msg1, err := q.Add("Hello", nil, nil, "client1", 0)
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
@@ -36,7 +36,7 @@ func TestQueue_AddAndList(t *testing.T) {
 	}
 
 	// Add second message with images
-	msg2, err := q.Add("World", []string{"img1", "img2"}, "client2", 0)
+	msg2, err := q.Add("World", []string{"img1", "img2"}, nil, "client2", 0)
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
@@ -64,7 +64,7 @@ func TestQueue_Get(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	msg, err := q.Add("Test message", nil, "", 0)
+	msg, err := q.Add("Test message", nil, nil, "", 0)
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
@@ -92,9 +92,9 @@ func TestQueue_Remove(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	msg1, _ := q.Add("First", nil, "", 0)
-	msg2, _ := q.Add("Second", nil, "", 0)
-	msg3, _ := q.Add("Third", nil, "", 0)
+	msg1, _ := q.Add("First", nil, nil, "", 0)
+	msg2, _ := q.Add("Second", nil, nil, "", 0)
+	msg3, _ := q.Add("Third", nil, nil, "", 0)
 
 	// Remove middle message
 	if err := q.Remove(msg2.ID); err != nil {
@@ -121,8 +121,8 @@ func TestQueue_UpdateTitle(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	msg1, _ := q.Add("First message", nil, "", 0)
-	msg2, _ := q.Add("Second message", nil, "", 0)
+	msg1, _ := q.Add("First message", nil, nil, "", 0)
+	msg2, _ := q.Add("Second message", nil, nil, "", 0)
 
 	// Update title of first message
 	if err := q.UpdateTitle(msg1.ID, "First Title"); err != nil {
@@ -155,9 +155,9 @@ func TestQueue_Clear(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	q.Add("First", nil, "", 0)
-	q.Add("Second", nil, "", 0)
-	q.Add("Third", nil, "", 0)
+	q.Add("First", nil, nil, "", 0)
+	q.Add("Second", nil, nil, "", 0)
+	q.Add("Third", nil, nil, "", 0)
 
 	if err := q.Clear(); err != nil {
 		t.Fatalf("Clear() error = %v", err)
@@ -179,8 +179,8 @@ func TestQueue_Pop(t *testing.T) {
 		t.Errorf("Pop() on empty queue error = %v, want ErrQueueEmpty", err)
 	}
 
-	msg1, _ := q.Add("First", nil, "", 0)
-	msg2, _ := q.Add("Second", nil, "", 0)
+	msg1, _ := q.Add("First", nil, nil, "", 0)
+	msg2, _ := q.Add("Second", nil, nil, "", 0)
 
 	// Pop first message
 	popped, err := q.Pop()
@@ -219,8 +219,8 @@ func TestQueue_Len(t *testing.T) {
 		t.Errorf("Len() = %d, want 0", length)
 	}
 
-	q.Add("First", nil, "", 0)
-	q.Add("Second", nil, "", 0)
+	q.Add("First", nil, nil, "", 0)
+	q.Add("Second", nil, nil, "", 0)
 
 	length, err = q.Len()
 	if err != nil {
@@ -243,7 +243,7 @@ func TestQueue_IsEmpty(t *testing.T) {
 		t.Error("IsEmpty() = false, want true")
 	}
 
-	q.Add("Test", nil, "", 0)
+	q.Add("Test", nil, nil, "", 0)
 
 	empty, err = q.IsEmpty()
 	if err != nil {
@@ -258,7 +258,7 @@ func TestQueue_Delete(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	q.Add("Test", nil, "", 0)
+	q.Add("Test", nil, nil, "", 0)
 
 	// Verify queue file exists
 	queuePath := filepath.Join(dir, queueFileName)
@@ -297,7 +297,7 @@ func TestQueue_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < messagesPerGoroutine; j++ {
-				_, err := q.Add("message", nil, "", 0)
+				_, err := q.Add("message", nil, nil, "", 0)
 				if err != nil {
 					t.Errorf("Concurrent Add() error = %v", err)
 				}
@@ -323,8 +323,8 @@ func TestQueue_Persistence(t *testing.T) {
 
 	// Create queue and add messages
 	q1 := NewQueue(dir)
-	msg1, _ := q1.Add("First", nil, "client1", 0)
-	msg2, _ := q1.Add("Second", []string{"img1"}, "client2", 0)
+	msg1, _ := q1.Add("First", nil, nil, "client1", 0)
+	msg2, _ := q1.Add("Second", []string{"img1"}, nil, "client2", 0)
 
 	// Create new queue instance pointing to same directory
 	q2 := NewQueue(dir)
@@ -356,7 +356,7 @@ func TestQueue_MaxSize(t *testing.T) {
 
 	// Add messages up to the limit
 	for i := 0; i < maxSize; i++ {
-		_, err := q.Add("message", nil, "", maxSize)
+		_, err := q.Add("message", nil, nil, "", maxSize)
 		if err != nil {
 			t.Fatalf("Add() error = %v (message %d)", err, i+1)
 		}
@@ -369,7 +369,7 @@ func TestQueue_MaxSize(t *testing.T) {
 	}
 
 	// Try to add one more - should fail with ErrQueueFull
-	_, err := q.Add("overflow", nil, "", maxSize)
+	_, err := q.Add("overflow", nil, nil, "", maxSize)
 	if err != ErrQueueFull {
 		t.Errorf("Add() when full error = %v, want ErrQueueFull", err)
 	}
@@ -384,7 +384,7 @@ func TestQueue_MaxSize(t *testing.T) {
 	q.Pop()
 
 	// Now we should be able to add again
-	_, err = q.Add("new message", nil, "", maxSize)
+	_, err = q.Add("new message", nil, nil, "", maxSize)
 	if err != nil {
 		t.Errorf("Add() after Pop() error = %v", err)
 	}
@@ -402,7 +402,7 @@ func TestQueue_MaxSize_Zero_NoLimit(t *testing.T) {
 
 	// With maxSize=0, there should be no limit
 	for i := 0; i < 100; i++ {
-		_, err := q.Add("message", nil, "", 0)
+		_, err := q.Add("message", nil, nil, "", 0)
 		if err != nil {
 			t.Fatalf("Add() with no limit error = %v (message %d)", err, i+1)
 		}
@@ -420,7 +420,7 @@ func TestQueue_MaxSize_Negative_NoLimit(t *testing.T) {
 
 	// With maxSize<0, there should be no limit
 	for i := 0; i < 10; i++ {
-		_, err := q.Add("message", nil, "", -1)
+		_, err := q.Add("message", nil, nil, "", -1)
 		if err != nil {
 			t.Fatalf("Add() with negative limit error = %v (message %d)", err, i+1)
 		}
@@ -436,9 +436,9 @@ func TestQueue_Move(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	msg1, _ := q.Add("First", nil, "", 0)
-	msg2, _ := q.Add("Second", nil, "", 0)
-	msg3, _ := q.Add("Third", nil, "", 0)
+	msg1, _ := q.Add("First", nil, nil, "", 0)
+	msg2, _ := q.Add("Second", nil, nil, "", 0)
+	msg3, _ := q.Add("Third", nil, nil, "", 0)
 
 	// Move second message up (should swap with first)
 	messages, err := q.Move(msg2.ID, "up")
@@ -475,9 +475,9 @@ func TestQueue_Move_AtBoundary(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	msg1, _ := q.Add("First", nil, "", 0)
-	_, _ = q.Add("Second", nil, "", 0) // msg2 not used in this test
-	msg3, _ := q.Add("Third", nil, "", 0)
+	msg1, _ := q.Add("First", nil, nil, "", 0)
+	_, _ = q.Add("Second", nil, nil, "", 0) // msg2 not used in this test
+	msg3, _ := q.Add("Third", nil, nil, "", 0)
 
 	// Move first message up (already at top, should be no-op)
 	messages, err := q.Move(msg1.ID, "up")
@@ -502,7 +502,7 @@ func TestQueue_Move_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	q.Add("First", nil, "", 0)
+	q.Add("First", nil, nil, "", 0)
 
 	// Move non-existent message
 	_, err := q.Move("nonexistent", "up")
@@ -515,7 +515,7 @@ func TestQueue_Move_InvalidDirection(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)
 
-	msg, _ := q.Add("First", nil, "", 0)
+	msg, _ := q.Add("First", nil, nil, "", 0)
 
 	// Move with invalid direction
 	_, err := q.Move(msg.ID, "invalid")
@@ -529,8 +529,8 @@ func TestQueue_Move_Persistence(t *testing.T) {
 
 	// Create queue and add messages
 	q1 := NewQueue(dir)
-	msg1, _ := q1.Add("First", nil, "", 0)
-	msg2, _ := q1.Add("Second", nil, "", 0)
+	msg1, _ := q1.Add("First", nil, nil, "", 0)
+	msg2, _ := q1.Add("Second", nil, nil, "", 0)
 
 	// Move second message up
 	_, err := q1.Move(msg2.ID, "up")

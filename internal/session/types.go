@@ -96,6 +96,7 @@ type Event struct {
 type UserPromptData struct {
 	Message  string     `json:"message"`
 	Images   []ImageRef `json:"images,omitempty"`
+	Files    []FileRef  `json:"files,omitempty"`
 	PromptID string     `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
 }
 
@@ -135,11 +136,14 @@ type PlanData struct {
 }
 
 // PlanEntry represents a single entry in a plan.
+// This mirrors the ACP protocol's PlanEntry structure.
 type PlanEntry struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Status   string `json:"status"`
-	Priority string `json:"priority,omitempty"`
+	// Content is a human-readable description of what this task aims to accomplish.
+	Content string `json:"content"`
+	// Priority indicates the relative importance of this task (high, medium, low).
+	Priority string `json:"priority"`
+	// Status is the current execution status (pending, in_progress, completed).
+	Status string `json:"status"`
 }
 
 // PermissionData contains data for a permission event.
@@ -179,7 +183,6 @@ type Metadata struct {
 	SessionID         string        `json:"session_id"`
 	Name              string        `json:"name,omitempty"` // User-friendly session name
 	ACPServer         string        `json:"acp_server"`
-	ACPCommand        string        `json:"acp_command,omitempty"`    // Shell command used to start the ACP server
 	ACPSessionID      string        `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
 	WorkingDir        string        `json:"working_dir"`
 	CreatedAt         time.Time     `json:"created_at"`

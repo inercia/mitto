@@ -285,6 +285,87 @@ func TestRecorder_ResumeNonExistent(t *testing.T) {
 	}
 }
 
+// TestRecorder_ResumeCompletedSessionUpdatesStatus tests that resuming a completed session
+// updates its status back to active, preventing duplicate session_end events.
+func TestRecorder_ResumeCompletedSessionUpdatesStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create and start a session
+	recorder1 := NewRecorder(store)
+	sessionID := recorder1.SessionID()
+	if err := recorder1.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record a user prompt
+	if err := recorder1.RecordUserPrompt("Hello"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	// End the session - this should set status to completed
+	if err := recorder1.End("server_shutdown"); err != nil {
+		t.Fatalf("End failed: %v", err)
+	}
+
+	// Verify status is completed
+	meta1, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if meta1.Status != SessionStatusCompleted {
+		t.Errorf("Expected status %q after End, got %q", SessionStatusCompleted, meta1.Status)
+	}
+
+	// Resume the session - this should update status back to active
+	recorder2 := NewRecorderWithID(store, sessionID)
+	if err := recorder2.Resume(); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	// Verify status is now active
+	meta2, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if meta2.Status != SessionStatusActive {
+		t.Errorf("Expected status %q after Resume, got %q", SessionStatusActive, meta2.Status)
+	}
+
+	// End the session again
+	if err := recorder2.End("server_shutdown"); err != nil {
+		t.Fatalf("Second End failed: %v", err)
+	}
+
+	// Verify we have exactly 2 session_end events (one from each End call)
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	sessionEndCount := 0
+	for _, e := range events {
+		if e.Type == EventTypeSessionEnd {
+			sessionEndCount++
+		}
+	}
+
+	// We expect 2 session_end events: one from recorder1.End() and one from recorder2.End()
+	// The bug was that without the fix, resuming wouldn't update the status,
+	// but End() would still write session_end because r.started was true.
+	// With the fix, the status is properly tracked and each End() writes exactly one session_end.
+	if sessionEndCount != 2 {
+		t.Errorf("Expected 2 session_end events, got %d", sessionEndCount)
+		for i, e := range events {
+			t.Logf("Event %d: seq=%d type=%s", i, e.Seq, e.Type)
+		}
+	}
+}
+
 // TestRecorder_EventOrdering verifies that events maintain correct chronological order
 // with proper sequence numbers regardless of event type.
 func TestRecorder_EventOrdering(t *testing.T) {
@@ -719,9 +800,9 @@ func TestRecorder_RecordPlan(t *testing.T) {
 	}
 
 	entries := []PlanEntry{
-		{ID: "1", Title: "Task 1", Status: "completed"},
-		{ID: "2", Title: "Task 2", Status: "in_progress"},
-		{ID: "3", Title: "Task 3", Status: "pending"},
+		{Content: "Task 1", Priority: "high", Status: "completed"},
+		{Content: "Task 2", Priority: "medium", Status: "in_progress"},
+		{Content: "Task 3", Priority: "low", Status: "pending"},
 	}
 
 	if err := recorder.RecordPlan(entries); err != nil {

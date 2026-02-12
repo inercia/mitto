@@ -61,16 +61,7 @@ func (r *Recorder) SessionID() string {
 }
 
 // Start starts a new recording session.
-// For backward compatibility, this method does not store the ACP command.
-// Use StartWithCommand to also store the ACP command for session resume.
 func (r *Recorder) Start(acpServer, workingDir string) error {
-	return r.StartWithCommand(acpServer, "", workingDir)
-}
-
-// StartWithCommand starts a new recording session with the ACP command stored.
-// The acpCommand is stored in metadata so sessions can be resumed even if
-// the workspace configuration is not available.
-func (r *Recorder) StartWithCommand(acpServer, acpCommand, workingDir string) error {
 	log := logging.Session()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -82,7 +73,6 @@ func (r *Recorder) StartWithCommand(acpServer, acpCommand, workingDir string) er
 	meta := Metadata{
 		SessionID:  r.sessionID,
 		ACPServer:  acpServer,
-		ACPCommand: acpCommand,
 		WorkingDir: workingDir,
 	}
 
@@ -105,16 +95,17 @@ func (r *Recorder) StartWithCommand(acpServer, acpCommand, workingDir string) er
 		return err
 	}
 
-	log.Info("session recording started",
+	log.Debug("session recording started",
 		"session_id", r.sessionID,
 		"acp_server", acpServer,
-		"acp_command", acpCommand,
 		"working_dir", workingDir)
 	return nil
 }
 
 // Resume resumes recording to an existing session.
 // This is used when switching back to a previously created session.
+// If the session was previously completed (has a session_end event),
+// its status is updated back to active.
 func (r *Recorder) Resume() error {
 	log := logging.Session()
 	r.mu.Lock()
@@ -124,9 +115,23 @@ func (r *Recorder) Resume() error {
 		return fmt.Errorf("session already started")
 	}
 
-	// Verify the session exists
-	if !r.store.Exists(r.sessionID) {
-		return fmt.Errorf("session %s does not exist", r.sessionID)
+	// Verify the session exists and get its metadata
+	meta, err := r.store.GetMetadata(r.sessionID)
+	if err != nil {
+		if err == ErrSessionNotFound {
+			return fmt.Errorf("session %s does not exist", r.sessionID)
+		}
+		return fmt.Errorf("failed to get session metadata: %w", err)
+	}
+
+	// If the session was previously completed, update status back to active
+	if meta.Status == SessionStatusCompleted {
+		if err := r.store.UpdateMetadata(r.sessionID, func(m *Metadata) {
+			m.Status = SessionStatusActive
+		}); err != nil {
+			return fmt.Errorf("failed to update session status: %w", err)
+		}
+		log.Debug("session status updated from completed to active", "session_id", r.sessionID)
 	}
 
 	r.started = true
@@ -136,15 +141,28 @@ func (r *Recorder) Resume() error {
 
 // RecordUserPrompt records a user prompt event.
 func (r *Recorder) RecordUserPrompt(message string) error {
-	return r.RecordUserPromptWithImages(message, nil)
+	return r.RecordUserPromptComplete(message, nil, nil, "")
 }
 
 // RecordUserPromptWithImages records a user prompt event with optional image references.
 func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef) error {
+	return r.RecordUserPromptComplete(message, images, nil, "")
+}
+
+// RecordUserPromptFull records a user prompt event with optional image references and prompt ID.
+// The promptID is a client-generated ID used for delivery confirmation on reconnect.
+// Deprecated: Use RecordUserPromptComplete for new code that needs file support.
+func (r *Recorder) RecordUserPromptFull(message string, images []ImageRef, promptID string) error {
+	return r.RecordUserPromptComplete(message, images, nil, promptID)
+}
+
+// RecordUserPromptComplete records a user prompt event with optional image/file references and prompt ID.
+// The promptID is a client-generated ID used for delivery confirmation on reconnect.
+func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string) error {
 	return r.recordEvent(Event{
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
-		Data:      UserPromptData{Message: message, Images: images},
+		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID},
 	})
 }
 
@@ -260,7 +278,7 @@ func (r *Recorder) Suspend() error {
 	// but don't record a session end event or change the status.
 	// The session remains "active" in the metadata.
 	r.started = false
-	log.Info("session recording suspended", "session_id", r.sessionID)
+	log.Debug("session recording suspended", "session_id", r.sessionID)
 	return nil
 }
 
@@ -273,6 +291,10 @@ func (r *Recorder) End(reason string) error {
 	if !r.started {
 		return nil
 	}
+
+	// Mark as ended first to prevent duplicate session_end events
+	// if End is called multiple times (e.g., during shutdown)
+	r.started = false
 
 	// Record session end event
 	if err := r.store.AppendEvent(r.sessionID, Event{
@@ -290,7 +312,7 @@ func (r *Recorder) End(reason string) error {
 		return err
 	}
 
-	log.Info("session recording ended", "session_id", r.sessionID, "reason", reason)
+	log.Debug("session recording ended", "session_id", r.sessionID, "reason", reason)
 	return nil
 }
 

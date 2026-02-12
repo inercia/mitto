@@ -51,6 +51,11 @@ func (s *Store) sessionDir(sessionID string) string {
 	return filepath.Join(s.baseDir, sessionID)
 }
 
+// SessionDir returns the directory path for a session (exported).
+func (s *Store) SessionDir(sessionID string) string {
+	return s.sessionDir(sessionID)
+}
+
 // eventsPath returns the events file path for a session.
 func (s *Store) eventsPath(sessionID string) string {
 	return filepath.Join(s.sessionDir(sessionID), eventsFileName)
@@ -110,7 +115,7 @@ func (s *Store) Create(meta Metadata) error {
 		return err
 	}
 
-	log.Info("session created",
+	log.Debug("session created",
 		"session_id", meta.SessionID,
 		"acp_server", meta.ACPServer,
 		"working_dir", meta.WorkingDir,
@@ -402,7 +407,7 @@ func (s *Store) Delete(sessionID string) error {
 		return err
 	}
 
-	log.Info("session deleted", "session_id", sessionID, "session_dir", sessionDir)
+	log.Debug("session deleted", "session_id", sessionID, "session_dir", sessionDir)
 	return nil
 }
 
