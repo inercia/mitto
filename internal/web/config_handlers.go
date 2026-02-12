@@ -510,14 +510,11 @@ func (s *Server) ensureExternalListenerStarted() {
 		return
 	}
 
-	actualPort, err := s.StartExternalListener(port)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to start external listener", "error", err)
-		}
-	} else if s.logger != nil {
-		s.logger.Info("External listener started", "port", actualPort)
+	_, err := s.StartExternalListener(port)
+	if err != nil && s.logger != nil {
+		s.logger.Error("Failed to start external listener", "error", err)
 	}
+	// Note: StartExternalListener already logs success
 }
 
 // applyAuthChanges handles dynamic changes to authentication and external access.

@@ -78,9 +78,10 @@ const (
 	// Note: before_seq and after_seq are mutually exclusive.
 	WSMsgTypeLoadEvents = "load_events"
 
-	// WSMsgTypeKeepalive is an application-level keepalive with timestamp.
-	// Used to detect stale connections and measure latency.
-	// Data: { "timestamp": int64 (Unix ms) }
+	// WSMsgTypeKeepalive is an application-level keepalive with timestamp and sequence info.
+	// Used to detect stale connections, measure latency, and detect out-of-sync clients.
+	// Data: { "client_time": int64 (Unix ms), "last_seen_seq": int64 (optional, highest seq client has seen) }
+	// The server responds with keepalive_ack containing server_max_seq so clients can detect if they're behind.
 	WSMsgTypeKeepalive = "keepalive"
 )
 
@@ -118,6 +119,16 @@ const (
 	// Sent on /api/events to all connected clients.
 	// Data: { "session_id": string }
 	WSMsgTypeSessionDeleted = "session_deleted"
+
+	// WSMsgTypeSessionArchived notifies that a session's archived state changed.
+	// Sent on /api/events to all connected clients.
+	// Data: { "session_id": string, "archived": bool }
+	WSMsgTypeSessionArchived = "session_archived"
+
+	// WSMsgTypeSessionStreaming notifies that a session's streaming state changed.
+	// Sent on /api/events when a session starts or stops streaming.
+	// Data: { "session_id": string, "is_streaming": bool }
+	WSMsgTypeSessionStreaming = "session_streaming"
 
 	// WSMsgTypeAgentMessage contains HTML-rendered agent response content.
 	// Sent incrementally as the agent generates output.
@@ -190,8 +201,20 @@ const (
 	// - prepend: True if these are older events to prepend (for "load more")
 	WSMsgTypeEventsLoaded = "events_loaded"
 
-	// WSMsgTypeKeepaliveAck responds to a keepalive with server timestamp.
-	// Data: { "client_timestamp": int64, "server_timestamp": int64 }
+	// WSMsgTypeKeepaliveAck responds to a keepalive with server timestamp, sequence info, and session state.
+	// Data: {
+	//   "client_time": int64,      // Echo back client time for RTT calculation
+	//   "server_time": int64,      // Server's current time (Unix ms)
+	//   "server_max_seq": int64,   // Highest seq server has for this session
+	//   "is_prompting": bool,      // Whether agent is currently responding
+	//   "is_running": bool,        // Whether background session is active
+	//   "queue_length": int,       // Number of messages waiting in queue
+	//   "status": string           // Session status (active, completed, error)
+	// }
+	// The server_max_seq field allows clients to detect if they're behind and need to sync.
+	// If client's last_seen_seq < server_max_seq, client should request events with after_seq.
+	// Additional fields (is_running, queue_length, status) allow the UI to stay in sync
+	// without separate API calls, useful for multi-tab scenarios and mobile wake recovery.
 	WSMsgTypeKeepaliveAck = "keepalive_ack"
 
 	// WSMsgTypeRunnerFallback notifies that a configured runner is not supported and fell back to exec.
@@ -234,6 +257,27 @@ const (
 	// Sent after a force_reset message is processed.
 	// Data: { "session_id": string }
 	WSMsgTypeSessionReset = "session_reset"
+
+	// WSMsgTypeACPStopped notifies that the ACP connection for a session was stopped.
+	// Sent when a session is archived and the ACP process is gracefully terminated.
+	// Data: { "session_id": string, "reason": string }
+	WSMsgTypeACPStopped = "acp_stopped"
+
+	// WSMsgTypeACPStarted notifies that the ACP connection for a session was started.
+	// Sent when a session is unarchived and the ACP process is restarted.
+	// Data: { "session_id": string }
+	WSMsgTypeACPStarted = "acp_started"
+
+	// WSMsgTypeACPStartFailed notifies that the ACP connection for a session failed to start.
+	// Sent when session creation or resumption fails due to ACP startup error.
+	// Data: { "session_id": string, "error": string }
+	WSMsgTypeACPStartFailed = "acp_start_failed"
+
+	// WSMsgTypeAvailableCommandsUpdated notifies that the agent has sent available slash commands.
+	// Sent when the agent provides its list of supported slash commands.
+	// These commands can be used for autocomplete in the chat input.
+	// Data: { "session_id": string, "commands": []{ "name": string, "description": string, "input_hint": string (optional) } }
+	WSMsgTypeAvailableCommandsUpdated = "available_commands_updated"
 )
 
 // =============================================================================
@@ -300,7 +344,7 @@ type ToolCallUpdateData struct {
 
 // PlanData holds data for a plan event.
 type PlanData struct {
-	// Plan data is not persisted in detail, just the event occurrence
+	Entries []PlanEntry `json:"entries"`
 }
 
 // FileOperationData holds data for file read/write events.
@@ -402,11 +446,11 @@ func (b *EventBuffer) AppendToolCallUpdate(seq int64, id string, status *string)
 
 // AppendPlan appends a plan event to the buffer.
 // Always creates a new event with the provided seq.
-func (b *EventBuffer) AppendPlan(seq int64) {
+func (b *EventBuffer) AppendPlan(seq int64, entries []PlanEntry) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventPlan,
 		Seq:  seq,
-		Data: &PlanData{},
+		Data: &PlanData{Entries: entries},
 	})
 }
 
@@ -504,7 +548,9 @@ func (e BufferedEvent) ReplayTo(observer SessionObserver) {
 			observer.OnToolUpdate(e.Seq, data.ID, data.Status)
 		}
 	case BufferedEventPlan:
-		observer.OnPlan(e.Seq)
+		if data, ok := e.Data.(*PlanData); ok {
+			observer.OnPlan(e.Seq, data.Entries)
+		}
 	case BufferedEventFileRead:
 		if data, ok := e.Data.(*FileOperationData); ok {
 			observer.OnFileRead(e.Seq, data.Path, data.Size)
@@ -537,7 +583,18 @@ func (e BufferedEvent) PersistTo(persister EventPersister) error {
 			return persister.RecordToolCallUpdate(data.ID, data.Status, nil)
 		}
 	case BufferedEventPlan:
-		return persister.RecordPlan(nil)
+		if data, ok := e.Data.(*PlanData); ok {
+			// Convert web.PlanEntry to session.PlanEntry
+			sessionEntries := make([]session.PlanEntry, len(data.Entries))
+			for i, entry := range data.Entries {
+				sessionEntries[i] = session.PlanEntry{
+					Content:  entry.Content,
+					Priority: entry.Priority,
+					Status:   entry.Status,
+				}
+			}
+			return persister.RecordPlan(sessionEntries)
+		}
 	case BufferedEventFileRead:
 		if data, ok := e.Data.(*FileOperationData); ok {
 			return persister.RecordFileRead(data.Path, data.Size)

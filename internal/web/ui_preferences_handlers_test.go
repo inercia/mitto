@@ -53,7 +53,7 @@ func TestHandleUIPreferences_GET_EmptyFile(t *testing.T) {
 	if prefs.GroupingMode != "" {
 		t.Errorf("GroupingMode = %q, want empty", prefs.GroupingMode)
 	}
-	if prefs.ExpandedGroups != nil && len(prefs.ExpandedGroups) > 0 {
+	if len(prefs.ExpandedGroups) > 0 {
 		t.Errorf("ExpandedGroups = %v, want nil or empty", prefs.ExpandedGroups)
 	}
 }

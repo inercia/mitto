@@ -66,7 +66,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		}
 
 		if cfg.Logger != nil {
-			cfg.Logger.Info("Auto-generated session title", "session_id", cfg.SessionID, "title", title)
+			cfg.Logger.Debug("Auto-generated session title", "session_id", cfg.SessionID, "title", title)
 		}
 
 		// Notify via callback
