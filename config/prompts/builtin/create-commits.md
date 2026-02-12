@@ -27,7 +27,19 @@ Before analyzing changes, verify the codebase is in a good state:
    - ⚠️ Warn the user: "Tests are currently failing. Committing with failing tests is not recommended."
    - Ask if they want to fix the tests first or proceed anyway
 
-### 1. Analyze Changes
+### 1. Check Current Branch
+
+Before creating commits, verify we're on an appropriate branch:
+
+1. Run `git branch --show-current` to identify the current branch
+2. If on a protected branch (`main`, `master`, `develop`):
+   - ⚠️ Warn the user: "You are currently on the `<branch>` branch. It's recommended to create commits on a feature branch."
+   - Ask if they want to:
+     - **Create a feature branch** - suggest a name based on the changes (e.g., `feat/add-feature-x` or `fix/issue-description`)
+     - **Continue on current branch** - proceed with commits on the protected branch
+3. If already on a feature branch, proceed normally
+
+### 2. Analyze Changes
 
 - Run `git status --porcelain` to list all changes
 - Verify the directory is a valid Git repository
@@ -41,7 +53,7 @@ Before analyzing changes, verify the codebase is in a good state:
   you are going to propose.
 - If you are not sure about anything, just ask me.
 
-### 2. Propose Commits
+### 3. Propose Commits
 
 Present a table, formatted as Markdown, with each proposed commit:
 
@@ -52,7 +64,7 @@ Files can be expressed with Unix shell-style wildcards (e.g. `*.md`, `docs/*`).
 
 Order commits logically (e.g., implementation before documentation).
 
-### 3. Wait for Approval
+### 4. Wait for Approval
 
 Ask the user to:
 
@@ -62,7 +74,7 @@ Ask the user to:
 
 **Do not commit until the user explicitly approves.**
 
-### 4. Execute Commits
+### 5. Execute Commits
 
 For each approved commit:
 
@@ -70,6 +82,23 @@ For each approved commit:
 2. `git commit -m "<message>"`
 
 Report success or errors after execution.
+
+### 6. Update Agent Rules (Optional)
+
+After completing the workflow, if during this session:
+
+- You asked the user for clarification about project conventions
+- You discovered project-specific patterns or preferences
+- The user corrected your assumptions
+
+Then update the appropriate Agent rules or memories in order
+to memorize these learnings for future sessions:
+
+- Add branch naming conventions discovered
+- Add remote/upstream preferences
+- Add any project-specific PR workflows or requirements
+
+Ask the user before making changes to rules files.
 
 ## Rules
 

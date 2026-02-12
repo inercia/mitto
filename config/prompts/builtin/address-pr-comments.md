@@ -140,7 +140,53 @@ For each required code change:
 - Include commit references when applicable
 - Ask for re-review if significant changes were made
 
-### 9. Summary Report
+### 8. Identify Push Remote
+
+Before pushing, ensure you're pushing to the correct remote:
+
+**Check where to push:**
+
+```bash
+# List all configured remotes
+git remote -v
+
+# Check upstream tracking for current branch
+git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null
+```
+
+**In fork workflows:**
+- `origin` typically points to your fork (push here)
+- `upstream` points to the main repository (PR target)
+- Always push to the remote where your PR source branch lives (usually `origin`)
+
+**Verify by checking the PR:**
+
+Use the GitHub API (via `github-api` tool) to confirm:
+```
+GET /repos/{owner}/{repo}/pulls?head={username}:{current-branch}&state=open
+```
+
+The PR's `head.repo.full_name` tells you which repository your branch lives in - push to that remote.
+
+### 9. Push Changes and Request Re-review
+
+After all changes are implemented and responses are ready and
+the user has approved, do:
+
+```bash
+# Ensure code is formatted (run project's formatters)
+
+# Run tests to verify nothing broke
+
+# Push changes to the correct remote (your fork in fork workflows)
+git push <push-remote> <branch-name>
+
+# Request re-review
+# GitHub: gh pr ready && gh pr comment --body "Ready for re-review"
+# GitLab: glab mr update --ready
+```
+
+### 10. Summary Report
 
 Prepare a clear summary:
 
@@ -161,26 +207,6 @@ Prepare a clear summary:
 All comments have been responded to. The PR is ready for re-review.
 ```
 
-Show this summary to the user and ask for confirmation before pushing changes.
-
-### 8. Push Changes and Request Re-review
-
-After all changes are implemented and responses are ready and
-the user has approved, do:
-
-```bash
-# Ensure code is formatted (run project's formatters)
-
-# Run tests to verify nothing broke
-
-# Push changes
-git push
-
-# Request re-review
-# GitHub: gh pr ready && gh pr comment --body "Ready for re-review"
-# GitLab: glab mr update --ready
-```
-
 ## Rules
 
 - **Never dismiss feedback without careful consideration**
@@ -193,3 +219,4 @@ git push
 - **Don't mark conversations as resolved** if you're not the author of the comment (unless explicitly asked)
 - **If a comment suggests a larger refactor**, discuss scope before implementing
 - **If feedback conflicts**, ask reviewers to align before proceeding
+- **Never assume which remote to push to** - in fork workflows, push to `origin` (your fork), not `upstream`
