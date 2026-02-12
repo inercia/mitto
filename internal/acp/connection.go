@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
 )
 
@@ -99,9 +100,17 @@ func NewConnection(
 	}
 
 	client := NewClient(autoApprove, output)
-	conn := acp.NewClientSideConnection(client, stdin, stdout)
+
+	// Wrap stdout with a JSON line filter to discard non-JSON output
+	// (e.g., ANSI escape sequences, terminal UI from crashed agents)
+	filteredStdout := NewJSONLineFilterReader(stdout, logger)
+
+	conn := acp.NewClientSideConnection(client, stdin, filteredStdout)
 	if logger != nil {
-		conn.SetLogger(logger)
+		// Use a downgraded logger for the SDK to convert INFO to DEBUG
+		// This prevents verbose SDK logs (e.g., "peer connection closed") from
+		// appearing in stdout when log level is INFO.
+		conn.SetLogger(logging.DowngradeInfoToDebug(logger))
 	}
 
 	c := &Connection{
