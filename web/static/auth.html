@@ -6,15 +6,29 @@
     <title>Mitto - Login</title>
     <link rel="icon" type="image/png" href="./favicon.png" />
 
-    <!-- Tailwind CSS (Play CDN) -->
-    <script nonce="{{CSP_NONCE}}" src="https://cdn.tailwindcss.com"></script>
-    <script nonce="{{CSP_NONCE}}" src="./tailwind-config-auth.js"></script>
+    <!-- Tailwind CSS (pre-built, run 'make tailwind' to regenerate) -->
+    <link rel="stylesheet" href="./tailwind.css" />
 
     <!-- API prefix for all API calls -->
     <script nonce="{{CSP_NONCE}}">
       window.mittoApiPrefix = "{{API_PREFIX}}";
     </script>
     <style>
+      /* Dark theme CSS variables - matches index.html */
+      :root {
+        --mitto-bg: #0f172a;
+        --mitto-sidebar: #1e293b;
+        --mitto-chat: #0f172a;
+        --mitto-input: #1e293b;
+        --mitto-input-box: #1e3a5f;
+        --mitto-user: #1e293b;
+        --mitto-user-text: #f1f5f9;
+        --mitto-user-border: #334155;
+        --mitto-agent: #1e293b;
+        --mitto-text: #f1f5f9;
+        --mitto-text-secondary: #94a3b8;
+        --mitto-border: #334155;
+      }
       body {
         background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
       }

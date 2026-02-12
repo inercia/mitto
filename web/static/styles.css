@@ -68,6 +68,40 @@
   overflow-x: hidden;
 }
 
+/* Messages container scrollbar - show scrollbar for better Edge compatibility.
+   Edge (Chromium) can have scrolling issues when scrollbar is hidden with
+   flex-col-reverse layouts. We show a thin, styled scrollbar instead. */
+.messages-container-reverse {
+  -ms-overflow-style: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+.messages-container-reverse::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+.messages-container-reverse::-webkit-scrollbar-track {
+  background: transparent;
+}
+.messages-container-reverse::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+.messages-container-reverse::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Light theme scrollbar for messages container */
+.light .messages-container-reverse {
+  scrollbar-color: #cbd5e1 transparent;
+}
+.light .messages-container-reverse::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+.light .messages-container-reverse::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
 /* Messages container styles for progressive loading.
    Note: The actual column-reverse is applied inline to the inner messages wrapper
    (the div with class="max-w-2xl mx-auto flex flex-col-reverse") so that:
@@ -76,11 +110,17 @@
    - New messages added to DOM start appear at visual bottom
    - Older messages loaded for infinite scroll appear at visual top
 
-   We use justify-end to push content to the bottom when there are few messages. */
+   IMPORTANT: Do NOT use justify-content: flex-end here!
+   It breaks scrollHeight calculation in browsers - scrollHeight equals clientHeight
+   even when content overflows, making scroll detection impossible.
+   Instead, we use min-height: 100% on the inner wrapper to push content to bottom. */
 .messages-container-reverse {
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
+  display: block;
+}
+
+/* Inner messages wrapper: min-height pushes content to bottom via flex-col-reverse */
+.messages-container-reverse > .flex-col-reverse {
+  min-height: 100%;
 }
 
 /* Message animation */
@@ -1060,6 +1100,84 @@ a.mailto-link:hover {
 
 .light .queue-dropdown-list::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
+}
+
+/* =============================================================================
+   Agent Plan Panel - Light Theme
+   ============================================================================= */
+
+.light .agent-plan-panel {
+  background: rgba(226, 232, 240, 0.97);
+  border-color: #cbd5e1;
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.25),
+    0 8px 16px rgba(0, 0, 0, 0.15),
+    0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.light .agent-plan-header {
+  border-color: #e2e8f0;
+}
+
+.light .agent-plan-header:hover {
+  background: rgba(241, 245, 249, 0.8);
+}
+
+.light .agent-plan-item {
+  border-color: rgba(226, 232, 240, 0.5);
+}
+
+.light .agent-plan-item:hover {
+  background: rgba(241, 245, 249, 0.8);
+}
+
+/* Task text color in light mode - override text-gray-200 */
+.light .agent-plan-item .text-gray-200 {
+  color: #1e293b;
+}
+
+/* Status icon colors in light mode - darker for visibility */
+.light .agent-plan-item .text-green-400 {
+  color: #16a34a;
+}
+
+.light .agent-plan-item .text-blue-400 {
+  color: #2563eb;
+}
+
+/* Priority badge colors in light mode */
+.light .agent-plan-item .text-red-400 {
+  color: #dc2626;
+}
+
+.light .agent-plan-item .text-yellow-400 {
+  color: #ca8a04;
+}
+
+.light .agent-plan-list::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+.light .agent-plan-list::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Agent plan indicator in light mode */
+.light .agent-plan-indicator {
+  background: rgba(226, 232, 240, 0.9);
+}
+
+.light .agent-plan-indicator:hover {
+  background: rgba(203, 213, 225, 0.9);
+}
+
+/* Indicator text colors in light mode */
+.light .agent-plan-indicator .text-gray-300 {
+  color: #1e293b;
+}
+
+.light .agent-plan-indicator .text-blue-400 {
+  color: #2563eb;
 }
 
 /* Action Buttons - Hide raw mitto-action tags in rendered content
