@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/hooks"
@@ -167,13 +169,9 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		promptsCache.SetAdditionalDirs(cfg.PromptsDirs)
 	}
 
-	// Configure access log (disabled by default for CLI)
-	var accessLogConfig web.AccessLogConfig
-	if webAccessLog != "" {
-		accessLogConfig = web.DefaultAccessLogConfig()
-		accessLogConfig.Path = webAccessLog
-		fmt.Printf("   Access log: %s\n", webAccessLog)
-	}
+	// Configure access log
+	// Priority: --access-log flag > settings.json > disabled by default for CLI
+	accessLogConfig := resolveAccessLogConfig(cfg, webAccessLog)
 
 	// Create web server with workspaces
 	srv, err := web.NewServer(web.Config{
@@ -204,14 +202,19 @@ func runWeb(cmd *cobra.Command, args []string) error {
 
 	// Get actual port (may differ if we requested port 0 for random)
 	actualPort := listener.Addr().(*net.TCPAddr).Port
+	slog.Info("Local listener started", "address", fmt.Sprintf("127.0.0.1:%d", actualPort), "port", actualPort)
 	fmt.Printf("   Local URL: http://127.0.0.1:%d\n", actualPort)
 
 	// Start external listener if auth is configured (for external access)
+	// Track the actual external port for the up hook
+	var actualExternalPort int
 	if cfg != nil && cfg.Web.Auth != nil {
-		actualExternalPort, err := srv.StartExternalListener(externalPort)
+		var err error
+		actualExternalPort, err = srv.StartExternalListener(externalPort)
 		if err != nil {
 			fmt.Printf("   ⚠️  Failed to start external listener: %v\n", err)
 		} else {
+			// Note: StartExternalListener already logs success
 			fmt.Printf("   External URL: http://0.0.0.0:%d\n", actualExternalPort)
 		}
 	} else {
@@ -228,9 +231,15 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	}
 
 	// Run the up hook if configured
+	// Use external port if available (for tunneling services like Tailscale/ngrok),
+	// otherwise fall back to local port
 	var upHook *hooks.Process
 	if cfg != nil {
-		upHook = hooks.StartUp(cfg.Web.Hooks.Up, actualPort)
+		hookPort := actualPort
+		if actualExternalPort > 0 {
+			hookPort = actualExternalPort
+		}
+		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort)
 	}
 	if upHook == nil && debug {
 		// Log why hook wasn't started
@@ -276,4 +285,61 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	shutdown.Shutdown("server_stopped")
 
 	return nil
+}
+
+// resolveAccessLogConfig determines the access log configuration based on:
+// 1. CLI flag (--access-log) - highest priority
+// 2. Settings from config file
+// 3. Disabled by default for CLI usage
+func resolveAccessLogConfig(cfg *config.Config, cliPath string) web.AccessLogConfig {
+	accessLogConfig := web.DefaultAccessLogConfig()
+
+	// CLI flag has highest priority
+	if cliPath != "" {
+		accessLogConfig.Path = cliPath
+		fmt.Printf("   Access log: %s\n", cliPath)
+		return accessLogConfig
+	}
+
+	// Check settings from config file
+	if cfg != nil && cfg.Web.AccessLog != nil {
+		alCfg := cfg.Web.AccessLog
+
+		// Check if explicitly disabled
+		if alCfg.Enabled != nil && !*alCfg.Enabled {
+			return web.AccessLogConfig{} // Disabled
+		}
+
+		// Use custom path if specified
+		if alCfg.Path != "" {
+			accessLogConfig.Path = alCfg.Path
+		} else if alCfg.Enabled != nil && *alCfg.Enabled {
+			// Enabled but no custom path - use default logs directory
+			logsDir, err := appdir.LogsDir()
+			if err != nil {
+				slog.Warn("Failed to get logs directory for access log", "error", err)
+			} else {
+				if err := appdir.EnsureLogsDir(); err != nil {
+					slog.Warn("Failed to create logs directory", "error", err)
+				} else {
+					accessLogConfig.Path = filepath.Join(logsDir, "access.log")
+				}
+			}
+		}
+
+		// Apply custom settings
+		if alCfg.MaxSizeMB > 0 {
+			accessLogConfig.MaxSizeMB = alCfg.MaxSizeMB
+		}
+		if alCfg.MaxBackups > 0 {
+			accessLogConfig.MaxBackups = alCfg.MaxBackups
+		}
+
+		if accessLogConfig.Path != "" {
+			fmt.Printf("   Access log: %s\n", accessLogConfig.Path)
+		}
+	}
+
+	// Default: disabled for CLI usage (empty path)
+	return accessLogConfig
 }

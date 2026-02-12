@@ -76,6 +76,11 @@ type SessionCallbacks struct {
 	// OnError is called when an error occurs.
 	OnError func(message string)
 
+	// OnACPStopped is called when the ACP connection for this session is stopped.
+	// This happens when the session is archived or explicitly closed.
+	// reason indicates why the session was stopped (e.g., "archived", "archived_timeout").
+	OnACPStopped func(reason string)
+
 	// OnDisconnected is called when the WebSocket connection is closed.
 	OnDisconnected func(err error)
 
@@ -471,6 +476,14 @@ func (s *Session) handleMessage(msg wsMessage) {
 		}
 		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnError != nil {
 			s.callbacks.OnError(data.Message)
+		}
+
+	case "acp_stopped":
+		var data struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnACPStopped != nil {
+			s.callbacks.OnACPStopped(data.Reason)
 		}
 	}
 }

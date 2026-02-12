@@ -263,6 +263,27 @@ type WebConfig struct {
 	Auth *WebAuth `json:"auth,omitempty"`
 	// Security contains security configuration (rate limiting, WebSocket security, etc.)
 	Security *WebSecurity `json:"security,omitempty"`
+	// AccessLog contains access log configuration
+	AccessLog *AccessLogConfig `json:"access_log,omitempty"`
+}
+
+// AccessLogConfig represents access log configuration.
+type AccessLogConfig struct {
+	// Enabled controls whether access logging is enabled.
+	// Default: true (enabled when running as macOS app or via mitto-web)
+	Enabled *bool `json:"enabled,omitempty"`
+	// Path is the file path for the access log.
+	// If empty, defaults to platform-specific logs directory:
+	//   - macOS: ~/Library/Logs/Mitto/access.log
+	//   - Linux: $XDG_STATE_HOME/mitto/access.log or ~/.local/state/mitto/access.log
+	//   - Windows: %LOCALAPPDATA%\Mitto\Logs\access.log
+	Path string `json:"path,omitempty"`
+	// MaxSizeMB is the maximum size of the log file in megabytes before rotation.
+	// Default: 10MB
+	MaxSizeMB int `json:"max_size_mb,omitempty"`
+	// MaxBackups is the maximum number of old log files to retain.
+	// Default: 1
+	MaxBackups int `json:"max_backups,omitempty"`
 }
 
 // DefaultAPIPrefix is the default URL prefix for API endpoints.
