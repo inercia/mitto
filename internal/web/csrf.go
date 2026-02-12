@@ -56,13 +56,19 @@ func (c *CSRFManager) GenerateToken() (string, error) {
 }
 
 // SetCSRFCookie sets the CSRF token cookie on the response.
-func (c *CSRFManager) SetCSRFCookie(w http.ResponseWriter, token string) {
+// The request is used to determine if we're on localhost (to set Secure flag appropriately).
+func (c *CSRFManager) SetCSRFCookie(w http.ResponseWriter, r *http.Request, token string) {
+	// Determine if we should set Secure flag.
+	// WKWebView (macOS app) doesn't send Secure cookies over http://localhost,
+	// so we need to set Secure=false for localhost connections.
+	secure := !isLocalhostRequest(r)
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false, // JavaScript needs to read this
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode, // Lax mode for better Safari/iOS compatibility
 		MaxAge:   csrfTokenDuration,
 	})
@@ -100,7 +106,7 @@ func (c *CSRFManager) HandleCSRFToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set cookie so subsequent requests can use it
-	c.SetCSRFCookie(w, token)
+	c.SetCSRFCookie(w, r, token)
 
 	writeJSONOK(w, map[string]string{"token": token})
 }

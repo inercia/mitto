@@ -518,14 +518,22 @@ func (a *AuthManager) InvalidateSession(token string) {
 }
 
 // SetSessionCookie sets the authentication cookie on the response.
-func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, session *AuthSession) {
+// The request is used to determine if we're on localhost (to set Secure flag appropriately).
+func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, r *http.Request, session *AuthSession) {
 	logger := logging.Auth()
+
+	// Determine if we should set Secure flag.
+	// WKWebView (macOS app) doesn't send Secure cookies over http://localhost,
+	// so we need to set Secure=false for localhost connections.
+	// For external/HTTPS connections, we always want Secure=true.
+	secure := !isLocalhostRequest(r)
+
 	cookie := &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    session.Token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true, // Always set Secure; browsers will handle appropriately
+		Secure:   secure,
 		// Use Lax instead of Strict to allow cookies to be sent on same-site navigations
 		// Strict would block cookies on navigation from external links (e.g., bookmarks)
 		SameSite: http.SameSiteLaxMode,
@@ -543,13 +551,17 @@ func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, session *AuthSessi
 }
 
 // ClearSessionCookie removes the authentication cookie.
-func (a *AuthManager) ClearSessionCookie(w http.ResponseWriter) {
+// The request is used to determine if we're on localhost (to set Secure flag appropriately).
+func (a *AuthManager) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	// Match the Secure flag from SetSessionCookie for consistency
+	secure := !isLocalhostRequest(r)
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -590,10 +602,12 @@ func (a *AuthManager) GetSessionFromRequest(r *http.Request) (*AuthSession, bool
 var publicStaticPaths = map[string]bool{
 	"/auth.html":               true,
 	"/auth.js":                 true,
+	"/tailwind.css":            true, // Required by auth.html for styling
 	"/tailwind-config-auth.js": true,
 	"/styles.css":              true,
 	"/styles-v2.css":           true,
 	"/favicon.ico":             true,
+	"/favicon.png":             true, // Referenced by auth.html
 }
 
 // publicAPIPaths are API paths (without prefix) that don't require authentication.
@@ -656,6 +670,26 @@ func isLoopbackIP(ipStr string) bool {
 	return ip.IsLoopback()
 }
 
+// isLocalhostRequest checks if the request is coming from/to localhost.
+// This is used to determine if we should set the Secure flag on cookies.
+// WKWebView (macOS app) connects via http://127.0.0.1:PORT and doesn't
+// handle Secure cookies properly over non-HTTPS localhost connections.
+func isLocalhostRequest(r *http.Request) bool {
+	// Check the Host header - this tells us what the client connected to
+	host := r.Host
+	if host == "" {
+		host = r.URL.Host
+	}
+
+	// Strip port if present
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+
+	// Check if host is localhost or 127.0.0.1
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 // contextKey is a type for context keys used by the auth package.
 type contextKey string
 
@@ -706,7 +740,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 
 		// Log external connection attempts
 		if isExternal {
-			logger.Info("AUTH: External connection",
+			logger.Debug("AUTH: External connection",
 				"client_ip", clientIP,
 				"path", r.URL.Path,
 				"is_loopback", isLoopbackIP(clientIP),
@@ -939,7 +973,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		"username", req.Username,
 	)
 
-	a.SetSessionCookie(w, session)
+	a.SetSessionCookie(w, r, session)
 	writeJSON(w, http.StatusOK, LoginResponse{Success: true})
 }
 
@@ -955,7 +989,7 @@ func (a *AuthManager) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		a.InvalidateSession(session.Token)
 	}
 
-	a.ClearSessionCookie(w)
+	a.ClearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 

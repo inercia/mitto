@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -212,14 +213,14 @@ func TestCSPNonceMiddleware_APIPrefixInjection(t *testing.T) {
 	}
 }
 
-// TestCSPNonceMiddleware_BothPlaceholders verifies both CSP_NONCE and API_PREFIX are replaced.
+// TestCSPNonceMiddleware_BothPlaceholders verifies CSP_NONCE, API_PREFIX, and IS_EXTERNAL are replaced.
 func TestCSPNonceMiddleware_BothPlaceholders(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(`<!DOCTYPE html>
 <html>
 <head>
-    <script nonce="{{CSP_NONCE}}">window.mittoApiPrefix = "{{API_PREFIX}}";</script>
+    <script nonce="{{CSP_NONCE}}">window.mittoApiPrefix = "{{API_PREFIX}}"; window.mittoIsExternal = {{IS_EXTERNAL}};</script>
     <script nonce="{{CSP_NONCE}}" src="./app.js"></script>
 </head>
 <body>Test</body>
@@ -238,17 +239,25 @@ func TestCSPNonceMiddleware_BothPlaceholders(t *testing.T) {
 
 	body := rec.Body.String()
 
-	// Neither placeholder should remain
+	// No placeholders should remain
 	if strings.Contains(body, "{{CSP_NONCE}}") {
 		t.Error("Response still contains CSP_NONCE placeholder")
 	}
 	if strings.Contains(body, "{{API_PREFIX}}") {
 		t.Error("Response still contains API_PREFIX placeholder")
 	}
+	if strings.Contains(body, "{{IS_EXTERNAL}}") {
+		t.Error("Response still contains IS_EXTERNAL placeholder")
+	}
 
 	// Should contain the API prefix
 	if !strings.Contains(body, `window.mittoApiPrefix = "/mitto"`) {
 		t.Errorf("body does not contain expected API prefix assignment")
+	}
+
+	// Should contain isExternal = false (not an external connection by default)
+	if !strings.Contains(body, `window.mittoIsExternal = false`) {
+		t.Errorf("body does not contain expected isExternal = false assignment")
 	}
 
 	// Should contain nonce attributes
@@ -260,6 +269,46 @@ func TestCSPNonceMiddleware_BothPlaceholders(t *testing.T) {
 	csp := rec.Header().Get("Content-Security-Policy")
 	if csp == "" {
 		t.Error("Content-Security-Policy header not set")
+	}
+}
+
+// TestCSPNonceMiddleware_ExternalConnection verifies IS_EXTERNAL is set to true for external connections.
+func TestCSPNonceMiddleware_ExternalConnection(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head>
+    <script nonce="{{CSP_NONCE}}">window.mittoIsExternal = {{IS_EXTERNAL}};</script>
+</head>
+<body>Test</body>
+</html>`))
+	})
+
+	opts := cspNonceMiddlewareOptions{
+		config:    DefaultSecurityConfig(),
+		apiPrefix: "/mitto",
+	}
+	wrapped := cspNonceMiddlewareWithOptions(opts)(handler)
+
+	// Create a request with external connection context
+	req := httptest.NewRequest("GET", "/", nil)
+	ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+
+	// Should contain isExternal = true
+	if !strings.Contains(body, `window.mittoIsExternal = true`) {
+		t.Errorf("body does not contain expected isExternal = true assignment, got: %s", body)
+	}
+
+	// Placeholder should not remain
+	if strings.Contains(body, "{{IS_EXTERNAL}}") {
+		t.Error("Response still contains IS_EXTERNAL placeholder")
 	}
 }
 

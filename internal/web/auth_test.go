@@ -1,3 +1,7 @@
+// Package web provides HTTP server and authentication functionality.
+//
+// Auth tests use table-driven test patterns for comprehensive coverage.
+// See TestAuthManager_ValidateCredentials, TestParseClientIP, etc. for examples.
 package web
 
 import (

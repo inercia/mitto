@@ -317,7 +317,7 @@ func (a *AccessLogger) determineEventType(r *http.Request, statusCode int, isExt
 		}
 	}
 
-	// External connections - log all auth-required requests
+	// External connections - log all requests
 	if isExternal {
 		switch statusCode {
 		case http.StatusUnauthorized:
@@ -327,8 +327,8 @@ func (a *AccessLogger) determineEventType(r *http.Request, statusCode int, isExt
 		case http.StatusTooManyRequests:
 			return "rate_limited"
 		default:
-			// Log successful external access to non-static resources
-			if !isStaticAsset(path) && statusCode >= 200 && statusCode < 300 {
+			// Log all successful external access (including static assets)
+			if statusCode >= 200 && statusCode < 300 {
 				return "external_access"
 			}
 		}

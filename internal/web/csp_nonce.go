@@ -23,6 +23,10 @@ const (
 	// apiPrefixPlaceholder is the placeholder in HTML files that gets replaced with the API prefix.
 	// This is used to inject the API prefix for frontend JavaScript.
 	apiPrefixPlaceholder = "{{API_PREFIX}}"
+
+	// isExternalPlaceholder is the placeholder in HTML files that gets replaced with the external connection status.
+	// This is used to inject the external connection flag for frontend JavaScript.
+	isExternalPlaceholder = "{{IS_EXTERNAL}}"
 )
 
 // generateCSPNonce generates a cryptographically secure random nonce for CSP.
@@ -39,6 +43,7 @@ type cspNonceResponseWriter struct {
 	http.ResponseWriter
 	nonce         string
 	apiPrefix     string
+	isExternal    bool
 	config        SecurityConfig
 	statusCode    int
 	headerWritten bool
@@ -106,6 +111,11 @@ func (w *cspNonceResponseWriter) Flush() {
 	html := w.buffer.String()
 	html = strings.ReplaceAll(html, noncePlaceholder, w.nonce)
 	html = strings.ReplaceAll(html, apiPrefixPlaceholder, w.apiPrefix)
+	if w.isExternal {
+		html = strings.ReplaceAll(html, isExternalPlaceholder, "true")
+	} else {
+		html = strings.ReplaceAll(html, isExternalPlaceholder, "false")
+	}
 
 	// Set CSP header with nonce
 	w.setCSPHeader(true)
@@ -140,7 +150,7 @@ func (w *cspNonceResponseWriter) setCSPHeader(includeNonce bool) {
 	csp := "default-src 'self'; " +
 		"script-src " + scriptSrc + "; " +
 		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; " +
-		"img-src 'self' data:; " +
+		"img-src 'self' data: blob:; " +
 		"font-src 'self' https://fonts.gstatic.com; " +
 		"connect-src 'self' ws: wss:; " +
 		"frame-ancestors 'none'; " +
@@ -179,11 +189,12 @@ func cspNonceMiddlewareWithOptions(opts cspNonceMiddlewareOptions) func(http.Han
 				return
 			}
 
-			// Wrap the response writer to inject nonces and API prefix
+			// Wrap the response writer to inject nonces, API prefix, and external connection status
 			wrapped := &cspNonceResponseWriter{
 				ResponseWriter: w,
 				nonce:          nonce,
 				apiPrefix:      opts.apiPrefix,
+				isExternal:     IsExternalConnection(r),
 				config:         opts.config,
 			}
 
