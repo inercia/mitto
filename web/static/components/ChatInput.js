@@ -3,9 +3,15 @@
 
 const { useState, useEffect, useRef, useCallback, html } = window.preact;
 
-import { hasNativeImagePicker, pickImages } from "../utils/native.js";
+import {
+  hasNativeImagePicker,
+  pickImages,
+  hasNativeFilePicker,
+  pickFiles,
+} from "../utils/native.js";
 import { secureFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
+import { SlashCommandPicker } from "./SlashCommandPicker.js";
 
 /**
  * Calculate contrasting text color (black or white) for a given background color.
@@ -133,6 +139,7 @@ function sortPromptsByColor(prompts) {
  * @param {Function} props.onToggleQueue - Callback to toggle queue panel visibility
  * @param {boolean} props.showQueueDropdown - Whether the queue dropdown is currently visible
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
+ * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
  */
 export function ChatInput({
   onSend,
@@ -154,6 +161,7 @@ export function ChatInput({
   onToggleQueue,
   showQueueDropdown = false,
   actionButtons = [],
+  availableCommands = [],
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -206,9 +214,16 @@ export function ChatInput({
   const [pendingImages, setPendingImages] = useState([]); // Array of { id, url, name, mimeType, uploading }
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploadError, setUploadError] = useState(null);
-  const fileInputRef = useRef(null);
+  const imageInputRef = useRef(null); // For image file input
+  const fileInputRef = useRef(null); // For general file input
 
+  // File upload state (non-image files)
+  const [pendingFiles, setPendingFiles] = useState([]); // Array of { id, name, mimeType, size, category, uploading }
+  const [pendingSendFiles, setPendingSendFiles] = useState([]);
 
+  // Slash command autocomplete state
+  const [showSlashPicker, setShowSlashPicker] = useState(false);
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -218,17 +233,35 @@ export function ChatInput({
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Clear pending images and sending state when session changes
+  // Clear pending images/files and sending state when session changes
   // Note: improving state is tracked per-session in improvingSessionsRef and persists
   useEffect(() => {
     setPendingImages([]);
+    setPendingFiles([]);
     setUploadError(null);
     setIsSending(false);
     setSendError(null);
     setPendingSendText("");
     setPendingSendImages([]);
+    setPendingSendFiles([]);
     setImproveError(null);
+    setShowSlashPicker(false);
+    setSlashSelectedIndex(0);
   }, [sessionId]);
+
+  // Compute slash command filter from current text (text after '/' when text starts with '/')
+  const slashFilter =
+    text.startsWith("/") && showSlashPicker ? text.slice(1).split(/\s/)[0] : "";
+
+  // Get filtered commands for the picker
+  const filteredSlashCommands = availableCommands.filter((cmd) =>
+    cmd.name.toLowerCase().startsWith(slashFilter.toLowerCase()),
+  );
+
+  // Reset selection index when filter changes
+  useEffect(() => {
+    setSlashSelectedIndex(0);
+  }, [slashFilter]);
 
   // Determine if input should be fully disabled (no session, explicitly disabled, or archived)
   const isFullyDisabled = disabled || noSession || isSending || isArchived;
@@ -306,9 +339,11 @@ export function ChatInput({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    // Allow sending if there's text OR images (or both)
+    // Allow sending if there's text OR images OR files (or any combination)
     const hasContent =
-      text.trim() || pendingImages.some((img) => !img.uploading);
+      text.trim() ||
+      pendingImages.some((img) => !img.uploading) ||
+      pendingFiles.some((f) => !f.uploading);
 
     // Check queue capacity when agent is streaming (message will be queued)
     if (isQueueFull) {
@@ -320,25 +355,29 @@ export function ChatInput({
     }
 
     if (hasContent && !disabled && !isReadOnly && !isSending) {
-      // Filter out images that are still uploading
+      // Filter out images/files that are still uploading
       const readyImages = pendingImages.filter((img) => !img.uploading);
+      const readyFiles = pendingFiles.filter((f) => !f.uploading);
       const messageText = text.trim();
 
       // Store the message for retry capability
       setPendingSendText(messageText);
       setPendingSendImages(readyImages);
+      setPendingSendFiles(readyFiles);
       setIsSending(true);
       setSendError(null);
 
       try {
         // onSend now returns a Promise that resolves on ACK
-        await onSend(messageText, readyImages);
+        await onSend(messageText, readyImages, readyFiles);
 
-        // Success! Clear the text and images
+        // Success! Clear the text, images, and files
         setText("");
         setPendingImages([]);
+        setPendingFiles([]);
         setPendingSendText("");
         setPendingSendImages([]);
+        setPendingSendFiles([]);
         if (textareaRef.current) {
           textareaRef.current.style.height = "auto";
         }
@@ -354,13 +393,88 @@ export function ChatInput({
     }
   };
 
+  // Handle adding message to queue (with images and files)
+  const handleAddToQueueClick = async () => {
+    // Allow queueing if there's text OR images OR files (or any combination)
+    const hasContent =
+      text.trim() ||
+      pendingImages.some((img) => !img.uploading) ||
+      pendingFiles.some((f) => !f.uploading);
+
+    if (hasContent && onAddToQueue && !disabled && !isReadOnly) {
+      // Filter out images/files that are still uploading
+      const readyImages = pendingImages.filter((img) => !img.uploading);
+      const readyFiles = pendingFiles.filter((f) => !f.uploading);
+      const messageText = text.trim();
+
+      try {
+        // onAddToQueue returns a Promise that resolves on success
+        const result = await onAddToQueue(messageText, readyImages, readyFiles);
+        if (result?.success) {
+          // Success! Clear the text, images, and files
+          setText("");
+          setPendingImages([]);
+          setPendingFiles([]);
+          if (textareaRef.current) {
+            textareaRef.current.style.height = "auto";
+          }
+        }
+      } catch (err) {
+        console.error("Failed to add to queue:", err);
+      }
+    }
+  };
+
+  // Handle slash command selection
+  const handleSlashCommandSelect = useCallback(
+    (command) => {
+      setText(`/${command.name} `);
+      setShowSlashPicker(false);
+      setSlashSelectedIndex(0);
+      // Focus textarea and move cursor to end
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        const len = `/${command.name} `.length;
+        textareaRef.current.setSelectionRange(len, len);
+      }
+    },
+    [setText],
+  );
+
   const handleKeyDown = (e) => {
+    // Handle slash command picker keyboard navigation
+    if (showSlashPicker && filteredSlashCommands.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashSelectedIndex((prev) =>
+          prev < filteredSlashCommands.length - 1 ? prev + 1 : prev,
+        );
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashSelectedIndex((prev) => (prev > 0 ? prev - 1 : prev));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        const selectedCommand = filteredSlashCommands[slashSelectedIndex];
+        if (selectedCommand) {
+          handleSlashCommandSelect(selectedCommand);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setShowSlashPicker(false);
+        return;
+      }
+    }
+
     // Cmd/Ctrl+Enter to add to queue
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) {
       e.preventDefault();
-      if (onAddToQueue && text.trim()) {
-        onAddToQueue();
-      }
+      handleAddToQueueClick();
       return;
     }
     // Enter (without modifiers) to send
@@ -371,6 +485,7 @@ export function ChatInput({
     // Close dropup on Escape
     if (e.key === "Escape") {
       setShowDropup(false);
+      setShowSlashPicker(false);
     }
     // Ctrl+P to improve prompt (magic wand)
     if (e.ctrlKey && e.key === "p") {
@@ -380,10 +495,22 @@ export function ChatInput({
   };
 
   const handleInput = (e) => {
-    setText(e.target.value);
+    const newValue = e.target.value;
+    setText(newValue);
     const textarea = e.target;
     textarea.style.height = "auto";
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+
+    // Show slash command picker when typing '/' at the start
+    if (
+      newValue.startsWith("/") &&
+      availableCommands.length > 0 &&
+      !newValue.includes(" ")
+    ) {
+      setShowSlashPicker(true);
+    } else {
+      setShowSlashPicker(false);
+    }
   };
 
   const handlePredefinedPrompt = (prompt) => {
@@ -491,10 +618,10 @@ export function ChatInput({
       return "Agent responding...";
     }
     if (isImproving) return "Improving prompt...";
-    if (isDragOver) return "Drop image here...";
+    if (isDragOver) return "Drop files here...";
     return isSmallWindow
       ? "Type your message..."
-      : "Type your message... (drop or paste images)";
+      : "Type your message... (drop or paste images/files)";
   };
 
   // Upload an image file to the session
@@ -631,12 +758,148 @@ export function ChatInput({
     }
   };
 
-  // Handle attach button click - uses native picker on macOS, file input otherwise
-  const handleAttachClick = async () => {
+  // Upload a single file (non-image)
+  const uploadFile = async (file) => {
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const tempFile = {
+      id: tempId,
+      name: file.name,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+      category: "text", // Will be updated from server response
+      uploading: true,
+    };
+    setPendingFiles((prev) => [...prev, tempFile]);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/files`),
+        { method: "POST", body: formData },
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to upload file");
+      }
+
+      const data = await response.json();
+      setPendingFiles((prev) =>
+        prev.map((f) =>
+          f.id === tempId
+            ? {
+                id: data.id,
+                name: data.name,
+                mimeType: data.mime_type,
+                size: data.size,
+                category: data.category,
+                uploading: false,
+              }
+            : f,
+        ),
+      );
+      return data;
+    } catch (err) {
+      console.error("Failed to upload file:", err);
+      setUploadError(err.message || "Failed to upload file");
+      setTimeout(() => setUploadError(null), 5000);
+      setPendingFiles((prev) => prev.filter((f) => f.id !== tempId));
+      return null;
+    }
+  };
+
+  // Upload files from file paths (native macOS app)
+  const uploadFilesFromPaths = async (paths) => {
+    const tempFiles = paths.map((path, index) => {
+      const filename = path.split("/").pop();
+      const tempId = `temp_${Date.now()}_${index}_${Math.random().toString(36).substr(2, 9)}`;
+      return { id: tempId, filename, path };
+    });
+
+    tempFiles.forEach(({ id, filename }) => {
+      setPendingFiles((prev) => [
+        ...prev,
+        {
+          id,
+          name: filename,
+          mimeType: "",
+          size: 0,
+          category: "text",
+          uploading: true,
+        },
+      ]);
+    });
+
+    try {
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/files/from-path`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paths }),
+        },
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to upload files");
+      }
+
+      const results = await response.json();
+      const tempIds = tempFiles.map((t) => t.id);
+      setPendingFiles((prev) => prev.filter((f) => !tempIds.includes(f.id)));
+
+      for (const data of results) {
+        setPendingFiles((prev) => [
+          ...prev,
+          {
+            id: data.id,
+            name: data.name,
+            mimeType: data.mime_type,
+            size: data.size,
+            category: data.category,
+            uploading: false,
+          },
+        ]);
+      }
+      return results;
+    } catch (err) {
+      console.error("Failed to upload files from paths:", err);
+      setUploadError(err.message || "Failed to upload files");
+      setTimeout(() => setUploadError(null), 5000);
+      const tempIds = tempFiles.map((t) => t.id);
+      setPendingFiles((prev) => prev.filter((f) => !tempIds.includes(f.id)));
+      return [];
+    }
+  };
+
+  // Remove a pending file
+  const removeFile = (fileId) => {
+    setPendingFiles((prev) => prev.filter((f) => f.id !== fileId));
+  };
+
+  // Handle attach image button click - uses native picker on macOS, file input otherwise
+  const handleAttachImageClick = async () => {
     if (hasNativeImagePicker()) {
       const paths = await pickImages();
       if (paths && paths.length > 0) {
         await uploadImagesFromPaths(paths);
+      }
+    } else {
+      if (imageInputRef.current) {
+        imageInputRef.current.click();
+      }
+    }
+  };
+
+  // Handle attach file button click - uses native picker on macOS, file input otherwise
+  const handleAttachFileClick = async () => {
+    if (hasNativeFilePicker()) {
+      const paths = await pickFiles();
+      if (paths && paths.length > 0) {
+        await uploadFilesFromPaths(paths);
       }
     } else {
       if (fileInputRef.current) {
@@ -645,7 +908,7 @@ export function ChatInput({
     }
   };
 
-  // Handle file drop
+  // Handle file drop - supports both images and other files
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragOver(false);
@@ -653,8 +916,16 @@ export function ChatInput({
 
     const files = Array.from(e.dataTransfer.files);
     const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    const otherFiles = files.filter((f) => !f.type.startsWith("image/"));
+
+    // Upload images
     for (const file of imageFiles) {
       await uploadImage(file);
+    }
+
+    // Upload other files
+    for (const file of otherFiles) {
+      await uploadFile(file);
     }
   };
 
@@ -699,8 +970,8 @@ export function ChatInput({
     });
   };
 
-  // Handle file input change
-  const handleFileInputChange = async (e) => {
+  // Handle image input change (for image file picker)
+  const handleImageInputChange = async (e) => {
     const files = Array.from(e.target.files);
     for (const file of files) {
       await uploadImage(file);
@@ -708,8 +979,24 @@ export function ChatInput({
     e.target.value = "";
   };
 
+  // Handle file input change (for general file picker)
+  const handleFileInputChange = async (e) => {
+    const files = Array.from(e.target.files);
+    for (const file of files) {
+      // Route images to image upload, others to file upload
+      if (file.type.startsWith("image/")) {
+        await uploadImage(file);
+      } else {
+        await uploadFile(file);
+      }
+    }
+    e.target.value = "";
+  };
+
   const hasPrompts = predefinedPrompts && predefinedPrompts.length > 0;
   const hasPendingImages = pendingImages.length > 0;
+  const hasPendingFiles = pendingFiles.length > 0;
+  const hasPendingAttachments = hasPendingImages || hasPendingFiles;
   const hasActionButtons = actionButtons && actionButtons.length > 0;
 
   // Debug logging for action buttons
@@ -751,10 +1038,19 @@ export function ChatInput({
         ? "ring-2 ring-blue-500 ring-inset"
         : ""}"
     >
+      <!-- Hidden file input for images -->
+      <input
+        ref=${imageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        multiple
+        class="hidden"
+        onChange=${handleImageInputChange}
+      />
+      <!-- Hidden file input for general files -->
       <input
         ref=${fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp"
         multiple
         class="hidden"
         onChange=${handleFileInputChange}
@@ -884,6 +1180,103 @@ export function ChatInput({
         </div>
       `}
 
+      ${hasPendingFiles &&
+      html`
+        <div class="max-w-4xl mx-auto mb-3">
+          <div class="flex flex-wrap gap-2">
+            ${pendingFiles.map(
+              (file) => html`
+                <div
+                  key=${file.id}
+                  class="relative group flex items-center gap-2 bg-slate-700 rounded-lg px-3 py-2 border border-slate-600"
+                >
+                  <!-- File icon -->
+                  <svg
+                    class="w-5 h-5 text-gray-400 flex-shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                    />
+                  </svg>
+                  <!-- File name -->
+                  <span
+                    class="text-sm text-gray-300 max-w-[150px] truncate"
+                    title=${file.name}
+                  >
+                    ${file.name}
+                  </span>
+                  <!-- Category badge -->
+                  ${file.category &&
+                  html`
+                    <span
+                      class="text-xs px-1.5 py-0.5 rounded ${file.category ===
+                      "text"
+                        ? "bg-green-900 text-green-300"
+                        : "bg-blue-900 text-blue-300"}"
+                    >
+                      ${file.category}
+                    </span>
+                  `}
+                  <!-- Loading or remove button -->
+                  ${file.uploading
+                    ? html`
+                        <div class="flex items-center justify-center">
+                          <svg
+                            class="w-4 h-4 animate-spin text-blue-400"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                          >
+                            <circle
+                              class="opacity-25"
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              stroke-width="4"
+                            ></circle>
+                            <path
+                              class="opacity-75"
+                              fill="currentColor"
+                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                            ></path>
+                          </svg>
+                        </div>
+                      `
+                    : html`
+                        <button
+                          type="button"
+                          onClick=${() => removeFile(file.id)}
+                          class="w-5 h-5 bg-red-600 hover:bg-red-700 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Remove file"
+                        >
+                          <svg
+                            class="w-3 h-3 text-white"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              stroke-width="2"
+                              d="M6 18L18 6M6 6l12 12"
+                            />
+                          </svg>
+                        </button>
+                      `}
+                </div>
+              `,
+            )}
+          </div>
+        </div>
+      `}
+
       <!-- Collapsible Action Toolbar - positioned at bottom-right of conversation area -->
       <div
         ref=${toolbarRef}
@@ -892,7 +1285,7 @@ export function ChatInput({
         <!-- Attach Image Button -->
         <button
           type="button"
-          onClick=${handleAttachClick}
+          onClick=${handleAttachImageClick}
           onMouseDown=${(e) => e.preventDefault()}
           disabled=${isFullyDisabled || isReadOnly || isImproving}
           class="action-toolbar-btn"
@@ -913,6 +1306,30 @@ export function ChatInput({
           </svg>
         </button>
 
+        <!-- Attach File Button (paperclip icon) -->
+        <button
+          type="button"
+          onClick=${handleAttachFileClick}
+          onMouseDown=${(e) => e.preventDefault()}
+          disabled=${isFullyDisabled || isReadOnly || isImproving}
+          class="action-toolbar-btn"
+          title="Attach file"
+        >
+          <svg
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+            />
+          </svg>
+        </button>
+
         <!-- Magic Wand / Improve Prompt Button -->
         <button
           type="button"
@@ -921,7 +1338,6 @@ export function ChatInput({
           disabled=${isFullyDisabled ||
           !text.trim() ||
           isReadOnly ||
-          isStreaming ||
           isImproving}
           class="action-toolbar-btn ${isImproving ? "loading" : ""}"
           title="Improve prompt with AI (Ctrl+P)"
@@ -969,6 +1385,17 @@ export function ChatInput({
       <div class="flex gap-2 items-end max-w-4xl mx-auto chat-input-container">
         <!-- Textarea container -->
         <div class="relative flex-1">
+          <!-- Slash command picker - expands from bottom of this container -->
+          <${SlashCommandPicker}
+            isOpen=${showSlashPicker}
+            onClose=${() => setShowSlashPicker(false)}
+            onSelect=${handleSlashCommandSelect}
+            commands=${availableCommands}
+            filter=${slashFilter}
+            selectedIndex=${slashSelectedIndex}
+            onSelectedIndexChange=${setSlashSelectedIndex}
+          />
+
           <textarea
             ref=${textareaRef}
             value=${text}
@@ -1136,7 +1563,7 @@ export function ChatInput({
                     <button
                       type="submit"
                       disabled=${isFullyDisabled ||
-                      (!text.trim() && !hasPendingImages) ||
+                      (!text.trim() && !hasPendingAttachments) ||
                       isReadOnly ||
                       isImproving ||
                       isQueueFull}
@@ -1191,8 +1618,8 @@ export function ChatInput({
             <!-- Add to Queue button -->
             <button
               type="button"
-              onClick=${() => onAddToQueue && text.trim() && onAddToQueue()}
-              disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
+              onClick=${handleAddToQueueClick}
+              disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving}
               class="action-toolbar-btn"
               style="opacity: 1; transform: none;"
               title="Add to queue (⌘/Ctrl+Enter)"

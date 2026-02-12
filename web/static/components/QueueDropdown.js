@@ -209,7 +209,7 @@ export function QueueDropdown({
         class="queue-dropdown-header px-3 py-2 border-b border-slate-700 flex items-center justify-between"
       >
         <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">
-          Queued Messages (${queueLength}/${maxSize})
+          Queued Messages (${messages.length}/${maxSize})
         </span>
       </div>
       ${messages.length > 0

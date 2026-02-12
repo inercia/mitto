@@ -3,7 +3,9 @@
 
 // Maximum number of messages to keep in browser memory per session.
 // This prevents memory issues in very long sessions while keeping enough context.
-export const MAX_MESSAGES = 100;
+// Set high enough to allow meaningful history loading while still protecting memory.
+// Modern browsers can handle 1000+ DOM nodes efficiently with modern virtual scrolling techniques.
+export const MAX_MESSAGES = 1000;
 
 // Number of events to load initially when switching to a session.
 // This provides a faster initial load while allowing users to load more history.
@@ -446,6 +448,33 @@ export function getMinSeq(events) {
 export function getMaxSeq(events) {
   if (!events || events.length === 0) return 0;
   return Math.max(...events.map((e) => e.seq || 0));
+}
+
+/**
+ * Detects if the client has stale state compared to the server.
+ *
+ * This happens when the client's lastLoadedSeq is higher than the server's lastSeq,
+ * indicating the client has cached state from a different server instance or after
+ * a server restart. In this case, the server is always right and the client should
+ * discard its state and use the server's data.
+ *
+ * Common scenarios where this occurs:
+ * - Mobile client reconnects after phone was sleeping
+ * - Server restarted while client was offline
+ * - Browser tab restored with cached state
+ * - Network disconnection and reconnection
+ *
+ * @param {number} clientLastSeq - The client's last loaded sequence number
+ * @param {number} serverLastSeq - The server's last sequence number from events_loaded
+ * @returns {boolean} True if client has stale state and should defer to server
+ */
+export function isStaleClientState(clientLastSeq, serverLastSeq) {
+  // Both must be positive numbers for a valid comparison
+  if (!clientLastSeq || clientLastSeq <= 0) return false;
+  if (!serverLastSeq || serverLastSeq <= 0) return false;
+
+  // Client is stale if it thinks it has seen more than the server has
+  return clientLastSeq > serverLastSeq;
 }
 
 /**
@@ -1090,14 +1119,22 @@ export function generatePromptId() {
  * @param {string} promptId - The unique prompt ID
  * @param {string} message - The message text
  * @param {Array} imageIds - Optional array of image IDs
+ * @param {Array} fileIds - Optional array of file IDs
  */
-export function savePendingPrompt(sessionId, promptId, message, imageIds = []) {
+export function savePendingPrompt(
+  sessionId,
+  promptId,
+  message,
+  imageIds = [],
+  fileIds = [],
+) {
   try {
     const pending = getPendingPrompts();
     pending[promptId] = {
       sessionId,
       message,
       imageIds,
+      fileIds,
       timestamp: Date.now(),
     };
     localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));

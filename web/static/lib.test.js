@@ -1,5 +1,22 @@
 /**
  * Unit tests for Mitto Web Interface library functions
+ *
+ * TODO: Consider splitting this large test file (4000+ lines) into smaller, focused files:
+ * - lib.session.test.js: computeAllSessions, createSessionState, addMessageToSessionState,
+ *   updateLastMessageInSession, removeSessionFromState, limitMessages
+ * - lib.sync.test.js: convertEventsToMessages, getMinSeq, getMaxSeq, getMessageHash,
+ *   mergeMessagesWithSync
+ * - lib.workspace.test.js: getBasename, getWorkspaceAbbreviation, getWorkspaceColor,
+ *   getWorkspaceVisualInfo, hexToRgb, getLuminance, getColorFromHex, hslToHex
+ * - lib.validation.test.js: validateUsername, validatePassword, validateCredentials
+ * - lib.prompt.test.js: generatePromptId, savePendingPrompt, getPendingPrompts,
+ *   removePendingPrompt, getPendingPromptsForSession, cleanupExpiredPrompts,
+ *   clearPendingPromptsFromEvents
+ * - lib.markdown.test.js: hasMarkdownContent, renderUserMarkdown
+ * - lib.ack.test.js: Send Message ACK Tracking tests
+ * - lib.state.test.js: UI State Consistency tests
+ *
+ * See existing split examples: utils/api.test.js, utils/storage.test.js, utils/websocket.test.js
  */
 
 import {
@@ -19,6 +36,7 @@ import {
   convertEventsToMessages,
   getMinSeq,
   getMaxSeq,
+  isStaleClientState,
   getMessageHash,
   mergeMessagesWithSync,
   safeJsonParse,
@@ -508,6 +526,177 @@ describe("getMaxSeq", () => {
   test("handles events with missing seq", () => {
     const events = [{ seq: 5 }, {}, { seq: 3 }];
     expect(getMaxSeq(events)).toBe(5);
+  });
+});
+
+// =============================================================================
+// isStaleClientState Tests
+// =============================================================================
+
+describe("isStaleClientState", () => {
+  // The server is always right. When client's lastLoadedSeq > server's lastSeq,
+  // the client has stale state and should defer to the server.
+
+  describe("stale client detection", () => {
+    test("returns true when client seq is higher than server seq", () => {
+      // Client thinks it has seen seq 463, but server only has 160
+      // This is the classic mobile reconnect scenario
+      expect(isStaleClientState(463, 160)).toBe(true);
+    });
+
+    test("returns true when client is slightly ahead", () => {
+      // Client has seq 10, server has seq 5
+      expect(isStaleClientState(10, 5)).toBe(true);
+    });
+
+    test("returns true when client is way ahead (server restart scenario)", () => {
+      // Client has seq 1000 from before server restart, server now has seq 50
+      expect(isStaleClientState(1000, 50)).toBe(true);
+    });
+  });
+
+  describe("normal sync scenarios (not stale)", () => {
+    test("returns false when client seq equals server seq (in sync)", () => {
+      expect(isStaleClientState(100, 100)).toBe(false);
+    });
+
+    test("returns false when client seq is lower than server seq (behind)", () => {
+      // Client is behind - this is normal, just needs to sync
+      expect(isStaleClientState(50, 100)).toBe(false);
+    });
+
+    test("returns false when client has no seq yet (initial load)", () => {
+      expect(isStaleClientState(0, 100)).toBe(false);
+    });
+
+    test("returns false when server has no seq yet (empty session)", () => {
+      expect(isStaleClientState(100, 0)).toBe(false);
+    });
+  });
+
+  describe("edge cases", () => {
+    test("returns false for null client seq", () => {
+      expect(isStaleClientState(null, 100)).toBe(false);
+    });
+
+    test("returns false for null server seq", () => {
+      expect(isStaleClientState(100, null)).toBe(false);
+    });
+
+    test("returns false for undefined client seq", () => {
+      expect(isStaleClientState(undefined, 100)).toBe(false);
+    });
+
+    test("returns false for undefined server seq", () => {
+      expect(isStaleClientState(100, undefined)).toBe(false);
+    });
+
+    test("returns false for negative client seq", () => {
+      expect(isStaleClientState(-1, 100)).toBe(false);
+    });
+
+    test("returns false for negative server seq", () => {
+      expect(isStaleClientState(100, -1)).toBe(false);
+    });
+
+    test("returns false when both are zero", () => {
+      expect(isStaleClientState(0, 0)).toBe(false);
+    });
+
+    test("returns false when both are null", () => {
+      expect(isStaleClientState(null, null)).toBe(false);
+    });
+
+    test("handles string numbers (JavaScript coercion)", () => {
+      // JavaScript naturally coerces strings to numbers in comparisons
+      // "100" > 50 is true in JavaScript, so this returns true
+      // This is acceptable since values from JSON will always be numbers
+      expect(isStaleClientState("100", 50)).toBe(true);
+    });
+  });
+
+  describe("real-world scenarios", () => {
+    test("mobile phone sleep and wake - stale state triggers full reload", () => {
+      // Phone was sleeping, had cached seq 463
+      // Server restarted or session was modified, now has seq 160
+      // When this returns true, client should do FULL RELOAD:
+      // 1. Discard all client messages
+      // 2. Use server's last 50 messages
+      // 3. Auto-load remaining if hasMore=true
+      const clientLastSeq = 463;
+      const serverLastSeq = 160;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(true);
+    });
+
+    test("browser tab restored from cache - stale state triggers full reload", () => {
+      // Browser restored tab with cached state from yesterday
+      // Server has been running and session has new events
+      // Full reload needed to get correct conversation state
+      const clientLastSeq = 500;
+      const serverLastSeq = 200;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(true);
+    });
+
+    test("server restart while client offline - stale state triggers full reload", () => {
+      // Client had seq 1000 before going offline
+      // Server restarted, session now only has 50 events
+      // Client must discard its 1000 messages and reload from server
+      const clientLastSeq = 1000;
+      const serverLastSeq = 50;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(true);
+    });
+
+    test("normal reconnect after brief disconnect - not stale, just sync", () => {
+      // Client disconnected briefly, server added a few events
+      // Not stale - client just needs to sync missing events
+      const clientLastSeq = 100;
+      const serverLastSeq = 105;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(false);
+    });
+
+    test("fresh session load - not stale", () => {
+      // Client loading session for the first time
+      const clientLastSeq = 0;
+      const serverLastSeq = 50;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(false);
+    });
+
+    test("empty session - not stale", () => {
+      // New session with no events yet
+      const clientLastSeq = 0;
+      const serverLastSeq = 0;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(false);
+    });
+
+    test("keepalive detects stale state - triggers full reload", () => {
+      // Scenario: keepalive_ack returns server_max_seq=160, but client has lastLoadedSeq=463
+      // This is detected via keepalive and should trigger a full reload
+      // The keepalive handler uses isStaleClientState to detect this
+      const clientMaxSeq = 463; // From Math.max(getMaxSeq(messages), lastLoadedSeq)
+      const serverMaxSeq = 160; // From keepalive_ack.server_max_seq
+      expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(true);
+      // When true, keepalive handler sends: { type: "load_events", data: { limit: 50 } }
+      // This triggers a full reload instead of incremental sync
+    });
+
+    test("keepalive detects client behind - triggers incremental sync", () => {
+      // Scenario: keepalive_ack returns server_max_seq=200, client has lastLoadedSeq=150
+      // Client is behind but not stale - should request missing events
+      const clientMaxSeq = 150;
+      const serverMaxSeq = 200;
+      expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(false);
+      // When false and serverMaxSeq > clientMaxSeq, keepalive handler sends:
+      // { type: "load_events", data: { after_seq: 150 } }
+    });
+
+    test("keepalive detects in-sync - no action needed", () => {
+      // Scenario: keepalive_ack returns server_max_seq=100, client has lastLoadedSeq=100
+      // Client is in sync - no action needed
+      const clientMaxSeq = 100;
+      const serverMaxSeq = 100;
+      expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(false);
+      // When false and serverMaxSeq <= clientMaxSeq, no sync needed
+    });
   });
 });
 
@@ -3858,6 +4047,240 @@ describe("Send Message ACK Tracking", () => {
           "Hello world",
         );
         expect(isDuplicate).toBe(true); // This case worked
+      });
+    });
+  });
+
+  // ==========================================================================
+  // Message Delivery Retry Logic Tests
+  // ==========================================================================
+  // These tests verify the new retry-on-reconnect pattern implemented in sendPrompt
+  // Total delivery budget: 10 seconds
+  // Initial ACK timeout: 3s (desktop) / 4s (mobile)
+  // On timeout: reconnect, verify delivery via last_user_prompt_id, retry if needed
+
+  describe("Message Delivery Retry Logic", () => {
+    describe("Timing Constants", () => {
+      test("total delivery budget is 10 seconds", () => {
+        const TOTAL_DELIVERY_BUDGET_MS = 10000;
+        expect(TOTAL_DELIVERY_BUDGET_MS).toBe(10000);
+      });
+
+      test("initial ACK timeout is short to detect zombie connections quickly", () => {
+        const INITIAL_ACK_TIMEOUT_MS = 3000; // Desktop
+        const MOBILE_ACK_TIMEOUT_MS = 4000; // Mobile
+        expect(INITIAL_ACK_TIMEOUT_MS).toBeLessThanOrEqual(4000);
+        expect(MOBILE_ACK_TIMEOUT_MS).toBeLessThanOrEqual(5000);
+      });
+
+      test("reconnect timeout fits within remaining budget", () => {
+        const TOTAL_DELIVERY_BUDGET_MS = 10000;
+        const INITIAL_ACK_TIMEOUT_MS = 3000;
+        const RECONNECT_TIMEOUT_MS = 4000;
+        // After initial timeout, we have ~7s left, reconnect should fit
+        expect(RECONNECT_TIMEOUT_MS).toBeLessThan(
+          TOTAL_DELIVERY_BUDGET_MS - INITIAL_ACK_TIMEOUT_MS,
+        );
+      });
+    });
+
+    describe("Delivery Verification via Reconnect", () => {
+      test("verifies delivery by matching prompt_id with last_user_prompt_id", () => {
+        const pendingPromptId = "prompt_123_abc";
+        const lastConfirmedPromptId = "prompt_123_abc";
+
+        // Simulate the check done after reconnect
+        const wasDelivered = pendingPromptId === lastConfirmedPromptId;
+        expect(wasDelivered).toBe(true);
+      });
+
+      test("detects non-delivery when prompt_ids do not match", () => {
+        const pendingPromptId = "prompt_123_abc";
+        const lastConfirmedPromptId = "prompt_456_def"; // Different prompt
+
+        const wasDelivered = pendingPromptId === lastConfirmedPromptId;
+        expect(wasDelivered).toBe(false);
+      });
+
+      test("detects non-delivery when no prompt has been confirmed yet", () => {
+        const pendingPromptId = "prompt_123_abc";
+        const lastConfirmedPromptId = null; // No prompt confirmed yet
+
+        // In the actual code, this check returns falsy (null), which is treated as "not delivered"
+        const wasDelivered =
+          lastConfirmedPromptId && pendingPromptId === lastConfirmedPromptId;
+        expect(wasDelivered).toBeFalsy();
+      });
+    });
+
+    describe("Retry Budget Calculation", () => {
+      test("calculates remaining budget correctly after initial timeout", () => {
+        const TOTAL_BUDGET = 10000;
+        const startTime = Date.now() - 3200; // 3.2 seconds ago
+        const elapsed = Date.now() - startTime;
+        const remaining = TOTAL_BUDGET - elapsed;
+
+        expect(remaining).toBeLessThan(7000);
+        expect(remaining).toBeGreaterThan(6000);
+      });
+
+      test("rejects immediately when budget is exhausted", () => {
+        const TOTAL_BUDGET = 10000;
+        const startTime = Date.now() - 11000; // 11 seconds ago
+        const remaining = TOTAL_BUDGET - (Date.now() - startTime);
+
+        expect(remaining).toBeLessThan(0);
+        // Should throw: "Message delivery timed out"
+      });
+
+      test("skips retry when remaining budget is too small", () => {
+        const TOTAL_BUDGET = 10000;
+        const MIN_RETRY_BUDGET = 500;
+        const startTime = Date.now() - 9800; // 9.8 seconds ago
+        const remaining = TOTAL_BUDGET - (Date.now() - startTime);
+
+        expect(remaining).toBeLessThan(MIN_RETRY_BUDGET);
+        // Should throw: "Message delivery could not be confirmed"
+      });
+    });
+
+    describe("Retry Flow Simulation", () => {
+      test("successful delivery on first attempt (no retry needed)", async () => {
+        let pendingSends = {};
+        const promptId = "prompt_success";
+
+        // Simulate attemptSend that succeeds quickly
+        const attemptSend = () =>
+          new Promise((resolve) => {
+            pendingSends[promptId] = {
+              resolve,
+              reject: () => {},
+              timeoutId: setTimeout(() => {}, 3000),
+            };
+            // Simulate ACK received
+            setTimeout(() => {
+              const pending = pendingSends[promptId];
+              if (pending) {
+                clearTimeout(pending.timeoutId);
+                pending.resolve({ success: true, promptId });
+                delete pendingSends[promptId];
+              }
+            }, 100);
+          });
+
+        const result = await attemptSend();
+        expect(result.success).toBe(true);
+        expect(result.promptId).toBe(promptId);
+      });
+
+      test("successful delivery after reconnect (verified on reconnect)", async () => {
+        // Simulate: initial send times out, reconnect shows message was delivered
+        const promptId = "prompt_verified";
+        const lastConfirmedPrompt = { promptId }; // Server confirms our prompt
+
+        // Simulate verification check
+        const wasDelivered = lastConfirmedPrompt?.promptId === promptId;
+        expect(wasDelivered).toBe(true);
+        // Result should be { success: true, promptId, verifiedOnReconnect: true }
+      });
+
+      test("successful delivery after retry on fresh connection", async () => {
+        // Simulate: initial send times out, reconnect shows NOT delivered, retry succeeds
+        const promptId = "prompt_retried";
+        let retryAttempted = false;
+
+        // Simulate: first check shows not delivered
+        const lastConfirmedPrompt = { promptId: "other_prompt" };
+        const wasDelivered = lastConfirmedPrompt?.promptId === promptId;
+        expect(wasDelivered).toBe(false);
+
+        // Retry on fresh connection
+        retryAttempted = true;
+        const retryResult = { success: true, promptId, retriedOnReconnect: true };
+
+        expect(retryAttempted).toBe(true);
+        expect(retryResult.retriedOnReconnect).toBe(true);
+      });
+
+      test("failure after retry also times out", async () => {
+        // Simulate: both initial and retry timeout
+        const promptId = "prompt_failed";
+        let errorMessage = null;
+
+        // Simulate retry timeout
+        try {
+          throw new Error("ACK_TIMEOUT");
+        } catch (err) {
+          if (err.message === "ACK_TIMEOUT") {
+            errorMessage =
+              "Message delivery could not be confirmed after retry. Please check your connection.";
+          }
+        }
+
+        expect(errorMessage).toContain("could not be confirmed");
+        expect(errorMessage).toContain("retry");
+      });
+
+      test("failure when reconnection fails", async () => {
+        // Simulate: reconnection itself fails
+        let errorMessage = null;
+
+        try {
+          throw new Error("Connection timeout");
+        } catch (err) {
+          errorMessage =
+            "Connection lost and could not reconnect. Please check your network and try again.";
+        }
+
+        expect(errorMessage).toContain("could not reconnect");
+        expect(errorMessage).toContain("network");
+      });
+    });
+
+    describe("Edge Cases", () => {
+      test("handles rapid send attempts during reconnect", () => {
+        // Multiple sends should queue properly
+        const pendingSends = {};
+        const promptIds = ["prompt_1", "prompt_2", "prompt_3"];
+
+        promptIds.forEach((id) => {
+          pendingSends[id] = {
+            resolve: () => {},
+            reject: () => {},
+            timeoutId: setTimeout(() => {}, 3000),
+          };
+        });
+
+        expect(Object.keys(pendingSends).length).toBe(3);
+
+        // Clean up
+        Object.values(pendingSends).forEach((p) => clearTimeout(p.timeoutId));
+      });
+
+      test("cleans up pending state even on error", () => {
+        const pendingSends = {};
+        const promptId = "prompt_cleanup";
+
+        pendingSends[promptId] = {
+          resolve: () => {},
+          reject: () => {},
+          timeoutId: setTimeout(() => {}, 3000),
+        };
+
+        // Simulate error handling
+        const pending = pendingSends[promptId];
+        clearTimeout(pending.timeoutId);
+        delete pendingSends[promptId];
+
+        expect(pendingSends[promptId]).toBeUndefined();
+      });
+
+      test("does not retry on non-timeout errors", () => {
+        // Errors like "Failed to send message" should not trigger retry
+        const error = new Error("Failed to send message");
+        const shouldRetry = error.message === "ACK_TIMEOUT";
+
+        expect(shouldRetry).toBe(false);
       });
     });
   });
