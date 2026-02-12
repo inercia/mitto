@@ -21,14 +21,16 @@ func TestImageAttachmentFromFile(t *testing.T) {
 		t.Fatalf("ImageAttachmentFromFile failed: %v", err)
 	}
 
-	if att.Type != "image" {
-		t.Errorf("Type = %q, want %q", att.Type, "image")
+	if att.Type != AttachmentTypeImage {
+		t.Errorf("Type = %q, want %q", att.Type, AttachmentTypeImage)
 	}
 	if att.MimeType != "image/png" {
 		t.Errorf("MimeType = %q, want %q", att.MimeType, "image/png")
 	}
-	if att.Name != path {
-		t.Errorf("Name = %q, want %q", att.Name, path)
+	// Name should be just the base filename, not the full path
+	expectedName := filepath.Base(path)
+	if att.Name != expectedName {
+		t.Errorf("Name = %q, want %q", att.Name, expectedName)
 	}
 
 	// Verify data is base64 encoded
