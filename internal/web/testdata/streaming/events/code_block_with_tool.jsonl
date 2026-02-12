@@ -1,0 +1,10 @@
+{"seq": 1, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.000Z", "data": {"html": "Here's the code:\n\n"}}
+{"seq": 2, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.050Z", "data": {"html": "```go\n"}}
+{"seq": 3, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.100Z", "data": {"html": "func main() {\n"}}
+{"seq": 4, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.150Z", "data": {"html": "    fmt.Println(\"Hello\")\n"}}
+{"seq": 5, "type": "tool_call", "timestamp": "2026-01-25T14:30:57.200Z", "data": {"tool_call_id": "tc1", "title": "Read file", "status": "running"}}
+{"seq": 6, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.250Z", "data": {"html": "}\n"}}
+{"seq": 7, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.300Z", "data": {"html": "```\n"}}
+{"seq": 8, "type": "tool_call_update", "timestamp": "2026-01-25T14:30:57.350Z", "data": {"tool_call_id": "tc1", "status": "completed"}}
+{"seq": 9, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.400Z", "data": {"html": "\nThat's the code.\n"}}
+

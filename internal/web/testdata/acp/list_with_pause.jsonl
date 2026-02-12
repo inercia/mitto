@@ -1,0 +1,10 @@
+# List with 2.5s pause mid-stream
+# This tests that the inactivity timeout (2s) doesn't split the list
+{"timestamp": "2026-01-25T14:30:57.000Z", "type": "agent_message", "data": {"html": "Here's what I found:\n\n"}}
+{"timestamp": "2026-01-25T14:30:57.050Z", "type": "agent_message", "data": {"html": "1. First item with some content\n"}}
+{"timestamp": "2026-01-25T14:30:57.100Z", "type": "agent_message", "data": {"html": "   that continues on the next line\n"}}
+# 2.5 second pause here - should NOT trigger flush because we're in a list
+{"timestamp": "2026-01-25T14:30:59.600Z", "type": "agent_message", "data": {"html": "2. Second item after the pause\n"}}
+{"timestamp": "2026-01-25T14:30:59.650Z", "type": "agent_message", "data": {"html": "\n"}}
+{"timestamp": "2026-01-25T14:30:59.700Z", "type": "agent_message", "data": {"html": "That's all!\n"}}
+

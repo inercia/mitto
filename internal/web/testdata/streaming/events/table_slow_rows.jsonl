@@ -1,0 +1,9 @@
+{"seq": 1, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.000Z", "data": {"html": "Here's the comparison:\n\n"}}
+{"seq": 2, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.050Z", "data": {"html": "| Feature | Before | After |\n"}}
+{"seq": 3, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.100Z", "data": {"html": "|---------|--------|-------|\n"}}
+{"seq": 4, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.500Z", "data": {"html": "| Speed | Slow | Fast |\n"}}
+{"seq": 5, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.900Z", "data": {"html": "| Memory | High | Low |\n"}}
+{"seq": 6, "type": "agent_message", "timestamp": "2026-01-25T14:30:58.300Z", "data": {"html": "| Reliability | Poor | Good |\n"}}
+{"seq": 7, "type": "agent_message", "timestamp": "2026-01-25T14:30:58.350Z", "data": {"html": "\n"}}
+{"seq": 8, "type": "agent_message", "timestamp": "2026-01-25T14:30:58.400Z", "data": {"html": "As you can see, the improvements are significant.\n"}}
+

@@ -1,0 +1,12 @@
+{"seq": 1, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.000Z", "data": {"html": "long as:\n"}}
+{"seq": 2, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.050Z", "data": {"html": "1. There\n"}}
+{"seq": 3, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.100Z", "data": {"html": "'s a\n"}}
+{"seq": 4, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.600Z", "data": {"html": "blank line followed by a line that looks\n"}}
+{"seq": 5, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.650Z", "data": {"html": "like a continuation AND\n"}}
+{"seq": 6, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.700Z", "data": {"html": "2. The continuation hasn\n"}}
+{"seq": 7, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.750Z", "data": {"html": "'t ended (indicated by reaching a line that\n"}}
+{"seq": 8, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.800Z", "data": {"html": "starts a new sentence/paragraph)\n"}}
+{"seq": 9, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.850Z", "data": {"html": "\n"}}
+{"seq": 10, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.900Z", "data": {"html": "Let me rewrite the function with a\n"}}
+{"seq": 11, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.950Z", "data": {"html": "simpler approach:\n"}}
+

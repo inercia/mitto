@@ -1,0 +1,32 @@
+# Complex response with multiple tool calls and structured content
+# This simulates a real agent response with code, lists, and tool calls
+{"timestamp": "2026-01-25T14:30:57.000Z", "type": "agent_message", "data": {"html": "I'll help you fix that bug. Let me first look at the code:\n\n"}}
+{"timestamp": "2026-01-25T14:30:57.050Z", "type": "tool_call", "data": {"tool_call_id": "tc1", "title": "Read file: main.go", "status": "running"}}
+{"timestamp": "2026-01-25T14:30:57.500Z", "type": "tool_update", "data": {"tool_call_id": "tc1", "status": "completed"}}
+{"timestamp": "2026-01-25T14:30:57.550Z", "type": "agent_message", "data": {"html": "I found the issue. Here's what's wrong:\n\n"}}
+{"timestamp": "2026-01-25T14:30:57.600Z", "type": "agent_message", "data": {"html": "1. The function doesn't handle nil pointers\n"}}
+{"timestamp": "2026-01-25T14:30:57.650Z", "type": "agent_message", "data": {"html": "2. There's a race condition in the goroutine\n"}}
+{"timestamp": "2026-01-25T14:30:57.700Z", "type": "agent_message", "data": {"html": "3. The error handling is incomplete\n"}}
+{"timestamp": "2026-01-25T14:30:57.750Z", "type": "agent_message", "data": {"html": "\n"}}
+{"timestamp": "2026-01-25T14:30:57.800Z", "type": "agent_message", "data": {"html": "Here's the fix:\n\n"}}
+{"timestamp": "2026-01-25T14:30:57.850Z", "type": "agent_message", "data": {"html": "```go\n"}}
+{"timestamp": "2026-01-25T14:30:57.900Z", "type": "agent_message", "data": {"html": "func process(data *Data) error {\n"}}
+{"timestamp": "2026-01-25T14:30:57.950Z", "type": "agent_message", "data": {"html": "    if data == nil {\n"}}
+{"timestamp": "2026-01-25T14:30:58.000Z", "type": "agent_message", "data": {"html": "        return errors.New(\"data is nil\")\n"}}
+{"timestamp": "2026-01-25T14:30:58.050Z", "type": "agent_message", "data": {"html": "    }\n"}}
+# Tool call arrives while we're in the code block
+{"timestamp": "2026-01-25T14:30:58.100Z", "type": "tool_call", "data": {"tool_call_id": "tc2", "title": "Write file: main.go", "status": "running"}}
+{"timestamp": "2026-01-25T14:30:58.150Z", "type": "agent_message", "data": {"html": "    mu.Lock()\n"}}
+{"timestamp": "2026-01-25T14:30:58.200Z", "type": "agent_message", "data": {"html": "    defer mu.Unlock()\n"}}
+{"timestamp": "2026-01-25T14:30:58.250Z", "type": "agent_message", "data": {"html": "    return data.Process()\n"}}
+{"timestamp": "2026-01-25T14:30:58.300Z", "type": "agent_message", "data": {"html": "}\n"}}
+{"timestamp": "2026-01-25T14:30:58.350Z", "type": "agent_message", "data": {"html": "```\n"}}
+{"timestamp": "2026-01-25T14:30:58.400Z", "type": "tool_update", "data": {"tool_call_id": "tc2", "status": "completed"}}
+{"timestamp": "2026-01-25T14:30:58.450Z", "type": "agent_message", "data": {"html": "\nI've applied the fix. The changes:\n\n"}}
+{"timestamp": "2026-01-25T14:30:58.500Z", "type": "agent_message", "data": {"html": "| Issue | Fix |\n"}}
+{"timestamp": "2026-01-25T14:30:58.550Z", "type": "agent_message", "data": {"html": "|-------|-----|\n"}}
+{"timestamp": "2026-01-25T14:30:58.600Z", "type": "agent_message", "data": {"html": "| Nil pointer | Added nil check |\n"}}
+{"timestamp": "2026-01-25T14:30:58.650Z", "type": "agent_message", "data": {"html": "| Race condition | Added mutex |\n"}}
+{"timestamp": "2026-01-25T14:30:58.700Z", "type": "agent_message", "data": {"html": "\n"}}
+{"timestamp": "2026-01-25T14:30:58.750Z", "type": "agent_message", "data": {"html": "Let me know if you need anything else!\n"}}
+
