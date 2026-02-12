@@ -278,6 +278,7 @@ func fixTableSeparator(line string, targetCols int) string {
 
 // HasUnmatchedInlineFormatting checks if the content has unmatched inline formatting markers.
 // This includes **, *, _, and ` markers that would be broken if we flush mid-content.
+// It also checks for unmatched parentheses which indicate a sentence was split mid-thought.
 func HasUnmatchedInlineFormatting(content string) bool {
 	// Count occurrences of formatting markers
 	// For **, we need to count pairs
@@ -303,5 +304,13 @@ func HasUnmatchedInlineFormatting(content string) bool {
 			inlineCodeCount++
 		}
 	}
-	return inlineCodeCount%2 != 0
+	if inlineCodeCount%2 != 0 {
+		return true
+	}
+
+	// Check for unmatched parentheses - indicates sentence split mid-thought
+	// Count total parentheses in the entire content
+	openParens := strings.Count(content, "(")
+	closeParens := strings.Count(content, ")")
+	return openParens > closeParens
 }
