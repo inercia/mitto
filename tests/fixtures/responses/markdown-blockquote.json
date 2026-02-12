@@ -1,0 +1,25 @@
+{
+  "scenario": "markdown-blockquote",
+  "description": "Test markdown-blockquote",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:blockquote-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "Here's a quote:\n\n",
+            "> This is a blockquote\n",
+            "> that spans multiple lines\n",
+            "> and continues here.\n\n",
+            "End of quote."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

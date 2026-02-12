@@ -1,0 +1,26 @@
+{
+  "scenario": "markdown-backticks",
+  "description": "Test markdown-backticks",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:backticks-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "Here's code:\n\n`",
+            "``python\n",
+            "def foo():\n",
+            "    pass\n",
+            "``",
+            "`\n\nDone."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

@@ -1,0 +1,23 @@
+{
+  "scenario": "markdown-link",
+  "description": "Test markdown-link",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:link-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "Check out [",
+            "this link",
+            "](https://example.com) for more info."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

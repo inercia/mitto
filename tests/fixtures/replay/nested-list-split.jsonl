@@ -1,0 +1,9 @@
+{"seq":1,"type":"agent_message","timestamp":"2024-01-01T00:00:00Z","data":{"text":"Here's a nested list:\n\n"}}
+{"seq":2,"type":"agent_message","timestamp":"2024-01-01T00:00:01Z","data":{"text":"1. First item\n"}}
+{"seq":3,"type":"agent_message","timestamp":"2024-01-01T00:00:02Z","data":{"text":"   - Nested bullet\n"}}
+{"seq":4,"type":"agent_message","timestamp":"2024-01-01T00:00:03Z","data":{"text":"   - Another nested\n"}}
+{"seq":5,"type":"agent_message","timestamp":"2024-01-01T00:00:04Z","data":{"text":"2. Second item\n"}}
+{"seq":6,"type":"agent_message","timestamp":"2024-01-01T00:00:05Z","data":{"text":"   1. Numbered nested\n"}}
+{"seq":7,"type":"agent_message","timestamp":"2024-01-01T00:00:06Z","data":{"text":"   2. Another numbered\n\n"}}
+{"seq":8,"type":"agent_message","timestamp":"2024-01-01T00:00:07Z","data":{"text":"That's the list."}}
+

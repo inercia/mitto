@@ -1,0 +1,33 @@
+{
+  "scenario": "markdown-mixed",
+  "description": "Test markdown-mixed",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:mixed-formatting"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "# Getting Started\n\n",
+            "Call `myFunction` to begin.\n\n",
+            "```javascript\n",
+            "function myFunction() {\n",
+            "  console.log('Hello');\n",
+            "}\n",
+            "```\n\n",
+            "**First**, set up your environment.\n\n",
+            "> Note: This is important.\n\n",
+            "See the [documentation](https://example.com) for more.\n\n",
+            "```python\n",
+            "print('Done')\n",
+            "```"
+          ]
+        }
+      ]
+    }
+  ]
+}
+

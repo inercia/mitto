@@ -1,0 +1,27 @@
+{
+  "scenario": "markdown-bold-italic",
+  "description": "Test markdown-bold-italic",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:bold-italic-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "This is **",
+            "bold text",
+            "** and this is *",
+            "italic text",
+            "* and this is ***",
+            "bold italic",
+            "*** text."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

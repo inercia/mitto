@@ -1,0 +1,25 @@
+{
+  "scenario": "markdown-inline-code",
+  "description": "Test markdown-inline-code",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:inline-code-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "Use the `",
+            "console.log",
+            "` function to print. Also try `",
+            "console.error",
+            "` for errors."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

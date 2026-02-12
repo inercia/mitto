@@ -1,0 +1,7 @@
+{"seq":1,"type":"agent_message","timestamp":"2024-01-01T00:00:00Z","data":{"text":"Here's a table:\n\n"}}
+{"seq":2,"type":"agent_message","timestamp":"2024-01-01T00:00:01Z","data":{"text":"| Name | Age |\n"}}
+{"seq":3,"type":"agent_message","timestamp":"2024-01-01T00:00:02Z","data":{"text":"| --- | --- |\n"}}
+{"seq":4,"type":"agent_message","timestamp":"2024-01-01T00:00:03Z","data":{"text":"| Alice | 30 |\n"}}
+{"seq":5,"type":"agent_message","timestamp":"2024-01-01T00:00:04Z","data":{"text":"| Bob | 25 |\n\n"}}
+{"seq":6,"type":"agent_message","timestamp":"2024-01-01T00:00:05Z","data":{"text":"That's the table."}}
+

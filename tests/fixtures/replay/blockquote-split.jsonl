@@ -1,0 +1,6 @@
+{"seq":1,"type":"agent_message","timestamp":"2024-01-01T00:00:00Z","data":{"text":"Here's a quote:\n\n"}}
+{"seq":2,"type":"agent_message","timestamp":"2024-01-01T00:00:01Z","data":{"text":"> This is the first "}}
+{"seq":3,"type":"agent_message","timestamp":"2024-01-01T00:00:02Z","data":{"text":"line of the quote.\n"}}
+{"seq":4,"type":"agent_message","timestamp":"2024-01-01T00:00:03Z","data":{"text":"> This is the second line.\n\n"}}
+{"seq":5,"type":"agent_message","timestamp":"2024-01-01T00:00:04Z","data":{"text":"End of quote."}}
+

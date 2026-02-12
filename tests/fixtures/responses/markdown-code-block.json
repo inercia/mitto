@@ -1,0 +1,24 @@
+{
+  "scenario": "markdown-code-block",
+  "description": "Test code block split across chunks",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:code-block-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "Here's some code:\n\n```python\n",
+            "def hello():\n",
+            "    print(\"Hello, World!\")\n",
+            "```\n\nThat's the code."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

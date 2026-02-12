@@ -47,6 +47,8 @@ export const selectors = {
   toolMessage: '.text-yellow-500:has-text("🔧")',
   // All messages in the chat (for ordering tests)
   allMessages: ".message-enter",
+  // Messages container (for scroll operations) - the one with messages-container-reverse class
+  messagesContainer: ".messages-container-reverse",
 
   // Sessions/Conversations sidebar
   // Note: The UI uses "Conversations" as the heading text

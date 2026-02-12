@@ -1,0 +1,5 @@
+{"seq":1,"type":"agent_message","timestamp":"2024-01-01T00:00:00Z","data":{"text":"Here's some code:\n\n```python\n"}}
+{"seq":2,"type":"agent_message","timestamp":"2024-01-01T00:00:01Z","data":{"text":"def hello():\n"}}
+{"seq":3,"type":"agent_message","timestamp":"2024-01-01T00:00:02Z","data":{"text":"    print(\"Hello, World!\")\n"}}
+{"seq":4,"type":"agent_message","timestamp":"2024-01-01T00:00:03Z","data":{"text":"```\n\nThat's the code."}}
+
