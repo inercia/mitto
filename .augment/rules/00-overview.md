@@ -18,7 +18,7 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | [session-management.md](../docs/devel/session-management.md) | Recording, playback, state ownership |
 | [message-queue.md](../docs/devel/message-queue.md) | Queue system, title generation, API |
 | [web-interface.md](../docs/devel/web-interface.md) | HTTP server, streaming, mobile support |
-| [websocket-messaging.md](../docs/devel/websocket-messaging.md) | Message types, sync, reconnection |
+| [websocket-messaging.md](../docs/devel/websocket-messaging.md) | **WebSocket protocol spec** (message types, seq numbers, sync, reconnection, delivery verification) |
 | [workspaces.md](../docs/devel/workspaces.md) | Multi-workspace, persistence |
 | [follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) | Action buttons, auxiliary analysis, persistence |
 
@@ -34,25 +34,33 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `06-conversion.md` | Markdown-to-HTML conversion (`internal/conversion/`) |
 | `07-regex-patterns.md` | Keywords: regex, regexp, pattern, URL detection, linkify |
 | `08-config.md` | Working on configuration (`internal/config/`) |
-| `09-macos-app.md` | macOS app, WKWebView, keyboard shortcuts, `*.m`, `*.h` |
-| **Web Backend (10-12)** | |
+| **macOS App (09, 13)** | |
+| `09-macos-app.md` | macOS app core: WKWebView, icon, native functions, `*.m`, `*.h` |
+| `13-macos-keyboard-gestures.md` | Keyboard shortcuts, trackpad gestures, menu items |
+| **Web Backend (10-14)** | |
 | `10-web-backend-core.md` | Server, routing, HTTP handlers (`internal/web/server.go`) |
-| `11-web-backend-sequences.md` | Sequences, observers, prompt ACK, MarkdownBuffer |
+| `11-web-backend-sequences.md` | Backend patterns for sequences, observers, MarkdownBuffer (→ [websocket-messaging.md](../docs/devel/websocket-messaging.md) for protocol) |
 | `12-web-backend-actions.md` | Follow-up suggestions, action buttons |
-| **Web Frontend (20-26)** | |
+| `14-web-backend-auth.md` | Authentication middleware, public paths, session management |
+| **Web Frontend (20-27)** | |
 | `20-web-frontend-core.md` | Component structure, Preact/HTM, CDN setup |
 | `21-web-frontend-state.md` | State management, refs, useCallback, useLayoutEffect |
-| `22-web-frontend-websocket.md` | WebSocket, reconnection, keepalive, ACK handling |
+| `22-web-frontend-websocket.md` | Frontend patterns for WebSocket, keepalive (→ [websocket-messaging.md](../docs/devel/websocket-messaging.md) for protocol) |
 | `23-web-frontend-mobile.md` | Mobile wake resync, zombie connections, localStorage |
 | `24-web-frontend-lib.md` | lib.js utilities, markdown rendering |
 | `25-web-frontend-components.md` | UI components (ChatInput, QueueDropdown, Icons) |
 | `26-web-frontend-hooks.md` | Custom hooks (useResizeHandle, useSwipeNavigation) |
+| `27-web-frontend-sync.md` | Sequence sync, stale client detection, deduplication |
 | **Testing (30-34)** | |
 | `30-testing-unit.md` | Go unit tests (`*_test.go`) |
 | `31-testing-integration.md` | Integration tests, mock ACP server |
 | `32-testing-playwright.md` | Playwright UI tests |
 | `33-testing-js.md` | JavaScript unit tests (lib.test.js) |
 | `34-anti-patterns.md` | Common anti-patterns, lessons learned, best practices |
+| **Debugging (40-42)** | |
+| `40-mcp-debugging.md` | Using MCP tools for debugging (events.jsonl, conversation inspection) |
+| `41-debugging-logs.md` | Log file debugging (mitto.log, webview.log, access.log) |
+| `42-mcpserver-development.md` | MCP server development patterns, adding tools |
 | `99-local.md` | Local development notes (not committed) |
 
 ## Package Structure
@@ -111,18 +119,19 @@ logger := logging.WithSessionContext(base, sessionID, workingDir, acpServer)
 logger := logging.WithClient(base, clientID, sessionID)
 ```
 
-### Log Files (macOS App)
+### Log Files
 
 When debugging issues, check these log files in `~/Library/Logs/Mitto/`:
 
 | File | Content |
 |------|---------|
-| `mitto.log` | Go application logs (server, ACP, sessions) |
+| `mitto.log` | Go application logs (server, ACP, sessions). Enable DEBUG for seq numbers. |
 | `access.log` | Security events (auth, unauthorized access) |
-| `webview.log` | JavaScript console output from WKWebView |
+| `webview.log` | JavaScript console output from WKWebView. Includes message seq numbers. |
 
-See `09-macos-app.md` for detailed debugging instructions.
-```
+**Tip:** Use sequence numbers (`seq=N`) to track messages across frontend and backend logs.
+
+See `41-debugging-logs.md` for detailed debugging instructions, or use MCP tools (`40-mcp-debugging.md`).
 
 ## Documentation Standards
 

@@ -21,7 +21,7 @@ The library provides pure functions for state manipulation.
 | `removeSessionFromState()` | Remove session and determine next active |
 | `limitMessages()` | Enforce MAX_MESSAGES limit |
 | `getMinSeq(events)` | Get minimum sequence number from events array |
-| `getMaxSeq(events)` | Get maximum sequence number from events array |
+| `getMaxSeq(events)` | Get maximum sequence number from events/messages array |
 | `generatePromptId()` | Generate unique prompt ID for delivery tracking |
 | `savePendingPrompt()` | Save prompt to localStorage before sending |
 | `removePendingPrompt()` | Remove prompt after ACK received |
@@ -84,6 +84,28 @@ User messages use `.markdown-content-user` class:
 .markdown-content-user :not(pre) > code { background: rgba(0, 0, 0, 0.15); }
 .markdown-content-user a { color: #1d4ed8; }
 ```
+
+## Dynamic Sequence Calculation
+
+The `getMaxSeq` function is used to calculate the last seen sequence number dynamically from messages in state, avoiding stale localStorage issues:
+
+```javascript
+import { getMaxSeq } from '../lib.js';
+
+// Calculate lastSeenSeq from messages in state (not localStorage)
+const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
+const lastSeq = getMaxSeq(sessionMessages);
+
+// Use for sync requests
+if (lastSeq > 0) {
+    ws.send(JSON.stringify({
+        type: 'load_events',
+        data: { after_seq: lastSeq }
+    }));
+}
+```
+
+This approach eliminates the stale localStorage problem in WKWebView because the seq is always calculated from the actual messages being displayed.
 
 ## Pure Function Design
 

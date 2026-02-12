@@ -47,20 +47,22 @@ alwaysApply: true
 
 ### File Numbering
 
-- **00-09**: Core concepts (overview, Go conventions, core packages)
-- **10-19**: Backend (web server, sequences, actions)
+- **00-09**: Core concepts (overview, Go conventions, core packages, macOS app)
+- **10-19**: Backend (web server, sequences, actions, macOS keyboard/gestures)
 - **20-29**: Frontend (components, state, hooks)
 - **30-39**: Testing (unit, integration, UI, anti-patterns)
+- **40-49**: Debugging (MCP tools, log files, MCP server development)
 - **99**: Local development (not committed)
 
 ### Quick Index
 
 | Range | Topic | Example Files |
 |-------|-------|---------------|
-| 00-09 | Core | `00-overview.md`, `01-go-conventions.md`, `06-conversion.md` |
-| 10-19 | Backend | `10-web-backend-core.md`, `11-web-backend-sequences.md` |
+| 00-09 | Core | `00-overview.md`, `01-go-conventions.md`, `09-macos-app.md` |
+| 10-19 | Backend + macOS | `10-web-backend-core.md`, `13-macos-keyboard-gestures.md` |
 | 20-29 | Frontend | `20-web-frontend-core.md`, `21-web-frontend-state.md` |
 | 30-39 | Testing | `30-testing-unit.md`, `34-anti-patterns.md` |
+| 40-49 | Debugging | `40-mcp-debugging.md`, `41-debugging-logs.md`, `42-mcpserver-development.md` |
 
 ## When to Update Rules
 
@@ -220,4 +222,6 @@ Content...
 - [Go Conventions](.augment/rules/01-go-conventions.md)
 - [Testing](.augment/rules/30-testing-unit.md)
 - [Anti-Patterns](.augment/rules/34-anti-patterns.md)
+- [MCP Debugging](.augment/rules/40-mcp-debugging.md)
+- [Log File Debugging](.augment/rules/41-debugging-logs.md)
 

@@ -45,22 +45,16 @@ const KEEPALIVE_MAX_MISSED = 2;       // Force reconnect after 2 missed
 // If missedCount >= 2, force close WebSocket → triggers reconnect
 ```
 
-### 2. Sequence Number Tracking
+### 2. Dynamic Sequence Number Calculation
 
-Track the last seen event sequence number in localStorage:
+**Important**: The `lastSeenSeq` is calculated dynamically from messages in state, NOT stored in localStorage. This avoids stale localStorage issues, especially in WKWebView.
 
 ```javascript
-import { getLastSeenSeq, setLastSeenSeq } from '../utils/storage.js';
+import { getMaxSeq } from '../lib.js';
 
-// Update lastSeenSeq when loading a session
-const lastSeq = events.length > 0 ? getMaxSeq(events) : 0;
-if (lastSeq > 0) setLastSeenSeq(sessionId, lastSeq);
-
-// Update lastSeenSeq when prompt completes
-case 'prompt_complete': {
-    if (msg.data.event_count) setLastSeenSeq(sessionId, msg.data.event_count);
-    break;
-}
+// Calculate lastSeenSeq from messages in state (not localStorage)
+const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
+const lastSeq = getMaxSeq(sessionMessages);
 ```
 
 ## Sync on WebSocket Reconnect
@@ -69,17 +63,26 @@ When per-session WebSocket connects, request missed events using `load_events`:
 
 ```javascript
 ws.onopen = () => {
-    const lastSeq = getLastSeenSeq(sessionId);
+    // Calculate lastSeenSeq dynamically from messages in state
+    const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
+    const lastSeq = getMaxSeq(sessionMessages);
     if (lastSeq > 0) {
+        console.log(`Syncing session ${sessionId} from seq ${lastSeq} (calculated from ${sessionMessages.length} messages)`);
         ws.send(JSON.stringify({
             type: 'load_events',
             data: { after_seq: lastSeq }
+        }));
+    } else {
+        // Initial load
+        ws.send(JSON.stringify({
+            type: 'load_events',
+            data: { limit: INITIAL_EVENTS_LIMIT }
         }));
     }
 };
 ```
 
-**Important:** The `lastSeenSeq` is only updated at specific points (`prompt_complete`, `events_loaded`), not during streaming. If a visibility change occurs during active streaming, the `lastSeenSeq` may be stale. This is why the frontend uses `mergeMessagesWithSync` for client-side deduplication when handling `events_loaded` responses.
+This approach eliminates the stale localStorage problem because the seq is always calculated from the actual messages being displayed.
 
 ## Force Reconnect on Visibility Change
 
@@ -163,14 +166,14 @@ const handleVisibilityChange = async () => {
 
 Located in `web/static/utils/storage.js`:
 
-### Session Sync Functions
+### Session Functions
 
 | Function | Purpose |
 |----------|---------|
-| `getLastSeenSeq(sessionId)` | Get last seen sequence number from localStorage |
-| `setLastSeenSeq(sessionId, seq)` | Store sequence number in localStorage |
 | `getLastActiveSessionId()` | Get last active session for page reload recovery |
 | `setLastActiveSessionId(id)` | Store active session ID |
+
+**Note**: `getLastSeenSeq` and `setLastSeenSeq` are deprecated. The seq is now calculated dynamically from messages in state using `getMaxSeq()` from `lib.js`.
 
 ### UI Preference Functions
 

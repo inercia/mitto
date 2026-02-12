@@ -12,9 +12,15 @@ keywords:
   - zombie connection
   - prompt_received
   - ACK
+  - delivery verification
+  - last_user_prompt_id
 ---
 
 # WebSocket and Message Handling
+
+> **📖 Full Protocol Documentation**: See [docs/devel/websocket-messaging.md](../../docs/devel/websocket-messaging.md) for complete WebSocket protocol specification, message formats, sequence number contract, and communication flows.
+
+This file covers **frontend implementation patterns** for WebSocket handling. For protocol details, message formats, and architecture, refer to the main documentation.
 
 ## Hooks Directory Structure
 
@@ -73,6 +79,28 @@ export function savePendingPrompt(sessionId, promptId, message, imageIds = []) {
 }
 ```
 
+### Delivery Verification on Timeout
+
+When ACK timeout occurs, the frontend verifies delivery by reconnecting and checking `last_user_prompt_id`:
+
+```javascript
+// On timeout, instead of immediately rejecting:
+// 1. Force close zombie WebSocket
+// 2. Wait for fresh connection
+// 3. Check if last_user_prompt_id matches our pending promptId
+// 4. If match → resolve success (message was delivered!)
+// 5. If no match → reject with error
+
+const confirmed = lastConfirmedPromptRef.current[sessionId];
+if (confirmed && confirmed.promptId === promptId) {
+    resolve({ success: true, promptId, verifiedOnReconnect: true });
+} else {
+    reject(new Error("Message delivery could not be confirmed"));
+}
+```
+
+> **📖 See**: [Send Timeout with Delivery Verification](../../docs/devel/websocket-messaging.md#corner-case-send-timeout-with-delivery-verification) for the complete flow diagram.
+
 ## WebSocket Connection Management
 
 ### Preventing Reference Leaks on Close
@@ -115,20 +143,13 @@ const forceReconnectActiveSession = useCallback(() => {
 
 ## Message Ordering and Deduplication
 
-### Two-Tier Deduplication Strategy
+> **📖 See**: [27-web-frontend-sync.md](./27-web-frontend-sync.md) for detailed sequence sync, stale client detection, and deduplication patterns.
 
-The system uses both server-side and client-side deduplication:
+### Key Points
 
-1. **Server-side** (`lastSentSeq` tracking): Prevents duplicates during normal streaming
-2. **Client-side** (`mergeMessagesWithSync`): Handles sync after reconnect when `lastSeenSeq` may be stale
-
-### When Client-Side Deduplication is Needed
-
-The `lastSeenSeq` in localStorage is only updated at specific points:
-- When `prompt_complete` is received
-- When `events_loaded` is received
-
-If a visibility change (phone wake) triggers a reconnect **during streaming** (before `prompt_complete`), the `lastSeenSeq` may be stale. The server will return events that are already displayed in the UI.
+- **Dynamic sequence calculation**: `lastSeenSeq` is calculated from messages in state, NOT localStorage
+- **Two-tier deduplication**: Server-side (`lastSentSeq`) + client-side (`mergeMessagesWithSync`)
+- **Server authority**: When client and server disagree, server always wins
 
 ### Sequence Number Based Ordering
 
@@ -137,74 +158,87 @@ All streaming events include a sequence number (`seq`) assigned when the event i
 - Included in all WebSocket messages (`agent_message`, `tool_call`, etc.)
 - Sorting by `seq` gives correct chronological order
 
-### events_loaded Handler
+## Keepalive Mechanism with Sequence Sync
 
-```javascript
-case "events_loaded": {
-  if (isPrepend) {
-    // Load more (older events) - no dedup needed
-    messages = [...newMessages, ...session.messages];
-  } else if (session.messages.length === 0) {
-    // Initial load - just use the new messages
-    messages = newMessages;
-  } else {
-    // Sync after reconnect - merge with deduplication
-    messages = mergeMessagesWithSync(session.messages, newMessages);
-  }
-}
-```
+Mobile browsers can leave WebSocket connections in a "zombie" state - appearing open but actually dead. The keepalive mechanism detects and recovers from this, and also detects out-of-sync situations.
 
-### Deduplication in mergeMessagesWithSync
+### Dual Purpose
 
-```javascript
-export function mergeMessagesWithSync(existingMessages, newMessages) {
-  // Create a map of existing messages by seq for fast lookup
-  const existingBySeq = new Map();
-  const existingHashes = new Set();
-  for (const m of existingMessages) {
-    if (m.seq) existingBySeq.set(m.seq, m);
-    existingHashes.add(getMessageHash(m));
-  }
-
-  // Deduplicate by seq (preferred) or content hash (fallback)
-  const filteredNewMessages = newMessages.filter((m) => {
-    if (m.seq && existingBySeq.has(m.seq)) return false;
-    return !existingHashes.has(getMessageHash(m));
-  });
-
-  // Combine and sort by seq for correct ordering
-  const allMessages = [...existingMessages, ...filteredNewMessages];
-  allMessages.sort((a, b) => {
-    if (a.seq && b.seq) return a.seq - b.seq;
-    return 0;
-  });
-  return allMessages;
-}
-```
-
-## Keepalive Mechanism for Zombie Connection Detection
-
-Mobile browsers can leave WebSocket connections in a "zombie" state - appearing open but actually dead. The keepalive mechanism detects and recovers from this.
+1. **Zombie Connection Detection**: Force reconnect if keepalives aren't acknowledged
+2. **Sequence Sync**: Compare client's `last_seen_seq` with server's `server_max_seq` to detect missed messages
 
 ### Configuration Constants
 
 ```javascript
-const KEEPALIVE_INTERVAL_MS = 25000;  // Send keepalive every 25 seconds
-const KEEPALIVE_TIMEOUT_MS = 10000;   // Response timeout (unused, tracked by missed count)
-const KEEPALIVE_MAX_MISSED = 2;       // Force reconnect after 2 missed keepalives
+// Native macOS app uses shorter interval (5s) since it's local with no network latency
+// Browser uses longer interval (10s) to reduce network overhead
+const KEEPALIVE_INTERVAL_NATIVE_MS = 5000;   // Native macOS app: every 5 seconds
+const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Browser: every 10 seconds
+const KEEPALIVE_TIMEOUT_MS = 10000;          // Response timeout (unused, tracked by missed count)
+const KEEPALIVE_MAX_MISSED = 2;              // Force reconnect after 2 missed keepalives
+
+// Dynamic interval based on runtime environment
+function getKeepaliveInterval() {
+  return isNativeApp() ? KEEPALIVE_INTERVAL_NATIVE_MS : KEEPALIVE_INTERVAL_BROWSER_MS;
+}
 ```
+
+### Message Format
+
+```javascript
+// Client → Server (keepalive)
+{
+  type: "keepalive",
+  data: {
+    client_time: Date.now(),
+    last_seen_seq: getMaxSeq(sessionMessages)  // Calculated from messages in state
+  }
+}
+
+// Server → Client (keepalive_ack)
+{
+  type: "keepalive_ack",
+  data: {
+    client_time: ...,      // Echo back for RTT calculation
+    server_time: ...,      // Server's current time (Unix ms)
+    server_max_seq: 45,    // Highest seq server has for this session
+    is_prompting: true,    // Whether agent is currently responding
+    is_running: true,      // Whether background session is active
+    queue_length: 3,       // Number of messages in queue
+    status: "active"       // Session status (active, completed, error)
+  }
+}
+```
+
+### Piggybacked State Sync
+
+The `keepalive_ack` includes additional session state for multi-tab sync and mobile wake recovery:
+
+| Field | Purpose |
+|-------|---------|
+| `is_prompting` | Sync streaming state with server |
+| `is_running` | Detect if background session disconnected |
+| `queue_length` | Sync queue badge across tabs |
+| `status` | Detect session completion while in background |
 
 ### Keepalive Flow
 
 ```
-1. WebSocket connects → Start keepalive interval
-2. Every 25s: Send keepalive {client_time} → Set pendingKeepalive = true
-3. Server responds → keepalive_ack {client_time, server_time}
-4. Frontend receives → Reset missedCount, set pendingKeepalive = false
+1. WebSocket connects → Start keepalive interval (5s native, 10s browser)
+2. At each interval: Send keepalive {client_time, last_seen_seq} → Set pendingKeepalive = true
+3. Server responds → keepalive_ack {client_time, server_time, server_max_seq, ...}
+4. Frontend receives:
+   - Reset missedCount, set pendingKeepalive = false
+   - Sync isStreaming, queue_length, status, is_running if changed
+   - If server_max_seq > last_seen_seq → Request load_events {after_seq}
 
 On missed keepalive:
 1. Interval fires, pendingKeepalive is still true → missedCount++
 2. If missedCount >= 2 → Force close WebSocket → Triggers reconnect
+
+Zombie detection timing:
+- Native macOS app: detected after 10s (2 × 5s intervals)
+- Browser: detected after 20s (2 × 10s intervals)
 ```
 
 ### Keepalive State Tracking
@@ -223,13 +257,26 @@ keepaliveRef.current[sessionId] = {
     pendingKeepalive: false,
 };
 
-// On keepalive_ack received - connection is healthy
+// On keepalive_ack received - connection is healthy + check for sync
 case "keepalive_ack": {
     const keepalive = keepaliveRef.current[sessionId];
     if (keepalive) {
         keepalive.lastAckTime = Date.now();
         keepalive.missedCount = 0;
         keepalive.pendingKeepalive = false;
+    }
+
+    // Check if we're behind the server
+    const serverMaxSeq = msg.data?.server_max_seq || 0;
+    if (serverMaxSeq > 0) {
+        const clientMaxSeq = getMaxSeq(sessionsRef.current[sessionId]?.messages || []);
+        if (serverMaxSeq > clientMaxSeq) {
+            // Request missing events
+            ws.send(JSON.stringify({
+                type: "load_events",
+                data: { after_seq: clientMaxSeq }
+            }));
+        }
     }
     break;
 }
@@ -245,7 +292,7 @@ const isConnectionHealthy = (sessionId) => {
     if (!keepalive) return true; // No tracking yet, assume healthy
 
     const timeSinceLastAck = Date.now() - (keepalive.lastAckTime || 0);
-    return timeSinceLastAck < KEEPALIVE_INTERVAL_MS * 2 &&
+    return timeSinceLastAck < getKeepaliveInterval() * 2 &&
            (keepalive.missedCount || 0) === 0;
 };
 ```
@@ -285,16 +332,23 @@ export function wsUrl(path) {
 }
 ```
 
+## Server Authority and Stale Client Detection
+
+> **📖 See**: [27-web-frontend-sync.md](./27-web-frontend-sync.md) for detailed stale client detection, recovery flows, and keepalive-based sync patterns.
+
+**Key principle**: The server is the single source of truth. When client and server disagree, server always wins.
+
 ## Sequence Number Contract
 
 See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#sequence-number-contract) for the complete formal specification.
 
 ### Frontend Responsibilities
 
-1. **Update lastSeenSeq immediately during streaming** (H1 fix):
+1. **Calculate lastSeenSeq dynamically from messages**:
    ```javascript
-   // Called for agent_message, agent_thought, tool_call, user_prompt
-   updateLastSeenSeqIfHigher(sessionId, msg.data.seq);
+   // On WebSocket connect, calculate from messages in state
+   const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
+   const lastSeq = getMaxSeq(sessionMessages);
    ```
 
 2. **Client-side deduplication by seq** (M1 fix):
@@ -307,7 +361,16 @@ See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#seq
    markSeqSeen(sessionId, msgSeq);
    ```
 
-3. **Allow same-seq for coalescing**:
+3. **Reset seq tracker on stale client recovery** (M1 fix):
+   ```javascript
+   // In events_loaded handler - CRITICAL!
+   if (isStaleClient) {
+     clearSeenSeqs(sessionId);  // Reset before processing fresh events
+   }
+   ```
+   > **📖 See**: [27-web-frontend-sync.md](./27-web-frontend-sync.md#critical-reset-seq-tracker-on-stale-client-recovery) for why this is critical.
+
+4. **Allow same-seq for coalescing**:
    ```javascript
    // Allow same seq as last message (streaming continuation)
    if (lastMessageSeq && seq === lastMessageSeq) return false;

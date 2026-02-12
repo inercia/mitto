@@ -334,12 +334,11 @@ The queue system supports automatic dequeuing for idle agent sessions:
 
 2. **On server startup**: `ProcessPendingQueues()` checks all persisted sessions for queued messages. For sessions with pending items, it:
    - Resumes the session (starts ACP process)
-   - Checks if the delay period has elapsed
-   - Sends the first queued message if conditions are met
+   - Sends the first queued message immediately (delay is skipped because `lastResponseComplete` is zero for freshly resumed sessions)
 
 3. **Delay handling**: The `delay_seconds` configuration controls how long to wait:
    - **Normal flow**: After a prompt completes, sleep for `delay_seconds` before sending the next queued message
-   - **Startup flow**: Check if `delay_seconds` has elapsed since `lastResponseComplete` before sending
+   - **Startup flow**: On startup, the delay is skipped for the first message because `lastResponseComplete` is zero (no previous response yet)
 
 ### Methods
 

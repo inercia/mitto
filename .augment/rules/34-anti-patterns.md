@@ -304,35 +304,106 @@ const isConnectionHealthy = (sessionId) => {
 };
 ```
 
-## WKWebView Anti-Patterns
+## M1 Deduplication Anti-Patterns
 
-### ❌ Don't: Assume localStorage Consistency
+### ❌ Don't: Keep Stale Seq Tracker on Client Recovery
 
 ```javascript
-// BAD: Assuming localStorage in WKWebView matches browser
+// BAD: Seq tracker not reset when stale client detected
+case "events_loaded": {
+  const isStaleClient = isStaleClientState(clientLastSeq, serverLastSeq);
+
+  // Process events without resetting tracker
+  for (const event of events) {
+    if (event.seq) {
+      markSeqSeen(sessionId, event.seq);  // Tracker still has stale highestSeq!
+    }
+  }
+  // Fresh events from server are rejected as "very old" duplicates!
+}
+```
+
+**Problem**: When client has stale state (e.g., `highestSeq = 200` but server now has `lastSeq = 50`), the `isSeqDuplicate()` function rejects any seq < 100 as "very old":
+
+```javascript
+// In isSeqDuplicate()
+if (seq < tracker.highestSeq - MAX_RECENT_SEQS) {
+  return true;  // Wrongly marks fresh events as duplicates!
+}
+```
+
+### ✅ Do: Reset Seq Tracker Before Processing Stale Recovery Events
+
+```javascript
+// GOOD: Reset tracker when stale client detected
+case "events_loaded": {
+  const isStaleClient = isStaleClientState(clientLastSeq, serverLastSeq);
+
+  // CRITICAL: Reset tracker BEFORE processing events
+  if (isStaleClient) {
+    console.log(`[M1 fix] Resetting seq tracker for stale client`);
+    clearSeenSeqs(sessionId);
+  }
+
+  // Now process events with fresh tracker
+  for (const event of events) {
+    if (event.seq) {
+      markSeqSeen(sessionId, event.seq);
+    }
+  }
+}
+```
+
+**Key insight**: The M1 deduplication tracker (`seenSeqsRef`) must be reset when the client detects stale state, otherwise fresh events from the server will be wrongly rejected.
+
+## WKWebView Anti-Patterns
+
+### ❌ Don't: Store Sync State in localStorage
+
+```javascript
+// BAD: Storing lastSeenSeq in localStorage
+localStorage.setItem(`mitto_last_seen_seq_${sessionId}`, lastSeq);
+// Later...
 const lastSeq = localStorage.getItem(`mitto_last_seen_seq_${sessionId}`);
 // This value can be stale in WKWebView!
 ```
 
-**Problem**: WKWebView's localStorage can desynchronize from the actual data store.
+**Problem**: WKWebView's localStorage can desynchronize from the actual data store, causing:
+- Stale seq values that don't match displayed messages
+- Sync requests that return 0 events when messages exist
+- Messages appearing to be "lost" until page reload
 
-### ✅ Do: Validate State on Reconnect
+### ✅ Do: Calculate Sync State from Application State
 
 ```javascript
-// GOOD: Request fresh state from server on reconnect
-ws.onopen = () => {
-    // Don't trust localStorage lastSeenSeq completely
-    // Request events and merge with deduplication
-    ws.send(JSON.stringify({
-        type: 'load_events',
-        data: { after_seq: getLastSeenSeq(sessionId) || 0 }
-    }));
-};
+// GOOD: Calculate lastSeenSeq dynamically from messages in state
+import { getMaxSeq } from '../lib.js';
 
-// Use mergeMessagesWithSync to handle duplicates
-case "events_loaded":
-    messages = mergeMessagesWithSync(session.messages, newMessages);
+ws.onopen = () => {
+    // Calculate from actual messages being displayed
+    const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
+    const lastSeq = getMaxSeq(sessionMessages);
+
+    if (lastSeq > 0) {
+        ws.send(JSON.stringify({
+            type: 'load_events',
+            data: { after_seq: lastSeq }
+        }));
+    } else {
+        // Initial load
+        ws.send(JSON.stringify({
+            type: 'load_events',
+            data: { limit: INITIAL_EVENTS_LIMIT }
+        }));
+    }
+};
 ```
+
+**Benefits**:
+- Always reflects actual displayed messages
+- No stale localStorage issues
+- Works correctly in WKWebView
+- Simpler code (no localStorage read/write)
 
 ## Lessons Learned
 
@@ -386,3 +457,47 @@ When an operation can fail either synchronously (error) or asynchronously (timeo
 - Don't show timeout warnings for synchronous errors
 - Clear pending state on both success AND failure
 
+### 7. Calculate Sync State from Application State, Not localStorage
+
+For sync state (like `lastSeenSeq`), calculate dynamically from application state:
+- localStorage can become stale, especially in WKWebView
+- Application state (messages in React/Preact state) is always current
+- Use `getMaxSeq(messages)` instead of `localStorage.getItem('lastSeenSeq')`
+- This eliminates an entire class of "missing messages" bugs
+
+### 8. Auth Page Assets Must Be in Public Paths
+
+When adding assets to authentication pages (auth.html), ensure they're in `publicStaticPaths`:
+
+```go
+// internal/web/auth.go
+var publicStaticPaths = map[string]bool{
+    "/auth.html":    true,
+    "/auth.js":      true,
+    "/tailwind.css": true,  // ← Don't forget CSS!
+    // ...
+}
+```
+
+**Symptom**: Login page shows unstyled HTML, browser console shows MIME type error
+**Cause**: CSS file not in public paths → redirected to auth.html → wrong MIME type
+**Fix**: Add the CSS file to `publicStaticPaths`
+
+See `14-web-backend-auth.md` for complete authentication patterns.
+
+### 9. Reset Deduplication State on Stale Client Recovery
+
+When a client reconnects with stale state (detected by `clientLastSeq > serverLastSeq`), any deduplication tracking state must be reset:
+
+- The M1 seq tracker (`seenSeqsRef`) tracks `highestSeq` from previously seen events
+- If not reset, fresh events from the server are wrongly rejected as "very old" duplicates
+- The `isSeqDuplicate()` function uses `seq < highestSeq - MAX_RECENT_SEQS` to detect old events
+- With stale `highestSeq = 200` and `MAX_RECENT_SEQS = 100`, any `seq < 100` is rejected
+
+**Pattern**: Always reset deduplication state when transitioning from stale to fresh state:
+```javascript
+if (isStaleClient) {
+  clearSeenSeqs(sessionId);  // Reset M1 tracker
+  // Then process fresh events from server
+}
+```

@@ -22,6 +22,10 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Follow-up Suggestions](follow-up-suggestions.md)** - AI-generated response suggestions, persistence, multi-client sync, and lifecycle
 
+### Debugging & Tools
+
+- **[MCP Debug Server](mcp.md)** - Built-in MCP server for debugging, conversation inspection, log analysis, and agent configuration
+
 ## Quick Links
 
 | Topic              | Document                                          | Key Sections           |
@@ -37,6 +41,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Workspace API      | [Workspaces](workspaces.md)                       | Workspace REST API     |
 | Mobile support     | [Web Interface](web-interface.md)                 | Mobile Wake Resync     |
 | Action buttons     | [Follow-up Suggestions](follow-up-suggestions.md) | Persistence, Lifecycle |
+| MCP debugging      | [MCP Debug Server](mcp.md)                        | Tools, Agent Config    |
 
 ## Additional Documentation
 

@@ -13,9 +13,15 @@ keywords:
   - prompt_received
   - ACK
   - message ordering
+  - last_user_prompt_id
+  - delivery verification
 ---
 
 # Sequence Numbers and Observer Pattern
+
+> **📖 Full Protocol Documentation**: See [docs/devel/websocket-messaging.md](../../docs/devel/websocket-messaging.md) for complete WebSocket protocol specification, message formats, sequence number contract, and communication flows.
+
+This file covers **backend implementation patterns** for sequence numbers and observers. For protocol details and message formats, refer to the main documentation.
 
 ## Critical Patterns
 
@@ -183,6 +189,23 @@ Frontend                    Backend
 | `prompt_received` | Prompt accepted, processing started | Clear pending, show streaming |
 | `error` | Prompt rejected (e.g., already prompting) | Show error, preserve input |
 
+### Delivery Verification via Connected Message
+
+The `connected` message includes `last_user_prompt_id` and `last_user_prompt_seq` to help clients verify delivery after reconnecting from a zombie connection:
+
+```go
+// In sendSessionConnected()
+if events, err := c.store.ReadEventsLast(c.sessionID, 50, 0); err == nil {
+    lastPromptInfo := session.GetLastUserPromptInfo(events)
+    if lastPromptInfo.Found {
+        data["last_user_prompt_id"] = lastPromptInfo.PromptID
+        data["last_user_prompt_seq"] = lastPromptInfo.Seq
+    }
+}
+```
+
+> **📖 See**: [Send Timeout with Delivery Verification](../../docs/devel/websocket-messaging.md#corner-case-send-timeout-with-delivery-verification) for the complete flow.
+
 ### Error Before ACK
 
 When backend rejects prompt synchronously (e.g., "prompt already in progress"):
@@ -232,6 +255,8 @@ See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#seq
 **H1: Stale lastSeenSeq** - Frontend now updates `lastSeenSeq` immediately during streaming, not just at `prompt_complete`.
 
 **H2: Observer Registration Race** - Server syncs missed events after observer registration to handle the race window.
+
+**H3: Keepalive Sync with Buffered Events** - When `load_events` is called with `after_seq` (keepalive sync), the server now also replays buffered events, not just persisted ones. This is critical because `getServerMaxSeq()` includes buffer events.
 
 **M1: Client-Side Deduplication** - Frontend tracks seen `seq` values and skips duplicates as defense-in-depth.
 

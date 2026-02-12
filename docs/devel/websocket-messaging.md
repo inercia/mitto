@@ -139,6 +139,191 @@ func (mb *MarkdownBuffer) flushLocked() {
 
 This ensures that even if multiple text chunks are buffered together, the seq from the first chunk is preserved and used when the content is eventually flushed.
 
+### Event Type Ordering Guarantees
+
+The system guarantees correct ordering for **all event types**, not just agent messages. The `StreamBuffer` wraps the `MarkdownBuffer` and handles buffering of non-markdown events when they arrive mid-block (list, table, code block).
+
+| Event Type          | Buffered?            | Behavior                              | Seq Assignment                            |
+| ------------------- | -------------------- | ------------------------------------- | ----------------------------------------- |
+| `AgentMessageChunk` | Yes (MarkdownBuffer) | Buffered until block completes        | At receive time, preserved through buffer |
+| `AgentThoughtChunk` | Conditional          | Buffered if mid-block, else immediate | At receive time                           |
+| `ToolCall`          | Conditional          | Buffered if mid-block, else immediate | At receive time                           |
+| `ToolCallUpdate`    | Conditional          | Buffered if mid-block, else immediate | At receive time                           |
+| `Plan`              | Conditional          | Buffered if mid-block, else immediate | At receive time                           |
+| `FileRead`          | No                   | Immediate                             | At receive time                           |
+| `FileWrite`         | No                   | Immediate                             | At receive time                           |
+
+**Key ordering guarantees:**
+
+1. **Non-markdown events don't break lists/tables/code blocks**: When a `ToolCall`, `AgentThoughtChunk`, or `Plan` arrives while we're in the middle of a markdown block (list, table, or code block), the event is **buffered** and emitted after the block completes. This prevents tool calls from breaking list rendering and ensures tables are rendered as complete units.
+
+2. **Non-markdown events flush paragraphs**: When a non-markdown event arrives and we're NOT in a block (just a paragraph), the paragraph is flushed and the event is emitted immediately.
+
+3. **Sequence numbers are strictly increasing**: Each event gets a unique, monotonically increasing seq. Events emitted later always have higher seq values.
+
+4. **Buffered content preserves first seq**: When multiple markdown chunks are buffered together, the seq from the first chunk is used when the content is flushed.
+
+#### Block Detection
+
+The system detects when content is inside a markdown block that shouldn't be interrupted:
+
+| Block Type        | Start Detection                     | End Detection               |
+| ----------------- | ----------------------------------- | --------------------------- |
+| **Numbered List** | Line starts with `1. `, `2. `, etc. | Double newline (empty line) |
+| **Bullet List**   | Line starts with `- `, `* `, `+ `   | Double newline (empty line) |
+| **Table**         | Line contains `\|` pipe character   | Double newline (empty line) |
+| **Code Block**    | Line starts with ` ``` `            | Closing ` ``` `             |
+
+When an event arrives while in a block, it is added to a pending queue. The queue is flushed when:
+
+1. The markdown block ends (detected by double newline or closing fence)
+2. `Flush()` is called explicitly (at end of agent response)
+
+This ensures visual continuity of structured content while preserving the correct event ordering.
+
+#### Inline Formatting Protection
+
+The system also protects against flushing content with unmatched inline formatting markers (`**`, `` ` ``). This prevents rendering broken markdown like:
+
+```
+4. **Real-time
+```
+
+Instead of:
+
+```
+4. **Real-time messaging works after refresh** - New messages
+```
+
+The `HasUnmatchedInlineFormatting()` function counts formatting markers and returns true if they're unbalanced. This check is applied:
+
+1. **Soft timeout flush**: Won't flush if formatting is unmatched
+2. **Inactivity timeout flush**: Won't flush if formatting is unmatched
+3. **Size-based flush**: Won't flush if formatting is unmatched
+4. **SafeFlush()**: Won't flush if formatting is unmatched
+
+This ensures that bold text spanning multiple lines (common in agent responses) is rendered correctly as `<strong>` tags rather than showing literal `**` markers.
+
+**Example: Tool Call Mid-List (Buffered)**
+
+```mermaid
+sequenceDiagram
+    participant ACP as ACP Agent
+    participant SB as StreamBuffer
+    participant MD as MarkdownBuffer
+    participant Out as Output (Observers)
+
+    Note over SB: seq counter = 0
+
+    ACP->>SB: AgentMessageChunk("1. First item\n")
+    SB->>SB: seq = 1
+    SB->>MD: Write(seq=1, "1. First item\n")
+    Note over MD: Buffered, inList=true
+
+    ACP->>SB: ToolCall(read_file)
+    SB->>SB: seq = 2
+    SB->>SB: InBlock()? Yes (in list)
+    Note over SB: Buffer tool_call(seq=2)
+
+    ACP->>SB: AgentMessageChunk("2. Second item\n\n")
+    SB->>SB: seq = 3
+    SB->>MD: Write(seq=3, "2. Second item\n\n")
+    Note over MD: Double newline ends list
+    MD->>Out: OnAgentMessage(seq=1, html with complete list)
+    Note over SB: List complete, emit buffered events
+    SB->>Out: OnToolCall(seq=2, ...)
+```
+
+**Output order**: `message(1, complete list) → tool_call(2)`
+
+The list is rendered as a single `<ol>` with both items, then the tool call appears after.
+
+**Example: Tool Call Mid-Table (Buffered)**
+
+Tables are handled the same way as lists. When a tool call arrives while rendering a table, it's buffered until the table completes:
+
+```mermaid
+sequenceDiagram
+    participant ACP as ACP Agent
+    participant SB as StreamBuffer
+    participant MD as MarkdownBuffer
+    participant Out as Output (Observers)
+
+    ACP->>SB: AgentMessageChunk("| Component | Status |\n")
+    SB->>SB: seq = 1
+    SB->>MD: Write(seq=1, "| Component | Status |\n")
+    Note over MD: Buffered, inTable=true
+
+    ACP->>SB: AgentMessageChunk("| --- | --- |\n")
+    SB->>MD: Write(seq=1, "| --- | --- |\n")
+    Note over MD: Still in table
+
+    ACP->>SB: AgentMessageChunk("| WebClient | ✅ Done |\n")
+    SB->>MD: Write(seq=1, "| WebClient | ✅ Done |\n")
+
+    ACP->>SB: ToolCall(read_file)
+    SB->>SB: seq = 2
+    SB->>SB: InBlock()? Yes (in table)
+    Note over SB: Buffer tool_call(seq=2)
+
+    ACP->>SB: AgentMessageChunk("| StreamBuffer | ✅ Done |\n\n")
+    SB->>MD: Write(seq=1, "| StreamBuffer | ✅ Done |\n\n")
+    Note over MD: Double newline ends table
+    MD->>Out: OnAgentMessage(seq=1, complete table HTML)
+    Note over SB: Table complete, emit buffered events
+    SB->>Out: OnToolCall(seq=2, ...)
+```
+
+**Output order**: `message(1, complete table) → tool_call(2)`
+
+The table is rendered as a single `<table>` element with all rows, then the tool call appears after. This ensures proper visual rendering of the table.
+
+**Example: Tool Call Outside Block (Immediate)**
+
+```mermaid
+sequenceDiagram
+    participant ACP as ACP Agent
+    participant SB as StreamBuffer
+    participant MD as MarkdownBuffer
+    participant Out as Output (Observers)
+
+    ACP->>SB: AgentMessageChunk("Let me help")
+    SB->>SB: seq = 1
+    SB->>MD: Write(seq=1, "Let me help")
+    Note over MD: Buffered (paragraph)
+
+    ACP->>SB: ToolCall(read_file)
+    SB->>SB: seq = 2
+    SB->>SB: InBlock()? No (just paragraph)
+    SB->>MD: Flush()
+    MD->>Out: OnAgentMessage(seq=1, html)
+    SB->>Out: OnToolCall(seq=2, ...)
+```
+
+**Output order**: `message(1) → tool_call(2)`
+
+The paragraph is flushed immediately, then the tool call is emitted.
+
+**Testing Event Ordering**
+
+The ordering guarantees are verified by comprehensive tests in `internal/web/event_ordering_test.go`:
+
+- `TestEventOrdering_AllEventTypesInterleaved`: All 7 event types interleaved
+- `TestEventOrdering_ToolCallFlushesBufferedMarkdown`: Tool calls flush pending markdown (when not in block)
+- `TestEventOrdering_ThoughtFlushesBufferedMarkdown`: Thoughts flush pending markdown (when not in block)
+- `TestEventOrdering_MultipleToolCallsWithMessages`: Multiple tool calls with messages
+- `TestEventOrdering_BufferedMarkdownPreservesFirstSeq`: Buffered chunks use first seq
+- `TestEventOrdering_RapidEventSequence`: Rapid event delivery maintains order
+- `TestEventOrdering_FileOperationsWithMessages`: File operations interleaved with messages
+- `TestEventOrdering_ListItemWithMultiLineBold`: Bold text spanning multiple lines in list items
+- `TestEventOrdering_InactivityTimeoutRespectsUnmatchedFormatting`: **Key test** - inactivity timeout respects unmatched `**`
+- `TestEventOrdering_ListWithDelayBetweenChunks`: Delays between chunks don't break lists
+- `TestEventOrdering_ToolCallMidListWithMultiLineBold`: Tool calls mid-list with multi-line bold
+- `TestEventOrdering_ToolCallDoesNotBreakList`: **Key test** - verifies tool calls mid-list are buffered
+- `TestEventOrdering_ToolCallDoesNotBreakTable`: **Key test** - verifies tool calls mid-table are buffered
+- `TestEventOrdering_ToolCallDoesNotBreakTableWithHeader`: Verifies tables with headers are preserved
+- `TestEventOrdering_LongMarkdownWithInterruptions`: Complex scenario with multiple interruptions
+
 ### Frontend Ordering Strategy
 
 The frontend preserves message order using these principles:
@@ -152,17 +337,37 @@ The frontend preserves message order using these principles:
 
 This section formalizes the sequence number contract between the backend and frontend. Adhering to this contract is critical for correct message ordering, deduplication, and reconnection sync.
 
+### Server is Always Right
+
+**Critical Principle**: The server is the single source of truth for sequence numbers. When there's a mismatch between client and server state, **the server always wins**.
+
+This is essential because mobile clients can have stale state due to:
+
+- Phone sleeping while in background
+- Network disconnection and reconnection
+- Server restart while client was offline
+- Browser tab restoration with cached state
+
+When the client detects `clientLastSeq > serverLastSeq`, it must:
+
+1. Discard its messages and use the server's data
+2. Reset its sequence tracking to the server's values
+3. Auto-load any remaining messages if `hasMore=true`
+
+**Never** try to "fix" the server based on client state.
+
 ### Contract Summary
 
-| Property            | Guarantee                                                                 |
-| ------------------- | ------------------------------------------------------------------------- |
-| **Uniqueness**      | Each event in a session has a unique `seq` (except coalescing chunks)     |
-| **Monotonicity**    | `seq` values are strictly increasing within a session                     |
-| **Assignment Time** | `seq` is assigned when the event is received from ACP, not at persistence |
-| **Persistence**     | `seq` is preserved when events are written to `events.jsonl`              |
-| **Coalescing**      | Multiple chunks of the same logical message share the same `seq`          |
-| **No Gaps**         | `seq` values are contiguous (1, 2, 3, ...) with no gaps                   |
-| **No Reuse**        | Once assigned, a `seq` is never reused or reassigned                      |
+| Property             | Guarantee                                                                 |
+| -------------------- | ------------------------------------------------------------------------- |
+| **Server Authority** | Server's sequence numbers are authoritative; client defers on mismatch    |
+| **Uniqueness**       | Each event in a session has a unique `seq` (except coalescing chunks)     |
+| **Monotonicity**     | `seq` values are strictly increasing within a session                     |
+| **Assignment Time**  | `seq` is assigned when the event is received from ACP, not at persistence |
+| **Persistence**      | `seq` is preserved when events are written to `events.jsonl`              |
+| **Coalescing**       | Multiple chunks of the same logical message share the same `seq`          |
+| **No Gaps**          | `seq` values are contiguous (1, 2, 3, ...) with no gaps                   |
+| **No Reuse**         | Once assigned, a `seq` is never reused or reassigned                      |
 
 ### Backend Responsibilities
 
@@ -187,18 +392,17 @@ This section formalizes the sequence number contract between the backend and fro
 
 ### Frontend Responsibilities
 
-1. **Update lastSeenSeq immediately during streaming**: The frontend updates `lastSeenSeq` in localStorage when streaming events arrive, not just at `prompt_complete` (H1 fix):
+1. **Calculate lastSeenSeq dynamically from messages**: The frontend calculates `lastSeenSeq` dynamically from messages in state using `getMaxSeq()`, avoiding stale localStorage issues (especially in WKWebView):
 
    ```javascript
-   // Called for agent_message, agent_thought, tool_call, user_prompt
-   function updateLastSeenSeqIfHigher(sessionId, seq) {
-     if (!seq || seq <= 0) return;
-     const currentSeq = getLastSeenSeq(sessionId);
-     if (seq > currentSeq) {
-       setLastSeenSeq(sessionId, seq);
-     }
-   }
+   // Calculate lastSeenSeq from messages in state (not localStorage)
+   import { getMaxSeq } from "../lib.js";
+
+   const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
+   const lastSeenSeq = getMaxSeq(sessionMessages);
    ```
+
+   > **Note**: The older approach of storing `lastSeenSeq` in localStorage via `setLastSeenSeq()` is deprecated. See `.augment/rules/34-anti-patterns.md` for details.
 
 2. **Client-side deduplication by seq**: The frontend tracks seen `seq` values and skips duplicates (M1 fix):
 
@@ -270,27 +474,22 @@ sequenceDiagram
     WC->>BS: onAgentMessage(seq=3, html)
     BS->>Buffer: AppendAgentMessage(seq=3, html)
     BS->>WS: OnAgentMessage(seq=3, html)
-    WS->>LS: updateLastSeenSeqIfHigher(3)
+    Note over WS: Messages stored in React state with seq
 
     ACP->>WC: PromptComplete
     BS->>Buffer: Flush()
     BS->>Store: Persist buffered events (seq=1, seq=3)
     BS->>WS: OnPromptComplete(event_count=3)
-    WS->>LS: setLastSeenSeq(3)
+    Note over WS: lastSeenSeq calculated from messages via getMaxSeq()
 ```
 
 ### Edge Cases and Fixes
 
-#### H1: Stale lastSeenSeq During Streaming
+#### H1: Stale lastSeenSeq (Historical - Now Fixed)
 
-**Problem**: If the client disconnects during streaming (before `prompt_complete`), the `lastSeenSeq` in localStorage was stale because it was only updated at `prompt_complete`.
+**Problem**: Previously, `lastSeenSeq` was stored in localStorage and could become stale if the client disconnected during streaming.
 
-**Fix**: Update `lastSeenSeq` immediately when streaming events arrive:
-
-- `agent_message` → update lastSeenSeq
-- `agent_thought` → update lastSeenSeq
-- `tool_call` → update lastSeenSeq
-- `user_prompt` → update lastSeenSeq
+**Fix**: The frontend now calculates `lastSeenSeq` dynamically from messages in React state using `getMaxSeq()`. This avoids stale localStorage issues, especially in WKWebView where localStorage can desynchronize from the actual data store.
 
 #### H2: Observer Registration Race
 
@@ -316,6 +515,18 @@ if lastSeq > 0 {
 - Allow same-seq for coalescing (streaming continuation)
 - Mark seq as seen after processing
 - Prune old seqs to prevent unbounded memory growth
+- **Critical**: Reset tracker when stale client state is detected (see below)
+
+**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), the seq tracker MUST be reset BEFORE processing events. Without this reset, the tracker's `highestSeq` from the stale state would cause all fresh events from the server to be wrongly rejected as "very old" duplicates.
+
+Example scenario:
+
+1. Client had `highestSeq = 200` from previous session
+2. Server was restarted, now has `lastSeq = 50`
+3. Server sends events with seqs 1-50
+4. Without reset: `isSeqDuplicate(50)` returns `true` because `50 < 200 - 100` (highestSeq - MAX_RECENT_SEQS)
+5. All messages are rejected → UI shows no messages!
+6. With reset: Fresh tracker accepts all events correctly
 
 ### Testing the Contract
 
@@ -349,23 +560,25 @@ All WebSocket messages use a JSON envelope format with `type` and optional `data
 
 ### Backend → Frontend Messages
 
-| Type              | Data                                                                          | Description                                  |
-| ----------------- | ----------------------------------------------------------------------------- | -------------------------------------------- |
-| `connected`       | `{session_id, client_id, acp_server, is_running}`                             | Connection established                       |
-| `prompt_received` | `{prompt_id}`                                                                 | ACK that prompt was received and persisted   |
-| `user_prompt`     | `{seq, sender_id, prompt_id, message, is_mine}`                               | Broadcast of user prompt to all clients      |
-| `agent_message`   | `{seq, html, is_prompting}`                                                   | HTML-rendered agent response chunk           |
-| `agent_thought`   | `{seq, text, is_prompting}`                                                   | Agent thinking/reasoning (plain text)        |
-| `tool_call`       | `{seq, id, title, status, is_prompting}`                                      | Tool invocation notification                 |
-| `tool_update`     | `{seq, id, status, is_prompting}`                                             | Tool status update                           |
-| `permission`      | `{request_id, title, description, options}`                                   | Permission request                           |
-| `prompt_complete` | `{event_count}`                                                               | Agent finished responding                    |
-| `events_loaded`   | `{events, has_more, first_seq, last_seq, total_count, prepend, is_prompting}` | Response to load_events request              |
-| `session_sync`    | `{events, event_count, is_running, is_prompting}`                             | (DEPRECATED) Response to sync_session        |
-| `keepalive_ack`   | `{client_time, server_time}`                                                  | Response to keepalive (for zombie detection) |
-| `error`           | `{message, code?}`                                                            | Error notification                           |
+| Type              | Data                                                                                           | Description                                                                  |
+| ----------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `connected`       | `{session_id, client_id, acp_server, is_running, last_user_prompt_id?, last_user_prompt_seq?}` | Connection established (includes last prompt info for delivery verification) |
+| `prompt_received` | `{prompt_id}`                                                                                  | ACK that prompt was received and persisted                                   |
+| `user_prompt`     | `{seq, sender_id, prompt_id, message, is_mine}`                                                | Broadcast of user prompt to all clients                                      |
+| `agent_message`   | `{seq, html, is_prompting}`                                                                    | HTML-rendered agent response chunk                                           |
+| `agent_thought`   | `{seq, text, is_prompting}`                                                                    | Agent thinking/reasoning (plain text)                                        |
+| `tool_call`       | `{seq, id, title, status, is_prompting}`                                                       | Tool invocation notification                                                 |
+| `tool_update`     | `{seq, id, status, is_prompting}`                                                              | Tool status update                                                           |
+| `permission`      | `{request_id, title, description, options}`                                                    | Permission request                                                           |
+| `prompt_complete` | `{event_count}`                                                                                | Agent finished responding                                                    |
+| `events_loaded`   | `{events, has_more, first_seq, last_seq, total_count, prepend, is_prompting}`                  | Response to load_events request                                              |
+| `session_sync`    | `{events, event_count, is_running, is_prompting}`                                              | (DEPRECATED) Response to sync_session                                        |
+| `keepalive_ack`   | `{client_time, server_time, server_max_seq, is_prompting, is_running, queue_length, status}`   | Response to keepalive (for zombie detection and state sync)                  |
+| `error`           | `{message, code?}`                                                                             | Error notification                                                           |
 
 **Note on `seq`**: All event messages (`user_prompt`, `agent_message`, `agent_thought`, `tool_call`, `tool_update`) include a sequence number for ordering and deduplication. Multiple chunks of the same logical message (e.g., streaming agent message) share the same `seq`.
+
+**Note on `connected`**: The `last_user_prompt_id` and `last_user_prompt_seq` fields are included when the session has at least one user prompt. These are used by the frontend to verify delivery of pending prompts after reconnecting from a zombie WebSocket connection (see [Send Timeout with Delivery Verification](#corner-case-send-timeout-with-delivery-verification)).
 
 ## Communication Flows
 
@@ -532,65 +745,92 @@ sequenceDiagram
     UI->>Storage: removePendingPrompt(promptId)
 ```
 
-### Corner Case: Send Timeout with Uncertain Delivery
+### Corner Case: Send Timeout with Automatic Retry
 
-When the ACK doesn't arrive within the timeout period (15s desktop, 30s mobile):
+When the ACK doesn't arrive within the initial timeout period, the frontend automatically reconnects and retries delivery. The user can wait up to **10 seconds total** for message delivery.
+
+**Timing budget (10 seconds total):**
+
+- Initial ACK timeout: **3 seconds** (desktop) / **4 seconds** (mobile)
+- Reconnect + delivery verification: up to 4 seconds
+- Retry delivery + second ACK: up to 3 seconds
 
 ```mermaid
 sequenceDiagram
     participant UI as Mitto UI
-    participant WS as WebSocket
+    participant ZombieWS as Zombie WebSocket
+    participant NewWS as New WebSocket
     participant Backend as Mitto Backend
     participant Storage as localStorage
 
     UI->>Storage: savePendingPrompt(promptId, message)
     UI->>UI: Add message to UI (optimistic)
-    UI->>WS: prompt {message, prompt_id}
-    UI->>UI: Start timeout (15s desktop, 30s mobile)
+    UI->>ZombieWS: prompt {message, prompt_id}
+    UI->>UI: Start ACK timeout (3s desktop, 4s mobile)
 
-    Note over WS,Backend: Network issues - message may or may not arrive
+    Note over ZombieWS,Backend: Connection may be zombie
 
-    Note over UI: Timeout expires...
-    UI->>UI: Timeout fires
-    UI->>WS: close() (force reconnect)
-    UI->>UI: Show error: "Message delivery could not be confirmed"
+    Note over UI: ACK timeout expires...
+    UI->>UI: ACK timeout fires
+    UI->>ZombieWS: close() (force close potentially zombie connection)
 
-    Note over UI,Backend: On reconnect, sync will reveal truth
-    UI->>WS: New connection
-    Backend-->>WS: connected {...}
-    UI->>WS: load_events {after_seq: lastSeenSeq}
+    Note over UI,Backend: Reconnect to verify delivery status
+    UI->>NewWS: Connect to /api/sessions/{id}/ws
+    Backend-->>NewWS: connected {last_user_prompt_id, last_user_prompt_seq, ...}
+    NewWS-->>UI: Store last_user_prompt_id in ref
 
-    alt Message was received
-        Backend-->>WS: events_loaded {includes user_prompt with our prompt_id}
-        WS-->>UI: Message confirmed (deduplicate with existing)
+    UI->>UI: Compare: pending promptId == last_user_prompt_id?
+
+    alt Prompt was delivered (IDs match)
+        UI->>UI: Resolve send as SUCCESS
         UI->>Storage: removePendingPrompt(promptId)
-    else Message was lost
-        Backend-->>WS: events_loaded {no matching prompt_id}
-        Note over UI: Pending prompt still in localStorage
-        UI->>UI: retryPendingPrompts()
-        UI->>WS: prompt {message, prompt_id} (retry)
-        Backend-->>WS: user_prompt {seq, prompt_id}
+        Note over UI: No error shown - message was delivered! ✓
+    else Prompt was NOT delivered (IDs don't match)
+        Note over UI,Backend: Retry delivery on fresh connection
+        UI->>NewWS: prompt {message, prompt_id} (retry)
+        UI->>UI: Start retry ACK timeout (remaining time budget)
+        Backend-->>NewWS: prompt_received {prompt_id}
+        NewWS-->>UI: ACK received
+        UI->>UI: Resolve send as SUCCESS
         UI->>Storage: removePendingPrompt(promptId)
+    else Reconnection failed within budget
+        UI->>UI: Reject with network error
+        UI->>UI: Show error: "Connection lost, please check network"
+    else Retry ACK timeout (budget exhausted)
+        UI->>UI: Reject with error
+        UI->>UI: Show error: "Message delivery could not be confirmed"
+        Note over UI: User can retry manually
     end
 ```
 
-#### Mobile Timeout Considerations
+**Key behavior:**
 
-The prompt ACK timeout is **30 seconds on mobile** vs **15 seconds on desktop**. This is because:
+1. **Short initial timeout**: Wait only 3-4 seconds for ACK before assuming connection issues
+2. **Automatic reconnect**: Force a fresh WebSocket connection on timeout
+3. **Delivery verification**: Check `last_user_prompt_id` in `connected` message
+4. **Automatic retry**: If message wasn't delivered, retry on the fresh connection
+5. **Total budget**: User waits at most 10 seconds before seeing an error
+6. **Transparent recovery**: Most zombie connection issues are resolved without user intervention
 
-1. **Network variability**: Mobile networks have higher latency and more variability than desktop connections
-2. **Background/foreground transitions**: iOS Safari may suspend WebSocket activity briefly when switching apps
-3. **ACK path**: The `prompt_received` ACK is only sent after the message is persisted and broadcast, which involves more server-side work than just receiving the WebSocket message
+This approach significantly reduces false "delivery failed" errors and provides automatic recovery from zombie connections.
 
-Mobile detection uses user-agent detection:
+#### Timeout Configuration
 
 ```javascript
+// Timing constants
+const TOTAL_DELIVERY_BUDGET_MS = 10000; // Max time user waits for delivery
+const INITIAL_ACK_TIMEOUT_MS = 3000; // Desktop: wait for first ACK
+const MOBILE_ACK_TIMEOUT_MS = 4000; // Mobile: slightly longer due to network variability
+const RECONNECT_TIMEOUT_MS = 4000; // Max time to establish new connection
+
+// Mobile detection
 const isMobile =
   /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
     navigator.userAgent,
   );
-const ACK_TIMEOUT_MS = isMobile ? 30000 : 15000;
 ```
+
+Mobile devices get a slightly longer initial timeout due to network variability, but the total 10-second budget remains the same.
 
 #### Agent Response as Implicit ACK
 
@@ -1174,17 +1414,74 @@ sequenceDiagram
     Note over User: Confused - message may have been sent!
 ```
 
-**The Solution: Client-Side Keepalive**
+**The Solution: Client-Side Keepalive with Sequence Sync**
 
-The frontend sends periodic `keepalive` messages and tracks responses to detect zombie connections:
+The frontend sends periodic `keepalive` messages that serve two purposes:
+
+1. **Detect zombie connections** - Force reconnect if keepalives aren't acknowledged
+2. **Detect out-of-sync state** - Compare sequence numbers to catch missed messages
 
 ```javascript
-// Configuration
-const KEEPALIVE_INTERVAL_MS = 25000; // Send keepalive every 25 seconds
+// Configuration - different intervals for different environments
+// Native macOS app uses shorter interval for faster sync detection (local, no latency)
+const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Native app: every 5 seconds
+const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Browser: every 10 seconds
 const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
+
+// Dynamic interval based on runtime environment
+function getKeepaliveInterval() {
+  return isNativeApp()
+    ? KEEPALIVE_INTERVAL_NATIVE_MS
+    : KEEPALIVE_INTERVAL_BROWSER_MS;
+}
 ```
 
-**Keepalive Flow:**
+**Keepalive Message Format:**
+
+```javascript
+// Client → Server (keepalive)
+{
+  type: "keepalive",
+  data: {
+    client_time: 1234567890123,  // Unix timestamp (ms)
+    last_seen_seq: 42            // Highest seq client has (calculated from messages)
+  }
+}
+
+// Server → Client (keepalive_ack)
+{
+  type: "keepalive_ack",
+  data: {
+    client_time: 1234567890123,  // Echo back client time for RTT calculation
+    server_time: 1234567890456,  // Server's current time (Unix ms)
+    server_max_seq: 45,          // Highest seq server has for this session
+    is_prompting: true,          // Whether agent is currently responding
+    is_running: true,            // Whether background session is active (ACP connected)
+    queue_length: 3,             // Number of messages waiting in queue
+    status: "active"             // Session status (active, completed, error)
+  }
+}
+```
+
+**Piggybacked State Fields:**
+
+The `keepalive_ack` includes additional session state to keep the UI in sync without separate API calls:
+
+| Field          | Type   | Description                                                                                                 |
+| -------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `is_running`   | bool   | Whether the background session is active (ACP connection alive). Useful for showing "reconnect" indicators. |
+| `queue_length` | int    | Number of messages waiting in the queue. Enables multi-tab queue sync.                                      |
+| `status`       | string | Session status (`active`, `completed`, `error`). Detects session completion while UI was in background.     |
+
+These fields are synced every 5-10 seconds (depending on native vs browser), providing eventual consistency for:
+
+- Multi-tab scenarios (queue updated in another tab)
+- Mobile wake recovery (session state changed while phone was sleeping)
+- Background session monitoring (ACP connection dropped)
+
+**Sequence Sync on Keepalive:**
+
+When `server_max_seq > last_seen_seq`, the client knows it missed messages and automatically requests a sync:
 
 ```mermaid
 sequenceDiagram
@@ -1192,21 +1489,43 @@ sequenceDiagram
     participant WS as WebSocket
     participant Server as Backend
 
-    Note over Frontend: Every 25 seconds...
-    Frontend->>WS: keepalive {client_time}
-    WS->>Server: keepalive {client_time}
-    Server-->>WS: keepalive_ack {client_time, server_time}
+    Note over Frontend: Every 5s (native) or 10s (browser)...
+    Frontend->>WS: keepalive {client_time, last_seen_seq: 42}
+    WS->>Server: keepalive
+    Server-->>WS: keepalive_ack {server_max_seq: 45, is_prompting, queue_length, status}
     WS-->>Frontend: keepalive_ack received
-    Frontend->>Frontend: Update lastAckTime, reset missedCount
 
-    Note over Frontend: 25 seconds later...
-    Frontend->>WS: keepalive {client_time}
+    Note over Frontend: Sync streaming state, queue length, status
+    Note over Frontend: server_max_seq(45) > last_seen_seq(42)
+    Note over Frontend: We're behind! Request sync
+    Frontend->>WS: load_events {after_seq: 42}
+    Server-->>WS: events_loaded {events: [...], last_seq: 45}
+    Frontend->>Frontend: Merge missing events
+```
+
+**Keepalive Flow (Zombie Detection):**
+
+```mermaid
+sequenceDiagram
+    participant Frontend
+    participant WS as WebSocket
+    participant Server as Backend
+
+    Note over Frontend: Every 5s (native) or 10s (browser)...
+    Frontend->>WS: keepalive {client_time, last_seen_seq}
+    WS->>Server: keepalive
+    Server-->>WS: keepalive_ack {server_time, server_max_seq, is_prompting, is_running, queue_length, status}
+    WS-->>Frontend: keepalive_ack received
+    Frontend->>Frontend: Sync isStreaming, queue, status, is_running
+
+    Note over Frontend: Next interval, no response...
+    Frontend->>WS: keepalive {client_time, last_seen_seq}
     Note over WS: Connection is dead (zombie)
     Note over Frontend: No response received
     Frontend->>Frontend: missedCount++
 
-    Note over Frontend: 25 seconds later...
-    Frontend->>WS: keepalive {client_time}
+    Note over Frontend: Next interval, still no response...
+    Frontend->>WS: keepalive {client_time, last_seen_seq}
     Note over Frontend: Still no response, missedCount = 2
     Frontend->>Frontend: Force close WebSocket
     Note over Frontend: onclose triggers reconnection
@@ -1224,7 +1543,7 @@ const isConnectionHealthy = (sessionId) => {
   const timeSinceLastAck = Date.now() - (keepalive.lastAckTime || 0);
   // Unhealthy if no ACK in 2x the keepalive interval or missed keepalives
   return (
-    timeSinceLastAck < KEEPALIVE_INTERVAL_MS * 2 &&
+    timeSinceLastAck < getKeepaliveInterval() * 2 &&
     (keepalive.missedCount || 0) === 0
   );
 };
@@ -1254,10 +1573,11 @@ sequenceDiagram
 
 **Key Benefits:**
 
-1. **Proactive detection**: Zombie connections are detected within ~50 seconds (2 missed keepalives)
+1. **Proactive detection**: Zombie connections are detected within ~10 seconds (native app, 2 × 5s) or ~20 seconds (browser, 2 × 10s)
 2. **Pre-send validation**: Unhealthy connections are replaced before sending messages
 3. **Improved reliability**: Messages are sent over fresh, verified connections
 4. **Better UX**: Users don't see confusing timeout errors for messages that may have been sent
+5. **Environment-optimized**: Native macOS app uses faster intervals since it's local with no network latency
 
 **Server-Side Keepalive:**
 

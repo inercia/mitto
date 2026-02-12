@@ -108,7 +108,8 @@ const { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, us
 
 ```javascript
 // MAX_MESSAGES prevents memory issues in long sessions
-export const MAX_MESSAGES = 100;
+// Set high enough to allow meaningful history loading (500+ messages)
+export const MAX_MESSAGES = 500;
 
 // Messages auto-trimmed when added
 const newMessages = limitMessages([...session.messages, message]);
