@@ -188,7 +188,7 @@ describe("isSeqDuplicate", () => {
     // These should NOT be duplicates, but without reset they are!
     expect(isSeqDuplicate(tracker, 50, undefined)).toBe(true); // WRONG: rejected as "very old"
     expect(isSeqDuplicate(tracker, 30, undefined)).toBe(true); // WRONG: rejected as "very old"
-    expect(isSeqDuplicate(tracker, 1, undefined)).toBe(true);  // WRONG: rejected as "very old"
+    expect(isSeqDuplicate(tracker, 1, undefined)).toBe(true); // WRONG: rejected as "very old"
 
     // The fix: When isStaleClient is detected in events_loaded handler,
     // clearSeenSeqs(sessionId) is called BEFORE processing events.
@@ -196,7 +196,7 @@ describe("isSeqDuplicate", () => {
     const freshTracker = createSeqTracker();
     expect(isSeqDuplicate(freshTracker, 50, undefined)).toBe(false); // CORRECT: accepted
     expect(isSeqDuplicate(freshTracker, 30, undefined)).toBe(false); // CORRECT: accepted
-    expect(isSeqDuplicate(freshTracker, 1, undefined)).toBe(false);  // CORRECT: accepted
+    expect(isSeqDuplicate(freshTracker, 1, undefined)).toBe(false); // CORRECT: accepted
   });
 });
 
@@ -407,9 +407,7 @@ describe("Available Commands WebSocket message handling", () => {
       type: "available_commands_updated",
       data: {
         session_id: "test-session",
-        commands: [
-          { name: "new-cmd", description: "New command" },
-        ],
+        commands: [{ name: "new-cmd", description: "New command" }],
       },
     };
     const commands = parseCommandsUpdateMessage(msg);

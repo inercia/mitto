@@ -73,7 +73,9 @@ const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
  * @returns {number} Keepalive interval in milliseconds
  */
 function getKeepaliveInterval() {
-  return isNativeApp() ? KEEPALIVE_INTERVAL_NATIVE_MS : KEEPALIVE_INTERVAL_BROWSER_MS;
+  return isNativeApp()
+    ? KEEPALIVE_INTERVAL_NATIVE_MS
+    : KEEPALIVE_INTERVAL_BROWSER_MS;
 }
 
 /**
@@ -235,23 +237,31 @@ export function useWebSocket() {
    * Check if a sequence number has already been seen for a session.
    * Wrapper around utility function that manages per-session state.
    */
-  const isSeqDuplicate = useCallback((sessionId, seq, lastMessageSeq) => {
-    const tracker = getSeqTracker(sessionId);
-    const isDuplicate = isSeqDuplicateUtil(tracker, seq, lastMessageSeq);
-    if (isDuplicate) {
-      console.log(`M1 dedup: Skipping duplicate seq ${seq} for session ${sessionId}`);
-    }
-    return isDuplicate;
-  }, [getSeqTracker]);
+  const isSeqDuplicate = useCallback(
+    (sessionId, seq, lastMessageSeq) => {
+      const tracker = getSeqTracker(sessionId);
+      const isDuplicate = isSeqDuplicateUtil(tracker, seq, lastMessageSeq);
+      if (isDuplicate) {
+        console.log(
+          `M1 dedup: Skipping duplicate seq ${seq} for session ${sessionId}`,
+        );
+      }
+      return isDuplicate;
+    },
+    [getSeqTracker],
+  );
 
   /**
    * Mark a sequence number as seen for a session.
    * Wrapper around utility function that manages per-session state.
    */
-  const markSeqSeen = useCallback((sessionId, seq) => {
-    const tracker = getSeqTracker(sessionId);
-    markSeqSeenUtil(tracker, seq);
-  }, [getSeqTracker]);
+  const markSeqSeen = useCallback(
+    (sessionId, seq) => {
+      const tracker = getSeqTracker(sessionId);
+      markSeqSeenUtil(tracker, seq);
+    },
+    [getSeqTracker],
+  );
 
   /**
    * Clear seen sequences for a session (e.g., when session is deleted or reset).
@@ -259,6 +269,14 @@ export function useWebSocket() {
   const clearSeenSeqs = useCallback((sessionId) => {
     delete seenSeqsRef.current[sessionId];
   }, []);
+
+  // Track pending gap fill requests to avoid duplicate requests
+  // { sessionId: { afterSeq: number, requestTime: number } }
+  const pendingGapFillRef = useRef({});
+
+  // Debounce timeout for gap fill requests (ms)
+  // We wait a bit before requesting to allow for out-of-order delivery
+  const GAP_FILL_DEBOUNCE_MS = 500;
 
   // Track if this is a reconnection (vs initial connection)
   const wasConnectedRef = useRef(false);
@@ -269,6 +287,100 @@ export function useWebSocket() {
   // Keepalive tracking for detecting zombie connections
   // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
   const keepaliveRef = useRef({});
+
+  /**
+   * Check for gaps in message sequence and request missing events if needed.
+   *
+   * When we receive a message with max_seq, we can detect if we're missing events:
+   * - If max_seq > our last known seq + 1, we have a gap
+   * - We request the missing events via load_events with after_seq
+   *
+   * This is called from streaming message handlers (agent_message, tool_call, etc.)
+   * to provide immediate gap detection instead of waiting for keepalive.
+   *
+   * @param {string} sessionId - The session ID
+   * @param {number} maxSeq - The server's max_seq from the message
+   * @param {number} msgSeq - The seq of the current message (optional)
+   */
+  const checkAndFillGap = useCallback(
+    (sessionId, maxSeq, msgSeq) => {
+      if (!maxSeq || maxSeq <= 0) return;
+
+      const session = sessionsRef.current[sessionId];
+      if (!session) return;
+
+      // Get our last known seq (highest of messages in memory or lastLoadedSeq)
+      const sessionMessages = session.messages || [];
+      const clientMaxSeq = Math.max(
+        getMaxSeq(sessionMessages),
+        session.lastLoadedSeq || 0,
+      );
+
+      // If client has stale state (client > server), don't try to fill gaps
+      // This will be handled by the stale detection in keepalive or events_loaded
+      if (isStaleClientState(clientMaxSeq, maxSeq)) {
+        return;
+      }
+
+      // Check if there's a gap: server has more events than we know about
+      // We use a threshold of 1 to avoid false positives from out-of-order delivery
+      // (the current message with msgSeq is being processed, so we should have msgSeq - 1)
+      const expectedSeq = msgSeq ? msgSeq : clientMaxSeq + 1;
+      const gap = maxSeq - expectedSeq;
+
+      if (gap <= 0) {
+        // No gap, or we're ahead (stale) - nothing to do
+        return;
+      }
+
+      // We have a gap! Check if we already have a pending request
+      const pending = pendingGapFillRef.current[sessionId];
+      if (pending && Date.now() - pending.requestTime < GAP_FILL_DEBOUNCE_MS) {
+        // Recent request is pending, skip to avoid duplicate requests
+        return;
+      }
+
+      // Schedule a gap fill request (debounced)
+      console.log(
+        `[gap-fill] Session ${sessionId}: Detected gap of ${gap} events (client has up to ${clientMaxSeq}, server has ${maxSeq}), scheduling fill request`,
+      );
+
+      // Clear any existing timeout
+      if (pending?.timeoutId) {
+        clearTimeout(pending.timeoutId);
+      }
+
+      // Schedule the request with debounce
+      const timeoutId = setTimeout(() => {
+        const ws = sessionWsRefs.current[sessionId];
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          // Request events after our last known seq
+          const afterSeq = clientMaxSeq;
+          console.log(
+            `[gap-fill] Session ${sessionId}: Requesting events after seq ${afterSeq}`,
+          );
+          ws.send(
+            JSON.stringify({
+              type: "load_events",
+              data: {
+                after_seq: afterSeq,
+                limit: 100, // Request up to 100 events to fill the gap
+              },
+            }),
+          );
+        }
+        // Clear pending state after request is sent
+        delete pendingGapFillRef.current[sessionId];
+      }, GAP_FILL_DEBOUNCE_MS);
+
+      pendingGapFillRef.current[sessionId] = {
+        afterSeq: clientMaxSeq,
+        requestTime: Date.now(),
+        timeoutId,
+      };
+    },
+    [sessionsRef],
+  );
 
   // Fetch workspaces and ACP servers
   const fetchWorkspaces = useCallback(async () => {
@@ -570,7 +682,7 @@ export function useWebSocket() {
       console.log("[ActionButtons] Returning buttons for render:", {
         sessionId: activeSessionId,
         buttonCount: buttons.length,
-        buttons: buttons.map(b => b.label),
+        buttons: buttons.map((b) => b.label),
       });
     }
     return buttons;
@@ -601,6 +713,10 @@ export function useWebSocket() {
       storedSession?.working_dir ||
       data.info?.working_dir ||
       "";
+    // Check if session is archived (from session info or stored session)
+    // Archived sessions should not be marked as "active" since they have no ACP connection
+    const isArchived =
+      data.info?.archived || storedSession?.archived || false;
     return {
       session_id: id,
       name: data.info?.name || "New conversation",
@@ -609,10 +725,12 @@ export function useWebSocket() {
       created_at: data.info?.created_at || new Date().toISOString(),
       updated_at: data.info?.updated_at || new Date().toISOString(),
       last_user_message_at: lastUserMsgTime || data.info?.last_user_message_at,
-      status: "active",
-      isActive: true,
-      isStreaming: data.isStreaming || false,
+      // Archived sessions are not "active" - they have no ACP connection
+      status: isArchived ? "archived" : "active",
+      isActive: !isArchived,
+      isStreaming: !isArchived && (data.isStreaming || false),
       messageCount: data.messages?.length || 0,
+      archived: isArchived,
     };
   });
 
@@ -683,7 +801,8 @@ export function useWebSocket() {
                 created_at: msg.data.created_at || session.info?.created_at,
                 status: msg.data.status || "active",
                 runner_type: msg.data.runner_type || session.info?.runner_type,
-                runner_restricted: msg.data.runner_restricted ?? session.info?.runner_restricted,
+                runner_restricted:
+                  msg.data.runner_restricted ?? session.info?.runner_restricted,
                 // Preserve archived flag from existing session info (set by switchSession)
                 archived: session.info?.archived || false,
               },
@@ -695,16 +814,29 @@ export function useWebSocket() {
 
       case "agent_message": {
         const msgSeq = msg.data.seq;
+        const maxSeq = msg.data.max_seq;
         const htmlLen = msg.data.html?.length || 0;
         const isPromptingFromServer = msg.data.is_prompting;
         console.log(
           "[DEBUG agent_message] received:",
-          "sessionId:", sessionId,
-          "seq:", msgSeq,
-          "html_len:", htmlLen,
-          "is_prompting:", isPromptingFromServer,
-          "html_preview:", msg.data.html?.substring(0, 80) + (htmlLen > 80 ? "..." : ""),
+          "sessionId:",
+          sessionId,
+          "seq:",
+          msgSeq,
+          "max_seq:",
+          maxSeq,
+          "html_len:",
+          htmlLen,
+          "is_prompting:",
+          isPromptingFromServer,
+          "html_preview:",
+          msg.data.html?.substring(0, 80) + (htmlLen > 80 ? "..." : ""),
         );
+
+        // Check for gaps using max_seq (immediate gap detection)
+        if (maxSeq) {
+          checkAndFillGap(sessionId, maxSeq, msgSeq);
+        }
 
         // Agent is responding - this proves any pending prompts were received.
         // Resolve pending sends to prevent false "delivery not confirmed" errors on mobile.
@@ -717,7 +849,10 @@ export function useWebSocket() {
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) {
-            console.warn("[DEBUG agent_message] No session found for:", sessionId);
+            console.warn(
+              "[DEBUG agent_message] No session found for:",
+              sessionId,
+            );
             return prev;
           }
           let messages = [...session.messages];
@@ -725,7 +860,10 @@ export function useWebSocket() {
 
           // M1 fix: Check for duplicate events (but allow same-seq for coalescing)
           if (isSeqDuplicate(sessionId, msgSeq, last?.seq)) {
-            console.log("[DEBUG agent_message] Skipping duplicate seq:", msgSeq);
+            console.log(
+              "[DEBUG agent_message] Skipping duplicate seq:",
+              msgSeq,
+            );
             return prev; // Skip duplicate
           }
 
@@ -733,7 +871,11 @@ export function useWebSocket() {
           // - Same seq means it's a continuation of the same logical message
           // - Or if last message is incomplete agent message (backward compat)
           const sameSeq = msgSeq && last?.seq === msgSeq;
-          const shouldAppend = last && last.role === ROLE_AGENT && !last.complete && (sameSeq || !msgSeq);
+          const shouldAppend =
+            last &&
+            last.role === ROLE_AGENT &&
+            !last.complete &&
+            (sameSeq || !msgSeq);
 
           console.log("[DEBUG agent_message] State update:", {
             msgSeq,
@@ -748,12 +890,29 @@ export function useWebSocket() {
           });
 
           if (shouldAppend) {
-            const newHtml = (last.html || "") + msg.data.html;
+            // Safeguard: Check if the incoming HTML is a duplicate of what we already have.
+            // This can happen when the backend sends the same complete message multiple times
+            // (e.g., due to replayBufferedEventsWithDedup after a load_events fallback).
+            // If the existing HTML already ends with the incoming HTML, skip the append.
+            const existingHtml = last.html || "";
+            const incomingHtml = msg.data.html;
+            if (existingHtml.endsWith(incomingHtml)) {
+              console.log(
+                "[DEBUG agent_message] Skipping duplicate append - HTML already contains this content, seq:",
+                msgSeq,
+              );
+              return prev; // Skip duplicate append
+            }
+
+            const newHtml = existingHtml + incomingHtml;
             messages[messages.length - 1] = {
               ...last,
               html: newHtml,
             };
-            console.log("[DEBUG agent_message] Appended to existing message, new html_len:", newHtml.length);
+            console.log(
+              "[DEBUG agent_message] Appended to existing message, new html_len:",
+              newHtml.length,
+            );
           } else {
             // New message - mark seq as seen
             markSeqSeen(sessionId, msgSeq);
@@ -765,10 +924,16 @@ export function useWebSocket() {
               seq: msgSeq,
             });
             messages = limitMessages(messages);
-            console.log("[DEBUG agent_message] Created new message, total messages:", messages.length);
+            console.log(
+              "[DEBUG agent_message] Created new message, total messages:",
+              messages.length,
+            );
           }
           const isPrompting = isPromptingFromServer ?? true;
-          console.log("[DEBUG agent_message] Setting isStreaming to:", isPrompting);
+          console.log(
+            "[DEBUG agent_message] Setting isStreaming to:",
+            isPrompting,
+          );
           return {
             ...prev,
             [sessionId]: { ...session, messages, isStreaming: isPrompting },
@@ -779,16 +944,24 @@ export function useWebSocket() {
 
       case "agent_thought": {
         const msgSeq = msg.data.seq;
+        const maxSeq = msg.data.max_seq;
         console.log(
           "agent_thought received:",
           sessionId,
           "seq:",
           msgSeq,
+          "max_seq:",
+          maxSeq,
           "text:",
           msg.data.text?.substring(0, 50) + "...",
           "is_prompting:",
           msg.data.is_prompting,
         );
+
+        // Check for gaps using max_seq (immediate gap detection)
+        if (maxSeq) {
+          checkAndFillGap(sessionId, maxSeq, msgSeq);
+        }
 
         // Agent is responding - this proves any pending prompts were received.
         // Resolve pending sends to prevent false "delivery not confirmed" errors on mobile.
@@ -812,7 +985,12 @@ export function useWebSocket() {
           // - Same seq means it's a continuation of the same logical thought
           // - Or if last message is incomplete thought (backward compat)
           const sameSeq = msgSeq && last?.seq === msgSeq;
-          if (last && last.role === ROLE_THOUGHT && !last.complete && (sameSeq || !msgSeq)) {
+          if (
+            last &&
+            last.role === ROLE_THOUGHT &&
+            !last.complete &&
+            (sameSeq || !msgSeq)
+          ) {
             messages[messages.length - 1] = {
               ...last,
               text: (last.text || "") + msg.data.text,
@@ -840,11 +1018,14 @@ export function useWebSocket() {
 
       case "tool_call": {
         const msgSeq = msg.data.seq;
+        const maxSeq = msg.data.max_seq;
         console.log(
           "tool_call received:",
           sessionId,
           "seq:",
           msgSeq,
+          "max_seq:",
+          maxSeq,
           "id:",
           msg.data.id,
           "title:",
@@ -854,6 +1035,11 @@ export function useWebSocket() {
           "is_prompting:",
           msg.data.is_prompting,
         );
+
+        // Check for gaps using max_seq (immediate gap detection)
+        if (maxSeq) {
+          checkAndFillGap(sessionId, maxSeq, msgSeq);
+        }
 
         // M1 fix: Check for duplicate events
         if (isSeqDuplicate(sessionId, msgSeq, null)) {
@@ -890,11 +1076,14 @@ export function useWebSocket() {
 
       case "tool_update": {
         const msgSeq = msg.data.seq;
+        const maxSeq = msg.data.max_seq;
         console.log(
           "tool_update received:",
           sessionId,
           "seq:",
           msgSeq,
+          "max_seq:",
+          maxSeq,
           "id:",
           msg.data.id,
           "status:",
@@ -902,6 +1091,12 @@ export function useWebSocket() {
           "is_prompting:",
           msg.data.is_prompting,
         );
+
+        // Check for gaps using max_seq (immediate gap detection)
+        if (maxSeq) {
+          checkAndFillGap(sessionId, maxSeq, msgSeq);
+        }
+
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -947,7 +1142,10 @@ export function useWebSocket() {
             return prev;
           }
 
-          console.log("[ActionButtons] Storing buttons for session:", sessionId);
+          console.log(
+            "[ActionButtons] Storing buttons for session:",
+            sessionId,
+          );
           return {
             ...prev,
             [sessionId]: {
@@ -963,25 +1161,44 @@ export function useWebSocket() {
         const currentSession = sessionsRef.current[sessionId];
         const isBackgroundSession = sessionId !== activeSessionIdRef.current;
         const wasStreaming = currentSession?.isStreaming;
-        const lastMessage = currentSession?.messages?.[currentSession.messages.length - 1];
+        const lastMessage =
+          currentSession?.messages?.[currentSession.messages.length - 1];
+        const maxSeq = msg.data.max_seq;
 
         console.log(
           "[DEBUG prompt_complete] received:",
-          "sessionId:", sessionId,
-          "event_count:", msg.data.event_count,
-          "wasStreaming:", wasStreaming,
-          "lastMessage:", lastMessage ? {
-            role: lastMessage.role,
-            complete: lastMessage.complete,
-            seq: lastMessage.seq,
-            html_len: lastMessage.html?.length || 0,
-          } : null,
+          "sessionId:",
+          sessionId,
+          "event_count:",
+          msg.data.event_count,
+          "max_seq:",
+          maxSeq,
+          "wasStreaming:",
+          wasStreaming,
+          "lastMessage:",
+          lastMessage
+            ? {
+                role: lastMessage.role,
+                complete: lastMessage.complete,
+                seq: lastMessage.seq,
+                html_len: lastMessage.html?.length || 0,
+              }
+            : null,
         );
+
+        // Check for gaps using max_seq (immediate gap detection)
+        // This is important for prompt_complete as it signals the end of a response
+        if (maxSeq) {
+          checkAndFillGap(sessionId, maxSeq, null);
+        }
 
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) {
-            console.warn("[DEBUG prompt_complete] No session found for:", sessionId);
+            console.warn(
+              "[DEBUG prompt_complete] No session found for:",
+              sessionId,
+            );
             return prev;
           }
           const messages = [...session.messages];
@@ -990,19 +1207,25 @@ export function useWebSocket() {
           console.log("[DEBUG prompt_complete] State update:", {
             messageCount: messages.length,
             lastIdx,
-            lastMessage: lastIdx >= 0 ? {
-              role: messages[lastIdx].role,
-              complete: messages[lastIdx].complete,
-              seq: messages[lastIdx].seq,
-              html_len: messages[lastIdx].html?.length || 0,
-            } : null,
+            lastMessage:
+              lastIdx >= 0
+                ? {
+                    role: messages[lastIdx].role,
+                    complete: messages[lastIdx].complete,
+                    seq: messages[lastIdx].seq,
+                    html_len: messages[lastIdx].html?.length || 0,
+                  }
+                : null,
           });
 
           if (lastIdx >= 0) {
             const last = messages[lastIdx];
             if (last.role === ROLE_AGENT || last.role === ROLE_THOUGHT) {
               messages[lastIdx] = { ...last, complete: true };
-              console.log("[DEBUG prompt_complete] Marked last message as complete, html_len:", last.html?.length || 0);
+              console.log(
+                "[DEBUG prompt_complete] Marked last message as complete, html_len:",
+                last.html?.length || 0,
+              );
             }
           }
           return {
@@ -1022,7 +1245,14 @@ export function useWebSocket() {
         }
 
         // Play notification sound if enabled (macOS only)
-        console.log("[prompt_complete] wasStreaming:", wasStreaming, "soundEnabled:", window.mittoAgentCompletedSoundEnabled, "isBackgroundSession:", isBackgroundSession);
+        console.log(
+          "[prompt_complete] wasStreaming:",
+          wasStreaming,
+          "soundEnabled:",
+          window.mittoAgentCompletedSoundEnabled,
+          "isBackgroundSession:",
+          isBackgroundSession,
+        );
         if (wasStreaming && window.mittoAgentCompletedSoundEnabled) {
           console.log("[prompt_complete] Playing notification sound");
           playAgentCompletedSound();
@@ -1077,7 +1307,10 @@ export function useWebSocket() {
         // This ensures the UI reflects the actual server state (agent responding or not)
         const serverIsPrompting = msg.data?.is_prompting || false;
         const currentSession = sessionsRef.current[sessionId];
-        if (currentSession && currentSession.isStreaming !== serverIsPrompting) {
+        if (
+          currentSession &&
+          currentSession.isStreaming !== serverIsPrompting
+        ) {
           console.log(
             `[keepalive] Session ${sessionId} streaming state mismatch: client=${currentSession.isStreaming}, server=${serverIsPrompting}, syncing`,
           );
@@ -1109,7 +1342,10 @@ export function useWebSocket() {
         }
 
         // Sync session status from keepalive (detect completed/error sessions)
-        if (msg.data?.status && currentSession?.info?.status !== msg.data.status) {
+        if (
+          msg.data?.status &&
+          currentSession?.info?.status !== msg.data.status
+        ) {
           console.log(
             `[keepalive] Session ${sessionId} status sync: ${currentSession?.info?.status} -> ${msg.data.status}`,
           );
@@ -1129,7 +1365,10 @@ export function useWebSocket() {
         // Sync is_running state (detect if background session disconnected)
         // This is useful for showing a "reconnect" indicator in the UI
         const serverIsRunning = msg.data?.is_running ?? true;
-        if (currentSession?.info?.isRunning !== undefined && currentSession.info.isRunning !== serverIsRunning) {
+        if (
+          currentSession?.info?.isRunning !== undefined &&
+          currentSession.info.isRunning !== serverIsRunning
+        ) {
           console.log(
             `[keepalive] Session ${sessionId} running state sync: ${currentSession.info.isRunning} -> ${serverIsRunning}`,
           );
@@ -1148,12 +1387,16 @@ export function useWebSocket() {
 
         // Check sequence number sync between client and server
         // This detects out-of-sync situations where the client missed messages OR has stale state
-        const serverMaxSeq = msg.data?.server_max_seq || 0;
+        // Note: max_seq is the new field name, server_max_seq is deprecated but kept for backward compat
+        const serverMaxSeq = msg.data?.max_seq || msg.data?.server_max_seq || 0;
         if (serverMaxSeq > 0) {
           const session = sessionsRef.current[sessionId];
           const sessionMessages = session?.messages || [];
           // Use the higher of: max seq from messages OR lastLoadedSeq (which includes session_end, etc.)
-          const clientMaxSeq = Math.max(getMaxSeq(sessionMessages), session?.lastLoadedSeq || 0);
+          const clientMaxSeq = Math.max(
+            getMaxSeq(sessionMessages),
+            session?.lastLoadedSeq || 0,
+          );
 
           if (isStaleClientState(clientMaxSeq, serverMaxSeq)) {
             // Client has stale state! Server is always right.
@@ -1238,7 +1481,10 @@ export function useWebSocket() {
         // DEPRECATED: Use events_loaded instead
         // Handle incremental sync response (kept for backward compatibility)
         const events = msg.data.events || [];
-        const newMessages = convertEventsToMessages(events, { sessionId, apiPrefix: getApiPrefix() });
+        const newMessages = convertEventsToMessages(events, {
+          sessionId,
+          apiPrefix: getApiPrefix(),
+        });
         const lastSeq =
           events.length > 0
             ? Math.max(...events.map((e) => e.seq || 0))
@@ -1285,16 +1531,28 @@ export function useWebSocket() {
         const hasMore = msg.data.has_more || false;
         const firstSeq = msg.data.first_seq || 0;
         const lastSeq = msg.data.last_seq || 0;
+        const maxSeq = msg.data.max_seq || lastSeq; // Use max_seq if available, fallback to lastSeq
         const isPrompting = msg.data.is_prompting || false;
         const totalCount = msg.data.total_count || 0;
 
-        // Check if client has stale state: client's lastLoadedSeq > server's lastSeq
+        // Check if client has stale state: client's max seq > server's max_seq
         // This happens when mobile client reconnects after being in background with
         // cached state from a different server instance or after server restart.
         // In this case, server wins - we treat this as a fresh load.
+        //
+        // IMPORTANT: We must check BOTH lastLoadedSeq AND getMaxSeq(messages) because:
+        // - lastLoadedSeq tracks the highest seq from events_loaded responses
+        // - getMaxSeq(messages) tracks the highest seq from messages in memory (including streamed)
+        // If either is higher than server's max_seq, the client has stale state.
+        // This fixes a bug where messages in memory had high seq values from a previous
+        // server session, but lastLoadedSeq was reset, causing stale detection to fail.
         const currentSession = sessionsRef.current[sessionId];
-        const clientLastSeq = currentSession?.lastLoadedSeq || 0;
-        const isStaleClient = isStaleClientState(clientLastSeq, lastSeq);
+        const sessionMessages = currentSession?.messages || [];
+        const clientLastSeq = Math.max(
+          getMaxSeq(sessionMessages),
+          currentSession?.lastLoadedSeq || 0,
+        );
+        const isStaleClient = isStaleClientState(clientLastSeq, maxSeq);
 
         console.log("[DEBUG events_loaded] received:", {
           sessionId,
@@ -1303,21 +1561,32 @@ export function useWebSocket() {
           hasMore,
           firstSeq,
           lastSeq,
+          maxSeq,
           isPrompting,
           totalCount,
           clientLastSeq,
+          clientLastLoadedSeq: currentSession?.lastLoadedSeq || 0,
+          clientMaxSeqFromMessages: getMaxSeq(sessionMessages),
+          messageCount: sessionMessages.length,
           isStaleClient,
         });
 
         // DEBUG: Log event order to check if they're in correct seq order
-        console.log("[DEBUG events_loaded] Event order:", events.map(e => ({
-          seq: e.seq,
-          type: e.type,
-          preview: e.type === 'agent_message' ? (e.data?.html?.substring(0, 50) + '...') :
-                   e.type === 'tool_call' ? e.data?.title :
-                   e.type === 'user_prompt' ? (e.data?.message?.substring(0, 50) + '...') :
-                   e.type
-        })));
+        console.log(
+          "[DEBUG events_loaded] Event order:",
+          events.map((e) => ({
+            seq: e.seq,
+            type: e.type,
+            preview:
+              e.type === "agent_message"
+                ? e.data?.html?.substring(0, 50) + "..."
+                : e.type === "tool_call"
+                  ? e.data?.title
+                  : e.type === "user_prompt"
+                    ? e.data?.message?.substring(0, 50) + "..."
+                    : e.type,
+          })),
+        );
 
         // M1 fix: When client has stale state, reset the seq tracker BEFORE processing events.
         // Without this, the seq tracker's highestSeq from the stale state would cause
@@ -1325,7 +1594,9 @@ export function useWebSocket() {
         // Example: if client had highestSeq=200 but server now has lastSeq=50,
         // any event with seq < 100 (highestSeq - MAX_RECENT_SEQS) would be rejected!
         if (isStaleClient) {
-          console.log(`[M1 fix] Resetting seq tracker for stale client (highestSeq was from stale state)`);
+          console.log(
+            `[M1 fix] Resetting seq tracker for stale client (highestSeq was from stale state)`,
+          );
           clearSeenSeqs(sessionId);
         }
 
@@ -1357,7 +1628,9 @@ export function useWebSocket() {
             // When client has stale state, server wins - we discard client's messages
             // and use the fresh data from server
             if (isStaleClient) {
-              console.log(`[Stale client recovery] Replacing ${session.messages.length} stale messages with ${newMessages.length} fresh messages`);
+              console.log(
+                `[Stale client recovery] Replacing ${session.messages.length} stale messages with ${newMessages.length} fresh messages`,
+              );
             }
             messages = newMessages;
           } else {
@@ -1371,7 +1644,9 @@ export function useWebSocket() {
           // Track the highest seq we've seen from events_loaded
           // This includes session_end and other events that don't become messages
           // For stale client recovery, reset to server's lastSeq
-          const newLastLoadedSeq = isStaleClient ? lastSeq : Math.max(session.lastLoadedSeq || 0, lastSeq);
+          const newLastLoadedSeq = isStaleClient
+            ? lastSeq
+            : Math.max(session.lastLoadedSeq || 0, lastSeq);
 
           const updatedSession = {
             ...session,
@@ -1379,11 +1654,16 @@ export function useWebSocket() {
             isStreaming: isPrompting,
             hasMoreMessages: hasMore,
             // For stale client recovery, reset firstLoadedSeq to server's value
-            firstLoadedSeq: isPrepend ? firstSeq : (isStaleClient ? firstSeq : (session.firstLoadedSeq || firstSeq)),
+            firstLoadedSeq: isPrepend
+              ? firstSeq
+              : isStaleClient
+                ? firstSeq
+                : session.firstLoadedSeq || firstSeq,
             // Track highest seq from loaded events (includes session_end, etc.)
             lastLoadedSeq: newLastLoadedSeq,
             // Flag to indicate this is a fresh load - used for instant scroll positioning
-            justLoaded: !isPrepend && (session.messages.length === 0 || isStaleClient),
+            justLoaded:
+              !isPrepend && (session.messages.length === 0 || isStaleClient),
             // Clear loading state when prepend (load more) completes
             isLoadingMore: isPrepend ? false : session.isLoadingMore,
           };
@@ -1406,7 +1686,9 @@ export function useWebSocket() {
         // This handles the case where a mobile client reconnects after being in background
         // with stale sequence numbers - without this, the user would only see the last 50 messages.
         if (isStaleClient && hasMore && firstSeq > 1) {
-          console.log(`[Stale client recovery] Auto-loading remaining ${firstSeq - 1} events for session ${sessionId}`);
+          console.log(
+            `[Stale client recovery] Auto-loading remaining ${firstSeq - 1} events for session ${sessionId}`,
+          );
           // Small delay to let the UI update first, then load remaining messages
           setTimeout(() => {
             const currentWs = sessionWsRefs.current[sessionId];
@@ -1448,6 +1730,7 @@ export function useWebSocket() {
         // This is sent to ALL connected clients for multi-browser sync
         const {
           seq,
+          max_seq,
           is_mine,
           prompt_id,
           message,
@@ -1457,12 +1740,19 @@ export function useWebSocket() {
         } = msg.data;
         console.log("user_prompt received:", {
           seq,
+          max_seq,
           is_mine,
           prompt_id,
           sender_id,
           is_prompting,
           message: message?.substring(0, 50),
+          is_queue_message: sender_id === "queue",
         });
+
+        // Check for gaps using max_seq (immediate gap detection)
+        if (max_seq) {
+          checkAndFillGap(sessionId, max_seq, seq);
+        }
 
         // M1 fix: Mark seq as seen (for our own prompts, we mark after confirmation)
         if (!is_mine && seq) {
@@ -1563,7 +1853,14 @@ export function useWebSocket() {
           // Check if this message already exists (by seq or content)
           setSessions((prev) => {
             const session = prev[sessionId];
-            if (!session) return prev;
+            if (!session) {
+              console.log(
+                "user_prompt: No session found for:",
+                sessionId,
+                "skipping message add",
+              );
+              return prev;
+            }
 
             // Check if this message already exists (by seq if available, or by content)
             // Note: We always check content because a prompt retry can result in a new seq
@@ -1578,16 +1875,24 @@ export function useWebSocket() {
             });
 
             if (alreadyExists) {
-              console.log("Skipping duplicate user_prompt:", prompt_id, "seq:", seq);
+              console.log(
+                "Skipping duplicate user_prompt:",
+                prompt_id,
+                "seq:",
+                seq,
+                "sender_id:",
+                sender_id,
+              );
               return prev;
             }
 
             console.log(
-              "Prompt from another client:",
-              prompt_id,
-              "seq:",
-              seq,
-              "adding to UI",
+              "user_prompt: Adding message to UI:",
+              "prompt_id:", prompt_id,
+              "seq:", seq,
+              "sender_id:", sender_id,
+              "message_preview:", message?.substring(0, 50),
+              "existing_messages:", session.messages.length,
             );
             let messages = [...session.messages];
             // Mark any previous streaming message as complete
@@ -1612,6 +1917,12 @@ export function useWebSocket() {
               userMessage.imageIds = image_ids;
             }
             messages = limitMessages([...messages, userMessage]);
+            console.log(
+              "user_prompt: Message added successfully:",
+              "new_message_count:", messages.length,
+              "last_message_role:", messages[messages.length - 1]?.role,
+              "last_message_text_preview:", messages[messages.length - 1]?.text?.substring(0, 30),
+            );
             return { ...prev, [sessionId]: { ...session, messages } };
           });
         }
@@ -1700,7 +2011,12 @@ export function useWebSocket() {
         // Server notifies that the ACP connection for this session was stopped.
         // This happens when the session is archived or explicitly closed.
         // We need to update the session state to prevent further prompts.
-        console.log("ACP stopped for session:", sessionId, "reason:", msg.data?.reason);
+        console.log(
+          "ACP stopped for session:",
+          sessionId,
+          "reason:",
+          msg.data?.reason,
+        );
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -1811,10 +2127,15 @@ export function useWebSocket() {
         const session = sessionsRef.current[sessionId];
         const sessionMessages = session?.messages || [];
         // Use the higher of: max seq from messages OR lastLoadedSeq (which includes session_end, etc.)
-        const lastSeq = Math.max(getMaxSeq(sessionMessages), session?.lastLoadedSeq || 0);
+        const lastSeq = Math.max(
+          getMaxSeq(sessionMessages),
+          session?.lastLoadedSeq || 0,
+        );
         if (lastSeq > 0) {
           // Reconnection: sync events after lastSeq
-          console.log(`Syncing session ${sessionId} from seq ${lastSeq} (lastLoadedSeq=${session?.lastLoadedSeq}, messages=${sessionMessages.length})`);
+          console.log(
+            `Syncing session ${sessionId} from seq ${lastSeq} (lastLoadedSeq=${session?.lastLoadedSeq}, messages=${sessionMessages.length})`,
+          );
           ws.send(
             JSON.stringify({
               type: "load_events",
@@ -1879,7 +2200,10 @@ export function useWebSocket() {
           const session = sessionsRef.current[sessionId];
           const sessionMessages = session?.messages || [];
           // Use the higher of: max seq from messages OR lastLoadedSeq (which includes session_end, etc.)
-          const lastSeenSeq = Math.max(getMaxSeq(sessionMessages), session?.lastLoadedSeq || 0);
+          const lastSeenSeq = Math.max(
+            getMaxSeq(sessionMessages),
+            session?.lastLoadedSeq || 0,
+          );
 
           keepaliveRef.current[sessionId] = {
             ...keepaliveRef.current[sessionId],
@@ -1965,7 +2289,9 @@ export function useWebSocket() {
           // M2: Use exponential backoff for reconnection
           const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
           const delay = calculateReconnectDelay(attempt);
-          console.log(`Scheduling reconnect for session ${sessionId} (attempt ${attempt + 1}, delay ${delay}ms)`);
+          console.log(
+            `Scheduling reconnect for session ${sessionId} (attempt ${attempt + 1}, delay ${delay}ms)`,
+          );
 
           sessionReconnectRefs.current[sessionId] = setTimeout(() => {
             delete sessionReconnectRefs.current[sessionId];
@@ -2034,7 +2360,9 @@ export function useWebSocket() {
         // If not connected, connect now - the onopen handler will sync events
         const existingWs = sessionWsRefs.current[sessionId];
         if (!existingWs || existingWs.readyState !== WebSocket.OPEN) {
-          console.log(`Session ${sessionId} has messages but WebSocket is not connected, reconnecting...`);
+          console.log(
+            `Session ${sessionId} has messages but WebSocket is not connected, reconnecting...`,
+          );
           // Remove stale WebSocket reference if any
           if (existingWs) {
             delete sessionWsRefs.current[sessionId];
@@ -2115,8 +2443,14 @@ export function useWebSocket() {
               },
               isStreaming: existing.isStreaming || false,
               // Reset these to prevent stale UI state while loading
-              hasMoreMessages: existing.messages?.length > 0 ? existing.hasMoreMessages : false,
-              firstLoadedSeq: existing.messages?.length > 0 ? existing.firstLoadedSeq : undefined,
+              hasMoreMessages:
+                existing.messages?.length > 0
+                  ? existing.hasMoreMessages
+                  : false,
+              firstLoadedSeq:
+                existing.messages?.length > 0
+                  ? existing.firstLoadedSeq
+                  : undefined,
             },
           };
         });
@@ -2378,7 +2712,9 @@ export function useWebSocket() {
       // M2: Use exponential backoff for reconnection
       const attempt = eventsReconnectAttemptRef.current;
       const delay = calculateReconnectDelay(attempt);
-      console.log(`Scheduling global events reconnect (attempt ${attempt + 1}, delay ${delay}ms)`);
+      console.log(
+        `Scheduling global events reconnect (attempt ${attempt + 1}, delay ${delay}ms)`,
+      );
       eventsReconnectAttemptRef.current = attempt + 1;
       reconnectRef.current = setTimeout(connectToEvents, delay);
     };
@@ -2619,9 +2955,14 @@ export function useWebSocket() {
           const session = sessionsRef.current[sessionId];
           const sessionMessages = session?.messages || [];
           // Use the higher of: max seq from messages OR lastLoadedSeq (which includes session_end, etc.)
-          const lastSeq = Math.max(getMaxSeq(sessionMessages), session?.lastLoadedSeq || 0);
+          const lastSeq = Math.max(
+            getMaxSeq(sessionMessages),
+            session?.lastLoadedSeq || 0,
+          );
           if (lastSeq > 0) {
-            console.log(`Syncing session ${sessionId} from seq ${lastSeq} (lastLoadedSeq=${session?.lastLoadedSeq}, messages=${sessionMessages.length})`);
+            console.log(
+              `Syncing session ${sessionId} from seq ${lastSeq} (lastLoadedSeq=${session?.lastLoadedSeq}, messages=${sessionMessages.length})`,
+            );
             ws.send(
               JSON.stringify({
                 type: "load_events",
@@ -2776,7 +3117,12 @@ export function useWebSocket() {
           // Send prompt with prompt_id for acknowledgment
           const sent = sendToSession(activeSessionId, {
             type: "prompt",
-            data: { message, image_ids: imageIds, file_ids: fileIds, prompt_id: promptId },
+            data: {
+              message,
+              image_ids: imageIds,
+              file_ids: fileIds,
+              prompt_id: promptId,
+            },
           });
 
           if (!sent) {
@@ -2855,8 +3201,12 @@ export function useWebSocket() {
 
         try {
           // Reconnect and check if message was delivered
-          const reconnectTimeout = Math.min(remainingBudget, RECONNECT_TIMEOUT_MS);
-          const wasDelivered = await verifyDeliveryAfterReconnect(reconnectTimeout);
+          const reconnectTimeout = Math.min(
+            remainingBudget,
+            RECONNECT_TIMEOUT_MS,
+          );
+          const wasDelivered =
+            await verifyDeliveryAfterReconnect(reconnectTimeout);
 
           if (wasDelivered) {
             removePendingPrompt(promptId);
@@ -3010,7 +3360,9 @@ export function useWebSocket() {
     });
 
     // Send load_events request with before_seq for pagination
-    console.log(`Loading more messages for ${sessionId} before seq ${session.firstLoadedSeq}`);
+    console.log(
+      `Loading more messages for ${sessionId} before seq ${session.firstLoadedSeq}`,
+    );
     ws.send(
       JSON.stringify({
         type: "load_events",
@@ -3250,7 +3602,9 @@ export function useWebSocket() {
 
     // Inconsistent state: server said there's more but we have no messages
     if (hasMoreFlag && !hasMessages) {
-      console.log(`Detected inconsistent state for ${activeSessionId}: hasMoreMessages=true but messages=[], triggering reload...`);
+      console.log(
+        `Detected inconsistent state for ${activeSessionId}: hasMoreMessages=true but messages=[], triggering reload...`,
+      );
 
       // Mark that we've attempted recovery to prevent infinite loops
       recoveryAttemptedRef.current[activeSessionId] = true;
