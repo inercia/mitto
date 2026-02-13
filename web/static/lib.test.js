@@ -34,6 +34,7 @@ import {
   MAX_PASSWORD_LENGTH,
   computeAllSessions,
   convertEventsToMessages,
+  coalesceAgentMessages,
   getMinSeq,
   getMaxSeq,
   isStaleClientState,
@@ -393,7 +394,11 @@ describe("convertEventsToMessages", () => {
         data: {
           message: "Check this image",
           images: [
-            { id: "img_001.png", name: "screenshot.png", mime_type: "image/png" },
+            {
+              id: "img_001.png",
+              name: "screenshot.png",
+              mime_type: "image/png",
+            },
             { id: "img_002.jpg", mime_type: "image/jpeg" },
           ],
         },
@@ -401,7 +406,9 @@ describe("convertEventsToMessages", () => {
         seq: 1,
       },
     ];
-    const result = convertEventsToMessages(events, { sessionId: "test-session" });
+    const result = convertEventsToMessages(events, {
+      sessionId: "test-session",
+    });
     expect(result).toHaveLength(1);
     expect(result[0].role).toBe(ROLE_USER);
     expect(result[0].text).toBe("Check this image");
@@ -471,9 +478,119 @@ describe("convertEventsToMessages", () => {
         seq: 1,
       },
     ];
-    const result = convertEventsToMessages(events, { sessionId: "test-session" });
+    const result = convertEventsToMessages(events, {
+      sessionId: "test-session",
+    });
     expect(result).toHaveLength(1);
     expect(result[0].images).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// coalesceAgentMessages Tests
+// =============================================================================
+
+describe("coalesceAgentMessages", () => {
+  test("returns empty array for empty input", () => {
+    expect(coalesceAgentMessages([])).toEqual([]);
+  });
+
+  test("returns same array for null/undefined input", () => {
+    expect(coalesceAgentMessages(null)).toBeNull();
+    expect(coalesceAgentMessages(undefined)).toBeUndefined();
+  });
+
+  test("does not coalesce non-agent messages", () => {
+    const messages = [
+      { role: ROLE_USER, text: "Hello", seq: 1, timestamp: 1000 },
+      { role: ROLE_TOOL, id: "tool1", title: "Read file", seq: 2, timestamp: 2000 },
+      { role: ROLE_THOUGHT, text: "Thinking...", seq: 3, timestamp: 3000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(3);
+    expect(result[0].role).toBe(ROLE_USER);
+    expect(result[1].role).toBe(ROLE_TOOL);
+    expect(result[2].role).toBe(ROLE_THOUGHT);
+  });
+
+  test("coalesces consecutive agent messages", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Hello</p>", seq: 1, timestamp: 1000, complete: false },
+      { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000, complete: false },
+      { role: ROLE_AGENT, html: "<p>World</p>", seq: 3, timestamp: 3000, complete: true },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe(ROLE_AGENT);
+    expect(result[0].html).toBe("<p>Hello</p><hr/><p>World</p>");
+    expect(result[0].seq).toBe(1); // First seq preserved
+    expect(result[0].timestamp).toBe(3000); // Latest timestamp
+    expect(result[0].complete).toBe(true); // Latest complete status
+    expect(result[0].coalescedSeqs).toEqual([1, 2, 3]);
+    expect(result[0].maxSeq).toBe(3);
+  });
+
+  test("does not coalesce agent messages separated by other types", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Part 1</p>", seq: 1, timestamp: 1000 },
+      { role: ROLE_TOOL, id: "tool1", title: "Read file", seq: 2, timestamp: 2000 },
+      { role: ROLE_AGENT, html: "<p>Part 2</p>", seq: 3, timestamp: 3000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(3);
+    expect(result[0].html).toBe("<p>Part 1</p>");
+    expect(result[1].role).toBe(ROLE_TOOL);
+    expect(result[2].html).toBe("<p>Part 2</p>");
+  });
+
+  test("handles single agent message", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Only one</p>", seq: 1, timestamp: 1000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].html).toBe("<p>Only one</p>");
+    expect(result[0].coalescedSeqs).toEqual([1]);
+  });
+
+  test("handles mixed sequence with multiple coalesced groups", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>A1</p>", seq: 1, timestamp: 1000 },
+      { role: ROLE_AGENT, html: "<p>A2</p>", seq: 2, timestamp: 2000 },
+      { role: ROLE_USER, text: "Question", seq: 3, timestamp: 3000 },
+      { role: ROLE_AGENT, html: "<p>B1</p>", seq: 4, timestamp: 4000 },
+      { role: ROLE_AGENT, html: "<p>B2</p>", seq: 5, timestamp: 5000 },
+      { role: ROLE_AGENT, html: "<p>B3</p>", seq: 6, timestamp: 6000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(3);
+    // First coalesced group
+    expect(result[0].html).toBe("<p>A1</p><p>A2</p>");
+    expect(result[0].coalescedSeqs).toEqual([1, 2]);
+    // User message
+    expect(result[1].role).toBe(ROLE_USER);
+    // Second coalesced group
+    expect(result[2].html).toBe("<p>B1</p><p>B2</p><p>B3</p>");
+    expect(result[2].coalescedSeqs).toEqual([4, 5, 6]);
+  });
+
+  test("handles empty html in agent messages", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Start</p>", seq: 1, timestamp: 1000 },
+      { role: ROLE_AGENT, html: "", seq: 2, timestamp: 2000 },
+      { role: ROLE_AGENT, html: "<p>End</p>", seq: 3, timestamp: 3000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].html).toBe("<p>Start</p><p>End</p>");
+  });
+
+  test("preserves other message properties", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Test</p>", seq: 1, timestamp: 1000, customProp: "value" },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result[0].customProp).toBe("value");
   });
 });
 
@@ -1867,7 +1984,9 @@ describe("mergeMessagesWithSync", () => {
       const result = mergeMessagesWithSync(existing, syncEvents);
 
       expect(result.length).toBe(1);
-      expect(result[0].text).toBe("Thinking... I should analyze this carefully.");
+      expect(result[0].text).toBe(
+        "Thinking... I should analyze this carefully.",
+      );
       expect(result[0].complete).toBe(true);
     });
 
@@ -3007,9 +3126,15 @@ describe("clearPendingPromptsFromEvents", () => {
 
     // Simulate loaded events with prompt_id
     const events = [
-      { type: "user_prompt", data: { message: "First message", prompt_id: "prompt1" } },
+      {
+        type: "user_prompt",
+        data: { message: "First message", prompt_id: "prompt1" },
+      },
       { type: "agent_message", data: { text: "Response" } },
-      { type: "user_prompt", data: { message: "Second message", prompt_id: "prompt2" } },
+      {
+        type: "user_prompt",
+        data: { message: "Second message", prompt_id: "prompt2" },
+      },
     ];
 
     clearPendingPromptsFromEvents(events);
@@ -3024,9 +3149,7 @@ describe("clearPendingPromptsFromEvents", () => {
     savePendingPrompt("session1", "prompt1", "Message", []);
 
     // Events without prompt_id (old format)
-    const events = [
-      { type: "user_prompt", data: { message: "Message" } },
-    ];
+    const events = [{ type: "user_prompt", data: { message: "Message" } }];
 
     clearPendingPromptsFromEvents(events);
 
@@ -3056,7 +3179,10 @@ describe("clearPendingPromptsFromEvents", () => {
 
   test("handles no pending prompts", () => {
     const events = [
-      { type: "user_prompt", data: { message: "Message", prompt_id: "prompt1" } },
+      {
+        type: "user_prompt",
+        data: { message: "Message", prompt_id: "prompt1" },
+      },
     ];
 
     // Should not throw
@@ -3070,7 +3196,10 @@ describe("clearPendingPromptsFromEvents", () => {
 
     // Events with prompt_id but wrong type
     const events = [
-      { type: "agent_message", data: { text: "Response", prompt_id: "prompt1" } },
+      {
+        type: "agent_message",
+        data: { text: "Response", prompt_id: "prompt1" },
+      },
       { type: "tool_call", data: { name: "test", prompt_id: "prompt1" } },
     ];
 
@@ -4196,7 +4325,11 @@ describe("Send Message ACK Tracking", () => {
 
         // Retry on fresh connection
         retryAttempted = true;
-        const retryResult = { success: true, promptId, retriedOnReconnect: true };
+        const retryResult = {
+          success: true,
+          promptId,
+          retriedOnReconnect: true,
+        };
 
         expect(retryAttempted).toBe(true);
         expect(retryResult.retriedOnReconnect).toBe(true);

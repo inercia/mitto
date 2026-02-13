@@ -163,17 +163,13 @@ describe("isGroupExpanded", () => {
 describe("setGroupExpanded", () => {
   test("saves expanded state to localStorage", () => {
     setGroupExpanded("my-group", true);
-    const stored = JSON.parse(
-      mockStore["mitto_conversation_expanded_groups"],
-    );
+    const stored = JSON.parse(mockStore["mitto_conversation_expanded_groups"]);
     expect(stored["my-group"]).toBe(true);
   });
 
   test("saves collapsed state to localStorage", () => {
     setGroupExpanded("my-group", false);
-    const stored = JSON.parse(
-      mockStore["mitto_conversation_expanded_groups"],
-    );
+    const stored = JSON.parse(mockStore["mitto_conversation_expanded_groups"]);
     expect(stored["my-group"]).toBe(false);
   });
 
@@ -182,9 +178,7 @@ describe("setGroupExpanded", () => {
       existing: true,
     });
     setGroupExpanded("new-group", false);
-    const stored = JSON.parse(
-      mockStore["mitto_conversation_expanded_groups"],
-    );
+    const stored = JSON.parse(mockStore["mitto_conversation_expanded_groups"]);
     expect(stored["existing"]).toBe(true);
     expect(stored["new-group"]).toBe(false);
   });
@@ -194,9 +188,7 @@ describe("setGroupExpanded", () => {
       "my-group": true,
     });
     setGroupExpanded("my-group", false);
-    const stored = JSON.parse(
-      mockStore["mitto_conversation_expanded_groups"],
-    );
+    const stored = JSON.parse(mockStore["mitto_conversation_expanded_groups"]);
     expect(stored["my-group"]).toBe(false);
   });
 });

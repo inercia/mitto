@@ -237,7 +237,10 @@ export function parseToolTitlePaths(title) {
 
     // Add text before this match
     if (matchStart > lastIndex) {
-      segments.push({ type: "text", value: title.slice(lastIndex, matchStart) });
+      segments.push({
+        type: "text",
+        value: title.slice(lastIndex, matchStart),
+      });
     }
 
     // Check if this looks like a real file path:
@@ -248,7 +251,11 @@ export function parseToolTitlePaths(title) {
     const hasPathSeparator = path.includes("/");
     const looksLikeVersion = /^v?\d+\.\d+/.test(path);
 
-    if (hasExtension && (hasPathSeparator || path.startsWith("./") || path.startsWith("../")) && !looksLikeVersion) {
+    if (
+      hasExtension &&
+      (hasPathSeparator || path.startsWith("./") || path.startsWith("../")) &&
+      !looksLikeVersion
+    ) {
       segments.push({ type: "path", value: path });
     } else {
       // Not a file path, treat as text
@@ -428,6 +435,76 @@ export function convertEventsToMessages(events, options = {}) {
     }
   }
   return messages;
+}
+
+/**
+ * Coalesce consecutive agent messages into single messages for display.
+ *
+ * The backend's MarkdownBuffer flushes content at semantic boundaries (paragraphs,
+ * headers, horizontal rules, etc.), creating separate events with different sequence
+ * numbers. This is correct for tracking and sync, but creates a poor visual experience
+ * where each flush appears as a separate message bubble.
+ *
+ * This function combines consecutive agent messages into single messages for rendering,
+ * while preserving the original messages for internal tracking.
+ *
+ * @param {Array} messages - Array of message objects (in chronological order)
+ * @returns {Array} Array of messages with consecutive agent messages coalesced
+ *
+ * @example
+ * // Input: [agent(seq:1, "Hello"), agent(seq:2, "<hr/>"), agent(seq:3, "World")]
+ * // Output: [agent(seq:1, "Hello<hr/>World", coalescedSeqs:[1,2,3])]
+ */
+export function coalesceAgentMessages(messages) {
+  if (!messages || messages.length === 0) {
+    return messages;
+  }
+
+  const result = [];
+  let currentCoalesced = null;
+
+  for (const msg of messages) {
+    // Only coalesce agent messages
+    if (msg.role !== ROLE_AGENT) {
+      // Flush any pending coalesced message
+      if (currentCoalesced) {
+        result.push(currentCoalesced);
+        currentCoalesced = null;
+      }
+      result.push(msg);
+      continue;
+    }
+
+    // Agent message - check if we should coalesce
+    if (currentCoalesced) {
+      // Append to existing coalesced message
+      currentCoalesced = {
+        ...currentCoalesced,
+        html: (currentCoalesced.html || "") + (msg.html || ""),
+        // Keep the latest timestamp and complete status
+        timestamp: msg.timestamp,
+        complete: msg.complete,
+        // Track all coalesced sequence numbers (for debugging)
+        coalescedSeqs: [...(currentCoalesced.coalescedSeqs || []), msg.seq],
+        // Use the highest seq for deduplication purposes
+        maxSeq: Math.max(currentCoalesced.maxSeq || currentCoalesced.seq, msg.seq),
+      };
+    } else {
+      // Start a new coalesced message
+      currentCoalesced = {
+        ...msg,
+        coalescedSeqs: [msg.seq],
+        maxSeq: msg.seq,
+      };
+    }
+  }
+
+  // Flush any remaining coalesced message
+  if (currentCoalesced) {
+    result.push(currentCoalesced);
+  }
+
+  return result;
 }
 
 /**
@@ -1322,10 +1399,18 @@ export function linkifyUrls(text) {
     while (cleanUrl.length > 0 && /[.,;:!?)\]}>]$/.test(cleanUrl)) {
       const lastChar = cleanUrl.slice(-1);
       // Keep if it's a balanced closing bracket/paren
-      if (lastChar === ")" && (cleanUrl.match(/\(/g) || []).length > (cleanUrl.match(/\)/g) || []).length - 1) {
+      if (
+        lastChar === ")" &&
+        (cleanUrl.match(/\(/g) || []).length >
+          (cleanUrl.match(/\)/g) || []).length - 1
+      ) {
         break;
       }
-      if (lastChar === "]" && (cleanUrl.match(/\[/g) || []).length > (cleanUrl.match(/]/g) || []).length - 1) {
+      if (
+        lastChar === "]" &&
+        (cleanUrl.match(/\[/g) || []).length >
+          (cleanUrl.match(/]/g) || []).length - 1
+      ) {
         break;
       }
       cleanUrl = cleanUrl.slice(0, -1);
