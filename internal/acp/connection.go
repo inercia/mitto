@@ -21,7 +21,7 @@ type Connection struct {
 	client       *Client
 	logger       *slog.Logger
 	capabilities *acp.AgentCapabilities
-	wait         func() error // cleanup function from runner.RunWithPipes or cmd.Wait
+	wait         func() error       // cleanup function from runner.RunWithPipes or cmd.Wait
 	cancel       context.CancelFunc // cancellation function for restricted runner processes
 }
 
