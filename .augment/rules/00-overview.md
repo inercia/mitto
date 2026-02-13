@@ -62,7 +62,9 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `40-mcp-debugging.md`           | Using MCP tools for debugging (events.jsonl, conversation inspection)                                                                     |
 | `41-debugging-logs.md`          | Log file debugging (mitto.log, webview.log, access.log)                                                                                   |
 | `42-mcpserver-development.md`   | MCP server development patterns, adding tools                                                                                             |
-| `99-local.md`                   | Local development notes (not committed)                                                                                                   |
+| **Release & CI (50, 99)**       |                                                                                                                                           |
+| `50-release.md`                 | Release workflow, version tagging, Homebrew tap updates, CI/CD                                                                            |
+| `99-local.md`                   | Local development notes, GitHub CLI authentication                                                                                        |
 
 ## Package Structure
 
