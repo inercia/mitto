@@ -110,6 +110,15 @@ type BackgroundSession struct {
 	// Available slash commands from the agent
 	availableCommandsMu sync.RWMutex
 	availableCommands   []AvailableCommand
+
+	// ACP process restart tracking
+	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
+	// To prevent infinite restart loops, we limit restarts to maxACPRestarts within
+	// acpRestartWindow. The acpCommand is stored so we can restart the process.
+	acpCommand   string      // Command used to start ACP process (for restart)
+	restartCount int         // Number of restarts in current window
+	restartTimes []time.Time // Timestamps of recent restarts (for rate limiting)
+	restartMu    sync.Mutex  // Protects restart tracking fields
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -165,6 +174,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		runner:                  cfg.Runner,
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
+		acpCommand:              cfg.ACPCommand, // Store for restart
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -193,13 +203,24 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			meta.RunnerRestricted = isRestricted
 		})
 
-		// Initialize nextSeq from current event count (new session starts at 1)
-		bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+		// Initialize nextSeq from MaxSeq if available, otherwise from EventCount
+		// MaxSeq tracks the highest seq persisted, which may be higher than EventCount
+		// if events were assigned seq at streaming time but not all were persisted
+		maxSeq := bs.recorder.MaxSeq()
+		eventCount := int64(bs.recorder.EventCount())
+		if maxSeq > eventCount {
+			bs.nextSeq = maxSeq + 1
+		} else {
+			bs.nextSeq = eventCount + 1
+		}
 
 		// Create session-scoped logger with context
 		if bs.logger != nil {
 			bs.logger = logging.WithSessionContext(bs.logger, bs.persistedID, cfg.WorkingDir, cfg.ACPServer)
 		}
+	} else {
+		// No store - initialize nextSeq to 1 to prevent seq=0 errors
+		bs.nextSeq = 1
 	}
 
 	// Log runner information
@@ -278,6 +299,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		runner:                  config.Runner,
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
+		acpCommand:              config.ACPCommand, // Store for restart
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -304,8 +326,19 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			bs.logger.Error("Failed to update session status", "error", err)
 		}
 
-		// Initialize nextSeq from current event count
-		bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+		// Initialize nextSeq from MaxSeq if available, otherwise from EventCount
+		// MaxSeq tracks the highest seq persisted, which may be higher than EventCount
+		// if events were assigned seq at streaming time but not all were persisted
+		maxSeq := bs.recorder.MaxSeq()
+		eventCount := int64(bs.recorder.EventCount())
+		if maxSeq > eventCount {
+			bs.nextSeq = maxSeq + 1
+		} else {
+			bs.nextSeq = eventCount + 1
+		}
+	} else {
+		// No store - initialize nextSeq to 1 to prevent seq=0 errors
+		bs.nextSeq = 1
 	}
 
 	// Log runner information
@@ -443,6 +476,17 @@ func (bs *BackgroundSession) GetEventCount() int {
 func (bs *BackgroundSession) getNextSeq() int64 {
 	bs.seqMu.Lock()
 	defer bs.seqMu.Unlock()
+
+	// Defensive check: ensure nextSeq is at least 1
+	// This can happen if Store was nil during session creation
+	if bs.nextSeq < 1 {
+		bs.nextSeq = 1
+		if bs.logger != nil {
+			bs.logger.Warn("nextSeq was < 1, reset to 1",
+				"session_id", bs.persistedID)
+		}
+	}
+
 	seq := bs.nextSeq
 	bs.nextSeq++
 
@@ -463,24 +507,40 @@ func (bs *BackgroundSession) GetNextSeq() int64 {
 	return bs.getNextSeq()
 }
 
-// refreshNextSeq updates nextSeq from the current event count.
+// refreshNextSeq updates nextSeq from the current max sequence number.
 // This should be called after events are persisted outside the normal buffer flow
 // (e.g., after user prompts are persisted directly).
+//
+// IMPORTANT: Uses MaxSeq (highest seq persisted) not EventCount (number of events)
+// because seq numbers can be sparse due to coalescing (multiple chunks share the same seq).
+// Using EventCount would cause seq number reuse after session resume.
 func (bs *BackgroundSession) refreshNextSeq() {
 	if bs.recorder == nil {
 		return
 	}
 	bs.seqMu.Lock()
 	defer bs.seqMu.Unlock()
+
 	oldSeq := bs.nextSeq
-	bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+	maxSeq := bs.recorder.MaxSeq()
+	eventCount := int64(bs.recorder.EventCount())
+
+	// Use the higher of MaxSeq or EventCount to determine next seq.
+	// MaxSeq tracks the highest seq persisted, while EventCount tracks the number of events.
+	// Due to coalescing, MaxSeq can be much higher than EventCount.
+	if maxSeq > eventCount {
+		bs.nextSeq = maxSeq + 1
+	} else {
+		bs.nextSeq = eventCount + 1
+	}
 
 	// L1: Log seq refresh
 	if bs.logger != nil && oldSeq != bs.nextSeq {
 		bs.logger.Debug("seq_refreshed",
 			"old_next_seq", oldSeq,
 			"new_next_seq", bs.nextSeq,
-			"event_count", bs.recorder.EventCount(),
+			"max_seq", maxSeq,
+			"event_count", eventCount,
 			"session_id", bs.persistedID)
 	}
 }
@@ -630,9 +690,17 @@ func (bs *BackgroundSession) Close(reason string) {
 	// Kill ACP process and clean up resources
 	bs.killACPProcess()
 
-	// End recording
+	// Handle recording based on close reason
 	if bs.recorder != nil {
-		bs.recorder.End(reason)
+		// For server_shutdown, use Suspend() instead of End() to avoid
+		// recording multiple session_end events when the session is resumed
+		// after server restart. The session can be resumed later, so we
+		// don't want to mark it as permanently ended.
+		if reason == "server_shutdown" {
+			bs.recorder.Suspend()
+		} else {
+			bs.recorder.End(reason)
+		}
 	}
 }
 
@@ -697,6 +765,102 @@ const maxACPStartRetries = 2
 
 // acpStartRetryDelay is the delay between ACP start retries.
 const acpStartRetryDelay = 500 * time.Millisecond
+
+// maxACPRestarts is the maximum number of automatic restarts allowed within acpRestartWindow.
+// If this limit is exceeded, the user must manually restart the session.
+const maxACPRestarts = 3
+
+// acpRestartWindow is the time window for counting restart attempts.
+// Restarts older than this are not counted toward the limit.
+const acpRestartWindow = 5 * time.Minute
+
+// canRestartACP checks if we can restart the ACP process based on rate limiting.
+// Returns true if restart is allowed, false if we've exceeded the limit.
+// This method is thread-safe.
+func (bs *BackgroundSession) canRestartACP() bool {
+	bs.restartMu.Lock()
+	defer bs.restartMu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-acpRestartWindow)
+
+	// Filter out old restart times
+	var recentRestarts []time.Time
+	for _, t := range bs.restartTimes {
+		if t.After(cutoff) {
+			recentRestarts = append(recentRestarts, t)
+		}
+	}
+	bs.restartTimes = recentRestarts
+
+	return len(recentRestarts) < maxACPRestarts
+}
+
+// recordRestart records a restart attempt for rate limiting.
+// This method is thread-safe.
+func (bs *BackgroundSession) recordRestart() {
+	bs.restartMu.Lock()
+	defer bs.restartMu.Unlock()
+
+	bs.restartCount++
+	bs.restartTimes = append(bs.restartTimes, time.Now())
+}
+
+// restartACPProcess attempts to restart the ACP process after it has died.
+// It kills the old process, cleans up resources, and starts a new one.
+// The new process will attempt to resume the ACP session if the agent supports it.
+// Returns nil on success, or an error if restart fails.
+func (bs *BackgroundSession) restartACPProcess() error {
+	if bs.logger != nil {
+		bs.logger.Info("Restarting ACP process",
+			"session_id", bs.persistedID,
+			"acp_id", bs.acpID,
+			"restart_count", bs.restartCount+1)
+	}
+
+	// Kill the old process and clean up
+	bs.killACPProcess()
+
+	// Close the old ACP client if it exists
+	if bs.acpClient != nil {
+		bs.acpClient.Close()
+		bs.acpClient = nil
+	}
+
+	// Clear the old connection
+	bs.acpConn = nil
+
+	// Record this restart attempt
+	bs.recordRestart()
+
+	// Start a new ACP process, attempting to resume the session
+	err := bs.startACPProcess(bs.acpCommand, bs.workingDir, bs.acpID)
+	if err != nil {
+		if bs.logger != nil {
+			bs.logger.Error("Failed to restart ACP process",
+				"session_id", bs.persistedID,
+				"error", err)
+		}
+		return err
+	}
+
+	// Update the ACP session ID in metadata if it changed
+	if bs.store != nil && bs.acpID != "" {
+		if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+			m.ACPSessionID = bs.acpID
+		}); err != nil && bs.logger != nil {
+			bs.logger.Warn("Failed to update ACP session ID after restart", "error", err)
+		}
+	}
+
+	if bs.logger != nil {
+		bs.logger.Info("ACP process restarted successfully",
+			"session_id", bs.persistedID,
+			"acp_id", bs.acpID)
+	}
+
+	return nil
+}
 
 // startACPProcess starts the ACP server process and initializes the connection.
 // If acpSessionID is provided and the agent supports session loading, it attempts
@@ -1191,13 +1355,33 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			bs.lastResponseComplete = time.Now()
 			bs.promptMu.Unlock()
 
-			// Notify observers about the dead connection
-			// The user will need to switch away and back to restart the session
-			bs.notifyObservers(func(o SessionObserver) {
-				o.OnError("The AI agent process has stopped unexpectedly. Please switch to another conversation and back to restart.")
-			})
+			// Check if we can restart automatically
+			if bs.canRestartACP() {
+				// Notify observers that we're restarting
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("The AI agent process stopped unexpectedly. Restarting...")
+				})
 
-			return &sessionError{"ACP process died unexpectedly - switch conversations to restart"}
+				// Attempt to restart the ACP process
+				if err := bs.restartACPProcess(); err != nil {
+					bs.notifyObservers(func(o SessionObserver) {
+						o.OnError("Failed to restart the AI agent: " + err.Error() + ". Please switch to another conversation and back to retry.")
+					})
+					return &sessionError{"ACP process died and restart failed: " + err.Error()}
+				}
+
+				// Restart succeeded - notify user and retry the prompt
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("AI agent restarted successfully. Please resend your message.")
+				})
+				return &sessionError{"ACP process restarted - please resend your message"}
+			}
+
+			// Restart limit exceeded - notify user to manually restart
+			bs.notifyObservers(func(o SessionObserver) {
+				o.OnError("The AI agent keeps crashing. Please switch to another conversation and back to restart.")
+			})
+			return &sessionError{"ACP process died repeatedly - switch conversations to restart"}
 		} else {
 			bs.promptMu.Unlock()
 			return &sessionError{"prompt already in progress"}
@@ -1464,8 +1648,9 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					"error", err.Error(),
 					"observer_count", observerCount)
 			}
+			userFriendlyErr := formatACPError(err)
 			bs.notifyObservers(func(o SessionObserver) {
-				o.OnError("Prompt failed: " + err.Error())
+				o.OnError(userFriendlyErr)
 			})
 		} else {
 			if bs.logger != nil {
@@ -2331,4 +2516,51 @@ func (bs *BackgroundSession) onCurrentModeChanged(modeID string) {
 		bs.logger.Debug("Session mode changed",
 			"new_mode_id", modeID)
 	}
+}
+
+// formatACPError transforms ACP errors into user-friendly messages.
+// It detects common error patterns and provides actionable guidance.
+func formatACPError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	errMsg := err.Error()
+
+	// Timeout errors from ACP server (tool execution took too long)
+	if strings.Contains(errMsg, "aborted due to timeout") {
+		return "A tool operation timed out. The AI agent's tool call took too long to complete. " +
+			"Try breaking your request into smaller steps, or ask for a more specific task."
+	}
+
+	// Connection/transport errors
+	if strings.Contains(errMsg, "peer disconnected") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "broken pipe") {
+		return "Lost connection to the AI agent. The agent process may have crashed or been restarted. " +
+			"Please try sending your message again."
+	}
+
+	// Context cancelled (user cancelled or session closed)
+	if strings.Contains(errMsg, "context canceled") ||
+		strings.Contains(errMsg, "context deadline exceeded") {
+		return "The request was cancelled. Please try again."
+	}
+
+	// Rate limiting
+	if strings.Contains(errMsg, "rate limit") || strings.Contains(errMsg, "too many requests") {
+		return "Rate limit reached. Please wait a moment before sending another message."
+	}
+
+	// Generic JSON-RPC internal error with details
+	if strings.Contains(errMsg, "-32603") && strings.Contains(errMsg, "Internal error") {
+		// Extract any details if present
+		if strings.Contains(errMsg, "details") {
+			return "The AI agent encountered an internal error. Please try again, " +
+				"or simplify your request if the problem persists."
+		}
+	}
+
+	// Default: return original error with prefix
+	return "Prompt failed: " + errMsg
 }
