@@ -105,4 +105,3 @@ export function useInfiniteScroll(options = {}) {
 
   return { sentinelRef };
 }
-

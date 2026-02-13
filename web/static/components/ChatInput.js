@@ -360,6 +360,32 @@ export function ChatInput({
       const readyFiles = pendingFiles.filter((f) => !f.uploading);
       const messageText = text.trim();
 
+      // When agent is streaming, automatically add to queue instead of sending directly
+      // This prevents "prompt already in progress" errors
+      if (isStreaming && onAddToQueue) {
+        try {
+          const result = await onAddToQueue(
+            messageText,
+            readyImages,
+            readyFiles,
+          );
+          if (result?.success) {
+            // Success! Clear the text, images, and files
+            setText("");
+            setPendingImages([]);
+            setPendingFiles([]);
+            if (textareaRef.current) {
+              textareaRef.current.style.height = "auto";
+            }
+          }
+        } catch (err) {
+          console.error("Failed to add to queue:", err);
+          setSendError(err.message || "Failed to add to queue");
+          setTimeout(() => setSendError(null), 10000);
+        }
+        return;
+      }
+
       // Store the message for retry capability
       setPendingSendText(messageText);
       setPendingSendImages(readyImages);
@@ -551,7 +577,9 @@ export function ChatInput({
     const controller = new AbortController();
 
     // Track that this session has an active improve request
-    improvingSessionsRef.current.set(targetSessionId, { abortController: controller });
+    improvingSessionsRef.current.set(targetSessionId, {
+      abortController: controller,
+    });
     setImprovingVersion((v) => v + 1); // Force re-render
     setImproveError(null);
 
@@ -615,7 +643,7 @@ export function ChatInput({
     if (isQueueFull)
       return `Queue full (${queueConfig.max_size}/${queueConfig.max_size})...`;
     if (isStreaming) {
-      return "Agent responding...";
+      return "Agent responding... (messages will be queued)";
     }
     if (isImproving) return "Improving prompt...";
     if (isDragOver) return "Drop files here...";
@@ -1003,7 +1031,7 @@ export function ChatInput({
   if (actionButtons && actionButtons.length > 0) {
     console.log("[ActionButtons] ChatInput received buttons:", {
       count: actionButtons.length,
-      labels: actionButtons.map(b => b.label),
+      labels: actionButtons.map((b) => b.label),
       isStreaming,
       isReadOnly,
       noSession,
@@ -1092,7 +1120,6 @@ export function ChatInput({
           </div>
         </div>
       `}
-
       ${hasPendingImages &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
@@ -1179,7 +1206,6 @@ export function ChatInput({
           </div>
         </div>
       `}
-
       ${hasPendingFiles &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
@@ -1280,7 +1306,11 @@ export function ChatInput({
       <!-- Collapsible Action Toolbar - positioned at bottom-right of conversation area -->
       <div
         ref=${toolbarRef}
-        class="action-toolbar ${isTextareaFocused && !isFullyDisabled && !isReadOnly ? "visible" : ""}"
+        class="action-toolbar ${isTextareaFocused &&
+        !isFullyDisabled &&
+        !isReadOnly
+          ? "visible"
+          : ""}"
       >
         <!-- Attach Image Button -->
         <button
@@ -1437,7 +1467,9 @@ export function ChatInput({
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                 ></path>
               </svg>
-              <span class="text-sm text-blue-300 mt-2">Improving prompt...</span>
+              <span class="text-sm text-blue-300 mt-2"
+                >Improving prompt...</span
+              >
             </div>
           `}
         </div>
@@ -1538,8 +1570,20 @@ export function ChatInput({
                     style="background: #dc2626 !important; border-color: #ef4444 !important; color: white !important; opacity: 1; transform: none;"
                     title="Stop streaming"
                   >
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
+                    <svg
+                      class="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <rect
+                        x="6"
+                        y="6"
+                        width="12"
+                        height="12"
+                        rx="2"
+                        stroke-width="2"
+                      />
                     </svg>
                   </button>
                 `
@@ -1552,9 +1596,24 @@ export function ChatInput({
                       class="action-toolbar-btn"
                       style="opacity: 1; transform: none;"
                     >
-                      <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      <svg
+                        class="w-5 h-5 animate-spin"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          class="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          stroke-width="4"
+                        ></circle>
+                        <path
+                          class="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        ></path>
                       </svg>
                     </button>
                   `
@@ -1567,7 +1626,9 @@ export function ChatInput({
                       isReadOnly ||
                       isImproving ||
                       isQueueFull}
-                      class="action-toolbar-btn ${isQueueFull ? "queue-full" : ""}"
+                      class="action-toolbar-btn ${isQueueFull
+                        ? "queue-full"
+                        : ""}"
                       style="${isQueueFull
                         ? "background: #ea580c !important; border-color: #f97316 !important; color: white !important; opacity: 1; transform: none;"
                         : "opacity: 1; transform: none;"}"
@@ -1578,14 +1639,34 @@ export function ChatInput({
                       ${isQueueFull
                         ? html`
                             <!-- Queue full icon -->
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                            <svg
+                              class="w-5 h-5"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                              />
                             </svg>
                           `
                         : html`
                             <!-- Paper plane / send arrow pointing RIGHT (like WhatsApp) -->
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            <svg
+                              class="w-5 h-5"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
+                              />
                             </svg>
                           `}
                     </button>
@@ -1602,12 +1683,19 @@ export function ChatInput({
                 title="Insert predefined prompt"
               >
                 <svg
-                  class="w-5 h-5 transition-transform ${showDropup ? "rotate-180" : ""}"
+                  class="w-5 h-5 transition-transform ${showDropup
+                    ? "rotate-180"
+                    : ""}"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
                 >
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M5 15l7-7 7 7"
+                  />
                 </svg>
               </button>
             `}
@@ -1619,34 +1707,64 @@ export function ChatInput({
             <button
               type="button"
               onClick=${handleAddToQueueClick}
-              disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving}
+              disabled=${isFullyDisabled ||
+              (!text.trim() && !hasPendingAttachments) ||
+              isReadOnly ||
+              isImproving}
               class="action-toolbar-btn"
               style="opacity: 1; transform: none;"
               title="Add to queue (⌘/Ctrl+Enter)"
             >
               <!-- Plus icon -->
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+              <svg
+                class="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M12 4v16m8-8H4"
+                />
               </svg>
             </button>
             <!-- Toggle Queue Panel button -->
             <button
               type="button"
-              onClick=${() => { console.log('[DEBUG] Queue toggle button clicked, onToggleQueue=', typeof onToggleQueue); if (onToggleQueue) onToggleQueue(); }}
+              onClick=${() => {
+                console.log(
+                  "[DEBUG] Queue toggle button clicked, onToggleQueue=",
+                  typeof onToggleQueue,
+                );
+                if (onToggleQueue) onToggleQueue();
+              }}
               data-queue-toggle
               class="action-toolbar-btn relative"
               style="${showQueueDropdown
                 ? "background: #2563eb !important; border-color: #3b82f6 !important; color: white !important; opacity: 1; transform: none;"
                 : "opacity: 1; transform: none;"}"
-              title="${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue"
+              title="${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown
+                ? "hide"
+                : "show"} queue"
             >
               <!-- Queue/list icon -->
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+              <svg
+                class="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M4 6h16M4 10h16M4 14h16M4 18h16"
+                />
               </svg>
-              ${queueLength > 0 && html`
-                <span class="queue-badge">${queueLength}</span>
-              `}
+              ${queueLength > 0 &&
+              html` <span class="queue-badge">${queueLength}</span> `}
             </button>
           </div>
         </div>

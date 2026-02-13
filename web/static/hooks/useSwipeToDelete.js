@@ -72,18 +72,15 @@ export function useSwipeToDelete(options = {}) {
   }, [onDelete, reset, isDeleting]);
 
   // Calculate swipe offset from movement
-  const calculateOffset = useCallback(
-    (clientX) => {
-      if (!dragStartRef.current || !containerRef.current) return 0;
+  const calculateOffset = useCallback((clientX) => {
+    if (!dragStartRef.current || !containerRef.current) return 0;
 
-      const deltaX = clientX - dragStartRef.current.startX;
-      // Only allow swiping left (negative values)
-      if (deltaX > 0) return 0;
+    const deltaX = clientX - dragStartRef.current.startX;
+    // Only allow swiping left (negative values)
+    if (deltaX > 0) return 0;
 
-      return deltaX;
-    },
-    [],
-  );
+    return deltaX;
+  }, []);
 
   // Handle start of drag (mouse or touch)
   // Note: We don't set isSwipingRef.current = true here because we don't know
@@ -253,9 +250,14 @@ export function useSwipeToDelete(options = {}) {
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
       // Use passive: false for touchmove so we can call stopPropagation
-      document.addEventListener("touchmove", handleTouchMove, { passive: true, capture: true });
+      document.addEventListener("touchmove", handleTouchMove, {
+        passive: true,
+        capture: true,
+      });
       document.addEventListener("touchend", handleTouchEnd, { capture: true });
-      document.addEventListener("touchcancel", handleTouchEnd, { capture: true });
+      document.addEventListener("touchcancel", handleTouchEnd, {
+        capture: true,
+      });
       // Prevent text selection while dragging
       document.body.style.userSelect = "none";
     }
@@ -263,12 +265,24 @@ export function useSwipeToDelete(options = {}) {
     return () => {
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
-      document.removeEventListener("touchmove", handleTouchMove, { capture: true });
-      document.removeEventListener("touchend", handleTouchEnd, { capture: true });
-      document.removeEventListener("touchcancel", handleTouchEnd, { capture: true });
+      document.removeEventListener("touchmove", handleTouchMove, {
+        capture: true,
+      });
+      document.removeEventListener("touchend", handleTouchEnd, {
+        capture: true,
+      });
+      document.removeEventListener("touchcancel", handleTouchEnd, {
+        capture: true,
+      });
       document.body.style.userSelect = "";
     };
-  }, [isSwiping, handleMouseMove, handleMouseUp, handleTouchMove, handleTouchEnd]);
+  }, [
+    isSwiping,
+    handleMouseMove,
+    handleMouseUp,
+    handleTouchMove,
+    handleTouchEnd,
+  ]);
 
   // Click outside to reset revealed state
   // Use a ref to store the listener so we can remove it even if the component unmounts
@@ -345,4 +359,3 @@ export function useSwipeToDelete(options = {}) {
     triggerDelete,
   };
 }
-

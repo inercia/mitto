@@ -175,12 +175,18 @@ export function AgentPlanPanel({
         onClick=${onToggle}
       >
         <div class="flex items-center gap-2">
-          <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">
+          <span
+            class="text-xs font-medium text-gray-400 uppercase tracking-wide"
+          >
             Agent Plan
           </span>
-          ${totalCount > 0 && html`
+          ${totalCount > 0 &&
+          html`
             <span class="text-xs text-gray-500">
-              (${completedCount}/${totalCount} complete${inProgressCount > 0 ? `, ${inProgressCount} in progress` : ""})
+              (${completedCount}/${totalCount}
+              complete${inProgressCount > 0
+                ? `, ${inProgressCount} in progress`
+                : ""})
             </span>
           `}
         </div>
@@ -194,40 +200,50 @@ export function AgentPlanPanel({
               class="agent-plan-list overflow-y-auto"
               style="max-height: ${listMaxHeight}px;"
             >
-              ${entries.map(
-                (entry, index) => {
-                  const statusDisplay = getStatusDisplay(entry.status);
-                  return html`
-                    <div
-                      key=${index}
-                      class="agent-plan-item flex items-start gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0"
+              ${entries.map((entry, index) => {
+                const statusDisplay = getStatusDisplay(entry.status);
+                return html`
+                  <div
+                    key=${index}
+                    class="agent-plan-item flex items-start gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors border-b border-slate-700/50 last:border-b-0"
+                  >
+                    <span
+                      class="flex-shrink-0 mt-0.5 ${statusDisplay.colorClass}"
                     >
-                      <span class="flex-shrink-0 mt-0.5 ${statusDisplay.colorClass}">
-                        ${statusDisplay.icon}
+                      ${statusDisplay.icon}
+                    </span>
+                    <span class="flex-1 text-sm text-gray-200">
+                      ${entry.content}
+                    </span>
+                    ${entry.priority &&
+                    entry.priority !== "medium" &&
+                    html`
+                      <span
+                        class="flex-shrink-0 text-xs px-1.5 py-0.5 rounded border ${getPriorityBadge(
+                          entry.priority,
+                        )}"
+                      >
+                        ${entry.priority}
                       </span>
-                      <span class="flex-1 text-sm text-gray-200">
-                        ${entry.content}
-                      </span>
-                      ${entry.priority && entry.priority !== "medium" && html`
-                        <span class="flex-shrink-0 text-xs px-1.5 py-0.5 rounded border ${getPriorityBadge(entry.priority)}">
-                          ${entry.priority}
-                        </span>
-                      `}
-                    </div>
-                  `;
-                },
-              )}
+                    `}
+                  </div>
+                `;
+              })}
             </div>
           `
         : html`
-            <div class="agent-plan-empty px-3 py-4 text-center text-sm text-gray-500">
+            <div
+              class="agent-plan-empty px-3 py-4 text-center text-sm text-gray-500"
+            >
               No plan available
             </div>
           `}
 
       <!-- Resize Handle at bottom edge -->
       <div
-        class="agent-plan-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none ${isDragging ? "bg-slate-600/50" : ""}"
+        class="agent-plan-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none ${isDragging
+          ? "bg-slate-600/50"
+          : ""}"
         ...${handleProps}
         title="Drag to resize"
       >
@@ -244,18 +260,26 @@ export function AgentPlanPanel({
  * @param {Array} props.entries - Array of plan entries
  * @param {boolean} props.hasNewUpdate - Whether there's a new update to show
  */
-export function AgentPlanIndicator({ onClick, entries = [], hasNewUpdate = false }) {
+export function AgentPlanIndicator({
+  onClick,
+  entries = [],
+  hasNewUpdate = false,
+}) {
   if (entries.length === 0) return null;
 
   const completedCount = entries.filter((e) => e.status === "completed").length;
-  const inProgressCount = entries.filter((e) => e.status === "in_progress").length;
+  const inProgressCount = entries.filter(
+    (e) => e.status === "in_progress",
+  ).length;
   const totalCount = entries.length;
 
   return html`
     <button
       type="button"
       onClick=${onClick}
-      class="agent-plan-indicator flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-700/80 hover:bg-slate-600/80 transition-colors text-xs ${hasNewUpdate ? "ring-2 ring-blue-400/50" : ""}"
+      class="agent-plan-indicator flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-700/80 hover:bg-slate-600/80 transition-colors text-xs ${hasNewUpdate
+        ? "ring-2 ring-blue-400/50"
+        : ""}"
       title="View agent plan"
     >
       ${inProgressCount > 0
@@ -266,4 +290,3 @@ export function AgentPlanIndicator({ onClick, entries = [], hasNewUpdate = false
     </button>
   `;
 }
-

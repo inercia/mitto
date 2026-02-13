@@ -168,10 +168,7 @@ export function Message({ message, isLast, isStreaming }) {
   if (isThought) {
     const showCursor = isLast && isStreaming && !message.complete;
     // Linkify URLs in thought text
-    const linkedText = useMemo(
-      () => linkifyUrls(message.text),
-      [message.text],
-    );
+    const linkedText = useMemo(() => linkifyUrls(message.text), [message.text]);
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div

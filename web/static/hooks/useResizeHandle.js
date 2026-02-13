@@ -94,7 +94,9 @@ export function useResizeHandle(options = {}) {
     if (isDragging) {
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
-      document.addEventListener("touchmove", handleTouchMove, { passive: false });
+      document.addEventListener("touchmove", handleTouchMove, {
+        passive: false,
+      });
       document.addEventListener("touchend", handleTouchEnd);
       document.addEventListener("touchcancel", handleTouchEnd);
       // Prevent text selection while dragging
@@ -111,7 +113,13 @@ export function useResizeHandle(options = {}) {
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
     };
-  }, [isDragging, handleMouseMove, handleMouseUp, handleTouchMove, handleTouchEnd]);
+  }, [
+    isDragging,
+    handleMouseMove,
+    handleMouseUp,
+    handleTouchMove,
+    handleTouchEnd,
+  ]);
 
   // Handle props to spread on the resize handle element
   const handleProps = {
@@ -124,11 +132,13 @@ export function useResizeHandle(options = {}) {
     onTouchStart: (e) => {
       if (!e.touches[0]) return;
       setIsDragging(true);
-      dragStartRef.current = { startY: e.touches[0].clientY, startHeight: height };
+      dragStartRef.current = {
+        startY: e.touches[0].clientY,
+        startHeight: height,
+      };
       onDragStart?.();
     },
   };
 
   return { height, setHeight, isDragging, handleRef, handleProps };
 }
-

@@ -64,10 +64,10 @@ function hashMermaidContent(content) {
   const str = content.trim();
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash; // Convert to 32-bit integer
   }
-  return 'mermaid-' + Math.abs(hash).toString(36);
+  return "mermaid-" + Math.abs(hash).toString(36);
 }
 
 /**

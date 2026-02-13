@@ -525,11 +525,7 @@ export function DragHandleIcon({ className = "w-4 h-4" }) {
  */
 export function QueueIcon({ className = "w-4 h-4" }) {
   return html`
-    <svg
-      class="${className}"
-      fill="currentColor"
-      viewBox="0 0 24 24"
-    >
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
       <!-- Top arrow -->
       <path d="M12 3L6 9h4v4h4V9h4L12 3z" />
       <!-- Stacked layers below -->
@@ -617,8 +613,10 @@ export function ArchiveIcon({ className = "w-4 h-4" }) {
 export function ArchiveFilledIcon({ className = "w-4 h-4" }) {
   return html`
     <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
-      <path d="M20 2H4c-1.1 0-2 .9-2 2v2c0 .55.45 1 1 1h18c.55 0 1-.45 1-1V4c0-1.1-.9-2-2-2z"/>
-      <path d="M19 8H5v10c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V8zm-7 8h-2v-4h2v4z"/>
+      <path
+        d="M20 2H4c-1.1 0-2 .9-2 2v2c0 .55.45 1 1 1h18c.55 0 1-.45 1-1V4c0-1.1-.9-2-2-2z"
+      />
+      <path d="M19 8H5v10c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V8zm-7 8h-2v-4h2v4z" />
     </svg>
   `;
 }

@@ -151,7 +151,7 @@ export function convertHTTPFileURLToFile(httpUrl) {
     workspacePath = getCurrentWorkspace();
     if (!workspacePath) {
       console.warn(
-        "Cannot convert HTTP file URL to file://: workspace path not available"
+        "Cannot convert HTTP file URL to file://: workspace path not available",
       );
       return null;
     }
@@ -407,7 +407,7 @@ export function fixViewerURLIfNeeded(url) {
           "[Mitto] Fixed old viewer URL:",
           url,
           "->",
-          parsed.toString()
+          parsed.toString(),
         );
         return parsed.toString();
       }

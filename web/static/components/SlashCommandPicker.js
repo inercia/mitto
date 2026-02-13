@@ -118,7 +118,8 @@ export function SlashCommandPicker({
           Commands ${filter ? `(/${filter})` : ""}
         </span>
         <span class="text-xs text-gray-500">
-          ${filteredCommands.length} command${filteredCommands.length !== 1 ? "s" : ""}
+          ${filteredCommands.length}
+          command${filteredCommands.length !== 1 ? "s" : ""}
         </span>
       </div>
       <div
@@ -131,14 +132,21 @@ export function SlashCommandPicker({
             <div
               key=${cmd.name}
               data-index=${index}
-              class="slash-picker-item flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors ${index === selectedIndex ? "bg-blue-600/40" : "hover:bg-slate-600/50"}"
+              class="slash-picker-item flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors ${index ===
+              selectedIndex
+                ? "bg-blue-600/40"
+                : "hover:bg-slate-600/50"}"
               onClick=${() => handleSelect(cmd)}
               onMouseEnter=${() => handleMouseEnter(index)}
             >
-              <span class="slash-command-name font-mono text-sm text-blue-300 flex-shrink-0">
+              <span
+                class="slash-command-name font-mono text-sm text-blue-300 flex-shrink-0"
+              >
                 /${cmd.name}
               </span>
-              <span class="slash-command-desc text-sm text-gray-400 truncate flex-1">
+              <span
+                class="slash-command-desc text-sm text-gray-400 truncate flex-1"
+              >
                 ${cmd.description || ""}
               </span>
             </div>
@@ -148,4 +156,3 @@ export function SlashCommandPicker({
     </div>
   `;
 }
-

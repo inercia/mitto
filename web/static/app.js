@@ -22,6 +22,7 @@ import {
   INITIAL_EVENTS_LIMIT,
   computeAllSessions,
   convertEventsToMessages,
+  coalesceAgentMessages,
   safeJsonParse,
   limitMessages,
   getWorkspaceVisualInfo,
@@ -65,7 +66,12 @@ import {
 } from "./utils/index.js";
 
 // Import hooks
-import { useWebSocket, useSwipeNavigation, useSwipeToDelete, useInfiniteScroll } from "./hooks/index.js";
+import {
+  useWebSocket,
+  useSwipeNavigation,
+  useSwipeToDelete,
+  useInfiniteScroll,
+} from "./hooks/index.js";
 
 // Import components
 import { Message } from "./components/Message.js";
@@ -359,12 +365,11 @@ function WorkspacePill({
 }) {
   if (!path) return null;
 
-  const { abbreviation, color, displayName: wsDisplayName } = getWorkspaceVisualInfo(
-    path,
-    customColor,
-    customCode,
-    customName,
-  );
+  const {
+    abbreviation,
+    color,
+    displayName: wsDisplayName,
+  } = getWorkspaceVisualInfo(path, customColor, customCode, customName);
   // Display ACP server name if available, otherwise fall back to workspace display name
   const displayName = acpServer || wsDisplayName;
 
@@ -376,7 +381,9 @@ function WorkspacePill({
     }
   };
 
-  const cursorClass = clickable ? "cursor-pointer workspace-pill-clickable" : "";
+  const cursorClass = clickable
+    ? "cursor-pointer workspace-pill-clickable"
+    : "";
 
   return html`
     <div
@@ -805,7 +812,14 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
               onKeyDown=${(e) => {
                 // Intercept number keys 1-9 to select workspaces quickly
                 const num = parseInt(e.key, 10);
-                if (num >= 1 && num <= Math.min(WORKSPACE_FILTER_THRESHOLD, filteredWorkspaces.length)) {
+                if (
+                  num >= 1 &&
+                  num <=
+                    Math.min(
+                      WORKSPACE_FILTER_THRESHOLD,
+                      filteredWorkspaces.length,
+                    )
+                ) {
                   e.preventDefault();
                   const workspace = filteredWorkspaces[num - 1];
                   if (workspace) {
@@ -814,7 +828,7 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
                 }
               }}
               placeholder="Filter workspaces..."
-              autoFocus
+              autofocus
               class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500 placeholder-gray-500"
             />
           </div>
@@ -842,9 +856,7 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
                             ${index + 1}
                           </div>
                         `
-                      : html`
-                          <div class="w-8 h-8 flex-shrink-0"></div>
-                        `}
+                      : html` <div class="w-8 h-8 flex-shrink-0"></div> `}
                     <${WorkspaceBadge}
                       path=${ws.working_dir}
                       customColor=${ws.color}
@@ -1047,17 +1059,24 @@ function SessionItem({
       parts.push(`Archived: ${archivedDate.toLocaleString()}`);
     }
 
-    return parts.join('\n');
+    return parts.join("\n");
   };
 
   // Swipe-to-delete hook
-  const { swipeOffset, isSwiping, isSwipingRef, isRevealed, containerProps, reset, triggerDelete } =
-    useSwipeToDelete({
-      onDelete: () => onDelete(session),
-      threshold: 0.5,
-      revealWidth: 80,
-      disabled: false,
-    });
+  const {
+    swipeOffset,
+    isSwiping,
+    isSwipingRef,
+    isRevealed,
+    containerProps,
+    reset,
+    triggerDelete,
+  } = useSwipeToDelete({
+    onDelete: () => onDelete(session),
+    threshold: 0.5,
+    revealWidth: 80,
+    disabled: false,
+  });
 
   const handleRename = (e) => {
     if (e) e.stopPropagation();
@@ -1096,8 +1115,10 @@ function SessionItem({
   }, [isSwipingRef, isRevealed, reset, onSelect, session.session_id]);
 
   const displayName = session.name || session.description || "Untitled";
-  const isActiveSession = session.isActive || session.status === "active";
-  const isStreaming = session.isStreaming || false;
+  // Archived sessions should never show as active (they have no ACP connection)
+  const isActiveSession =
+    !isArchived && (session.isActive || session.status === "active");
+  const isStreaming = !isArchived && (session.isStreaming || false);
 
   const contextMenuItems = [
     {
@@ -1106,7 +1127,9 @@ function SessionItem({
         : isArchived
           ? "Unarchive"
           : "Archive",
-      icon: isArchived ? html`<${ArchiveFilledIcon} />` : html`<${ArchiveIcon} />`,
+      icon: isArchived
+        ? html`<${ArchiveFilledIcon} />`
+        : html`<${ArchiveIcon} />`,
       onClick: canArchive ? () => handleArchive() : undefined,
       disabled: !canArchive,
     },
@@ -1162,124 +1185,124 @@ function SessionItem({
         title=${buildTooltip()}
         data-session-id=${session.session_id}
       >
-      ${contextMenu &&
-      html`
-        <${ContextMenu}
-          x=${contextMenu.x}
-          y=${contextMenu.y}
-          items=${contextMenuItems}
-          onClose=${closeContextMenu}
-        />
-      `}
-      <!-- Top row: status indicator, title, and workspace pill -->
-      <div class="flex items-start gap-2">
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2">
-            ${isStreaming
-              ? html`
-                  <span
-                    class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
-                    title="Receiving response..."
-                  ></span>
-                `
-              : isActiveSession
-                ? html`
-                    <span
-                      class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
-                    ></span>
-                  `
-                : null}
-            <span class="text-sm font-medium truncate">${displayName}</span>
-          </div>
-          <div class="text-xs text-gray-500 mt-1">
-            ${new Date(session.created_at).toLocaleDateString()}
-            ${new Date(session.created_at).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </div>
-        </div>
-        ${workingDir &&
+        ${contextMenu &&
         html`
-          <${WorkspacePill}
-            path=${workingDir}
-            customColor=${workspaceColor}
-            customCode=${workspaceCode}
-            customName=${workspaceName}
-            acpServer=${acpServer}
-            clickable=${badgeClickEnabled}
-            onBadgeClick=${onBadgeClick}
+          <${ContextMenu}
+            x=${contextMenu.x}
+            y=${contextMenu.y}
+            items=${contextMenuItems}
+            onClose=${closeContextMenu}
           />
         `}
-      </div>
-      <!-- Bottom row: message count, saved/stored badge, and action buttons -->
-      <div class="flex items-center justify-between mt-2">
-        <div class="flex items-center gap-2">
-          ${session.messageCount !== undefined
-            ? html`
-                <span class="text-xs text-gray-500"
-                  >${session.messageCount} msgs</span
-                >
-              `
-            : session.event_count !== undefined
+        <!-- Top row: status indicator, title, and workspace pill -->
+        <div class="flex items-start gap-2">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              ${isStreaming
+                ? html`
+                    <span
+                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
+                      title="Receiving response..."
+                    ></span>
+                  `
+                : isActiveSession
+                  ? html`
+                      <span
+                        class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
+                      ></span>
+                    `
+                  : null}
+              <span class="text-sm font-medium truncate">${displayName}</span>
+            </div>
+            <div class="text-xs text-gray-500 mt-1">
+              ${new Date(session.created_at).toLocaleDateString()}
+              ${new Date(session.created_at).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </div>
+          </div>
+          ${workingDir &&
+          html`
+            <${WorkspacePill}
+              path=${workingDir}
+              customColor=${workspaceColor}
+              customCode=${workspaceCode}
+              customName=${workspaceName}
+              acpServer=${acpServer}
+              clickable=${badgeClickEnabled}
+              onBadgeClick=${onBadgeClick}
+            />
+          `}
+        </div>
+        <!-- Bottom row: message count, saved/stored badge, and action buttons -->
+        <div class="flex items-center justify-between mt-2">
+          <div class="flex items-center gap-2">
+            ${session.messageCount !== undefined
               ? html`
                   <span class="text-xs text-gray-500"
-                    >${session.event_count} events</span
+                    >${session.messageCount} msgs</span
                   >
                 `
-              : null}
-          ${session.isActive
-            ? html`
-                <span class="text-gray-500" title="Session is auto-saved">
-                  <${SaveIcon} className="w-3 h-3" />
-                </span>
-              `
-            : html`
-                <span
-                  class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
-                  >stored</span
-                >
-              `}
+              : session.event_count !== undefined
+                ? html`
+                    <span class="text-xs text-gray-500"
+                      >${session.event_count} events</span
+                    >
+                  `
+                : null}
+            ${session.isActive
+              ? html`
+                  <span class="text-gray-500" title="Session is auto-saved">
+                    <${SaveIcon} className="w-3 h-3" />
+                  </span>
+                `
+              : html`
+                  <span
+                    class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
+                    >stored</span
+                  >
+                `}
+          </div>
+          <div
+            class="flex items-center gap-1 ${showActions
+              ? "opacity-100"
+              : "opacity-0"} transition-opacity flex-shrink-0"
+          >
+            <button
+              onClick=${canArchive ? handleArchive : undefined}
+              disabled=${!canArchive}
+              class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
+                ? "opacity-50 cursor-not-allowed text-gray-500"
+                : isArchived
+                  ? "hover:bg-slate-600 text-gray-500"
+                  : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
+              title="${!canArchive
+                ? "Clear queue before archiving"
+                : isArchived
+                  ? "Unarchive"
+                  : "Archive"}"
+            >
+              ${isArchived
+                ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
+                : html`<${ArchiveIcon} className="w-4 h-4" />`}
+            </button>
+            <button
+              onClick=${handleRename}
+              class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
+              title="Rename"
+            >
+              <${EditIcon} className="w-4 h-4" />
+            </button>
+            <button
+              onClick=${handleDelete}
+              class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
+              title="Delete"
+            >
+              <${TrashIcon} className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-        <div
-          class="flex items-center gap-1 ${showActions
-            ? "opacity-100"
-            : "opacity-0"} transition-opacity flex-shrink-0"
-        >
-          <button
-            onClick=${canArchive ? handleArchive : undefined}
-            disabled=${!canArchive}
-            class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
-              ? "opacity-50 cursor-not-allowed text-gray-500"
-              : isArchived
-                ? "hover:bg-slate-600 text-gray-500"
-                : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
-            title="${!canArchive
-              ? "Clear queue before archiving"
-              : isArchived
-                ? "Unarchive"
-                : "Archive"}"
-          >
-            ${isArchived
-              ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
-              : html`<${ArchiveIcon} className="w-4 h-4" />`}
-          </button>
-          <button
-            onClick=${handleRename}
-            class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
-            title="Rename"
-          >
-            <${EditIcon} className="w-4 h-4" />
-          </button>
-          <button
-            onClick=${handleDelete}
-            class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
-            title="Delete"
-          >
-            <${TrashIcon} className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
       </div>
     </div>
   `;
@@ -1320,7 +1343,9 @@ function SessionList({
   const isLargeFont = fontSize === "large";
 
   // Grouping state - initialized from localStorage
-  const [groupingMode, setGroupingModeState] = useState(() => getGroupingMode());
+  const [groupingMode, setGroupingModeState] = useState(() =>
+    getGroupingMode(),
+  );
   // Track expanded groups - use a counter to force re-render when localStorage changes
   const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
 
@@ -1332,7 +1357,10 @@ function SessionList({
       setGroupingModeState(newMode);
       // Force re-render for expanded groups
       setExpandedGroupsVersion((v) => v + 1);
-      console.debug("[Mitto] SessionList: UI preferences synced from server, mode:", newMode);
+      console.debug(
+        "[Mitto] SessionList: UI preferences synced from server, mode:",
+        newMode,
+      );
     });
     return unsubscribe;
   }, []);
@@ -1536,7 +1564,8 @@ function SessionList({
           <span class="flex-1 text-left">Archived</span>
           <span class="text-xs text-gray-500">${archivedSessions.length}</span>
         </div>
-        ${expanded && archivedSessions.map((session) => renderSessionItem(session))}
+        ${expanded &&
+        archivedSessions.map((session) => renderSessionItem(session))}
       </div>
     `;
   };
@@ -1558,20 +1587,25 @@ function SessionList({
               class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer group/header"
               onClick=${() => handleToggleGroup(group.key)}
             >
-              <span class="transition-transform ${expanded ? "" : "-rotate-90"}">
+              <span
+                class="transition-transform ${expanded ? "" : "-rotate-90"}"
+              >
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
               ${groupingMode === "server"
                 ? html`<${ServerIcon} className="w-4 h-4" />`
                 : html`<${FolderIcon} className="w-4 h-4" />`}
               <span class="flex-1 text-left truncate">${group.label}</span>
-              ${!expanded && hasStreamingSession && html`
+              ${!expanded &&
+              hasStreamingSession &&
+              html`
                 <span
                   class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
                   title="Agent responding in this group"
                 ></span>
               `}
-              ${groupingMode === "folder" && html`
+              ${groupingMode === "folder" &&
+              html`
                 <button
                   onClick=${(e) => handleNewSessionInGroup(group.key, e)}
                   class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
@@ -1582,7 +1616,8 @@ function SessionList({
               `}
               <span class="text-xs text-gray-500">${sessionCount}</span>
             </div>
-            ${expanded && group.sessions.map((session) => renderSessionItem(session))}
+            ${expanded &&
+            group.sessions.map((session) => renderSessionItem(session))}
           </div>
         `;
       })}
@@ -1612,9 +1647,12 @@ function SessionList({
           </span>
           <${ListIcon} className="w-4 h-4" />
           <span class="flex-1 text-left">All</span>
-          <span class="text-xs text-gray-500">${nonArchivedSessions.length}</span>
+          <span class="text-xs text-gray-500"
+            >${nonArchivedSessions.length}</span
+          >
         </div>
-        ${allExpanded && nonArchivedSessions.map((session) => renderSessionItem(session))}
+        ${allExpanded &&
+        nonArchivedSessions.map((session) => renderSessionItem(session))}
       </div>
       ${renderArchivedSection()}
     `;
@@ -1808,6 +1846,11 @@ function App() {
   const [planUserPinned, setPlanUserPinned] = useState(false);
   // Plan expiration tracking - per-session: { sessionId: { completedAt: timestamp, messagesAfterCompletion: number } }
   const [planExpirationMap, setPlanExpirationMap] = useState({});
+  // Plan completion timer - per-session: { sessionId: timeoutId }
+  const planCompletionTimersRef = useRef({});
+
+  // Delay in milliseconds before erasing a completed plan
+  const PLAN_COMPLETION_ERASE_DELAY = 5000;
 
   // Number of user messages after plan completion before auto-expiring (configurable between 3-4)
   const PLAN_EXPIRATION_MESSAGE_THRESHOLD = 3;
@@ -1817,6 +1860,16 @@ function App() {
     if (!activeSessionId) return [];
     return planEntriesMap[activeSessionId] || [];
   }, [planEntriesMap, activeSessionId]);
+
+  // Coalesce consecutive agent messages for display.
+  // The backend's MarkdownBuffer flushes content at semantic boundaries (paragraphs,
+  // headers, horizontal rules, etc.), creating separate events. This is correct for
+  // tracking and sync, but creates a poor visual experience where each flush appears
+  // as a separate message bubble. This combines them for rendering.
+  const displayMessages = useMemo(() => {
+    return coalesceAgentMessages(messages);
+  }, [messages]);
+
   const [renameDialog, setRenameDialog] = useState({
     isOpen: false,
     session: null,
@@ -1888,7 +1941,9 @@ function App() {
         return true; // No ACP server selected, show all prompts
       }
       // Parse comma-separated list and check for match (case-insensitive)
-      const allowedServers = prompt.acps.split(",").map((s) => s.trim().toLowerCase());
+      const allowedServers = prompt.acps
+        .split(",")
+        .map((s) => s.trim().toLowerCase());
       return allowedServers.includes(currentAcpServer);
     };
 
@@ -2052,7 +2107,10 @@ function App() {
     };
     window.addEventListener("mitto:acp_start_failed", handleAcpStartFailed);
     return () => {
-      window.removeEventListener("mitto:acp_start_failed", handleAcpStartFailed);
+      window.removeEventListener(
+        "mitto:acp_start_failed",
+        handleAcpStartFailed,
+      );
     };
   }, []);
 
@@ -2106,7 +2164,10 @@ function App() {
         scrollHeight: container.scrollHeight,
         scrollTop: container.scrollTop,
       };
-      console.log("[Scroll] Saved scroll metrics before load more:", scrollPreservationRef.current);
+      console.log(
+        "[Scroll] Saved scroll metrics before load more:",
+        scrollPreservationRef.current,
+      );
     }
 
     loadMoreMessages(activeSessionId);
@@ -2178,7 +2239,8 @@ function App() {
     const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
-    if (currentIndex === -1 || currentIndex === navigableSessions.length - 1) return; // Already at bottom or not found
+    if (currentIndex === -1 || currentIndex === navigableSessions.length - 1)
+      return; // Already at bottom or not found
     switchSession(navigableSessions[currentIndex + 1].session_id);
   }, [navigableSessions, activeSessionId, switchSession]);
 
@@ -2290,6 +2352,9 @@ function App() {
   // Badge click action settings (macOS only, default: enabled)
   const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
 
+  // Input font family setting (web UI, default: "system")
+  const [inputFontFamily, setInputFontFamily] = useState("system");
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
@@ -2335,7 +2400,10 @@ function App() {
           setConfirmDeleteSession(false);
         }
         // Load UI settings (macOS only)
-        console.log("[config] ui.mac.notifications:", config?.ui?.mac?.notifications);
+        console.log(
+          "[config] ui.mac.notifications:",
+          config?.ui?.mac?.notifications,
+        );
         if (config?.ui?.mac?.notifications?.sounds?.agent_completed) {
           console.log("[config] Setting agent_completed sound ENABLED");
           setAgentCompletedSoundEnabled(true);
@@ -2356,6 +2424,10 @@ function App() {
         } else {
           // Disable for non-macOS environments
           setBadgeClickEnabled(false);
+        }
+        // Load input font family setting (web UI)
+        if (config?.ui?.web?.input_font_family) {
+          setInputFontFamily(config.ui.web.input_font_family);
         }
         // Check if ACP servers or workspaces are configured - if not, force open settings
         // Skip this if config is read-only (user manages config via file) or if external connection
@@ -2654,6 +2726,28 @@ function App() {
     setFontSize((prev) => (prev === "small" ? "large" : "small"));
   }, []);
 
+  // Apply input font family class to document
+  useEffect(() => {
+    const root = document.documentElement;
+    // Remove all input font classes first
+    const fontClasses = [
+      "input-font-system",
+      "input-font-sans-serif",
+      "input-font-serif",
+      "input-font-monospace",
+      "input-font-menlo",
+      "input-font-monaco",
+      "input-font-consolas",
+      "input-font-courier-new",
+      "input-font-jetbrains-mono",
+      "input-font-sf-mono",
+      "input-font-cascadia-code",
+    ];
+    fontClasses.forEach((cls) => root.classList.remove(cls));
+    // Add the current font class
+    root.classList.add(`input-font-${inputFontFamily}`);
+  }, [inputFontFamily]);
+
   // Threshold for considering user "at bottom"
   // For large scroll ranges (>200px), use a fixed 50px threshold
   // For smaller ranges, use 25% of maxScroll to ensure the button can appear
@@ -2672,7 +2766,10 @@ function App() {
     if (maxScroll <= 0) return true;
     // Use percentage-based threshold for small scroll ranges,
     // fixed threshold for larger ones
-    const threshold = Math.min(SCROLL_THRESHOLD_PX, maxScroll * SCROLL_THRESHOLD_PERCENT);
+    const threshold = Math.min(
+      SCROLL_THRESHOLD_PX,
+      maxScroll * SCROLL_THRESHOLD_PERCENT,
+    );
     const atBottom = container.scrollTop >= maxScroll - threshold;
     console.log("[scroll] checkIfAtBottom:", {
       scrollTop: container.scrollTop,
@@ -3104,7 +3201,10 @@ function App() {
 
   // Queue dropdown handlers
   const handleToggleQueueDropdown = useCallback(() => {
-    console.log("[DEBUG] handleToggleQueueDropdown called, current showQueueDropdown:", showQueueDropdown);
+    console.log(
+      "[DEBUG] handleToggleQueueDropdown called, current showQueueDropdown:",
+      showQueueDropdown,
+    );
     // Cancel any auto-close timer when user manually toggles
     if (queuePanelAutoCloseTimerRef.current) {
       clearTimeout(queuePanelAutoCloseTimerRef.current);
@@ -3158,58 +3258,68 @@ function App() {
 
   // Handle adding message to queue (with optional images and files)
   // Called from ChatInput with message text, images, and files
-  const handleAddToQueue = useCallback(async (message, images = [], files = []) => {
-    // Allow queueing if there's text OR images OR files (or any combination)
-    const hasContent = message?.trim() || images.length > 0 || files.length > 0;
-    if (!hasContent || isAddingToQueue) return { success: false };
+  const handleAddToQueue = useCallback(
+    async (message, images = [], files = []) => {
+      // Allow queueing if there's text OR images OR files (or any combination)
+      const hasContent =
+        message?.trim() || images.length > 0 || files.length > 0;
+      if (!hasContent || isAddingToQueue) return { success: false };
 
-    setIsAddingToQueue(true);
-    try {
-      // Extract image and file IDs from the objects
-      const imageIds = images.map((img) => img.id).filter(Boolean);
-      const fileIds = files.map((f) => f.id).filter(Boolean);
-      const result = await addToQueue(message, imageIds, fileIds);
-      if (result.success) {
-        // Clear the draft after successful addition
-        // Note: Images are cleared by ChatInput on success
-        updateDraft(activeSessionId, "");
+      setIsAddingToQueue(true);
+      try {
+        // Extract image and file IDs from the objects
+        const imageIds = images.map((img) => img.id).filter(Boolean);
+        const fileIds = files.map((f) => f.id).filter(Boolean);
+        const result = await addToQueue(message, imageIds, fileIds);
+        if (result.success) {
+          // Clear the draft after successful addition
+          // Note: Images are cleared by ChatInput on success
+          updateDraft(activeSessionId, "");
 
-        // Show queue toast feedback
-        if (queueToastTimerRef.current) {
-          clearTimeout(queueToastTimerRef.current);
+          // Show queue toast feedback
+          if (queueToastTimerRef.current) {
+            clearTimeout(queueToastTimerRef.current);
+          }
+          setQueueToastVisible(true);
+          queueToastTimerRef.current = setTimeout(() => {
+            setQueueToastVisible(false);
+            queueToastTimerRef.current = null;
+          }, 2000);
+
+          // Trigger badge pulse animation
+          setQueueBadgePulse(true);
+          setTimeout(() => setQueueBadgePulse(false), 600);
+
+          // Open queue panel briefly to show the new message
+          fetchQueueMessages();
+          setShowQueueDropdown(true);
+
+          // Clear any existing auto-close timer
+          if (queuePanelAutoCloseTimerRef.current) {
+            clearTimeout(queuePanelAutoCloseTimerRef.current);
+          }
+
+          // Auto-close the queue panel after 1.5 seconds
+          queuePanelAutoCloseTimerRef.current = setTimeout(() => {
+            setShowQueueDropdown(false);
+            queuePanelAutoCloseTimerRef.current = null;
+          }, 1500);
+
+          return { success: true };
         }
-        setQueueToastVisible(true);
-        queueToastTimerRef.current = setTimeout(() => {
-          setQueueToastVisible(false);
-          queueToastTimerRef.current = null;
-        }, 2000);
-
-        // Trigger badge pulse animation
-        setQueueBadgePulse(true);
-        setTimeout(() => setQueueBadgePulse(false), 600);
-
-        // Open queue panel briefly to show the new message
-        fetchQueueMessages();
-        setShowQueueDropdown(true);
-
-        // Clear any existing auto-close timer
-        if (queuePanelAutoCloseTimerRef.current) {
-          clearTimeout(queuePanelAutoCloseTimerRef.current);
-        }
-
-        // Auto-close the queue panel after 1.5 seconds
-        queuePanelAutoCloseTimerRef.current = setTimeout(() => {
-          setShowQueueDropdown(false);
-          queuePanelAutoCloseTimerRef.current = null;
-        }, 1500);
-
-        return { success: true };
+        return { success: false, error: result.error };
+      } finally {
+        setIsAddingToQueue(false);
       }
-      return { success: false, error: result.error };
-    } finally {
-      setIsAddingToQueue(false);
-    }
-  }, [isAddingToQueue, addToQueue, updateDraft, activeSessionId, fetchQueueMessages]);
+    },
+    [
+      isAddingToQueue,
+      addToQueue,
+      updateDraft,
+      activeSessionId,
+      fetchQueueMessages,
+    ],
+  );
 
   // Auto-hide queue dropdown when certain events occur
   useEffect(() => {
@@ -3241,8 +3351,26 @@ function App() {
     };
   }, [showQueueDropdown, fetchQueueMessages]);
 
+  // Helper function to compare plan entries
+  const arePlanEntriesEqual = useCallback((a, b) => {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    if (a.length !== b.length) return false;
+    // Compare each entry by content, status, and priority
+    for (let i = 0; i < a.length; i++) {
+      if (
+        a[i].content !== b[i].content ||
+        a[i].status !== b[i].status ||
+        a[i].priority !== b[i].priority
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }, []);
+
   // Listen for plan updates from WebSocket - store per session in the map
-  // Also track plan completion for auto-expiration
+  // When all tasks are completed, erase the plan after a delay
   useEffect(() => {
     const handlePlanUpdate = (event) => {
       const { sessionId, entries } = event.detail;
@@ -3251,43 +3379,91 @@ function App() {
       // Check if this is a new plan (has entries) or an update to existing
       const hasEntries = entries && entries.length > 0;
 
+      // Get existing entries for comparison
+      const existingEntries = planEntriesMap[sessionId] || [];
+
+      // Check if the plan has actually changed
+      const hasChanged = !arePlanEntriesEqual(existingEntries, entries || []);
+
+      // If nothing changed, skip all updates
+      if (!hasChanged) {
+        console.log(
+          `[Plan] No changes for session ${sessionId}, skipping update`,
+        );
+        return;
+      }
+
+      // Check if all tasks are completed
+      const allCompleted =
+        hasEntries && entries.every((e) => e.status === "completed");
+
+      // Cancel any existing completion timer for this session
+      if (planCompletionTimersRef.current[sessionId]) {
+        clearTimeout(planCompletionTimersRef.current[sessionId]);
+        delete planCompletionTimersRef.current[sessionId];
+      }
+
+      if (allCompleted) {
+        // All tasks completed - update entries to show completion, then schedule erasure
+        console.log(
+          `[Plan] All tasks completed for session ${sessionId}, scheduling erasure in ${PLAN_COMPLETION_ERASE_DELAY}ms`,
+        );
+
+        // Update entries to show completed state
+        setPlanEntriesMap((prev) => ({
+          ...prev,
+          [sessionId]: entries || [],
+        }));
+
+        // Remove from expiration tracking if present
+        setPlanExpirationMap((prev) => {
+          const { [sessionId]: _, ...rest } = prev;
+          return rest;
+        });
+
+        // Schedule plan erasure after delay
+        planCompletionTimersRef.current[sessionId] = setTimeout(() => {
+          console.log(
+            `[Plan] Erasing completed plan for session ${sessionId}`,
+          );
+          delete planCompletionTimersRef.current[sessionId];
+
+          // Close panel first (triggers CSS transition)
+          if (sessionId === activeSessionId) {
+            setShowPlanPanel(false);
+            setPlanUserPinned(false);
+          }
+
+          // Wait for panel close animation (300ms transition) before removing entries
+          setTimeout(() => {
+            setPlanEntriesMap((prevEntries) => {
+              const { [sessionId]: _, ...restEntries } = prevEntries;
+              return restEntries;
+            });
+          }, 350); // Slightly longer than 300ms transition to ensure it completes
+        }, PLAN_COMPLETION_ERASE_DELAY);
+
+        return;
+      }
+
       // Store plan entries for this session in the map
-      setPlanEntriesMap(prev => ({
+      setPlanEntriesMap((prev) => ({
         ...prev,
         [sessionId]: entries || [],
       }));
 
-      // Handle plan expiration tracking
+      // Reset expiration tracking when new/updated plan with incomplete tasks is received
       if (hasEntries) {
-        // Check if all tasks are completed
-        const allCompleted = entries.every(e => e.status === "completed");
-
-        setPlanExpirationMap(prev => {
+        setPlanExpirationMap((prev) => {
           const existing = prev[sessionId];
-
-          if (allCompleted) {
-            // Plan is fully complete - start tracking if not already
-            if (!existing?.completedAt) {
-              console.log(`[Plan Expiration] Plan for session ${sessionId} is fully completed, starting expiration tracking`);
-              return {
-                ...prev,
-                [sessionId]: {
-                  completedAt: Date.now(),
-                  messagesAfterCompletion: 0,
-                },
-              };
-            }
-            // Already tracking, keep existing state
-            return prev;
-          } else {
-            // Plan has incomplete tasks - reset expiration tracking (new plan received)
-            if (existing) {
-              console.log(`[Plan Expiration] New/updated plan for session ${sessionId}, resetting expiration tracking`);
-              const { [sessionId]: _, ...rest } = prev;
-              return rest;
-            }
-            return prev;
+          if (existing) {
+            console.log(
+              `[Plan] New/updated plan for session ${sessionId}, resetting expiration tracking`,
+            );
+            const { [sessionId]: _, ...rest } = prev;
+            return rest;
           }
+          return prev;
         });
       }
 
@@ -3300,7 +3476,7 @@ function App() {
     return () => {
       window.removeEventListener("mitto:plan_update", handlePlanUpdate);
     };
-  }, [activeSessionId, planUserPinned]);
+  }, [activeSessionId, planUserPinned, planEntriesMap, arePlanEntriesEqual]);
 
   // Reset panel state (but not entries) when switching sessions
   // The entries are preserved in planEntriesMap and will show the badge indicator
@@ -3326,68 +3502,78 @@ function App() {
   }, []);
 
   // Track user messages for plan expiration - called when user sends a prompt
-  const trackUserMessageForPlanExpiration = useCallback((sessionId) => {
-    if (!sessionId) return;
+  const trackUserMessageForPlanExpiration = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
 
-    setPlanExpirationMap(prev => {
-      const existing = prev[sessionId];
-      if (!existing?.completedAt) {
-        // No completed plan being tracked for this session
-        return prev;
-      }
+      setPlanExpirationMap((prev) => {
+        const existing = prev[sessionId];
+        if (!existing?.completedAt) {
+          // No completed plan being tracked for this session
+          return prev;
+        }
 
-      const newCount = (existing.messagesAfterCompletion || 0) + 1;
-      console.log(`[Plan Expiration] User message sent for session ${sessionId}, count: ${newCount}/${PLAN_EXPIRATION_MESSAGE_THRESHOLD}`);
+        const newCount = (existing.messagesAfterCompletion || 0) + 1;
+        console.log(
+          `[Plan Expiration] User message sent for session ${sessionId}, count: ${newCount}/${PLAN_EXPIRATION_MESSAGE_THRESHOLD}`,
+        );
 
-      if (newCount >= PLAN_EXPIRATION_MESSAGE_THRESHOLD) {
-        // Threshold reached - expire the plan
-        console.log(`[Plan Expiration] Threshold reached for session ${sessionId}, expiring plan`);
+        if (newCount >= PLAN_EXPIRATION_MESSAGE_THRESHOLD) {
+          // Threshold reached - expire the plan
+          console.log(
+            `[Plan Expiration] Threshold reached for session ${sessionId}, expiring plan`,
+          );
 
-        // Remove from expiration tracking
-        const { [sessionId]: _, ...rest } = prev;
+          // Remove from expiration tracking
+          const { [sessionId]: _, ...rest } = prev;
 
-        // Schedule plan removal with graceful animation:
-        // 1. Close panel first (triggers CSS transition)
-        // 2. Wait for transition to complete (300ms)
-        // 3. Then remove entries from state
-        setTimeout(() => {
-          // Close panel if it's showing this session's plan
-          if (sessionId === activeSessionId) {
-            setShowPlanPanel(false);
-            setPlanUserPinned(false);
-          }
-
-          // Wait for panel close animation (300ms transition) before removing entries
+          // Schedule plan removal with graceful animation:
+          // 1. Close panel first (triggers CSS transition)
+          // 2. Wait for transition to complete (300ms)
+          // 3. Then remove entries from state
           setTimeout(() => {
-            setPlanEntriesMap(prevEntries => {
-              const { [sessionId]: __, ...restEntries } = prevEntries;
-              return restEntries;
-            });
-          }, 350); // Slightly longer than 300ms transition to ensure it completes
-        }, 0);
+            // Close panel if it's showing this session's plan
+            if (sessionId === activeSessionId) {
+              setShowPlanPanel(false);
+              setPlanUserPinned(false);
+            }
 
-        return rest;
-      }
+            // Wait for panel close animation (300ms transition) before removing entries
+            setTimeout(() => {
+              setPlanEntriesMap((prevEntries) => {
+                const { [sessionId]: __, ...restEntries } = prevEntries;
+                return restEntries;
+              });
+            }, 350); // Slightly longer than 300ms transition to ensure it completes
+          }, 0);
 
-      // Update message count
-      return {
-        ...prev,
-        [sessionId]: {
-          ...existing,
-          messagesAfterCompletion: newCount,
-        },
-      };
-    });
-  }, [activeSessionId, PLAN_EXPIRATION_MESSAGE_THRESHOLD]);
+          return rest;
+        }
+
+        // Update message count
+        return {
+          ...prev,
+          [sessionId]: {
+            ...existing,
+            messagesAfterCompletion: newCount,
+          },
+        };
+      });
+    },
+    [activeSessionId, PLAN_EXPIRATION_MESSAGE_THRESHOLD],
+  );
 
   // Wrapper for sendPrompt that tracks messages for plan expiration
-  const handleSendPrompt = useCallback(async (message, images = [], files = [], options = {}) => {
-    // Track this message for plan expiration before sending
-    trackUserMessageForPlanExpiration(activeSessionId);
+  const handleSendPrompt = useCallback(
+    async (message, images = [], files = [], options = {}) => {
+      // Track this message for plan expiration before sending
+      trackUserMessageForPlanExpiration(activeSessionId);
 
-    // Call the original sendPrompt
-    return sendPrompt(message, images, files, options);
-  }, [sendPrompt, trackUserMessageForPlanExpiration, activeSessionId]);
+      // Call the original sendPrompt
+      return sendPrompt(message, images, files, options);
+    },
+    [sendPrompt, trackUserMessageForPlanExpiration, activeSessionId],
+  );
 
   // Handler for prompts dropdown open - refreshes both global and workspace prompts
   const handlePromptsOpen = useCallback(() => {
@@ -3415,7 +3601,11 @@ function App() {
       .catch((err) => {
         console.error("Failed to refresh global prompts:", err);
       });
-  }, [sessionInfo?.working_dir, sessionInfo?.acp_server, fetchWorkspacePrompts]);
+  }, [
+    sessionInfo?.working_dir,
+    sessionInfo?.acp_server,
+    fetchWorkspacePrompts,
+  ]);
 
   const handleSelectSession = (sessionId) => {
     switchSession(sessionId);
@@ -3462,15 +3652,19 @@ function App() {
   const handleDeleteSession = async (session) => {
     // If confirmation is disabled, delete immediately
     if (!confirmDeleteSession) {
-      // Clean up plan entries and expiration tracking for this session to avoid memory leaks
-      setPlanEntriesMap(prev => {
+      // Clean up plan entries, expiration tracking, and completion timers for this session
+      setPlanEntriesMap((prev) => {
         const { [session.session_id]: _, ...rest } = prev;
         return rest;
       });
-      setPlanExpirationMap(prev => {
+      setPlanExpirationMap((prev) => {
         const { [session.session_id]: _, ...rest } = prev;
         return rest;
       });
+      if (planCompletionTimersRef.current[session.session_id]) {
+        clearTimeout(planCompletionTimersRef.current[session.session_id]);
+        delete planCompletionTimersRef.current[session.session_id];
+      }
       await removeSession(session.session_id);
       fetchStoredSessions();
       return;
@@ -3486,15 +3680,19 @@ function App() {
     // Close the dialog first
     setDeleteDialog({ isOpen: false, session: null });
 
-    // Clean up plan entries and expiration tracking for this session to avoid memory leaks
-    setPlanEntriesMap(prev => {
+    // Clean up plan entries, expiration tracking, and completion timers for this session
+    setPlanEntriesMap((prev) => {
       const { [session.session_id]: _, ...rest } = prev;
       return rest;
     });
-    setPlanExpirationMap(prev => {
+    setPlanExpirationMap((prev) => {
       const { [session.session_id]: _, ...rest } = prev;
       return rest;
     });
+    if (planCompletionTimersRef.current[session.session_id]) {
+      clearTimeout(planCompletionTimersRef.current[session.session_id]);
+      delete planCompletionTimersRef.current[session.session_id];
+    }
 
     // removeSession handles: closing WebSocket, updating local state,
     // switching to another session (or creating new if none left), and calling DELETE API
@@ -3571,6 +3769,8 @@ function App() {
                   config?.ui?.mac?.badge_click_action?.enabled !== false,
                 );
               }
+              // Reload input font family setting
+              setInputFontFamily(config?.ui?.web?.input_font_family || "system");
             }
           } catch (err) {
             console.error("Failed to reload config after save:", err);
@@ -3642,10 +3842,13 @@ function App() {
             </div>
             <div class="text-xs opacity-90 ml-7">
               <div>
-                Requested: <strong>${runnerFallbackWarning.requested_type}</strong>
+                Requested:
+                <strong>${runnerFallbackWarning.requested_type}</strong>
               </div>
               <div>
-                Using: <strong>${runnerFallbackWarning.fallback_type}</strong> (no restrictions)
+                Using:
+                <strong>${runnerFallbackWarning.fallback_type}</strong> (no
+                restrictions)
               </div>
               <div class="mt-1 text-white/70">
                 ${runnerFallbackWarning.reason}
@@ -3664,7 +3867,9 @@ function App() {
           >
             <div class="flex items-center gap-2">
               <span class="text-lg">❌</span>
-              <span class="text-sm font-medium">ACP Server Failed to Start</span>
+              <span class="text-sm font-medium"
+                >ACP Server Failed to Start</span
+              >
               <button
                 onClick=${() => setAcpStartFailedError(null)}
                 class="ml-auto text-white/80 hover:text-white"
@@ -3798,8 +4003,12 @@ function App() {
             userPinned=${planUserPinned}
           />
           <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
-          ${!showPlanPanel && planEntries.length > 0 && html`
-            <div class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10">
+          ${!showPlanPanel &&
+          planEntries.length > 0 &&
+          html`
+            <div
+              class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
+            >
               <${AgentPlanIndicator}
                 onClick=${handleTogglePlanPanel}
                 entries=${planEntries}
@@ -3839,121 +4048,129 @@ function App() {
                 ? `swipe-slide-${swipeDirection}`
                 : ""}"
             >
-            ${/* With column-reverse: first in DOM = visual bottom, last in DOM = visual top
+              ${
+                /* With column-reverse: first in DOM = visual bottom, last in DOM = visual top
                 So we render messages in reverse order (newest first in DOM = visual bottom)
-                and put the infinite scroll sentinel at the DOM end (= visual top) */ ""}
-            ${messages.length === 0 &&
-            !hasMoreMessages &&
-            html`
-              <div class="flex items-center justify-center h-full">
-                <div class="text-center text-gray-400">
-                  <div class="text-6xl mb-6">💬</div>
-                  <p class="text-2xl font-medium text-gray-300 mb-4">
-                    Welcome to Mitto
-                  </p>
-                  ${workspaces.length === 0
-                    ? html`
-                        <p class="text-base text-gray-500 max-w-md">
-                          Get started by creating a workspace in Settings (<span
-                            class="inline-block align-middle"
-                          >
-                            <${SettingsIcon} className="w-5 h-5 inline" />
-                          </span>
-                          icon in the sidebar)
-                        </p>
-                      `
-                    : activeSessionId
+                and put the infinite scroll sentinel at the DOM end (= visual top) */ ""
+              }
+              ${messages.length === 0 &&
+              !hasMoreMessages &&
+              html`
+                <div class="flex items-center justify-center h-full">
+                  <div class="text-center text-gray-400">
+                    <div class="text-6xl mb-6">💬</div>
+                    <p class="text-2xl font-medium text-gray-300 mb-4">
+                      Welcome to Mitto
+                    </p>
+                    ${workspaces.length === 0
                       ? html`
-                          <p class="text-base text-gray-500">
-                            Type a message to start chatting with the AI agent
+                          <p class="text-base text-gray-500 max-w-md">
+                            Get started by creating a workspace in Settings
+                            (<span class="inline-block align-middle">
+                              <${SettingsIcon} className="w-5 h-5 inline" />
+                            </span>
+                            icon in the sidebar)
                           </p>
                         `
-                      : html`
-                          <div class="text-base text-gray-500 max-w-md">
-                            <p>
-                              Create a new conversation using the
-                              <span
-                                class="inline-flex items-center justify-center w-6 h-6 rounded text-white text-sm font-bold mx-1"
-                                >+</span
-                              >
-                              button in the sidebar
+                      : activeSessionId
+                        ? html`
+                            <p class="text-base text-gray-500">
+                              Type a message to start chatting with the AI agent
                             </p>
-                            ${workspaces.length > 1
-                              ? html`
-                                  <p class="text-sm text-gray-600 mt-3">
-                                    You'll be able to choose which workspace to
-                                    use
-                                  </p>
-                                `
-                              : ""}
-                          </div>
-                        `}
-                  ${!connected &&
-                  html`
-                    <p class="text-sm mt-6 text-yellow-500">
-                      Connecting to server...
-                    </p>
-                  `}
+                          `
+                        : html`
+                            <div class="text-base text-gray-500 max-w-md">
+                              <p>
+                                Create a new conversation using the
+                                <span
+                                  class="inline-flex items-center justify-center w-6 h-6 rounded text-white text-sm font-bold mx-1"
+                                  >+</span
+                                >
+                                button in the sidebar
+                              </p>
+                              ${workspaces.length > 1
+                                ? html`
+                                    <p class="text-sm text-gray-600 mt-3">
+                                      You'll be able to choose which workspace
+                                      to use
+                                    </p>
+                                  `
+                                : ""}
+                            </div>
+                          `}
+                    ${!connected &&
+                    html`
+                      <p class="text-sm mt-6 text-yellow-500">
+                        Connecting to server...
+                      </p>
+                    `}
+                  </div>
                 </div>
-              </div>
-            `}
-            ${/* Render messages in reverse order for column-reverse:
-                newest (last in array) becomes first in DOM = visual bottom */ ""}
-            ${[...messages].reverse().map(
-              (msg, i, arr) => html`
-                <${Message}
-                  key=${msg.timestamp + "-" + (arr.length - 1 - i)}
-                  message=${msg}
-                  isLast=${i === 0}
-                  isStreaming=${isStreaming}
-                />
-              `,
-            )}
-            ${/* Load more button / loading indicator / limit reached - at DOM end = visual top */ ""}
-            ${(hasMoreMessages || hasReachedLimit) &&
-            html`
-              <div class="flex justify-center my-4">
-                ${isLoadingMore
-                  ? html`
-                      <div
-                        class="px-4 py-2 text-sm text-gray-400 flex items-center gap-2"
-                      >
-                        <${SpinnerIcon} className="w-4 h-4" />
-                        <span>Loading earlier messages...</span>
-                      </div>
-                    `
-                  : hasReachedLimit
+              `}
+              ${
+                /* Render coalesced messages in reverse order for column-reverse:
+                newest (last in array) becomes first in DOM = visual bottom.
+                displayMessages combines consecutive agent messages for cleaner display. */ ""
+              }
+              ${[...displayMessages]
+                .reverse()
+                .map(
+                  (msg, i, arr) => html`
+                    <${Message}
+                      key=${msg.timestamp + "-" + (arr.length - 1 - i)}
+                      message=${msg}
+                      isLast=${i === 0}
+                      isStreaming=${isStreaming}
+                    />
+                  `,
+                )}
+              ${
+                /* Load more button / loading indicator / limit reached - at DOM end = visual top */ ""
+              }
+              ${(hasMoreMessages || hasReachedLimit) &&
+              html`
+                <div class="flex justify-center my-4">
+                  ${isLoadingMore
                     ? html`
                         <div
-                          class="px-4 py-2 text-sm text-gray-500 flex items-center gap-2"
-                          data-testid="limit-reached-indicator"
+                          class="px-4 py-2 text-sm text-gray-400 flex items-center gap-2"
                         >
-                          <span>📚</span>
-                          <span>Message limit reached (${messages.length} messages loaded)</span>
+                          <${SpinnerIcon} className="w-4 h-4" />
+                          <span>Loading earlier messages...</span>
                         </div>
                       `
-                    : html`
-                        <button
-                          onClick=${handleLoadMore}
-                          class="load-more-btn px-4 py-2 text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 rounded-lg transition-colors flex items-center gap-2"
-                          data-testid="load-more-button"
-                        >
-                          <span>↑</span>
-                          <span>Load earlier messages...</span>
-                        </button>
-                      `}
-              </div>
-            `}
-            ${html`
-              <!-- Infinite scroll sentinel: at DOM end = visual top (triggers when scrolling up) -->
-              <div
-                ref=${sentinelRef}
-                class="h-1 w-full"
-                aria-hidden="true"
-              />
-            `}
+                    : hasReachedLimit
+                      ? html`
+                          <div
+                            class="px-4 py-2 text-sm text-gray-500 flex items-center gap-2"
+                            data-testid="limit-reached-indicator"
+                          >
+                            <span>📚</span>
+                            <span
+                              >Message limit reached (${messages.length}
+                              messages loaded)</span
+                            >
+                          </div>
+                        `
+                      : html`
+                          <button
+                            onClick=${handleLoadMore}
+                            class="load-more-btn px-4 py-2 text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 rounded-lg transition-colors flex items-center gap-2"
+                            data-testid="load-more-button"
+                          >
+                            <span>↑</span>
+                            <span>Load earlier messages...</span>
+                          </button>
+                        `}
+                </div>
+              `}
+              ${html`
+                <!-- Infinite scroll sentinel: at DOM end = visual top (triggers when scrolling up) -->
+                <div ref=${sentinelRef} class="h-1 w-full" aria-hidden="true" />
+              `}
+            </div>
           </div>
-          </div><!-- End of scrollable messages container -->
+          <!-- End of scrollable messages container -->
 
           <!-- Scroll to bottom button (positioned relative to wrapper, not scrollable container) -->
           ${(!isUserAtBottom || hasNewMessages) &&
@@ -3971,7 +4188,8 @@ function App() {
               </button>
             </div>
           `}
-        </div><!-- End of messages wrapper -->
+        </div>
+        <!-- End of messages wrapper -->
 
         <!-- Input Area Container (relative for QueueDropdown positioning) -->
         <div class="relative flex-shrink-0">
@@ -3990,28 +4208,28 @@ function App() {
 
           <!-- Input -->
           <${ChatInput}
-          onSend=${handleSendPrompt}
-          onCancel=${cancelPrompt}
-          disabled=${!connected || !activeSessionId}
-          isStreaming=${isStreaming}
-          isReadOnly=${sessionInfo?.isReadOnly}
-          isArchived=${sessionInfo?.archived || false}
-          predefinedPrompts=${predefinedPrompts}
-          inputRef=${chatInputRef}
-          noSession=${!activeSessionId}
-          sessionId=${activeSessionId}
-          draft=${currentDraft}
-          onDraftChange=${updateDraft}
-          sessionDraftsRef=${sessionDraftsRef}
-          onPromptsOpen=${handlePromptsOpen}
-          queueLength=${queueLength}
-          queueConfig=${queueConfig}
-          onAddToQueue=${handleAddToQueue}
-          onToggleQueue=${handleToggleQueueDropdown}
-          showQueueDropdown=${showQueueDropdown}
-          actionButtons=${actionButtons}
-          availableCommands=${availableCommands}
-        />
+            onSend=${handleSendPrompt}
+            onCancel=${cancelPrompt}
+            disabled=${!connected || !activeSessionId}
+            isStreaming=${isStreaming}
+            isReadOnly=${sessionInfo?.isReadOnly}
+            isArchived=${sessionInfo?.archived || false}
+            predefinedPrompts=${predefinedPrompts}
+            inputRef=${chatInputRef}
+            noSession=${!activeSessionId}
+            sessionId=${activeSessionId}
+            draft=${currentDraft}
+            onDraftChange=${updateDraft}
+            sessionDraftsRef=${sessionDraftsRef}
+            onPromptsOpen=${handlePromptsOpen}
+            queueLength=${queueLength}
+            queueConfig=${queueConfig}
+            onAddToQueue=${handleAddToQueue}
+            onToggleQueue=${handleToggleQueueDropdown}
+            showQueueDropdown=${showQueueDropdown}
+            actionButtons=${actionButtons}
+            availableCommands=${availableCommands}
+          />
         </div>
       </div>
     </div>

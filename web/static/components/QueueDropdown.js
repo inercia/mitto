@@ -198,7 +198,9 @@ export function QueueDropdown({
     >
       <!-- Resize Handle at top edge -->
       <div
-        class="queue-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none ${isDragging ? "bg-slate-600/50" : ""}"
+        class="queue-resize-handle flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none ${isDragging
+          ? "bg-slate-600/50"
+          : ""}"
         ...${handleProps}
         title="Drag to resize"
       >

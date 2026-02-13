@@ -160,4 +160,3 @@ describe("Slash picker visibility logic", () => {
     expect(shouldShowSlashPicker("/", 5)).toBe(true);
   });
 });
-
