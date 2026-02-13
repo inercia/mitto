@@ -16,7 +16,7 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Web Interface](web-interface.md)** - Browser-based UI architecture, streaming response handling, mobile wake resync
 
-- **[WebSocket Messaging](websocket-messaging.md)** - Message ordering, synchronization, reconnection handling, and multi-client support
+- **[WebSocket Documentation](websockets/)** - Message ordering, synchronization, reconnection handling, and multi-client support
 
 - **[Workspaces](workspaces.md)** - Multi-workspace architecture, CLI usage, REST API, and workspace persistence
 
@@ -36,8 +36,8 @@ This directory contains technical documentation for developers working on Mitto.
 | Event types        | [Session Management](session-management.md)       | Event Types            |
 | Queue API          | [Message Queue](message-queue.md)                 | REST API               |
 | Queue titles       | [Message Queue](message-queue.md)                 | Title Generation       |
-| WebSocket protocol | [WebSocket Messaging](websocket-messaging.md)     | Message Format         |
-| Resync mechanism   | [WebSocket Messaging](websocket-messaging.md)     | Resync Mechanism       |
+| WebSocket protocol | [WebSocket Documentation](websockets/)            | Message Format         |
+| Resync mechanism   | [WebSocket Documentation](websockets/)            | Resync Mechanism       |
 | Workspace API      | [Workspaces](workspaces.md)                       | Workspace REST API     |
 | Mobile support     | [Web Interface](web-interface.md)                 | Mobile Wake Resync     |
 | Action buttons     | [Follow-up Suggestions](follow-up-suggestions.md) | Persistence, Lifecycle |
