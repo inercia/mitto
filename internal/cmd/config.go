@@ -74,8 +74,9 @@ func runConfigCreate(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Write the embedded default config
-	if err := os.WriteFile(configPath, embeddedconfig.DefaultConfigYAML, 0644); err != nil {
+	// Write the embedded default config with restrictive permissions (0600)
+	// to protect any credentials that may be added later (e.g., auth passwords)
+	if err := os.WriteFile(configPath, embeddedconfig.DefaultConfigYAML, 0600); err != nil {
 		return fmt.Errorf("failed to write configuration file: %w", err)
 	}
 

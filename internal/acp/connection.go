@@ -22,6 +22,7 @@ type Connection struct {
 	logger       *slog.Logger
 	capabilities *acp.AgentCapabilities
 	wait         func() error // cleanup function from runner.RunWithPipes or cmd.Wait
+	cancel       context.CancelFunc // cancellation function for restricted runner processes
 }
 
 // NewConnection starts an ACP server process and establishes a connection.
@@ -49,16 +50,24 @@ func NewConnection(
 	var cmd *exec.Cmd
 	var err error
 
+	// cancel is used to terminate restricted runner processes in Close()
+	var cancel context.CancelFunc
+
 	// Create command through runner or directly
 	if r != nil {
 		// Use restricted runner with RunWithPipes
+		// Create a cancellable context so we can terminate the process in Close()
+		var runCtx context.Context
+		runCtx, cancel = context.WithCancel(ctx)
+
 		if logger != nil {
 			logger.Info("starting ACP process through restricted runner",
 				"runner_type", r.Type(),
 				"command", command)
 		}
-		stdin, stdout, stderr, wait, err = r.RunWithPipes(ctx, args[0], args[1:], os.Environ())
+		stdin, stdout, stderr, wait, err = r.RunWithPipes(runCtx, args[0], args[1:], os.Environ())
 		if err != nil {
+			cancel() // Clean up the context if we fail to start
 			return nil, fmt.Errorf("failed to start with runner: %w", err)
 		}
 
@@ -119,6 +128,7 @@ func NewConnection(
 		client: client,
 		logger: logger,
 		wait:   wait,
+		cancel: cancel, // Store cancel function for restricted runner cleanup
 	}
 
 	return c, nil
@@ -190,14 +200,20 @@ func (c *Connection) Cancel(ctx context.Context) error {
 
 // Close terminates the ACP server process and cleans up resources.
 func (c *Connection) Close() error {
-	// Kill the process first
+	// For restricted runner processes, cancel the context to terminate the process.
+	// This is necessary because c.cmd is nil when using restricted runners.
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	// For direct execution, kill the process explicitly
 	if c.cmd != nil && c.cmd.Process != nil {
 		c.cmd.Process.Kill()
 	}
 
 	// Call wait() to clean up resources (from runner.RunWithPipes or cmd.Wait)
 	if c.wait != nil {
-		// Ignore error from wait() since we already killed the process
+		// Ignore error from wait() since we already killed/cancelled the process
 		c.wait()
 	}
 
