@@ -435,6 +435,132 @@ func TestQueueAddDuringPrompting(t *testing.T) {
 	// The test passes if no panics or deadlocks occurred during concurrent queue/prompt operations
 }
 
+// TestQueuedMessageAppearsInConversation tests that a queued message appears in the
+// conversation after the agent finishes responding.
+//
+// This is a regression test for a bug where queued messages were not displayed in the
+// conversation after being sent. The bug was: user queues a message while agent is
+// responding, but when the queued message is sent after agent finishes, the user_prompt
+// event is not received or not processed correctly by the client.
+//
+// Scenario:
+// 1. Client sends a prompt
+// 2. While agent is responding, client adds to queue
+// 3. Wait for prompt to complete
+// 4. Verify user_prompt event is received for the queued message
+func TestQueuedMessageAppearsInConversation(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	defer ts.Client.DeleteSession(session.SessionID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var mu sync.Mutex
+	var userPromptReceived bool
+	var userPromptMessage string
+	var promptComplete = make(chan struct{})
+	var userPromptCh = make(chan struct{})
+
+	callbacks := client.SessionCallbacks{
+		OnPromptComplete: func(eventCount int) {
+			t.Logf("PromptComplete: eventCount=%d", eventCount)
+			// Use select to avoid closing already-closed channel
+			select {
+			case <-promptComplete:
+				// Already closed
+			default:
+				close(promptComplete)
+			}
+		},
+		OnUserPrompt: func(senderID, promptID, message string) {
+			t.Logf("UserPrompt received: senderID=%s, promptID=%s, message=%s", senderID, promptID, message)
+			mu.Lock()
+			// Track the queued message (sent with sender_id="queue")
+			if senderID == "queue" {
+				userPromptReceived = true
+				userPromptMessage = message
+				select {
+				case <-userPromptCh:
+					// Already closed
+				default:
+					close(userPromptCh)
+				}
+			}
+			mu.Unlock()
+		},
+		OnAgentMessage: func(html string) {
+			t.Logf("AgentMessage: %d chars", len(html))
+		},
+	}
+
+	ws, err := ts.Client.Connect(ctx, session.SessionID, callbacks)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer ws.Close()
+
+	// Wait for connection and register as observer
+	time.Sleep(300 * time.Millisecond)
+	ws.LoadEvents(100, 0, 0)
+	time.Sleep(200 * time.Millisecond)
+
+	// Send initial prompt
+	t.Log("Sending initial prompt")
+	err = ws.SendPrompt("Initial prompt - please respond briefly")
+	if err != nil {
+		t.Fatalf("SendPrompt failed: %v", err)
+	}
+
+	// Wait a moment for agent to start responding, then add to queue
+	time.Sleep(100 * time.Millisecond)
+
+	// Add to queue while prompting
+	queuedMsgText := "Queued message - this should appear in conversation"
+	t.Logf("Adding message to queue: %s", queuedMsgText)
+	queuedMsg, err := ts.Client.AddToQueue(session.SessionID, queuedMsgText)
+	if err != nil {
+		t.Fatalf("AddToQueue failed: %v", err)
+	}
+	t.Logf("Added message to queue: ID=%s", queuedMsg.ID)
+
+	// Wait for initial prompt to complete
+	t.Log("Waiting for initial prompt to complete...")
+	select {
+	case <-promptComplete:
+		t.Log("Initial prompt completed")
+	case <-time.After(15 * time.Second):
+		t.Fatal("Timeout waiting for initial prompt to complete")
+	}
+
+	// Now wait for the queued message to be sent and user_prompt to be received
+	// The queue should auto-process after prompt completes
+	t.Log("Waiting for queued message user_prompt event...")
+	select {
+	case <-userPromptCh:
+		t.Log("user_prompt event received for queued message")
+	case <-time.After(10 * time.Second):
+		t.Fatal("Timeout waiting for user_prompt event for queued message - BUG: queued message not appearing in conversation")
+	}
+
+	// Verify the message content
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !userPromptReceived {
+		t.Error("user_prompt event was not received for queued message")
+	}
+	if userPromptMessage != queuedMsgText {
+		t.Errorf("user_prompt message mismatch: got %q, want %q", userPromptMessage, queuedMsgText)
+	}
+
+	t.Log("Test passed: queued message appeared in conversation via user_prompt event")
+}
+
 // TestObserverAddDuringHighFrequencyEvents tests that adding an observer
 // while events are being emitted at high frequency doesn't cause races or missed events.
 func TestObserverAddDuringHighFrequencyEvents(t *testing.T) {
