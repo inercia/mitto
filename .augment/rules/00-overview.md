@@ -12,56 +12,57 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 
 **Always consult `docs/devel/` for detailed architecture:**
 
-| Document | Topics |
-|----------|--------|
-| [architecture.md](../docs/devel/architecture.md) | System overview, package breakdown |
-| [session-management.md](../docs/devel/session-management.md) | Recording, playback, state ownership |
-| [message-queue.md](../docs/devel/message-queue.md) | Queue system, title generation, API |
-| [web-interface.md](../docs/devel/web-interface.md) | HTTP server, streaming, mobile support |
-| [websocket-messaging.md](../docs/devel/websocket-messaging.md) | **WebSocket protocol spec** (message types, seq numbers, sync, reconnection, delivery verification) |
-| [workspaces.md](../docs/devel/workspaces.md) | Multi-workspace, persistence |
-| [follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) | Action buttons, auxiliary analysis, persistence |
+| Document                                                           | Topics                                                                                              |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| [architecture.md](../docs/devel/architecture.md)                   | System overview, package breakdown                                                                  |
+| [session-management.md](../docs/devel/session-management.md)       | Recording, playback, state ownership                                                                |
+| [message-queue.md](../docs/devel/message-queue.md)                 | Queue system, title generation, API                                                                 |
+| [web-interface.md](../docs/devel/web-interface.md)                 | HTTP server, streaming, mobile support                                                              |
+| [websockets/](../docs/devel/websockets/)                           | **WebSocket protocol** (message types, seq numbers, sync, reconnection, delivery verification)      |
+| [workspaces.md](../docs/devel/workspaces.md)                       | Multi-workspace, persistence                                                                        |
+| [follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) | Action buttons, auxiliary analysis, persistence                                                     |
 
 ## Rules Files Reference
 
-| File | Triggers When |
-|------|---------------|
-| `01-go-conventions.md` | Editing Go files (`*.go`) |
-| `02-session.md` | Working on `internal/session/` or `internal/auxiliary/` |
-| `03-cli.md` | Working on `internal/cmd/` or `cmd/mitto/` |
-| `04-acp.md` | Working on `internal/acp/` |
-| `05-msghooks.md` | Working on message hooks (`internal/msghooks/`) |
-| `06-conversion.md` | Markdown-to-HTML conversion (`internal/conversion/`) |
-| `07-regex-patterns.md` | Keywords: regex, regexp, pattern, URL detection, linkify |
-| `08-config.md` | Working on configuration (`internal/config/`) |
-| **macOS App (09, 13)** | |
-| `09-macos-app.md` | macOS app core: WKWebView, icon, native functions, `*.m`, `*.h` |
-| `13-macos-keyboard-gestures.md` | Keyboard shortcuts, trackpad gestures, menu items |
-| **Web Backend (10-14)** | |
-| `10-web-backend-core.md` | Server, routing, HTTP handlers (`internal/web/server.go`) |
-| `11-web-backend-sequences.md` | Backend patterns for sequences, observers, MarkdownBuffer (→ [websocket-messaging.md](../docs/devel/websocket-messaging.md) for protocol) |
-| `12-web-backend-actions.md` | Follow-up suggestions, action buttons |
-| `14-web-backend-auth.md` | Authentication middleware, public paths, session management |
-| **Web Frontend (20-27)** | |
-| `20-web-frontend-core.md` | Component structure, Preact/HTM, CDN setup |
-| `21-web-frontend-state.md` | State management, refs, useCallback, useLayoutEffect |
-| `22-web-frontend-websocket.md` | Frontend patterns for WebSocket, keepalive (→ [websocket-messaging.md](../docs/devel/websocket-messaging.md) for protocol) |
-| `23-web-frontend-mobile.md` | Mobile wake resync, zombie connections, localStorage |
-| `24-web-frontend-lib.md` | lib.js utilities, markdown rendering |
-| `25-web-frontend-components.md` | UI components (ChatInput, QueueDropdown, Icons) |
-| `26-web-frontend-hooks.md` | Custom hooks (useResizeHandle, useSwipeNavigation) |
-| `27-web-frontend-sync.md` | Sequence sync, stale client detection, deduplication |
-| **Testing (30-34)** | |
-| `30-testing-unit.md` | Go unit tests (`*_test.go`) |
-| `31-testing-integration.md` | Integration tests, mock ACP server |
-| `32-testing-playwright.md` | Playwright UI tests |
-| `33-testing-js.md` | JavaScript unit tests (lib.test.js) |
-| `34-anti-patterns.md` | Common anti-patterns, lessons learned, best practices |
-| **Debugging (40-42)** | |
-| `40-mcp-debugging.md` | Using MCP tools for debugging (events.jsonl, conversation inspection) |
-| `41-debugging-logs.md` | Log file debugging (mitto.log, webview.log, access.log) |
-| `42-mcpserver-development.md` | MCP server development patterns, adding tools |
-| `99-local.md` | Local development notes (not committed) |
+| File                            | Triggers When                                                                                                                             |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `01-go-conventions.md`          | Editing Go files (`*.go`)                                                                                                                 |
+| `02-session.md`                 | Working on `internal/session/` or `internal/auxiliary/`                                                                                   |
+| `03-cli.md`                     | Working on `internal/cmd/` or `cmd/mitto/`                                                                                                |
+| `04-acp.md`                     | Working on `internal/acp/`                                                                                                                |
+| `05-msghooks.md`                | Working on message hooks (`internal/msghooks/`)                                                                                           |
+| `06-conversion.md`              | Markdown-to-HTML conversion (`internal/conversion/`)                                                                                      |
+| `07-regex-patterns.md`          | Keywords: regex, regexp, pattern, URL detection, linkify                                                                                  |
+| `08-config.md`                  | Working on configuration (`internal/config/`)                                                                                             |
+| **macOS App (09, 13)**          |                                                                                                                                           |
+| `09-macos-app.md`               | macOS app core: WKWebView, icon, native functions, `*.m`, `*.h`                                                                           |
+| `13-macos-keyboard-gestures.md` | Keyboard shortcuts, trackpad gestures, menu items                                                                                         |
+| **Web Backend (10-15)**         |                                                                                                                                           |
+| `10-web-backend-core.md`        | Server, routing, HTTP handlers (`internal/web/server.go`)                                                                                 |
+| `11-web-backend-sequences.md`   | Backend patterns for sequences, observers, MarkdownBuffer (→ [websockets/](../docs/devel/websockets/) for protocol)                       |
+| `12-web-backend-actions.md`     | Follow-up suggestions, action buttons                                                                                                     |
+| `14-web-backend-auth.md`        | Authentication middleware, public paths, session management                                                                               |
+| `15-web-backend-session-lifecycle.md` | Session lifecycle (archive/unarchive), ACP connection lifecycle, graceful shutdown                                                  |
+| **Web Frontend (20-27)**        |                                                                                                                                           |
+| `20-web-frontend-core.md`       | Component structure, Preact/HTM, CDN setup                                                                                                |
+| `21-web-frontend-state.md`      | State management, refs, useCallback, useLayoutEffect                                                                                      |
+| `22-web-frontend-websocket.md`  | Frontend patterns for WebSocket, keepalive (→ [websockets/](../docs/devel/websockets/) for protocol)                                      |
+| `23-web-frontend-mobile.md`     | Mobile wake resync, zombie connections, localStorage                                                                                      |
+| `24-web-frontend-lib.md`        | lib.js utilities, markdown rendering                                                                                                      |
+| `25-web-frontend-components.md` | UI components (ChatInput, QueueDropdown, Icons)                                                                                           |
+| `26-web-frontend-hooks.md`      | Custom hooks (useResizeHandle, useSwipeNavigation)                                                                                        |
+| `27-web-frontend-sync.md`       | Sequence sync, stale client detection, deduplication                                                                                      |
+| **Testing (30-34)**             |                                                                                                                                           |
+| `30-testing-unit.md`            | Go unit tests (`*_test.go`)                                                                                                               |
+| `31-testing-integration.md`     | Integration tests, mock ACP server                                                                                                        |
+| `32-testing-playwright.md`      | Playwright UI tests                                                                                                                       |
+| `33-testing-js.md`              | JavaScript unit tests (lib.test.js)                                                                                                       |
+| `34-anti-patterns.md`           | Common anti-patterns, lessons learned, best practices                                                                                     |
+| **Debugging (40-42)**           |                                                                                                                                           |
+| `40-mcp-debugging.md`           | Using MCP tools for debugging (events.jsonl, conversation inspection)                                                                     |
+| `41-debugging-logs.md`          | Log file debugging (mitto.log, webview.log, access.log)                                                                                   |
+| `42-mcpserver-development.md`   | MCP server development patterns, adding tools                                                                                             |
+| `99-local.md`                   | Local development notes (not committed)                                                                                                   |
 
 ## Package Structure
 
@@ -123,11 +124,11 @@ logger := logging.WithClient(base, clientID, sessionID)
 
 When debugging issues, check these log files in `~/Library/Logs/Mitto/`:
 
-| File | Content |
-|------|---------|
-| `mitto.log` | Go application logs (server, ACP, sessions). Enable DEBUG for seq numbers. |
-| `access.log` | Security events (auth, unauthorized access) |
-| `webview.log` | JavaScript console output from WKWebView. Includes message seq numbers. |
+| File          | Content                                                                    |
+| ------------- | -------------------------------------------------------------------------- |
+| `mitto.log`   | Go application logs (server, ACP, sessions). Enable DEBUG for seq numbers. |
+| `access.log`  | Security events (auth, unauthorized access)                                |
+| `webview.log` | JavaScript console output from WKWebView. Includes message seq numbers.    |
 
 **Tip:** Use sequence numbers (`seq=N`) to track messages across frontend and backend logs.
 
@@ -136,6 +137,7 @@ See `41-debugging-logs.md` for detailed debugging instructions, or use MCP tools
 ## Documentation Standards
 
 When adding new features:
+
 1. Update `docs/devel/` (see [README](../docs/devel/README.md) for which file)
 2. Add Mermaid diagrams for complex flows
 3. Document design decisions and rationale
@@ -144,13 +146,14 @@ When adding new features:
 ## Rules File Organization
 
 Rules files are automatically loaded based on:
+
 - **globs**: File path patterns (e.g., `internal/conversion/**/*`)
 - **keywords**: Specific terms in prompts (e.g., "regex", "URL detection")
 - **alwaysApply**: Always loaded (only `00-overview.md`)
 
 When adding new patterns:
+
 1. Add to existing rules file if closely related
 2. Create new focused file if it's a distinct topic
 3. Update `00-overview.md` rules reference table
 4. Use specific globs and keywords for targeted loading
-

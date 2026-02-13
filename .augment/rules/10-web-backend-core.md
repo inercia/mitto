@@ -15,19 +15,19 @@ keywords:
 
 # Web Backend Core Patterns
 
-**Architecture docs**: See [docs/devel/web-interface.md](../docs/devel/web-interface.md) and [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md).
+**Architecture docs**: See [docs/devel/web-interface.md](../../docs/devel/web-interface.md) and [docs/devel/websockets/](../../docs/devel/websockets/).
 
 ## Key Components
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| `Server` | `server.go` | HTTP server, routing, lifecycle |
-| `SessionWSClient` | `session_ws.go` | Per-session WebSocket (implements `SessionObserver`) |
-| `BackgroundSession` | `background_session.go` | Long-lived ACP session with observer pattern |
-| `SessionManager` | `session_manager.go` | Session registry + workspace management |
-| `QueueTitleWorker` | `queue_title.go` | Auto-generates titles for queued messages |
-| `WebClient` | `client.go` | ACP client for web (implements `acp.Client`) |
-| `MarkdownBuffer` | `markdown.go` | Streaming markdown to HTML with smart flushing |
+| Component           | File                    | Purpose                                              |
+| ------------------- | ----------------------- | ---------------------------------------------------- |
+| `Server`            | `server.go`             | HTTP server, routing, lifecycle                      |
+| `SessionWSClient`   | `session_ws.go`         | Per-session WebSocket (implements `SessionObserver`) |
+| `BackgroundSession` | `background_session.go` | Long-lived ACP session with observer pattern         |
+| `SessionManager`    | `session_manager.go`    | Session registry + workspace management              |
+| `QueueTitleWorker`  | `queue_title.go`        | Auto-generates titles for queued messages            |
+| `WebClient`         | `client.go`             | ACP client for web (implements `acp.Client`)         |
+| `MarkdownBuffer`    | `markdown.go`           | Streaming markdown to HTML with smart flushing       |
 
 ## HTTP Response Helpers
 
@@ -48,6 +48,7 @@ w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 ## External Access
 
 Dual listener architecture:
+
 1. **Localhost** (`127.0.0.1`): No auth required
 2. **External** (`0.0.0.0`): Optional, requires authentication
 
@@ -118,4 +119,3 @@ bs.logger = logging.WithSessionContext(config.Logger, sessionID, workingDir, acp
 // Client-scoped (auto-includes client_id, session_id)
 clientLogger := logging.WithClient(s.logger, clientID, sessionID)
 ```
-

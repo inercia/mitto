@@ -28,12 +28,12 @@ Keyboard shortcuts are handled at two levels:
 
 ### Shortcut Categories
 
-| Category | Handler | Works in Browser | Works in macOS App |
-|----------|---------|------------------|-------------------|
-| Native menu shortcuts | `menu_darwin.m` | ❌ No | ✅ Yes |
-| Web shortcuts | `handleGlobalKeyDown` | ✅ Yes | ✅ Yes |
-| Global hotkey | Carbon Events API | ❌ No | ✅ Yes (system-wide) |
-| Trackpad gestures | `menu_darwin.m` (scroll event monitor) | ❌ No | ✅ Yes |
+| Category              | Handler                                | Works in Browser | Works in macOS App   |
+| --------------------- | -------------------------------------- | ---------------- | -------------------- |
+| Native menu shortcuts | `menu_darwin.m`                        | ❌ No            | ✅ Yes               |
+| Web shortcuts         | `handleGlobalKeyDown`                  | ✅ Yes           | ✅ Yes               |
+| Global hotkey         | Carbon Events API                      | ❌ No            | ✅ Yes (system-wide) |
+| Trackpad gestures     | `menu_darwin.m` (scroll event monitor) | ❌ No            | ✅ Yes               |
 
 ## Trackpad Gestures
 
@@ -41,12 +41,13 @@ Keyboard shortcuts are handled at two levels:
 
 The macOS app supports two-finger horizontal swipe gestures to navigate between conversations:
 
-| Gesture | Action | Implementation |
-|---------|--------|----------------|
-| Swipe left (two fingers) | Go to next conversation | Calls `window.mittoNextConversation()` |
+| Gesture                   | Action                      | Implementation                         |
+| ------------------------- | --------------------------- | -------------------------------------- |
+| Swipe left (two fingers)  | Go to next conversation     | Calls `window.mittoNextConversation()` |
 | Swipe right (two fingers) | Go to previous conversation | Calls `window.mittoPrevConversation()` |
 
 **Implementation details** (`cmd/mitto-app/menu_darwin.m`):
+
 - Uses `NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel` to track scroll events
 - Accumulates scroll delta during the gesture (from `NSEventPhaseBegan` to `NSEventPhaseEnded`)
 - Requires horizontal movement > 100px and dominant over vertical (2:1 ratio)
@@ -59,12 +60,26 @@ Define shortcuts centrally for the help dialog:
 
 ```javascript
 const KEYBOARD_SHORTCUTS = [
-    // macOnly: true = only works in native macOS app
-    { keys: '⌘⇧M', description: 'Show/hide window', macOnly: true, section: 'Global' },
-    { keys: '⌘N', description: 'New conversation', macOnly: true, section: 'Conversations' },
-    // No macOnly = works in both browser and macOS app
-    { keys: '⌘1-9', description: 'Switch to conversation 1-9', section: 'Conversations' },
-    { keys: '⌘,', description: 'Settings', section: 'Navigation' },
+  // macOnly: true = only works in native macOS app
+  {
+    keys: "⌘⇧M",
+    description: "Show/hide window",
+    macOnly: true,
+    section: "Global",
+  },
+  {
+    keys: "⌘N",
+    description: "New conversation",
+    macOnly: true,
+    section: "Conversations",
+  },
+  // No macOnly = works in both browser and macOS app
+  {
+    keys: "⌘1-9",
+    description: "Switch to conversation 1-9",
+    section: "Conversations",
+  },
+  { keys: "⌘,", description: "Settings", section: "Navigation" },
 ];
 ```
 
@@ -72,14 +87,14 @@ const KEYBOARD_SHORTCUTS = [
 
 ```javascript
 // Check if running in the native macOS app
-const isMacApp = typeof window.mittoPickFolder === 'function';
+const isMacApp = typeof window.mittoPickFolder === "function";
 
 // Filter shortcuts - hide macOnly when in browser
-KEYBOARD_SHORTCUTS.forEach(shortcut => {
-    if (shortcut.macOnly && !isMacApp) {
-        return;  // Skip native-only shortcuts in browser
-    }
-    // Add to sections...
+KEYBOARD_SHORTCUTS.forEach((shortcut) => {
+  if (shortcut.macOnly && !isMacApp) {
+    return; // Skip native-only shortcuts in browser
+  }
+  // Add to sections...
 });
 ```
 
@@ -94,18 +109,18 @@ To add a shortcut that works in both browser and macOS app:
 
 ```javascript
 useEffect(() => {
-    const handleGlobalKeyDown = (e) => {
-        if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
-            if (e.key === ',') {
-                e.preventDefault();
-                if (!configReadonly) {
-                    setSettingsDialog({ isOpen: true, forceOpen: false });
-                }
-            }
+  const handleGlobalKeyDown = (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+      if (e.key === ",") {
+        e.preventDefault();
+        if (!configReadonly) {
+          setSettingsDialog({ isOpen: true, forceOpen: false });
         }
-    };
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+      }
+    }
+  };
+  window.addEventListener("keydown", handleGlobalKeyDown);
+  return () => window.removeEventListener("keydown", handleGlobalKeyDown);
 }, [configReadonly]);
 ```
 
@@ -131,13 +146,12 @@ NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Action Name"
 
 ## Common Shortcuts Reference
 
-| Shortcut | Action | Type |
-|----------|--------|------|
-| `⌘⇧M` | Show/hide window (global) | Native only |
-| `⌘N` | New conversation | Native only |
-| `⌘W` | Close conversation | Native only |
-| `⌘1-9` | Switch to conversation | Web |
-| `⌘,` | Settings | Web |
-| `⌘[` / `⌘]` | Previous/next conversation | Web |
-| `Escape` | Cancel/close dialogs | Web |
-
+| Shortcut    | Action                     | Type        |
+| ----------- | -------------------------- | ----------- |
+| `⌘⇧M`       | Show/hide window (global)  | Native only |
+| `⌘N`        | New conversation           | Native only |
+| `⌘W`        | Close conversation         | Native only |
+| `⌘1-9`      | Switch to conversation     | Web         |
+| `⌘,`        | Settings                   | Web         |
+| `⌘[` / `⌘]` | Previous/next conversation | Web         |
+| `Escape`    | Cancel/close dialogs       | Web         |

@@ -9,12 +9,12 @@ globs:
 
 ## Hooks Directory Structure
 
-| File | Purpose |
-|------|---------|
-| `hooks/useWebSocket.js` | WebSocket connections, session management |
-| `hooks/useSwipeNavigation.js` | Mobile swipe gestures for navigation |
-| `hooks/useResizeHandle.js` | Drag-to-resize with mouse and touch support |
-| `hooks/index.js` | Re-exports for clean imports |
+| File                          | Purpose                                     |
+| ----------------------------- | ------------------------------------------- |
+| `hooks/useWebSocket.js`       | WebSocket connections, session management   |
+| `hooks/useSwipeNavigation.js` | Mobile swipe gestures for navigation        |
+| `hooks/useResizeHandle.js`    | Drag-to-resize with mouse and touch support |
+| `hooks/index.js`              | Re-exports for clean imports                |
 
 ## useResizeHandle Hook
 
@@ -39,23 +39,23 @@ const { height, isDragging, handleProps } = useResizeHandle({
 
 ### Return Values
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `height` | `number` | Current height in pixels |
-| `isDragging` | `boolean` | Whether drag is in progress |
-| `handleProps` | `object` | Props to spread on handle element |
-| `setHeight` | `function` | Manually set height |
+| Property      | Type       | Description                       |
+| ------------- | ---------- | --------------------------------- |
+| `height`      | `number`   | Current height in pixels          |
+| `isDragging`  | `boolean`  | Whether drag is in progress       |
+| `handleProps` | `object`   | Props to spread on handle element |
+| `setHeight`   | `function` | Manually set height               |
 
 ### Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `initialHeight` | `number` | 256 | Starting height |
-| `minHeight` | `number` | 100 | Minimum allowed height |
-| `maxHeight` | `number` | 500 | Maximum allowed height |
-| `onHeightChange` | `function` | null | Called during drag with new height |
-| `onDragStart` | `function` | null | Called when drag begins |
-| `onDragEnd` | `function` | null | Called when drag ends with final height |
+| Option           | Type       | Default | Description                             |
+| ---------------- | ---------- | ------- | --------------------------------------- |
+| `initialHeight`  | `number`   | 256     | Starting height                         |
+| `minHeight`      | `number`   | 100     | Minimum allowed height                  |
+| `maxHeight`      | `number`   | 500     | Maximum allowed height                  |
+| `onHeightChange` | `function` | null    | Called during drag with new height      |
+| `onDragStart`    | `function` | null    | Called when drag begins                 |
+| `onDragEnd`      | `function` | null    | Called when drag ends with final height |
 
 ### Implementation Details
 
@@ -74,26 +74,26 @@ import { useSwipeNavigation } from "../hooks/useSwipeNavigation.js";
 
 useSwipeNavigation(
   containerRef,
-  onSwipeLeft,   // e.g., next session
-  onSwipeRight,  // e.g., previous session
+  onSwipeLeft, // e.g., next session
+  onSwipeRight, // e.g., previous session
   {
-    threshold: 80,      // Min distance to trigger
-    maxVertical: 80,    // Max vertical movement allowed
-    edgeWidth: 40,      // Edge zone width for special actions
-    onEdgeSwipeRight: openSidebar,  // Swipe from left edge
-  }
+    threshold: 80, // Min distance to trigger
+    maxVertical: 80, // Max vertical movement allowed
+    edgeWidth: 40, // Edge zone width for special actions
+    onEdgeSwipeRight: openSidebar, // Swipe from left edge
+  },
 );
 ```
 
 ### Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `threshold` | `number` | 50 | Minimum horizontal distance to trigger swipe |
-| `maxVertical` | `number` | 100 | Maximum vertical movement (prevents scroll conflicts) |
-| `edgeWidth` | `number` | 30 | Width of edge zone for special swipes |
-| `onEdgeSwipeRight` | `function` | null | Called for right swipe starting from left edge |
-| `onEdgeSwipeLeft` | `function` | null | Called for left swipe starting from right edge |
+| Option             | Type       | Default | Description                                           |
+| ------------------ | ---------- | ------- | ----------------------------------------------------- |
+| `threshold`        | `number`   | 50      | Minimum horizontal distance to trigger swipe          |
+| `maxVertical`      | `number`   | 100     | Maximum vertical movement (prevents scroll conflicts) |
+| `edgeWidth`        | `number`   | 30      | Width of edge zone for special swipes                 |
+| `onEdgeSwipeRight` | `function` | null    | Called for right swipe starting from left edge        |
+| `onEdgeSwipeLeft`  | `function` | null    | Called for left swipe starting from right edge        |
 
 ### Gesture Detection
 
@@ -113,7 +113,11 @@ import { useSwipeNavigation } from "../hooks/useSwipeNavigation.js";
 import { useResizeHandle, useSwipeNavigation } from "../hooks/index.js";
 
 // In app.js (uses hooks/index.js)
-import { useWebSocket, useSwipeNavigation, useResizeHandle } from "./hooks/index.js";
+import {
+  useWebSocket,
+  useSwipeNavigation,
+  useResizeHandle,
+} from "./hooks/index.js";
 ```
 
 ## Creating New Hooks
@@ -132,18 +136,19 @@ const { useState, useEffect, useRef, useCallback } = window.preact;
 
 export function useMyHook(options = {}) {
   const { option1 = defaultValue, option2 = null } = options;
-  
+
   // State and refs
   const [state, setState] = useState(initialValue);
   const ref = useRef(null);
-  
+
   // Effects with cleanup
   useEffect(() => {
     // Setup
-    return () => { /* cleanup */ };
+    return () => {
+      /* cleanup */
+    };
   }, [dependencies]);
-  
-  return { state, ref, /* other values */ };
+
+  return { state, ref /* other values */ };
 }
 ```
-

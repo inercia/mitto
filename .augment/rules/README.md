@@ -56,19 +56,20 @@ alwaysApply: true
 
 ### Quick Index
 
-| Range | Topic | Example Files |
-|-------|-------|---------------|
-| 00-09 | Core | `00-overview.md`, `01-go-conventions.md`, `09-macos-app.md` |
-| 10-19 | Backend + macOS | `10-web-backend-core.md`, `13-macos-keyboard-gestures.md` |
-| 20-29 | Frontend | `20-web-frontend-core.md`, `21-web-frontend-state.md` |
-| 30-39 | Testing | `30-testing-unit.md`, `34-anti-patterns.md` |
-| 40-49 | Debugging | `40-mcp-debugging.md`, `41-debugging-logs.md`, `42-mcpserver-development.md` |
+| Range | Topic           | Example Files                                                                          |
+| ----- | --------------- | -------------------------------------------------------------------------------------- |
+| 00-09 | Core            | `00-overview.md`, `01-go-conventions.md`, `09-macos-app.md`                            |
+| 10-19 | Backend + macOS | `10-web-backend-core.md`, `13-macos-keyboard-gestures.md`, `15-web-backend-session-lifecycle.md` |
+| 20-29 | Frontend        | `20-web-frontend-core.md`, `21-web-frontend-state.md`, `27-web-frontend-sync.md`       |
+| 30-39 | Testing         | `30-testing-unit.md`, `34-anti-patterns.md`                                            |
+| 40-49 | Debugging       | `40-mcp-debugging.md`, `41-debugging-logs.md`, `42-mcpserver-development.md`           |
 
 ## When to Update Rules
 
 ### Add to Existing File
 
 When:
+
 - Adding examples to existing patterns
 - Documenting edge cases
 - Updating existing features
@@ -77,6 +78,7 @@ When:
 ### Create New File
 
 When:
+
 - Topic is distinct and self-contained
 - Existing file would become too large (>300 lines)
 - Topic has specific trigger conditions
@@ -145,7 +147,7 @@ More content...
 \`\`\`go
 // BAD: Explanation
 func badExample() {
-    // Wrong approach
+// Wrong approach
 }
 \`\`\`
 
@@ -154,7 +156,7 @@ func badExample() {
 \`\`\`go
 // GOOD: Explanation
 func goodExample() {
-    // Right approach
+// Right approach
 }
 \`\`\`
 ```
@@ -162,10 +164,10 @@ func goodExample() {
 ### Table Format
 
 ```markdown
-| Component | Purpose |
-|-----------|---------|
-| Item 1 | Description 1 |
-| Item 2 | Description 2 |
+| Component | Purpose       |
+| --------- | ------------- |
+| Item 1    | Description 1 |
+| Item 2    | Description 2 |
 ```
 
 ### Section Organization
@@ -224,4 +226,3 @@ Content...
 - [Anti-Patterns](.augment/rules/34-anti-patterns.md)
 - [MCP Debugging](.augment/rules/40-mcp-debugging.md)
 - [Log File Debugging](.augment/rules/41-debugging-logs.md)
-

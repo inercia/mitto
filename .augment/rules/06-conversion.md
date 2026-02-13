@@ -10,9 +10,9 @@ The `internal/conversion` package handles Markdown-to-HTML conversion with secur
 
 ## Components
 
-| Component | Purpose |
-|-----------|---------|
-| `Converter` | Markdown-to-HTML with goldmark |
+| Component    | Purpose                                        |
+| ------------ | ---------------------------------------------- |
+| `Converter`  | Markdown-to-HTML with goldmark                 |
 | `FileLinker` | Detect and linkify file paths and URLs in HTML |
 
 ## Converter Usage
@@ -43,6 +43,7 @@ config := conversion.FileLinkerConfig{
 ```
 
 **Detection patterns:**
+
 - Absolute paths: `/home/user/file.go`
 - Relative paths: `./src/main.go`, `../lib/utils.py`
 - Line references: `file.go:42`, `file.go:42:10`
@@ -52,29 +53,39 @@ config := conversion.FileLinkerConfig{
 The `FileLinker` also detects and linkifies URLs in inline code blocks (backticks):
 
 **Supported URL schemes:**
+
 - `https://` - HTTPS URLs
 - `http://` - HTTP URLs
 - `ftp://` - FTP URLs
 - `mailto:` - Email links (without `target="_blank"`)
 
 **Processing order:**
+
 1. URLs in `<code>` tags are processed first
 2. File paths in `<code>` tags are processed second
 3. File paths in regular text are processed last
 
 **Example:**
+
 ```markdown
 Check out `https://example.com` for more info
 ```
 
 Converts to:
+
 ```html
-<a href="https://example.com" target="_blank" rel="noopener noreferrer" class="url-link">
+<a
+  href="https://example.com"
+  target="_blank"
+  rel="noopener noreferrer"
+  class="url-link"
+>
   <code>https://example.com</code>
 </a>
 ```
 
 **Edge cases handled:**
+
 - Trailing punctuation is stripped: `https://example.com.` → `https://example.com`
 - Balanced parentheses are preserved: `https://example.com/page(1)`
 - URLs in code blocks (triple backticks) are NOT linked
@@ -83,12 +94,12 @@ Converts to:
 
 ## Helper Functions for MarkdownBuffer
 
-| Function | Purpose |
-|----------|---------|
-| `IsCodeBlockStart(line)` | Detect ``` fence lines |
-| `IsListItem(line)` | Detect list items (`- `, `* `, `1. `) |
-| `IsTableRow(line)` | Detect table rows (`|`) |
-| `HasUnmatchedInlineFormatting(text)` | Check for incomplete `**`, `_`, etc. |
+| Function                             | Purpose                               |
+| ------------------------------------ | ------------------------------------- | --- |
+| `IsCodeBlockStart(line)`             | Detect ``` fence lines                |
+| `IsListItem(line)`                   | Detect list items (`- `, `* `, `1. `) |
+| `IsTableRow(line)`                   | Detect table rows (`                  | `)  |
+| `HasUnmatchedInlineFormatting(text)` | Check for incomplete `**`, `_`, etc.  |
 
 These helpers are used by `MarkdownBuffer` to avoid flushing mid-structure:
 
@@ -117,6 +128,7 @@ testdata/
 ```
 
 Run tests:
+
 ```bash
 go test ./internal/conversion/...
 ```
@@ -124,6 +136,7 @@ go test ./internal/conversion/...
 ## Security
 
 All HTML output is sanitized using bluemonday's UGCPolicy to prevent XSS:
+
 - Allows common formatting tags (p, strong, em, code, pre)
 - Allows safe attributes (class, id, href)
 - Strips script tags and event handlers
@@ -136,6 +149,7 @@ All HTML output is sanitized using bluemonday's UGCPolicy to prevent XSS:
 When adding new link detection patterns (like URL detection):
 
 1. **Add regex pattern** at package level:
+
    ```go
    var urlPattern = regexp.MustCompile(`\b((?:https?://|ftp://|mailto:)[^\s<>"\[\]{}|\\^` + "`" + `]+)`)
    ```
@@ -148,6 +162,7 @@ When adding new link detection patterns (like URL detection):
    - Wraps `<code>` tag in anchor tag (preserves formatting)
 
 3. **Add to LinkFilePaths pipeline** in correct order:
+
    ```go
    // Process URLs first (more specific)
    html = fl.processInlineCodeURLs(html)
@@ -181,4 +196,3 @@ For link detection features, create three test levels:
    - Verify output format
 
 **Test coverage target:** 90%+ for conversion package
-

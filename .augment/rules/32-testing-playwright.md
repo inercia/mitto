@@ -9,12 +9,12 @@ description: "Playwright UI tests, test fixtures, selectors, 'mitto web' setup, 
 
 **ALL Playwright tests MUST use a test configuration with these properties:**
 
-| Property | Required Value | Reason |
-|----------|----------------|--------|
-| `external_port` | `-1` | **MANDATORY** - Disables external access, no 0.0.0.0 binding |
-| `host` | `127.0.0.1` | **MANDATORY** - Localhost only |
-| `web.auth` | **OMIT ENTIRELY** | **MANDATORY** - Prevents keychain access on macOS |
-| ACP server | `mock-acp` | **MANDATORY** - Deterministic testing |
+| Property        | Required Value    | Reason                                                       |
+| --------------- | ----------------- | ------------------------------------------------------------ |
+| `external_port` | `-1`              | **MANDATORY** - Disables external access, no 0.0.0.0 binding |
+| `host`          | `127.0.0.1`       | **MANDATORY** - Localhost only                               |
+| `web.auth`      | **OMIT ENTIRELY** | **MANDATORY** - Prevents keychain access on macOS            |
+| ACP server      | `mock-acp`        | **MANDATORY** - Deterministic testing                        |
 
 ### ❌ NEVER DO THIS
 
@@ -24,7 +24,7 @@ web:
   host: 127.0.0.1
   port: 8089
   auth:
-    simple: "password"  # ❌ Will trigger keychain access!
+    simple: "password" # ❌ Will trigger keychain access!
 ```
 
 ```bash
@@ -41,7 +41,7 @@ mitto web --config /path/to/normal/config    # ❌ May have auth!
 web:
   host: 127.0.0.1
   port: 8089
-  external_port: -1    # ✅ Disable external access
+  external_port: -1 # ✅ Disable external access
   theme: v2
   # NO auth section!   # ✅ No keychain access
 ```
@@ -78,14 +78,14 @@ tests/ui/
 ## Playwright Test Conventions
 
 ```typescript
-import { test, expect } from '../fixtures/test-fixtures';
+import { test, expect } from "../fixtures/test-fixtures";
 
-test.describe('Feature Name', () => {
+test.describe("Feature Name", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
   });
 
-  test('should do something', async ({ page, selectors, timeouts }) => {
+  test("should do something", async ({ page, selectors, timeouts }) => {
     const element = page.locator(selectors.chatInput);
     await expect(element).toBeVisible({ timeout: timeouts.appReady });
   });
@@ -96,10 +96,10 @@ test.describe('Feature Name', () => {
 
 ```typescript
 export const selectors = {
-  chatInput: 'textarea',
+  chatInput: "textarea",
   sendButton: 'button:has-text("Send")',
-  userMessage: '.bg-mitto-user, .bg-blue-600',
-  agentMessage: '.bg-mitto-agent, .prose',
+  userMessage: ".bg-mitto-user, .bg-blue-600",
+  agentMessage: ".bg-mitto-agent, .prose",
 };
 
 export const timeouts = {
@@ -162,21 +162,25 @@ npx playwright codegen http://127.0.0.1:8089
 ## Why These Requirements?
 
 ### `external_port: -1`
+
 - Disables binding to `0.0.0.0`
 - Tests run in complete isolation
 - No network exposure during tests
 
 ### No `web.auth` Section
+
 - Mitto accesses macOS Keychain when auth is configured
 - This causes prompts during tests
 - Omitting auth = no keychain access
 
 ### Mock ACP Server
+
 - Deterministic, repeatable test responses
 - No dependency on external AI services
 - Fast execution
 
 ### `--config` Flag
+
 - Makes configuration read-only
 - Disables Settings dialog in UI
 - Prevents accidental config changes during tests
@@ -185,11 +189,11 @@ npx playwright codegen http://127.0.0.1:8089
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `MITTO_TEST_URL` | Base URL for tests (default: `http://127.0.0.1:8089`) |
-| `MITTO_DIR` | Data directory for test (default: `/tmp/mitto-test`) |
-| `MITTO_TEST_MODE` | Set to `1` when running Playwright tests |
+| Variable          | Description                                           |
+| ----------------- | ----------------------------------------------------- |
+| `MITTO_TEST_URL`  | Base URL for tests (default: `http://127.0.0.1:8089`) |
+| `MITTO_DIR`       | Data directory for test (default: `/tmp/mitto-test`)  |
+| `MITTO_TEST_MODE` | Set to `1` when running Playwright tests              |
 
 ---
 

@@ -72,11 +72,11 @@ func getMockACPPath(t *testing.T) string {
 
 The `tests/integration/inprocess/` package runs the web server in-process using `httptest.Server`:
 
-| Aspect | In-Process | External Process |
-|--------|------------|------------------|
-| Speed | Fast (no process spawn) | Slower |
-| Debugging | Easy (same process) | Harder |
-| Coverage | Counted in reports | Not counted |
+| Aspect    | In-Process              | External Process |
+| --------- | ----------------------- | ---------------- |
+| Speed     | Fast (no process spawn) | Slower           |
+| Debugging | Easy (same process)     | Harder           |
+| Coverage  | Counted in reports      | Not counted      |
 
 ### Test Server Setup
 
@@ -158,12 +158,12 @@ func TestWebSocketMessageFlow(t *testing.T) {
 
 ## Key Test Scenarios
 
-| Test | What It Validates |
-|------|-------------------|
-| `TestSessionLifecycle` | Create → List → Get → Delete |
-| `TestQueueOperations` | Add → List → Clear queue |
-| `TestWebSocketConnection` | Connect → Callbacks → Disconnect |
-| `TestSendPromptAndReceiveResponse` | Full prompt/response flow |
+| Test                               | What It Validates                |
+| ---------------------------------- | -------------------------------- |
+| `TestSessionLifecycle`             | Create → List → Get → Delete     |
+| `TestQueueOperations`              | Add → List → Clear queue         |
+| `TestWebSocketConnection`          | Connect → Callbacks → Disconnect |
+| `TestSendPromptAndReceiveResponse` | Full prompt/response flow        |
 
 ## Running In-Process Tests
 
@@ -175,4 +175,3 @@ go test -tags integration -coverprofile=coverage.out \
     -coverpkg=./internal/web/...,./internal/client/... \
     ./tests/integration/inprocess
 ```
-

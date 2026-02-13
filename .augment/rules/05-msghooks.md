@@ -10,12 +10,12 @@ The `internal/msghooks` package provides external command-based hooks for messag
 
 ## Quick Reference
 
-| Component | Purpose |
-|-----------|---------|
-| `Hook` | Hook definition loaded from YAML |
-| `Loader` | Loads and validates hook files |
-| `Executor` | Runs hooks as external commands |
-| `Apply*` | Applies hooks to messages |
+| Component  | Purpose                          |
+| ---------- | -------------------------------- |
+| `Hook`     | Hook definition loaded from YAML |
+| `Loader`   | Loads and validates hook files   |
+| `Executor` | Runs hooks as external commands  |
+| `Apply*`   | Applies hooks to messages        |
 
 ## Hook Configuration
 
@@ -24,18 +24,18 @@ Hooks are defined in YAML files in `MITTO_DIR/hooks/*.yaml`:
 ```yaml
 name: system-prompt
 description: Prepends a system prompt to the first message
-when: first  # first, all, all-except-first
-position: prepend  # prepend, append
-priority: 100  # Lower = earlier execution
+when: first # first, all, all-except-first
+position: prepend # prepend, append
+priority: 100 # Lower = earlier execution
 
 command: ./generate-prompt.sh
 args: []
-input: message  # message, conversation, none
-output: transform  # transform, prepend, append, discard
+input: message # message, conversation, none
+output: transform # transform, prepend, append, discard
 
 timeout: 5s
-working_dir: session  # session, hook
-on_error: skip  # skip, fail
+working_dir: session # session, hook
+on_error: skip # skip, fail
 
 # Optional: limit to specific workspaces
 workspaces:
@@ -44,27 +44,27 @@ workspaces:
 
 ## Input Types
 
-| Type | Description |
-|------|-------------|
-| `message` | Send message with basic context (JSON) |
-| `conversation` | Send full conversation history (JSON) |
-| `none` | Send nothing to stdin |
+| Type           | Description                            |
+| -------------- | -------------------------------------- |
+| `message`      | Send message with basic context (JSON) |
+| `conversation` | Send full conversation history (JSON)  |
+| `none`         | Send nothing to stdin                  |
 
 ## Output Types
 
-| Type | Description |
-|------|-------------|
+| Type        | Description                          |
+| ----------- | ------------------------------------ |
 | `transform` | Replace message entirely with stdout |
-| `prepend` | Prepend stdout to message |
-| `append` | Append stdout to message |
-| `discard` | Ignore stdout (side-effect only) |
+| `prepend`   | Prepend stdout to message            |
+| `append`    | Append stdout to message             |
+| `discard`   | Ignore stdout (side-effect only)     |
 
 ## Working Directory
 
-| Type | Description |
-|------|-------------|
-| `session` | Use session's working directory |
-| `hook` | Use hook file's directory (for relative paths) |
+| Type      | Description                                    |
+| --------- | ---------------------------------------------- |
+| `session` | Use session's working directory                |
+| `hook`    | Use hook file's directory (for relative paths) |
 
 ## Hook Application Flow
 
@@ -84,16 +84,17 @@ Transformed message
 
 ## Error Handling
 
-| Mode | Behavior |
-|------|----------|
+| Mode   | Behavior                                     |
+| ------ | -------------------------------------------- |
 | `skip` | Continue without the hook on error (default) |
-| `fail` | Abort the message on error |
+| `fail` | Abort the message on error                   |
 
 ## Key Patterns
 
 ### Command Resolution
 
 Commands are resolved as follows:
+
 - `./ or ../` prefix → relative to hook file directory
 - Absolute path → used as-is
 - Otherwise → PATH lookup
@@ -121,13 +122,12 @@ func (h *Hook) ShouldApply(isFirstMessage bool, workingDir string) bool {
 
 ### Default Values
 
-| Field | Default |
-|-------|---------|
-| `enabled` | true |
-| `timeout` | 5s |
-| `priority` | 100 |
-| `input` | message |
-| `output` | transform |
-| `working_dir` | session |
-| `on_error` | skip |
-
+| Field         | Default   |
+| ------------- | --------- |
+| `enabled`     | true      |
+| `timeout`     | 5s        |
+| `priority`    | 100       |
+| `input`       | message   |
+| `output`      | transform |
+| `working_dir` | session   |
+| `on_error`    | skip      |

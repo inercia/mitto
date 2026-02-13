@@ -21,29 +21,34 @@ keywords:
 
 ```javascript
 // Problem: activeSessionId in useCallback captures stale value
-const handleMessage = useCallback((msg) => {
+const handleMessage = useCallback(
+  (msg) => {
     // activeSessionId here is stale - it was captured when callback was created
-    if (!activeSessionId) return;  // BUG: always null on first messages!
-}, [activeSessionId]);
+    if (!activeSessionId) return; // BUG: always null on first messages!
+  },
+  [activeSessionId],
+);
 
 // Solution: Use a ref that's always current
 const activeSessionIdRef = useRef(activeSessionId);
 useEffect(() => {
-    activeSessionIdRef.current = activeSessionId;
+  activeSessionIdRef.current = activeSessionId;
 }, [activeSessionId]);
 
 const handleMessage = useCallback((msg) => {
-    const currentSessionId = activeSessionIdRef.current;  // Always current!
-    if (!currentSessionId) return;
-}, []);  // No dependency on activeSessionId
+  const currentSessionId = activeSessionIdRef.current; // Always current!
+  if (!currentSessionId) return;
+}, []); // No dependency on activeSessionId
 ```
 
 **Race condition pattern in WebSocket handlers:**
+
 - WebSocket messages can arrive before React state updates complete
 - Session switching: `session_switched` sets `activeSessionId`, but `agent_message` may arrive first
 - Always use refs for state that callbacks need to read during async operations
 
 **Function definition order in hooks:**
+
 - `useCallback` functions must be defined before they're used in dependency arrays
 - If function A uses function B, define B before A
 - Circular dependencies require refs to break the cycle
@@ -52,9 +57,9 @@ const handleMessage = useCallback((msg) => {
 
 **Critical distinction** for DOM positioning and scroll handling:
 
-| Hook | Timing | Use When |
-|------|--------|----------|
-| `useEffect` | After paint (async) | Data fetching, subscriptions, side effects |
+| Hook              | Timing              | Use When                                          |
+| ----------------- | ------------------- | ------------------------------------------------- |
+| `useEffect`       | After paint (async) | Data fetching, subscriptions, side effects        |
 | `useLayoutEffect` | Before paint (sync) | DOM positioning, scroll restoration, measurements |
 
 ### Scroll Positioning Pattern
@@ -66,19 +71,19 @@ const handleMessage = useCallback((msg) => {
 ```javascript
 // Position at bottom synchronously BEFORE paint when switching sessions
 useLayoutEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
+  const container = messagesContainerRef.current;
+  if (!container) return;
 
-    // Detect session switch
-    if (prevActiveSessionIdRef.current !== activeSessionId) {
-        prevActiveSessionIdRef.current = activeSessionId;
+  // Detect session switch
+  if (prevActiveSessionIdRef.current !== activeSessionId) {
+    prevActiveSessionIdRef.current = activeSessionId;
 
-        // Instant scroll - bypass CSS scroll-behavior: smooth
-        const originalBehavior = container.style.scrollBehavior;
-        container.style.scrollBehavior = 'auto';
-        container.scrollTop = container.scrollHeight;
-        container.style.scrollBehavior = originalBehavior;
-    }
+    // Instant scroll - bypass CSS scroll-behavior: smooth
+    const originalBehavior = container.style.scrollBehavior;
+    container.style.scrollBehavior = "auto";
+    container.scrollTop = container.scrollHeight;
+    container.style.scrollBehavior = originalBehavior;
+  }
 }, [activeSessionId, messages.length]);
 ```
 
@@ -89,16 +94,16 @@ Use separate hooks for different scroll scenarios:
 ```javascript
 // useLayoutEffect: Session switch - instant scroll, no animation, before paint
 useLayoutEffect(() => {
-    if (sessionJustChanged) {
-        scrollToBottomInstant();
-    }
+  if (sessionJustChanged) {
+    scrollToBottomInstant();
+  }
 }, [activeSessionId, messages.length]);
 
 // useEffect: Streaming updates - smooth scroll, after paint is fine
 useEffect(() => {
-    if (isStreaming && isUserAtBottom) {
-        scrollToBottom(true);  // smooth: true
-    }
+  if (isStreaming && isUserAtBottom) {
+    scrollToBottom(true); // smooth: true
+  }
 }, [messages.length, isStreaming]);
 ```
 
@@ -110,14 +115,17 @@ When saving settings that affect external state, update local state immediately 
 
 ```javascript
 const handleSave = async () => {
-    await fetch('/api/config', { method: 'POST', body: JSON.stringify(settings) });
+  await fetch("/api/config", {
+    method: "POST",
+    body: JSON.stringify(settings),
+  });
 
-    // Fetch updated external status to get actual port
-    const statusRes = await fetch('/api/external-status');
-    const { enabled, port } = await statusRes.json();
+  // Fetch updated external status to get actual port
+  const statusRes = await fetch("/api/external-status");
+  const { enabled, port } = await statusRes.json();
 
-    // Update local state so UI reflects new values
-    setCurrentExternalPort(port);
+  // Update local state so UI reflects new values
+  setCurrentExternalPort(port);
 };
 ```
 
@@ -131,7 +139,6 @@ const [configReadonly, setConfigReadonly] = useState(false);
 
 // Disable settings access when readonly
 if (configReadonly) {
-    return;  // Don't open settings dialog
+  return; // Don't open settings dialog
 }
 ```
-

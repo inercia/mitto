@@ -90,6 +90,7 @@ abStore.Clear()
 ```
 
 **Key patterns**:
+
 - Separate file (`action_buttons.json`) - not in events.jsonl (transient UI state, not history)
 - Delete file on clear (vs writing empty) - reduces disk clutter
 
@@ -103,10 +104,9 @@ case 'action_buttons':
 
 ## Key Behaviors
 
-| Event | Action |
-|-------|--------|
-| `action_buttons` received | Update session state with new buttons |
-| User clicks button | Send `btn.response` as prompt, buttons auto-clear |
-| User types and sends | Buttons cleared by server (new prompt = stale suggestions) |
-| Session switch | New session's buttons loaded from server |
-
+| Event                     | Action                                                     |
+| ------------------------- | ---------------------------------------------------------- |
+| `action_buttons` received | Update session state with new buttons                      |
+| User clicks button        | Send `btn.response` as prompt, buttons auto-clear          |
+| User types and sends      | Buttons cleared by server (new prompt = stale suggestions) |
+| Session switch            | New session's buttons loaded from server                   |

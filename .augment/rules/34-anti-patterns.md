@@ -24,12 +24,13 @@ alwaysApply: false
 ```go
 // BAD: Simple string replacement breaks with multiple occurrences
 func linkifyURL(html string) string {
-    return strings.ReplaceAll(html, "https://example.com", 
+    return strings.ReplaceAll(html, "https://example.com",
         `<a href="https://example.com">https://example.com</a>`)
 }
 ```
 
 **Problems:**
+
 - Breaks with multiple URLs
 - Can't handle variations
 - May replace inside existing tags
@@ -42,7 +43,7 @@ func linkifyURL(html string) string {
 func linkifyURLs(html string) string {
     skipRegions := findSkipRegions(html)
     matches := urlPattern.FindAllStringSubmatchIndex(html, -1)
-    
+
     result := html
     for i := len(matches) - 1; i >= 0; i-- {
         if !isInSkipRegion(matches[i], skipRegions) {
@@ -171,8 +172,8 @@ func processText(text string) string {
 const URL_PATTERN = /https?:\/\/[^\s]+/gi;
 
 function findURLs(text) {
-    // If called multiple times, lastIndex is wrong!
-    return URL_PATTERN.exec(text);
+  // If called multiple times, lastIndex is wrong!
+  return URL_PATTERN.exec(text);
 }
 ```
 
@@ -183,8 +184,8 @@ function findURLs(text) {
 const URL_PATTERN = /https?:\/\/[^\s]+/gi;
 
 function findURLs(text) {
-    URL_PATTERN.lastIndex = 0;  // Reset state
-    return URL_PATTERN.exec(text);
+  URL_PATTERN.lastIndex = 0; // Reset state
+  return URL_PATTERN.exec(text);
 }
 ```
 
@@ -244,18 +245,18 @@ func convertMarkdown(md string) string {
 ```javascript
 // BAD: Backend returns error immediately, but frontend still shows timeout warning
 const handleSubmit = async () => {
-    const timeoutId = setTimeout(() => {
-        showWarning("Message delivery could not be confirmed");  // Wrong!
-    }, 5000);
+  const timeoutId = setTimeout(() => {
+    showWarning("Message delivery could not be confirmed"); // Wrong!
+  }, 5000);
 
-    try {
-        await sendPrompt(message);  // Backend returns error synchronously
-        clearTimeout(timeoutId);
-    } catch (err) {
-        // Error is shown, but timeout warning ALSO shows because clearTimeout
-        // wasn't called before the error handler runs
-        showError(err.message);
-    }
+  try {
+    await sendPrompt(message); // Backend returns error synchronously
+    clearTimeout(timeoutId);
+  } catch (err) {
+    // Error is shown, but timeout warning ALSO shows because clearTimeout
+    // wasn't called before the error handler runs
+    showError(err.message);
+  }
 };
 ```
 
@@ -266,17 +267,17 @@ const handleSubmit = async () => {
 ```javascript
 // GOOD: Clear timeout before handling result
 const handleSubmit = async () => {
-    const timeoutId = setTimeout(() => {
-        showWarning("Message delivery could not be confirmed");
-    }, 5000);
+  const timeoutId = setTimeout(() => {
+    showWarning("Message delivery could not be confirmed");
+  }, 5000);
 
-    try {
-        await sendPrompt(message);
-    } catch (err) {
-        showError(err.message);
-    } finally {
-        clearTimeout(timeoutId);  // Always clear, regardless of success/failure
-    }
+  try {
+    await sendPrompt(message);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    clearTimeout(timeoutId); // Always clear, regardless of success/failure
+  }
 };
 ```
 
@@ -285,7 +286,7 @@ const handleSubmit = async () => {
 ```javascript
 // BAD: readyState can be OPEN even for zombie connections
 if (ws.readyState === WebSocket.OPEN) {
-    ws.send(message);  // May silently fail!
+  ws.send(message); // May silently fail!
 }
 ```
 
@@ -294,13 +295,13 @@ if (ws.readyState === WebSocket.OPEN) {
 ```javascript
 // GOOD: Track actual message delivery
 if (ws.readyState === WebSocket.OPEN && isConnectionHealthy(sessionId)) {
-    ws.send(message);
+  ws.send(message);
 }
 
 // isConnectionHealthy checks keepalive_ack responses
 const isConnectionHealthy = (sessionId) => {
-    const keepalive = keepaliveRef.current[sessionId];
-    return keepalive && keepalive.missedCount === 0;
+  const keepalive = keepaliveRef.current[sessionId];
+  return keepalive && keepalive.missedCount === 0;
 };
 ```
 
@@ -328,7 +329,7 @@ case "events_loaded": {
 ```javascript
 // In isSeqDuplicate()
 if (seq < tracker.highestSeq - MAX_RECENT_SEQS) {
-  return true;  // Wrongly marks fresh events as duplicates!
+  return true; // Wrongly marks fresh events as duplicates!
 }
 ```
 
@@ -356,6 +357,79 @@ case "events_loaded": {
 
 **Key insight**: The M1 deduplication tracker (`seenSeqsRef`) must be reset when the client detects stale state, otherwise fresh events from the server will be wrongly rejected.
 
+### ❌ Don't: Reset lastSentSeq on Fallback to Initial Load
+
+```go
+// BAD: Resetting lastSentSeq when falling back to initial load
+if afterSeq > serverMaxSeq {
+    events, err = c.store.ReadEventsLast(c.sessionID, limit, 0)
+    isPrepend = false
+    // Reset lastSentSeq since we're doing a fresh load
+    c.seqMu.Lock()
+    c.lastSentSeq = 0  // BUG: This loses track of observer-delivered events!
+    c.seqMu.Unlock()
+}
+```
+
+**Problem**: The observer path may have already delivered events with higher seq numbers than what's in storage (events not yet persisted). Resetting `lastSentSeq` causes `replayBufferedEventsWithDedup` to re-send those events, resulting in duplicate messages in the UI.
+
+**Race condition:**
+
+1. Agent streams message, observer delivers seq=18 to client (`lastSentSeq=18`)
+2. Client sends keepalive, server detects mismatch (client has seq=18, storage only has seq=10)
+3. Server falls back to initial load, resets `lastSentSeq=0`, then updates to `lastSentSeq=10`
+4. `replayBufferedEventsWithDedup` sees seq=18 > `lastSentSeq=10`, sends seq=18 again
+5. Client receives seq=18 twice → duplicate message!
+
+### ✅ Do: Preserve lastSentSeq on Fallback
+
+```go
+// GOOD: Don't reset lastSentSeq - preserve observer-delivered events
+if afterSeq > serverMaxSeq {
+    events, err = c.store.ReadEventsLast(c.sessionID, limit, 0)
+    isPrepend = false
+    // NOTE: We intentionally do NOT reset lastSentSeq here.
+    // The observer path may have already delivered events with higher seq numbers
+    // than what's in storage. The lastSentSeq will be updated below based on
+    // the loaded events, but only if they have higher seq than what was already sent.
+}
+```
+
+**Key insight**: The `lastSentSeq` tracks what was sent via ANY path (observer or load_events). Resetting it loses track of observer-delivered events that aren't yet persisted.
+
+### ❌ Don't: Append Duplicate HTML During Streaming Coalescing
+
+```javascript
+// BAD: Blindly appending HTML without checking for duplicates
+if (shouldAppend) {
+    const newHtml = (last.html || "") + msg.data.html;
+    messages[messages.length - 1] = { ...last, html: newHtml };
+}
+```
+
+**Problem**: If the backend sends the same complete HTML multiple times with the same seq (edge case), the frontend appends identical content repeatedly, causing duplicate text in the UI.
+
+### ✅ Do: Check for Duplicate Content Before Appending
+
+```javascript
+// GOOD: Check if content is already present before appending
+if (shouldAppend) {
+    const existingHtml = last.html || "";
+    const incomingHtml = msg.data.html;
+
+    // Safeguard: Skip if this is duplicate content
+    if (existingHtml.endsWith(incomingHtml)) {
+        console.log("[DEBUG agent_message] Skipping duplicate append");
+        return prev;
+    }
+
+    const newHtml = existingHtml + incomingHtml;
+    messages[messages.length - 1] = { ...last, html: newHtml };
+}
+```
+
+**Key insight**: This is a defense-in-depth safeguard. The primary fix is server-side (preserving `lastSentSeq`), but this frontend check provides additional protection.
+
 ## WKWebView Anti-Patterns
 
 ### ❌ Don't: Store Sync State in localStorage
@@ -369,6 +443,7 @@ const lastSeq = localStorage.getItem(`mitto_last_seen_seq_${sessionId}`);
 ```
 
 **Problem**: WKWebView's localStorage can desynchronize from the actual data store, causing:
+
 - Stale seq values that don't match displayed messages
 - Sync requests that return 0 events when messages exist
 - Messages appearing to be "lost" until page reload
@@ -377,29 +452,34 @@ const lastSeq = localStorage.getItem(`mitto_last_seen_seq_${sessionId}`);
 
 ```javascript
 // GOOD: Calculate lastSeenSeq dynamically from messages in state
-import { getMaxSeq } from '../lib.js';
+import { getMaxSeq } from "../lib.js";
 
 ws.onopen = () => {
-    // Calculate from actual messages being displayed
-    const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
-    const lastSeq = getMaxSeq(sessionMessages);
+  // Calculate from actual messages being displayed
+  const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
+  const lastSeq = getMaxSeq(sessionMessages);
 
-    if (lastSeq > 0) {
-        ws.send(JSON.stringify({
-            type: 'load_events',
-            data: { after_seq: lastSeq }
-        }));
-    } else {
-        // Initial load
-        ws.send(JSON.stringify({
-            type: 'load_events',
-            data: { limit: INITIAL_EVENTS_LIMIT }
-        }));
-    }
+  if (lastSeq > 0) {
+    ws.send(
+      JSON.stringify({
+        type: "load_events",
+        data: { after_seq: lastSeq },
+      }),
+    );
+  } else {
+    // Initial load
+    ws.send(
+      JSON.stringify({
+        type: "load_events",
+        data: { limit: INITIAL_EVENTS_LIMIT },
+      }),
+    );
+  }
 };
 ```
 
 **Benefits**:
+
 - Always reflects actual displayed messages
 - No stale localStorage issues
 - Works correctly in WKWebView
@@ -410,6 +490,7 @@ ws.onopen = () => {
 ### 1. Order Matters in Processing Pipelines
 
 When processing HTML with multiple transformations:
+
 - Process more specific patterns first (URLs before file paths)
 - Process inline code before regular text
 - Apply sanitization after all transformations
@@ -417,6 +498,7 @@ When processing HTML with multiple transformations:
 ### 2. Test Coverage Reveals Edge Cases
 
 Aiming for 90%+ coverage forces you to think about:
+
 - Error paths
 - Edge cases
 - Boundary conditions
@@ -425,6 +507,7 @@ Aiming for 90%+ coverage forces you to think about:
 ### 3. Examples Are Documentation
 
 Example tests serve multiple purposes:
+
 - Verify functionality
 - Document usage
 - Provide copy-paste examples
@@ -433,11 +516,13 @@ Example tests serve multiple purposes:
 ### 4. Race Detector Catches Subtle Bugs
 
 Always run tests with `-race` flag:
+
 ```bash
 go test -race ./...
 ```
 
 Catches:
+
 - Concurrent map access
 - Shared state without locks
 - Goroutine leaks
@@ -445,6 +530,7 @@ Catches:
 ### 5. Mobile/WKWebView Requires Extra Validation
 
 Don't trust browser state in mobile contexts:
+
 - Connections can be "zombie" (OPEN but dead)
 - localStorage can be stale in WKWebView
 - Always validate with server on reconnect
@@ -453,6 +539,7 @@ Don't trust browser state in mobile contexts:
 ### 6. Synchronous Errors Need Different Handling Than Timeouts
 
 When an operation can fail either synchronously (error) or asynchronously (timeout):
+
 - Use `finally` to clean up timeout handlers
 - Don't show timeout warnings for synchronous errors
 - Clear pending state on both success AND failure
@@ -460,6 +547,7 @@ When an operation can fail either synchronously (error) or asynchronously (timeo
 ### 7. Calculate Sync State from Application State, Not localStorage
 
 For sync state (like `lastSeenSeq`), calculate dynamically from application state:
+
 - localStorage can become stale, especially in WKWebView
 - Application state (messages in React/Preact state) is always current
 - Use `getMaxSeq(messages)` instead of `localStorage.getItem('lastSeenSeq')`
@@ -495,9 +583,119 @@ When a client reconnects with stale state (detected by `clientLastSeq > serverLa
 - With stale `highestSeq = 200` and `MAX_RECENT_SEQS = 100`, any `seq < 100` is rejected
 
 **Pattern**: Always reset deduplication state when transitioning from stale to fresh state:
+
 ```javascript
 if (isStaleClient) {
-  clearSeenSeqs(sessionId);  // Reset M1 tracker
+  clearSeenSeqs(sessionId); // Reset M1 tracker
   // Then process fresh events from server
 }
 ```
+
+### 10. Preserve lastSentSeq on Fallback to Initial Load
+
+When `handleLoadEvents` falls back to initial load (due to client/server seq mismatch), do NOT reset `lastSentSeq` to 0:
+
+- The observer path may have already delivered events with higher seq numbers than what's in storage
+- Resetting `lastSentSeq` causes `replayBufferedEventsWithDedup` to re-send those events
+- This results in duplicate messages appearing in the UI
+
+**Pattern**: Preserve `lastSentSeq` and only update it if loaded events have higher seq:
+
+```go
+if afterSeq > serverMaxSeq {
+    events, err = c.store.ReadEventsLast(c.sessionID, limit, 0)
+    // NOTE: Do NOT reset lastSentSeq here - observer may have delivered higher seqs
+}
+// Later: update lastSentSeq only if lastSeq > c.lastSentSeq
+```
+
+### 11. Frontend HTML Duplicate Safeguard
+
+When coalescing streaming chunks (same seq), check if the incoming HTML is already present:
+
+- The `isSeqDuplicate` function allows same-seq events for coalescing
+- If backend sends the same complete HTML multiple times, it would be appended repeatedly
+- Check `existingHtml.endsWith(incomingHtml)` before appending
+
+**Pattern**: Defense-in-depth check before appending:
+
+```javascript
+if (shouldAppend) {
+    if (existingHtml.endsWith(incomingHtml)) {
+        return prev; // Skip duplicate content
+    }
+    const newHtml = existingHtml + incomingHtml;
+    // ...
+}
+```
+
+## Session Lifecycle Anti-Patterns
+
+### ❌ Don't: Resume ACP for Archived Sessions
+
+```go
+// BAD: Resumes ACP without checking archived state
+if bs == nil && store != nil {
+    meta, err := store.GetMetadata(sessionID)
+    if err == nil {
+        // Missing archived check!
+        bs, err = s.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
+    }
+}
+```
+
+**Problem**: Archived sessions should be read-only with no ACP connection. Resuming ACP for archived sessions:
+- Wastes resources (ACP process running for read-only session)
+- Confuses users (green "active" dot on archived session)
+- Violates the archive contract (archived = no active agent)
+
+### ✅ Do: Check Archived State Before Resuming
+
+```go
+// GOOD: Skip resume for archived sessions
+if bs == nil && store != nil {
+    meta, err := store.GetMetadata(sessionID)
+    if err == nil {
+        if meta.Archived {
+            // Don't resume - archived sessions are read-only
+            if clientLogger != nil {
+                clientLogger.Debug("Session is archived, not resuming ACP")
+            }
+        } else {
+            bs, err = s.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
+        }
+    }
+}
+```
+
+### ❌ Don't: Show Active Indicator for Archived Sessions
+
+```javascript
+// BAD: All sessions in state are marked active
+const isActiveSession = session.isActive || session.status === "active";
+// Archived sessions incorrectly show green dot!
+```
+
+### ✅ Do: Check Archived State for UI Indicators
+
+```javascript
+// GOOD: Archived sessions are never "active"
+const isActiveSession =
+    !isArchived && (session.isActive || session.status === "active");
+const isStreaming = !isArchived && (session.isStreaming || false);
+```
+
+### 12. Archived Sessions Must Not Have Active ACP
+
+When archiving a session:
+1. Wait for any active response to complete (graceful shutdown)
+2. Close the ACP connection
+3. Mark session as archived in metadata
+4. Broadcast state change to all clients
+
+When viewing an archived session:
+1. Load history from storage (read-only)
+2. Do NOT start ACP connection
+3. Do NOT show active indicator
+
+See `15-web-backend-session-lifecycle.md` for complete lifecycle patterns.

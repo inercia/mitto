@@ -1,16 +1,14 @@
 ---
 description: Frontend sequence sync, stale client detection, message deduplication, and server authority patterns
 globs:
-  - "web/static/hooks/useWebSocket.js"
   - "web/static/lib.js"
-  - "web/static/utils/websocket.js"
 keywords:
-  - stale client
+  - stale client detection
   - sequence sync
-  - deduplication
+  - message deduplication
   - server authority
   - lastSeenSeq
-  - events_loaded
+  - events_loaded handler
   - mergeMessagesWithSync
   - getMaxSeq
   - seenSeqsRef
@@ -19,11 +17,12 @@ keywords:
   - markSeqSeen
   - M1 fix
   - M1 dedup
+  - isStaleClientState
 ---
 
 # Frontend Sequence Sync and Deduplication
 
-> **📖 Full Protocol Documentation**: See [docs/devel/websocket-messaging.md](../../docs/devel/websocket-messaging.md) for complete WebSocket protocol specification.
+> **📖 Full Protocol Documentation**: See [docs/devel/websockets/](../../docs/devel/websockets/) for complete WebSocket protocol specification.
 
 ## Server is Always Right (Sequence Authority)
 
@@ -32,6 +31,7 @@ keywords:
 ### Why This Matters
 
 Mobile clients (especially iPhone) can have stale state due to:
+
 - Phone sleeping while in background
 - Network disconnection and reconnection
 - Server restart while client was offline
@@ -47,7 +47,8 @@ const clientLastSeq = currentSession?.lastLoadedSeq || 0;
 const serverLastSeq = msg.data.last_seq || 0;
 
 // If client thinks it has seen more than server has, client is stale
-const isStaleClient = clientLastSeq > 0 && serverLastSeq > 0 && clientLastSeq > serverLastSeq;
+const isStaleClient =
+  clientLastSeq > 0 && serverLastSeq > 0 && clientLastSeq > serverLastSeq;
 ```
 
 ### Recovery Behavior
@@ -75,7 +76,7 @@ if (session.messages.length === 0 || isStaleClient) {
 **Important**: The `lastSeenSeq` is calculated dynamically from messages in state, NOT stored in localStorage. This avoids stale localStorage issues, especially in WKWebView.
 
 ```javascript
-import { getMaxSeq } from '../lib.js';
+import { getMaxSeq } from "../lib.js";
 
 // Calculate lastSeenSeq from messages in state (not localStorage)
 const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
@@ -83,6 +84,7 @@ const lastSeq = getMaxSeq(sessionMessages);
 ```
 
 This approach:
+
 - Eliminates stale localStorage issues in WKWebView
 - Always reflects the actual messages being displayed
 - Simplifies the sync logic
@@ -105,7 +107,7 @@ Without this reset, the tracker's `highestSeq` from the stale state causes fresh
 // In events_loaded handler
 if (isStaleClient) {
   console.log(`[M1 fix] Resetting seq tracker for stale client`);
-  clearSeenSeqs(sessionId);  // CRITICAL: Reset before processing events
+  clearSeenSeqs(sessionId); // CRITICAL: Reset before processing events
 }
 
 // Then process events normally
@@ -117,6 +119,7 @@ for (const event of events) {
 ```
 
 **Why this matters:**
+
 - Client had `highestSeq = 200` from previous session
 - Server was restarted, now has `lastSeq = 50`
 - Server sends events with seqs 1-50
@@ -197,11 +200,10 @@ case "keepalive_ack": {
 
 ## Key Points Summary
 
-| Scenario | Detection Point | Client Action |
-|----------|-----------------|---------------|
-| `clientSeq > serverSeq` | `events_loaded` or `keepalive_ack` | Client is stale → full reload |
-| `clientSeq < serverSeq` | `events_loaded` or `keepalive_ack` | Client is behind → request missing events |
-| `clientSeq == serverSeq` | `keepalive_ack` | In sync → no action needed |
+| Scenario                 | Detection Point                    | Client Action                             |
+| ------------------------ | ---------------------------------- | ----------------------------------------- |
+| `clientSeq > serverSeq`  | `events_loaded` or `keepalive_ack` | Client is stale → full reload             |
+| `clientSeq < serverSeq`  | `events_loaded` or `keepalive_ack` | Client is behind → request missing events |
+| `clientSeq == serverSeq` | `keepalive_ack`                    | In sync → no action needed                |
 
 **Never** try to "fix" the server based on client state. The server's sequence numbers are authoritative.
-

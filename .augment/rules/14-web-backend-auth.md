@@ -22,10 +22,10 @@ keywords:
 
 Mitto uses a dual-listener architecture for security:
 
-| Listener | Binding | Auth Required | Use Case |
-|----------|---------|---------------|----------|
-| **Internal** | `127.0.0.1:PORT` | No (localhost bypass) | Local development, macOS app |
-| **External** | `0.0.0.0:EXTERNAL_PORT` | Yes (always) | Remote access, Tailscale |
+| Listener     | Binding                 | Auth Required         | Use Case                     |
+| ------------ | ----------------------- | --------------------- | ---------------------------- |
+| **Internal** | `127.0.0.1:PORT`        | No (localhost bypass) | Local development, macOS app |
+| **External** | `0.0.0.0:EXTERNAL_PORT` | Yes (always)          | Remote access, Tailscale     |
 
 ## Public Static Paths
 
@@ -48,6 +48,7 @@ var publicStaticPaths = map[string]bool{
 ### ❌ Common Mistake: Missing CSS in Public Paths
 
 **Symptom**: Login page shows unstyled HTML, browser console shows:
+
 ```
 Refused to apply style from 'http://example.com/tailwind.css' because its MIME type ('text/html')
 ```
@@ -98,6 +99,7 @@ const (
 ### Session Persistence
 
 Sessions are persisted to `auth_sessions.json` in the data directory:
+
 - Survives server restarts
 - Cleaned up on expiration
 - Limited to `maxSessionsPerUser` per user (oldest evicted)
@@ -119,14 +121,14 @@ All state-changing requests require CSRF token:
 
 ```javascript
 // Frontend: Get token before login
-const csrfRes = await fetch('/api/csrf-token');
+const csrfRes = await fetch("/api/csrf-token");
 const { token } = await csrfRes.json();
 
 // Include in login request
-fetch('/api/login', {
-    method: 'POST',
-    headers: { 'X-CSRF-Token': token },
-    body: JSON.stringify({ username, password })
+fetch("/api/login", {
+  method: "POST",
+  headers: { "X-CSRF-Token": token },
+  body: JSON.stringify({ username, password }),
 });
 ```
 
@@ -141,7 +143,7 @@ fetch('/api/login', {
 web:
   host: 127.0.0.1
   port: 8089
-  external_port: -1  # Disable external listener
+  external_port: -1 # Disable external listener
   # NO auth section!
 ```
 
@@ -188,7 +190,6 @@ web:
   auth:
     allow:
       ips:
-        - "192.168.1.0/24"  # CIDR notation
-        - "10.0.0.5"        # Single IP
+        - "192.168.1.0/24" # CIDR notation
+        - "10.0.0.5" # Single IP
 ```
-

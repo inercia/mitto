@@ -50,42 +50,50 @@ App
 
 ## File Structure
 
-| File | Purpose |
-|------|---------|
-| `app.js` | Main Preact application, state management |
-| `lib.js` | Pure utility functions (testable without DOM) |
-| `lib.test.js` | Jest tests for lib.js |
-| `preact-loader.js` | CDN imports, library initialization |
-| `styles.css` / `styles-v2.css` | Custom CSS for Markdown rendering |
-| `index.html` | HTML shell, Tailwind config |
-| `components/ChatInput.js` | Message composition with queue controls |
-| `components/QueueDropdown.js` | Queue panel with roll-up animation |
-| `components/Message.js` | Message rendering component |
-| `components/Icons.js` | SVG icon components |
-| `components/SettingsDialog.js` | Settings modal |
-| `hooks/useWebSocket.js` | WebSocket connection management |
-| `hooks/useSwipeNavigation.js` | Mobile swipe gestures |
-| `utils/api.js` | API URL helpers with prefix handling |
-| `utils/storage.js` | localStorage utilities |
-| `utils/native.js` | macOS app detection and native functions |
-| `utils/csrf.js` | CSRF token handling for secure requests |
+| File                           | Purpose                                       |
+| ------------------------------ | --------------------------------------------- |
+| `app.js`                       | Main Preact application, state management     |
+| `lib.js`                       | Pure utility functions (testable without DOM) |
+| `lib.test.js`                  | Jest tests for lib.js                         |
+| `preact-loader.js`             | CDN imports, library initialization           |
+| `styles.css` / `styles-v2.css` | Custom CSS for Markdown rendering             |
+| `index.html`                   | HTML shell, Tailwind config                   |
+| `components/ChatInput.js`      | Message composition with queue controls       |
+| `components/QueueDropdown.js`  | Queue panel with roll-up animation            |
+| `components/Message.js`        | Message rendering component                   |
+| `components/Icons.js`          | SVG icon components                           |
+| `components/SettingsDialog.js` | Settings modal                                |
+| `hooks/useWebSocket.js`        | WebSocket connection management               |
+| `hooks/useSwipeNavigation.js`  | Mobile swipe gestures                         |
+| `utils/api.js`                 | API URL helpers with prefix handling          |
+| `utils/storage.js`             | localStorage utilities                        |
+| `utils/native.js`              | macOS app detection and native functions      |
+| `utils/csrf.js`                | CSRF token handling for secure requests       |
 
 ## CDN Selection for Frontend Libraries
 
 **Recommended CDN for ES modules**: Skypack (`cdn.skypack.dev`)
+
 - Handles internal module resolution correctly
 - Works with Preact hooks imports
 
 **Avoid for ES modules**:
+
 - `unpkg.com` and `jsdelivr.net` - May fail with "Failed to resolve module specifier"
 - `esm.sh` - Generally works but may have availability issues
 
 ```html
 <!-- Recommended -->
 <script type="module">
-    import { h, render } from 'https://cdn.skypack.dev/preact@10.19.3';
-    import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'https://cdn.skypack.dev/preact@10.19.3/hooks';
-    import htm from 'https://cdn.skypack.dev/htm@3.1.1';
+  import { h, render } from "https://cdn.skypack.dev/preact@10.19.3";
+  import {
+    useState,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useCallback,
+  } from "https://cdn.skypack.dev/preact@10.19.3/hooks";
+  import htm from "https://cdn.skypack.dev/htm@3.1.1";
 </script>
 ```
 
@@ -93,15 +101,35 @@ App
 
 ```javascript
 // preact-loader.js - loads and exposes libraries
-import { marked } from 'https://cdn.skypack.dev/marked@12.0.0';
-import DOMPurify from 'https://cdn.skypack.dev/dompurify@3.0.8';
+import { marked } from "https://cdn.skypack.dev/marked@12.0.0";
+import DOMPurify from "https://cdn.skypack.dev/dompurify@3.0.8";
 
-window.preact = { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, html };
+window.preact = {
+  h,
+  render,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  html,
+};
 window.marked = marked;
 window.DOMPurify = DOMPurify;
 
 // app.js - imports from window.preact bundle
-const { h, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, html } = window.preact;
+const {
+  h,
+  render,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  html,
+} = window.preact;
 ```
 
 ## Memory Management
@@ -125,12 +153,13 @@ For destructive operations, implement validation in both layers:
 ```javascript
 // Frontend: Check workspace usage before removal
 const removeWorkspace = (workingDir) => {
-    const count = storedSessions.filter(s => s.working_dir === workingDir).length;
-    if (count > 0) {
-        setError(`Cannot remove: ${count} conversation(s) using it`);
-        return;
-    }
-    // Proceed with removal
+  const count = storedSessions.filter(
+    (s) => s.working_dir === workingDir,
+  ).length;
+  if (count > 0) {
+    setError(`Cannot remove: ${count} conversation(s) using it`);
+    return;
+  }
+  // Proceed with removal
 };
 ```
-

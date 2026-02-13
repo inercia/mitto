@@ -19,10 +19,10 @@ The Mitto MCP server (`internal/mcpserver/`) provides debugging tools via the Mo
 
 The server supports two transport modes:
 
-| Mode | Use Case | Configuration |
-|------|----------|---------------|
-| **HTTP** (default) | Remote access, Auggie integration | `TransportModeHTTP`, runs on port 5757 |
-| **STDIO** | Subprocess usage, Claude Desktop | `TransportModeSTDIO`, reads/writes stdin/stdout |
+| Mode               | Use Case                          | Configuration                                   |
+| ------------------ | --------------------------------- | ----------------------------------------------- |
+| **HTTP** (default) | Remote access, Auggie integration | `TransportModeHTTP`, runs on port 5757          |
+| **STDIO**          | Subprocess usage, Claude Desktop  | `TransportModeSTDIO`, reads/writes stdin/stdout |
 
 ### HTTP Mode (Streamable HTTP)
 
@@ -36,6 +36,7 @@ server.Start(ctx)
 ```
 
 Client configuration (Auggie/Claude):
+
 ```json
 {
   "mcpServers": {
@@ -57,6 +58,7 @@ server.RunSTDIO(ctx)  // Blocks until context cancelled
 ```
 
 Client configuration:
+
 ```json
 {
   "mcpServers": {
@@ -130,11 +132,11 @@ func (s *Server) handleGetConversation(ctx context.Context, req mcp.CallToolRequ
     if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
         return nil, fmt.Errorf("invalid input: %w", err)
     }
-    
+
     if input.SessionID == "" {
         return nil, fmt.Errorf("session_id is required")
     }
-    
+
     // ... implementation
 }
 ```
@@ -180,13 +182,13 @@ func (s *Server) handleGetConversation(ctx context.Context, req mcp.CallToolRequ
     if input.SessionID == "" {
         return nil, fmt.Errorf("session_id is required")
     }
-    
+
     // Operation errors
     metadata, err := s.loadMetadata(input.SessionID)
     if err != nil {
         return nil, fmt.Errorf("failed to load session %s: %w", input.SessionID, err)
     }
-    
+
     return &ConversationOutput{...}, nil
 }
 ```
@@ -202,4 +204,3 @@ Call list_conversations_mitto-debug to see available sessions
 ```
 
 See `40-mcp-debugging.md` for using MCP tools for debugging.
-

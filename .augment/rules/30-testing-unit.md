@@ -124,23 +124,23 @@ func TestNewConnection_EmptyCommand(t *testing.T) {
 
 ## Test Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `MITTO_TEST_MODE` | Set to `1` to enable test mode |
-| `MITTO_DIR` | Override data directory (use `t.Setenv()`) |
-| `CI` | Set automatically in CI environments |
+| Variable          | Description                                |
+| ----------------- | ------------------------------------------ |
+| `MITTO_TEST_MODE` | Set to `1` to enable test mode             |
+| `MITTO_DIR`       | Override data directory (use `t.Setenv()`) |
+| `CI`              | Set automatically in CI environments       |
 
 ## Test Coverage Targets
 
-| Package | Target | Notes |
-|---------|--------|-------|
-| `internal/conversion` | 90%+ | Markdown conversion, link detection |
-| `internal/config` | 80%+ | Configuration loading |
-| `internal/fileutil` | 80%+ | File utilities |
-| `internal/session` | 70%+ | Session management |
-| `internal/acp` | 70%+ | ACP protocol |
-| `internal/web` | 60%+ | Web handlers |
-| `internal/cmd` | 30%+ | CLI (hard to unit test) |
+| Package               | Target | Notes                               |
+| --------------------- | ------ | ----------------------------------- |
+| `internal/conversion` | 90%+   | Markdown conversion, link detection |
+| `internal/config`     | 80%+   | Configuration loading               |
+| `internal/fileutil`   | 80%+   | File utilities                      |
+| `internal/session`    | 70%+   | Session management                  |
+| `internal/acp`        | 70%+   | ACP protocol                        |
+| `internal/web`        | 60%+   | Web handlers                        |
+| `internal/cmd`        | 30%+   | CLI (hard to unit test)             |
 
 Run coverage: `go test -cover ./internal/...`
 
@@ -151,6 +151,7 @@ For features that process text/HTML (like link detection):
 ### Three-Level Testing Strategy
 
 1. **Unit Tests** - Test core logic with HTML input/output:
+
    ```go
    func TestFileLinker_URLsInBackticks(t *testing.T) {
        linker := NewFileLinker(FileLinkerConfig{...})
@@ -185,6 +186,7 @@ For features that process text/HTML (like link detection):
    ```
 
 2. **Integration Tests** - Test full pipeline (markdown → HTML):
+
    ```go
    func TestURLsInBackticks_Integration(t *testing.T) {
        converter := NewConverter(WithFileLinks(...))
@@ -246,4 +248,3 @@ Always run tests with race detector for concurrent code:
 go test -race ./internal/conversion/...
 go test -race -count=2 ./internal/conversion/...  # Run twice to catch flaky tests
 ```
-

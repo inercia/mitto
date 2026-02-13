@@ -75,4 +75,3 @@ mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
 # Mix default and explicit servers
 mitto web --dir /path/to/project1 --dir claude-code:/path/to/project2
 ```
-

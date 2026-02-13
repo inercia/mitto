@@ -25,11 +25,11 @@ Mitto writes to multiple log files for comprehensive debugging. **Always check t
 
 All logs are stored in `~/Library/Logs/Mitto/` (macOS):
 
-| Log File | Purpose | Rotation |
-|----------|---------|----------|
-| `mitto.log` | Go application logs (server, ACP, sessions) | 10MB, 3 backups |
-| `access.log` | Security events (auth, unauthorized access) | 10MB, 1 backup |
-| `webview.log` | JavaScript console output from WKWebView | 10MB, 3 backups |
+| Log File      | Purpose                                     | Rotation        |
+| ------------- | ------------------------------------------- | --------------- |
+| `mitto.log`   | Go application logs (server, ACP, sessions) | 10MB, 3 backups |
+| `access.log`  | Security events (auth, unauthorized access) | 10MB, 1 backup  |
+| `webview.log` | JavaScript console output from WKWebView    | 10MB, 3 backups |
 
 **Tip:** Use `get_runtime_info_mitto-debug` MCP tool to get exact paths.
 
@@ -51,17 +51,17 @@ tail -50 ~/Library/Logs/Mitto/*.log
 
 ## Which Log to Check
 
-| Issue Type | Primary Log | Secondary Log |
-|------------|-------------|---------------|
-| **App startup failures** | `mitto.log` | - |
-| **Server/API errors** | `mitto.log` | `access.log` |
-| **Authentication issues** | `access.log` | `mitto.log` |
-| **UI rendering problems** | `webview.log` | - |
-| **JavaScript errors** | `webview.log` | - |
-| **WebSocket connection issues** | `mitto.log` | `webview.log` |
-| **Session loading/saving** | `mitto.log` | - |
-| **ACP communication** | `mitto.log` | - |
-| **Message ordering issues** | `mitto.log` | `webview.log` |
+| Issue Type                      | Primary Log   | Secondary Log |
+| ------------------------------- | ------------- | ------------- |
+| **App startup failures**        | `mitto.log`   | -             |
+| **Server/API errors**           | `mitto.log`   | `access.log`  |
+| **Authentication issues**       | `access.log`  | `mitto.log`   |
+| **UI rendering problems**       | `webview.log` | -             |
+| **JavaScript errors**           | `webview.log` | -             |
+| **WebSocket connection issues** | `mitto.log`   | `webview.log` |
+| **Session loading/saving**      | `mitto.log`   | -             |
+| **ACP communication**           | `mitto.log`   | -             |
+| **Message ordering issues**     | `mitto.log`   | `webview.log` |
 
 ## mitto.log - Go Application Logs
 
@@ -86,15 +86,15 @@ grep -i "websocket\|ws\|client" ~/Library/Logs/Mitto/mitto.log
 
 **Key patterns:**
 
-| Pattern | Indicates |
-|---------|-----------|
-| `level=ERROR` | Application errors |
-| `level=WARN` | Warnings that may indicate issues |
-| `component=web` | Web server events |
-| `component=session` | Session management |
-| `session_id=` | Session-specific events |
-| `client_id=` | WebSocket client events |
-| `seq=` | Message sequence numbers (DEBUG level) |
+| Pattern             | Indicates                              |
+| ------------------- | -------------------------------------- |
+| `level=ERROR`       | Application errors                     |
+| `level=WARN`        | Warnings that may indicate issues      |
+| `component=web`     | Web server events                      |
+| `component=session` | Session management                     |
+| `session_id=`       | Session-specific events                |
+| `client_id=`        | WebSocket client events                |
+| `seq=`              | Message sequence numbers (DEBUG level) |
 
 ## webview.log - JavaScript Console
 
@@ -112,11 +112,13 @@ grep "\[WS\] event:" ~/Library/Logs/Mitto/webview.log | tail -50
 ```
 
 **Log format:**
+
 ```
 [2024-01-15T10:30:45.123-08:00] [LEVEL] message content
 ```
 
 **Sequence number logging:**
+
 ```
 [LOG] [WS] event: seq=42 type=text kind=assistant_text
 [LOG] [WS] event: seq=43 type=agent_thought title="Analyzing code"
@@ -156,6 +158,7 @@ grep "seq=42" ~/Library/Logs/Mitto/webview.log ~/Library/Logs/Mitto/mitto.log
 ## Debugging Workflow
 
 1. **Reproduce the issue** while tailing logs:
+
    ```bash
    tail -f ~/Library/Logs/Mitto/mitto.log ~/Library/Logs/Mitto/webview.log
    ```
@@ -163,6 +166,7 @@ grep "seq=42" ~/Library/Logs/Mitto/webview.log ~/Library/Logs/Mitto/mitto.log
 2. **Identify the timeframe** of the issue
 
 3. **Search for errors**:
+
    ```bash
    grep -i "error" ~/Library/Logs/Mitto/*.log | tail -50
    ```
@@ -187,15 +191,15 @@ MITTO_LOG_LEVEL=debug /Applications/Mitto.app/Contents/MacOS/mitto-app
 
 ## CLI vs macOS App Logging
 
-| Feature | `mitto web` CLI | macOS App |
-|---------|-----------------|-----------|
-| Console output | ✅ Always | ✅ Always |
-| `mitto.log` file | ❌ Disabled by default | ✅ Enabled |
-| `access.log` file | ❌ Disabled by default | ✅ Enabled |
-| `webview.log` file | N/A | ✅ Enabled |
+| Feature            | `mitto web` CLI        | macOS App  |
+| ------------------ | ---------------------- | ---------- |
+| Console output     | ✅ Always              | ✅ Always  |
+| `mitto.log` file   | ❌ Disabled by default | ✅ Enabled |
+| `access.log` file  | ❌ Disabled by default | ✅ Enabled |
+| `webview.log` file | N/A                    | ✅ Enabled |
 
 To enable file logging for CLI:
+
 ```bash
 mitto web --access-log ~/Library/Logs/Mitto/access.log
 ```
-

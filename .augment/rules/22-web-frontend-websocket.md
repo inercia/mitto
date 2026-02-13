@@ -6,29 +6,32 @@ globs:
   - "web/static/utils/api.js"
   - "web/static/utils/csrf.js"
 keywords:
-  - keepalive
-  - websocket
-  - reconnect
-  - zombie connection
+  - websocket connection
+  - websocket reconnect
+  - keepalive interval
+  - keepalive_ack
   - prompt_received
-  - ACK
+  - ACK timeout
   - delivery verification
   - last_user_prompt_id
+  - connectToSession
+  - forceReconnectActiveSession
+  - sessionWsRefs
 ---
 
 # WebSocket and Message Handling
 
-> **📖 Full Protocol Documentation**: See [docs/devel/websocket-messaging.md](../../docs/devel/websocket-messaging.md) for complete WebSocket protocol specification, message formats, sequence number contract, and communication flows.
+> **📖 Full Protocol Documentation**: See [docs/devel/websockets/](../../docs/devel/websockets/) for complete WebSocket protocol specification, message formats, sequence number contract, and communication flows.
 
 This file covers **frontend implementation patterns** for WebSocket handling. For protocol details, message formats, and architecture, refer to the main documentation.
 
 ## Hooks Directory Structure
 
-| File | Purpose |
-|------|---------|
-| `hooks/useWebSocket.js` | WebSocket connections, session management, keepalive, message handling |
-| `hooks/useSwipeNavigation.js` | Mobile swipe gestures for navigation |
-| `hooks/index.js` | Re-exports for clean imports |
+| File                          | Purpose                                                                |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `hooks/useWebSocket.js`       | WebSocket connections, session management, keepalive, message handling |
+| `hooks/useSwipeNavigation.js` | Mobile swipe gestures for navigation                                   |
+| `hooks/index.js`              | Re-exports for clean imports                                           |
 
 ## Promise-Based Message Sending with ACK
 
@@ -40,30 +43,30 @@ User clicks Send → onSend() returns Promise → Wait for ACK → Resolve/Rejec
 
 ### Send Button States
 
-| State | Button Appearance | Text Area |
-|-------|-------------------|-----------|
-| Normal | "Send" button enabled | Editable |
-| Sending | Spinner + "Sending..." | Disabled |
-| Error | "Send" enabled | Editable (text preserved) |
-| Streaming | "Stop" button | Disabled |
+| State     | Button Appearance      | Text Area                 |
+| --------- | ---------------------- | ------------------------- |
+| Normal    | "Send" button enabled  | Editable                  |
+| Sending   | Spinner + "Sending..." | Disabled                  |
+| Error     | "Send" enabled         | Editable (text preserved) |
+| Streaming | "Stop" button          | Disabled                  |
 
 ```javascript
 const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!hasContent || isSending) return;
+  e.preventDefault();
+  if (!hasContent || isSending) return;
 
-    setIsSending(true);
-    setSendError(null);
+  setIsSending(true);
+  setSendError(null);
 
-    try {
-        await onSend(text, images);  // Returns Promise that resolves on ACK
-        setText('');  // Only clear on success
-    } catch (err) {
-        setSendError(err.message);
-        // Text is preserved for retry
-    } finally {
-        setIsSending(false);
-    }
+  try {
+    await onSend(text, images); // Returns Promise that resolves on ACK
+    setText(""); // Only clear on success
+  } catch (err) {
+    setSendError(err.message);
+    // Text is preserved for retry
+  } finally {
+    setIsSending(false);
+  }
 };
 ```
 
@@ -73,9 +76,9 @@ For mobile reliability (phone sleep, network loss), prompts are saved to localSt
 
 ```javascript
 export function savePendingPrompt(sessionId, promptId, message, imageIds = []) {
-    const pending = getPendingPrompts();
-    pending[promptId] = { sessionId, message, imageIds, timestamp: Date.now() };
-    localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+  const pending = getPendingPrompts();
+  pending[promptId] = { sessionId, message, imageIds, timestamp: Date.now() };
+  localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
 }
 ```
 
@@ -93,13 +96,13 @@ When ACK timeout occurs, the frontend verifies delivery by reconnecting and chec
 
 const confirmed = lastConfirmedPromptRef.current[sessionId];
 if (confirmed && confirmed.promptId === promptId) {
-    resolve({ success: true, promptId, verifiedOnReconnect: true });
+  resolve({ success: true, promptId, verifiedOnReconnect: true });
 } else {
-    reject(new Error("Message delivery could not be confirmed"));
+  reject(new Error("Message delivery could not be confirmed"));
 }
 ```
 
-> **📖 See**: [Send Timeout with Delivery Verification](../../docs/devel/websocket-messaging.md#corner-case-send-timeout-with-delivery-verification) for the complete flow diagram.
+> **📖 See**: [Communication Flows](../../docs/devel/websockets/communication-flows.md) for the complete flow diagrams.
 
 ## WebSocket Connection Management
 
@@ -109,14 +112,17 @@ When a WebSocket closes, only delete its reference if it's still the current one
 
 ```javascript
 ws.onclose = () => {
-    // Only delete ref if it still points to THIS WebSocket
-    if (sessionWsRefs.current[sessionId] === ws) {
-        delete sessionWsRefs.current[sessionId];
-    }
-    // Only schedule reconnect if no newer connection exists
-    if (activeSessionIdRef.current === sessionId && !sessionWsRefs.current[sessionId]) {
-        // Schedule reconnect...
-    }
+  // Only delete ref if it still points to THIS WebSocket
+  if (sessionWsRefs.current[sessionId] === ws) {
+    delete sessionWsRefs.current[sessionId];
+  }
+  // Only schedule reconnect if no newer connection exists
+  if (
+    activeSessionIdRef.current === sessionId &&
+    !sessionWsRefs.current[sessionId]
+  ) {
+    // Schedule reconnect...
+  }
 };
 ```
 
@@ -126,18 +132,18 @@ When forcing a reconnection (e.g., on visibility change), delete the ref BEFORE 
 
 ```javascript
 const forceReconnectActiveSession = useCallback(() => {
-    const currentSessionId = activeSessionIdRef.current;
-    if (!currentSessionId) return;
+  const currentSessionId = activeSessionIdRef.current;
+  if (!currentSessionId) return;
 
-    // Delete ref FIRST so onclose doesn't schedule another reconnect
-    const existingWs = sessionWsRefs.current[currentSessionId];
-    if (existingWs) {
-        delete sessionWsRefs.current[currentSessionId];
-        existingWs.close();
-    }
+  // Delete ref FIRST so onclose doesn't schedule another reconnect
+  const existingWs = sessionWsRefs.current[currentSessionId];
+  if (existingWs) {
+    delete sessionWsRefs.current[currentSessionId];
+    existingWs.close();
+  }
 
-    // Create fresh connection
-    connectToSession(currentSessionId);
+  // Create fresh connection
+  connectToSession(currentSessionId);
 }, [connectToSession]);
 ```
 
@@ -154,6 +160,7 @@ const forceReconnectActiveSession = useCallback(() => {
 ### Sequence Number Based Ordering
 
 All streaming events include a sequence number (`seq`) assigned when the event is received from the ACP:
+
 - Assigned immediately when event is received (not at persistence time)
 - Included in all WebSocket messages (`agent_message`, `tool_call`, etc.)
 - Sorting by `seq` gives correct chronological order
@@ -172,14 +179,16 @@ Mobile browsers can leave WebSocket connections in a "zombie" state - appearing 
 ```javascript
 // Native macOS app uses shorter interval (5s) since it's local with no network latency
 // Browser uses longer interval (10s) to reduce network overhead
-const KEEPALIVE_INTERVAL_NATIVE_MS = 5000;   // Native macOS app: every 5 seconds
+const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Native macOS app: every 5 seconds
 const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Browser: every 10 seconds
-const KEEPALIVE_TIMEOUT_MS = 10000;          // Response timeout (unused, tracked by missed count)
-const KEEPALIVE_MAX_MISSED = 2;              // Force reconnect after 2 missed keepalives
+const KEEPALIVE_TIMEOUT_MS = 10000; // Response timeout (unused, tracked by missed count)
+const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
 
 // Dynamic interval based on runtime environment
 function getKeepaliveInterval() {
-  return isNativeApp() ? KEEPALIVE_INTERVAL_NATIVE_MS : KEEPALIVE_INTERVAL_BROWSER_MS;
+  return isNativeApp()
+    ? KEEPALIVE_INTERVAL_NATIVE_MS
+    : KEEPALIVE_INTERVAL_BROWSER_MS;
 }
 ```
 
@@ -214,12 +223,12 @@ function getKeepaliveInterval() {
 
 The `keepalive_ack` includes additional session state for multi-tab sync and mobile wake recovery:
 
-| Field | Purpose |
-|-------|---------|
-| `is_prompting` | Sync streaming state with server |
-| `is_running` | Detect if background session disconnected |
-| `queue_length` | Sync queue badge across tabs |
-| `status` | Detect session completion while in background |
+| Field          | Purpose                                       |
+| -------------- | --------------------------------------------- |
+| `is_prompting` | Sync streaming state with server              |
+| `is_running`   | Detect if background session disconnected     |
+| `queue_length` | Sync queue badge across tabs                  |
+| `status`       | Detect session completion while in background |
 
 ### Keepalive Flow
 
@@ -288,12 +297,14 @@ Before sending critical messages, check if the connection is healthy:
 
 ```javascript
 const isConnectionHealthy = (sessionId) => {
-    const keepalive = keepaliveRef.current[sessionId];
-    if (!keepalive) return true; // No tracking yet, assume healthy
+  const keepalive = keepaliveRef.current[sessionId];
+  if (!keepalive) return true; // No tracking yet, assume healthy
 
-    const timeSinceLastAck = Date.now() - (keepalive.lastAckTime || 0);
-    return timeSinceLastAck < getKeepaliveInterval() * 2 &&
-           (keepalive.missedCount || 0) === 0;
+  const timeSinceLastAck = Date.now() - (keepalive.lastAckTime || 0);
+  return (
+    timeSinceLastAck < getKeepaliveInterval() * 2 &&
+    (keepalive.missedCount || 0) === 0
+  );
 };
 ```
 
@@ -303,11 +314,11 @@ Always clean up keepalive interval when WebSocket closes:
 
 ```javascript
 ws.onclose = () => {
-    if (keepaliveRef.current[sessionId]?.intervalId) {
-        clearInterval(keepaliveRef.current[sessionId].intervalId);
-        delete keepaliveRef.current[sessionId];
-    }
-    // Schedule reconnect...
+  if (keepaliveRef.current[sessionId]?.intervalId) {
+    clearInterval(keepaliveRef.current[sessionId].intervalId);
+    delete keepaliveRef.current[sessionId];
+  }
+  // Schedule reconnect...
 };
 ```
 
@@ -318,17 +329,17 @@ The API prefix is injected by the server into the HTML page:
 ```javascript
 // In utils/api.js
 export function getApiPrefix() {
-    return window.mittoApiPrefix || '';
+  return window.mittoApiPrefix || "";
 }
 
 export function apiUrl(path) {
-    return getApiPrefix() + path;  // e.g., "/mitto" + "/api/sessions"
+  return getApiPrefix() + path; // e.g., "/mitto" + "/api/sessions"
 }
 
 export function wsUrl(path) {
-    const prefix = getApiPrefix();
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}${prefix}${path}`;
+  const prefix = getApiPrefix();
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}${prefix}${path}`;
 }
 ```
 
@@ -340,11 +351,12 @@ export function wsUrl(path) {
 
 ## Sequence Number Contract
 
-See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#sequence-number-contract) for the complete formal specification.
+See [docs/devel/websockets/sequence-numbers.md](../../docs/devel/websockets/sequence-numbers.md) for the complete formal specification.
 
 ### Frontend Responsibilities
 
 1. **Calculate lastSeenSeq dynamically from messages**:
+
    ```javascript
    // On WebSocket connect, calculate from messages in state
    const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
@@ -352,6 +364,7 @@ See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#seq
    ```
 
 2. **Client-side deduplication by seq** (M1 fix):
+
    ```javascript
    // Check before processing
    if (isSeqDuplicate(sessionId, msgSeq, lastMessageSeq)) {
@@ -362,12 +375,14 @@ See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#seq
    ```
 
 3. **Reset seq tracker on stale client recovery** (M1 fix):
+
    ```javascript
    // In events_loaded handler - CRITICAL!
    if (isStaleClient) {
-     clearSeenSeqs(sessionId);  // Reset before processing fresh events
+     clearSeenSeqs(sessionId); // Reset before processing fresh events
    }
    ```
+
    > **📖 See**: [27-web-frontend-sync.md](./27-web-frontend-sync.md#critical-reset-seq-tracker-on-stale-client-recovery) for why this is critical.
 
 4. **Allow same-seq for coalescing**:
@@ -381,17 +396,76 @@ See [docs/devel/websocket-messaging.md](../docs/devel/websocket-messaging.md#seq
 WebSocket reconnection uses exponential backoff with jitter:
 
 ```javascript
-const RECONNECT_BASE_DELAY_MS = 1000;   // 1 second initial
-const RECONNECT_MAX_DELAY_MS = 30000;   // 30 second max
-const RECONNECT_JITTER_FACTOR = 0.3;    // 30% random jitter
+const RECONNECT_BASE_DELAY_MS = 1000; // 1 second initial
+const RECONNECT_MAX_DELAY_MS = 30000; // 30 second max
+const RECONNECT_JITTER_FACTOR = 0.3; // 30% random jitter
 
 function calculateReconnectDelay(attempt) {
   const exponentialDelay = Math.min(
     RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt),
-    RECONNECT_MAX_DELAY_MS
+    RECONNECT_MAX_DELAY_MS,
   );
   const jitter = exponentialDelay * RECONNECT_JITTER_FACTOR * Math.random();
   return Math.floor(exponentialDelay + jitter);
 }
 ```
 
+## Immediate Gap Detection (max_seq)
+
+All streaming messages include `max_seq` for immediate gap detection without waiting for keepalive.
+
+### checkAndFillGap Function
+
+```javascript
+const checkAndFillGap = useCallback((sessionId, maxSeq, msgSeq) => {
+  if (!maxSeq || maxSeq <= 0) return;
+
+  const session = sessionsRef.current[sessionId];
+  const clientMaxSeq = Math.max(
+    getMaxSeq(session?.messages || []),
+    session?.lastLoadedSeq || 0,
+  );
+
+  // Skip if client has stale state (handled by stale detection)
+  if (isStaleClientState(clientMaxSeq, maxSeq)) return;
+
+  // Check for gap
+  const expectedSeq = msgSeq ? msgSeq : clientMaxSeq + 1;
+  const gap = maxSeq - expectedSeq;
+
+  if (gap <= 0) return; // No gap
+
+  // Debounce and request missing events
+  console.log(`[gap-fill] Detected gap of ${gap} events`);
+  // ... schedule load_events request with after_seq
+}, [sessionsRef]);
+```
+
+### Usage in Message Handlers
+
+Call `checkAndFillGap` in all streaming message handlers:
+
+```javascript
+case "agent_message": {
+  const msgSeq = msg.data.seq;
+  const maxSeq = msg.data.max_seq;
+
+  // Check for gaps using max_seq (immediate gap detection)
+  if (maxSeq) {
+    checkAndFillGap(sessionId, maxSeq, msgSeq);
+  }
+
+  // ... rest of handler
+}
+```
+
+### Messages That Include max_seq
+
+- `agent_message`
+- `agent_thought`
+- `tool_call`
+- `tool_update`
+- `user_prompt`
+- `prompt_complete`
+- `events_loaded`
+- `keepalive_ack`

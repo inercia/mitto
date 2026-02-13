@@ -43,11 +43,13 @@ var (
 When processing HTML content with regex:
 
 1. **Find skip regions first** (code blocks, pre tags, anchor tags):
+
    ```go
    preRegions := fl.findPreRegions(html)
    ```
 
 2. **Process matches in reverse order** to preserve indices:
+
    ```go
    matches := pattern.FindAllStringSubmatchIndex(html, -1)
    result := html
@@ -56,12 +58,12 @@ When processing HTML content with regex:
        // Extract indices
        fullStart, fullEnd := match[0], match[1]
        contentStart, contentEnd := match[2], match[3]
-       
+
        // Skip if in skip region
        if fl.isInSkipRegion(fullStart, fullEnd, skipRegions) {
            continue
        }
-       
+
        // Process and replace
        replacement := processContent(html[contentStart:contentEnd])
        result = result[:fullStart] + replacement + result[fullEnd:]
@@ -69,10 +71,11 @@ When processing HTML content with regex:
    ```
 
 3. **Use capturing groups** for extraction:
+
    ```go
    // Pattern with capturing group
    pattern := regexp.MustCompile(`<code>([^<]+)</code>`)
-   
+
    // Extract captured content
    match := pattern.FindStringSubmatch(html)
    if len(match) >= 2 {
@@ -99,12 +102,13 @@ var pattern = regexp.MustCompile(`[\s>"` + "`" + `]`)
 Reset regex state when using global flag:
 
 ```javascript
-const URL_PATTERN = /\b((?:https?:\/\/|ftp:\/\/|mailto:)[^\s<>"\[\]{}|\\^`]+)/gi;
+const URL_PATTERN =
+  /\b((?:https?:\/\/|ftp:\/\/|mailto:)[^\s<>"\[\]{}|\\^`]+)/gi;
 
 function processText(text) {
   // Reset state before use
   URL_PATTERN.lastIndex = 0;
-  
+
   let match;
   while ((match = URL_PATTERN.exec(text)) !== null) {
     // Process match
@@ -128,7 +132,7 @@ func TestPattern(t *testing.T) {
         {"partial URL", "example.com", false},
         {"URL with trailing period", "https://example.com.", true},
     }
-    
+
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             got := urlPattern.MatchString(tt.input)
@@ -143,12 +147,14 @@ func TestPattern(t *testing.T) {
 ## Common Patterns
 
 ### URL Detection
+
 ```go
 // Matches http://, https://, ftp://, mailto:
 `\b((?:https?://|ftp://|mailto:)[^\s<>"\[\]{}|\\^` + "`" + `]+)`
 ```
 
 ### File Path Detection
+
 ```go
 // Matches relative and absolute paths
 `(?:^|[\s>"\x60])` +
@@ -157,6 +163,7 @@ func TestPattern(t *testing.T) {
 ```
 
 ### HTML Tag Matching
+
 ```go
 // Match content inside tags
 `(?s)<code[^>]*>.*?</code>`  // (?s) enables . to match newlines
@@ -171,4 +178,3 @@ func TestPattern(t *testing.T) {
 - Use `FindStringSubmatch` when you need captured groups
 - Use `FindAllStringSubmatchIndex` for multiple matches with positions
 - Limit matches with `-1` parameter or slice results
-

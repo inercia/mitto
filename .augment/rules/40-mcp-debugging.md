@@ -24,6 +24,7 @@ Mitto includes a built-in MCP (Model Context Protocol) server that exposes debug
 ### 1. `list_conversations`
 
 Lists all conversations with metadata:
+
 - Session ID, title, description
 - ACP server and working directory
 - Created/updated timestamps
@@ -38,6 +39,7 @@ Returns the current effective Mitto configuration (sanitized).
 ### 3. `get_runtime_info`
 
 Returns runtime information:
+
 - OS, architecture, hostname
 - Process ID, executable path
 - **Log file paths** (`mitto.log`, `access.log`, `webview.log`)
@@ -95,10 +97,12 @@ cat "$SESSION_FOLDER/events.jsonl" | jq 'select(.seq >= 10 and .seq <= 20)'
 ### Step 4: Check Log Files
 
 **For message/streaming issues:**
+
 - Check `mitto.log` for backend errors and sequence numbers
 - Check `webview.log` for frontend JavaScript errors
 
 **For authentication issues:**
+
 - Check `access.log` for security events
 
 ```bash
@@ -114,18 +118,18 @@ grep "20260211-143052-a1b2c3d4" ~/Library/Logs/Mitto/mitto.log
 
 ## Event Types in events.jsonl
 
-| Type | Description |
-|------|-------------|
-| `session_start` | Session initialization |
-| `user_prompt` | User message |
-| `agent_message` | Agent response (HTML content) |
-| `agent_thought` | Agent thinking/reasoning |
-| `tool_call` | Tool invocation start |
-| `tool_call_update` | Tool status update |
-| `plan` | Task plan entries |
-| `permission` | Permission request/response |
-| `error` | Error event |
-| `session_end` | Session termination |
+| Type               | Description                   |
+| ------------------ | ----------------------------- |
+| `session_start`    | Session initialization        |
+| `user_prompt`      | User message                  |
+| `agent_message`    | Agent response (HTML content) |
+| `agent_thought`    | Agent thinking/reasoning      |
+| `tool_call`        | Tool invocation start         |
+| `tool_call_update` | Tool status update            |
+| `plan`             | Task plan entries             |
+| `permission`       | Permission request/response   |
+| `error`            | Error event                   |
+| `session_end`      | Session termination           |
 
 ## Replaying Events with Mock ACP Server
 
@@ -186,14 +190,14 @@ acp_servers:
 
 ## File Locations Summary
 
-| File | Location | Purpose |
-|------|----------|---------|
-| `events.jsonl` | `$SESSIONS_DIR/$SESSION_ID/` | All session events |
-| `metadata.json` | `$SESSIONS_DIR/$SESSION_ID/` | Session metadata |
-| `lock.json` | `$SESSIONS_DIR/$SESSION_ID/` | Session lock info |
-| `mitto.log` | `$LOGS_DIR/` | Backend application logs |
-| `access.log` | `$LOGS_DIR/` | Security/auth events |
-| `webview.log` | `$LOGS_DIR/` | Frontend JS console |
+| File            | Location                     | Purpose                  |
+| --------------- | ---------------------------- | ------------------------ |
+| `events.jsonl`  | `$SESSIONS_DIR/$SESSION_ID/` | All session events       |
+| `metadata.json` | `$SESSIONS_DIR/$SESSION_ID/` | Session metadata         |
+| `lock.json`     | `$SESSIONS_DIR/$SESSION_ID/` | Session lock info        |
+| `mitto.log`     | `$LOGS_DIR/`                 | Backend application logs |
+| `access.log`    | `$LOGS_DIR/`                 | Security/auth events     |
+| `webview.log`   | `$LOGS_DIR/`                 | Frontend JS console      |
 
 ## Using Sequence Numbers
 
@@ -208,4 +212,3 @@ cat events.jsonl | jq -s '[.[].seq] | sort | . as $s | range(1; length) | select
 ```
 
 In logs, search for `seq=N` to trace a message through the system.
-
