@@ -819,12 +819,6 @@ func (m *mockBackgroundSessionForMaxSeq) IsClosed() bool {
 	return m.isClosed
 }
 
-func (m *mockBackgroundSessionForMaxSeq) setMaxAssignedSeq(v int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.maxAssignedSeq = v
-}
-
 // TestGetServerMaxSeq_WithBackgroundSession tests that getServerMaxSeq
 // returns the correct value when a BackgroundSession is active.
 func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
