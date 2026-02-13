@@ -397,5 +397,5 @@ case "queue_message_titled":
 ## Related Documentation
 
 - [Session Management](session-management.md) - Session lifecycle and state ownership
-- [WebSocket Messaging](websocket-messaging.md) - WebSocket protocol details
+- [WebSocket Documentation](websockets/) - WebSocket protocol details
 - [Architecture](architecture.md) - Overall system architecture

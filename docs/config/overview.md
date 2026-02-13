@@ -70,13 +70,21 @@ web:
 
 ### UI Settings
 
-Configure UI behavior including confirmation dialogs and macOS-specific settings.
+Configure UI behavior including confirmation dialogs, web UI appearance, and macOS-specific settings.
 
 ```yaml
 ui:
   # Confirmation dialogs
   confirmations:
     delete_session: true # Show confirmation when deleting conversations (default: true)
+
+  # Web interface UI settings
+  web:
+    # Font family for the message compose/input box
+    # Options: "system" (default), "monospace", "sans-serif", "serif",
+    # or specific fonts: "menlo", "monaco", "consolas", "courier-new",
+    # "jetbrains-mono", "sf-mono", "cascadia-code"
+    input_font_family: "system"
 
   # macOS desktop app settings (see mac.md for details)
   mac:
@@ -87,6 +95,22 @@ ui:
       sounds:
         agent_completed: true
 ```
+
+#### Input Font Family Options
+
+| Value            | Description                                                          |
+| ---------------- | -------------------------------------------------------------------- |
+| `system`         | System default UI font (San Francisco on macOS, Segoe UI on Windows) |
+| `sans-serif`     | Generic sans-serif font                                              |
+| `serif`          | Generic serif font (Georgia, Times)                                  |
+| `monospace`      | System monospace font (Menlo/Monaco on macOS, Consolas on Windows)   |
+| `menlo`          | Menlo (macOS native, falls back on other platforms)                  |
+| `monaco`         | Monaco (macOS native)                                                |
+| `consolas`       | Consolas (Windows native, common on macOS)                           |
+| `courier-new`    | Courier New (universal, available on all platforms)                  |
+| `jetbrains-mono` | JetBrains Mono (popular developer font)                              |
+| `sf-mono`        | SF Mono (macOS/iOS only)                                             |
+| `cascadia-code`  | Cascadia Code (Windows Terminal default)                             |
 
 See [macOS Configuration](mac.md) for macOS-specific settings like hotkeys and notifications.
 

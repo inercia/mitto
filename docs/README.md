@@ -36,7 +36,7 @@ Communication Protocol (ACP).
 - [Architecture](devel/architecture.md) - System design and components
 - [Session Management](devel/session-management.md) - Recording, playback, queues
 - [Web Interface](devel/web-interface.md) - Streaming, mobile support
-- [WebSocket Messaging](devel/websocket-messaging.md) - Protocol, sync, reconnection
+- [WebSocket Documentation](devel/websockets/) - Protocol, sync, reconnection
 - [Workspaces](devel/workspaces.md) - Multi-workspace architecture
 
 ### Development

@@ -271,5 +271,5 @@ When cleared, `buttons` is an empty array:
 
 - [Message Queue](message-queue.md) - Similar persistence pattern for queued messages
 - [Session Management](session-management.md) - Session lifecycle and observer pattern
-- [WebSocket Messaging](websocket-messaging.md) - WebSocket protocol details
+- [WebSocket Documentation](websockets/) - WebSocket protocol details
 - [Architecture](architecture.md) - Overall system architecture

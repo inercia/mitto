@@ -239,7 +239,7 @@ case u.ToolCall != nil:
     c.onToolCall(seq, id, title, status)
 ```
 
-See [WebSocket Messaging](websocket-messaging.md) for detailed documentation on sequence numbers and message ordering.
+See [WebSocket Documentation](websockets/) for detailed documentation on sequence numbers and message ordering.
 
 ## Markdown Buffer Strategy
 
@@ -297,7 +297,7 @@ App
 
 Mobile browsers (iOS Safari, Android Chrome) suspend WebSocket connections when the device sleeps. When the user wakes their phone, the app may show stale data. The frontend implements a resync mechanism to catch up on missed events.
 
-Additionally, the frontend uses a **client-side keepalive mechanism** to proactively detect "zombie" connections (connections that appear open but are actually dead). See [Zombie Connection Detection](websocket-messaging.md#zombie-connection-detection-keepalive) for details.
+Additionally, the frontend uses a **client-side keepalive mechanism** to proactively detect "zombie" connections (connections that appear open but are actually dead). See [Synchronization](websockets/synchronization.md) for details.
 
 ### Problem Scenario
 
@@ -357,7 +357,7 @@ sequenceDiagram
 3. **Keepalive Failure** (missed keepalive responses):
    - If 2 consecutive keepalives go unanswered, connection is considered dead
    - WebSocket is force-closed, triggering automatic reconnection
-   - See [Zombie Connection Detection](websocket-messaging.md#zombie-connection-detection-keepalive)
+   - See [Synchronization](websockets/synchronization.md)
 
 ### Sequence Number Tracking
 
@@ -382,7 +382,7 @@ The function deduplicates by:
 1. **Sequence number** (preferred): Same `seq` = same event
 2. **Content hash** (fallback): For messages without `seq`
 
-See [websocket-messaging.md](websocket-messaging.md) for detailed documentation on the deduplication strategy.
+See [Synchronization](websockets/synchronization.md) for detailed documentation on the deduplication strategy.
 
 ### Backend Support
 
@@ -395,4 +395,4 @@ The `handleLoadEvents` function in `session_ws.go` handles event loading via Web
 // Server responds with events_loaded message
 ```
 
-See [websocket-messaging.md](websocket-messaging.md) for details on the WebSocket-only architecture.
+See [WebSocket Documentation](websockets/) for details on the WebSocket-only architecture.

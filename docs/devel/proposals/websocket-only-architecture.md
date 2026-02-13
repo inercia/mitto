@@ -2,7 +2,7 @@
 
 **Status**: ✅ Implemented (February 2026)
 
-> **Note**: This proposal has been implemented. See [websocket-messaging.md](../websocket-messaging.md) for the current documentation.
+> **Note**: This proposal has been implemented. See [WebSocket Documentation](../websockets/) for the current documentation.
 
 ## Problem Statement
 

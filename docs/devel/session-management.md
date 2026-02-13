@@ -30,9 +30,60 @@ flowchart TB
 ## Session Lifecycle
 
 1. **Creation**: `Recorder.Start()` creates session directory and files
-2. **Recording**: Events appended via `Recorder.Record*()` methods
+2. **Recording**: Events persisted immediately via `Recorder.RecordEventWithSeq()` (web) or `Recorder.Record*()` (CLI)
 3. **Completion**: `Recorder.End()` marks session as completed
 4. **Playback**: `Player` loads events for review/replay
+
+## Immediate Persistence
+
+Events are persisted **immediately** when received from ACP, preserving the sequence numbers assigned at streaming time. This ensures:
+
+- **Consistent seq numbers**: Streaming and persisted events have identical `seq` values
+- **Crash resilience**: No data loss window (no buffering)
+- **Simpler architecture**: No periodic persistence timers or buffer management
+
+### Event Flow
+
+```mermaid
+sequenceDiagram
+    participant ACP as ACP Agent
+    participant WC as WebClient
+    participant BS as BackgroundSession
+    participant REC as Recorder
+    participant STORE as Store
+    participant WS as WebSocket Clients
+
+    ACP->>WC: AgentMessage
+    WC->>BS: GetNextSeq() → seq=5
+    WC->>BS: onAgentMessage(seq=5, html)
+    BS->>REC: RecordEventWithSeq(event{seq=5})
+    REC->>STORE: RecordEvent(event{seq=5})
+    Note over STORE: Persists with seq=5 preserved
+    BS->>WS: OnAgentMessage(seq=5, html)
+```
+
+### Key Methods
+
+| Method                          | Purpose                   | Seq Handling                       |
+| ------------------------------- | ------------------------- | ---------------------------------- |
+| `Store.AppendEvent()`           | CLI recording             | Assigns seq = EventCount + 1       |
+| `Store.RecordEvent()`           | Web immediate persistence | Preserves pre-assigned seq         |
+| `Recorder.RecordEventWithSeq()` | Web recording wrapper     | Delegates to `Store.RecordEvent()` |
+
+### MaxSeq Tracking
+
+The `Metadata.MaxSeq` field tracks the highest sequence number persisted:
+
+```go
+type Metadata struct {
+    // ...
+    EventCount int   `json:"event_count"`
+    MaxSeq     int64 `json:"max_seq,omitempty"` // Highest seq persisted
+    // ...
+}
+```
+
+This is used by `SessionWSClient.getServerMaxSeq()` to determine the server's authoritative sequence state for client synchronization.
 
 ## Event Types
 
@@ -81,13 +132,13 @@ graph TB
 
 ### Component Responsibilities
 
-| Component           | Owns                                                       | Does NOT Own                               |
-| ------------------- | ---------------------------------------------------------- | ------------------------------------------ |
-| `session.Store`     | Persisted metadata, event log, file I/O                    | Runtime state, ACP connection              |
-| `BackgroundSession` | ACP process, observers, prompt state, immediate persistence | UI state                                   |
-| `SessionManager`    | Running session registry, workspace config, session limits | Individual session state, persistence      |
-| `SessionWSClient`   | WebSocket connection, permission response channel          | Session lifecycle, persistence             |
-| Frontend            | UI state, active session selection, message display        | Backend state, persistence                 |
+| Component           | Owns                                                        | Does NOT Own                          |
+| ------------------- | ----------------------------------------------------------- | ------------------------------------- |
+| `session.Store`     | Persisted metadata, event log, file I/O                     | Runtime state, ACP connection         |
+| `BackgroundSession` | ACP process, observers, prompt state, immediate persistence | UI state                              |
+| `SessionManager`    | Running session registry, workspace config, session limits  | Individual session state, persistence |
+| `SessionWSClient`   | WebSocket connection, permission response channel           | Session lifecycle, persistence        |
+| Frontend            | UI state, active session selection, message display         | Backend state, persistence            |
 
 ### State Flow
 
