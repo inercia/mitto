@@ -19,9 +19,9 @@ const (
 )
 
 // StreamEvent represents a buffered event in the stream.
+// Note: Seq is NOT stored here - it's assigned at emit time by SeqProvider.
 type StreamEvent struct {
 	Type        StreamEventType
-	Seq         int64
 	HTML        string      // For AgentMessage
 	Text        string      // For AgentThought
 	ToolID      string      // For ToolCall/ToolUpdate
@@ -43,6 +43,9 @@ type StreamBufferCallbacks struct {
 type StreamBufferConfig struct {
 	Callbacks       StreamBufferCallbacks
 	FileLinksConfig *conversion.FileLinkerConfig
+	// SeqProvider provides sequence numbers for event ordering.
+	// Seq is assigned at emit time (not receive time) to ensure contiguous numbers.
+	SeqProvider SeqProvider
 }
 
 // StreamBuffer buffers all streaming events and emits them in correct order.
@@ -51,6 +54,9 @@ type StreamBufferConfig struct {
 // (list, table, code block). Events are emitted in sequence order once the
 // markdown block completes.
 //
+// Sequence numbers are assigned at emit time (not receive time) to ensure
+// contiguous numbers without gaps from coalesced chunks.
+//
 // This ensures that a tool call arriving mid-list doesn't break the list rendering.
 // Instead, the tool call is buffered and emitted after the list completes.
 type StreamBuffer struct {
@@ -58,6 +64,7 @@ type StreamBuffer struct {
 	mdBuffer      *MarkdownBuffer
 	pendingEvents []StreamEvent // Events waiting to be emitted after markdown flush
 	callbacks     StreamBufferCallbacks
+	seqProvider   SeqProvider
 }
 
 // NewStreamBuffer creates a new stream buffer with the given configuration.
@@ -65,12 +72,13 @@ func NewStreamBuffer(cfg StreamBufferConfig) *StreamBuffer {
 	sb := &StreamBuffer{
 		callbacks:     cfg.Callbacks,
 		pendingEvents: make([]StreamEvent, 0, 8),
+		seqProvider:   cfg.SeqProvider,
 	}
 
 	// Create markdown buffer that notifies us on flush
 	sb.mdBuffer = NewMarkdownBufferWithConfig(MarkdownBufferConfig{
-		OnFlush: func(seq int64, html string) {
-			sb.onMarkdownFlush(seq, html)
+		OnFlush: func(html string) {
+			sb.onMarkdownFlush(html)
 		},
 		FileLinksConfig: cfg.FileLinksConfig,
 	})
@@ -78,10 +86,20 @@ func NewStreamBuffer(cfg StreamBufferConfig) *StreamBuffer {
 	return sb
 }
 
+// getNextSeq returns the next sequence number from the provider.
+// Returns 0 if no provider is configured (for backward compatibility in tests).
+func (sb *StreamBuffer) getNextSeq() int64 {
+	if sb.seqProvider == nil {
+		return 0
+	}
+	return sb.seqProvider.GetNextSeq()
+}
+
 // WriteMarkdown adds a markdown chunk to the buffer.
-func (sb *StreamBuffer) WriteMarkdown(seq int64, chunk string) {
+// Note: No seq is passed - seq is assigned at emit time.
+func (sb *StreamBuffer) WriteMarkdown(chunk string) {
 	// Don't hold lock while calling mdBuffer - it may trigger onMarkdownFlush
-	sb.mdBuffer.Write(seq, chunk)
+	sb.mdBuffer.Write(chunk)
 
 	// After writing, check if we're no longer in a block and have pending events
 	inBlock := sb.mdBuffer.InBlock()
@@ -103,7 +121,8 @@ func (sb *StreamBuffer) WriteMarkdown(seq int64, chunk string) {
 // AddThought adds a thought event to the buffer.
 // If we're in a markdown block (list/table/code), the thought is buffered until the block completes.
 // Otherwise, any pending markdown is flushed and the thought is emitted immediately.
-func (sb *StreamBuffer) AddThought(seq int64, text string) {
+// Note: No seq is passed - seq is assigned at emit time.
+func (sb *StreamBuffer) AddThought(text string) {
 	// Check if we're in a block
 	inBlock := sb.mdBuffer.InBlock()
 
@@ -112,7 +131,6 @@ func (sb *StreamBuffer) AddThought(seq int64, text string) {
 		sb.mu.Lock()
 		sb.pendingEvents = append(sb.pendingEvents, StreamEvent{
 			Type: StreamEventAgentThought,
-			Seq:  seq,
 			Text: text,
 		})
 		sb.mu.Unlock()
@@ -123,8 +141,9 @@ func (sb *StreamBuffer) AddThought(seq int64, text string) {
 	// (use Flush, not SafeFlush, to ensure content is emitted before the thought)
 	sb.mdBuffer.Flush()
 
-	// Emit the thought immediately
+	// Emit the thought immediately with seq assigned now
 	if sb.callbacks.OnAgentThought != nil {
+		seq := sb.getNextSeq()
 		sb.callbacks.OnAgentThought(seq, text)
 	}
 }
@@ -132,7 +151,8 @@ func (sb *StreamBuffer) AddThought(seq int64, text string) {
 // AddToolCall adds a tool call event to the buffer.
 // If we're in a markdown block (list/table/code), the tool call is buffered until the block completes.
 // Otherwise, any pending markdown is flushed and the tool call is emitted immediately.
-func (sb *StreamBuffer) AddToolCall(seq int64, id, title string, status *string) {
+// Note: No seq is passed - seq is assigned at emit time.
+func (sb *StreamBuffer) AddToolCall(id, title string, status *string) {
 	// Check if we're in a block
 	inBlock := sb.mdBuffer.InBlock()
 
@@ -141,7 +161,6 @@ func (sb *StreamBuffer) AddToolCall(seq int64, id, title string, status *string)
 		sb.mu.Lock()
 		sb.pendingEvents = append(sb.pendingEvents, StreamEvent{
 			Type:   StreamEventToolCall,
-			Seq:    seq,
 			ToolID: id,
 			Title:  title,
 			Status: status,
@@ -154,8 +173,9 @@ func (sb *StreamBuffer) AddToolCall(seq int64, id, title string, status *string)
 	// (use Flush, not SafeFlush, to ensure content is emitted before the tool call)
 	sb.mdBuffer.Flush()
 
-	// Emit the tool call immediately
+	// Emit the tool call immediately with seq assigned now
 	if sb.callbacks.OnToolCall != nil {
+		seq := sb.getNextSeq()
 		s := ""
 		if status != nil {
 			s = *status
@@ -167,7 +187,8 @@ func (sb *StreamBuffer) AddToolCall(seq int64, id, title string, status *string)
 // AddToolUpdate adds a tool update event to the buffer.
 // If we're in a markdown block (list/table/code), the update is buffered until the block completes.
 // Otherwise, any pending markdown is flushed and the update is emitted immediately.
-func (sb *StreamBuffer) AddToolUpdate(seq int64, id string, status *string) {
+// Note: No seq is passed - seq is assigned at emit time.
+func (sb *StreamBuffer) AddToolUpdate(id string, status *string) {
 	// Check if we're in a block
 	inBlock := sb.mdBuffer.InBlock()
 
@@ -176,7 +197,6 @@ func (sb *StreamBuffer) AddToolUpdate(seq int64, id string, status *string) {
 		sb.mu.Lock()
 		sb.pendingEvents = append(sb.pendingEvents, StreamEvent{
 			Type:   StreamEventToolUpdate,
-			Seq:    seq,
 			ToolID: id,
 			Status: status,
 		})
@@ -187,8 +207,9 @@ func (sb *StreamBuffer) AddToolUpdate(seq int64, id string, status *string) {
 	// Not in a block - force flush any pending markdown first
 	sb.mdBuffer.Flush()
 
-	// Emit the tool update immediately
+	// Emit the tool update immediately with seq assigned now
 	if sb.callbacks.OnToolUpdate != nil {
+		seq := sb.getNextSeq()
 		sb.callbacks.OnToolUpdate(seq, id, status)
 	}
 }
@@ -196,7 +217,8 @@ func (sb *StreamBuffer) AddToolUpdate(seq int64, id string, status *string) {
 // AddPlan adds a plan event to the buffer.
 // If we're in a markdown block (list/table/code), the plan is buffered until the block completes.
 // Otherwise, any pending markdown is flushed and the plan is emitted immediately.
-func (sb *StreamBuffer) AddPlan(seq int64, entries []PlanEntry) {
+// Note: No seq is passed - seq is assigned at emit time.
+func (sb *StreamBuffer) AddPlan(entries []PlanEntry) {
 	// Check if we're in a block
 	inBlock := sb.mdBuffer.InBlock()
 
@@ -205,7 +227,6 @@ func (sb *StreamBuffer) AddPlan(seq int64, entries []PlanEntry) {
 		sb.mu.Lock()
 		sb.pendingEvents = append(sb.pendingEvents, StreamEvent{
 			Type:        StreamEventPlan,
-			Seq:         seq,
 			PlanEntries: entries,
 		})
 		sb.mu.Unlock()
@@ -215,8 +236,9 @@ func (sb *StreamBuffer) AddPlan(seq int64, entries []PlanEntry) {
 	// Not in a block - force flush any pending markdown first
 	sb.mdBuffer.Flush()
 
-	// Emit the plan immediately
+	// Emit the plan immediately with seq assigned now
 	if sb.callbacks.OnPlan != nil {
+		seq := sb.getNextSeq()
 		sb.callbacks.OnPlan(seq, entries)
 	}
 }
@@ -257,9 +279,10 @@ func (sb *StreamBuffer) Close() {
 // Pending events are NOT emitted here - they're emitted when:
 // 1. Flush() is called explicitly (end of response)
 // 2. A non-markdown event arrives and we're not in a block
-func (sb *StreamBuffer) onMarkdownFlush(seq int64, html string) {
-	// Emit the markdown content
+func (sb *StreamBuffer) onMarkdownFlush(html string) {
+	// Emit the markdown content with seq assigned now
 	if sb.callbacks.OnAgentMessage != nil && html != "" {
+		seq := sb.getNextSeq()
 		sb.callbacks.OnAgentMessage(seq, html)
 	}
 	// Note: We don't emit pending events here because we can't safely check
@@ -269,33 +292,39 @@ func (sb *StreamBuffer) onMarkdownFlush(seq int64, html string) {
 }
 
 // emitEvents emits a list of events via callbacks.
+// Seq is assigned at emit time for each event.
 // Must be called WITHOUT lock held.
 func (sb *StreamBuffer) emitEvents(events []StreamEvent) {
 	for _, event := range events {
 		switch event.Type {
 		case StreamEventAgentMessage:
 			if sb.callbacks.OnAgentMessage != nil {
-				sb.callbacks.OnAgentMessage(event.Seq, event.HTML)
+				seq := sb.getNextSeq()
+				sb.callbacks.OnAgentMessage(seq, event.HTML)
 			}
 		case StreamEventAgentThought:
 			if sb.callbacks.OnAgentThought != nil {
-				sb.callbacks.OnAgentThought(event.Seq, event.Text)
+				seq := sb.getNextSeq()
+				sb.callbacks.OnAgentThought(seq, event.Text)
 			}
 		case StreamEventToolCall:
 			if sb.callbacks.OnToolCall != nil {
+				seq := sb.getNextSeq()
 				s := ""
 				if event.Status != nil {
 					s = *event.Status
 				}
-				sb.callbacks.OnToolCall(event.Seq, event.ToolID, event.Title, s)
+				sb.callbacks.OnToolCall(seq, event.ToolID, event.Title, s)
 			}
 		case StreamEventToolUpdate:
 			if sb.callbacks.OnToolUpdate != nil {
-				sb.callbacks.OnToolUpdate(event.Seq, event.ToolID, event.Status)
+				seq := sb.getNextSeq()
+				sb.callbacks.OnToolUpdate(seq, event.ToolID, event.Status)
 			}
 		case StreamEventPlan:
 			if sb.callbacks.OnPlan != nil {
-				sb.callbacks.OnPlan(event.Seq, event.PlanEntries)
+				seq := sb.getNextSeq()
+				sb.callbacks.OnPlan(seq, event.PlanEntries)
 			}
 		}
 	}

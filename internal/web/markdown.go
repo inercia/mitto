@@ -29,37 +29,36 @@ const (
 // It buffers chunks until semantic boundaries (lines, code blocks, paragraphs)
 // are detected, then converts to HTML and sends via callback.
 //
-// Sequence numbers (seq) are tracked through the buffer to maintain correct
-// event ordering. When content is buffered, the seq from the first chunk is
-// preserved and passed to the onFlush callback when the content is flushed.
+// Note: Sequence numbers are NOT tracked by MarkdownBuffer. The caller (StreamBuffer)
+// is responsible for assigning sequence numbers at emit time. This ensures contiguous
+// sequence numbers without gaps from coalesced chunks.
 type MarkdownBuffer struct {
 	mu              sync.Mutex
 	buffer          strings.Builder
 	converter       *conversion.Converter
-	onFlush         func(seq int64, html string)
+	onFlush         func(html string)
 	flushTimer      *time.Timer // Soft timeout (respects block boundaries)
 	inactivityTimer *time.Timer // Hard timeout (forces flush regardless of state)
 	flushTimeout    time.Duration
 	inCodeBlock     bool
-	inList          bool  // Track if we're inside a list
-	inTable         bool  // Track if we're inside a table
-	pendingSeq      int64 // Seq for buffered content (from first chunk)
-	sawBlankLine    bool  // Track if we saw a blank line (potential list/paragraph end)
+	inList          bool // Track if we're inside a list
+	inTable         bool // Track if we're inside a table
+	sawBlankLine    bool // Track if we saw a blank line (potential list/paragraph end)
 }
 
 // MarkdownBufferConfig holds configuration for creating a MarkdownBuffer.
 type MarkdownBufferConfig struct {
 	// OnFlush is called when HTML content is ready to be sent.
-	// The seq parameter is the sequence number from when the content was received.
-	OnFlush func(seq int64, html string)
+	// The caller is responsible for assigning sequence numbers.
+	OnFlush func(html string)
 	// FileLinksConfig configures file path detection and linking.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
 }
 
 // NewMarkdownBuffer creates a new streaming Markdown buffer.
-// Deprecated: Use NewMarkdownBufferWithConfig instead for seq support.
-func NewMarkdownBuffer(onFlush func(seq int64, html string)) *MarkdownBuffer {
+// Deprecated: Use NewMarkdownBufferWithConfig instead.
+func NewMarkdownBuffer(onFlush func(html string)) *MarkdownBuffer {
 	return &MarkdownBuffer{
 		converter:    conversion.DefaultConverter(),
 		onFlush:      onFlush,
@@ -87,21 +86,15 @@ func NewMarkdownBufferWithConfig(cfg MarkdownBufferConfig) *MarkdownBuffer {
 }
 
 // Write adds a chunk of text to the buffer and triggers smart flushing.
-// The seq parameter is the sequence number assigned when this content was received
-// from ACP. If the buffer is empty, this seq becomes the pendingSeq for the buffered
-// content. If content is already buffered, the original seq is preserved (first wins).
-func (mb *MarkdownBuffer) Write(seq int64, chunk string) {
+// Note: Sequence numbers are assigned by the caller (StreamBuffer) at emit time,
+// not when chunks are received. This ensures contiguous sequence numbers.
+func (mb *MarkdownBuffer) Write(chunk string) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
 	// Cancel any pending timeout flush
 	if mb.flushTimer != nil {
 		mb.flushTimer.Stop()
-	}
-
-	// Track seq for buffered content (first chunk's seq wins)
-	if mb.buffer.Len() == 0 {
-		mb.pendingSeq = seq
 	}
 
 	// Process chunk character by character for code block detection
@@ -170,16 +163,10 @@ func (mb *MarkdownBuffer) Write(seq int64, chunk string) {
 						mb.buffer.WriteString(listContent)
 						mb.inList = false
 						mb.sawBlankLine = false
-						savedSeq := mb.pendingSeq
 						mb.flushLocked()
 
-						// Re-add the remaining content with a new seq
+						// Re-add the remaining content
 						mb.buffer.WriteString(remainingContent)
-						// Preserve the seq from the remaining content's first line
-						// Since we don't track per-line seq, use the original seq
-						if mb.buffer.Len() > 0 && mb.pendingSeq == 0 {
-							mb.pendingSeq = savedSeq
-						}
 					} else {
 						// Fallback: check for unmatched formatting before flushing
 						if conversion.HasUnmatchedInlineFormatting(content) {
@@ -342,7 +329,6 @@ func (mb *MarkdownBuffer) flushLocked() {
 
 	if mb.buffer.Len() == 0 {
 		log.Debug("markdown_buffer_flush_empty",
-			"pending_seq", mb.pendingSeq,
 			"in_code_block", mb.inCodeBlock,
 			"in_list", mb.inList,
 			"in_table", mb.inTable)
@@ -365,9 +351,7 @@ func (mb *MarkdownBuffer) flushLocked() {
 	content = joinListItemContinuations(content)
 
 	contentLen := len(content)
-	seq := mb.pendingSeq // Capture seq before reset
 	mb.buffer.Reset()
-	mb.pendingSeq = 0
 
 	// Check for unmatched formatting before converting
 	hasUnmatched := conversion.HasUnmatchedInlineFormatting(content)
@@ -384,7 +368,6 @@ func (mb *MarkdownBuffer) flushLocked() {
 			preview = content[:100] + "..." + content[contentLen-100:]
 		}
 		log.Debug("markdown_buffer_flush_unmatched_formatting",
-			"seq", seq,
 			"content_len", contentLen,
 			"html_len", htmlLen,
 			"in_code_block", mb.inCodeBlock,
@@ -398,7 +381,6 @@ func (mb *MarkdownBuffer) flushLocked() {
 			preview = htmlStr[:100] + "..." + htmlStr[htmlLen-100:]
 		}
 		log.Debug("markdown_buffer_flush_large",
-			"seq", seq,
 			"content_len", contentLen,
 			"html_len", htmlLen,
 			"in_code_block", mb.inCodeBlock,
@@ -407,20 +389,17 @@ func (mb *MarkdownBuffer) flushLocked() {
 			"preview", preview)
 	} else {
 		log.Debug("markdown_buffer_flush",
-			"seq", seq,
 			"content_len", contentLen,
 			"html_len", htmlLen)
 	}
 
 	if htmlStr != "" && mb.onFlush != nil {
 		log.Debug("markdown_buffer_flush_callback",
-			"seq", seq,
 			"html_len", htmlLen,
 			"html_preview", truncateForLog(htmlStr, 100))
-		mb.onFlush(seq, htmlStr)
+		mb.onFlush(htmlStr)
 	} else if htmlStr == "" {
 		log.Debug("markdown_buffer_flush_empty_html",
-			"seq", seq,
 			"content_len", contentLen,
 			"content_preview", truncateForLog(content, 100))
 	}
@@ -464,7 +443,6 @@ func (mb *MarkdownBuffer) Reset() {
 	mb.inList = false
 	mb.inTable = false
 	mb.sawBlankLine = false
-	mb.pendingSeq = 0
 }
 
 // InBlock returns true if the buffer is currently in the middle of a

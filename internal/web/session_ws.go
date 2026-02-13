@@ -145,29 +145,38 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	bs := s.sessionManager.GetSession(sessionID)
 	wasResumed := false // Track if we resumed the session (vs already running)
 
-	// If no running session, try to resume it
+	// If no running session, try to resume it (unless archived)
 	if bs == nil && store != nil {
 		// Check if session exists in store
 		meta, err := store.GetMetadata(sessionID)
 		if err == nil {
-			// Session exists in store, resume it
-			cwd := meta.WorkingDir
-			if cwd == "" {
-				cwd, _ = os.Getwd()
-			}
-			bs, err = s.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
-			if err != nil {
+			// Don't resume archived sessions - they should remain read-only
+			// without an ACP connection. Users can still view history.
+			if meta.Archived {
 				if clientLogger != nil {
-					clientLogger.Error("Failed to resume session", "error", err)
+					clientLogger.Debug("Session is archived, not resuming ACP",
+						"session_id", sessionID)
 				}
-				// Broadcast ACP start failure to all clients
-				s.BroadcastACPStartFailed(sessionID, err.Error())
-				// Continue without a running session - client can still view history
 			} else {
-				wasResumed = true
-				if clientLogger != nil {
-					clientLogger.Debug("Resumed session for WebSocket client",
-						"acp_id", bs.GetACPID())
+				// Session exists in store and is not archived, resume it
+				cwd := meta.WorkingDir
+				if cwd == "" {
+					cwd, _ = os.Getwd()
+				}
+				bs, err = s.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
+				if err != nil {
+					if clientLogger != nil {
+						clientLogger.Error("Failed to resume session", "error", err)
+					}
+					// Broadcast ACP start failure to all clients
+					s.BroadcastACPStartFailed(sessionID, err.Error())
+					// Continue without a running session - client can still view history
+				} else {
+					wasResumed = true
+					if clientLogger != nil {
+						clientLogger.Debug("Resumed session for WebSocket client",
+							"acp_id", bs.GetACPID())
+					}
 				}
 			}
 		}
@@ -518,7 +527,13 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 			return
 		}
 
-		serverMaxSeq := int64(meta.EventCount)
+		// Use MaxSeq (highest persisted seq) not EventCount (number of events)
+		// because seq numbers can be sparse due to coalescing
+		serverMaxSeq := meta.MaxSeq
+		if serverMaxSeq == 0 {
+			// Fallback for sessions created before MaxSeq was tracked
+			serverMaxSeq = int64(meta.EventCount)
+		}
 
 		// SAFETY CHECK: If client's afterSeq is higher than server's max seq,
 		// the client has stale/corrupt state from a previous streaming session.
@@ -845,10 +860,16 @@ func (c *SessionWSClient) getServerMaxSeq() int64 {
 	var maxSeq int64
 
 	// First, check persisted events from storage
+	// Use MaxSeq (highest persisted seq) not EventCount (number of events)
+	// because seq numbers can be sparse due to coalescing
 	if c.store != nil {
 		meta, err := c.store.GetMetadata(c.sessionID)
 		if err == nil {
-			maxSeq = int64(meta.EventCount)
+			maxSeq = meta.MaxSeq
+			if maxSeq == 0 {
+				// Fallback for sessions created before MaxSeq was tracked
+				maxSeq = int64(meta.EventCount)
+			}
 		}
 	}
 

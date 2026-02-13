@@ -88,6 +88,8 @@ func NewWebClient(config WebClientConfig) *WebClient {
 	// Non-markdown events (tool calls, thoughts) are buffered when we're in
 	// the middle of a markdown block (list, table, code block) and emitted
 	// after the block completes.
+	// SeqProvider is passed to StreamBuffer so seq is assigned at emit time,
+	// ensuring contiguous sequence numbers without gaps from coalesced chunks.
 	c.streamBuffer = NewStreamBuffer(StreamBufferConfig{
 		Callbacks: StreamBufferCallbacks{
 			OnAgentMessage: config.OnAgentMessage,
@@ -97,14 +99,15 @@ func NewWebClient(config WebClientConfig) *WebClient {
 			OnPlan:         config.OnPlan,
 		},
 		FileLinksConfig: config.FileLinksConfig,
+		SeqProvider:     config.SeqProvider,
 	})
 
 	return c
 }
 
 // SessionUpdate handles streaming updates from the agent.
-// Sequence numbers are assigned at receive time to ensure correct ordering,
-// even when content is buffered (e.g., in MarkdownBuffer or StreamBuffer).
+// Sequence numbers are assigned at emit time (not receive time) to ensure
+// contiguous numbers without gaps from coalesced chunks.
 //
 // Non-markdown events (tool calls, thoughts, plans) are buffered when we're
 // in the middle of a markdown block (list, table, code block) and emitted
@@ -114,43 +117,38 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 
 	switch {
 	case u.AgentMessageChunk != nil:
-		// Assign seq NOW at receive time, before buffering.
-		// This ensures correct ordering even if the buffer delays flushing.
-		seq := c.getNextSeq()
+		// Seq is assigned at emit time by StreamBuffer, not here.
+		// This ensures contiguous seq numbers even when chunks are coalesced.
 		content := u.AgentMessageChunk.Content
 		if content.Text != nil {
-			c.streamBuffer.WriteMarkdown(seq, content.Text.Text)
+			c.streamBuffer.WriteMarkdown(content.Text.Text)
 		}
 
 	case u.AgentThoughtChunk != nil:
-		// Assign seq NOW at receive time.
-		seq := c.getNextSeq()
+		// Seq is assigned at emit time by StreamBuffer.
 		// Thoughts are buffered if we're in a markdown block, otherwise emitted immediately.
 		thought := u.AgentThoughtChunk.Content
 		if thought.Text != nil {
-			c.streamBuffer.AddThought(seq, thought.Text.Text)
+			c.streamBuffer.AddThought(thought.Text.Text)
 		}
 
 	case u.ToolCall != nil:
-		// Assign seq NOW at receive time.
-		seq := c.getNextSeq()
+		// Seq is assigned at emit time by StreamBuffer.
 		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
 		status := string(u.ToolCall.Status)
-		c.streamBuffer.AddToolCall(seq, string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
+		c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
 
 	case u.ToolCallUpdate != nil:
-		// Assign seq NOW at receive time.
-		seq := c.getNextSeq()
+		// Seq is assigned at emit time by StreamBuffer.
 		var status *string
 		if u.ToolCallUpdate.Status != nil {
 			s := string(*u.ToolCallUpdate.Status)
 			status = &s
 		}
-		c.streamBuffer.AddToolUpdate(seq, string(u.ToolCallUpdate.ToolCallId), status)
+		c.streamBuffer.AddToolUpdate(string(u.ToolCallUpdate.ToolCallId), status)
 
 	case u.Plan != nil:
-		// Assign seq NOW at receive time.
-		seq := c.getNextSeq()
+		// Seq is assigned at emit time by StreamBuffer.
 		// Convert ACP plan entries to our PlanEntry type
 		entries := make([]PlanEntry, len(u.Plan.Entries))
 		for i, e := range u.Plan.Entries {
@@ -160,7 +158,7 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 				Status:   string(e.Status),
 			}
 		}
-		c.streamBuffer.AddPlan(seq, entries)
+		c.streamBuffer.AddPlan(entries)
 
 	case u.AvailableCommandsUpdate != nil:
 		// Available commands are not sequence-dependent; notify immediately.
