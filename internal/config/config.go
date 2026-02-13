@@ -218,10 +218,21 @@ type ConfirmationsConfig struct {
 	QuitWithRunningSessions *bool `json:"quit_with_running_sessions,omitempty"`
 }
 
+// WebUIConfig represents web-specific UI configuration.
+type WebUIConfig struct {
+	// InputFontFamily is the font family for the compose/input box.
+	// Options: "system" (default), "monospace", "sans-serif", "serif",
+	// or specific fonts: "menlo", "monaco", "consolas", "courier-new",
+	// "jetbrains-mono", "sf-mono", "cascadia-code"
+	InputFontFamily string `json:"input_font_family,omitempty"`
+}
+
 // UIConfig represents UI configuration for the desktop app.
 type UIConfig struct {
 	// Confirmations contains confirmation dialog settings
 	Confirmations *ConfirmationsConfig `json:"confirmations,omitempty"`
+	// Web contains web-specific UI configuration
+	Web *WebUIConfig `json:"web,omitempty"`
 	// Mac contains macOS-specific UI configuration
 	Mac *MacUIConfig `json:"mac,omitempty"`
 }
@@ -848,6 +859,9 @@ type rawConfig struct {
 			DeleteSession           *bool `yaml:"delete_session"`
 			QuitWithRunningSessions *bool `yaml:"quit_with_running_sessions"`
 		} `yaml:"confirmations"`
+		Web *struct {
+			InputFontFamily string `yaml:"input_font_family"`
+		} `yaml:"web"`
 		Mac *struct {
 			Hotkeys *struct {
 				ShowHide *struct {
@@ -1021,6 +1035,13 @@ func Parse(data []byte) (*Config, error) {
 			cfg.UI.Confirmations = &ConfirmationsConfig{
 				DeleteSession:           raw.UI.Confirmations.DeleteSession,
 				QuitWithRunningSessions: raw.UI.Confirmations.QuitWithRunningSessions,
+			}
+		}
+
+		// Populate Web-specific config
+		if raw.UI.Web != nil {
+			cfg.UI.Web = &WebUIConfig{
+				InputFontFamily: raw.UI.Web.InputFontFamily,
 			}
 		}
 
