@@ -208,10 +208,11 @@ func (s *Store) RecordEvent(sessionID string, event Event) error {
 	}
 
 	// Validate monotonic ordering: event.Seq should be EventCount + 1
-	// This is a warning, not an error, because the streaming seq is authoritative
+	// With emit-time seq assignment, this should always match.
+	// Log at DEBUG level as a safety check - mismatches indicate a bug.
 	expectedSeq := int64(meta.EventCount + 1)
 	if event.Seq != expectedSeq {
-		log.Warn("seq_mismatch_on_persist",
+		log.Debug("seq_mismatch_on_persist",
 			"session_id", sessionID,
 			"event_seq", event.Seq,
 			"expected_seq", expectedSeq,

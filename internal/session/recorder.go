@@ -391,3 +391,17 @@ func (r *Recorder) EventCount() int {
 	}
 	return meta.EventCount
 }
+
+// MaxSeq returns the highest sequence number persisted for the session.
+// Returns 0 if the session doesn't exist, there's an error, or MaxSeq is not set.
+// This is used to initialize nextSeq when resuming a session.
+func (r *Recorder) MaxSeq() int64 {
+	if r.store == nil {
+		return 0
+	}
+	meta, err := r.store.GetMetadata(r.sessionID)
+	if err != nil {
+		return 0
+	}
+	return meta.MaxSeq
+}
