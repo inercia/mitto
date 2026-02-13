@@ -858,6 +858,59 @@ a.mailto-link:hover {
 }
 
 /* =============================================================================
+   Input Font Family Classes (applied to compose/input textarea)
+   ============================================================================= */
+
+/* Font family stacks for each option */
+.input-font-system textarea.bg-mitto-input-box {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+.input-font-sans-serif textarea.bg-mitto-input-box {
+  font-family: sans-serif;
+}
+
+.input-font-serif textarea.bg-mitto-input-box {
+  font-family: Georgia, "Times New Roman", Times, serif;
+}
+
+.input-font-monospace textarea.bg-mitto-input-box {
+  font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+.input-font-menlo textarea.bg-mitto-input-box {
+  font-family: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+}
+
+.input-font-monaco textarea.bg-mitto-input-box {
+  font-family: Monaco, Menlo, Consolas, "Courier New", monospace;
+}
+
+.input-font-consolas textarea.bg-mitto-input-box {
+  font-family: Consolas, Monaco, Menlo, "Courier New", monospace;
+}
+
+.input-font-courier-new textarea.bg-mitto-input-box {
+  font-family: "Courier New", Courier, monospace;
+}
+
+.input-font-jetbrains-mono textarea.bg-mitto-input-box {
+  font-family: "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
+}
+
+.input-font-sf-mono textarea.bg-mitto-input-box {
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+.input-font-cascadia-code textarea.bg-mitto-input-box {
+  font-family: "Cascadia Code", "Cascadia Mono", Consolas, "Courier New",
+    monospace;
+}
+
+/* =============================================================================
    Scroll to Bottom Button
    ============================================================================= */
 
