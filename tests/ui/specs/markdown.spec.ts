@@ -64,9 +64,15 @@ test.describe("Markdown Rendering", () => {
 });
 
 test.describe("Mermaid Diagram Rendering", () => {
-  test.beforeEach(async ({ page, helpers }) => {
+  test.beforeEach(async ({ page, helpers, selectors, timeouts }) => {
     await helpers.navigateAndWait(page);
-    await helpers.ensureActiveSession(page);
+    // Create a fresh session for mermaid tests to avoid interference from previous tests
+    // The mermaid scenario requires a clean session to trigger correctly
+    const newButton = page.locator(selectors.newSessionButton);
+    await newButton.click();
+    const textarea = page.locator(selectors.chatInput);
+    await expect(textarea).toBeEnabled({ timeout: timeouts.appReady });
+    await helpers.waitForWebSocketReady(page);
   });
 
   test("should render mermaid diagrams during streaming", async ({

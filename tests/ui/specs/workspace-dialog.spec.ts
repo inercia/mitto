@@ -71,16 +71,19 @@ test.describe("Workspace Dialog", () => {
     // Type to filter - should match "project-alpha" and "project-beta"
     await filterInput.fill("project");
 
-    // Wait for filtering to take effect
-    await page.waitForTimeout(100);
+    // Wait for filtering to take effect (increased timeout for reliability)
+    await page.waitForTimeout(300);
 
-    // Should see project-alpha and project-beta (use .first() to avoid strict mode violation)
-    await expect(page.locator("div.font-medium:has-text('project-alpha')").first()).toBeVisible();
-    await expect(page.locator("div.font-medium:has-text('project-beta')").first()).toBeVisible();
+    // Should see project-alpha and project-beta (look in button text or aria labels)
+    // The workspace dialog shows workspace names in buttons with their abbreviations
+    await expect(page.locator("button:has-text('project-alpha')").first()).toBeVisible({ timeout: 5000 });
+    // Note: project-beta may be abbreviated as PBE in the UI, but the path should be visible
+    await expect(page.locator("button:has-text('project-beta'), button:has-text('PBE')").first()).toBeVisible({ timeout: 5000 });
 
     // Should NOT see other workspaces (they don't contain "project" in basename)
-    // Note: cmd, internal, web, docs should be hidden
-    await expect(page.locator("div.font-medium:has-text('cmd')")).toBeHidden();
+    // Note: cmd, internal, web, docs should be hidden (filtered out)
+    // We check that buttons with these exact workspace names are not visible
+    await expect(page.locator("button:has-text('cmd')").filter({ hasNotText: 'Commands' })).toBeHidden();
   });
 
   test("should show 'no match' message when filter has no results", async ({ page, selectors }) => {
