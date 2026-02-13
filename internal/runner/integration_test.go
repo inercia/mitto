@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"io"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/inercia/mitto/internal/config"
 )
+
+// isFirejailAvailable checks if firejail is installed and available in PATH.
+func isFirejailAvailable() bool {
+	_, err := exec.LookPath("firejail")
+	return err == nil
+}
 
 // TestRunnerWithPipes_ExecRunner tests the exec runner with RunWithPipes.
 func TestRunnerWithPipes_ExecRunner(t *testing.T) {
@@ -161,11 +168,12 @@ func TestRunnerFallback_PlatformDetection(t *testing.T) {
 			}(),
 		},
 		{
-			name:           "firejail on Linux",
-			runnerType:     "firejail",
-			shouldFallback: runtime.GOOS != "linux",
+			name:       "firejail on Linux",
+			runnerType: "firejail",
+			// Firejail should fallback if not on Linux OR if firejail is not installed
+			shouldFallback: runtime.GOOS != "linux" || !isFirejailAvailable(),
 			expectedType: func() string {
-				if runtime.GOOS == "linux" {
+				if runtime.GOOS == "linux" && isFirejailAvailable() {
 					return "firejail"
 				}
 				return "exec"
