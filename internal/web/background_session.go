@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,12 +18,16 @@ import (
 	"github.com/inercia/mitto/internal/conversion"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/msghooks"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
 // BackgroundSession manages an ACP session that runs independently of WebSocket connections.
 // It continues running even when no client is connected, persisting all events to disk.
 // Multiple observers can subscribe to receive real-time updates.
+//
+// Events are persisted immediately when received from ACP, preserving the sequence numbers
+// assigned at streaming time. This ensures streaming and persisted events have identical seq.
 type BackgroundSession struct {
 	// Immutable identifiers
 	persistedID string // Session ID for persistence and routing
@@ -32,11 +37,10 @@ type BackgroundSession struct {
 	acpCmd    *exec.Cmd
 	acpConn   *acp.ClientSideConnection
 	acpClient *WebClient
+	acpWait   func() error // cleanup function from runner.RunWithPipes or cmd.Wait
 
 	// Session persistence
-	recorder    *session.Recorder
-	eventBuffer *EventBuffer // Unified buffer for all streaming events
-	bufferMu    sync.Mutex   // Protects eventBuffer
+	recorder *session.Recorder
 
 	// Sequence number tracking for event ordering
 	// nextSeq is the next sequence number to assign to a new event.
@@ -56,9 +60,10 @@ type BackgroundSession struct {
 
 	// Prompt state
 	promptMu             sync.Mutex
+	promptCond           *sync.Cond // Condition variable for waiting on prompt completion
 	isPrompting          bool
 	promptCount          int
-	promptStartTime      time.Time // When the current prompt started (for stuck detection)
+	promptStartTime      time.Time // When the current prompt started (for logging)
 	lastResponseComplete time.Time // When the agent last completed a response (for queue delay)
 
 	// Configuration
@@ -91,6 +96,29 @@ type BackgroundSession struct {
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
 	apiPrefix       string                  // URL prefix for API endpoints (for HTTP file links)
 	workspaceUUID   string                  // Workspace UUID for secure file links
+
+	// Restricted runner for sandboxed execution
+	runner *runner.Runner // Optional runner for restricted execution (nil = direct execution)
+
+	// onStreamingStateChanged is called when the session's streaming state changes.
+	onStreamingStateChanged func(sessionID string, isStreaming bool)
+
+	// onPlanStateChanged is called when the agent plan state changes.
+	// Used to cache plan state in SessionManager for restoration on conversation switch.
+	onPlanStateChanged func(sessionID string, entries []PlanEntry)
+
+	// Available slash commands from the agent
+	availableCommandsMu sync.RWMutex
+	availableCommands   []AvailableCommand
+
+	// ACP process restart tracking
+	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
+	// To prevent infinite restart loops, we limit restarts to maxACPRestarts within
+	// acpRestartWindow. The acpCommand is stored so we can restart the process.
+	acpCommand   string      // Command used to start ACP process (for restart)
+	restartCount int         // Number of restarts in current window
+	restartTimes []time.Time // Timestamps of recent restarts (for rate limiting)
+	restartMu    sync.Mutex  // Protects restart tracking fields
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -107,11 +135,20 @@ type BackgroundSessionConfig struct {
 	Processors   []config.MessageProcessor // Merged processors for message transformation
 	HookManager  *msghooks.Manager         // External command hooks for message transformation
 	QueueConfig  *config.QueueConfig       // Queue processing configuration
+	Runner       *runner.Runner            // Optional restricted runner for sandboxed execution
 
 	ActionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration
 	FileLinksConfig     *config.FileLinksConfig     // File path linking configuration
 	APIPrefix           string                      // URL prefix for API endpoints (for HTTP file links)
 	WorkspaceUUID       string                      // Workspace UUID for secure file links
+
+	// OnStreamingStateChanged is called when the session's streaming state changes.
+	// It's called with true when streaming starts (user sends prompt) and false when it ends.
+	OnStreamingStateChanged func(sessionID string, isStreaming bool)
+
+	// OnPlanStateChanged is called when the agent plan state changes.
+	// Used to cache plan state in SessionManager for restoration on conversation switch.
+	OnPlanStateChanged func(sessionID string, entries []PlanEntry)
 }
 
 // NewBackgroundSession creates a new background session.
@@ -120,47 +157,86 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bs := &BackgroundSession{
-		ctx:                 ctx,
-		cancel:              cancel,
-		autoApprove:         cfg.AutoApprove,
-		logger:              cfg.Logger,
-		eventBuffer:         NewEventBuffer(),
-		observers:           make(map[SessionObserver]struct{}),
-		processors:          cfg.Processors,
-		hookManager:         cfg.HookManager,
-		workingDir:          cfg.WorkingDir,
-		isFirstPrompt:       true, // New session starts with first prompt pending
-		queueConfig:         cfg.QueueConfig,
-		actionButtonsConfig: cfg.ActionButtonsConfig,
-		fileLinksConfig:     cfg.FileLinksConfig,
-		apiPrefix:           cfg.APIPrefix,
-		workspaceUUID:       cfg.WorkspaceUUID,
+		ctx:                     ctx,
+		cancel:                  cancel,
+		autoApprove:             cfg.AutoApprove,
+		logger:                  cfg.Logger,
+		observers:               make(map[SessionObserver]struct{}),
+		processors:              cfg.Processors,
+		hookManager:             cfg.HookManager,
+		workingDir:              cfg.WorkingDir,
+		isFirstPrompt:           true, // New session starts with first prompt pending
+		queueConfig:             cfg.QueueConfig,
+		actionButtonsConfig:     cfg.ActionButtonsConfig,
+		fileLinksConfig:         cfg.FileLinksConfig,
+		apiPrefix:               cfg.APIPrefix,
+		workspaceUUID:           cfg.WorkspaceUUID,
+		runner:                  cfg.Runner,
+		onStreamingStateChanged: cfg.OnStreamingStateChanged,
+		onPlanStateChanged:      cfg.OnPlanStateChanged,
+		acpCommand:              cfg.ACPCommand, // Store for restart
 	}
+	// Initialize condition variable for prompt completion waiting
+	bs.promptCond = sync.NewCond(&bs.promptMu)
 
 	// Create recorder for persistence
 	if cfg.Store != nil {
 		bs.recorder = session.NewRecorder(cfg.Store)
 		bs.persistedID = bs.recorder.SessionID()
 		bs.store = cfg.Store
-		// Use StartWithCommand to store the ACP command for session resume
-		if err := bs.recorder.StartWithCommand(cfg.ACPServer, cfg.ACPCommand, cfg.WorkingDir); err != nil {
+		if err := bs.recorder.Start(cfg.ACPServer, cfg.WorkingDir); err != nil {
 			cancel()
 			return nil, err
 		}
-		// Update session name
-		if cfg.SessionName != "" {
-			cfg.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
-				meta.Name = cfg.SessionName
-			})
+		// Update session name and runner info
+		runnerType := "exec"
+		isRestricted := false
+		if cfg.Runner != nil {
+			runnerType = cfg.Runner.Type()
+			isRestricted = cfg.Runner.IsRestricted()
 		}
+		cfg.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
+			if cfg.SessionName != "" {
+				meta.Name = cfg.SessionName
+			}
+			meta.RunnerType = runnerType
+			meta.RunnerRestricted = isRestricted
+		})
 
-		// Initialize nextSeq from current event count (new session starts at 1)
-		bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+		// Initialize nextSeq from MaxSeq if available, otherwise from EventCount
+		// MaxSeq tracks the highest seq persisted, which may be higher than EventCount
+		// if events were assigned seq at streaming time but not all were persisted
+		maxSeq := bs.recorder.MaxSeq()
+		eventCount := int64(bs.recorder.EventCount())
+		if maxSeq > eventCount {
+			bs.nextSeq = maxSeq + 1
+		} else {
+			bs.nextSeq = eventCount + 1
+		}
 
 		// Create session-scoped logger with context
 		if bs.logger != nil {
 			bs.logger = logging.WithSessionContext(bs.logger, bs.persistedID, cfg.WorkingDir, cfg.ACPServer)
 		}
+	} else {
+		// No store - initialize nextSeq to 1 to prevent seq=0 errors
+		bs.nextSeq = 1
+	}
+
+	// Log runner information
+	if bs.logger != nil {
+		runnerType := "exec"
+		isRestricted := false
+		if cfg.Runner != nil {
+			runnerType = cfg.Runner.Type()
+			isRestricted = cfg.Runner.IsRestricted()
+		}
+		bs.logger.Debug("session created",
+			"session_id", bs.persistedID,
+			"workspace", cfg.WorkingDir,
+			"acp_server", cfg.ACPServer,
+			"runner_type", runnerType,
+			"runner_restricted", isRestricted)
 	}
 
 	// Start ACP process (no ACP session ID for new sessions)
@@ -203,25 +279,30 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	bs := &BackgroundSession{
-		persistedID:         config.PersistedID,
-		ctx:                 ctx,
-		cancel:              cancel,
-		autoApprove:         config.AutoApprove,
-		logger:              sessionLogger,
-		eventBuffer:         NewEventBuffer(),
-		observers:           make(map[SessionObserver]struct{}),
-		isResumed:           true, // Mark as resumed session
-		store:               config.Store,
-		processors:          config.Processors,
-		hookManager:         config.HookManager,
-		workingDir:          config.WorkingDir,
-		isFirstPrompt:       false, // Resumed session = first prompt already sent
-		queueConfig:         config.QueueConfig,
-		actionButtonsConfig: config.ActionButtonsConfig,
-		fileLinksConfig:     config.FileLinksConfig,
-		apiPrefix:           config.APIPrefix,
-		workspaceUUID:       config.WorkspaceUUID,
+		persistedID:             config.PersistedID,
+		ctx:                     ctx,
+		cancel:                  cancel,
+		autoApprove:             config.AutoApprove,
+		logger:                  sessionLogger,
+		observers:               make(map[SessionObserver]struct{}),
+		isResumed:               true, // Mark as resumed session
+		store:                   config.Store,
+		processors:              config.Processors,
+		hookManager:             config.HookManager,
+		workingDir:              config.WorkingDir,
+		isFirstPrompt:           false, // Resumed session = first prompt already sent
+		queueConfig:             config.QueueConfig,
+		actionButtonsConfig:     config.ActionButtonsConfig,
+		fileLinksConfig:         config.FileLinksConfig,
+		apiPrefix:               config.APIPrefix,
+		workspaceUUID:           config.WorkspaceUUID,
+		runner:                  config.Runner,
+		onStreamingStateChanged: config.OnStreamingStateChanged,
+		onPlanStateChanged:      config.OnPlanStateChanged,
+		acpCommand:              config.ACPCommand, // Store for restart
 	}
+	// Initialize condition variable for prompt completion waiting
+	bs.promptCond = sync.NewCond(&bs.promptMu)
 
 	// Resume recorder for the existing session
 	if config.Store != nil {
@@ -230,15 +311,50 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			cancel()
 			return nil, &sessionError{"failed to resume session recording: " + err.Error()}
 		}
-		// Update the metadata to mark it as active again
+		// Update the metadata to mark it as active again and store runner info
+		runnerType := "exec"
+		isRestricted := false
+		if config.Runner != nil {
+			runnerType = config.Runner.Type()
+			isRestricted = config.Runner.IsRestricted()
+		}
 		if err := config.Store.UpdateMetadata(config.PersistedID, func(m *session.Metadata) {
 			m.Status = "active"
+			m.RunnerType = runnerType
+			m.RunnerRestricted = isRestricted
 		}); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to update session status", "error", err)
 		}
 
-		// Initialize nextSeq from current event count
-		bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+		// Initialize nextSeq from MaxSeq if available, otherwise from EventCount
+		// MaxSeq tracks the highest seq persisted, which may be higher than EventCount
+		// if events were assigned seq at streaming time but not all were persisted
+		maxSeq := bs.recorder.MaxSeq()
+		eventCount := int64(bs.recorder.EventCount())
+		if maxSeq > eventCount {
+			bs.nextSeq = maxSeq + 1
+		} else {
+			bs.nextSeq = eventCount + 1
+		}
+	} else {
+		// No store - initialize nextSeq to 1 to prevent seq=0 errors
+		bs.nextSeq = 1
+	}
+
+	// Log runner information
+	if bs.logger != nil {
+		runnerType := "exec"
+		isRestricted := false
+		if config.Runner != nil {
+			runnerType = config.Runner.Type()
+			isRestricted = config.Runner.IsRestricted()
+		}
+		bs.logger.Debug("session resumed",
+			"session_id", config.PersistedID,
+			"workspace", config.WorkingDir,
+			"acp_server", config.ACPServer,
+			"runner_type", runnerType,
+			"runner_restricted", isRestricted)
 	}
 
 	// Start ACP process, passing the ACP session ID for potential resumption
@@ -305,6 +421,47 @@ func (bs *BackgroundSession) GetLastResponseCompleteTime() time.Time {
 	return bs.lastResponseComplete
 }
 
+// WaitForResponseComplete waits for the current prompt to complete, if one is in progress.
+// Returns true if the prompt completed within the timeout, false if it timed out.
+// If no prompt is in progress, returns immediately with true.
+func (bs *BackgroundSession) WaitForResponseComplete(timeout time.Duration) bool {
+	bs.promptMu.Lock()
+	defer bs.promptMu.Unlock()
+
+	// If not prompting, return immediately
+	if !bs.isPrompting {
+		return true
+	}
+
+	// Create a timer for the timeout
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	// Use a goroutine to wait on the condition with timeout
+	done := make(chan bool, 1)
+	go func() {
+		bs.promptMu.Lock()
+		for bs.isPrompting && bs.closed.Load() == 0 {
+			bs.promptCond.Wait()
+		}
+		completed := !bs.isPrompting || bs.closed.Load() != 0
+		bs.promptMu.Unlock()
+		done <- completed
+	}()
+
+	// Release the lock while waiting (the goroutine will re-acquire it)
+	bs.promptMu.Unlock()
+
+	select {
+	case completed := <-done:
+		bs.promptMu.Lock() // Re-acquire to satisfy defer
+		return completed
+	case <-timer.C:
+		bs.promptMu.Lock() // Re-acquire to satisfy defer
+		return false
+	}
+}
+
 // GetEventCount returns the current event count for the session.
 // Returns 0 if the recorder is not available or there's an error.
 func (bs *BackgroundSession) GetEventCount() int {
@@ -319,8 +476,28 @@ func (bs *BackgroundSession) GetEventCount() int {
 func (bs *BackgroundSession) getNextSeq() int64 {
 	bs.seqMu.Lock()
 	defer bs.seqMu.Unlock()
+
+	// Defensive check: ensure nextSeq is at least 1
+	// This can happen if Store was nil during session creation
+	if bs.nextSeq < 1 {
+		bs.nextSeq = 1
+		if bs.logger != nil {
+			bs.logger.Warn("nextSeq was < 1, reset to 1",
+				"session_id", bs.persistedID)
+		}
+	}
+
 	seq := bs.nextSeq
 	bs.nextSeq++
+
+	// L1: Structured logging for seq assignment
+	if bs.logger != nil {
+		bs.logger.Debug("seq_assigned",
+			"seq", seq,
+			"next_seq", bs.nextSeq,
+			"session_id", bs.persistedID)
+	}
+
 	return seq
 }
 
@@ -330,16 +507,42 @@ func (bs *BackgroundSession) GetNextSeq() int64 {
 	return bs.getNextSeq()
 }
 
-// refreshNextSeq updates nextSeq from the current event count.
+// refreshNextSeq updates nextSeq from the current max sequence number.
 // This should be called after events are persisted outside the normal buffer flow
 // (e.g., after user prompts are persisted directly).
+//
+// IMPORTANT: Uses MaxSeq (highest seq persisted) not EventCount (number of events)
+// because seq numbers can be sparse due to coalescing (multiple chunks share the same seq).
+// Using EventCount would cause seq number reuse after session resume.
 func (bs *BackgroundSession) refreshNextSeq() {
 	if bs.recorder == nil {
 		return
 	}
 	bs.seqMu.Lock()
 	defer bs.seqMu.Unlock()
-	bs.nextSeq = int64(bs.recorder.EventCount()) + 1
+
+	oldSeq := bs.nextSeq
+	maxSeq := bs.recorder.MaxSeq()
+	eventCount := int64(bs.recorder.EventCount())
+
+	// Use the higher of MaxSeq or EventCount to determine next seq.
+	// MaxSeq tracks the highest seq persisted, while EventCount tracks the number of events.
+	// Due to coalescing, MaxSeq can be much higher than EventCount.
+	if maxSeq > eventCount {
+		bs.nextSeq = maxSeq + 1
+	} else {
+		bs.nextSeq = eventCount + 1
+	}
+
+	// L1: Log seq refresh
+	if bs.logger != nil && oldSeq != bs.nextSeq {
+		bs.logger.Debug("seq_refreshed",
+			"old_next_seq", oldSeq,
+			"new_next_seq", bs.nextSeq,
+			"max_seq", maxSeq,
+			"event_count", eventCount,
+			"session_id", bs.persistedID)
+	}
 }
 
 // CreatedAt returns when the session was created.
@@ -383,36 +586,30 @@ func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 	isPrompting := bs.isPrompting
 	bs.promptMu.Unlock()
 
-	if isPrompting {
-		bs.replayBufferedEventsTo(observer)
-	} else {
-		// If not prompting, send cached action buttons to the new observer
-		// This ensures new clients see the follow-up suggestions
+	// If not prompting, send cached action buttons to the new observer
+	// This ensures new clients see the follow-up suggestions
+	// Note: Events are persisted immediately, so clients can get them from the store
+	// via the load_events WebSocket message. No need to replay buffered events.
+	if !isPrompting {
 		bs.sendCachedActionButtonsTo(observer)
 	}
 }
 
-// replayBufferedEventsTo sends all buffered events to a single observer in order.
-// This is used to catch up newly connected observers on in-progress streaming.
-func (bs *BackgroundSession) replayBufferedEventsTo(observer SessionObserver) {
-	bs.bufferMu.Lock()
-	var events []BufferedEvent
-	if bs.eventBuffer != nil {
-		events = bs.eventBuffer.Events() // Get a copy, don't flush
+// GetMaxAssignedSeq returns the highest sequence number that has been assigned
+// to any event in this session. This is nextSeq - 1, since nextSeq is the NEXT
+// seq to be assigned.
+//
+// This is used for keepalive reporting and to determine the server's max seq
+// for client synchronization.
+//
+// Returns 0 if no events have been assigned yet.
+func (bs *BackgroundSession) GetMaxAssignedSeq() int64 {
+	bs.seqMu.Lock()
+	defer bs.seqMu.Unlock()
+	if bs.nextSeq <= 1 {
+		return 0
 	}
-	bs.bufferMu.Unlock()
-
-	if len(events) == 0 {
-		return
-	}
-
-	if bs.logger != nil {
-		bs.logger.Debug("Replaying buffered events to new observer", "event_count", len(events))
-	}
-
-	for _, event := range events {
-		event.ReplayTo(observer)
-	}
+	return bs.nextSeq - 1
 }
 
 // sendCachedActionButtonsTo sends cached action buttons to a single observer.
@@ -473,33 +670,42 @@ func (bs *BackgroundSession) Close(reason string) {
 		return // Already closed
 	}
 
+	// Notify all observers that the ACP connection is being stopped.
+	// This must happen BEFORE we cancel the context or close resources,
+	// so observers can update their state and prevent further prompts.
+	// This fixes a race condition where a prompt could be sent while
+	// the session is being archived.
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnACPStopped(reason)
+	})
+
 	// Cancel context to stop any ongoing operations
 	bs.cancel()
-
-	// Flush and persist any buffered messages
-	bs.flushAndPersistMessages()
 
 	// Close ACP client
 	if bs.acpClient != nil {
 		bs.acpClient.Close()
 	}
 
-	// Kill ACP process
-	if bs.acpCmd != nil && bs.acpCmd.Process != nil {
-		bs.acpCmd.Process.Kill()
-	}
+	// Kill ACP process and clean up resources
+	bs.killACPProcess()
 
-	// End recording
+	// Handle recording based on close reason
 	if bs.recorder != nil {
-		bs.recorder.End(reason)
+		// For server_shutdown, use Suspend() instead of End() to avoid
+		// recording multiple session_end events when the session is resumed
+		// after server restart. The session can be resumed later, so we
+		// don't want to mark it as permanently ended.
+		if reason == "server_shutdown" {
+			bs.recorder.Suspend()
+		} else {
+			bs.recorder.End(reason)
+		}
 	}
 }
 
 // Suspend suspends the session without ending it (for temporary disconnects).
 func (bs *BackgroundSession) Suspend() {
-	// Flush and persist any buffered messages
-	bs.flushAndPersistMessages()
-
 	// Suspend recording (keeps status as "active")
 	if bs.recorder != nil {
 		bs.recorder.Suspend()
@@ -530,76 +736,335 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 	}
 
 	if bs.logger != nil {
-		bs.logger.Info("Injecting conversation history into resumed session",
+		bs.logger.Debug("Injecting conversation history into resumed session",
 			"history_length", len(history))
 	}
 
 	return history + message
 }
 
-// flushAndPersistMessages persists all buffered events in streaming order.
-// Events are persisted in the order they were received, ensuring correct
-// interleaving of agent messages, thoughts, and tool calls.
-func (bs *BackgroundSession) flushAndPersistMessages() {
-	if bs.recorder == nil {
-		return
+// killACPProcess terminates the ACP process and cleans up resources.
+// It handles both direct execution (acpCmd) and runner-based execution.
+func (bs *BackgroundSession) killACPProcess() {
+	// Kill direct process if using one
+	if bs.acpCmd != nil && bs.acpCmd.Process != nil {
+		bs.acpCmd.Process.Kill()
 	}
 
-	// Lock buffer access and flush all events
-	bs.bufferMu.Lock()
-	var events []BufferedEvent
-	if bs.eventBuffer != nil {
-		events = bs.eventBuffer.Flush()
+	// Call wait() to clean up resources (from runner.RunWithPipes or cmd.Wait)
+	// This is safe to call even if the process is already dead
+	if bs.acpWait != nil {
+		bs.acpWait()
+		bs.acpWait = nil // Prevent double cleanup
 	}
-	bs.bufferMu.Unlock()
+}
 
-	// Persist each event in order
-	for _, event := range events {
-		if err := event.PersistTo(bs.recorder); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist event", "type", event.Type, "error", err)
+// maxACPStartRetries is the maximum number of times to retry starting the ACP process
+// if the initial connection fails (e.g., "peer disconnected before response").
+const maxACPStartRetries = 2
+
+// acpStartRetryDelay is the delay between ACP start retries.
+const acpStartRetryDelay = 500 * time.Millisecond
+
+// maxACPRestarts is the maximum number of automatic restarts allowed within acpRestartWindow.
+// If this limit is exceeded, the user must manually restart the session.
+const maxACPRestarts = 3
+
+// acpRestartWindow is the time window for counting restart attempts.
+// Restarts older than this are not counted toward the limit.
+const acpRestartWindow = 5 * time.Minute
+
+// canRestartACP checks if we can restart the ACP process based on rate limiting.
+// Returns true if restart is allowed, false if we've exceeded the limit.
+// This method is thread-safe.
+func (bs *BackgroundSession) canRestartACP() bool {
+	bs.restartMu.Lock()
+	defer bs.restartMu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-acpRestartWindow)
+
+	// Filter out old restart times
+	var recentRestarts []time.Time
+	for _, t := range bs.restartTimes {
+		if t.After(cutoff) {
+			recentRestarts = append(recentRestarts, t)
 		}
 	}
+	bs.restartTimes = recentRestarts
+
+	return len(recentRestarts) < maxACPRestarts
+}
+
+// recordRestart records a restart attempt for rate limiting.
+// This method is thread-safe.
+func (bs *BackgroundSession) recordRestart() {
+	bs.restartMu.Lock()
+	defer bs.restartMu.Unlock()
+
+	bs.restartCount++
+	bs.restartTimes = append(bs.restartTimes, time.Now())
+}
+
+// restartACPProcess attempts to restart the ACP process after it has died.
+// It kills the old process, cleans up resources, and starts a new one.
+// The new process will attempt to resume the ACP session if the agent supports it.
+// Returns nil on success, or an error if restart fails.
+func (bs *BackgroundSession) restartACPProcess() error {
+	if bs.logger != nil {
+		bs.logger.Info("Restarting ACP process",
+			"session_id", bs.persistedID,
+			"acp_id", bs.acpID,
+			"restart_count", bs.restartCount+1)
+	}
+
+	// Kill the old process and clean up
+	bs.killACPProcess()
+
+	// Close the old ACP client if it exists
+	if bs.acpClient != nil {
+		bs.acpClient.Close()
+		bs.acpClient = nil
+	}
+
+	// Clear the old connection
+	bs.acpConn = nil
+
+	// Record this restart attempt
+	bs.recordRestart()
+
+	// Start a new ACP process, attempting to resume the session
+	err := bs.startACPProcess(bs.acpCommand, bs.workingDir, bs.acpID)
+	if err != nil {
+		if bs.logger != nil {
+			bs.logger.Error("Failed to restart ACP process",
+				"session_id", bs.persistedID,
+				"error", err)
+		}
+		return err
+	}
+
+	// Update the ACP session ID in metadata if it changed
+	if bs.store != nil && bs.acpID != "" {
+		if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+			m.ACPSessionID = bs.acpID
+		}); err != nil && bs.logger != nil {
+			bs.logger.Warn("Failed to update ACP session ID after restart", "error", err)
+		}
+	}
+
+	if bs.logger != nil {
+		bs.logger.Info("ACP process restarted successfully",
+			"session_id", bs.persistedID,
+			"acp_id", bs.acpID)
+	}
+
+	return nil
 }
 
 // startACPProcess starts the ACP server process and initializes the connection.
 // If acpSessionID is provided and the agent supports session loading, it attempts
 // to resume that session. Otherwise, it creates a new session.
+// This method includes retry logic for transient failures during startup.
 func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionID string) error {
+	var lastErr error
+	for attempt := 0; attempt < maxACPStartRetries; attempt++ {
+		if attempt > 0 {
+			if bs.logger != nil {
+				bs.logger.Info("Retrying ACP process start",
+					"attempt", attempt+1,
+					"max_attempts", maxACPStartRetries,
+					"last_error", lastErr)
+			}
+			// Wait before retry
+			select {
+			case <-bs.ctx.Done():
+				return &sessionError{"context cancelled during retry: " + bs.ctx.Err().Error()}
+			case <-time.After(acpStartRetryDelay):
+			}
+		}
+
+		err := bs.doStartACPProcess(acpCommand, workingDir, acpSessionID)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		// Only retry on connection/initialization failures, not on validation errors
+		if strings.Contains(err.Error(), "empty ACP command") {
+			return err // Don't retry validation errors
+		}
+
+		if bs.logger != nil {
+			bs.logger.Warn("ACP process start failed",
+				"attempt", attempt+1,
+				"error", err)
+		}
+	}
+
+	return lastErr
+}
+
+// doStartACPProcess performs a single attempt to start the ACP process.
+// stderrCollector collects stderr output from the ACP process for error reporting.
+// It stores the last N bytes of stderr output that can be retrieved when errors occur.
+type stderrCollector struct {
+	mu       sync.Mutex
+	buffer   []byte
+	maxSize  int
+	logger   *slog.Logger
+	isClosed bool
+}
+
+// newStderrCollector creates a new stderr collector with the given max buffer size.
+func newStderrCollector(maxSize int, logger *slog.Logger) *stderrCollector {
+	return &stderrCollector{
+		buffer:  make([]byte, 0, maxSize),
+		maxSize: maxSize,
+		logger:  logger,
+	}
+}
+
+// Write implements io.Writer to collect stderr output.
+func (c *stderrCollector) Write(p []byte) (n int, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.isClosed {
+		return len(p), nil
+	}
+
+	// Log at debug level as it comes in
+	if c.logger != nil && len(p) > 0 {
+		c.logger.Debug("agent stderr", "output", string(p))
+	}
+
+	// Append to buffer, keeping only the last maxSize bytes
+	c.buffer = append(c.buffer, p...)
+	if len(c.buffer) > c.maxSize {
+		c.buffer = c.buffer[len(c.buffer)-c.maxSize:]
+	}
+
+	return len(p), nil
+}
+
+// GetOutput returns the collected stderr output.
+func (c *stderrCollector) GetOutput() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.buffer)
+}
+
+// Close marks the collector as closed and logs any remaining output at warn level if non-empty.
+func (c *stderrCollector) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.isClosed = true
+}
+
+// startStderrMonitor starts a goroutine that reads from stderr and writes to the collector.
+func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector) {
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := stderr.Read(buf)
+			if n > 0 {
+				collector.Write(buf[:n])
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		collector.Close()
+	}()
+}
+
+func (bs *BackgroundSession) doStartACPProcess(acpCommand, workingDir, acpSessionID string) error {
 	args := strings.Fields(acpCommand)
 	if len(args) == 0 {
 		return &sessionError{"empty ACP command"}
 	}
 
-	cmd := exec.CommandContext(bs.ctx, args[0], args[1:]...)
+	var stdin runner.WriteCloser
+	var stdout runner.ReadCloser
+	var stderr runner.ReadCloser
+	var wait func() error
+	var cmd *exec.Cmd
+	var err error
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return &sessionError{"failed to create stdin pipe: " + err.Error()}
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return &sessionError{"failed to create stdout pipe: " + err.Error()}
+	// Create stderr collector to capture output for error reporting
+	// Keep last 8KB of stderr output
+	stderrCollector := newStderrCollector(8192, bs.logger)
+
+	// Use runner if configured, otherwise direct execution
+	if bs.runner != nil {
+		// Use restricted runner with RunWithPipes
+		if bs.logger != nil {
+			bs.logger.Info("starting ACP process through restricted runner",
+				"runner_type", bs.runner.Type(),
+				"command", acpCommand)
+		}
+		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], nil)
+		if err != nil {
+			return &sessionError{"failed to start with runner: " + err.Error()}
+		}
+
+		// Monitor stderr in background
+		startStderrMonitor(stderr, stderrCollector)
+
+		// Store wait function for cleanup
+		// We'll call it in Close() method
+		bs.acpCmd = nil // No cmd when using runner
+	} else {
+		// Direct execution (no restrictions)
+		cmd = exec.CommandContext(bs.ctx, args[0], args[1:]...)
+
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return &sessionError{"failed to create stdin pipe: " + err.Error()}
+		}
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return &sessionError{"failed to create stdout pipe: " + err.Error()}
+		}
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			return &sessionError{"failed to create stderr pipe: " + err.Error()}
+		}
+
+		if err := cmd.Start(); err != nil {
+			return &sessionError{"failed to start ACP server: " + err.Error()}
+		}
+
+		// Monitor stderr in background (same as runner case)
+		startStderrMonitor(stderrPipe, stderrCollector)
+
+		bs.acpCmd = cmd
+
+		// Create wait function for direct execution
+		wait = func() error {
+			return cmd.Wait()
+		}
 	}
 
-	if err := cmd.Start(); err != nil {
-		return &sessionError{"failed to start ACP server: " + err.Error()}
-	}
-
-	bs.acpCmd = cmd
+	// Store wait function for cleanup
+	bs.acpWait = wait
 
 	// Create web client with callbacks that route to attached client or persist.
 	// BackgroundSession implements SeqProvider, so seq is assigned at ACP receive time.
 	webClientConfig := WebClientConfig{
-		AutoApprove:    bs.autoApprove,
-		SeqProvider:    bs, // BackgroundSession implements SeqProvider
-		OnAgentMessage: bs.onAgentMessage,
-		OnAgentThought: bs.onAgentThought,
-		OnToolCall:     bs.onToolCall,
-		OnToolUpdate:   bs.onToolUpdate,
-		OnPlan:         bs.onPlan,
-		OnFileWrite:    bs.onFileWrite,
-		OnFileRead:     bs.onFileRead,
-		OnPermission:   bs.onPermission,
+		AutoApprove:          bs.autoApprove,
+		SeqProvider:          bs, // BackgroundSession implements SeqProvider
+		OnAgentMessage:       bs.onAgentMessage,
+		OnAgentThought:       bs.onAgentThought,
+		OnToolCall:           bs.onToolCall,
+		OnToolUpdate:         bs.onToolUpdate,
+		OnPlan:               bs.onPlan,
+		OnFileWrite:          bs.onFileWrite,
+		OnFileRead:           bs.onFileRead,
+		OnPermission:         bs.onPermission,
+		OnAvailableCommands:  bs.onAvailableCommands,
+		OnCurrentModeChanged: bs.onCurrentModeChanged,
 	}
 
 	// Configure file linking if enabled
@@ -619,10 +1084,17 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 
 	bs.acpClient = NewWebClient(webClientConfig)
 
-	// Create ACP connection
-	bs.acpConn = acp.NewClientSideConnection(bs.acpClient, stdin, stdout)
+	// Wrap stdout with a JSON line filter to discard non-JSON output
+	// (e.g., ANSI escape sequences, terminal UI from crashed agents)
+	filteredStdout := mittoAcp.NewJSONLineFilterReader(stdout, bs.logger)
+
+	// Create ACP connection with filtered stdout
+	bs.acpConn = acp.NewClientSideConnection(bs.acpClient, stdin, filteredStdout)
 	if bs.logger != nil {
-		bs.acpConn.SetLogger(bs.logger)
+		// Use a downgraded logger for the SDK to convert INFO to DEBUG
+		// This prevents verbose SDK logs (e.g., "peer connection closed") from
+		// appearing in stdout when log level is INFO.
+		bs.acpConn.SetLogger(logging.DowngradeInfoToDebug(bs.logger))
 	}
 
 	// Initialize and get agent capabilities
@@ -636,9 +1108,29 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 		},
 	})
 	if err != nil {
-		bs.acpCmd.Process.Kill()
+		// Give stderr goroutine a moment to capture any error output
+		time.Sleep(100 * time.Millisecond)
+
+		// Log the failure with command and stderr output
+		stderrOutput := strings.TrimSpace(stderrCollector.GetOutput())
+		if bs.logger != nil {
+			logAttrs := []any{
+				"command", acpCommand,
+				"working_dir", workingDir,
+				"error", err,
+			}
+			if stderrOutput != "" {
+				logAttrs = append(logAttrs, "stderr", stderrOutput)
+			}
+			bs.logger.Warn("ACP process initialization failed", logAttrs...)
+		}
+
+		bs.killACPProcess()
 		return &sessionError{"failed to initialize: " + err.Error()}
 	}
+
+	// Log agent information at DEBUG level
+	bs.logAgentInfo(initResp)
 
 	cwd := workingDir
 	if cwd == "" {
@@ -656,8 +1148,8 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 			bs.acpID = acpSessionID
 			if bs.logger != nil {
 				bs.logger.Info("Resumed ACP session",
-					"acp_session_id", acpSessionID,
-					"modes", loadResp.Modes)
+					"acp_session_id", acpSessionID)
+				bs.logSessionModes(loadResp.Modes)
 			}
 			return nil
 		}
@@ -675,12 +1167,101 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 		McpServers: []acp.McpServer{},
 	})
 	if err != nil {
-		bs.acpCmd.Process.Kill()
+		// Give stderr goroutine a moment to capture any error output
+		time.Sleep(100 * time.Millisecond)
+
+		// Log the failure with command and stderr output
+		stderrOutput := strings.TrimSpace(stderrCollector.GetOutput())
+		if bs.logger != nil {
+			logAttrs := []any{
+				"command", acpCommand,
+				"working_dir", workingDir,
+				"error", err,
+			}
+			if stderrOutput != "" {
+				logAttrs = append(logAttrs, "stderr", stderrOutput)
+			}
+			bs.logger.Warn("ACP session creation failed", logAttrs...)
+		}
+
+		bs.killACPProcess()
 		return &sessionError{"failed to create session: " + err.Error()}
 	}
 
 	bs.acpID = string(sessResp.SessionId)
+
+	if bs.logger != nil {
+		bs.logger.Info("Created new ACP session",
+			"acp_session_id", bs.acpID)
+		bs.logSessionModes(sessResp.Modes)
+	}
+
 	return nil
+}
+
+// logSessionModes logs the session modes/config options at DEBUG level.
+// This helps with debugging which modes are available from the ACP server.
+func (bs *BackgroundSession) logSessionModes(modes *acp.SessionModeState) {
+	if bs.logger == nil || modes == nil {
+		return
+	}
+
+	// Log current mode
+	bs.logger.Debug("Session mode state",
+		"current_mode", modes.CurrentModeId,
+		"available_modes_count", len(modes.AvailableModes))
+
+	// Log each available mode
+	for _, mode := range modes.AvailableModes {
+		desc := ""
+		if mode.Description != nil {
+			desc = *mode.Description
+		}
+		bs.logger.Debug("Available session mode",
+			"mode_id", mode.Id,
+			"mode_name", mode.Name,
+			"mode_description", desc)
+	}
+}
+
+// logAgentInfo logs the agent information and capabilities from the Initialize response at DEBUG level.
+// This helps with debugging which agent is being used and what features it supports.
+func (bs *BackgroundSession) logAgentInfo(resp acp.InitializeResponse) {
+	if bs.logger == nil {
+		return
+	}
+
+	// Log agent info if available
+	if resp.AgentInfo != nil {
+		bs.logger.Debug("Agent info",
+			"agent_name", resp.AgentInfo.Name,
+			"agent_version", resp.AgentInfo.Version)
+	}
+
+	// Log protocol version
+	bs.logger.Debug("ACP protocol version",
+		"protocol_version", resp.ProtocolVersion)
+
+	// Log agent capabilities
+	caps := resp.AgentCapabilities
+	bs.logger.Debug("Agent capabilities",
+		"load_session", caps.LoadSession,
+		"mcp_http", caps.McpCapabilities.Http,
+		"mcp_sse", caps.McpCapabilities.Sse,
+		"prompt_audio", caps.PromptCapabilities.Audio,
+		"prompt_embedded_context", caps.PromptCapabilities.EmbeddedContext,
+		"prompt_image", caps.PromptCapabilities.Image)
+
+	// Log authentication methods if available
+	if len(resp.AuthMethods) > 0 {
+		authMethods := make([]string, len(resp.AuthMethods))
+		for i, auth := range resp.AuthMethods {
+			authMethods[i] = auth.Name
+		}
+		bs.logger.Debug("Agent auth methods",
+			"count", len(resp.AuthMethods),
+			"methods", authMethods)
+	}
 }
 
 // sessionError is a simple error type for session errors.
@@ -710,6 +1291,7 @@ type PromptMeta struct {
 	SenderID string   // Unique identifier of the sending client (for broadcast deduplication)
 	PromptID string   // Client-generated prompt ID (for delivery confirmation)
 	ImageIDs []string // IDs of images attached to the prompt
+	FileIDs  []string // IDs of files attached to the prompt
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -725,11 +1307,18 @@ func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string)
 	return bs.PromptWithMeta(message, PromptMeta{ImageIDs: imageIDs})
 }
 
+// PromptWithAttachments sends a message with optional images and files to the agent.
+// This runs asynchronously. The IDs should be of previously uploaded images/files.
+func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fileIDs []string) error {
+	return bs.PromptWithMeta(message, PromptMeta{ImageIDs: imageIDs, FileIDs: fileIDs})
+}
+
 // PromptWithMeta sends a message with optional metadata to the agent. This runs asynchronously.
 // The meta parameter contains sender information for multi-client broadcast.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) error {
 	imageIDs := meta.ImageIDs
+	fileIDs := meta.FileIDs
 	if bs.IsClosed() {
 		return &sessionError{"session is closed"}
 	}
@@ -739,18 +1328,60 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	bs.promptMu.Lock()
 	if bs.isPrompting {
-		// Check if the current prompt is stuck (running for too long without activity)
-		// If it's been more than 5 minutes, auto-recover by resetting the state
-		const stuckPromptTimeout = 5 * time.Minute
-		if !bs.promptStartTime.IsZero() && time.Since(bs.promptStartTime) > stuckPromptTimeout {
+		// Check if the ACP connection is dead (process crashed)
+		// We use a non-blocking check on the Done() channel to detect this.
+		// This is more reliable than a timeout because legitimate operations
+		// (like running tests) can take a very long time.
+		acpDead := false
+		if bs.acpConn != nil {
+			select {
+			case <-bs.acpConn.Done():
+				acpDead = true
+			default:
+				// Connection still alive
+			}
+		} else {
+			acpDead = true // No connection at all
+		}
+
+		if acpDead {
+			elapsed := time.Since(bs.promptStartTime)
 			if bs.logger != nil {
-				bs.logger.Warn("Auto-recovering stuck prompt",
+				bs.logger.Warn("Detected dead ACP connection",
 					"prompt_start_time", bs.promptStartTime,
-					"elapsed", time.Since(bs.promptStartTime))
+					"elapsed", elapsed)
 			}
 			bs.isPrompting = false
 			bs.lastResponseComplete = time.Now()
-			// Fall through to process the new prompt
+			bs.promptMu.Unlock()
+
+			// Check if we can restart automatically
+			if bs.canRestartACP() {
+				// Notify observers that we're restarting
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("The AI agent process stopped unexpectedly. Restarting...")
+				})
+
+				// Attempt to restart the ACP process
+				if err := bs.restartACPProcess(); err != nil {
+					bs.notifyObservers(func(o SessionObserver) {
+						o.OnError("Failed to restart the AI agent: " + err.Error() + ". Please switch to another conversation and back to retry.")
+					})
+					return &sessionError{"ACP process died and restart failed: " + err.Error()}
+				}
+
+				// Restart succeeded - notify user and retry the prompt
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("AI agent restarted successfully. Please resend your message.")
+				})
+				return &sessionError{"ACP process restarted - please resend your message"}
+			}
+
+			// Restart limit exceeded - notify user to manually restart
+			bs.notifyObservers(func(o SessionObserver) {
+				o.OnError("The AI agent keeps crashing. Please switch to another conversation and back to restart.")
+			})
+			return &sessionError{"ACP process died repeatedly - switch conversations to restart"}
 		} else {
 			bs.promptMu.Unlock()
 			return &sessionError{"prompt already in progress"}
@@ -772,6 +1403,11 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		bs.isFirstPrompt = false
 	}
 	bs.promptMu.Unlock()
+
+	// Notify about streaming state change (prompt started)
+	if bs.onStreamingStateChanged != nil {
+		bs.onStreamingStateChanged(bs.persistedID, true)
+	}
 
 	// Load images and build content blocks
 	var imageRefs []session.ImageRef
@@ -814,16 +1450,72 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		}
 	}
 
+	// Load files and build content blocks
+	var fileRefs []session.FileRef
+	if len(fileIDs) > 0 && bs.store != nil {
+		for _, fileID := range fileIDs {
+			filePath, err := bs.store.GetFilePath(bs.persistedID, fileID)
+			if err != nil {
+				if bs.logger != nil {
+					bs.logger.Warn("Failed to get file path", "file_id", fileID, "error", err)
+				}
+				continue
+			}
+
+			// Determine MIME type from extension
+			ext := ""
+			if idx := strings.LastIndex(fileID, "."); idx >= 0 {
+				ext = fileID[idx:]
+			}
+			mimeType := session.GetFileMimeTypeFromExt(ext)
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+
+			// Determine file category and create appropriate attachment
+			category := session.GetFileCategory(mimeType)
+			var att mittoAcp.Attachment
+			if category == session.FileCategoryText {
+				// Text files are embedded inline
+				att, err = mittoAcp.TextFileAttachmentFromFile(filePath, mimeType)
+				if err != nil {
+					if bs.logger != nil {
+						bs.logger.Warn("Failed to load text file", "file_id", fileID, "error", err)
+					}
+					continue
+				}
+			} else {
+				// Binary files are referenced by path
+				att = mittoAcp.BinaryFileAttachment(filePath, mimeType)
+			}
+
+			contentBlocks = append(contentBlocks, att.ToContentBlock())
+			fileRefs = append(fileRefs, session.FileRef{
+				ID:       fileID,
+				Name:     att.Name,
+				MimeType: mimeType,
+				Category: category,
+			})
+		}
+	}
+
 	// Clear action buttons when new activity starts
 	// This ensures suggestions are tied to the latest agent response
 	bs.clearActionButtons()
 
-	// Persist user prompt with image references
+	// Clear cached plan state when new prompt starts
+	// The existing plan becomes stale; a new plan will be generated for this prompt
+	if bs.onPlanStateChanged != nil {
+		bs.onPlanStateChanged(bs.persistedID, nil)
+	}
+
+	// Persist user prompt with image/file references and prompt ID
 	// User prompts are persisted immediately (not buffered), so we need to
 	// refresh nextSeq after persistence to get the correct seq for the prompt
+	// The prompt ID is included so clients can clear pending prompts on reconnect
 	var userPromptSeq int64
 	if bs.recorder != nil {
-		if err := bs.recorder.RecordUserPromptWithImages(message, imageRefs); err != nil && bs.logger != nil {
+		if err := bs.recorder.RecordUserPromptComplete(message, imageRefs, fileRefs, meta.PromptID); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 		// Get the seq that was assigned to the user prompt (it's the current event count)
@@ -834,8 +1526,12 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	// Notify all observers about the user prompt (for multi-client sync)
 	// This includes the message text so other connected clients can display it
+	fileIDStrings := make([]string, len(fileRefs))
+	for i, f := range fileRefs {
+		fileIDStrings[i] = f.ID
+	}
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs)
+		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings)
 	})
 
 	// Build the actual prompt to send to ACP
@@ -902,38 +1598,68 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		bs.isPrompting = false
 		bs.promptStartTime = time.Time{}
 		bs.lastResponseComplete = time.Now()
+		bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
 		bs.promptMu.Unlock()
+
+		// Notify about streaming state change (prompt completed)
+		if bs.onStreamingStateChanged != nil {
+			bs.onStreamingStateChanged(bs.persistedID, false)
+		}
 
 		if bs.IsClosed() {
 			return
 		}
 
+		// DEBUG: Log prompt completion sequence
+		if bs.logger != nil {
+			bs.logger.Debug("prompt_completion_sequence_start",
+				"session_id", bs.persistedID,
+				"observer_count", bs.ObserverCount(),
+				"is_prompting", bs.IsPrompting())
+		}
+
 		// Flush markdown buffer
 		if bs.acpClient != nil {
-			bs.acpClient.FlushMarkdown()
-		}
-
-		// Get the agent message for async analysis (before flushing)
-		var agentMessage string
-		isEndTurn := err == nil && promptResp.StopReason == acp.StopReasonEndTurn
-		if bs.actionButtonsConfig.IsEnabled() && isEndTurn {
-			bs.bufferMu.Lock()
-			if bs.eventBuffer != nil {
-				agentMessage = bs.eventBuffer.GetAgentMessage()
+			if bs.logger != nil {
+				bs.logger.Debug("prompt_completion_flush_markdown_start",
+					"session_id", bs.persistedID)
 			}
-			bs.bufferMu.Unlock()
+			bs.acpClient.FlushMarkdown()
+			if bs.logger != nil {
+				bs.logger.Debug("prompt_completion_flush_markdown_done",
+					"session_id", bs.persistedID)
+			}
 		}
-
-		// Persist buffered messages
-		bs.flushAndPersistMessages()
 
 		// Notify all observers
 		eventCount := bs.GetEventCount()
+		observerCount := bs.ObserverCount()
+		if bs.logger != nil {
+			bs.logger.Debug("prompt_completion_notify_start",
+				"session_id", bs.persistedID,
+				"event_count", eventCount,
+				"observer_count", observerCount)
+		}
+
 		if err != nil {
+			if bs.logger != nil {
+				bs.logger.Error("prompt_failed",
+					"session_id", bs.persistedID,
+					"error", err.Error(),
+					"observer_count", observerCount)
+			}
+			userFriendlyErr := formatACPError(err)
 			bs.notifyObservers(func(o SessionObserver) {
-				o.OnError("Prompt failed: " + err.Error())
+				o.OnError(userFriendlyErr)
 			})
 		} else {
+			if bs.logger != nil {
+				bs.logger.Debug("prompt_complete",
+					"session_id", bs.persistedID,
+					"event_count", eventCount,
+					"observer_count", observerCount,
+					"stop_reason", promptResp.StopReason)
+			}
 			bs.notifyObservers(func(o SessionObserver) {
 				o.OnPromptComplete(eventCount)
 			})
@@ -944,13 +1670,23 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			// Async follow-up analysis (non-blocking)
 			// This runs after prompt_complete so the user sees the response immediately
 			// Note: 'message' is captured from the outer function scope (the user's prompt)
-			if agentMessage != "" {
-				// Skip follow-up analysis if there are queued messages that will be processed immediately
-				// (no delay configured). The suggestions would be stale by the time they arrive.
-				if bs.hasImmediateQueuedMessages() {
-					bs.logger.Debug("follow-up analysis: skipped due to pending immediate queue messages")
-				} else {
-					go bs.analyzeFollowUpQuestions(message, agentMessage)
+			isEndTurn := promptResp.StopReason == acp.StopReasonEndTurn
+			if bs.actionButtonsConfig.IsEnabled() && isEndTurn {
+				// Get the agent message from stored events (events are persisted immediately)
+				var agentMessage string
+				if bs.store != nil {
+					if events, err := bs.store.ReadEvents(bs.persistedID); err == nil {
+						agentMessage = session.GetLastAgentMessage(events)
+					}
+				}
+				if agentMessage != "" {
+					// Skip follow-up analysis if there are queued messages that will be processed immediately
+					// (no delay configured). The suggestions would be stale by the time they arrive.
+					if bs.hasImmediateQueuedMessages() {
+						bs.logger.Debug("follow-up analysis: skipped due to pending immediate queue messages")
+					} else {
+						go bs.analyzeFollowUpQuestions(message, agentMessage)
+					}
 				}
 			}
 		}
@@ -1032,7 +1768,7 @@ func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage s
 		}
 	}
 
-	bs.logger.Info("follow-up analysis: sending buttons to observers", "count", len(buttons))
+	bs.logger.Debug("follow-up analysis: sending buttons to observers", "count", len(buttons))
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnActionButtons(buttons)
 	})
@@ -1093,7 +1829,7 @@ func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
 		return false
 	}
 
-	bs.logger.Info("follow-up suggestions: triggering analysis for resumed session",
+	bs.logger.Debug("follow-up suggestions: triggering analysis for resumed session",
 		"user_prompt_length", len(userPrompt),
 		"agent_message_length", len(agentMessage))
 
@@ -1189,14 +1925,19 @@ func (bs *BackgroundSession) Cancel() error {
 	bs.isPrompting = false
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
+	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
 	bs.promptMu.Unlock()
+
+	// Notify about streaming state change if we were prompting
+	if wasPrompting && bs.onStreamingStateChanged != nil {
+		bs.onStreamingStateChanged(bs.persistedID, false)
+	}
 
 	if wasPrompting {
 		// Flush any buffered content before notifying completion
 		if bs.acpClient != nil {
 			bs.acpClient.FlushMarkdown()
 		}
-		bs.flushAndPersistMessages()
 
 		// Notify observers that the prompt was cancelled
 		eventCount := bs.GetEventCount()
@@ -1228,7 +1969,13 @@ func (bs *BackgroundSession) ForceReset() {
 	bs.isPrompting = false
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
+	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
 	bs.promptMu.Unlock()
+
+	// Notify about streaming state change if we were prompting
+	if wasPrompting && bs.onStreamingStateChanged != nil {
+		bs.onStreamingStateChanged(bs.persistedID, false)
+	}
 
 	if !wasPrompting {
 		if bs.logger != nil {
@@ -1241,7 +1988,6 @@ func (bs *BackgroundSession) ForceReset() {
 	if bs.acpClient != nil {
 		bs.acpClient.FlushMarkdown()
 	}
-	bs.flushAndPersistMessages()
 
 	// Notify observers that the prompt was forcefully reset
 	eventCount := bs.GetEventCount()
@@ -1443,23 +2189,46 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// AppendAgentMessage handles coalescing messages with the same seq.
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendAgentMessage(seq, html)
+	htmlLen := len(html)
+
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeAgentMessage,
+			Timestamp: time.Now(),
+			Data:      session.AgentMessageData{Text: html},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist agent message", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	observerCount := bs.ObserverCount()
-	if bs.logger != nil && observerCount > 1 {
-		bs.logger.Debug("Notifying multiple observers of agent message",
-			"observer_count", observerCount,
-			"html_len", len(html),
-			"seq", seq)
+
+	// Enhanced logging for debugging message content issues
+	if bs.logger != nil {
+		if htmlLen > 1000 {
+			// Large message - log with preview
+			preview := html
+			if len(preview) > 200 {
+				preview = html[:100] + "..." + html[htmlLen-100:]
+			}
+			bs.logger.Debug("agent_message_to_observers_large",
+				"seq", seq,
+				"html_len", htmlLen,
+				"observer_count", observerCount,
+				"session_id", bs.persistedID,
+				"preview", preview)
+		} else if observerCount > 1 {
+			bs.logger.Debug("Notifying multiple observers of agent message",
+				"observer_count", observerCount,
+				"html_len", htmlLen,
+				"seq", seq)
+		}
 	}
+
 	bs.notifyObservers(func(o SessionObserver) {
 		o.OnAgentMessage(seq, html)
 	})
@@ -1470,14 +2239,18 @@ func (bs *BackgroundSession) onAgentThought(seq int64, text string) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// AppendAgentThought handles coalescing thoughts with the same seq.
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendAgentThought(seq, text)
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeAgentThought,
+			Timestamp: time.Now(),
+			Data:      session.AgentThoughtData{Text: text},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist agent thought", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1490,13 +2263,22 @@ func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendToolCall(seq, id, title, status)
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeToolCall,
+			Timestamp: time.Now(),
+			Data: session.ToolCallData{
+				ToolCallID: id,
+				Title:      title,
+				Status:     status,
+			},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist tool call", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1509,12 +2291,21 @@ func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) 
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendToolCallUpdate(seq, id, status)
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeToolCallUpdate,
+			Timestamp: time.Now(),
+			Data: session.ToolCallUpdateData{
+				ToolCallID: id,
+				Status:     status,
+			},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist tool call update", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1522,22 +2313,41 @@ func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) 
 	})
 }
 
-func (bs *BackgroundSession) onPlan(seq int64) {
+func (bs *BackgroundSession) onPlan(seq int64, entries []PlanEntry) {
 	if bs.IsClosed() {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendPlan(seq)
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		// Convert web.PlanEntry to session.PlanEntry
+		sessionEntries := make([]session.PlanEntry, len(entries))
+		for i, entry := range entries {
+			sessionEntries[i] = session.PlanEntry{
+				Content:  entry.Content,
+				Priority: entry.Priority,
+				Status:   entry.Status,
+			}
+		}
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypePlan,
+			Timestamp: time.Now(),
+			Data:      session.PlanData{Entries: sessionEntries},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist plan", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
+
+	// Cache plan state in SessionManager for restoration on conversation switch
+	if bs.onPlanStateChanged != nil {
+		bs.onPlanStateChanged(bs.persistedID, entries)
+	}
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnPlan(seq)
+		o.OnPlan(seq, entries)
 	})
 }
 
@@ -1546,13 +2356,18 @@ func (bs *BackgroundSession) onFileWrite(seq int64, path string, size int) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendFileWrite(seq, path, size)
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeFileWrite,
+			Timestamp: time.Now(),
+			Data:      session.FileOperationData{Path: path, Size: size},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist file write", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1565,13 +2380,18 @@ func (bs *BackgroundSession) onFileRead(seq int64, path string, size int) {
 		return
 	}
 
-	// Buffer for persistence (protected by mutex)
-	// The seq was already assigned at ACP receive time by WebClient.
-	bs.bufferMu.Lock()
-	if bs.eventBuffer != nil {
-		bs.eventBuffer.AppendFileRead(seq, path, size)
+	// Persist immediately with pre-assigned seq
+	if bs.recorder != nil {
+		event := session.Event{
+			Seq:       seq,
+			Type:      session.EventTypeFileRead,
+			Timestamp: time.Now(),
+			Data:      session.FileOperationData{Path: path, Size: size},
+		}
+		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
+			bs.logger.Error("Failed to persist file read", "seq", seq, "error", err)
+		}
 	}
-	bs.bufferMu.Unlock()
 
 	// Notify all observers
 	bs.notifyObservers(func(o SessionObserver) {
@@ -1635,4 +2455,112 @@ func (bs *BackgroundSession) onPermission(ctx context.Context, params acp.Reques
 	return acp.RequestPermissionResponse{
 		Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
 	}, nil
+}
+
+// onAvailableCommands handles the available slash commands update from the agent.
+// It stores the commands and notifies all observers.
+func (bs *BackgroundSession) onAvailableCommands(commands []AvailableCommand) {
+	if bs.IsClosed() {
+		return
+	}
+
+	// Store the commands (sorted alphabetically by name)
+	sort.Slice(commands, func(i, j int) bool {
+		return commands[i].Name < commands[j].Name
+	})
+
+	bs.availableCommandsMu.Lock()
+	bs.availableCommands = commands
+	bs.availableCommandsMu.Unlock()
+
+	if bs.logger != nil {
+		// Build list of command names for logging
+		commandNames := make([]string, len(commands))
+		for i, cmd := range commands {
+			commandNames[i] = "/" + cmd.Name
+		}
+		bs.logger.Debug("Available slash commands updated",
+			"count", len(commands),
+			"commands", commandNames)
+	}
+
+	// Notify all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnAvailableCommandsUpdated(commands)
+	})
+}
+
+// AvailableCommands returns the current list of available slash commands.
+// The commands are sorted alphabetically by name.
+func (bs *BackgroundSession) AvailableCommands() []AvailableCommand {
+	bs.availableCommandsMu.RLock()
+	defer bs.availableCommandsMu.RUnlock()
+
+	// Return a copy to avoid mutation
+	if bs.availableCommands == nil {
+		return nil
+	}
+	result := make([]AvailableCommand, len(bs.availableCommands))
+	copy(result, bs.availableCommands)
+	return result
+}
+
+// onCurrentModeChanged handles the session mode change notification from the agent.
+// This is logged at DEBUG level to help with debugging session configuration.
+func (bs *BackgroundSession) onCurrentModeChanged(modeID string) {
+	if bs.IsClosed() {
+		return
+	}
+
+	if bs.logger != nil {
+		bs.logger.Debug("Session mode changed",
+			"new_mode_id", modeID)
+	}
+}
+
+// formatACPError transforms ACP errors into user-friendly messages.
+// It detects common error patterns and provides actionable guidance.
+func formatACPError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	errMsg := err.Error()
+
+	// Timeout errors from ACP server (tool execution took too long)
+	if strings.Contains(errMsg, "aborted due to timeout") {
+		return "A tool operation timed out. The AI agent's tool call took too long to complete. " +
+			"Try breaking your request into smaller steps, or ask for a more specific task."
+	}
+
+	// Connection/transport errors
+	if strings.Contains(errMsg, "peer disconnected") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "broken pipe") {
+		return "Lost connection to the AI agent. The agent process may have crashed or been restarted. " +
+			"Please try sending your message again."
+	}
+
+	// Context cancelled (user cancelled or session closed)
+	if strings.Contains(errMsg, "context canceled") ||
+		strings.Contains(errMsg, "context deadline exceeded") {
+		return "The request was cancelled. Please try again."
+	}
+
+	// Rate limiting
+	if strings.Contains(errMsg, "rate limit") || strings.Contains(errMsg, "too many requests") {
+		return "Rate limit reached. Please wait a moment before sending another message."
+	}
+
+	// Generic JSON-RPC internal error with details
+	if strings.Contains(errMsg, "-32603") && strings.Contains(errMsg, "Internal error") {
+		// Extract any details if present
+		if strings.Contains(errMsg, "details") {
+			return "The AI agent encountered an internal error. Please try again, " +
+				"or simplify your request if the problem persists."
+		}
+	}
+
+	// Default: return original error with prefix
+	return "Prompt failed: " + errMsg
 }

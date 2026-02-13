@@ -34,21 +34,21 @@ class Mitto < Formula
 
   def caveats
     <<~EOS
-      Mitto requires an ACP server to be installed and configured.
+      Mitto provides a Web for interacting with AI coding agents (ACP Servers).
 
-      Supported ACP servers:
-        - Auggie (auggie)
-        - Claude Code (claude-code)
+    Supported ACP servers:
+      - Auggie (auggie)
+      - Claude Code (claude-code)
+      - GitHub Copilot (copilot)
+      - and many more... check https://agentclientprotocol.com/get-started/agents
 
       Quick start:
-        1. Run: mitto web
+        1. Run: `mitto config create` and then review `~/.mittorc`
+        1. Run: `mitto web`
         2. Open: http://localhost:8080
 
-      Or use the CLI:
-        mitto cli
-
       Configuration is stored in:
-        #{Dir.home}/Library/Application Support/Mitto/
+        #{Dir.home}/.mittorc`
 
       For more information, visit:
         https://github.com/inercia/mitto

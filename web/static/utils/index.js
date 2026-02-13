@@ -14,13 +14,22 @@ export {
   hasNativeImagePicker,
   isNativeApp,
   fixViewerURLIfNeeded,
+  getAPIPrefix,
 } from "./native.js";
 
 export {
-  getLastSeenSeq,
-  setLastSeenSeq,
   getLastActiveSessionId,
   setLastActiveSessionId,
+  getQueueDropdownHeight,
+  setQueueDropdownHeight,
+  getQueueHeightConstraints,
+  getGroupingMode,
+  setGroupingMode,
+  cycleGroupingMode,
+  isGroupExpanded,
+  setGroupExpanded,
+  initUIPreferences,
+  onUIPreferencesLoaded,
 } from "./storage.js";
 
 export { playAgentCompletedSound } from "./audio.js";

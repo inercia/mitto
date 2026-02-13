@@ -15,7 +15,7 @@ Communication Protocol (ACP).
 ### Getting Started
 
 - See the main [README.md](../README.md) for installation and basic usage
-- See [sample.mittorc](../config/config.default.yaml) for a complete configuration example
+- Run `mitto config create` to create a default configuration file (`~/.mittorc`)
 
 ### Configuration
 
@@ -36,7 +36,7 @@ Communication Protocol (ACP).
 - [Architecture](devel/architecture.md) - System design and components
 - [Session Management](devel/session-management.md) - Recording, playback, queues
 - [Web Interface](devel/web-interface.md) - Streaming, mobile support
-- [WebSocket Messaging](devel/websocket-messaging.md) - Protocol, sync, reconnection
+- [WebSocket Documentation](devel/websockets/) - Protocol, sync, reconnection
 - [Workspaces](devel/workspaces.md) - Multi-workspace architecture
 
 ### Development

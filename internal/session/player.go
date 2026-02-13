@@ -181,6 +181,41 @@ func GetLastUserPrompt(events []Event) string {
 	return ""
 }
 
+// LastUserPromptInfo contains information about the last user prompt.
+type LastUserPromptInfo struct {
+	PromptID string // Client-generated prompt ID for delivery confirmation
+	Seq      int64  // Sequence number of the prompt
+	Found    bool   // Whether a user prompt was found
+}
+
+// GetLastUserPromptInfo extracts information about the last user prompt from a list of events.
+// This is used to help clients determine if their pending prompt was actually delivered
+// after reconnecting from a zombie WebSocket connection.
+func GetLastUserPromptInfo(events []Event) LastUserPromptInfo {
+	if len(events) == 0 {
+		return LastUserPromptInfo{}
+	}
+
+	// Find the last user_prompt
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == EventTypeUserPrompt {
+			data, err := DecodeEventData(events[i])
+			if err != nil {
+				return LastUserPromptInfo{}
+			}
+			if d, ok := data.(UserPromptData); ok {
+				return LastUserPromptInfo{
+					PromptID: d.PromptID,
+					Seq:      events[i].Seq,
+					Found:    true,
+				}
+			}
+		}
+	}
+
+	return LastUserPromptInfo{}
+}
+
 // truncateText truncates text to maxLen characters, adding "..." if truncated.
 func truncateText(text string, maxLen int) string {
 	if len(text) <= maxLen {

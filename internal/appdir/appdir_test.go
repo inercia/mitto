@@ -90,6 +90,44 @@ func TestEnsureDir(t *testing.T) {
 	}
 }
 
+func TestLogsDir(t *testing.T) {
+	dir, err := LogsDir()
+	if err != nil {
+		t.Fatalf("LogsDir() failed: %v", err)
+	}
+
+	// Verify it contains a platform-specific logs path
+	// On macOS: ~/Library/Logs/Mitto
+	// On Linux: ~/.local/state/mitto or $XDG_STATE_HOME/mitto
+	// On Windows: %LOCALAPPDATA%\Mitto\Logs
+	if !strings.Contains(strings.ToLower(dir), "mitto") {
+		t.Errorf("LogsDir() = %q, expected path to contain 'mitto'", dir)
+	}
+}
+
+func TestEnsureLogsDir(t *testing.T) {
+	// We can't easily override the LogsDir path, so just verify it doesn't error
+	// and creates/uses a valid directory
+	err := EnsureLogsDir()
+	if err != nil {
+		t.Fatalf("EnsureLogsDir() failed: %v", err)
+	}
+
+	// Verify the directory exists
+	dir, err := LogsDir()
+	if err != nil {
+		t.Fatalf("LogsDir() failed: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("logs dir does not exist after EnsureLogsDir(): %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("logs path is not a directory")
+	}
+}
+
 func TestSettingsPath(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv(MittoDirEnv, customDir)
@@ -192,6 +230,23 @@ func TestAuthSessionsPath(t *testing.T) {
 	}
 }
 
+func TestUIPreferencesPath(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	uiPrefsPath, err := UIPreferencesPath()
+	if err != nil {
+		t.Fatalf("UIPreferencesPath() failed: %v", err)
+	}
+
+	expected := filepath.Join(customDir, UIPreferencesFileName)
+	if uiPrefsPath != expected {
+		t.Errorf("UIPreferencesPath() = %q, want %q", uiPrefsPath, expected)
+	}
+}
+
 func TestRCFilePath_EnvOverride(t *testing.T) {
 	// Create a temp RC file
 	tmpDir := t.TempDir()
@@ -266,5 +321,43 @@ func TestRCFilePath_HomeDirRC(t *testing.T) {
 		if path != homeMittoRC {
 			t.Errorf("RCFilePath() = %q, want %q", path, homeMittoRC)
 		}
+	}
+}
+
+func TestWorkspacePromptsDir(t *testing.T) {
+	tests := []struct {
+		name          string
+		workspaceRoot string
+		want          string
+	}{
+		{
+			name:          "typical workspace path",
+			workspaceRoot: "/home/user/projects/myproject",
+			want:          "/home/user/projects/myproject/.mitto/prompts",
+		},
+		{
+			name:          "workspace with trailing slash",
+			workspaceRoot: "/home/user/projects/myproject",
+			want:          "/home/user/projects/myproject/.mitto/prompts",
+		},
+		{
+			name:          "root workspace",
+			workspaceRoot: "/",
+			want:          "/.mitto/prompts",
+		},
+		{
+			name:          "relative workspace path",
+			workspaceRoot: "myproject",
+			want:          "myproject/.mitto/prompts",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := WorkspacePromptsDir(tt.workspaceRoot)
+			if got != tt.want {
+				t.Errorf("WorkspacePromptsDir(%q) = %q, want %q", tt.workspaceRoot, got, tt.want)
+			}
+		})
 	}
 }

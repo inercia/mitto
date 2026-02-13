@@ -64,13 +64,13 @@ Create `./CLAUDE.md` with all project instructions:
 Brief description of what this project does.
 
 ## Build & Test Commands
-- `npm install` - Install dependencies
-- `npm test` - Run tests
-- `npm run build` - Build for production
+- `<install-command>` - Install dependencies
+- `<test-command>` - Run tests
+- `<build-command>` - Build for production
 
 ## Code Style
-- Use 2-space indentation
-- Prefer const over let
+- <describe formatting rules>
+- <describe naming conventions>
 - ...
 
 ## Architecture
@@ -98,15 +98,15 @@ For `.claude/rules/*.md` files, use YAML frontmatter with `paths` for conditiona
 ```markdown
 ---
 paths:
-  - "src/api/**/*.ts"
-  - "src/services/**/*.ts"
+  - "src/api/**/*"
+  - "src/services/**/*"
 ---
 
 # API Development Rules
 
 - All API endpoints must include input validation
 - Use the standard error response format
-- Include OpenAPI documentation comments
+- Include API documentation comments
 ```
 
 Rules without `paths` frontmatter are loaded unconditionally.
@@ -115,10 +115,10 @@ Rules without `paths` frontmatter are loaded unconditionally.
 
 | Pattern | Matches |
 |---------|---------|
-| `**/*.ts` | All TypeScript files in any directory |
+| `**/*.<ext>` | All files with extension in any directory |
 | `src/**/*` | All files under `src/` directory |
 | `*.md` | Markdown files in the project root |
-| `src/**/*.{ts,tsx}` | TypeScript and TSX files in src |
+| `src/**/*.{ext1,ext2}` | Multiple extensions in src |
 
 ### Content Guidelines
 

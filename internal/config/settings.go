@@ -56,17 +56,37 @@ type Settings struct {
 	Session *SessionConfig `json:"session,omitempty"`
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
+	// RestrictedRunners contains per-runner-type global configuration
+	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
 }
 
 // SessionConfig represents session storage configuration.
-// These settings are not exposed in the Settings dialog.
 type SessionConfig struct {
 	// MaxMessagesPerSession is the maximum number of messages to retain per conversation.
 	// When exceeded, oldest messages are pruned. Default: 0 (unlimited)
+	// Not exposed in the Settings dialog.
 	MaxMessagesPerSession int `json:"max_messages_per_session,omitempty"`
 	// MaxSessionSizeBytes is the maximum total size in bytes for a session's stored data.
 	// When exceeded, oldest messages are pruned. Default: 0 (unlimited)
+	// Not exposed in the Settings dialog.
 	MaxSessionSizeBytes int64 `json:"max_session_size_bytes,omitempty"`
+	// ArchiveRetentionPeriod specifies how long archived conversations are kept before auto-deletion.
+	// Values: "never" (default - keep forever), "1d", "1w", "1m", "3m" (1 day, 1 week, 1 month, 3 months)
+	ArchiveRetentionPeriod string `json:"archive_retention_period,omitempty"`
+}
+
+// ArchiveRetentionNever is the value for keeping archived conversations forever.
+const ArchiveRetentionNever = "never"
+
+// ValidArchiveRetentionPeriods contains all valid retention period values.
+var ValidArchiveRetentionPeriods = []string{ArchiveRetentionNever, "1d", "1w", "1m", "3m"}
+
+// GetArchiveRetentionPeriod returns the archive retention period, or "never" if not set.
+func (c *SessionConfig) GetArchiveRetentionPeriod() string {
+	if c == nil || c.ArchiveRetentionPeriod == "" {
+		return ArchiveRetentionNever
+	}
+	return c.ArchiveRetentionPeriod
 }
 
 // ACPServerSettings is the JSON representation of an ACP server.
@@ -77,18 +97,21 @@ type ACPServerSettings struct {
 	Command string `json:"command"`
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt `json:"prompts,omitempty"`
+	// RestrictedRunners contains per-runner-type configuration for this agent
+	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
 }
 
 // ToConfig converts Settings to the internal Config struct.
 func (s *Settings) ToConfig() *Config {
 	cfg := &Config{
-		ACPServers:    make([]ACPServer, len(s.ACPServers)),
-		Prompts:       s.Prompts,
-		PromptsDirs:   s.PromptsDirs,
-		Web:           s.Web,
-		UI:            s.UI,
-		Session:       s.Session,
-		Conversations: s.Conversations,
+		ACPServers:        make([]ACPServer, len(s.ACPServers)),
+		Prompts:           s.Prompts,
+		PromptsDirs:       s.PromptsDirs,
+		Web:               s.Web,
+		UI:                s.UI,
+		Session:           s.Session,
+		Conversations:     s.Conversations,
+		RestrictedRunners: s.RestrictedRunners,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -99,13 +122,14 @@ func (s *Settings) ToConfig() *Config {
 // ConfigToSettings converts a Config to Settings for persistence.
 func ConfigToSettings(cfg *Config) *Settings {
 	s := &Settings{
-		ACPServers:    make([]ACPServerSettings, len(cfg.ACPServers)),
-		Prompts:       cfg.Prompts,
-		PromptsDirs:   cfg.PromptsDirs,
-		Web:           cfg.Web,
-		UI:            cfg.UI,
-		Session:       cfg.Session,
-		Conversations: cfg.Conversations,
+		ACPServers:        make([]ACPServerSettings, len(cfg.ACPServers)),
+		Prompts:           cfg.Prompts,
+		PromptsDirs:       cfg.PromptsDirs,
+		Web:               cfg.Web,
+		UI:                cfg.UI,
+		Session:           cfg.Session,
+		Conversations:     cfg.Conversations,
+		RestrictedRunners: cfg.RestrictedRunners,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)

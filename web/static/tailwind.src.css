@@ -1,0 +1,9 @@
+/* Tailwind CSS source file for Mitto
+ * This file is processed by Tailwind CLI to generate tailwind.css
+ * Run: npm run tailwind
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+

@@ -35,6 +35,8 @@ type QueuedMessage struct {
 	Message string `json:"message"`
 	// ImageIDs are optional attached image IDs.
 	ImageIDs []string `json:"image_ids,omitempty"`
+	// FileIDs are optional attached file IDs.
+	FileIDs []string `json:"file_ids,omitempty"`
 	// QueuedAt is when the message was added to the queue.
 	QueuedAt time.Time `json:"queued_at"`
 	// ClientID identifies the client that queued this message (for UI tracking).
@@ -111,7 +113,7 @@ func (q *Queue) writeQueue(qf *QueueFile) error {
 // Add adds a message to the queue and returns the assigned message.
 // If maxSize > 0 and the queue already has maxSize messages, ErrQueueFull is returned.
 // If maxSize <= 0, no size limit is enforced.
-func (q *Queue) Add(message string, imageIDs []string, clientID string, maxSize int) (QueuedMessage, error) {
+func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string, maxSize int) (QueuedMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -129,6 +131,7 @@ func (q *Queue) Add(message string, imageIDs []string, clientID string, maxSize 
 		ID:       generateMessageID(),
 		Message:  message,
 		ImageIDs: imageIDs,
+		FileIDs:  fileIDs,
 		QueuedAt: time.Now(),
 		ClientID: clientID,
 	}

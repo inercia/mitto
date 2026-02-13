@@ -22,8 +22,7 @@ import {
   INITIAL_EVENTS_LIMIT,
   computeAllSessions,
   convertEventsToMessages,
-  getMinSeq,
-  getMaxSeq,
+  coalesceAgentMessages,
   safeJsonParse,
   limitMessages,
   getWorkspaceVisualInfo,
@@ -49,8 +48,6 @@ import {
   pickImages,
   hasNativeImagePicker,
   isNativeApp,
-  getLastSeenSeq,
-  setLastSeenSeq,
   getLastActiveSessionId,
   setLastActiveSessionId,
   playAgentCompletedSound,
@@ -59,10 +56,22 @@ import {
   apiUrl,
   authFetch,
   fixViewerURLIfNeeded,
+  getGroupingMode,
+  cycleGroupingMode,
+  isGroupExpanded,
+  setGroupExpanded,
+  getAPIPrefix,
+  initUIPreferences,
+  onUIPreferencesLoaded,
 } from "./utils/index.js";
 
 // Import hooks
-import { useWebSocket, useSwipeNavigation } from "./hooks/index.js";
+import {
+  useWebSocket,
+  useSwipeNavigation,
+  useSwipeToDelete,
+  useInfiniteScroll,
+} from "./hooks/index.js";
 
 // Import components
 import { Message } from "./components/Message.js";
@@ -70,11 +79,16 @@ import { ChatInput } from "./components/ChatInput.js";
 import { SettingsDialog } from "./components/SettingsDialog.js";
 import { QueueDropdown } from "./components/QueueDropdown.js";
 import {
+  AgentPlanPanel,
+  AgentPlanIndicator,
+} from "./components/AgentPlanPanel.js";
+import {
   SpinnerIcon,
   CloseIcon,
   SettingsIcon,
   PlusIcon,
-  ChevronUpIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   MenuIcon,
   TrashIcon,
   EditIcon,
@@ -88,10 +102,54 @@ import {
   MoonIcon,
   LightningIcon,
   QueueIcon,
+  PinIcon,
+  PinFilledIcon,
+  ArchiveIcon,
+  ArchiveFilledIcon,
+  ListIcon,
 } from "./components/Icons.js";
 
 // Import constants
 import { KEYBOARD_SHORTCUTS } from "./constants.js";
+
+// =============================================================================
+// File Link Helpers
+// =============================================================================
+
+/**
+ * Determines if a file link should open directly (browser renders it) or in the viewer.
+ * HTML files and Markdown files should open directly since the browser/server renders them.
+ * Other files should open in the syntax-highlighted viewer.
+ * @param {string} href - The file API URL (e.g., /mitto/api/files?ws=...&path=...)
+ * @returns {boolean} True if the file should open directly, false if it should open in viewer
+ */
+function shouldOpenFileDirectly(href) {
+  try {
+    // Parse the URL to extract the path parameter
+    const url = new URL(href, window.location.origin);
+    const path = url.searchParams.get("path") || "";
+
+    // Get file extension
+    const ext = path.split(".").pop()?.toLowerCase() || "";
+
+    // HTML files should always open directly (browser renders them)
+    if (ext === "html" || ext === "htm") {
+      return true;
+    }
+
+    // Markdown files should always open directly (server renders them as HTML)
+    // The render=html parameter will be added if not present
+    if (ext === "md" || ext === "markdown") {
+      return true;
+    }
+
+    // All other files should open in the viewer (syntax highlighting)
+    return false;
+  } catch (e) {
+    console.error("[Mitto] Error checking file type:", e);
+    return false;
+  }
+}
 
 // =============================================================================
 // Global Link Click Handler
@@ -135,11 +193,41 @@ document.addEventListener("click", (e) => {
         openFileURL(fileUrl);
       }
     } else {
-      // Web browser - open in viewer page with syntax highlighting
-      const viewerUrl = convertHTTPFileURLToViewer(href);
-      console.log("[Mitto] Converted to viewer URL:", viewerUrl);
-      if (viewerUrl) {
-        window.open(viewerUrl, "_blank", "noopener,noreferrer");
+      // Web browser - determine how to open the file
+      // HTML files and Markdown files should open directly (browser/server renders them)
+      // Other files should open in the syntax-highlighted viewer
+      const shouldOpenDirectly = shouldOpenFileDirectly(href);
+      if (shouldOpenDirectly) {
+        // Open directly via API - browser will render HTML/Markdown
+        // Fix old links missing API prefix
+        const apiPrefix = getAPIPrefix();
+        let finalUrl = href;
+        if (apiPrefix && !href.includes(apiPrefix)) {
+          // Old link without prefix - add the current prefix
+          finalUrl = finalUrl.replace("/api/files?", apiPrefix + "/api/files?");
+          console.log("[Mitto] Fixed old API link:", href, "->", finalUrl);
+        }
+        // Ensure markdown files have render=html parameter for proper rendering
+        // (old recordings may have links without this parameter)
+        const url = new URL(finalUrl, window.location.origin);
+        const path = url.searchParams.get("path") || "";
+        const ext = path.split(".").pop()?.toLowerCase() || "";
+        if (
+          (ext === "md" || ext === "markdown") &&
+          url.searchParams.get("render") !== "html"
+        ) {
+          url.searchParams.set("render", "html");
+          finalUrl = url.toString();
+          console.log("[Mitto] Added render=html for markdown file:", finalUrl);
+        }
+        window.open(finalUrl, "_blank", "noopener,noreferrer");
+      } else {
+        // Open in viewer page with syntax highlighting
+        const viewerUrl = convertHTTPFileURLToViewer(href);
+        console.log("[Mitto] Converted to viewer URL:", viewerUrl);
+        if (viewerUrl) {
+          window.open(viewerUrl, "_blank", "noopener,noreferrer");
+        }
       }
     }
     return;
@@ -277,12 +365,11 @@ function WorkspacePill({
 }) {
   if (!path) return null;
 
-  const { abbreviation, color, displayName: wsDisplayName } = getWorkspaceVisualInfo(
-    path,
-    customColor,
-    customCode,
-    customName,
-  );
+  const {
+    abbreviation,
+    color,
+    displayName: wsDisplayName,
+  } = getWorkspaceVisualInfo(path, customColor, customCode, customName);
   // Display ACP server name if available, otherwise fall back to workspace display name
   const displayName = acpServer || wsDisplayName;
 
@@ -294,7 +381,9 @@ function WorkspacePill({
     }
   };
 
-  const cursorClass = clickable ? "cursor-pointer workspace-pill-clickable" : "";
+  const cursorClass = clickable
+    ? "cursor-pointer workspace-pill-clickable"
+    : "";
 
   return html`
     <div
@@ -483,58 +572,6 @@ function DeleteDialog({
           >
             Delete
           </button>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// =============================================================================
-// Clean Inactive Sessions Confirmation Dialog
-// =============================================================================
-
-function CleanInactiveDialog({ isOpen, inactiveCount, onConfirm, onCancel }) {
-  if (!isOpen) return null;
-
-  return html`
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick=${onCancel}
-    >
-      <div
-        class="bg-mitto-sidebar rounded-xl p-6 w-80 shadow-2xl"
-        onClick=${(e) => e.stopPropagation()}
-      >
-        <h3 class="text-lg font-semibold mb-2">Clean Inactive Conversations</h3>
-        <p class="text-gray-400 text-sm mb-4">
-          ${inactiveCount === 0
-            ? "There are no inactive conversations to clean."
-            : html`Are you sure you want to delete
-                <span class="text-white font-medium">${inactiveCount}</span>
-                inactive conversation${inactiveCount === 1 ? "" : "s"}?
-                <br /><span class="text-gray-500 text-xs mt-2 block"
-                  >Only stored conversations without an active ACP connection
-                  will be removed.</span
-                >`}
-        </p>
-        <div class="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick=${onCancel}
-            class="px-4 py-2 rounded-lg hover:bg-slate-700 transition-colors"
-          >
-            ${inactiveCount === 0 ? "Close" : "Cancel"}
-          </button>
-          ${inactiveCount > 0 &&
-          html`
-            <button
-              type="button"
-              onClick=${onConfirm}
-              class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-            >
-              Clean All
-            </button>
-          `}
         </div>
       </div>
     </div>
@@ -775,7 +812,14 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
               onKeyDown=${(e) => {
                 // Intercept number keys 1-9 to select workspaces quickly
                 const num = parseInt(e.key, 10);
-                if (num >= 1 && num <= Math.min(WORKSPACE_FILTER_THRESHOLD, filteredWorkspaces.length)) {
+                if (
+                  num >= 1 &&
+                  num <=
+                    Math.min(
+                      WORKSPACE_FILTER_THRESHOLD,
+                      filteredWorkspaces.length,
+                    )
+                ) {
                   e.preventDefault();
                   const workspace = filteredWorkspaces[num - 1];
                   if (workspace) {
@@ -784,7 +828,7 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
                 }
               }}
               placeholder="Filter workspaces..."
-              autoFocus
+              autofocus
               class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500 placeholder-gray-500"
             />
           </div>
@@ -812,9 +856,7 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
                             ${index + 1}
                           </div>
                         `
-                      : html`
-                          <div class="w-8 h-8 flex-shrink-0"></div>
-                        `}
+                      : html` <div class="w-8 h-8 flex-shrink-0"></div> `}
                     <${WorkspaceBadge}
                       path=${ws.working_dir}
                       customColor=${ws.color}
@@ -913,12 +955,17 @@ function ContextMenu({ x, y, items, onClose }) {
             key=${item.label}
             onClick=${(e) => {
               e.stopPropagation();
-              item.onClick();
-              onClose();
+              if (!item.disabled) {
+                item.onClick();
+                onClose();
+              }
             }}
-            class="w-full px-3 py-2 text-left text-sm hover:bg-slate-700 transition-colors flex items-center gap-2 ${item.danger
-              ? "text-red-400 hover:text-red-300"
-              : "text-gray-200"}"
+            disabled=${item.disabled}
+            class="w-full px-3 py-2 text-left text-sm transition-colors flex items-center gap-2 ${item.disabled
+              ? "text-gray-500 cursor-not-allowed"
+              : item.danger
+                ? "text-red-400 hover:text-red-300 hover:bg-slate-700"
+                : "text-gray-200 hover:bg-slate-700"}"
           >
             ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
             ${item.label}
@@ -939,14 +986,97 @@ function SessionItem({
   onSelect,
   onRename,
   onDelete,
+  onArchive,
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
   badgeClickEnabled = false,
   onBadgeClick,
+  hasQueuedMessages = false,
 }) {
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
+
+  // Check if session is archived
+  const isArchived = session.archived || false;
+
+  // Archive button should be disabled if there are queued messages (can't archive with pending messages)
+  const canArchive = !hasQueuedMessages;
+
+  // Get working_dir from session, or fall back to global map
+  const workingDir =
+    session.working_dir || getGlobalWorkingDir(session.session_id) || "";
+  // Get acp_server from session
+  const acpServer = session.acp_server || "";
+
+  // Build tooltip with session metadata
+  const buildTooltip = () => {
+    const parts = [];
+
+    // Workspace folder
+    if (workingDir) {
+      parts.push(`Folder: ${workingDir}`);
+    }
+
+    // ACP server
+    if (acpServer) {
+      parts.push(`Server: ${acpServer}`);
+    }
+
+    // Runner type
+    if (session.runner_type) {
+      const runnerInfo = session.runner_restricted
+        ? `${session.runner_type} (restricted)`
+        : `${session.runner_type} (unrestricted)`;
+      parts.push(`Runner: ${runnerInfo}`);
+    }
+
+    // Message/event count
+    if (session.messageCount !== undefined) {
+      parts.push(`Messages: ${session.messageCount}`);
+    } else if (session.event_count !== undefined) {
+      parts.push(`Events: ${session.event_count}`);
+    }
+
+    // Creation time
+    if (session.created_at) {
+      const createdDate = new Date(session.created_at);
+      parts.push(`Created: ${createdDate.toLocaleString()}`);
+    }
+
+    // Last activity time
+    if (session.updated_at) {
+      const updatedDate = new Date(session.updated_at);
+      parts.push(`Last activity: ${updatedDate.toLocaleString()}`);
+    } else if (session.last_user_message_at) {
+      const lastMsgDate = new Date(session.last_user_message_at);
+      parts.push(`Last message: ${lastMsgDate.toLocaleString()}`);
+    }
+
+    // Archived time (for archived sessions)
+    if (isArchived && session.archived_at) {
+      const archivedDate = new Date(session.archived_at);
+      parts.push(`Archived: ${archivedDate.toLocaleString()}`);
+    }
+
+    return parts.join("\n");
+  };
+
+  // Swipe-to-delete hook
+  const {
+    swipeOffset,
+    isSwiping,
+    isSwipingRef,
+    isRevealed,
+    containerProps,
+    reset,
+    triggerDelete,
+  } = useSwipeToDelete({
+    onDelete: () => onDelete(session),
+    threshold: 0.5,
+    revealWidth: 80,
+    disabled: false,
+  });
 
   const handleRename = (e) => {
     if (e) e.stopPropagation();
@@ -956,6 +1086,11 @@ function SessionItem({
   const handleDelete = (e) => {
     if (e) e.stopPropagation();
     onDelete(session);
+  };
+
+  const handleArchive = (e) => {
+    if (e) e.stopPropagation();
+    onArchive(session, !isArchived);
   };
 
   const handleContextMenu = (e) => {
@@ -968,16 +1103,36 @@ function SessionItem({
     setContextMenu(null);
   };
 
+  // Handle click - only select if not swiping/revealed
+  // Use ref for isSwiping to avoid stale closure issues
+  const handleClick = useCallback(() => {
+    if (isSwipingRef.current) return;
+    if (isRevealed) {
+      reset();
+      return;
+    }
+    onSelect(session.session_id);
+  }, [isSwipingRef, isRevealed, reset, onSelect, session.session_id]);
+
   const displayName = session.name || session.description || "Untitled";
-  const isActiveSession = session.isActive || session.status === "active";
-  const isStreaming = session.isStreaming || false;
-  // Get working_dir from session, or fall back to global map
-  const workingDir =
-    session.working_dir || getGlobalWorkingDir(session.session_id) || "";
-  // Get acp_server from session
-  const acpServer = session.acp_server || "";
+  // Archived sessions should never show as active (they have no ACP connection)
+  const isActiveSession =
+    !isArchived && (session.isActive || session.status === "active");
+  const isStreaming = !isArchived && (session.isStreaming || false);
 
   const contextMenuItems = [
+    {
+      label: !canArchive
+        ? "Clear queue to archive"
+        : isArchived
+          ? "Unarchive"
+          : "Archive",
+      icon: isArchived
+        ? html`<${ArchiveFilledIcon} />`
+        : html`<${ArchiveIcon} />`,
+      onClick: canArchive ? () => handleArchive() : undefined,
+      disabled: !canArchive,
+    },
     {
       label: "Rename",
       icon: html`<${EditIcon} />`,
@@ -991,115 +1146,163 @@ function SessionItem({
     },
   ];
 
+  // Calculate visual feedback intensity based on swipe progress
+  const absOffset = Math.abs(swipeOffset);
+  const deleteProgress = Math.min(absOffset / 160, 1); // Max at 160px
+
   return html`
     <div
-      onClick=${() => onSelect(session.session_id)}
-      onContextMenu=${handleContextMenu}
-      onMouseEnter=${() => setShowActions(true)}
-      onMouseLeave=${() => setShowActions(false)}
-      class="p-3 border-b border-slate-700 cursor-pointer hover:bg-slate-700/50 transition-colors relative ${isActive
-        ? "bg-blue-900/30 border-l-2 border-l-blue-500"
-        : ""}"
+      class="session-item-container relative overflow-hidden border-b border-slate-700"
+      ...${containerProps}
     >
-      ${contextMenu &&
-      html`
-        <${ContextMenu}
-          x=${contextMenu.x}
-          y=${contextMenu.y}
-          items=${contextMenuItems}
-          onClose=${closeContextMenu}
-        />
-      `}
-      <!-- Top row: status indicator, title, and action buttons -->
-      <div class="flex items-start gap-2">
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2">
-            ${isStreaming
-              ? html`
-                  <span
-                    class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
-                    title="Receiving response..."
-                  ></span>
-                `
-              : isActiveSession
-                ? html`
-                    <span
-                      class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
-                    ></span>
-                  `
-                : null}
-            <span class="text-sm font-medium truncate">${displayName}</span>
-          </div>
-          <div class="text-xs text-gray-500 mt-1">
-            ${new Date(session.created_at).toLocaleDateString()}
-            ${new Date(session.created_at).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </div>
-        </div>
-        <div
-          class="flex items-center gap-1 ${showActions
-            ? "opacity-100"
-            : "opacity-0"} transition-opacity flex-shrink-0"
+      <!-- Delete background (revealed when swiping left) -->
+      <div
+        class="absolute inset-0 bg-red-600 flex items-center justify-end pr-6 transition-opacity"
+        style="opacity: ${isRevealed || absOffset > 20 ? 1 : 0}"
+      >
+        <button
+          onClick=${(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            triggerDelete();
+          }}
+          class="p-3 rounded-full bg-red-700 hover:bg-red-800 transition-colors"
+          title="Delete"
         >
-          <button
-            onClick=${handleRename}
-            class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
-            title="Rename"
-          >
-            <${EditIcon} className="w-4 h-4" />
-          </button>
-          <button
-            onClick=${handleDelete}
-            class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
-            title="Delete"
-          >
-            <${TrashIcon} className="w-4 h-4" />
-          </button>
-        </div>
+          <${TrashIcon} className="w-5 h-5 text-white" />
+        </button>
       </div>
-      <!-- Bottom row: message count, saved/stored badge, and workspace pill -->
-      <div class="flex items-center justify-between mt-2">
-        <div class="flex items-center gap-2">
-          ${session.messageCount !== undefined
-            ? html`
-                <span class="text-xs text-gray-500"
-                  >${session.messageCount} msgs</span
-                >
-              `
-            : session.event_count !== undefined
-              ? html`
-                  <span class="text-xs text-gray-500"
-                    >${session.event_count} events</span
-                  >
-                `
-              : null}
-          ${session.isActive
-            ? html`
-                <span class="text-gray-500" title="Session is auto-saved">
-                  <${SaveIcon} className="w-3 h-3" />
-                </span>
-              `
-            : html`
-                <span
-                  class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
-                  >stored</span
-                >
-              `}
-        </div>
-        ${workingDir &&
+      <!-- Swipeable content -->
+      <div
+        onClick=${handleClick}
+        onContextMenu=${handleContextMenu}
+        onMouseEnter=${() => setShowActions(true)}
+        onMouseLeave=${() => setShowActions(false)}
+        class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar ${isActive
+          ? "bg-blue-900/30 border-l-2 border-l-blue-500"
+          : ""} ${isSwiping ? "" : "transition-transform duration-200"}"
+        style="transform: translateX(${swipeOffset}px)"
+        title=${buildTooltip()}
+        data-session-id=${session.session_id}
+      >
+        ${contextMenu &&
         html`
-          <${WorkspacePill}
-            path=${workingDir}
-            customColor=${workspaceColor}
-            customCode=${workspaceCode}
-            customName=${workspaceName}
-            acpServer=${acpServer}
-            clickable=${badgeClickEnabled}
-            onBadgeClick=${onBadgeClick}
+          <${ContextMenu}
+            x=${contextMenu.x}
+            y=${contextMenu.y}
+            items=${contextMenuItems}
+            onClose=${closeContextMenu}
           />
         `}
+        <!-- Top row: status indicator, title, and workspace pill -->
+        <div class="flex items-start gap-2">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              ${isStreaming
+                ? html`
+                    <span
+                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
+                      title="Receiving response..."
+                    ></span>
+                  `
+                : isActiveSession
+                  ? html`
+                      <span
+                        class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
+                      ></span>
+                    `
+                  : null}
+              <span class="text-sm font-medium truncate">${displayName}</span>
+            </div>
+            <div class="text-xs text-gray-500 mt-1">
+              ${new Date(session.created_at).toLocaleDateString()}
+              ${new Date(session.created_at).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </div>
+          </div>
+          ${workingDir &&
+          html`
+            <${WorkspacePill}
+              path=${workingDir}
+              customColor=${workspaceColor}
+              customCode=${workspaceCode}
+              customName=${workspaceName}
+              acpServer=${acpServer}
+              clickable=${badgeClickEnabled}
+              onBadgeClick=${onBadgeClick}
+            />
+          `}
+        </div>
+        <!-- Bottom row: message count, saved/stored badge, and action buttons -->
+        <div class="flex items-center justify-between mt-2">
+          <div class="flex items-center gap-2">
+            ${session.messageCount !== undefined
+              ? html`
+                  <span class="text-xs text-gray-500"
+                    >${session.messageCount} msgs</span
+                  >
+                `
+              : session.event_count !== undefined
+                ? html`
+                    <span class="text-xs text-gray-500"
+                      >${session.event_count} events</span
+                    >
+                  `
+                : null}
+            ${session.isActive
+              ? html`
+                  <span class="text-gray-500" title="Session is auto-saved">
+                    <${SaveIcon} className="w-3 h-3" />
+                  </span>
+                `
+              : html`
+                  <span
+                    class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
+                    >stored</span
+                  >
+                `}
+          </div>
+          <div
+            class="flex items-center gap-1 ${showActions
+              ? "opacity-100"
+              : "opacity-0"} transition-opacity flex-shrink-0"
+          >
+            <button
+              onClick=${canArchive ? handleArchive : undefined}
+              disabled=${!canArchive}
+              class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
+                ? "opacity-50 cursor-not-allowed text-gray-500"
+                : isArchived
+                  ? "hover:bg-slate-600 text-gray-500"
+                  : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
+              title="${!canArchive
+                ? "Clear queue before archiving"
+                : isArchived
+                  ? "Unarchive"
+                  : "Archive"}"
+            >
+              ${isArchived
+                ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
+                : html`<${ArchiveIcon} className="w-4 h-4" />`}
+            </button>
+            <button
+              onClick=${handleRename}
+              class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
+              title="Rename"
+            >
+              <${EditIcon} className="w-4 h-4" />
+            </button>
+            <button
+              onClick=${handleDelete}
+              class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
+              title="Delete"
+            >
+              <${TrashIcon} className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -1115,9 +1318,9 @@ function SessionList({
   activeSessionId,
   onSelect,
   onNewSession,
-  onCleanInactive,
   onRename,
   onDelete,
+  onArchive,
   onClose,
   workspaces,
   theme,
@@ -1130,6 +1333,7 @@ function SessionList({
   rcFilePath = null,
   badgeClickEnabled = false,
   onBadgeClick,
+  queueLength = 0,
 }) {
   // Combine active and stored sessions using shared helper function
   // Note: Not using useMemo to ensure working_dir is always up-to-date
@@ -1137,6 +1341,322 @@ function SessionList({
 
   const isLight = theme === "light";
   const isLargeFont = fontSize === "large";
+
+  // Grouping state - initialized from localStorage
+  const [groupingMode, setGroupingModeState] = useState(() =>
+    getGroupingMode(),
+  );
+  // Track expanded groups - use a counter to force re-render when localStorage changes
+  const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
+
+  // Subscribe to UI preferences loaded from server (for macOS app where localStorage doesn't persist)
+  useEffect(() => {
+    const unsubscribe = onUIPreferencesLoaded((prefs) => {
+      // Re-read grouping mode from localStorage (which was just synced from server)
+      const newMode = getGroupingMode();
+      setGroupingModeState(newMode);
+      // Force re-render for expanded groups
+      setExpandedGroupsVersion((v) => v + 1);
+      console.debug(
+        "[Mitto] SessionList: UI preferences synced from server, mode:",
+        newMode,
+      );
+    });
+    return unsubscribe;
+  }, []);
+
+  // Handle grouping mode toggle
+  const handleToggleGrouping = useCallback(() => {
+    const newMode = cycleGroupingMode();
+    setGroupingModeState(newMode);
+  }, []);
+
+  // Handle group expand/collapse toggle
+  const handleToggleGroup = useCallback((groupKey) => {
+    const currentlyExpanded = isGroupExpanded(groupKey);
+    setGroupExpanded(groupKey, !currentlyExpanded);
+    setExpandedGroupsVersion((v) => v + 1); // Force re-render
+  }, []);
+
+  // Get grouping icon based on current mode
+  const getGroupingIcon = () => {
+    switch (groupingMode) {
+      case "server":
+        return html`<${ServerIcon} className="w-5 h-5" />`;
+      case "folder":
+        return html`<${FolderIcon} className="w-5 h-5" />`;
+      default:
+        return html`<${ListIcon} className="w-5 h-5" />`;
+    }
+  };
+
+  // Get grouping tooltip based on current mode
+  const getGroupingTooltip = () => {
+    switch (groupingMode) {
+      case "server":
+        return "Grouped by ACP server (click to group by folder)";
+      case "folder":
+        return "Grouped by workspace folder (click to disable grouping)";
+      default:
+        return "No grouping (click to group by server)";
+    }
+  };
+
+  // Helper to get session's working directory
+  const getSessionWorkingDir = (session) => {
+    const storedSession = storedSessions.find(
+      (s) => s.session_id === session.session_id,
+    );
+    return (
+      session.working_dir ||
+      storedSession?.working_dir ||
+      getGlobalWorkingDir(session.session_id) ||
+      ""
+    );
+  };
+
+  // Helper to get session's ACP server
+  const getSessionServer = (session) => {
+    const storedSession = storedSessions.find(
+      (s) => s.session_id === session.session_id,
+    );
+    return session.acp_server || storedSession?.acp_server || "Unknown";
+  };
+
+  // Separate archived and non-archived sessions
+  const { nonArchivedSessions, archivedSessions } = useMemo(() => {
+    const nonArchived = [];
+    const archived = [];
+    allSessions.forEach((session) => {
+      if (session.archived) {
+        archived.push(session);
+      } else {
+        nonArchived.push(session);
+      }
+    });
+    return { nonArchivedSessions: nonArchived, archivedSessions: archived };
+  }, [allSessions]);
+
+  // Group sessions based on current mode (only non-archived sessions)
+  const groupedSessions = useMemo(() => {
+    if (groupingMode === "none") {
+      return null; // No grouping, render flat list with sections
+    }
+
+    const groups = new Map();
+
+    // Only group non-archived sessions
+    nonArchivedSessions.forEach((session) => {
+      let groupKey;
+      let groupLabel;
+
+      if (groupingMode === "server") {
+        // Inline getSessionServer logic to avoid stale closure
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        groupKey = session.acp_server || storedSession?.acp_server || "Unknown";
+        groupLabel = groupKey;
+      } else {
+        // folder mode - inline getSessionWorkingDir logic
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        const workingDir =
+          session.working_dir ||
+          storedSession?.working_dir ||
+          getGlobalWorkingDir(session.session_id) ||
+          "";
+        groupKey = workingDir || "Unknown";
+        // Use basename for display
+        groupLabel = workingDir ? getBasename(workingDir) : "Unknown";
+      }
+
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, { label: groupLabel, sessions: [] });
+      }
+      groups.get(groupKey).sessions.push(session);
+    });
+
+    // Convert to array and sort by label
+    return Array.from(groups.entries())
+      .map(([key, value]) => ({ key, ...value }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [nonArchivedSessions, groupingMode, storedSessions]);
+
+  // Render a single session item
+  const renderSessionItem = (session) => {
+    const workingDir = getSessionWorkingDir(session);
+    const finalSession = workingDir
+      ? { ...session, working_dir: workingDir }
+      : session;
+    const workspace = workspaces.find((ws) => ws.working_dir === workingDir);
+    // Only the active session can have queued messages
+    const hasQueuedMessages =
+      session.session_id === activeSessionId && queueLength > 0;
+
+    return html`
+      <${SessionItem}
+        key=${session.session_id}
+        session=${finalSession}
+        isActive=${activeSessionId === session.session_id}
+        onSelect=${onSelect}
+        onRename=${onRename}
+        onDelete=${onDelete}
+        onArchive=${onArchive}
+        workspaceColor=${workspace?.color || null}
+        workspaceCode=${workspace?.code || null}
+        workspaceName=${workspace?.name || null}
+        badgeClickEnabled=${badgeClickEnabled}
+        onBadgeClick=${onBadgeClick}
+        hasQueuedMessages=${hasQueuedMessages}
+      />
+    `;
+  };
+
+  // Handle creating a new session in a specific workspace group
+  const handleNewSessionInGroup = useCallback(
+    (groupKey, e) => {
+      // Prevent the click from toggling the group
+      e.stopPropagation();
+
+      // Find the workspace that matches this group key
+      // For folder mode, groupKey is the working_dir
+      // For server mode, groupKey is the acp_server
+      let workspace = null;
+      if (groupingMode === "folder") {
+        workspace = workspaces.find((ws) => ws.working_dir === groupKey);
+      } else if (groupingMode === "server") {
+        // For server mode, find first workspace with matching acp_server
+        workspace = workspaces.find((ws) => ws.acp_server === groupKey);
+      }
+
+      if (workspace) {
+        onNewSession(workspace);
+      } else {
+        // Fallback to default new session behavior
+        onNewSession();
+      }
+    },
+    [groupingMode, workspaces, onNewSession],
+  );
+
+  // Special key for the archived section (used for localStorage persistence)
+  const ARCHIVED_GROUP_KEY = "__archived__";
+
+  // Render the archived section (used by both grouped and non-grouped modes)
+  const renderArchivedSection = () => {
+    if (archivedSessions.length === 0) return null;
+
+    // Archived section is collapsed by default (check localStorage, default to false)
+    const expanded = isGroupExpanded(ARCHIVED_GROUP_KEY);
+
+    return html`
+      <div key=${ARCHIVED_GROUP_KEY} class="group-section">
+        <div
+          class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer"
+          onClick=${() => handleToggleGroup(ARCHIVED_GROUP_KEY)}
+        >
+          <span class="transition-transform ${expanded ? "" : "-rotate-90"}">
+            <${ChevronDownIcon} className="w-4 h-4" />
+          </span>
+          <${ArchiveIcon} className="w-4 h-4" />
+          <span class="flex-1 text-left">Archived</span>
+          <span class="text-xs text-gray-500">${archivedSessions.length}</span>
+        </div>
+        ${expanded &&
+        archivedSessions.map((session) => renderSessionItem(session))}
+      </div>
+    `;
+  };
+
+  // Render grouped sessions with collapsible headers
+  const renderGroupedSessions = () => {
+    if (!groupedSessions) return null;
+
+    return html`
+      ${groupedSessions.map((group) => {
+        const expanded = isGroupExpanded(group.key);
+        const sessionCount = group.sessions.length;
+        // Check if any session in this group is actively streaming
+        const hasStreamingSession = group.sessions.some((s) => s.isStreaming);
+
+        return html`
+          <div key=${group.key} class="group-section">
+            <div
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer group/header"
+              onClick=${() => handleToggleGroup(group.key)}
+            >
+              <span
+                class="transition-transform ${expanded ? "" : "-rotate-90"}"
+              >
+                <${ChevronDownIcon} className="w-4 h-4" />
+              </span>
+              ${groupingMode === "server"
+                ? html`<${ServerIcon} className="w-4 h-4" />`
+                : html`<${FolderIcon} className="w-4 h-4" />`}
+              <span class="flex-1 text-left truncate">${group.label}</span>
+              ${!expanded &&
+              hasStreamingSession &&
+              html`
+                <span
+                  class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
+                  title="Agent responding in this group"
+                ></span>
+              `}
+              ${groupingMode === "folder" &&
+              html`
+                <button
+                  onClick=${(e) => handleNewSessionInGroup(group.key, e)}
+                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                  title="New conversation in ${group.label}"
+                >
+                  <${PlusIcon} className="w-3.5 h-3.5" />
+                </button>
+              `}
+              <span class="text-xs text-gray-500">${sessionCount}</span>
+            </div>
+            ${expanded &&
+            group.sessions.map((session) => renderSessionItem(session))}
+          </div>
+        `;
+      })}
+      ${renderArchivedSection()}
+    `;
+  };
+
+  // Render sessions in "none" grouping mode with "All" and "Archived" sections
+  const renderUngroupedSessions = () => {
+    // If there are no archived sessions, just render the flat list without section headers
+    if (archivedSessions.length === 0) {
+      return nonArchivedSessions.map((session) => renderSessionItem(session));
+    }
+
+    // Otherwise, show "All" section for non-archived and "Archived" section
+    const allExpanded = isGroupExpanded("__all__");
+
+    return html`
+      <!-- All (non-archived) section -->
+      <div key="__all__" class="group-section">
+        <div
+          class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer"
+          onClick=${() => handleToggleGroup("__all__")}
+        >
+          <span class="transition-transform ${allExpanded ? "" : "-rotate-90"}">
+            <${ChevronDownIcon} className="w-4 h-4" />
+          </span>
+          <${ListIcon} className="w-4 h-4" />
+          <span class="flex-1 text-left">All</span>
+          <span class="text-xs text-gray-500"
+            >${nonArchivedSessions.length}</span
+          >
+        </div>
+        ${allExpanded &&
+        nonArchivedSessions.map((session) => renderSessionItem(session))}
+      </div>
+      ${renderArchivedSection()}
+    `;
+  };
 
   return html`
     <div class="h-full flex flex-col">
@@ -1146,18 +1666,18 @@ function SessionList({
         <h2 class="font-semibold text-lg">Conversations</h2>
         <div class="flex items-center gap-2">
           <button
+            onClick=${handleToggleGrouping}
+            class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
+            title=${getGroupingTooltip()}
+          >
+            ${getGroupingIcon()}
+          </button>
+          <button
             onClick=${() => onNewSession()}
             class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
             title="New Conversation"
           >
             <${PlusIcon} className="w-5 h-5" />
-          </button>
-          <button
-            onClick=${onCleanInactive}
-            class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
-            title="Clean Inactive Conversations"
-          >
-            <${TrashIcon} className="w-5 h-5" />
           </button>
           ${onClose &&
           html`
@@ -1178,39 +1698,9 @@ function SessionList({
             No conversations yet
           </div>
         `}
-        ${allSessions.map((session) => {
-          // Ensure working_dir is available by looking up in storedSessions or global map
-          const storedSession = storedSessions.find(
-            (s) => s.session_id === session.session_id,
-          );
-          const workingDir =
-            session.working_dir ||
-            storedSession?.working_dir ||
-            getGlobalWorkingDir(session.session_id) ||
-            "";
-          const finalSession = workingDir
-            ? { ...session, working_dir: workingDir }
-            : session;
-          // Look up workspace for customization
-          const workspace = workspaces.find(
-            (ws) => ws.working_dir === workingDir,
-          );
-          return html`
-            <${SessionItem}
-              key=${session.session_id}
-              session=${finalSession}
-              isActive=${activeSessionId === session.session_id}
-              onSelect=${onSelect}
-              onRename=${onRename}
-              onDelete=${onDelete}
-              workspaceColor=${workspace?.color || null}
-              workspaceCode=${workspace?.code || null}
-              workspaceName=${workspace?.name || null}
-              badgeClickEnabled=${badgeClickEnabled}
-              onBadgeClick=${onBadgeClick}
-            />
-          `;
-        })}
+        ${groupingMode === "none"
+          ? renderUngroupedSessions()
+          : renderGroupedSessions()}
       </div>
       <!-- Footer with settings, theme and font size toggles -->
       <div class="p-4 border-t border-slate-700">
@@ -1312,9 +1802,13 @@ function App() {
     loadMoreMessages,
     updateSessionName,
     renameSession,
+    pinSession,
+    archiveSession,
     removeSession,
     isStreaming,
     hasMoreMessages,
+    hasReachedLimit,
+    isLoadingMore,
     actionButtons,
     sessionInfo,
     activeSessionId,
@@ -1335,6 +1829,8 @@ function App() {
     addWorkspace,
     removeWorkspace,
     refreshWorkspaces,
+    forceReconnectActiveSession,
+    availableCommands,
   } = useWebSocket();
 
   const [showSidebar, setShowSidebar] = useState(false);
@@ -1344,6 +1840,36 @@ function App() {
   const [isAddingToQueue, setIsAddingToQueue] = useState(false);
   const [queueToastVisible, setQueueToastVisible] = useState(false);
   const [queueBadgePulse, setQueueBadgePulse] = useState(false);
+  // Agent Plan panel state - per-session plan entries stored as { sessionId: entries[] }
+  const [planEntriesMap, setPlanEntriesMap] = useState({});
+  const [showPlanPanel, setShowPlanPanel] = useState(false);
+  const [planUserPinned, setPlanUserPinned] = useState(false);
+  // Plan expiration tracking - per-session: { sessionId: { completedAt: timestamp, messagesAfterCompletion: number } }
+  const [planExpirationMap, setPlanExpirationMap] = useState({});
+  // Plan completion timer - per-session: { sessionId: timeoutId }
+  const planCompletionTimersRef = useRef({});
+
+  // Delay in milliseconds before erasing a completed plan
+  const PLAN_COMPLETION_ERASE_DELAY = 5000;
+
+  // Number of user messages after plan completion before auto-expiring (configurable between 3-4)
+  const PLAN_EXPIRATION_MESSAGE_THRESHOLD = 3;
+
+  // Computed: get plan entries for active session
+  const planEntries = useMemo(() => {
+    if (!activeSessionId) return [];
+    return planEntriesMap[activeSessionId] || [];
+  }, [planEntriesMap, activeSessionId]);
+
+  // Coalesce consecutive agent messages for display.
+  // The backend's MarkdownBuffer flushes content at semantic boundaries (paragraphs,
+  // headers, horizontal rules, etc.), creating separate events. This is correct for
+  // tracking and sync, but creates a poor visual experience where each flush appears
+  // as a separate message bubble. This combines them for rendering.
+  const displayMessages = useMemo(() => {
+    return coalesceAgentMessages(messages);
+  }, [messages]);
+
   const [renameDialog, setRenameDialog] = useState({
     isOpen: false,
     session: null,
@@ -1351,9 +1877,6 @@ function App() {
   const [deleteDialog, setDeleteDialog] = useState({
     isOpen: false,
     session: null,
-  });
-  const [cleanInactiveDialog, setCleanInactiveDialog] = useState({
-    isOpen: false,
   });
   const [workspaceDialog, setWorkspaceDialog] = useState({ isOpen: false }); // Workspace selector for new session
   const [settingsDialog, setSettingsDialog] = useState({
@@ -1370,13 +1893,16 @@ function App() {
   const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
   const [workspacePromptsLastModified, setWorkspacePromptsLastModified] =
     useState(null); // Last-Modified header for conditional requests
-  const [configReadonly, setConfigReadonly] = useState(false); // True when --config flag was used or using RC file
+  const [configReadonly, setConfigReadonly] = useState(
+    () => window.mittoIsExternal === true, // Start as true for external connections, or when --config flag was used or using RC file
+  );
   const [rcFilePath, setRcFilePath] = useState(null); // Path to RC file when config is read-only due to RC file
   const [swipeDirection, setSwipeDirection] = useState(null); // 'left' or 'right' for animation
   const [swipeArrow, setSwipeArrow] = useState(null); // 'left' or 'right' for arrow indicator
   const [toastVisible, setToastVisible] = useState(false);
   const [toastData, setToastData] = useState(null); // { sessionId, sessionName }
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [runnerFallbackWarning, setRunnerFallbackWarning] = useState(null); // { requestedType, fallbackType, reason }
+  const [acpStartFailedError, setAcpStartFailedError] = useState(null); // { session_id, error }
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   // Per-session draft text: { sessionId: draftText } - null key for "no session" state
@@ -1389,6 +1915,8 @@ function App() {
   const mainContentRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const prevMessagesLengthRef = useRef(0);
+  // Scroll position preservation for "load more" (prepend) - stores scroll metrics before loading
+  const scrollPreservationRef = useRef(null);
 
   // Compute all sessions for navigation using shared helper function
   const allSessions = useMemo(
@@ -1413,7 +1941,9 @@ function App() {
         return true; // No ACP server selected, show all prompts
       }
       // Parse comma-separated list and check for match (case-insensitive)
-      const allowedServers = prompt.acps.split(",").map((s) => s.trim().toLowerCase());
+      const allowedServers = prompt.acps
+        .split(",")
+        .map((s) => s.trim().toLowerCase());
       return allowedServers.includes(currentAcpServer);
     };
 
@@ -1473,10 +2003,12 @@ function App() {
     workspacePrompts,
   ]);
 
-  // Initialize CSRF protection on mount
+  // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected
+  // Also loads UI preferences from server (for macOS app where localStorage doesn't persist)
   useEffect(() => {
     initCSRF();
+    initUIPreferences();
   }, []);
 
   // Clear swipe direction after animation completes
@@ -1543,6 +2075,45 @@ function App() {
     }
   }, [toastVisible, toastData]);
 
+  // Listen for runner fallback events
+  useEffect(() => {
+    const handleRunnerFallback = (event) => {
+      const data = event.detail;
+      if (data) {
+        setRunnerFallbackWarning(data);
+        // Auto-hide after 10 seconds
+        setTimeout(() => {
+          setRunnerFallbackWarning(null);
+        }, 10000);
+      }
+    };
+    window.addEventListener("mitto:runner_fallback", handleRunnerFallback);
+    return () => {
+      window.removeEventListener("mitto:runner_fallback", handleRunnerFallback);
+    };
+  }, []);
+
+  // Listen for ACP start failed events
+  useEffect(() => {
+    const handleAcpStartFailed = (event) => {
+      const data = event.detail;
+      if (data) {
+        setAcpStartFailedError(data);
+        // Auto-hide after 10 seconds
+        setTimeout(() => {
+          setAcpStartFailedError(null);
+        }, 10000);
+      }
+    };
+    window.addEventListener("mitto:acp_start_failed", handleAcpStartFailed);
+    return () => {
+      window.removeEventListener(
+        "mitto:acp_start_failed",
+        handleAcpStartFailed,
+      );
+    };
+  }, []);
+
   // Cleanup timer on unmount
   useEffect(() => {
     return () => {
@@ -1579,72 +2150,99 @@ function App() {
   }, []);
 
   // Handle loading more messages
-  const handleLoadMore = useCallback(async () => {
-    if (loadingMore || !activeSessionId || !hasMoreMessages) return;
+  // Note: isLoadingMore state is managed by useWebSocket hook, not locally.
+  // The hook sets isLoadingMore=true when sending load_events request,
+  // and clears it when events_loaded response is received.
+  const handleLoadMore = useCallback(() => {
+    if (isLoadingMore || !activeSessionId || !hasMoreMessages) return;
 
-    // Remember scroll position to maintain it after loading
+    // Save scroll metrics BEFORE loading for scroll position preservation
+    // When new messages are prepended, we'll restore the position relative to existing content
     const container = messagesContainerRef.current;
-    const scrollHeightBefore = container?.scrollHeight || 0;
-
-    setLoadingMore(true);
-    await loadMoreMessages(activeSessionId);
-    setLoadingMore(false);
-
-    // Restore scroll position (keep user at same visual position)
     if (container) {
-      const scrollHeightAfter = container.scrollHeight;
-      container.scrollTop = scrollHeightAfter - scrollHeightBefore;
+      scrollPreservationRef.current = {
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop,
+      };
+      console.log(
+        "[Scroll] Saved scroll metrics before load more:",
+        scrollPreservationRef.current,
+      );
     }
-  }, [loadingMore, activeSessionId, hasMoreMessages, loadMoreMessages]);
+
+    loadMoreMessages(activeSessionId);
+  }, [isLoadingMore, activeSessionId, hasMoreMessages, loadMoreMessages]);
+
+  // Infinite scroll for loading earlier messages
+  // Uses IntersectionObserver to detect when user scrolls near the top
+  // Scroll position restoration is handled by the useInfiniteScroll hook
+  const { sentinelRef } = useInfiniteScroll({
+    hasMoreMessages,
+    isLoading: isLoadingMore,
+    onLoadMore: handleLoadMore,
+    containerRef: messagesContainerRef,
+    rootMargin: "300px", // Trigger 300px before reaching top for smooth experience
+    debounceMs: 500, // Prevent rapid-fire loading
+  });
+
+  // Sessions available for navigation (excludes archived sessions)
+  // Navigation via keyboard shortcuts and swipe gestures should skip archived conversations
+  const navigableSessions = useMemo(() => {
+    return allSessions.filter((s) => !s.archived);
+  }, [allSessions]);
 
   // Navigate to previous/next session with animation direction (wraps around for swipe gestures)
+  // Skips archived sessions
   const navigateToPreviousSession = useCallback(() => {
-    if (allSessions.length <= 1) return;
-    const currentIndex = allSessions.findIndex(
+    if (navigableSessions.length <= 1) return;
+    const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
     if (currentIndex === -1) return;
     const prevIndex =
-      currentIndex === 0 ? allSessions.length - 1 : currentIndex - 1;
+      currentIndex === 0 ? navigableSessions.length - 1 : currentIndex - 1;
     setSwipeDirection("right"); // Content slides in from left
     setSwipeArrow("right"); // Show right arrow (user swiped right)
-    switchSession(allSessions[prevIndex].session_id);
-  }, [allSessions, activeSessionId, switchSession]);
+    switchSession(navigableSessions[prevIndex].session_id);
+  }, [navigableSessions, activeSessionId, switchSession]);
 
   const navigateToNextSession = useCallback(() => {
-    if (allSessions.length <= 1) return;
-    const currentIndex = allSessions.findIndex(
+    if (navigableSessions.length <= 1) return;
+    const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
     if (currentIndex === -1) return;
     const nextIndex =
-      currentIndex === allSessions.length - 1 ? 0 : currentIndex + 1;
+      currentIndex === navigableSessions.length - 1 ? 0 : currentIndex + 1;
     setSwipeDirection("left"); // Content slides in from right
     setSwipeArrow("left"); // Show left arrow (user swiped left)
-    switchSession(allSessions[nextIndex].session_id);
-  }, [allSessions, activeSessionId, switchSession]);
+    switchSession(navigableSessions[nextIndex].session_id);
+  }, [navigableSessions, activeSessionId, switchSession]);
 
   // Navigate to session above in the list (no wrap-around, for keyboard shortcuts)
   // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
+  // Skips archived sessions
   const navigateToSessionAbove = useCallback(() => {
-    if (allSessions.length <= 1) return;
-    const currentIndex = allSessions.findIndex(
+    if (navigableSessions.length <= 1) return;
+    const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
     if (currentIndex === -1 || currentIndex === 0) return; // Already at top or not found
-    switchSession(allSessions[currentIndex - 1].session_id);
-  }, [allSessions, activeSessionId, switchSession]);
+    switchSession(navigableSessions[currentIndex - 1].session_id);
+  }, [navigableSessions, activeSessionId, switchSession]);
 
   // Navigate to session below in the list (no wrap-around, for keyboard shortcuts)
   // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
+  // Skips archived sessions
   const navigateToSessionBelow = useCallback(() => {
-    if (allSessions.length <= 1) return;
-    const currentIndex = allSessions.findIndex(
+    if (navigableSessions.length <= 1) return;
+    const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
-    if (currentIndex === -1 || currentIndex === allSessions.length - 1) return; // Already at bottom or not found
-    switchSession(allSessions[currentIndex + 1].session_id);
-  }, [allSessions, activeSessionId, switchSession]);
+    if (currentIndex === -1 || currentIndex === navigableSessions.length - 1)
+      return; // Already at bottom or not found
+    switchSession(navigableSessions[currentIndex + 1].session_id);
+  }, [navigableSessions, activeSessionId, switchSession]);
 
   // Open sidebar handler for edge swipe
   const openSidebar = useCallback(() => {
@@ -1667,16 +2265,17 @@ function App() {
   );
 
   // Navigate to session by index (0-based) for keyboard shortcuts
+  // Uses navigableSessions to skip archived conversations
   const navigateToSessionByIndex = useCallback(
     (index) => {
-      if (index >= 0 && index < allSessions.length) {
-        const targetSession = allSessions[index];
+      if (index >= 0 && index < navigableSessions.length) {
+        const targetSession = navigableSessions[index];
         if (targetSession.session_id !== activeSessionId) {
           switchSession(targetSession.session_id);
         }
       }
     },
-    [allSessions, activeSessionId, switchSession],
+    [navigableSessions, activeSessionId, switchSession],
   );
 
   // Global keyboard shortcuts for Command+1-9 to switch sessions and Command+, for settings
@@ -1753,6 +2352,9 @@ function App() {
   // Badge click action settings (macOS only, default: enabled)
   const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
 
+  // Input font family setting (web UI, default: "system")
+  const [inputFontFamily, setInputFontFamily] = useState("system");
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
@@ -1798,7 +2400,10 @@ function App() {
           setConfirmDeleteSession(false);
         }
         // Load UI settings (macOS only)
-        console.log("[config] ui.mac.notifications:", config?.ui?.mac?.notifications);
+        console.log(
+          "[config] ui.mac.notifications:",
+          config?.ui?.mac?.notifications,
+        );
         if (config?.ui?.mac?.notifications?.sounds?.agent_completed) {
           console.log("[config] Setting agent_completed sound ENABLED");
           setAgentCompletedSoundEnabled(true);
@@ -1820,13 +2425,22 @@ function App() {
           // Disable for non-macOS environments
           setBadgeClickEnabled(false);
         }
+        // Load input font family setting (web UI)
+        if (config?.ui?.web?.input_font_family) {
+          setInputFontFamily(config.ui.web.input_font_family);
+        }
         // Check if ACP servers or workspaces are configured - if not, force open settings
-        // Skip this if config is read-only (user manages config via file)
+        // Skip this if config is read-only (user manages config via file) or if external connection
         const noAcpServers =
           !config?.acp_servers || config.acp_servers.length === 0;
         const noWorkspaces =
           !config?.workspaces || config.workspaces.length === 0;
-        if ((noAcpServers || noWorkspaces) && !config?.config_readonly) {
+        const isExternalConnection = window.mittoIsExternal === true;
+        if (
+          (noAcpServers || noWorkspaces) &&
+          !config?.config_readonly &&
+          !isExternalConnection
+        ) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
         }
       })
@@ -2047,6 +2661,10 @@ function App() {
       document.body.classList.remove("light");
     }
     localStorage.setItem("mitto-theme", theme);
+    // Update Mermaid.js theme for new diagrams
+    if (typeof window.updateMermaidTheme === "function") {
+      window.updateMermaidTheme(theme);
+    }
   }, [theme]);
 
   const toggleTheme = useCallback(() => {
@@ -2108,21 +2726,69 @@ function App() {
     setFontSize((prev) => (prev === "small" ? "large" : "small"));
   }, []);
 
-  // Threshold for considering user "at bottom" (in pixels)
-  const SCROLL_THRESHOLD = 100;
+  // Apply input font family class to document
+  useEffect(() => {
+    const root = document.documentElement;
+    // Remove all input font classes first
+    const fontClasses = [
+      "input-font-system",
+      "input-font-sans-serif",
+      "input-font-serif",
+      "input-font-monospace",
+      "input-font-menlo",
+      "input-font-monaco",
+      "input-font-consolas",
+      "input-font-courier-new",
+      "input-font-jetbrains-mono",
+      "input-font-sf-mono",
+      "input-font-cascadia-code",
+    ];
+    fontClasses.forEach((cls) => root.classList.remove(cls));
+    // Add the current font class
+    root.classList.add(`input-font-${inputFontFamily}`);
+  }, [inputFontFamily]);
+
+  // Threshold for considering user "at bottom"
+  // For large scroll ranges (>200px), use a fixed 50px threshold
+  // For smaller ranges, use 25% of maxScroll to ensure the button can appear
+  const SCROLL_THRESHOLD_PX = 50;
+  const SCROLL_THRESHOLD_PERCENT = 0.25;
 
   // Check if the user is at the bottom of the messages container
+  // With flex-col-reverse on the INNER wrapper (not the scrollable container):
+  // - scrollTop=0 means we're at the visual TOP (oldest messages)
+  // - scrollTop=scrollHeight-clientHeight means we're at the visual BOTTOM (newest messages)
   const checkIfAtBottom = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container) return true;
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    return scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
+    const maxScroll = container.scrollHeight - container.clientHeight;
+    // If there's no scrollable content, consider us at bottom
+    if (maxScroll <= 0) return true;
+    // Use percentage-based threshold for small scroll ranges,
+    // fixed threshold for larger ones
+    const threshold = Math.min(
+      SCROLL_THRESHOLD_PX,
+      maxScroll * SCROLL_THRESHOLD_PERCENT,
+    );
+    const atBottom = container.scrollTop >= maxScroll - threshold;
+    console.log("[scroll] checkIfAtBottom:", {
+      scrollTop: container.scrollTop,
+      scrollHeight: container.scrollHeight,
+      clientHeight: container.clientHeight,
+      maxScroll,
+      threshold,
+      atBottom,
+    });
+    return atBottom;
   }, []);
 
   // Scroll to bottom handler
+  // With flex-col-reverse on inner wrapper, scrollHeight is the visual bottom
   const scrollToBottom = useCallback((smooth = true) => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
         behavior: smooth ? "smooth" : "auto",
       });
       setIsUserAtBottom(true);
@@ -2135,8 +2801,9 @@ function App() {
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    const handleScroll = () => {
+    const handleScroll = (source = "scroll") => {
       const atBottom = checkIfAtBottom();
+      console.log(`[scroll] handleScroll(${source}):`, { atBottom });
       setIsUserAtBottom(atBottom);
       // Clear new messages indicator when user scrolls to bottom
       if (atBottom) {
@@ -2144,14 +2811,26 @@ function App() {
       }
     };
 
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    return () => container.removeEventListener("scroll", handleScroll);
+    // Check initial scroll position on mount
+    // This handles cases where content fits in viewport (no scroll event fires)
+    // Use requestAnimationFrame to ensure layout is complete before checking
+    requestAnimationFrame(() => {
+      handleScroll("initial-raf");
+    });
+
+    const onScroll = () => handleScroll("event");
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
   }, [checkIfAtBottom]);
 
   // Track the active session to detect when we switch sessions
   const prevActiveSessionIdRef = useRef(activeSessionId);
   // Track if we're still in the initial load phase after a session switch
   const sessionJustSwitchedRef = useRef(false);
+  // Track previous isLoadingMore state to detect when a "load more" completes
+  const prevIsLoadingMoreRef = useRef(false);
+  // Track if we just finished loading more (prepend) - skip auto-scroll in this case
+  const justLoadedMoreRef = useRef(false);
 
   // Position at bottom synchronously BEFORE paint when switching sessions
   // This prevents any visible "jump" - the content appears already at the bottom
@@ -2160,14 +2839,25 @@ function App() {
     const container = messagesContainerRef.current;
 
     // Helper to scroll to bottom instantly (bypassing CSS scroll-behavior: smooth)
+    // With flex-col-reverse on inner wrapper, scrollHeight is the visual bottom
     const scrollToBottomInstant = () => {
       if (!container) return;
       // Temporarily disable smooth scrolling to make scroll instant
       const originalBehavior = container.style.scrollBehavior;
       container.style.scrollBehavior = "auto";
-      container.scrollTop = container.scrollHeight;
+      const beforeScrollTop = container.scrollTop;
+      container.scrollTop = container.scrollHeight; // scrollHeight = visual bottom
+      console.log("[scroll] scrollToBottomInstant:", {
+        beforeScrollTop,
+        afterScrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+        clientHeight: container.clientHeight,
+      });
       // Restore original behavior after the scroll completes
       container.style.scrollBehavior = originalBehavior;
+      // Explicitly set state since scroll event may not fire if position doesn't change
+      setIsUserAtBottom(true);
+      setHasNewMessages(false);
     };
 
     // Detect session switch (activeSessionId changed)
@@ -2196,6 +2886,45 @@ function App() {
     }
   }, [messages, activeSessionId]);
 
+  // Detect when "load more" (prepend) completes - restore scroll position and skip auto-scroll
+  // Uses useLayoutEffect to run BEFORE browser paint, preventing visual jump
+  useLayoutEffect(() => {
+    // Detect transition from isLoadingMore=true to isLoadingMore=false
+    if (prevIsLoadingMoreRef.current && !isLoadingMore) {
+      // Load more just completed - set flag to skip auto-scroll for prepended content
+      justLoadedMoreRef.current = true;
+      console.log("[Scroll] Load more completed, will skip auto-scroll");
+
+      // Restore scroll position to maintain visual position after prepend
+      // The new content was added above, so we need to offset scrollTop by the height difference
+      const container = messagesContainerRef.current;
+      const savedMetrics = scrollPreservationRef.current;
+      if (container && savedMetrics) {
+        // Temporarily disable smooth scrolling to make scroll position restoration instant
+        // Without this, the browser will animate the scroll which causes visual jumping
+        const originalBehavior = container.style.scrollBehavior;
+        container.style.scrollBehavior = "auto";
+
+        const newScrollHeight = container.scrollHeight;
+        const heightDiff = newScrollHeight - savedMetrics.scrollHeight;
+        const newScrollTop = savedMetrics.scrollTop + heightDiff;
+        container.scrollTop = newScrollTop;
+        console.log("[Scroll] Restored scroll position after prepend:", {
+          oldScrollHeight: savedMetrics.scrollHeight,
+          newScrollHeight,
+          heightDiff,
+          oldScrollTop: savedMetrics.scrollTop,
+          newScrollTop,
+        });
+
+        // Restore original scroll behavior after the instant scroll
+        container.style.scrollBehavior = originalBehavior;
+        scrollPreservationRef.current = null;
+      }
+    }
+    prevIsLoadingMoreRef.current = isLoadingMore;
+  }, [isLoadingMore, messages]);
+
   // Smart auto-scroll for new content during active conversation
   useEffect(() => {
     const currentLength = messages.length;
@@ -2208,6 +2937,15 @@ function App() {
 
     // Skip if this is initial load after session switch (handled by useLayoutEffect above)
     if (sessionJustSwitchedRef.current) {
+      return;
+    }
+
+    // Skip auto-scroll if we just loaded older messages (prepend)
+    // The useInfiniteScroll hook handles scroll position restoration for this case
+    if (justLoadedMoreRef.current) {
+      console.log("[Scroll] Skipping auto-scroll - just loaded older messages");
+      justLoadedMoreRef.current = false;
+      prevMessagesLengthRef.current = currentLength;
       return;
     }
 
@@ -2333,6 +3071,16 @@ function App() {
       }
     };
 
+    // App Did Become Active - called from native macOS when app becomes visible
+    // WKWebView doesn't fire visibilitychange events, so the native app calls this
+    // to trigger WebSocket reconnection and sync any missed messages
+    window.mittoAppDidBecomeActive = () => {
+      console.log("[macOS] App became active, triggering reconnect and sync");
+      forceReconnectActiveSession();
+      // Also refresh session list in case there were changes
+      fetchStoredSessions();
+    };
+
     // Cleanup on unmount
     return () => {
       delete window.mittoNewConversation;
@@ -2343,6 +3091,7 @@ function App() {
       delete window.mittoNextConversation;
       delete window.mittoPrevConversation;
       delete window.mittoSwitchToSession;
+      delete window.mittoAppDidBecomeActive;
     };
   }, [
     newSession,
@@ -2357,9 +3106,31 @@ function App() {
     navigateToNextSession,
     navigateToPreviousSession,
     switchSession,
+    forceReconnectActiveSession,
   ]);
 
-  const handleNewSession = async () => {
+  const handleNewSession = async (workspace = null) => {
+    // If a specific workspace is provided, create session directly in that workspace
+    if (workspace) {
+      setShowSidebar(false);
+      const result = await newSession({
+        workingDir: workspace.working_dir,
+        acpServer: workspace.acp_server,
+      });
+      // If session creation failed due to no workspace configured, open settings
+      if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+        setSettingsDialog({ isOpen: true, forceOpen: true });
+      } else {
+        // Focus the input after creating new session
+        setTimeout(() => {
+          if (chatInputRef.current) {
+            chatInputRef.current.focus();
+          }
+        }, 100);
+      }
+      return;
+    }
+
     // If no workspaces configured, open settings dialog (unless config is read-only)
     if (workspaces.length === 0) {
       if (!configReadonly) {
@@ -2430,7 +3201,10 @@ function App() {
 
   // Queue dropdown handlers
   const handleToggleQueueDropdown = useCallback(() => {
-    console.log("[DEBUG] handleToggleQueueDropdown called, current showQueueDropdown:", showQueueDropdown);
+    console.log(
+      "[DEBUG] handleToggleQueueDropdown called, current showQueueDropdown:",
+      showQueueDropdown,
+    );
     // Cancel any auto-close timer when user manually toggles
     if (queuePanelAutoCloseTimerRef.current) {
       clearTimeout(queuePanelAutoCloseTimerRef.current);
@@ -2482,50 +3256,70 @@ function App() {
   // Ref to track queue toast hide timer
   const queueToastTimerRef = useRef(null);
 
-  // Handle adding current draft to queue
-  const handleAddToQueue = useCallback(async () => {
-    if (!currentDraft?.trim() || isAddingToQueue) return;
+  // Handle adding message to queue (with optional images and files)
+  // Called from ChatInput with message text, images, and files
+  const handleAddToQueue = useCallback(
+    async (message, images = [], files = []) => {
+      // Allow queueing if there's text OR images OR files (or any combination)
+      const hasContent =
+        message?.trim() || images.length > 0 || files.length > 0;
+      if (!hasContent || isAddingToQueue) return { success: false };
 
-    setIsAddingToQueue(true);
-    try {
-      const result = await addToQueue(currentDraft);
-      if (result.success) {
-        // Clear the draft after successful addition
-        updateDraft(activeSessionId, "");
+      setIsAddingToQueue(true);
+      try {
+        // Extract image and file IDs from the objects
+        const imageIds = images.map((img) => img.id).filter(Boolean);
+        const fileIds = files.map((f) => f.id).filter(Boolean);
+        const result = await addToQueue(message, imageIds, fileIds);
+        if (result.success) {
+          // Clear the draft after successful addition
+          // Note: Images are cleared by ChatInput on success
+          updateDraft(activeSessionId, "");
 
-        // Show queue toast feedback
-        if (queueToastTimerRef.current) {
-          clearTimeout(queueToastTimerRef.current);
+          // Show queue toast feedback
+          if (queueToastTimerRef.current) {
+            clearTimeout(queueToastTimerRef.current);
+          }
+          setQueueToastVisible(true);
+          queueToastTimerRef.current = setTimeout(() => {
+            setQueueToastVisible(false);
+            queueToastTimerRef.current = null;
+          }, 2000);
+
+          // Trigger badge pulse animation
+          setQueueBadgePulse(true);
+          setTimeout(() => setQueueBadgePulse(false), 600);
+
+          // Open queue panel briefly to show the new message
+          fetchQueueMessages();
+          setShowQueueDropdown(true);
+
+          // Clear any existing auto-close timer
+          if (queuePanelAutoCloseTimerRef.current) {
+            clearTimeout(queuePanelAutoCloseTimerRef.current);
+          }
+
+          // Auto-close the queue panel after 1.5 seconds
+          queuePanelAutoCloseTimerRef.current = setTimeout(() => {
+            setShowQueueDropdown(false);
+            queuePanelAutoCloseTimerRef.current = null;
+          }, 1500);
+
+          return { success: true };
         }
-        setQueueToastVisible(true);
-        queueToastTimerRef.current = setTimeout(() => {
-          setQueueToastVisible(false);
-          queueToastTimerRef.current = null;
-        }, 2000);
-
-        // Trigger badge pulse animation
-        setQueueBadgePulse(true);
-        setTimeout(() => setQueueBadgePulse(false), 600);
-
-        // Open queue panel briefly to show the new message
-        fetchQueueMessages();
-        setShowQueueDropdown(true);
-
-        // Clear any existing auto-close timer
-        if (queuePanelAutoCloseTimerRef.current) {
-          clearTimeout(queuePanelAutoCloseTimerRef.current);
-        }
-
-        // Auto-close the queue panel after 1.5 seconds
-        queuePanelAutoCloseTimerRef.current = setTimeout(() => {
-          setShowQueueDropdown(false);
-          queuePanelAutoCloseTimerRef.current = null;
-        }, 1500);
+        return { success: false, error: result.error };
+      } finally {
+        setIsAddingToQueue(false);
       }
-    } finally {
-      setIsAddingToQueue(false);
-    }
-  }, [currentDraft, isAddingToQueue, addToQueue, updateDraft, activeSessionId, fetchQueueMessages]);
+    },
+    [
+      isAddingToQueue,
+      addToQueue,
+      updateDraft,
+      activeSessionId,
+      fetchQueueMessages,
+    ],
+  );
 
   // Auto-hide queue dropdown when certain events occur
   useEffect(() => {
@@ -2557,6 +3351,230 @@ function App() {
     };
   }, [showQueueDropdown, fetchQueueMessages]);
 
+  // Helper function to compare plan entries
+  const arePlanEntriesEqual = useCallback((a, b) => {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    if (a.length !== b.length) return false;
+    // Compare each entry by content, status, and priority
+    for (let i = 0; i < a.length; i++) {
+      if (
+        a[i].content !== b[i].content ||
+        a[i].status !== b[i].status ||
+        a[i].priority !== b[i].priority
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }, []);
+
+  // Listen for plan updates from WebSocket - store per session in the map
+  // When all tasks are completed, erase the plan after a delay
+  useEffect(() => {
+    const handlePlanUpdate = (event) => {
+      const { sessionId, entries } = event.detail;
+      if (!sessionId) return;
+
+      // Check if this is a new plan (has entries) or an update to existing
+      const hasEntries = entries && entries.length > 0;
+
+      // Get existing entries for comparison
+      const existingEntries = planEntriesMap[sessionId] || [];
+
+      // Check if the plan has actually changed
+      const hasChanged = !arePlanEntriesEqual(existingEntries, entries || []);
+
+      // If nothing changed, skip all updates
+      if (!hasChanged) {
+        console.log(
+          `[Plan] No changes for session ${sessionId}, skipping update`,
+        );
+        return;
+      }
+
+      // Check if all tasks are completed
+      const allCompleted =
+        hasEntries && entries.every((e) => e.status === "completed");
+
+      // Cancel any existing completion timer for this session
+      if (planCompletionTimersRef.current[sessionId]) {
+        clearTimeout(planCompletionTimersRef.current[sessionId]);
+        delete planCompletionTimersRef.current[sessionId];
+      }
+
+      if (allCompleted) {
+        // All tasks completed - update entries to show completion, then schedule erasure
+        console.log(
+          `[Plan] All tasks completed for session ${sessionId}, scheduling erasure in ${PLAN_COMPLETION_ERASE_DELAY}ms`,
+        );
+
+        // Update entries to show completed state
+        setPlanEntriesMap((prev) => ({
+          ...prev,
+          [sessionId]: entries || [],
+        }));
+
+        // Remove from expiration tracking if present
+        setPlanExpirationMap((prev) => {
+          const { [sessionId]: _, ...rest } = prev;
+          return rest;
+        });
+
+        // Schedule plan erasure after delay
+        planCompletionTimersRef.current[sessionId] = setTimeout(() => {
+          console.log(
+            `[Plan] Erasing completed plan for session ${sessionId}`,
+          );
+          delete planCompletionTimersRef.current[sessionId];
+
+          // Close panel first (triggers CSS transition)
+          if (sessionId === activeSessionId) {
+            setShowPlanPanel(false);
+            setPlanUserPinned(false);
+          }
+
+          // Wait for panel close animation (300ms transition) before removing entries
+          setTimeout(() => {
+            setPlanEntriesMap((prevEntries) => {
+              const { [sessionId]: _, ...restEntries } = prevEntries;
+              return restEntries;
+            });
+          }, 350); // Slightly longer than 300ms transition to ensure it completes
+        }, PLAN_COMPLETION_ERASE_DELAY);
+
+        return;
+      }
+
+      // Store plan entries for this session in the map
+      setPlanEntriesMap((prev) => ({
+        ...prev,
+        [sessionId]: entries || [],
+      }));
+
+      // Reset expiration tracking when new/updated plan with incomplete tasks is received
+      if (hasEntries) {
+        setPlanExpirationMap((prev) => {
+          const existing = prev[sessionId];
+          if (existing) {
+            console.log(
+              `[Plan] New/updated plan for session ${sessionId}, resetting expiration tracking`,
+            );
+            const { [sessionId]: _, ...rest } = prev;
+            return rest;
+          }
+          return prev;
+        });
+      }
+
+      // Auto-expand the panel if this is the active session and not already pinned
+      if (sessionId === activeSessionId && !planUserPinned && hasEntries) {
+        setShowPlanPanel(true);
+      }
+    };
+    window.addEventListener("mitto:plan_update", handlePlanUpdate);
+    return () => {
+      window.removeEventListener("mitto:plan_update", handlePlanUpdate);
+    };
+  }, [activeSessionId, planUserPinned, planEntriesMap, arePlanEntriesEqual]);
+
+  // Reset panel state (but not entries) when switching sessions
+  // The entries are preserved in planEntriesMap and will show the badge indicator
+  useEffect(() => {
+    setShowPlanPanel(false);
+    setPlanUserPinned(false);
+  }, [activeSessionId]);
+
+  // Plan panel handlers
+  const handleTogglePlanPanel = useCallback(() => {
+    setShowPlanPanel((prev) => {
+      if (!prev) {
+        // Opening - mark as user pinned
+        setPlanUserPinned(true);
+      }
+      return !prev;
+    });
+  }, []);
+
+  const handleClosePlanPanel = useCallback(() => {
+    setShowPlanPanel(false);
+    setPlanUserPinned(false);
+  }, []);
+
+  // Track user messages for plan expiration - called when user sends a prompt
+  const trackUserMessageForPlanExpiration = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
+
+      setPlanExpirationMap((prev) => {
+        const existing = prev[sessionId];
+        if (!existing?.completedAt) {
+          // No completed plan being tracked for this session
+          return prev;
+        }
+
+        const newCount = (existing.messagesAfterCompletion || 0) + 1;
+        console.log(
+          `[Plan Expiration] User message sent for session ${sessionId}, count: ${newCount}/${PLAN_EXPIRATION_MESSAGE_THRESHOLD}`,
+        );
+
+        if (newCount >= PLAN_EXPIRATION_MESSAGE_THRESHOLD) {
+          // Threshold reached - expire the plan
+          console.log(
+            `[Plan Expiration] Threshold reached for session ${sessionId}, expiring plan`,
+          );
+
+          // Remove from expiration tracking
+          const { [sessionId]: _, ...rest } = prev;
+
+          // Schedule plan removal with graceful animation:
+          // 1. Close panel first (triggers CSS transition)
+          // 2. Wait for transition to complete (300ms)
+          // 3. Then remove entries from state
+          setTimeout(() => {
+            // Close panel if it's showing this session's plan
+            if (sessionId === activeSessionId) {
+              setShowPlanPanel(false);
+              setPlanUserPinned(false);
+            }
+
+            // Wait for panel close animation (300ms transition) before removing entries
+            setTimeout(() => {
+              setPlanEntriesMap((prevEntries) => {
+                const { [sessionId]: __, ...restEntries } = prevEntries;
+                return restEntries;
+              });
+            }, 350); // Slightly longer than 300ms transition to ensure it completes
+          }, 0);
+
+          return rest;
+        }
+
+        // Update message count
+        return {
+          ...prev,
+          [sessionId]: {
+            ...existing,
+            messagesAfterCompletion: newCount,
+          },
+        };
+      });
+    },
+    [activeSessionId, PLAN_EXPIRATION_MESSAGE_THRESHOLD],
+  );
+
+  // Wrapper for sendPrompt that tracks messages for plan expiration
+  const handleSendPrompt = useCallback(
+    async (message, images = [], files = [], options = {}) => {
+      // Track this message for plan expiration before sending
+      trackUserMessageForPlanExpiration(activeSessionId);
+
+      // Call the original sendPrompt
+      return sendPrompt(message, images, files, options);
+    },
+    [sendPrompt, trackUserMessageForPlanExpiration, activeSessionId],
+  );
+
   // Handler for prompts dropdown open - refreshes both global and workspace prompts
   const handlePromptsOpen = useCallback(() => {
     // Refresh workspace prompts
@@ -2583,7 +3601,11 @@ function App() {
       .catch((err) => {
         console.error("Failed to refresh global prompts:", err);
       });
-  }, [sessionInfo?.working_dir, sessionInfo?.acp_server, fetchWorkspacePrompts]);
+  }, [
+    sessionInfo?.working_dir,
+    sessionInfo?.acp_server,
+    fetchWorkspacePrompts,
+  ]);
 
   const handleSelectSession = (sessionId) => {
     switchSession(sessionId);
@@ -2630,6 +3652,19 @@ function App() {
   const handleDeleteSession = async (session) => {
     // If confirmation is disabled, delete immediately
     if (!confirmDeleteSession) {
+      // Clean up plan entries, expiration tracking, and completion timers for this session
+      setPlanEntriesMap((prev) => {
+        const { [session.session_id]: _, ...rest } = prev;
+        return rest;
+      });
+      setPlanExpirationMap((prev) => {
+        const { [session.session_id]: _, ...rest } = prev;
+        return rest;
+      });
+      if (planCompletionTimersRef.current[session.session_id]) {
+        clearTimeout(planCompletionTimersRef.current[session.session_id]);
+        delete planCompletionTimersRef.current[session.session_id];
+      }
       await removeSession(session.session_id);
       fetchStoredSessions();
       return;
@@ -2645,6 +3680,20 @@ function App() {
     // Close the dialog first
     setDeleteDialog({ isOpen: false, session: null });
 
+    // Clean up plan entries, expiration tracking, and completion timers for this session
+    setPlanEntriesMap((prev) => {
+      const { [session.session_id]: _, ...rest } = prev;
+      return rest;
+    });
+    setPlanExpirationMap((prev) => {
+      const { [session.session_id]: _, ...rest } = prev;
+      return rest;
+    });
+    if (planCompletionTimersRef.current[session.session_id]) {
+      clearTimeout(planCompletionTimersRef.current[session.session_id]);
+      delete planCompletionTimersRef.current[session.session_id];
+    }
+
     // removeSession handles: closing WebSocket, updating local state,
     // switching to another session (or creating new if none left), and calling DELETE API
     await removeSession(session.session_id);
@@ -2653,32 +3702,12 @@ function App() {
     fetchStoredSessions();
   };
 
-  // Get inactive sessions (stored sessions without an active ACP connection)
-  const inactiveSessions = useMemo(() => {
-    const activeIds = new Set(activeSessions.map((s) => s.session_id));
-    return storedSessions.filter((s) => !activeIds.has(s.session_id));
-  }, [activeSessions, storedSessions]);
-
-  const handleCleanInactive = () => {
-    setCleanInactiveDialog({ isOpen: true });
+  const handlePinSession = async (session, pinned) => {
+    await pinSession(session.session_id, pinned);
   };
 
-  const handleConfirmCleanInactive = async () => {
-    setCleanInactiveDialog({ isOpen: false });
-
-    // Delete all inactive sessions
-    for (const session of inactiveSessions) {
-      try {
-        await secureFetch(apiUrl(`/api/sessions/${session.session_id}`), {
-          method: "DELETE",
-        });
-      } catch (err) {
-        console.error("Failed to delete session:", session.session_id, err);
-      }
-    }
-
-    // Refresh the stored sessions list
-    fetchStoredSessions();
+  const handleArchiveSession = async (session, archived) => {
+    await archiveSession(session.session_id, archived);
   };
 
   return html`
@@ -2702,14 +3731,6 @@ function App() {
         isStreaming=${deleteDialog.session?.isStreaming || false}
         onConfirm=${handleConfirmDelete}
         onCancel=${() => setDeleteDialog({ isOpen: false, session: null })}
-      />
-
-      <!-- Clean Inactive Dialog -->
-      <${CleanInactiveDialog}
-        isOpen=${cleanInactiveDialog.isOpen}
-        inactiveCount=${inactiveSessions.length}
-        onConfirm=${handleConfirmCleanInactive}
-        onCancel=${() => setCleanInactiveDialog({ isOpen: false })}
       />
 
       <!-- Workspace Selection Dialog (for new conversations) -->
@@ -2748,6 +3769,8 @@ function App() {
                   config?.ui?.mac?.badge_click_action?.enabled !== false,
                 );
               }
+              // Reload input font family setting
+              setInputFontFamily(config?.ui?.web?.input_font_family || "system");
             }
           } catch (err) {
             console.error("Failed to reload config after save:", err);
@@ -2799,6 +3822,71 @@ function App() {
         </div>
       `}
 
+      <!-- Runner fallback warning toast -->
+      ${runnerFallbackWarning &&
+      html`
+        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
+          <div
+            class="flex flex-col gap-1 px-4 py-3 bg-yellow-600 text-white rounded-lg shadow-lg max-w-md"
+          >
+            <div class="flex items-center gap-2">
+              <span class="text-lg">⚠️</span>
+              <span class="text-sm font-medium">Runner Not Supported</span>
+              <button
+                onClick=${() => setRunnerFallbackWarning(null)}
+                class="ml-auto text-white/80 hover:text-white"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+            <div class="text-xs opacity-90 ml-7">
+              <div>
+                Requested:
+                <strong>${runnerFallbackWarning.requested_type}</strong>
+              </div>
+              <div>
+                Using:
+                <strong>${runnerFallbackWarning.fallback_type}</strong> (no
+                restrictions)
+              </div>
+              <div class="mt-1 text-white/70">
+                ${runnerFallbackWarning.reason}
+              </div>
+            </div>
+          </div>
+        </div>
+      `}
+
+      <!-- ACP start failed toast -->
+      ${acpStartFailedError &&
+      html`
+        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
+          <div
+            class="flex flex-col gap-1 px-4 py-3 bg-red-600 text-white rounded-lg shadow-lg max-w-md"
+          >
+            <div class="flex items-center gap-2">
+              <span class="text-lg">❌</span>
+              <span class="text-sm font-medium"
+                >ACP Server Failed to Start</span
+              >
+              <button
+                onClick=${() => setAcpStartFailedError(null)}
+                class="ml-auto text-white/80 hover:text-white"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+            <div class="text-xs opacity-90 ml-7">
+              <div class="text-white/70 break-words">
+                ${acpStartFailedError.error}
+              </div>
+            </div>
+          </div>
+        </div>
+      `}
+
       <!-- Sidebar (hidden on mobile by default) -->
       <div
         class="hidden md:block w-80 bg-mitto-sidebar border-r border-slate-700 flex-shrink-0"
@@ -2809,9 +3897,9 @@ function App() {
           activeSessionId=${activeSessionId}
           onSelect=${handleSelectSession}
           onNewSession=${handleNewSession}
-          onCleanInactive=${handleCleanInactive}
           onRename=${handleRenameSession}
           onDelete=${handleDeleteSession}
+          onArchive=${handleArchiveSession}
           workspaces=${workspaces}
           theme=${theme}
           onToggleTheme=${toggleTheme}
@@ -2823,6 +3911,7 @@ function App() {
           rcFilePath=${rcFilePath}
           badgeClickEnabled=${badgeClickEnabled}
           onBadgeClick=${handleBadgeClick}
+          queueLength=${queueLength}
         />
       </div>
 
@@ -2837,9 +3926,9 @@ function App() {
               activeSessionId=${activeSessionId}
               onSelect=${handleSelectSession}
               onNewSession=${handleNewSession}
-              onCleanInactive=${handleCleanInactive}
               onRename=${handleRenameSession}
               onDelete=${handleDeleteSession}
+              onArchive=${handleArchiveSession}
               onClose=${() => setShowSidebar(false)}
               workspaces=${workspaces}
               theme=${theme}
@@ -2852,6 +3941,7 @@ function App() {
               rcFilePath=${rcFilePath}
               badgeClickEnabled=${badgeClickEnabled}
               onBadgeClick=${handleBadgeClick}
+              queueLength=${queueLength}
             />
           </div>
           <div
@@ -2902,143 +3992,204 @@ function App() {
           </div>
         </div>
 
-        <!-- Messages -->
-        <div
-          ref=${messagesContainerRef}
-          class="flex-1 overflow-y-auto scroll-smooth scrollbar-hide p-4 relative"
-        >
-          ${swipeDirection &&
+        <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
+        <div class="flex-1 relative min-h-0 overflow-hidden">
+          <!-- Agent Plan Panel (floating overlay at top) -->
+          <${AgentPlanPanel}
+            isOpen=${showPlanPanel}
+            onClose=${handleClosePlanPanel}
+            onToggle=${handleTogglePlanPanel}
+            entries=${planEntries}
+            userPinned=${planUserPinned}
+          />
+          <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
+          ${!showPlanPanel &&
+          planEntries.length > 0 &&
           html`
             <div
-              key=${`flash-${activeSessionId}`}
-              class="swipe-flash swipe-flash-${swipeDirection}"
-            />
-          `}
-          ${swipeArrow &&
-          html`
-            <div
-              key=${`arrow-${activeSessionId}-${swipeArrow}`}
-              class="swipe-arrow-indicator"
+              class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
             >
-              <div class="swipe-arrow-indicator__content">
-                <span class="swipe-arrow-indicator__arrow"
-                  >${swipeArrow === "left" ? "→" : "←"}</span
-                >
-              </div>
+              <${AgentPlanIndicator}
+                onClick=${handleTogglePlanPanel}
+                entries=${planEntries}
+              />
             </div>
           `}
+          <!-- Messages (scrollable container with normal scroll) -->
+          <!-- The inner wrapper uses flex-col-reverse for message ordering -->
+          <!-- Note: scrollbar-hide removed for Edge compatibility - scrollbar styled in CSS -->
           <div
-            key=${activeSessionId}
-            class="max-w-2xl mx-auto ${swipeDirection
-              ? `swipe-slide-${swipeDirection}`
-              : ""}"
+            ref=${messagesContainerRef}
+            class="absolute inset-0 overflow-y-auto scroll-smooth p-4 messages-container-reverse"
           >
-            ${hasMoreMessages &&
+            ${swipeDirection &&
             html`
-              <div class="flex justify-center mb-4">
-                ${loadingMore
-                  ? html`
-                      <div
-                        class="px-4 py-2 text-sm text-gray-400 flex items-center gap-2"
-                      >
-                        <${SpinnerIcon} className="w-4 h-4" />
-                        <span>Loading earlier messages...</span>
-                      </div>
-                    `
-                  : html`
-                      <button
-                        onClick=${handleLoadMore}
-                        class="px-4 py-2 text-sm text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-full transition-colors flex items-center gap-2"
-                      >
-                        <${ChevronUpIcon} className="w-4 h-4" />
-                        <span>Load earlier messages</span>
-                      </button>
-                    `}
-              </div>
+              <div
+                key=${`flash-${activeSessionId}`}
+                class="swipe-flash swipe-flash-${swipeDirection}"
+              />
             `}
-            ${messages.length === 0 &&
-            !hasMoreMessages &&
+            ${swipeArrow &&
             html`
-              <div class="flex items-center justify-center h-full">
-                <div class="text-center text-gray-400">
-                  <div class="text-6xl mb-6">💬</div>
-                  <p class="text-2xl font-medium text-gray-300 mb-4">
-                    Welcome to Mitto
-                  </p>
-                  ${workspaces.length === 0
-                    ? html`
-                        <p class="text-base text-gray-500 max-w-md">
-                          Get started by creating a workspace in Settings (<span
-                            class="inline-block align-middle"
-                          >
-                            <${SettingsIcon} className="w-5 h-5 inline" />
-                          </span>
-                          icon in the sidebar)
-                        </p>
-                      `
-                    : activeSessionId
-                      ? html`
-                          <p class="text-base text-gray-500">
-                            Type a message to start chatting with the AI agent
-                          </p>
-                        `
-                      : html`
-                          <div class="text-base text-gray-500 max-w-md">
-                            <p>
-                              Create a new conversation using the
-                              <span
-                                class="inline-flex items-center justify-center w-6 h-6 rounded text-white text-sm font-bold mx-1"
-                                >+</span
-                              >
-                              button in the sidebar
-                            </p>
-                            ${workspaces.length > 1
-                              ? html`
-                                  <p class="text-sm text-gray-600 mt-3">
-                                    You'll be able to choose which workspace to
-                                    use
-                                  </p>
-                                `
-                              : ""}
-                          </div>
-                        `}
-                  ${!connected &&
-                  html`
-                    <p class="text-sm mt-6 text-yellow-500">
-                      Connecting to server...
-                    </p>
-                  `}
+              <div
+                key=${`arrow-${activeSessionId}-${swipeArrow}`}
+                class="swipe-arrow-indicator"
+              >
+                <div class="swipe-arrow-indicator__content">
+                  <span class="swipe-arrow-indicator__arrow"
+                    >${swipeArrow === "left" ? "→" : "←"}</span
+                  >
                 </div>
               </div>
             `}
-            ${messages.map(
-              (msg, i) => html`
-                <${Message}
-                  key=${msg.timestamp + "-" + i}
-                  message=${msg}
-                  isLast=${i === messages.length - 1}
-                  isStreaming=${isStreaming}
-                />
-              `,
-            )}
-            <div ref=${messagesEndRef} />
+            <div
+              key=${activeSessionId}
+              class="max-w-2xl mx-auto flex flex-col-reverse ${swipeDirection
+                ? `swipe-slide-${swipeDirection}`
+                : ""}"
+            >
+              ${
+                /* With column-reverse: first in DOM = visual bottom, last in DOM = visual top
+                So we render messages in reverse order (newest first in DOM = visual bottom)
+                and put the infinite scroll sentinel at the DOM end (= visual top) */ ""
+              }
+              ${messages.length === 0 &&
+              !hasMoreMessages &&
+              html`
+                <div class="flex items-center justify-center h-full">
+                  <div class="text-center text-gray-400">
+                    <div class="text-6xl mb-6">💬</div>
+                    <p class="text-2xl font-medium text-gray-300 mb-4">
+                      Welcome to Mitto
+                    </p>
+                    ${workspaces.length === 0
+                      ? html`
+                          <p class="text-base text-gray-500 max-w-md">
+                            Get started by creating a workspace in Settings
+                            (<span class="inline-block align-middle">
+                              <${SettingsIcon} className="w-5 h-5 inline" />
+                            </span>
+                            icon in the sidebar)
+                          </p>
+                        `
+                      : activeSessionId
+                        ? html`
+                            <p class="text-base text-gray-500">
+                              Type a message to start chatting with the AI agent
+                            </p>
+                          `
+                        : html`
+                            <div class="text-base text-gray-500 max-w-md">
+                              <p>
+                                Create a new conversation using the
+                                <span
+                                  class="inline-flex items-center justify-center w-6 h-6 rounded text-white text-sm font-bold mx-1"
+                                  >+</span
+                                >
+                                button in the sidebar
+                              </p>
+                              ${workspaces.length > 1
+                                ? html`
+                                    <p class="text-sm text-gray-600 mt-3">
+                                      You'll be able to choose which workspace
+                                      to use
+                                    </p>
+                                  `
+                                : ""}
+                            </div>
+                          `}
+                    ${!connected &&
+                    html`
+                      <p class="text-sm mt-6 text-yellow-500">
+                        Connecting to server...
+                      </p>
+                    `}
+                  </div>
+                </div>
+              `}
+              ${
+                /* Render coalesced messages in reverse order for column-reverse:
+                newest (last in array) becomes first in DOM = visual bottom.
+                displayMessages combines consecutive agent messages for cleaner display. */ ""
+              }
+              ${[...displayMessages]
+                .reverse()
+                .map(
+                  (msg, i, arr) => html`
+                    <${Message}
+                      key=${msg.timestamp + "-" + (arr.length - 1 - i)}
+                      message=${msg}
+                      isLast=${i === 0}
+                      isStreaming=${isStreaming}
+                    />
+                  `,
+                )}
+              ${
+                /* Load more button / loading indicator / limit reached - at DOM end = visual top */ ""
+              }
+              ${(hasMoreMessages || hasReachedLimit) &&
+              html`
+                <div class="flex justify-center my-4">
+                  ${isLoadingMore
+                    ? html`
+                        <div
+                          class="px-4 py-2 text-sm text-gray-400 flex items-center gap-2"
+                        >
+                          <${SpinnerIcon} className="w-4 h-4" />
+                          <span>Loading earlier messages...</span>
+                        </div>
+                      `
+                    : hasReachedLimit
+                      ? html`
+                          <div
+                            class="px-4 py-2 text-sm text-gray-500 flex items-center gap-2"
+                            data-testid="limit-reached-indicator"
+                          >
+                            <span>📚</span>
+                            <span
+                              >Message limit reached (${messages.length}
+                              messages loaded)</span
+                            >
+                          </div>
+                        `
+                      : html`
+                          <button
+                            onClick=${handleLoadMore}
+                            class="load-more-btn px-4 py-2 text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 rounded-lg transition-colors flex items-center gap-2"
+                            data-testid="load-more-button"
+                          >
+                            <span>↑</span>
+                            <span>Load earlier messages...</span>
+                          </button>
+                        `}
+                </div>
+              `}
+              ${html`
+                <!-- Infinite scroll sentinel: at DOM end = visual top (triggers when scrolling up) -->
+                <div ref=${sentinelRef} class="h-1 w-full" aria-hidden="true" />
+              `}
+            </div>
           </div>
+          <!-- End of scrollable messages container -->
 
-          <!-- Scroll to bottom button -->
+          <!-- Scroll to bottom button (positioned relative to wrapper, not scrollable container) -->
           ${(!isUserAtBottom || hasNewMessages) &&
           messages.length > 0 &&
           html`
-            <button
-              onClick=${() => scrollToBottom(true)}
-              class="scroll-to-bottom-btn ${hasNewMessages ? "has-new" : ""}"
-              title="Scroll to bottom"
-            >
-              <${ArrowDownIcon} className="w-5 h-5" />
-              ${hasNewMessages &&
-              html` <span class="new-messages-indicator"></span> `}
-            </button>
+            <div class="scroll-to-bottom-wrapper">
+              <button
+                onClick=${() => scrollToBottom(true)}
+                class="scroll-to-bottom-btn ${hasNewMessages ? "has-new" : ""}"
+                title="Scroll to bottom"
+              >
+                <${ArrowDownIcon} className="w-5 h-5" />
+                ${hasNewMessages &&
+                html` <span class="new-messages-indicator"></span> `}
+              </button>
+            </div>
           `}
         </div>
+        <!-- End of messages wrapper -->
 
         <!-- Input Area Container (relative for QueueDropdown positioning) -->
         <div class="relative flex-shrink-0">
@@ -3057,26 +4208,28 @@ function App() {
 
           <!-- Input -->
           <${ChatInput}
-          onSend=${sendPrompt}
-          onCancel=${cancelPrompt}
-          disabled=${!connected || !activeSessionId}
-          isStreaming=${isStreaming}
-          isReadOnly=${sessionInfo?.isReadOnly}
-          predefinedPrompts=${predefinedPrompts}
-          inputRef=${chatInputRef}
-          noSession=${!activeSessionId}
-          sessionId=${activeSessionId}
-          draft=${currentDraft}
-          onDraftChange=${updateDraft}
-          sessionDraftsRef=${sessionDraftsRef}
-          onPromptsOpen=${handlePromptsOpen}
-          queueLength=${queueLength}
-          queueConfig=${queueConfig}
-          onAddToQueue=${handleAddToQueue}
-          onToggleQueue=${handleToggleQueueDropdown}
-          showQueueDropdown=${showQueueDropdown}
-          actionButtons=${actionButtons}
-        />
+            onSend=${handleSendPrompt}
+            onCancel=${cancelPrompt}
+            disabled=${!connected || !activeSessionId}
+            isStreaming=${isStreaming}
+            isReadOnly=${sessionInfo?.isReadOnly}
+            isArchived=${sessionInfo?.archived || false}
+            predefinedPrompts=${predefinedPrompts}
+            inputRef=${chatInputRef}
+            noSession=${!activeSessionId}
+            sessionId=${activeSessionId}
+            draft=${currentDraft}
+            onDraftChange=${updateDraft}
+            sessionDraftsRef=${sessionDraftsRef}
+            onPromptsOpen=${handlePromptsOpen}
+            queueLength=${queueLength}
+            queueConfig=${queueConfig}
+            onAddToQueue=${handleAddToQueue}
+            onToggleQueue=${handleToggleQueueDropdown}
+            showQueueDropdown=${showQueueDropdown}
+            actionButtons=${actionButtons}
+            availableCommands=${availableCommands}
+          />
         </div>
       </div>
     </div>

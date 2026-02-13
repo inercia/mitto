@@ -1,7 +1,10 @@
 package web
 
 import (
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
@@ -242,5 +245,108 @@ func TestServer_Logger_Nil(t *testing.T) {
 
 	if server.Logger() != nil {
 		t.Error("Logger() should return nil when logger is nil")
+	}
+}
+
+func TestServer_HealthCheck(t *testing.T) {
+	// Create a minimal server with session manager
+	sm := NewSessionManager("", "test-server", false, nil)
+	server := &Server{
+		sessionManager: sm,
+	}
+
+	// Create a test request
+	req, err := http.NewRequest(http.MethodGet, "/api/health", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	// Create a response recorder
+	rr := httptest.NewRecorder()
+
+	// Call the handler
+	server.handleHealthCheck(rr, req)
+
+	// Check status code
+	if rr.Code != http.StatusOK {
+		t.Errorf("handleHealthCheck returned status %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Check content type
+	contentType := rr.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+
+	// Parse response
+	var response map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// Check status field
+	if status, ok := response["status"].(string); !ok || status != "healthy" {
+		t.Errorf("status = %v, want %q", response["status"], "healthy")
+	}
+
+	// Check timestamp field exists
+	if _, ok := response["timestamp"]; !ok {
+		t.Error("Response should contain timestamp field")
+	}
+
+	// Check sessions field exists
+	if sessions, ok := response["sessions"].(map[string]interface{}); !ok {
+		t.Error("Response should contain sessions field")
+	} else {
+		if _, ok := sessions["active"]; !ok {
+			t.Error("sessions should contain active field")
+		}
+		if _, ok := sessions["prompting"]; !ok {
+			t.Error("sessions should contain prompting field")
+		}
+	}
+}
+
+func TestServer_HealthCheck_MethodNotAllowed(t *testing.T) {
+	server := &Server{}
+
+	// Create a POST request (should be rejected)
+	req, err := http.NewRequest(http.MethodPost, "/api/health", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	server.handleHealthCheck(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("handleHealthCheck with POST returned status %d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestServer_HealthCheck_Shutdown(t *testing.T) {
+	server := &Server{
+		shutdown: true,
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "/api/health", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	server.handleHealthCheck(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("handleHealthCheck during shutdown returned status %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if status, ok := response["status"].(string); !ok || status != "unhealthy" {
+		t.Errorf("status = %v, want %q", response["status"], "unhealthy")
 	}
 }

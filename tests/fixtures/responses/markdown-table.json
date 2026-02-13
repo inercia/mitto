@@ -1,0 +1,26 @@
+{
+  "scenario": "markdown-table",
+  "description": "Test markdown-table",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:table-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "Here's a table:\n\n",
+            "| Name | Age |\n",
+            "|------|-----|\n",
+            "| Alice | 30 |\n",
+            "| Bob | 25 |\n\n",
+            "That's the table."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

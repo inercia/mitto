@@ -1,0 +1,6 @@
+{"seq":1,"type":"agent_message","timestamp":"2024-01-01T00:00:00Z","data":{"text":"# Getting Started\n\nHere's how to use the `"}}
+{"seq":2,"type":"agent_message","timestamp":"2024-01-01T00:00:01Z","data":{"text":"myFunction"}}
+{"seq":3,"type":"agent_message","timestamp":"2024-01-01T00:00:02Z","data":{"text":"` API:\n\n1. **First**, install the package:\n   ```bash\n   npm install "}}
+{"seq":4,"type":"agent_message","timestamp":"2024-01-01T00:00:03Z","data":{"text":"my-package\n   ```\n\n2. **Then**, import it:\n   ```javascript\n   import { myFunction } from '"}}
+{"seq":5,"type":"agent_message","timestamp":"2024-01-01T00:00:04Z","data":{"text":"my-package';\n   ```\n\n> **Note**: Make sure to check the [documentation](https://example.com) for more details.\n\nThat's it!"}}
+

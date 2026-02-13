@@ -1,0 +1,69 @@
+# Test Configuration for Runner System
+# This file demonstrates all runner configurations for manual testing
+
+# Global per-runner-type configuration
+restricted_runners:
+  # exec: No restrictions (baseline)
+  exec:
+    restrictions:
+      allow_networking: true
+    merge_strategy: "extend"
+
+  # sandbox-exec: macOS sandboxing
+  sandbox-exec:
+    restrictions:
+      allow_networking: true
+      allow_read_folders:
+        - "$WORKSPACE"
+        - "$HOME/.config"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/System/Library"
+        - "/Library"
+      allow_write_folders:
+        - "$WORKSPACE"
+        - "$HOME/.cache"
+        - "/tmp"
+      deny_folders:
+        - "$HOME/.ssh"
+        - "$HOME/.aws"
+    merge_strategy: "extend"
+
+  # firejail: Linux isolation (will fallback on macOS)
+  firejail:
+    restrictions:
+      allow_networking: true
+      allow_read_folders:
+        - "$WORKSPACE"
+        - "$HOME/.config"
+      allow_write_folders:
+        - "$WORKSPACE"
+      deny_folders:
+        - "$HOME/.ssh"
+    merge_strategy: "extend"
+
+  # docker: Container isolation
+  docker:
+    restrictions:
+      allow_networking: true
+      docker:
+        image: "alpine:latest"
+        memory_limit: "512m"
+        cpu_limit: "1.0"
+      allow_read_folders:
+        - "$WORKSPACE"
+      allow_write_folders:
+        - "$WORKSPACE"
+    merge_strategy: "replace"
+
+# ACP servers for testing
+acp_servers:
+  - name: test-agent
+    command: echo "Mock ACP agent for testing"
+
+# Web configuration
+web:
+  port: 8080
+  host: "127.0.0.1"
+

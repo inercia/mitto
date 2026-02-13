@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -9,10 +10,12 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
+	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/msghooks"
 	"github.com/inercia/mitto/internal/session"
 	mittoWeb "github.com/inercia/mitto/web"
@@ -146,6 +149,9 @@ type Server struct {
 
 	// Access logger for security-relevant events (nil if disabled)
 	accessLogger *AccessLogger
+
+	// MCP debug server for exposing debugging tools
+	mcpServer *mcpserver.Server
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -170,6 +176,23 @@ func NewServer(config Config) (*Server, error) {
 		logger.Warn("Failed to cleanup old images", "error", err)
 	} else if removed > 0 {
 		logger.Info("Cleaned up old images on startup", "removed_count", removed)
+	}
+
+	// Cleanup old files on startup
+	if removed, err := store.CleanupOldFiles(session.FileCleanupAge, session.FilePreserveRecent); err != nil {
+		logger.Warn("Failed to cleanup old files", "error", err)
+	} else if removed > 0 {
+		logger.Info("Cleaned up old files on startup", "removed_count", removed)
+	}
+
+	// Cleanup archived sessions on startup based on retention policy
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		retentionPeriod := config.MittoConfig.Session.GetArchiveRetentionPeriod()
+		if removed, err := store.CleanupArchivedSessions(retentionPeriod); err != nil {
+			logger.Warn("Failed to cleanup archived sessions", "error", err)
+		} else if removed > 0 {
+			logger.Info("Cleaned up archived sessions on startup", "removed_count", removed, "retention_period", retentionPeriod)
+		}
 	}
 
 	// Get API prefix early (needed by session manager for HTTP file links)
@@ -201,6 +224,18 @@ func NewServer(config Config) (*Server, error) {
 	// Set global conversations config for message processing
 	if config.MittoConfig != nil {
 		sessionMgr.SetGlobalConversations(config.MittoConfig.Conversations)
+	}
+
+	// Set full MittoConfig for agent-specific lookups
+	if config.MittoConfig != nil {
+		sessionMgr.SetMittoConfig(config.MittoConfig)
+	}
+
+	// Set global restricted runner config for sandboxed execution
+	if config.MittoConfig != nil && config.MittoConfig.RestrictedRunners != nil {
+		sessionMgr.SetGlobalRestrictedRunners(config.MittoConfig.RestrictedRunners)
+		logger.Info("Global restricted runners configured",
+			"runner_types", len(config.MittoConfig.RestrictedRunners))
 	}
 
 	// Load and set hooks from hooks directory
@@ -286,11 +321,13 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
+	eventsManager := NewGlobalEventsManager()
+
 	s := &Server{
 		config:            config,
 		logger:            logger,
 		apiPrefix:         apiPrefix,
-		eventsManager:     NewGlobalEventsManager(),
+		eventsManager:     eventsManager,
 		sessionManager:    sessionMgr,
 		store:             store,
 		authManager:       authMgr,
@@ -300,6 +337,29 @@ func NewServer(config Config) (*Server, error) {
 		wsSecurityConfig:  wsSecurityConfig,
 		proxyChecker:      proxyChecker,
 		accessLogger:      accessLogger,
+	}
+
+	// Set events manager in session manager for broadcasting
+	sessionMgr.SetEventsManager(eventsManager)
+
+	// Initialize MCP debug server (always on 127.0.0.1 for security)
+	mcpSrv, err := mcpserver.NewServer(
+		mcpserver.Config{Port: mcpserver.DefaultPort},
+		mcpserver.Dependencies{
+			Store:          store,
+			Config:         config.MittoConfig,
+			SessionManager: &sessionManagerAdapter{sm: sessionMgr},
+		},
+	)
+	if err != nil {
+		logger.Warn("Failed to create MCP debug server", "error", err)
+	} else {
+		s.mcpServer = mcpSrv
+		if err := mcpSrv.Start(context.Background()); err != nil {
+			logger.Warn("Failed to start MCP debug server", "error", err)
+		} else {
+			logger.Info("MCP debug server started", "port", mcpSrv.Port())
+		}
 	}
 
 	// Initialize queue title worker
@@ -333,9 +393,15 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
+	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
+	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.handleUIPreferences)
+
+	// M3: Health check endpoint for load balancer integration and monitoring
+	// This endpoint is intentionally NOT behind auth to allow health checks
+	mux.HandleFunc(apiPrefix+"/api/health", s.handleHealthCheck)
 
 	// File server endpoint - serves files from workspace directories (for web browser access)
 	fileServer := NewFileServer(sessionMgr, logger)
@@ -483,6 +549,11 @@ func (s *Server) Shutdown() error {
 		s.accessLogger.Close()
 	}
 
+	// Stop MCP debug server
+	if s.mcpServer != nil {
+		s.mcpServer.Stop()
+	}
+
 	return s.httpServer.Shutdown(context.Background())
 }
 
@@ -502,6 +573,56 @@ func (s *Server) Logger() *slog.Logger {
 // This store is owned by the server and should not be closed by callers.
 func (s *Server) Store() *session.Store {
 	return s.store
+}
+
+// handleHealthCheck handles the health check endpoint for load balancer integration.
+// M3: This endpoint returns server health status and basic metrics.
+// It is intentionally NOT behind authentication to allow health checks from load balancers.
+func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if server is shutting down
+	if s.IsShutdown() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "unhealthy",
+			"reason":  "server_shutting_down",
+			"message": "Server is shutting down",
+		})
+		return
+	}
+
+	// Gather health metrics
+	response := map[string]interface{}{
+		"status":    "healthy",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Add session metrics if session manager is available
+	if s.sessionManager != nil {
+		activeSessions := s.sessionManager.ActiveSessionCount()
+		promptingSessions := s.sessionManager.PromptingSessionCount()
+		response["sessions"] = map[string]interface{}{
+			"active":    activeSessions,
+			"prompting": promptingSessions,
+		}
+	}
+
+	// Add store metrics if available
+	if s.store != nil {
+		storedCount, err := s.store.CountSessions()
+		if err == nil {
+			response["stored_sessions"] = storedCount
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 // loggingMiddleware logs HTTP requests.
@@ -545,6 +666,32 @@ func (s *Server) BroadcastSessionRenamed(sessionID, newName string) {
 	}
 }
 
+// BroadcastSessionPinned notifies all connected clients that a session's pinned state changed.
+func (s *Server) BroadcastSessionPinned(sessionID string, pinned bool) {
+	s.eventsManager.Broadcast(WSMsgTypeSessionPinned, map[string]interface{}{
+		"session_id": sessionID,
+		"pinned":     pinned,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session pinned", "session_id", sessionID, "pinned", pinned,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastSessionArchived notifies all connected clients that a session's archived state changed.
+func (s *Server) BroadcastSessionArchived(sessionID string, archived bool) {
+	s.eventsManager.Broadcast(WSMsgTypeSessionArchived, map[string]interface{}{
+		"session_id": sessionID,
+		"archived":   archived,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session archived", "session_id", sessionID, "archived", archived,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	s.eventsManager.Broadcast(WSMsgTypeSessionDeleted, map[string]string{
@@ -555,4 +702,75 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 		s.logger.Debug("Broadcast session deleted", "session_id", sessionID,
 			"clients", s.eventsManager.ClientCount())
 	}
+}
+
+// BroadcastSessionStreaming notifies all connected clients that a session's streaming state changed.
+// This is called when a session starts (user sends a prompt) or stops streaming (agent completes).
+func (s *Server) BroadcastSessionStreaming(sessionID string, isStreaming bool) {
+	s.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
+		"session_id":   sessionID,
+		"is_streaming": isStreaming,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session streaming", "session_id", sessionID, "is_streaming", isStreaming,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastACPStopped notifies all connected clients that an ACP connection was stopped.
+func (s *Server) BroadcastACPStopped(sessionID, reason string) {
+	s.eventsManager.Broadcast(WSMsgTypeACPStopped, map[string]string{
+		"session_id": sessionID,
+		"reason":     reason,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast ACP stopped", "session_id", sessionID, "reason", reason,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastACPStarted notifies all connected clients that an ACP connection was started.
+func (s *Server) BroadcastACPStarted(sessionID string) {
+	s.eventsManager.Broadcast(WSMsgTypeACPStarted, map[string]string{
+		"session_id": sessionID,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast ACP started", "session_id", sessionID,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
+func (s *Server) BroadcastACPStartFailed(sessionID, errorMsg string) {
+	s.eventsManager.Broadcast(WSMsgTypeACPStartFailed, map[string]string{
+		"session_id": sessionID,
+		"error":      errorMsg,
+	})
+
+	if s.logger != nil {
+		s.logger.Warn("Broadcast ACP start failed", "session_id", sessionID, "error", errorMsg,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// sessionManagerAdapter adapts SessionManager to mcpserver.SessionManager interface.
+type sessionManagerAdapter struct {
+	sm *SessionManager
+}
+
+// GetSession returns a running session by ID.
+func (a *sessionManagerAdapter) GetSession(sessionID string) mcpserver.BackgroundSession {
+	bs := a.sm.GetSession(sessionID)
+	if bs == nil {
+		return nil
+	}
+	return bs
+}
+
+// ListRunningSessions returns the IDs of all running sessions.
+func (a *sessionManagerAdapter) ListRunningSessions() []string {
+	return a.sm.ListRunningSessions()
 }

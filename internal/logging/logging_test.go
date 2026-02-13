@@ -86,12 +86,12 @@ func resetGlobalState() {
 	globalLogger = nil
 	globalMu.Unlock()
 
-	logFileMu.Lock()
-	if logFile != nil {
-		logFile.Close()
-		logFile = nil
+	logWriterMu.Lock()
+	if logWriter != nil {
+		logWriter.Close()
+		logWriter = nil
 	}
-	logFileMu.Unlock()
+	logWriterMu.Unlock()
 
 	componentsMu.Lock()
 	allowedComponents = nil
@@ -344,5 +344,372 @@ func TestComponentShortcuts(t *testing.T) {
 				t.Errorf("%s() returned nil", s.name)
 			}
 		})
+	}
+}
+
+func TestDefaultFileLogConfig(t *testing.T) {
+	cfg := DefaultFileLogConfig()
+
+	if cfg.MaxSizeMB != 10 {
+		t.Errorf("MaxSizeMB = %d, want 10", cfg.MaxSizeMB)
+	}
+	if cfg.MaxBackups != 3 {
+		t.Errorf("MaxBackups = %d, want 3", cfg.MaxBackups)
+	}
+	if cfg.Compress != false {
+		t.Error("Compress should be false by default")
+	}
+	if cfg.Path != "" {
+		t.Errorf("Path = %q, want empty", cfg.Path)
+	}
+}
+
+func TestInitialize_WithFileLog(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	err := Initialize(Config{
+		Level: "info",
+		FileLog: &FileLogConfig{
+			Path:       logPath,
+			MaxSizeMB:  5,
+			MaxBackups: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Log something
+	logger := Get()
+	logger.Info("test file log message")
+
+	// Verify file was created
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("Log file was not created")
+	}
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "test file log message") {
+		t.Errorf("Log file should contain 'test file log message', got: %s", content)
+	}
+}
+
+func TestInitialize_FileLogTakesPrecedence(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	legacyPath := filepath.Join(tmpDir, "legacy.log")
+	fileLogPath := filepath.Join(tmpDir, "filelog.log")
+
+	// Both LogFile and FileLog specified - FileLog should take precedence
+	err := Initialize(Config{
+		Level:   "info",
+		LogFile: legacyPath,
+		FileLog: &FileLogConfig{
+			Path: fileLogPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	logger := Get()
+	logger.Info("precedence test message")
+
+	Close()
+
+	// FileLog path should exist
+	if _, err := os.Stat(fileLogPath); os.IsNotExist(err) {
+		t.Error("FileLog path should exist")
+	}
+
+	// Legacy path should NOT exist (FileLog takes precedence)
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Error("Legacy LogFile path should NOT exist when FileLog is specified")
+	}
+
+	// Verify content in FileLog
+	content, err := os.ReadFile(fileLogPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	if !strings.Contains(string(content), "precedence test message") {
+		t.Errorf("FileLog should contain message, got: %s", content)
+	}
+}
+
+func TestInitialize_FileLogWithDefaults(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "defaults.log")
+
+	// Use zero/negative values - should use defaults
+	err := Initialize(Config{
+		Level: "info",
+		FileLog: &FileLogConfig{
+			Path:       logPath,
+			MaxSizeMB:  0,  // Should default to 10
+			MaxBackups: -1, // Should default to 3
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Just verify it works
+	logger := Get()
+	logger.Info("defaults test")
+
+	Close()
+
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("Log file was not created")
+	}
+}
+
+func TestInitialize_FileLogEmptyPath(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	// FileLog with empty path should be ignored
+	err := Initialize(Config{
+		Level: "info",
+		FileLog: &FileLogConfig{
+			Path: "", // Empty - should be ignored
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Should still work, just without file logging
+	logger := Get()
+	if logger == nil {
+		t.Error("Logger should not be nil")
+	}
+}
+
+func TestInitialize_DifferentFileLevelDebugToFile(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Console at INFO, file at DEBUG
+	err := Initialize(Config{
+		Level:     "info",
+		FileLevel: "debug",
+		FileLog: &FileLogConfig{
+			Path: logPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Log at DEBUG level - should go to file but not console
+	logger := Get()
+	logger.Debug("debug message for file")
+	logger.Info("info message for both")
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	// File should contain BOTH debug and info messages
+	if !strings.Contains(string(content), "debug message for file") {
+		t.Errorf("Log file should contain DEBUG message, got: %s", content)
+	}
+	if !strings.Contains(string(content), "info message for both") {
+		t.Errorf("Log file should contain INFO message, got: %s", content)
+	}
+}
+
+func TestInitialize_FileLevelDefaultsToLevel(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Only set Level, FileLevel should default to it
+	err := Initialize(Config{
+		Level: "warn",
+		FileLog: &FileLogConfig{
+			Path: logPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	logger := Get()
+	logger.Debug("debug should not appear")
+	logger.Info("info should not appear")
+	logger.Warn("warn should appear")
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	if strings.Contains(string(content), "debug should not appear") {
+		t.Errorf("Log file should NOT contain DEBUG message, got: %s", content)
+	}
+	if strings.Contains(string(content), "info should not appear") {
+		t.Errorf("Log file should NOT contain INFO message, got: %s", content)
+	}
+	if !strings.Contains(string(content), "warn should appear") {
+		t.Errorf("Log file should contain WARN message, got: %s", content)
+	}
+}
+
+func TestDowngradeInfoToDebug(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Initialize with DEBUG level to capture all messages
+	err := Initialize(Config{
+		Level: "debug",
+		FileLog: &FileLogConfig{
+			Path: logPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Create a downgraded logger
+	baseLogger := Get().With("component", "sdk")
+	downgradedLogger := DowngradeInfoToDebug(baseLogger)
+
+	// Log at INFO level - should appear as DEBUG in output
+	downgradedLogger.Info("info becomes debug", "key", "value")
+
+	// Log at WARN level - should remain as WARN
+	downgradedLogger.Warn("warn stays warn")
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	contentStr := string(content)
+
+	// Check that the INFO message was downgraded to DEBUG
+	if !strings.Contains(contentStr, "level=DEBUG") {
+		t.Errorf("Log should contain DEBUG level (downgraded from INFO), got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "info becomes debug") {
+		t.Errorf("Log should contain the message, got: %s", contentStr)
+	}
+
+	// Check that WARN stayed as WARN
+	if !strings.Contains(contentStr, "level=WARN") {
+		t.Errorf("Log should contain WARN level, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "warn stays warn") {
+		t.Errorf("Log should contain warn message, got: %s", contentStr)
+	}
+}
+
+func TestDowngradeInfoToDebug_Nil(t *testing.T) {
+	result := DowngradeInfoToDebug(nil)
+	if result != nil {
+		t.Error("DowngradeInfoToDebug(nil) should return nil")
+	}
+}
+
+func TestDowngradeInfoToDebug_FilteredByLevel(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Initialize with INFO level - DEBUG should be filtered
+	err := Initialize(Config{
+		Level: "info",
+		FileLog: &FileLogConfig{
+			Path: logPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Create a downgraded logger
+	downgradedLogger := DowngradeInfoToDebug(Get())
+
+	// Log at INFO level - becomes DEBUG and should be filtered since level is INFO
+	downgradedLogger.Info("should not appear")
+
+	// Log at WARN level to ensure file is created
+	downgradedLogger.Warn("marker message")
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	if strings.Contains(string(content), "should not appear") {
+		t.Errorf("Downgraded INFO should NOT appear when level is INFO, got: %s", content)
+	}
+	if !strings.Contains(string(content), "marker message") {
+		t.Errorf("WARN message should appear, got: %s", content)
 	}
 }

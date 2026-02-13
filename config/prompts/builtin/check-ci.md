@@ -102,8 +102,8 @@ Then provide a failure analysis:
 ├─────────────────────────────────────────────────────────────┤
 │ Type:    Test Failure                                       │
 │ Job:     test-unit                                          │
-│ Error:   TestUserLogin failed: expected 200, got 401        │
-│ File:    internal/auth/login_test.go:45                     │
+│ Error:   <exact error message from logs>                    │
+│ File:    <file path and line number if available>           │
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
@@ -111,7 +111,7 @@ Then provide a failure analysis:
 ├─────────────────────────────────────────────────────────────┤
 │ Type:    Lint Error                                         │
 │ Job:     lint                                               │
-│ Error:   unused variable 'ctx' in handler.go:23             │
+│ Error:   <exact error message from logs>                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 

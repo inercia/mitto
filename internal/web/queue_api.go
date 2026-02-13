@@ -14,6 +14,7 @@ import (
 type QueueAddRequest struct {
 	Message  string   `json:"message"`
 	ImageIDs []string `json:"image_ids,omitempty"`
+	FileIDs  []string `json:"file_ids,omitempty"`
 }
 
 // QueueMoveRequest represents a request to move a message in the queue.
@@ -150,7 +151,7 @@ func (s *Server) handleAddToQueue(w http.ResponseWriter, r *http.Request, queue 
 		maxSize = queueConfig.GetMaxSize()
 	}
 
-	msg, err := queue.Add(req.Message, req.ImageIDs, clientID, maxSize)
+	msg, err := queue.Add(req.Message, req.ImageIDs, req.FileIDs, clientID, maxSize)
 	if err != nil {
 		if errors.Is(err, session.ErrQueueFull) {
 			writeErrorJSON(w, http.StatusConflict, "queue_full",

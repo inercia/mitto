@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/coder/acp-go-sdk"
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 )
 
 // Manager manages a hidden auxiliary ACP session for utility tasks.
@@ -75,8 +76,12 @@ func (m *Manager) start(ctx context.Context) error {
 	// Create client that collects responses
 	m.client = newAuxiliaryClient()
 
+	// Wrap stdout with a JSON line filter to discard non-JSON output
+	// (e.g., ANSI escape sequences, terminal UI from crashed agents)
+	filteredStdout := mittoAcp.NewJSONLineFilterReader(stdout, m.logger)
+
 	// Create ACP connection
-	m.conn = acp.NewClientSideConnection(m.client, stdin, stdout)
+	m.conn = acp.NewClientSideConnection(m.client, stdin, filteredStdout)
 	if m.logger != nil {
 		m.conn.SetLogger(m.logger)
 	}

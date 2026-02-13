@@ -112,6 +112,14 @@ func TestMultiClient_BothReceiveEvents(t *testing.T) {
 		t.Fatal("Timeout waiting for client 2 to connect")
 	}
 
+	// Both clients must send load_events to register as observers
+	if err := sess1.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("Client 1 LoadEvents failed: %v", err)
+	}
+	if err := sess2.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("Client 2 LoadEvents failed: %v", err)
+	}
+
 	// Small delay to ensure both are fully registered
 	time.Sleep(100 * time.Millisecond)
 
@@ -221,6 +229,14 @@ func TestMultiClient_PromptFromOneReceiveOnAnother(t *testing.T) {
 	// Wait for both to connect
 	<-client1Connected
 	<-client2Connected
+
+	// Both clients must send load_events to register as observers
+	if err := sess1.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("Client 1 LoadEvents failed: %v", err)
+	}
+	if err := sess2.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("Client 2 LoadEvents failed: %v", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	// Client 1 sends a prompt
@@ -306,6 +322,11 @@ func TestMultiClient_DisconnectOneOtherContinues(t *testing.T) {
 	// Wait for both to connect
 	<-client1Connected
 	<-client2Connected
+
+	// Client 2 must send load_events to register as an observer
+	if err := sess2.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("Client 2 LoadEvents failed: %v", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	// Disconnect client 1

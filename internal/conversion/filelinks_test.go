@@ -433,3 +433,308 @@ func TestFileLinker_InlineCodeHTTPLinks(t *testing.T) {
 		t.Errorf("Should not contain file:// links: %s", result)
 	}
 }
+
+func TestFileLinker_MarkdownAutoRender(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create test files in docs subdirectory
+	docsDir := filepath.Join(tmpDir, "docs")
+	if err := os.MkdirAll(docsDir, 0755); err != nil {
+		t.Fatalf("Failed to create docs directory: %v", err)
+	}
+	mdFile := filepath.Join(docsDir, "README.md")
+	if err := os.WriteFile(mdFile, []byte("# Title"), 0644); err != nil {
+		t.Fatalf("Failed to create .md test file: %v", err)
+	}
+	markdownFile := filepath.Join(docsDir, "guide.markdown")
+	if err := os.WriteFile(markdownFile, []byte("# Guide"), 0644); err != nil {
+		t.Fatalf("Failed to create .markdown test file: %v", err)
+	}
+	goFile := filepath.Join(docsDir, "main.go")
+	if err := os.WriteFile(goFile, []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create .go test file: %v", err)
+	}
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-uuid-md",
+		Enabled:       true,
+		UseHTTPLinks:  true,
+		APIPrefix:     "/mitto",
+	})
+
+	// Test .md file gets render=html
+	result := linker.LinkFilePaths("See <code>docs/README.md</code> for info")
+	if !containsString(result, `path=docs%2FREADME.md&render=html`) {
+		t.Errorf("Markdown file should have render=html: %s", result)
+	}
+
+	// Test .markdown file gets render=html
+	result = linker.LinkFilePaths("See <code>docs/guide.markdown</code> for info")
+	if !containsString(result, `path=docs%2Fguide.markdown&render=html`) {
+		t.Errorf(".markdown file should have render=html: %s", result)
+	}
+
+	// Test non-markdown file does NOT get render=html
+	result = linker.LinkFilePaths("See <code>docs/main.go</code> for code")
+	if containsString(result, "render=html") {
+		t.Errorf("Non-markdown file should NOT have render=html: %s", result)
+	}
+	if !containsString(result, `path=docs%2Fmain.go"`) {
+		t.Errorf("Non-markdown file should still have path param: %s", result)
+	}
+}
+
+func TestFileLinker_HiddenDirectoryPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create hidden directory structure: .augment/rules/imported/
+	augmentDir := filepath.Join(tmpDir, ".augment", "rules", "imported")
+	if err := os.MkdirAll(augmentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .augment directory: %v", err)
+	}
+	testFile := filepath.Join(augmentDir, "test.md")
+	if err := os.WriteFile(testFile, []byte("# Test"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Create .github/workflows/
+	githubDir := filepath.Join(tmpDir, ".github", "workflows")
+	if err := os.MkdirAll(githubDir, 0755); err != nil {
+		t.Fatalf("Failed to create .github directory: %v", err)
+	}
+	ciFile := filepath.Join(githubDir, "ci.yml")
+	if err := os.WriteFile(ciFile, []byte("name: CI"), 0644); err != nil {
+		t.Fatalf("Failed to create ci.yml file: %v", err)
+	}
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-uuid-hidden",
+		Enabled:       true,
+		UseHTTPLinks:  true,
+		APIPrefix:     "/mitto",
+	})
+
+	// Test .augment/ path in plain text
+	result := linker.LinkFilePaths("See .augment/rules/imported/test.md for details")
+	if !containsString(result, `path=.augment%2Frules%2Fimported%2Ftest.md`) {
+		t.Errorf("Hidden directory path should be linked: %s", result)
+	}
+	if !containsString(result, "render=html") {
+		t.Errorf("Markdown file in hidden dir should have render=html: %s", result)
+	}
+
+	// Test .augment/ path in backticks
+	result = linker.LinkFilePaths("Check <code>.augment/rules/imported/test.md</code>")
+	if !containsString(result, `path=.augment%2Frules%2Fimported%2Ftest.md`) {
+		t.Errorf("Hidden directory path in backticks should be linked: %s", result)
+	}
+
+	// Test .github/ path
+	result = linker.LinkFilePaths("See <code>.github/workflows/ci.yml</code>")
+	if !containsString(result, `path=.github%2Fworkflows%2Fci.yml`) {
+		t.Errorf(".github path should be linked: %s", result)
+	}
+}
+
+func TestFileLinker_URLsInBackticks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir: tmpDir,
+		Enabled:    true,
+	})
+
+	tests := []struct {
+		name     string
+		input    string
+		contains []string // Expected substrings in output
+		excludes []string // Substrings that should NOT be in output
+	}{
+		{
+			name:  "URL in single backticks",
+			input: "<code>https://example.com</code>",
+			contains: []string{
+				`<a href="https://example.com"`,
+				`target="_blank"`,
+				`rel="noopener noreferrer"`,
+				`class="url-link"`,
+				`<code>https://example.com</code></a>`,
+			},
+		},
+		{
+			name:  "HTTP URL in backticks",
+			input: "<code>http://example.com</code>",
+			contains: []string{
+				`<a href="http://example.com"`,
+				`target="_blank"`,
+				`<code>http://example.com</code></a>`,
+			},
+		},
+		{
+			name:  "HTTPS URL with path in backticks",
+			input: "<code>https://example.com/path/to/page</code>",
+			contains: []string{
+				`<a href="https://example.com/path/to/page"`,
+				`<code>https://example.com/path/to/page</code></a>`,
+			},
+		},
+		{
+			name:  "URL with query parameters in backticks",
+			input: "<code>https://example.com?foo=bar&baz=qux</code>",
+			contains: []string{
+				`<a href="https://example.com?foo=bar&baz=qux"`,
+				`<code>https://example.com?foo=bar&baz=qux</code></a>`,
+			},
+		},
+		{
+			name:  "URL with fragment in backticks",
+			input: "<code>https://example.com/page#section</code>",
+			contains: []string{
+				`<a href="https://example.com/page#section"`,
+				`<code>https://example.com/page#section</code></a>`,
+			},
+		},
+		{
+			name:  "FTP URL in backticks",
+			input: "<code>ftp://ftp.example.com/file.txt</code>",
+			contains: []string{
+				`<a href="ftp://ftp.example.com/file.txt"`,
+				`<code>ftp://ftp.example.com/file.txt</code></a>`,
+			},
+		},
+		{
+			name:  "mailto URL in backticks",
+			input: "<code>mailto:user@example.com</code>",
+			contains: []string{
+				`<a href="mailto:user@example.com"`,
+				`class="url-link mailto-link"`,
+				`<code>mailto:user@example.com</code></a>`,
+			},
+			excludes: []string{
+				`target="_blank"`, // mailto links should not have target="_blank"
+			},
+		},
+		{
+			name:  "URL in sentence with backticks",
+			input: "Check out <code>https://example.com</code> for more info",
+			contains: []string{
+				`<a href="https://example.com"`,
+				`<code>https://example.com</code></a>`,
+			},
+		},
+		{
+			name:  "multiple URLs in backticks",
+			input: "See <code>https://example.com</code> and <code>https://another.com</code>",
+			contains: []string{
+				`<a href="https://example.com"`,
+				`<code>https://example.com</code></a>`,
+				`<a href="https://another.com"`,
+				`<code>https://another.com</code></a>`,
+			},
+		},
+		{
+			name:     "URL in code block (pre tag) should not be linked",
+			input:    "<pre><code>https://example.com</code></pre>",
+			excludes: []string{`<a href="`},
+		},
+		{
+			name:     "non-URL text in backticks should not be linked",
+			input:    "<code>some code here</code>",
+			excludes: []string{`<a href="`},
+		},
+		{
+			name:     "partial URL in backticks should not be linked",
+			input:    "<code>example.com</code>",
+			excludes: []string{`<a href="`},
+		},
+		{
+			name:     "URL with surrounding text in backticks should not be linked",
+			input:    "<code>see https://example.com here</code>",
+			excludes: []string{`<a href="`},
+		},
+		{
+			name:  "URL with trailing punctuation",
+			input: "<code>https://example.com.</code>",
+			contains: []string{
+				`<a href="https://example.com"`, // Should strip trailing period
+			},
+		},
+		{
+			name:  "URL with balanced parentheses",
+			input: "<code>https://example.com/page(1)</code>",
+			contains: []string{
+				`<a href="https://example.com/page(1)"`, // Should keep balanced parens
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := linker.LinkFilePaths(tt.input)
+
+			for _, expected := range tt.contains {
+				if !containsString(result, expected) {
+					t.Errorf("Expected result to contain %q\nInput:  %s\nOutput: %s", expected, tt.input, result)
+				}
+			}
+
+			for _, excluded := range tt.excludes {
+				if containsString(result, excluded) {
+					t.Errorf("Expected result to NOT contain %q\nInput:  %s\nOutput: %s", excluded, tt.input, result)
+				}
+			}
+		})
+	}
+}
+
+func TestFileLinker_BackwardCompatibility(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create test files
+	srcDir := filepath.Join(tmpDir, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("Failed to create src directory: %v", err)
+	}
+	testFile := filepath.Join(srcDir, "main.go")
+	if err := os.WriteFile(testFile, []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir: tmpDir,
+		Enabled:    true,
+	})
+
+	tests := []struct {
+		name     string
+		input    string
+		contains string
+	}{
+		{
+			name:     "file path in backticks still works",
+			input:    "<code>src/main.go</code>",
+			contains: `<a href="file://`,
+		},
+		{
+			name:     "file path in regular text still works",
+			input:    "Check src/main.go for details",
+			contains: `<a href="file://`,
+		},
+		{
+			name:     "regular markdown links still work",
+			input:    `<a href="https://example.com">link</a>`,
+			contains: `<a href="https://example.com">link</a>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := linker.LinkFilePaths(tt.input)
+			if !containsString(result, tt.contains) {
+				t.Errorf("Expected result to contain %q, got: %s", tt.contains, result)
+			}
+		})
+	}
+}

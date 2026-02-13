@@ -158,7 +158,7 @@ ACP Agent → WebClient → MarkdownBuffer → BackgroundSession → WebSocket C
 
 The `WebClient` uses a `SeqProvider` interface (implemented by `BackgroundSession`) to obtain sequence numbers immediately when events arrive from ACP. This ensures correct ordering even when content is buffered in `MarkdownBuffer` for markdown rendering.
 
-See [WebSocket Messaging](websocket-messaging.md) for detailed documentation on message ordering and sequence numbers.
+See [WebSocket Documentation](websockets/) for detailed documentation on message ordering and sequence numbers.
 
 ## Design Decisions
 
@@ -320,6 +320,7 @@ flowchart LR
   "created_at": "2026-01-25T14:30:52Z",
   "updated_at": "2026-01-25T14:35:00Z",
   "event_count": 42,
+  "max_seq": 42,
   "status": "completed"
 }
 ```

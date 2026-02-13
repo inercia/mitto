@@ -24,14 +24,15 @@ async function globalSetup(config: FullConfig): Promise<void> {
   const projectRoot = path.resolve(__dirname, "../..");
 
   // Create test settings.json
+  // Pass the scenarios directory to the mock ACP server with increased delay
+  // to avoid race conditions where chunks arrive after prompt completes
+  const scenariosDir = path.join(projectRoot, "tests/fixtures/responses");
+  const mockAcpCommand = `${path.join(projectRoot, "tests/mocks/acp-server/mock-acp-server")} -scenarios ${scenariosDir} -delay 200ms`;
   const settings = {
     acp_servers: [
       {
         name: "mock-acp",
-        command: path.join(
-          projectRoot,
-          "tests/mocks/acp-server/mock-acp-server",
-        ),
+        command: mockAcpCommand,
       },
     ],
     web: {
@@ -51,10 +52,7 @@ async function globalSetup(config: FullConfig): Promise<void> {
     workspaces: [
       {
         acp_server: "mock-acp",
-        acp_command: path.join(
-          projectRoot,
-          "tests/mocks/acp-server/mock-acp-server",
-        ),
+        acp_command: mockAcpCommand,
         working_dir: path.join(
           projectRoot,
           "tests/fixtures/workspaces/project-alpha",

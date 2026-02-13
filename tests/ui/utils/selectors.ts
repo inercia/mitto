@@ -32,7 +32,10 @@ export const selectors = {
 
   // Chat input area
   chatInput: "textarea",
-  sendButton: 'button:has-text("Send")',
+  // Send button is now icon-only (paper plane SVG), use type="submit" to identify it
+  sendButton: 'button[type="submit"]',
+  // Stop button appears when streaming (red square icon)
+  stopButton: 'button[title="Stop streaming"]',
   cancelButton: 'button:has-text("Cancel")',
 
   // Messages
@@ -44,15 +47,18 @@ export const selectors = {
   toolMessage: '.text-yellow-500:has-text("🔧")',
   // All messages in the chat (for ordering tests)
   allMessages: ".message-enter",
+  // Messages container (for scroll operations) - the one with messages-container-reverse class
+  messagesContainer: ".messages-container-reverse",
 
   // Sessions/Conversations sidebar
   // Note: The UI uses "Conversations" as the heading text
   conversationsHeader: 'h2:has-text("Conversations")',
   sessionsHeader: 'h2:has-text("Conversations")', // Alias for backwards compatibility
-  sessionsList: '[class*="border-b"][class*="cursor-pointer"]',
+  // Session items are in containers with class "session-item-container"
+  sessionsList: '.session-item-container',
   newSessionButton: 'button[title="New Conversation"]',
   sessionItem: (name: string) =>
-    `[class*="border-b"][class*="cursor-pointer"]:has-text("${name}")`,
+    `.session-item-container:has-text("${name}")`,
 
   // Dialogs
   settingsDialog: '[role="dialog"]',
@@ -65,6 +71,19 @@ export const selectors = {
   // Body
   body: "body",
   darkTheme: ".bg-mitto-bg",
+
+  // Queue dropdown
+  queueToggleButton: '[data-queue-toggle]',
+  queueDropdown: '.queue-dropdown',
+  queueResizeHandle: '.queue-resize-handle',
+  queueDropdownHeader: '.queue-dropdown-header',
+  queueDropdownList: '.queue-dropdown-list',
+  queueDropdownItem: '.queue-dropdown-item',
+  queueDropdownEmpty: '.queue-dropdown-empty',
+
+  // Scroll to bottom button
+  scrollToBottomWrapper: '.scroll-to-bottom-wrapper',
+  scrollToBottomButton: '.scroll-to-bottom-btn',
 } as const;
 
 /**

@@ -7,11 +7,17 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/conversion"
+	"github.com/inercia/mitto/internal/logging"
 )
 
 const (
 	// defaultFlushTimeout is the default timeout for flushing buffered content.
+	// This is the "soft" timeout that respects block boundaries.
 	defaultFlushTimeout = 200 * time.Millisecond
+	// inactivityFlushTimeout is the timeout for forcing a flush regardless of block state.
+	// This ensures content is displayed even if the agent stops mid-block.
+	// Set to 2 seconds to give the agent time to complete blocks normally.
+	inactivityFlushTimeout = 2 * time.Second
 	// maxBufferSize is the maximum buffer size before forcing a flush.
 	maxBufferSize = 4096
 	// maxCodeBlockBufferSize is the absolute maximum buffer size, even inside code blocks.
@@ -23,35 +29,36 @@ const (
 // It buffers chunks until semantic boundaries (lines, code blocks, paragraphs)
 // are detected, then converts to HTML and sends via callback.
 //
-// Sequence numbers (seq) are tracked through the buffer to maintain correct
-// event ordering. When content is buffered, the seq from the first chunk is
-// preserved and passed to the onFlush callback when the content is flushed.
+// Note: Sequence numbers are NOT tracked by MarkdownBuffer. The caller (StreamBuffer)
+// is responsible for assigning sequence numbers at emit time. This ensures contiguous
+// sequence numbers without gaps from coalesced chunks.
 type MarkdownBuffer struct {
-	mu           sync.Mutex
-	buffer       strings.Builder
-	converter    *conversion.Converter
-	onFlush      func(seq int64, html string)
-	flushTimer   *time.Timer
-	flushTimeout time.Duration
-	inCodeBlock  bool
-	inList       bool  // Track if we're inside a list
-	inTable      bool  // Track if we're inside a table
-	pendingSeq   int64 // Seq for buffered content (from first chunk)
+	mu              sync.Mutex
+	buffer          strings.Builder
+	converter       *conversion.Converter
+	onFlush         func(html string)
+	flushTimer      *time.Timer // Soft timeout (respects block boundaries)
+	inactivityTimer *time.Timer // Hard timeout (forces flush regardless of state)
+	flushTimeout    time.Duration
+	inCodeBlock     bool
+	inList          bool // Track if we're inside a list
+	inTable         bool // Track if we're inside a table
+	sawBlankLine    bool // Track if we saw a blank line (potential list/paragraph end)
 }
 
 // MarkdownBufferConfig holds configuration for creating a MarkdownBuffer.
 type MarkdownBufferConfig struct {
 	// OnFlush is called when HTML content is ready to be sent.
-	// The seq parameter is the sequence number from when the content was received.
-	OnFlush func(seq int64, html string)
+	// The caller is responsible for assigning sequence numbers.
+	OnFlush func(html string)
 	// FileLinksConfig configures file path detection and linking.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
 }
 
 // NewMarkdownBuffer creates a new streaming Markdown buffer.
-// Deprecated: Use NewMarkdownBufferWithConfig instead for seq support.
-func NewMarkdownBuffer(onFlush func(seq int64, html string)) *MarkdownBuffer {
+// Deprecated: Use NewMarkdownBufferWithConfig instead.
+func NewMarkdownBuffer(onFlush func(html string)) *MarkdownBuffer {
 	return &MarkdownBuffer{
 		converter:    conversion.DefaultConverter(),
 		onFlush:      onFlush,
@@ -79,21 +86,15 @@ func NewMarkdownBufferWithConfig(cfg MarkdownBufferConfig) *MarkdownBuffer {
 }
 
 // Write adds a chunk of text to the buffer and triggers smart flushing.
-// The seq parameter is the sequence number assigned when this content was received
-// from ACP. If the buffer is empty, this seq becomes the pendingSeq for the buffered
-// content. If content is already buffered, the original seq is preserved (first wins).
-func (mb *MarkdownBuffer) Write(seq int64, chunk string) {
+// Note: Sequence numbers are assigned by the caller (StreamBuffer) at emit time,
+// not when chunks are received. This ensures contiguous sequence numbers.
+func (mb *MarkdownBuffer) Write(chunk string) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
 	// Cancel any pending timeout flush
 	if mb.flushTimer != nil {
 		mb.flushTimer.Stop()
-	}
-
-	// Track seq for buffered content (first chunk's seq wins)
-	if mb.buffer.Len() == 0 {
-		mb.pendingSeq = seq
 	}
 
 	// Process chunk character by character for code block detection
@@ -115,24 +116,93 @@ func (mb *MarkdownBuffer) Write(seq int64, chunk string) {
 			// If not in code block, check for flush conditions
 			if !mb.inCodeBlock {
 				content := mb.buffer.String()
+				isBlankLine := strings.TrimSpace(line) == ""
+				isListItem := conversion.IsListItem(line)
+
+				// Handle list continuation after blank line
+				// If we saw a blank line and now see a list item, the list continues
+				if mb.sawBlankLine && isListItem {
+					// List continues after blank line - don't flush
+					mb.sawBlankLine = false
+					// Re-enter list state since we're continuing the list
+					mb.inList = true
+					// Don't continue - we still need to process this line normally
+					// to track list state for nested items
+				}
+
+				// If we saw a blank line and now see non-list content, the list has ended
+				if mb.sawBlankLine && !isBlankLine && !isListItem && mb.inList {
+					// List has ended - flush the entire list as one unit
+					// The buffer currently contains: list + blank line + new content
+					// We need to extract and flush just the list part
+
+					// Find where the new content starts (after the last \n\n)
+					// We search in content excluding just the current line (not line+1)
+					// because the \n\n might be right before the current line
+					searchEnd := len(content) - len(line)
+					if searchEnd < 0 {
+						searchEnd = 0
+					}
+					lastDoubleNewline := strings.LastIndex(content[:searchEnd], "\n\n")
+					if lastDoubleNewline >= 0 {
+						// Flush everything up to and including the blank line
+						listContent := content[:lastDoubleNewline+2]
+						remainingContent := content[lastDoubleNewline+2:]
+
+						// Check if the list content has unmatched formatting
+						// If so, don't flush yet - wait for more content
+						hasUnmatched := conversion.HasUnmatchedInlineFormatting(listContent)
+						if hasUnmatched {
+							// Don't flush - the list has unmatched formatting
+							// Keep sawBlankLine true so we continue waiting
+							continue
+						}
+
+						// Reset buffer and write list content, then flush
+						mb.buffer.Reset()
+						mb.buffer.WriteString(listContent)
+						mb.inList = false
+						mb.sawBlankLine = false
+						mb.flushLocked()
+
+						// Re-add the remaining content
+						mb.buffer.WriteString(remainingContent)
+					} else {
+						// Fallback: check for unmatched formatting before flushing
+						if conversion.HasUnmatchedInlineFormatting(content) {
+							// Don't flush - content has unmatched formatting
+							continue
+						}
+						mb.inList = false
+						mb.sawBlankLine = false
+						mb.flushLocked()
+					}
+					continue
+				}
 
 				// Track list state: entering a list when we see a list item
-				if conversion.IsListItem(line) {
+				if isListItem {
 					mb.inList = true
+					mb.sawBlankLine = false
 				}
 
 				// Track table state: entering a table when we see a table row
 				if conversion.IsTableRow(line) {
 					mb.inTable = true
-				} else if mb.inTable && strings.TrimSpace(line) == "" {
+				} else if mb.inTable && isBlankLine {
 					// Empty line ends a table
 					mb.inTable = false
 				}
 
 				// Check for paragraph break (double newline)
 				if strings.HasSuffix(content, "\n\n") {
-					// Double newline ends a list and table
-					mb.inList = false
+					if mb.inList {
+						// In a list context, blank line might be between list items
+						// Don't flush yet - wait to see if next line is a list item
+						mb.sawBlankLine = true
+						continue
+					}
+					// Not in a list - double newline ends the paragraph
 					mb.inTable = false
 					mb.flushLocked()
 					continue
@@ -161,7 +231,7 @@ func (mb *MarkdownBuffer) Write(seq int64, chunk string) {
 		return
 	}
 
-	// Set timeout for eventual flush (but only if safe to flush)
+	// Set soft timeout for eventual flush (respects block boundaries)
 	mb.flushTimer = time.AfterFunc(mb.flushTimeout, func() {
 		mb.mu.Lock()
 		defer mb.mu.Unlock()
@@ -173,6 +243,31 @@ func (mb *MarkdownBuffer) Write(seq int64, chunk string) {
 		}
 		mb.flushLocked()
 	})
+
+	// Set hard inactivity timeout that forces flush regardless of block state.
+	// This ensures content is displayed even if the agent stops mid-block.
+	// Only set if not already set (we don't want to keep resetting it).
+	if mb.inactivityTimer == nil {
+		mb.inactivityTimer = time.AfterFunc(inactivityFlushTimeout, func() {
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			// Force flush if there's any content, but respect block boundaries
+			// and unmatched formatting to avoid rendering broken markdown
+			if mb.buffer.Len() > 0 {
+				// Don't flush if we're in a code block, list, or table - this would split the block
+				if mb.inCodeBlock || mb.inList || mb.inTable {
+					return
+				}
+				content := mb.buffer.String()
+				// Don't flush if we have unmatched inline formatting - this would
+				// render broken markdown like "**Real-time" without the closing "**"
+				if conversion.HasUnmatchedInlineFormatting(content) {
+					return
+				}
+				mb.flushLocked()
+			}
+		})
+	}
 }
 
 // getLastLine returns the last line in the buffer (after last \n or from start).
@@ -230,20 +325,92 @@ func (mb *MarkdownBuffer) SafeFlush() bool {
 
 // flushLocked performs the flush (must be called with lock held).
 func (mb *MarkdownBuffer) flushLocked() {
+	log := logging.Web()
+
 	if mb.buffer.Len() == 0 {
+		log.Debug("markdown_buffer_flush_empty",
+			"in_code_block", mb.inCodeBlock,
+			"in_list", mb.inList,
+			"in_table", mb.inTable)
 		return
 	}
 
+	// Reset inactivity timer since we're flushing
+	if mb.inactivityTimer != nil {
+		mb.inactivityTimer.Stop()
+		mb.inactivityTimer = nil
+	}
+
 	content := mb.buffer.String()
-	seq := mb.pendingSeq // Capture seq before reset
+
+	// Preprocess: Join list item continuations that were split by blank lines
+	// This handles malformed markdown where a list item is split like:
+	//   1. Start of item (with open paren
+	//
+	//   continuation with close paren)
+	content = joinListItemContinuations(content)
+
+	contentLen := len(content)
 	mb.buffer.Reset()
-	mb.pendingSeq = 0
+
+	// Check for unmatched formatting before converting
+	hasUnmatched := conversion.HasUnmatchedInlineFormatting(content)
 
 	// Convert to HTML using the converter (which handles sanitization)
 	htmlStr := mb.converter.ConvertToSafeHTML(content)
-	if htmlStr != "" && mb.onFlush != nil {
-		mb.onFlush(seq, htmlStr)
+	htmlLen := len(htmlStr)
+
+	// Log flush for debugging message content issues
+	if hasUnmatched {
+		// Log when flushing content with unmatched formatting
+		preview := content
+		if len(preview) > 200 {
+			preview = content[:100] + "..." + content[contentLen-100:]
+		}
+		log.Debug("markdown_buffer_flush_unmatched_formatting",
+			"content_len", contentLen,
+			"html_len", htmlLen,
+			"in_code_block", mb.inCodeBlock,
+			"in_list", mb.inList,
+			"in_table", mb.inTable,
+			"content_preview", preview)
+	} else if htmlLen > 1000 {
+		// Large content - log with preview
+		preview := htmlStr
+		if len(preview) > 200 {
+			preview = htmlStr[:100] + "..." + htmlStr[htmlLen-100:]
+		}
+		log.Debug("markdown_buffer_flush_large",
+			"content_len", contentLen,
+			"html_len", htmlLen,
+			"in_code_block", mb.inCodeBlock,
+			"in_list", mb.inList,
+			"in_table", mb.inTable,
+			"preview", preview)
+	} else {
+		log.Debug("markdown_buffer_flush",
+			"content_len", contentLen,
+			"html_len", htmlLen)
 	}
+
+	if htmlStr != "" && mb.onFlush != nil {
+		log.Debug("markdown_buffer_flush_callback",
+			"html_len", htmlLen,
+			"html_preview", truncateForLog(htmlStr, 100))
+		mb.onFlush(htmlStr)
+	} else if htmlStr == "" {
+		log.Debug("markdown_buffer_flush_empty_html",
+			"content_len", contentLen,
+			"content_preview", truncateForLog(content, 100))
+	}
+}
+
+// truncateForLog truncates a string for logging purposes.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // Close flushes any remaining content and cleans up.
@@ -251,6 +418,10 @@ func (mb *MarkdownBuffer) Close() {
 	mb.mu.Lock()
 	if mb.flushTimer != nil {
 		mb.flushTimer.Stop()
+	}
+	if mb.inactivityTimer != nil {
+		mb.inactivityTimer.Stop()
+		mb.inactivityTimer = nil
 	}
 	mb.mu.Unlock()
 	mb.Flush()
@@ -263,9 +434,174 @@ func (mb *MarkdownBuffer) Reset() {
 	if mb.flushTimer != nil {
 		mb.flushTimer.Stop()
 	}
+	if mb.inactivityTimer != nil {
+		mb.inactivityTimer.Stop()
+		mb.inactivityTimer = nil
+	}
 	mb.buffer.Reset()
 	mb.inCodeBlock = false
 	mb.inList = false
 	mb.inTable = false
-	mb.pendingSeq = 0
+	mb.sawBlankLine = false
+}
+
+// InBlock returns true if the buffer is currently in the middle of a
+// structured markdown block (code block, list, or table) that shouldn't
+// be interrupted by non-markdown events.
+func (mb *MarkdownBuffer) InBlock() bool {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	return mb.inCodeBlock || mb.inList || mb.inTable
+}
+
+// HasPendingContent returns true if there is buffered content waiting to be flushed.
+func (mb *MarkdownBuffer) HasPendingContent() bool {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	return mb.buffer.Len() > 0
+}
+
+// joinListItemContinuations preprocesses markdown to join list item continuations
+// that were split by blank lines. This handles malformed markdown where a list item
+// is split like:
+//
+//  1. Start of item (with open paren
+//
+//     continuation with close paren)
+//
+// Or with inline code:
+//
+//  1. Check for `something
+//
+//     `), which continues here
+//
+// Or with multiple continuations:
+//
+//  1. Start (with open
+//
+//     continuation
+//
+//     more continuation
+//
+// The function detects this pattern by looking for:
+// 1. A list item line with unmatched parentheses OR unmatched backticks
+// 2. Followed by a blank line
+// 3. Followed by a line that looks like a continuation (lowercase, backtick, closing paren, etc.)
+//
+// It joins these by indenting the continuation to be part of the list item.
+// It also handles multiple consecutive continuations.
+func joinListItemContinuations(content string) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) < 3 {
+		return content
+	}
+
+	result := make([]string, 0, len(lines))
+	i := 0
+
+	for i < len(lines) {
+		line := lines[i]
+
+		// Check if this is a list item with unmatched formatting
+		if conversion.IsListItem(line) {
+			// Collect all the content that belongs to this list item
+			listItemLines := []string{line}
+			j := i + 1
+
+			// Keep looking for continuations
+			for j < len(lines) {
+				// Check if current accumulated content has unmatched formatting
+				accumulated := strings.Join(listItemLines, "\n")
+				openParens := strings.Count(accumulated, "(")
+				closeParens := strings.Count(accumulated, ")")
+				backticks := countInlineBackticks(accumulated)
+
+				hasUnmatchedParens := openParens > closeParens
+				hasUnmatchedBackticks := backticks%2 != 0
+
+				// If no unmatched formatting, stop looking for continuations
+				if !hasUnmatchedParens && !hasUnmatchedBackticks {
+					break
+				}
+
+				// Check for blank line followed by continuation
+				if j+1 < len(lines) {
+					currentLine := lines[j]
+					nextLine := lines[j+1]
+
+					if strings.TrimSpace(currentLine) == "" && len(nextLine) > 0 {
+						if looksLikeContinuation(nextLine) {
+							// Add the continuation with indentation
+							listItemLines = append(listItemLines, "   "+nextLine)
+							j += 2
+							continue
+						}
+					}
+				}
+
+				// No more continuations found
+				break
+			}
+
+			// Add all collected lines
+			result = append(result, listItemLines...)
+			i = j
+			continue
+		}
+
+		result = append(result, line)
+		i++
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// countInlineBackticks counts backticks that are not part of code fences.
+func countInlineBackticks(s string) int {
+	count := 0
+	i := 0
+	for i < len(s) {
+		if s[i] == '`' {
+			// Check if this is part of a code fence (```)
+			if i+2 < len(s) && s[i+1] == '`' && s[i+2] == '`' {
+				i += 3
+				continue
+			}
+			count++
+		}
+		i++
+	}
+	return count
+}
+
+// looksLikeContinuation checks if a line looks like a continuation of a previous
+// sentence or inline code, rather than a new paragraph.
+func looksLikeContinuation(line string) bool {
+	if len(line) == 0 {
+		return false
+	}
+
+	firstChar := rune(line[0])
+
+	// Lowercase letter - likely continuation of sentence
+	if firstChar >= 'a' && firstChar <= 'z' {
+		return true
+	}
+
+	// Backtick - likely continuation of inline code
+	if firstChar == '`' {
+		return true
+	}
+
+	// Closing punctuation - likely continuation
+	if firstChar == ')' || firstChar == ']' || firstChar == '}' {
+		return true
+	}
+
+	// Comma, period, semicolon, colon after space - likely continuation
+	if firstChar == ',' || firstChar == ';' {
+		return true
+	}
+
+	return false
 }

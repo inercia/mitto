@@ -254,6 +254,11 @@ func TestSendPrompt_StreamingEvents(t *testing.T) {
 	// Wait for connection
 	time.Sleep(200 * time.Millisecond)
 
+	// Register as observer by loading events
+	if err := sess.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
+
 	// Send a prompt that triggers interleaved tool calls
 	if err := sess.SendPrompt("fix the file"); err != nil {
 		t.Fatalf("SendPrompt failed: %v", err)
@@ -428,6 +433,11 @@ func TestReconnect_EventReplayOrder(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
+	// Register as observer by loading events
+	if err := sess1.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
+
 	if err := sess1.SendPrompt("fix the file"); err != nil {
 		t.Fatalf("SendPrompt failed: %v", err)
 	}
@@ -514,6 +524,11 @@ func TestEventOrder_InterleavedToolCalls(t *testing.T) {
 	defer sess.Close()
 
 	time.Sleep(200 * time.Millisecond)
+
+	// Register as observer by loading events
+	if err := sess.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
 
 	// Trigger the interleaved scenario
 	if err := sess.SendPrompt("fix the file"); err != nil {
@@ -622,6 +637,11 @@ func TestEventOrder_MessageBeforeSecondToolCall(t *testing.T) {
 	defer sess.Close()
 
 	time.Sleep(200 * time.Millisecond)
+
+	// Register as observer by loading events
+	if err := sess.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
 
 	// Trigger the interleaved scenario
 	if err := sess.SendPrompt("fix the file"); err != nil {
@@ -773,6 +793,11 @@ func TestMultipleTurns_EventOrdering(t *testing.T) {
 	defer sess.Close()
 
 	time.Sleep(200 * time.Millisecond)
+
+	// Register as observer by loading events
+	if err := sess.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
 
 	// Send multiple prompts
 	prompts := []string{"Hello!", "fix the file", "Hello again!"}

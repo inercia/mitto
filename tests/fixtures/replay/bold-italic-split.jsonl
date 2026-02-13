@@ -1,0 +1,8 @@
+{"seq":1,"type":"agent_message","timestamp":"2024-01-01T00:00:00Z","data":{"text":"This is **"}}
+{"seq":2,"type":"agent_message","timestamp":"2024-01-01T00:00:01Z","data":{"text":"bold text"}}
+{"seq":3,"type":"agent_message","timestamp":"2024-01-01T00:00:02Z","data":{"text":"** and this is *"}}
+{"seq":4,"type":"agent_message","timestamp":"2024-01-01T00:00:03Z","data":{"text":"italic text"}}
+{"seq":5,"type":"agent_message","timestamp":"2024-01-01T00:00:04Z","data":{"text":"* and this is ***"}}
+{"seq":6,"type":"agent_message","timestamp":"2024-01-01T00:00:05Z","data":{"text":"bold italic"}}
+{"seq":7,"type":"agent_message","timestamp":"2024-01-01T00:00:06Z","data":{"text":"*** text."}}
+

@@ -1,7 +1,7 @@
 ---
 name: "Fix CI"
 description: "Diagnose and fix CI pipeline failures"
-backgroundColor: "#FFE0B2"
+backgroundColor: "#B2DFDB"
 ---
 
 Diagnose and fix CI pipeline failures for the current branch.
@@ -84,26 +84,9 @@ For each identified issue:
 
 Fix issues in dependency order (fix causes before symptoms).
 
-### 6. Commit and Push
+### 6. Report and Guide User
 
-After all fixes are implemented:
-
-```bash
-# Stage changes
-git add <fixed-files>
-
-# Commit with descriptive message
-git commit -m "fix: resolve CI failures
-
-- <brief description of each fix>"
-
-# Push to trigger CI
-git push
-```
-
-### 7. Report and Guide User
-
-After pushing:
+Show a summary of the fixes implemented:
 
 ```console
 ✅ Fixes pushed successfully!
@@ -118,6 +101,11 @@ Check back in a few minutes to verify the fixes resolved the issues.
 If CI still fails, run this prompt again to diagnose any remaining issues.
 ```
 
+### 7. Commit and Push
+
+After all fixes are implemented, suggest the user to commit
+and push the changes.
+
 ## Rules
 
 - Always check CI status before attempting fixes
@@ -126,4 +114,3 @@ If CI still fails, run this prompt again to diagnose any remaining issues.
 - If the failure is in a flaky test, report it rather than retrying blindly
 - If the failure is infrastructure-related (CI service issues), inform the user
 - Group related fixes in a single commit when possible
-

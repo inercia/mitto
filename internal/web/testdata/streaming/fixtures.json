@@ -1,0 +1,97 @@
+{
+  "description": "Markdown streaming test fixtures for edge cases",
+  "fixtures": [
+    {
+      "name": "list_unmatched_bold",
+      "description": "List where bold formatting spans across a blank line (malformed markdown)",
+      "file": "list_unmatched_bold.md",
+      "expectations": {
+        "has_ol_tag": true,
+        "comment": "Bold spans blank line - this is malformed markdown. The list will have literal ** because markdown cannot parse bold across blank lines. The key test is that we don't flush prematurely (tested separately)."
+      }
+    },
+    {
+      "name": "code_block_with_pause",
+      "description": "Code block that might have a pause during streaming",
+      "file": "code_block_with_pause.md",
+      "expectations": {
+        "single_pre_tag": true,
+        "no_split_code_block": true,
+        "comment": "Code block should never be split by timeouts"
+      }
+    },
+    {
+      "name": "list_multiline_bold",
+      "description": "List with bold text spanning multiple lines within items",
+      "file": "list_multiline_bold.md",
+      "expectations": {
+        "single_ol_tag": true,
+        "all_strong_tags_closed": true,
+        "comment": "Multi-line bold within list items should render correctly"
+      }
+    },
+    {
+      "name": "table_with_formatting",
+      "description": "Table with bold and code formatting inside cells",
+      "file": "table_with_formatting.md",
+      "expectations": {
+        "single_table_tag": true,
+        "has_strong_tags": true,
+        "has_code_tags": true,
+        "comment": "Table with inline formatting should render as single unit"
+      }
+    },
+    {
+      "name": "nested_code_in_list",
+      "description": "Code block near list items",
+      "file": "nested_code_in_list.md",
+      "expectations": {
+        "has_li_tags": true,
+        "has_pre_tag": true,
+        "comment": "Code block after list item (without proper indentation) ends the list in standard markdown. The key is that the code block is not split."
+      }
+    },
+    {
+      "name": "mixed_formatting",
+      "description": "Various formatting patterns combined",
+      "file": "mixed_formatting.md",
+      "expectations": {
+        "has_strong_tags": true,
+        "has_em_tags": true,
+        "has_code_tags": true,
+        "has_links": true,
+        "comment": "Mixed formatting should all render correctly"
+      }
+    },
+    {
+      "name": "unmatched_backtick",
+      "description": "Inline code that spans across lines (malformed)",
+      "file": "unmatched_backtick.md",
+      "expectations": {
+        "single_flush_preferred": true,
+        "comment": "Malformed inline code should not cause premature flush"
+      }
+    },
+    {
+      "name": "long_code_block",
+      "description": "Long code block that might trigger buffer limits",
+      "file": "long_code_block.md",
+      "expectations": {
+        "single_pre_tag": true,
+        "no_split_code_block": true,
+        "comment": "Long code blocks should not be split by buffer size limits"
+      }
+    },
+    {
+      "name": "paragraph_then_list",
+      "description": "Paragraph followed by numbered list",
+      "file": "paragraph_then_list.md",
+      "expectations": {
+        "has_ol_tag": true,
+        "has_li_tags": true,
+        "comment": "Paragraph followed by list should render both correctly"
+      }
+    }
+  ]
+}
+

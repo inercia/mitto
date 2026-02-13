@@ -14,6 +14,7 @@ export {
   PlusIcon,
   ChevronUpIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   MenuIcon,
   TrashIcon,
   EditIcon,
@@ -32,4 +33,7 @@ export {
   SunIcon,
   MoonIcon,
   QueueIcon,
+  ListIcon,
+  ArchiveIcon,
+  ArchiveFilledIcon,
 } from "./Icons.js";

@@ -14,8 +14,9 @@ let notificationAudioContext = null;
  */
 function getAudioContext() {
   if (!notificationAudioContext) {
-    notificationAudioContext = new (window.AudioContext ||
-      window.webkitAudioContext)();
+    notificationAudioContext = new (
+      window.AudioContext || window.webkitAudioContext
+    )();
   }
   return notificationAudioContext;
 }

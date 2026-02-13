@@ -76,7 +76,9 @@ function ServerEditForm({ server, onSave, onCancel }) {
         <div>
           <label class="text-sm text-gray-400 mb-2 block"
             >Server-specific prompts
-            <span class="text-xs text-gray-500">(from prompt files)</span></label
+            <span class="text-xs text-gray-500"
+              >(from prompt files)</span
+            ></label
           >
           <div class="space-y-1">
             ${filePrompts.map(
@@ -262,10 +264,14 @@ export function SettingsDialog({
   // Stored sessions for checking workspace usage
   const [storedSessions, setStoredSessions] = useState([]);
 
+  // Supported runners (fetched from server based on platform)
+  const [supportedRunners, setSupportedRunners] = useState([]);
+
   // Form state for adding new items
   const [showAddWorkspace, setShowAddWorkspace] = useState(false);
   const [newWorkspacePath, setNewWorkspacePath] = useState("");
   const [newWorkspaceServer, setNewWorkspaceServer] = useState("");
+  const [newWorkspaceRunner, setNewWorkspaceRunner] = useState("exec");
 
   const [showAddServer, setShowAddServer] = useState(false);
   const [newServerName, setNewServerName] = useState("");
@@ -294,9 +300,8 @@ export function SettingsDialog({
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [loginItemSupported, setLoginItemSupported] = useState(false);
   const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
-  const [badgeClickCommand, setBadgeClickCommand] = useState(
-    "open ${WORKSPACE}",
-  );
+  const [badgeClickCommand, setBadgeClickCommand] =
+    useState("open ${WORKSPACE}");
 
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
@@ -304,8 +309,14 @@ export function SettingsDialog({
   const [confirmQuitWithRunningSessions, setConfirmQuitWithRunningSessions] =
     useState(true);
 
+  // Archive retention period setting
+  const [archiveRetentionPeriod, setArchiveRetentionPeriod] = useState("never");
+
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
+
+  // Input font family setting (web UI)
+  const [inputFontFamily, setInputFontFamily] = useState("system");
 
   // Follow system theme setting (client-side, stored in localStorage)
   const [followSystemTheme, setFollowSystemTheme] = useState(() => {
@@ -340,6 +351,7 @@ export function SettingsDialog({
       setSuccess("");
       loadConfig();
       loadStoredSessions();
+      loadSupportedRunners();
     }
   }, [isOpen]);
 
@@ -355,6 +367,32 @@ export function SettingsDialog({
       }
     } catch (err) {
       console.error("Failed to load stored sessions:", err);
+    }
+  };
+
+  // Load supported runners from server
+  const loadSupportedRunners = async () => {
+    try {
+      const res = await fetch(apiUrl("/api/supported-runners"), {
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        const runners = await res.json();
+        setSupportedRunners(runners || []);
+      }
+    } catch (err) {
+      console.error("Failed to load supported runners:", err);
+      // Fallback to all runners if fetch fails
+      setSupportedRunners([
+        { type: "exec", label: "exec (no restrictions)", supported: true },
+        {
+          type: "sandbox-exec",
+          label: "sandbox-exec (macOS)",
+          supported: false,
+        },
+        { type: "firejail", label: "firejail (Linux)", supported: false },
+        { type: "docker", label: "docker (all platforms)", supported: true },
+      ]);
     }
   };
 
@@ -565,10 +603,18 @@ export function SettingsDialog({
         config.ui?.confirmations?.quit_with_running_sessions !== false,
       );
 
+      // Load archive retention period setting (default to "never")
+      setArchiveRetentionPeriod(
+        config.session?.archive_retention_period || "never",
+      );
+
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
         config.conversations?.action_buttons?.enabled !== false,
       );
+
+      // Load input font family setting (web UI) - default to "system"
+      setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
       // Set default server for new workspace
       if (servers.length > 0) {
@@ -649,6 +695,10 @@ export function SettingsDialog({
         confirmations: {
           delete_session: confirmDeleteSession,
         },
+        // Web-specific UI settings
+        web: {
+          input_font_family: inputFontFamily,
+        },
       };
 
       // Add macOS-specific settings
@@ -679,6 +729,11 @@ export function SettingsDialog({
         },
       };
 
+      // Build session config with archive retention period
+      const sessionConfig = {
+        archive_retention_period: archiveRetentionPeriod,
+      };
+
       // Filter prompts to only save settings-based prompts (not file-based ones)
       // Prompts with source='settings' or no source (new prompts) should be saved
       // Prompts with source='file' or source='workspace' should not be saved to settings.json
@@ -699,6 +754,7 @@ export function SettingsDialog({
         web: webConfig,
         ui: uiConfig,
         conversations: conversationsConfig,
+        session: sessionConfig,
       };
 
       // DEBUG: Log config being saved
@@ -838,9 +894,11 @@ export function SettingsDialog({
         working_dir: newWorkspacePath.trim(),
         acp_server: newWorkspaceServer,
         acp_command: server.command,
+        restricted_runner: newWorkspaceRunner,
       },
     ]);
     setNewWorkspacePath("");
+    setNewWorkspaceRunner("exec");
     setShowAddWorkspace(false);
     setError("");
   };
@@ -893,6 +951,17 @@ export function SettingsDialog({
       workspaces.map((ws) =>
         ws.working_dir === workingDir
           ? { ...ws, code: sanitizedCode || undefined } // undefined to omit from JSON if empty
+          : ws,
+      ),
+    );
+  };
+
+  // Update workspace restricted runner
+  const updateWorkspaceRunner = (workingDir, runner) => {
+    setWorkspaces(
+      workspaces.map((ws) =>
+        ws.working_dir === workingDir
+          ? { ...ws, restricted_runner: runner || "exec" }
           : ws,
       ),
     );
@@ -1187,11 +1256,37 @@ export function SettingsDialog({
                             )}
                           </select>
                         </div>
+                        <div>
+                          <label class="block text-sm text-gray-400 mb-1"
+                            >Sandbox Type</label
+                          >
+                          <select
+                            value=${newWorkspaceRunner}
+                            onChange=${(e) =>
+                              setNewWorkspaceRunner(e.target.value)}
+                            class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            title="Choose the runner type for sandboxing agent execution"
+                          >
+                            ${supportedRunners
+                              .filter((r) => r.supported)
+                              .map(
+                                (r) =>
+                                  html`<option value=${r.type}>
+                                    ${r.label}
+                                  </option>`,
+                              )}
+                          </select>
+                          <p class="text-xs text-gray-500 mt-1">
+                            Controls how the agent is sandboxed. "exec" runs
+                            with no restrictions (recommended for most users).
+                          </p>
+                        </div>
                         <div class="flex justify-end gap-2">
                           <button
                             onClick=${() => {
                               setShowAddWorkspace(false);
                               setNewWorkspacePath("");
+                              setNewWorkspaceRunner("exec");
                             }}
                             class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
                           >
@@ -1248,6 +1343,12 @@ export function SettingsDialog({
                                     >
                                       ${ws.acp_server}
                                     </span>
+                                    <span
+                                      class="px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-xs flex-shrink-0"
+                                      title="Sandbox type"
+                                    >
+                                      ${ws.restricted_runner || "exec"}
+                                    </span>
                                     <button
                                       onClick=${() =>
                                         removeWorkspace(ws.working_dir)}
@@ -1269,12 +1370,33 @@ export function SettingsDialog({
                                             ws.working_dir,
                                             e.target.value,
                                           )}
-                                        placeholder=${getBasename(ws.working_dir)}
+                                        placeholder=${getBasename(
+                                          ws.working_dir,
+                                        )}
                                         class="w-full px-2 py-1 bg-gray-100 dark:bg-slate-700/50 rounded text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-400 dark:placeholder-gray-500"
                                         title="Friendly name (optional)"
                                       />
                                     </div>
                                     <div class="flex items-center gap-2">
+                                      <select
+                                        value=${ws.restricted_runner || "exec"}
+                                        onChange=${(e) =>
+                                          updateWorkspaceRunner(
+                                            ws.working_dir,
+                                            e.target.value,
+                                          )}
+                                        class="px-2 py-1 bg-gray-100 dark:bg-slate-700/50 rounded text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                        title="Sandbox type"
+                                      >
+                                        ${supportedRunners
+                                          .filter((r) => r.supported)
+                                          .map(
+                                            (r) =>
+                                              html`<option value=${r.type}>
+                                                ${r.type}
+                                              </option>`,
+                                          )}
+                                      </select>
                                       <input
                                         type="text"
                                         value=${ws.code || ""}
@@ -1331,10 +1453,9 @@ export function SettingsDialog({
                           }}
                           class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
                           >Popular examples</a
-                        >${" "}
-                        include Auggie and Claude Code. You can configure
-                        multiple servers and choose which one to use for each
-                        workspace.
+                        >${" "} include Auggie and Claude Code. You can
+                        configure multiple servers and choose which one to use
+                        for each workspace.
                       </p>
                       <button
                         onClick=${() => setShowAddServer(!showAddServer)}
@@ -1884,11 +2005,12 @@ export function SettingsDialog({
                               type="button"
                               onClick=${() =>
                                 openExternalURL(
-                                  "https://github.com/inercia/mitto/blob/main/docs/config/ext-access.md"
+                                  "https://github.com/inercia/mitto/blob/main/docs/config/ext-access.md",
                                 )}
                               class="text-blue-400 hover:text-blue-300 underline cursor-pointer"
-                              >Learn more</button
                             >
+                              Learn more
+                            </button>
                           </p>
                           <div class="flex items-center gap-2">
                             <label class="text-sm text-gray-400 w-12">Up</label>
@@ -1948,6 +2070,35 @@ export function SettingsDialog({
                           </div>
                         </div>
                       </label>
+                      <div
+                        class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                      >
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">Input box font</div>
+                            <div class="text-xs text-gray-500">
+                              Font family for the message compose area
+                            </div>
+                          </div>
+                          <select
+                            value=${inputFontFamily}
+                            onChange=${(e) => setInputFontFamily(e.target.value)}
+                            class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                          >
+                            <option value="system">System Default</option>
+                            <option value="sans-serif">Sans-Serif</option>
+                            <option value="serif">Serif</option>
+                            <option value="monospace">Monospace</option>
+                            <option value="menlo">Menlo</option>
+                            <option value="monaco">Monaco</option>
+                            <option value="consolas">Consolas</option>
+                            <option value="courier-new">Courier New</option>
+                            <option value="jetbrains-mono">JetBrains Mono</option>
+                            <option value="sf-mono">SF Mono</option>
+                            <option value="cascadia-code">Cascadia Code</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
 
                     <!-- Confirmation Settings (all platforms) -->
@@ -1984,7 +2135,9 @@ export function SettingsDialog({
                             type="checkbox"
                             checked=${confirmQuitWithRunningSessions}
                             onChange=${(e) =>
-                              setConfirmQuitWithRunningSessions(e.target.checked)}
+                              setConfirmQuitWithRunningSessions(
+                                e.target.checked,
+                              )}
                             class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div>
@@ -1998,6 +2151,40 @@ export function SettingsDialog({
                           </div>
                         </label>
                       `}
+                    </div>
+
+                    <!-- Archive Settings -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-gray-300">
+                        Archive Settings
+                      </h4>
+                      <div
+                        class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                      >
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Auto-delete archived conversations
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Automatically delete archived conversations after
+                              the specified period
+                            </div>
+                          </div>
+                          <select
+                            value=${archiveRetentionPeriod}
+                            onChange=${(e) =>
+                              setArchiveRetentionPeriod(e.target.value)}
+                            class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                          >
+                            <option value="never">Never</option>
+                            <option value="1d">After 1 day</option>
+                            <option value="1w">After 1 week</option>
+                            <option value="1m">After 1 month</option>
+                            <option value="3m">After 3 months</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
 
                     <!-- macOS-specific settings -->
@@ -2083,7 +2270,8 @@ export function SettingsDialog({
                             <input
                               type="checkbox"
                               checked=${startAtLogin}
-                              onChange=${(e) => setStartAtLogin(e.target.checked)}
+                              onChange=${(e) =>
+                                setStartAtLogin(e.target.checked)}
                               class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
                             />
                             <div>
@@ -2140,8 +2328,7 @@ export function SettingsDialog({
                               Use${" "}
                               <code class="bg-slate-600 px-1 rounded"
                                 >\${WORKSPACE}</code
-                              >${" "}
-                              as placeholder for the workspace path
+                              >${" "} as placeholder for the workspace path
                             </p>
                           </div>
                         `}

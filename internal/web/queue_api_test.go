@@ -126,7 +126,7 @@ func TestHandleSessionQueue_Delete_Message(t *testing.T) {
 	queue := server.store.Queue(sessionID)
 
 	// Add a message first (0 = no limit)
-	msg, _ := queue.Add("Test", nil, "", 0)
+	msg, _ := queue.Add("Test", nil, nil, "", 0)
 
 	req := httptest.NewRequest(http.MethodDelete, "/mitto/api/sessions/"+sessionID+"/queue/"+msg.ID, nil)
 	w := httptest.NewRecorder()
@@ -169,9 +169,9 @@ func TestHandleSessionQueue_Clear(t *testing.T) {
 	queue := server.store.Queue(sessionID)
 
 	// Add some messages (0 = no limit)
-	queue.Add("First", nil, "", 0)
-	queue.Add("Second", nil, "", 0)
-	queue.Add("Third", nil, "", 0)
+	queue.Add("First", nil, nil, "", 0)
+	queue.Add("Second", nil, nil, "", 0)
+	queue.Add("Third", nil, nil, "", 0)
 
 	req := httptest.NewRequest(http.MethodDelete, "/mitto/api/sessions/"+sessionID+"/queue", nil)
 	w := httptest.NewRecorder()
@@ -197,7 +197,7 @@ func TestHandleSessionQueue_Get_Message(t *testing.T) {
 	queue := server.store.Queue(sessionID)
 
 	// Add a message (0 = no limit)
-	msg, _ := queue.Add("Test message", []string{"img1"}, "client1", 0)
+	msg, _ := queue.Add("Test message", []string{"img1"}, nil, "client1", 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/mitto/api/sessions/"+sessionID+"/queue/"+msg.ID, nil)
 	w := httptest.NewRecorder()
@@ -323,8 +323,8 @@ func TestHandleMoveQueueMessage(t *testing.T) {
 	defer queue.Delete()
 
 	// Add two messages to the queue (message, imageIDs, clientID, maxSize)
-	msg1, _ := queue.Add("First message", nil, "", 0)
-	msg2, _ := queue.Add("Second message", nil, "", 0)
+	msg1, _ := queue.Add("First message", nil, nil, "", 0)
+	msg2, _ := queue.Add("Second message", nil, nil, "", 0)
 
 	// Move second message up
 	body := `{"direction": "up"}`
@@ -362,7 +362,7 @@ func TestHandleMoveQueueMessage_InvalidDirection(t *testing.T) {
 	queue := server.store.Queue(sessionID)
 	defer queue.Delete()
 
-	msg, _ := queue.Add("Test message", nil, "", 0)
+	msg, _ := queue.Add("Test message", nil, nil, "", 0)
 
 	body := `{"direction": "invalid"}`
 	req := httptest.NewRequest(http.MethodPost, "/mitto/api/sessions/"+sessionID+"/queue/"+msg.ID+"/move", strings.NewReader(body))

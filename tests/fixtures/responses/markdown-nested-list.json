@@ -1,0 +1,28 @@
+{
+  "scenario": "markdown-nested-list",
+  "description": "Test nested list split across chunks",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:nested-list-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "Here's a nested list:\n\n",
+            "1. First item\n",
+            "   - Nested bullet\n",
+            "   - Another nested\n",
+            "2. Second item\n",
+            "   1. Numbered nested\n",
+            "   2. Another numbered\n\n",
+            "That's the list."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

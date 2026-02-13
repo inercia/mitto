@@ -285,6 +285,87 @@ func TestRecorder_ResumeNonExistent(t *testing.T) {
 	}
 }
 
+// TestRecorder_ResumeCompletedSessionUpdatesStatus tests that resuming a completed session
+// updates its status back to active, preventing duplicate session_end events.
+func TestRecorder_ResumeCompletedSessionUpdatesStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create and start a session
+	recorder1 := NewRecorder(store)
+	sessionID := recorder1.SessionID()
+	if err := recorder1.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record a user prompt
+	if err := recorder1.RecordUserPrompt("Hello"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	// End the session - this should set status to completed
+	if err := recorder1.End("server_shutdown"); err != nil {
+		t.Fatalf("End failed: %v", err)
+	}
+
+	// Verify status is completed
+	meta1, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if meta1.Status != SessionStatusCompleted {
+		t.Errorf("Expected status %q after End, got %q", SessionStatusCompleted, meta1.Status)
+	}
+
+	// Resume the session - this should update status back to active
+	recorder2 := NewRecorderWithID(store, sessionID)
+	if err := recorder2.Resume(); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	// Verify status is now active
+	meta2, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if meta2.Status != SessionStatusActive {
+		t.Errorf("Expected status %q after Resume, got %q", SessionStatusActive, meta2.Status)
+	}
+
+	// End the session again
+	if err := recorder2.End("server_shutdown"); err != nil {
+		t.Fatalf("Second End failed: %v", err)
+	}
+
+	// Verify we have exactly 2 session_end events (one from each End call)
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	sessionEndCount := 0
+	for _, e := range events {
+		if e.Type == EventTypeSessionEnd {
+			sessionEndCount++
+		}
+	}
+
+	// We expect 2 session_end events: one from recorder1.End() and one from recorder2.End()
+	// The bug was that without the fix, resuming wouldn't update the status,
+	// but End() would still write session_end because r.started was true.
+	// With the fix, the status is properly tracked and each End() writes exactly one session_end.
+	if sessionEndCount != 2 {
+		t.Errorf("Expected 2 session_end events, got %d", sessionEndCount)
+		for i, e := range events {
+			t.Logf("Event %d: seq=%d type=%s", i, e.Seq, e.Type)
+		}
+	}
+}
+
 // TestRecorder_EventOrdering verifies that events maintain correct chronological order
 // with proper sequence numbers regardless of event type.
 func TestRecorder_EventOrdering(t *testing.T) {
@@ -719,9 +800,9 @@ func TestRecorder_RecordPlan(t *testing.T) {
 	}
 
 	entries := []PlanEntry{
-		{ID: "1", Title: "Task 1", Status: "completed"},
-		{ID: "2", Title: "Task 2", Status: "in_progress"},
-		{ID: "3", Title: "Task 3", Status: "pending"},
+		{Content: "Task 1", Priority: "high", Status: "completed"},
+		{Content: "Task 2", Priority: "medium", Status: "in_progress"},
+		{Content: "Task 3", Priority: "low", Status: "pending"},
 	}
 
 	if err := recorder.RecordPlan(entries); err != nil {
@@ -995,5 +1076,421 @@ func TestRecorder_RecordUserPromptWithImages(t *testing.T) {
 
 	if len(imagesRaw) != 2 {
 		t.Errorf("got %d images, want 2", len(imagesRaw))
+	}
+}
+
+// TestRecorder_EndIsIdempotent tests that calling End() multiple times is safe
+// and only records a single session_end event.
+func TestRecorder_EndIsIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record some events
+	if err := recorder.RecordUserPrompt("Hello"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	// Call End multiple times (simulates shutdown scenarios with multiple signals)
+	for i := 0; i < 5; i++ {
+		if err := recorder.End("server_shutdown"); err != nil {
+			t.Errorf("End call %d failed: %v", i+1, err)
+		}
+	}
+
+	// Verify only one session_end event was recorded
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	sessionEndCount := 0
+	for _, e := range events {
+		if e.Type == EventTypeSessionEnd {
+			sessionEndCount++
+		}
+	}
+
+	if sessionEndCount != 1 {
+		t.Errorf("Expected 1 session_end event, got %d", sessionEndCount)
+		for i, e := range events {
+			t.Logf("Event %d: seq=%d type=%s", i, e.Seq, e.Type)
+		}
+	}
+
+	// Verify session is not started after End
+	if recorder.IsStarted() {
+		t.Error("Session should not be started after End()")
+	}
+}
+
+// TestRecorder_ConcurrentEnd tests that concurrent End() calls are safe
+// and only record a single session_end event.
+func TestRecorder_ConcurrentEnd(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	if err := recorder.RecordUserPrompt("Hello"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	// Call End from multiple goroutines simultaneously
+	const numGoroutines = 10
+	done := make(chan bool, numGoroutines)
+
+	for g := 0; g < numGoroutines; g++ {
+		go func() {
+			recorder.End("concurrent_shutdown")
+			done <- true
+		}()
+	}
+
+	// Wait for all goroutines to complete
+	for i := 0; i < numGoroutines; i++ {
+		<-done
+	}
+
+	// Verify only one session_end event was recorded
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	sessionEndCount := 0
+	for _, e := range events {
+		if e.Type == EventTypeSessionEnd {
+			sessionEndCount++
+		}
+	}
+
+	if sessionEndCount != 1 {
+		t.Errorf("Expected 1 session_end event from concurrent calls, got %d", sessionEndCount)
+		for i, e := range events {
+			t.Logf("Event %d: seq=%d type=%s", i, e.Seq, e.Type)
+		}
+	}
+}
+
+// TestRecorder_EndOnNeverStartedSession tests that End() on a session that was
+// never started does not record any events.
+func TestRecorder_EndOnNeverStartedSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+
+	// End without starting - should be a no-op
+	if err := recorder.End("user_quit"); err != nil {
+		t.Errorf("End on unstarted session should not error, got: %v", err)
+	}
+
+	// Session directory may or may not exist, but if it does, it should have no events
+	if store.Exists(recorder.SessionID()) {
+		events, err := store.ReadEvents(recorder.SessionID())
+		if err != nil {
+			t.Fatalf("ReadEvents failed: %v", err)
+		}
+		if len(events) > 0 {
+			t.Errorf("Expected 0 events for never-started session, got %d", len(events))
+		}
+	}
+}
+
+// TestRecorder_SuspendThenResumeThenEnd tests the state transitions:
+// Start -> Suspend -> Resume -> End
+func TestRecorder_SuspendThenResumeThenEnd(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Record initial event
+	if err := recorder.RecordUserPrompt("Hello"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	// Suspend
+	if err := recorder.Suspend(); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
+
+	// Recording should fail after suspend
+	if err := recorder.RecordUserPrompt("Should fail"); err == nil {
+		t.Error("RecordUserPrompt should fail after Suspend()")
+	}
+
+	// Resume the same recorder
+	if err := recorder.Resume(); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	// Recording should work after resume
+	if err := recorder.RecordUserPrompt("After resume"); err != nil {
+		t.Fatalf("RecordUserPrompt after Resume failed: %v", err)
+	}
+
+	// End the session
+	if err := recorder.End("test_complete"); err != nil {
+		t.Fatalf("End failed: %v", err)
+	}
+
+	// Verify exactly one session_end event
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	sessionEndCount := 0
+	for _, e := range events {
+		if e.Type == EventTypeSessionEnd {
+			sessionEndCount++
+		}
+	}
+
+	if sessionEndCount != 1 {
+		t.Errorf("Expected 1 session_end event, got %d", sessionEndCount)
+	}
+
+	// Verify metadata is completed
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if meta.Status != SessionStatusCompleted {
+		t.Errorf("Expected status %q, got %q", SessionStatusCompleted, meta.Status)
+	}
+}
+
+// TestRecorder_MultipleResumeEndCycles tests rapid Resume/End cycles
+// to ensure the state machine handles them correctly.
+func TestRecorder_MultipleResumeEndCycles(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Run multiple cycles of: record -> end -> resume
+	const numCycles = 5
+	for cycle := 0; cycle < numCycles; cycle++ {
+		// Record an event
+		if err := recorder.RecordUserPrompt("Message in cycle"); err != nil {
+			t.Fatalf("Cycle %d: RecordUserPrompt failed: %v", cycle, err)
+		}
+
+		// End the session
+		if err := recorder.End("cycle_end"); err != nil {
+			t.Fatalf("Cycle %d: End failed: %v", cycle, err)
+		}
+
+		// Verify status is completed
+		meta, err := store.GetMetadata(sessionID)
+		if err != nil {
+			t.Fatalf("Cycle %d: GetMetadata failed: %v", cycle, err)
+		}
+		if meta.Status != SessionStatusCompleted {
+			t.Errorf("Cycle %d: Expected status %q, got %q", cycle, SessionStatusCompleted, meta.Status)
+		}
+
+		// Resume for next cycle (except last)
+		if cycle < numCycles-1 {
+			if err := recorder.Resume(); err != nil {
+				t.Fatalf("Cycle %d: Resume failed: %v", cycle, err)
+			}
+
+			// Verify status is active after resume
+			meta, err := store.GetMetadata(sessionID)
+			if err != nil {
+				t.Fatalf("Cycle %d: GetMetadata after resume failed: %v", cycle, err)
+			}
+			if meta.Status != SessionStatusActive {
+				t.Errorf("Cycle %d: Expected status %q after resume, got %q", cycle, SessionStatusActive, meta.Status)
+			}
+		}
+	}
+
+	// Verify the correct number of session_end events
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	sessionEndCount := 0
+	for _, e := range events {
+		if e.Type == EventTypeSessionEnd {
+			sessionEndCount++
+		}
+	}
+
+	// Should have exactly numCycles session_end events
+	if sessionEndCount != numCycles {
+		t.Errorf("Expected %d session_end events, got %d", numCycles, sessionEndCount)
+		for i, e := range events {
+			t.Logf("Event %d: seq=%d type=%s", i, e.Seq, e.Type)
+		}
+	}
+}
+
+// TestRecorder_EndAfterSuspendWithoutResume tests that End() after Suspend()
+// (without Resume) does not record a session_end event.
+func TestRecorder_EndAfterSuspendWithoutResume(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Record an event
+	if err := recorder.RecordUserPrompt("Hello"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	// Suspend the session (not End)
+	if err := recorder.Suspend(); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
+
+	// Now try to End - should be a no-op since session is not started
+	if err := recorder.End("should_be_noop"); err != nil {
+		t.Errorf("End after Suspend should not error, got: %v", err)
+	}
+
+	// Verify no session_end event was recorded
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	sessionEndCount := 0
+	for _, e := range events {
+		if e.Type == EventTypeSessionEnd {
+			sessionEndCount++
+		}
+	}
+
+	if sessionEndCount != 0 {
+		t.Errorf("Expected 0 session_end events after Suspend->End, got %d", sessionEndCount)
+	}
+
+	// Status should still be active (Suspend doesn't change status)
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if meta.Status != SessionStatusActive {
+		t.Errorf("Expected status %q, got %q", SessionStatusActive, meta.Status)
+	}
+}
+
+// TestRecorder_ConcurrentRecordingAndEnd tests that concurrent recording
+// and End() calls are handled safely.
+func TestRecorder_ConcurrentRecordingAndEnd(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Start recording events in one goroutine
+	const numRecordGoroutines = 5
+	const eventsPerGoroutine = 20
+	recordDone := make(chan bool, numRecordGoroutines)
+
+	for g := 0; g < numRecordGoroutines; g++ {
+		go func() {
+			for i := 0; i < eventsPerGoroutine; i++ {
+				// Ignore errors - some will fail after End() is called
+				recorder.RecordAgentMessage("Message")
+			}
+			recordDone <- true
+		}()
+	}
+
+	// Call End from another goroutine after a short delay
+	endDone := make(chan bool)
+	go func() {
+		// Small delay to allow some events to be recorded
+		recorder.End("concurrent_end")
+		endDone <- true
+	}()
+
+	// Wait for all goroutines to complete
+	for i := 0; i < numRecordGoroutines; i++ {
+		<-recordDone
+	}
+	<-endDone
+
+	// Verify exactly one session_end event
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	sessionEndCount := 0
+	for _, e := range events {
+		if e.Type == EventTypeSessionEnd {
+			sessionEndCount++
+		}
+	}
+
+	if sessionEndCount != 1 {
+		t.Errorf("Expected 1 session_end event, got %d", sessionEndCount)
+	}
+
+	// Verify session_end is the last event
+	if len(events) > 0 {
+		lastEvent := events[len(events)-1]
+		if lastEvent.Type != EventTypeSessionEnd {
+			t.Errorf("Last event should be session_end, got %s", lastEvent.Type)
+		}
 	}
 }

@@ -30,6 +30,7 @@ go.work.sum
 # Build output directories
 /bin/
 /dist/
+/build/
 
 # -----------------------------------------------------------------------------
 # Go Test and Coverage
@@ -160,3 +161,6 @@ test-results/
 # Local Augment Rules (not committed)
 # -----------------------------------------------------------------------------
 .augment/rules/99-local.md
+
+# Local workspace config
+.mitto/

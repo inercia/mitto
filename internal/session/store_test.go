@@ -303,3 +303,158 @@ func TestStore_Delete(t *testing.T) {
 		t.Error("Session should not exist after deletion")
 	}
 }
+
+// TestStore_RecordEvent tests that RecordEvent preserves the pre-assigned seq.
+func TestStore_RecordEvent(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-record-event"
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Record an event with pre-assigned seq
+	event := Event{
+		Seq:       1,
+		Type:      EventTypeAgentMessage,
+		Timestamp: time.Now(),
+		Data:      AgentMessageData{Text: "Hello"},
+	}
+	if err := store.RecordEvent(sessionID, event); err != nil {
+		t.Fatalf("RecordEvent failed: %v", err)
+	}
+
+	// Read back and verify seq is preserved
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("Expected 1 event, got %d", len(events))
+	}
+
+	if events[0].Seq != 1 {
+		t.Errorf("Event seq = %d, want 1", events[0].Seq)
+	}
+
+	// Verify MaxSeq is updated in metadata
+	gotMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.MaxSeq != 1 {
+		t.Errorf("MaxSeq = %d, want 1", gotMeta.MaxSeq)
+	}
+}
+
+// TestStore_RecordEvent_SeqValidation tests that RecordEvent rejects seq <= 0.
+func TestStore_RecordEvent_SeqValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-record-event-validation"
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Try to record an event with seq = 0 (should fail)
+	event := Event{
+		Seq:       0,
+		Type:      EventTypeAgentMessage,
+		Timestamp: time.Now(),
+		Data:      AgentMessageData{Text: "Hello"},
+	}
+	err = store.RecordEvent(sessionID, event)
+	if err == nil {
+		t.Error("RecordEvent should fail with seq = 0")
+	}
+
+	// Try to record an event with seq = -1 (should fail)
+	event.Seq = -1
+	err = store.RecordEvent(sessionID, event)
+	if err == nil {
+		t.Error("RecordEvent should fail with seq = -1")
+	}
+}
+
+// TestStore_RecordEvent_MultipleEvents tests recording multiple events with pre-assigned seq.
+func TestStore_RecordEvent_MultipleEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-record-multiple"
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Record multiple events
+	for i := int64(1); i <= 5; i++ {
+		event := Event{
+			Seq:       i,
+			Type:      EventTypeAgentMessage,
+			Timestamp: time.Now(),
+			Data:      AgentMessageData{Text: "Message"},
+		}
+		if err := store.RecordEvent(sessionID, event); err != nil {
+			t.Fatalf("RecordEvent failed for seq %d: %v", i, err)
+		}
+	}
+
+	// Read back and verify all seqs are preserved
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	if len(events) != 5 {
+		t.Fatalf("Expected 5 events, got %d", len(events))
+	}
+
+	for i, e := range events {
+		expectedSeq := int64(i + 1)
+		if e.Seq != expectedSeq {
+			t.Errorf("Event %d: seq = %d, want %d", i, e.Seq, expectedSeq)
+		}
+	}
+
+	// Verify MaxSeq is updated to highest
+	gotMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.MaxSeq != 5 {
+		t.Errorf("MaxSeq = %d, want 5", gotMeta.MaxSeq)
+	}
+	if gotMeta.EventCount != 5 {
+		t.Errorf("EventCount = %d, want 5", gotMeta.EventCount)
+	}
+}

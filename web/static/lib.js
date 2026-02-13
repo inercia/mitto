@@ -3,11 +3,18 @@
 
 // Maximum number of messages to keep in browser memory per session.
 // This prevents memory issues in very long sessions while keeping enough context.
-export const MAX_MESSAGES = 100;
+// Set high enough to allow meaningful history loading while still protecting memory.
+// Modern browsers can handle 1000+ DOM nodes efficiently with modern virtual scrolling techniques.
+export const MAX_MESSAGES = 1000;
 
 // Number of events to load initially when switching to a session.
 // This provides a faster initial load while allowing users to load more history.
 export const INITIAL_EVENTS_LIMIT = 50;
+
+// Number of events to load in the fast initial phase (two-phase loading).
+// This small batch loads quickly to show the user the latest messages immediately,
+// then the remaining history is loaded in the background.
+export const FAST_INITIAL_LOAD_LIMIT = 10;
 
 // Message roles
 export const ROLE_USER = "user";
@@ -230,7 +237,10 @@ export function parseToolTitlePaths(title) {
 
     // Add text before this match
     if (matchStart > lastIndex) {
-      segments.push({ type: "text", value: title.slice(lastIndex, matchStart) });
+      segments.push({
+        type: "text",
+        value: title.slice(lastIndex, matchStart),
+      });
     }
 
     // Check if this looks like a real file path:
@@ -241,7 +251,11 @@ export function parseToolTitlePaths(title) {
     const hasPathSeparator = path.includes("/");
     const looksLikeVersion = /^v?\d+\.\d+/.test(path);
 
-    if (hasExtension && (hasPathSeparator || path.startsWith("./") || path.startsWith("../")) && !looksLikeVersion) {
+    if (
+      hasExtension &&
+      (hasPathSeparator || path.startsWith("./") || path.startsWith("../")) &&
+      !looksLikeVersion
+    ) {
       segments.push({ type: "path", value: path });
     } else {
       // Not a file path, treat as text
@@ -262,16 +276,6 @@ export function parseToolTitlePaths(title) {
   }
 
   return segments;
-}
-
-/**
- * Checks if a tool title contains a file path.
- * @param {string} title - The tool title
- * @returns {boolean} True if the title contains a file path
- */
-export function toolTitleHasPath(title) {
-  const segments = parseToolTitlePaths(title);
-  return segments.some((s) => s.type === "path");
 }
 
 // =============================================================================
@@ -311,12 +315,31 @@ export function computeAllSessions(activeSessions, storedSessions) {
   // Create a map of stored sessions for quick lookup
   const storedMap = new Map(storedSessions.map((s) => [s.session_id, s]));
 
-  // Merge working_dir from storedSessions (or global map) into activeSessions
+  // Merge properties from storedSessions into activeSessions
+  // Properties like archived, name, pinned, isStreaming are shared between active and stored sessions
   const mergedActive = activeSessions.map((s) => {
     const stored = storedMap.get(s.session_id);
     const globalWd = globalWorkingDirMap.get(s.session_id);
     // Get working_dir from: stored session, global map, or existing value
     const workingDir = stored?.working_dir || globalWd || s.working_dir || "";
+
+    // Always merge stored properties (archived, name, pinned, isStreaming) if stored session exists
+    if (stored) {
+      return {
+        ...s,
+        working_dir: workingDir || s.working_dir,
+        // Merge these properties from stored session (they don't exist in active sessions)
+        // For name: active session takes precedence if it has one, otherwise use stored
+        archived: stored.archived,
+        name: s.name || stored.name,
+        pinned: stored.pinned,
+        // For isStreaming: active session takes precedence (it has real-time state),
+        // but also consider stored session's value from global events
+        isStreaming: s.isStreaming || stored.isStreaming || false,
+      };
+    }
+
+    // No stored session, just update working_dir if needed
     if (workingDir && workingDir !== s.working_dir) {
       return { ...s, working_dir: workingDir };
     }
@@ -415,6 +438,76 @@ export function convertEventsToMessages(events, options = {}) {
 }
 
 /**
+ * Coalesce consecutive agent messages into single messages for display.
+ *
+ * The backend's MarkdownBuffer flushes content at semantic boundaries (paragraphs,
+ * headers, horizontal rules, etc.), creating separate events with different sequence
+ * numbers. This is correct for tracking and sync, but creates a poor visual experience
+ * where each flush appears as a separate message bubble.
+ *
+ * This function combines consecutive agent messages into single messages for rendering,
+ * while preserving the original messages for internal tracking.
+ *
+ * @param {Array} messages - Array of message objects (in chronological order)
+ * @returns {Array} Array of messages with consecutive agent messages coalesced
+ *
+ * @example
+ * // Input: [agent(seq:1, "Hello"), agent(seq:2, "<hr/>"), agent(seq:3, "World")]
+ * // Output: [agent(seq:1, "Hello<hr/>World", coalescedSeqs:[1,2,3])]
+ */
+export function coalesceAgentMessages(messages) {
+  if (!messages || messages.length === 0) {
+    return messages;
+  }
+
+  const result = [];
+  let currentCoalesced = null;
+
+  for (const msg of messages) {
+    // Only coalesce agent messages
+    if (msg.role !== ROLE_AGENT) {
+      // Flush any pending coalesced message
+      if (currentCoalesced) {
+        result.push(currentCoalesced);
+        currentCoalesced = null;
+      }
+      result.push(msg);
+      continue;
+    }
+
+    // Agent message - check if we should coalesce
+    if (currentCoalesced) {
+      // Append to existing coalesced message
+      currentCoalesced = {
+        ...currentCoalesced,
+        html: (currentCoalesced.html || "") + (msg.html || ""),
+        // Keep the latest timestamp and complete status
+        timestamp: msg.timestamp,
+        complete: msg.complete,
+        // Track all coalesced sequence numbers (for debugging)
+        coalescedSeqs: [...(currentCoalesced.coalescedSeqs || []), msg.seq],
+        // Use the highest seq for deduplication purposes
+        maxSeq: Math.max(currentCoalesced.maxSeq || currentCoalesced.seq, msg.seq),
+      };
+    } else {
+      // Start a new coalesced message
+      currentCoalesced = {
+        ...msg,
+        coalescedSeqs: [msg.seq],
+        maxSeq: msg.seq,
+      };
+    }
+  }
+
+  // Flush any remaining coalesced message
+  if (currentCoalesced) {
+    result.push(currentCoalesced);
+  }
+
+  return result;
+}
+
+/**
  * Get the minimum sequence number from an array of events.
  * @param {Array} events - Array of events with seq property
  * @returns {number} The minimum sequence number, or 0 if no events
@@ -432,6 +525,33 @@ export function getMinSeq(events) {
 export function getMaxSeq(events) {
   if (!events || events.length === 0) return 0;
   return Math.max(...events.map((e) => e.seq || 0));
+}
+
+/**
+ * Detects if the client has stale state compared to the server.
+ *
+ * This happens when the client's lastLoadedSeq is higher than the server's lastSeq,
+ * indicating the client has cached state from a different server instance or after
+ * a server restart. In this case, the server is always right and the client should
+ * discard its state and use the server's data.
+ *
+ * Common scenarios where this occurs:
+ * - Mobile client reconnects after phone was sleeping
+ * - Server restarted while client was offline
+ * - Browser tab restored with cached state
+ * - Network disconnection and reconnection
+ *
+ * @param {number} clientLastSeq - The client's last loaded sequence number
+ * @param {number} serverLastSeq - The server's last sequence number from events_loaded
+ * @returns {boolean} True if client has stale state and should defer to server
+ */
+export function isStaleClientState(clientLastSeq, serverLastSeq) {
+  // Both must be positive numbers for a valid comparison
+  if (!clientLastSeq || clientLastSeq <= 0) return false;
+  if (!serverLastSeq || serverLastSeq <= 0) return false;
+
+  // Client is stale if it thinks it has seen more than the server has
+  return clientLastSeq > serverLastSeq;
 }
 
 /**
@@ -500,24 +620,69 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     existingHashes.add(getMessageHash(m));
   }
 
-  // Filter out duplicates from new messages
-  // Prefer seq-based deduplication, fall back to content hash
-  const filteredNewMessages = newMessages.filter((m) => {
-    // If both have seq, deduplicate by seq
+  // M2 fix: Filter out duplicates from new messages, preferring complete messages
+  // When a message with matching seq is found, compare content to keep the longer/complete version
+  const filteredNewMessages = [];
+  const seqsToUpdate = new Map(); // seq -> newMessage (for messages that should replace existing)
+
+  for (const m of newMessages) {
+    // If both have seq, check if we should prefer the new message
     if (m.seq && existingBySeq.has(m.seq)) {
-      return false;
+      const existing = existingBySeq.get(m.seq);
+
+      // Prefer the more complete message:
+      // For agent messages, compare html length
+      // For thoughts, compare text length
+      // For other types, prefer the new one if existing is marked incomplete
+      let shouldReplace = false;
+      if (m.role === ROLE_AGENT || existing.role === ROLE_AGENT) {
+        const newLen = (m.html || "").length;
+        const existingLen = (existing.html || "").length;
+        // Prefer complete message, or longer message if both have same complete status
+        shouldReplace =
+          (m.complete && !existing.complete) ||
+          (m.complete === existing.complete && newLen > existingLen);
+      } else if (m.role === ROLE_THOUGHT || existing.role === ROLE_THOUGHT) {
+        const newLen = (m.text || "").length;
+        const existingLen = (existing.text || "").length;
+        shouldReplace =
+          (m.complete && !existing.complete) ||
+          (m.complete === existing.complete && newLen > existingLen);
+      } else {
+        // For tools and other types, prefer complete over incomplete
+        shouldReplace = m.complete && !existing.complete;
+      }
+
+      if (shouldReplace) {
+        seqsToUpdate.set(m.seq, m);
+      }
+      // Either way, don't add to filteredNewMessages (we'll handle updates separately)
+      continue;
     }
+
     // Fall back to content hash for messages without seq
     const hash = getMessageHash(m);
-    return !existingHashes.has(hash);
+    if (!existingHashes.has(hash)) {
+      filteredNewMessages.push(m);
+    }
+  }
+
+  // Apply replacements for messages where new version is more complete
+  let allMessages = existingMessages.map((m) => {
+    if (m.seq && seqsToUpdate.has(m.seq)) {
+      return seqsToUpdate.get(m.seq);
+    }
+    return m;
   });
 
-  if (filteredNewMessages.length === 0) {
+  // Add filtered new messages
+  if (filteredNewMessages.length === 0 && seqsToUpdate.size === 0) {
     return existingMessages;
   }
 
-  // Combine all messages
-  const allMessages = [...existingMessages, ...filteredNewMessages];
+  if (filteredNewMessages.length > 0) {
+    allMessages = [...allMessages, ...filteredNewMessages];
+  }
 
   // Sort by seq if available
   // Messages with seq are sorted by seq
@@ -1031,14 +1196,22 @@ export function generatePromptId() {
  * @param {string} promptId - The unique prompt ID
  * @param {string} message - The message text
  * @param {Array} imageIds - Optional array of image IDs
+ * @param {Array} fileIds - Optional array of file IDs
  */
-export function savePendingPrompt(sessionId, promptId, message, imageIds = []) {
+export function savePendingPrompt(
+  sessionId,
+  promptId,
+  message,
+  imageIds = [],
+  fileIds = [],
+) {
   try {
     const pending = getPendingPrompts();
     pending[promptId] = {
       sessionId,
       message,
       imageIds,
+      fileIds,
       timestamp: Date.now(),
     };
     localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
@@ -1124,6 +1297,40 @@ export function cleanupExpiredPrompts() {
   }
 }
 
+/**
+ * Clears pending prompts that have been persisted in loaded events.
+ * This is called when events are loaded on reconnect to prevent duplicate sends.
+ * @param {Array} events - Array of loaded events from the server
+ */
+export function clearPendingPromptsFromEvents(events) {
+  if (!events || events.length === 0) return;
+
+  try {
+    const pending = getPendingPrompts();
+    if (Object.keys(pending).length === 0) return;
+
+    let changed = false;
+    for (const event of events) {
+      if (event.type === "user_prompt" && event.data?.prompt_id) {
+        const promptId = event.data.prompt_id;
+        if (pending[promptId]) {
+          console.log(
+            `Clearing pending prompt ${promptId} - found in loaded events`,
+          );
+          delete pending[promptId];
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
+    }
+  } catch (err) {
+    console.warn("Failed to clear pending prompts from events:", err);
+  }
+}
+
 // =============================================================================
 // URL Detection and Linkification
 // =============================================================================
@@ -1192,10 +1399,18 @@ export function linkifyUrls(text) {
     while (cleanUrl.length > 0 && /[.,;:!?)\]}>]$/.test(cleanUrl)) {
       const lastChar = cleanUrl.slice(-1);
       // Keep if it's a balanced closing bracket/paren
-      if (lastChar === ")" && (cleanUrl.match(/\(/g) || []).length > (cleanUrl.match(/\)/g) || []).length - 1) {
+      if (
+        lastChar === ")" &&
+        (cleanUrl.match(/\(/g) || []).length >
+          (cleanUrl.match(/\)/g) || []).length - 1
+      ) {
         break;
       }
-      if (lastChar === "]" && (cleanUrl.match(/\[/g) || []).length > (cleanUrl.match(/]/g) || []).length - 1) {
+      if (
+        lastChar === "]" &&
+        (cleanUrl.match(/\[/g) || []).length >
+          (cleanUrl.match(/]/g) || []).length - 1
+      ) {
         break;
       }
       cleanUrl = cleanUrl.slice(0, -1);
@@ -1227,17 +1442,4 @@ export function linkifyUrls(text) {
   }
 
   return parts.join("");
-}
-
-/**
- * Checks if a text contains any URLs that would be linkified.
- * @param {string} text - The text to check
- * @returns {boolean} True if the text contains URLs
- */
-export function hasUrls(text) {
-  if (!text || typeof text !== "string") {
-    return false;
-  }
-  URL_PATTERN.lastIndex = 0;
-  return URL_PATTERN.test(text);
 }

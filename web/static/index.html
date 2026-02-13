@@ -9,9 +9,8 @@
     <title>Mitto - ACP Web Interface</title>
     <link rel="icon" type="image/png" href="./favicon.png" />
 
-    <!-- Tailwind CSS (Play CDN) -->
-    <script nonce="{{CSP_NONCE}}" src="https://cdn.tailwindcss.com"></script>
-    <script nonce="{{CSP_NONCE}}" src="./tailwind-config.js"></script>
+    <!-- Tailwind CSS (pre-built, run 'make tailwind' to regenerate) -->
+    <link rel="stylesheet" href="./tailwind.css" />
     <style>
       /* Dark theme (default) */
       :root {
@@ -60,6 +59,7 @@
     <!-- IMPORTANT: This must be loaded BEFORE theme-loader.js and other scripts that use it -->
     <script nonce="{{CSP_NONCE}}">
       window.mittoApiPrefix = "{{API_PREFIX}}";
+      window.mittoIsExternal = {{IS_EXTERNAL}};
     </script>
 
     <!-- Theme loader - adds v2-theme class to body if configured -->

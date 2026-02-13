@@ -304,7 +304,7 @@ func TestAccessLogger_DetermineEventType(t *testing.T) {
 		{"internal unauthorized", "/api/sessions", "GET", 401, false, "unauthorized"},
 		{"internal rate limited", "/api/sessions", "GET", 429, false, "rate_limited"},
 		{"internal success - not logged", "/api/sessions", "GET", 200, false, ""},
-		{"static asset external - not logged", "/static/app.js", "GET", 200, true, ""},
+		{"static asset external - logged", "/static/app.js", "GET", 200, true, "external_access"},
 	}
 
 	for _, tt := range tests {

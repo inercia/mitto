@@ -8,6 +8,7 @@ import (
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/msghooks"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -53,12 +54,29 @@ type SessionManager struct {
 	// globalConversations contains global conversation processing configuration.
 	globalConversations *config.ConversationsConfig
 
+	// globalRestrictedRunners contains per-runner-type global configuration.
+	globalRestrictedRunners map[string]*config.WorkspaceRunnerConfig
+
+	// mittoConfig contains the full Mitto configuration (for looking up agent configs).
+	mittoConfig *config.Config
+
 	// hookManager manages external command hooks for message transformation.
 	hookManager *msghooks.Manager
 
 	// apiPrefix is the URL prefix for API endpoints (e.g., "/mitto").
 	// Used to generate HTTP file links for web browser access.
 	apiPrefix string
+
+	// eventsManager is used to broadcast global events to all connected clients.
+	eventsManager *GlobalEventsManager
+
+	// planStateMu protects planState map.
+	planStateMu sync.RWMutex
+	// planState caches the last known agent plan entries per session.
+	// This is in-memory only (not persisted to disk) and survives conversation switches
+	// within the same server session. Automatically cleared on server restart.
+	// Used to restore the agent plan panel when switching back to a conversation.
+	planState map[string][]PlanEntry
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -77,6 +95,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		defaultWorkspace: defaultWS,
 		autoApprove:      autoApprove,
 		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
+		planState:        make(map[string][]PlanEntry),
 	}
 }
 
@@ -110,6 +129,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		onWorkspaceSave:  opts.OnWorkspaceSave,
 		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
 		apiPrefix:        opts.APIPrefix,
+		planState:        make(map[string][]PlanEntry),
 	}
 
 	for i := range opts.Workspaces {
@@ -234,13 +254,34 @@ func (sm *SessionManager) ResolveWorkspaceIdentifier(uuid string) (string, bool)
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	// Find workspace by UUID
+	// Find workspace by UUID - prefer workspaces with non-empty WorkingDir
+	for _, ws := range sm.workspaces {
+		if ws.UUID == uuid && ws.WorkingDir != "" {
+			return ws.WorkingDir, true
+		}
+	}
+
+	// Check default workspace if it has a non-empty WorkingDir
+	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid && sm.defaultWorkspace.WorkingDir != "" {
+		return sm.defaultWorkspace.WorkingDir, true
+	}
+
+	// Fall back to active sessions - this handles the case where sessions are created
+	// with a working directory that's not a registered workspace (e.g., CLI usage).
+	// The session inherits the default workspace's UUID but has its own working directory.
+	for _, bs := range sm.sessions {
+		if bs.workspaceUUID == uuid && bs.workingDir != "" {
+			return bs.workingDir, true
+		}
+	}
+
+	// If we found the UUID but all working dirs are empty, still return success
+	// to indicate the UUID is valid (even if we can't resolve to a directory)
 	for _, ws := range sm.workspaces {
 		if ws.UUID == uuid {
 			return ws.WorkingDir, true
 		}
 	}
-	// Check default workspace
 	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
 		return sm.defaultWorkspace.WorkingDir, true
 	}
@@ -427,6 +468,73 @@ func (sm *SessionManager) SetStore(store *session.Store) {
 	sm.store = store
 }
 
+// SetGlobalRestrictedRunners sets the per-runner-type global configuration.
+func (sm *SessionManager) SetGlobalRestrictedRunners(runners map[string]*config.WorkspaceRunnerConfig) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.globalRestrictedRunners = runners
+}
+
+// SetEventsManager sets the global events manager for broadcasting events.
+func (sm *SessionManager) SetEventsManager(eventsManager *GlobalEventsManager) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.eventsManager = eventsManager
+}
+
+// SetMittoConfig sets the full Mitto configuration.
+// This is used to look up agent-specific runner configurations.
+func (sm *SessionManager) SetMittoConfig(cfg *config.Config) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.mittoConfig = cfg
+}
+
+// createRunner creates a restricted runner for the given workspace and agent.
+// Returns nil if no runner configuration is found (direct execution).
+func (sm *SessionManager) createRunner(workingDir, acpServer string) (*runner.Runner, error) {
+	// Get workspace-specific runner configs from .mittorc (by runner type)
+	var workspaceRunnerConfigByType map[string]*config.WorkspaceRunnerConfig
+	if workingDir != "" && sm.workspaceRCCache != nil {
+		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
+			workspaceRunnerConfigByType = rc.RestrictedRunners
+		}
+	}
+
+	// Get global and agent-specific configs
+	sm.mu.RLock()
+	globalRunnersByType := sm.globalRestrictedRunners
+	mittoConfig := sm.mittoConfig
+	sm.mu.RUnlock()
+
+	// Get agent-specific runner config from MittoConfig
+	var agentRunnersByType map[string]*config.WorkspaceRunnerConfig
+	if mittoConfig != nil && acpServer != "" {
+		if server, err := mittoConfig.GetServer(acpServer); err == nil && server != nil {
+			agentRunnersByType = server.RestrictedRunners
+		}
+	}
+
+	// If no configuration at any level, return nil (direct execution)
+	if globalRunnersByType == nil && agentRunnersByType == nil && workspaceRunnerConfigByType == nil {
+		return nil, nil
+	}
+
+	// Create runner with configuration hierarchy
+	r, err := runner.NewRunner(
+		globalRunnersByType,
+		agentRunnersByType,
+		workspaceRunnerConfigByType,
+		workingDir,
+		sm.logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
 // CreateSession creates a new background session and registers it.
 // Returns ErrTooManySessions if the session limit is reached.
 // Uses the workspace configuration for the given working directory, or the default if not found.
@@ -500,6 +608,18 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		fileLinksConfig = globalConv.FileLinks
 	}
 
+	// Create restricted runner if configured
+	r, err := sm.createRunner(workingDir, acpServer)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if runner fallback occurred and notify clients
+	var runnerFallbackInfo *runner.FallbackInfo
+	if r != nil && r.FallbackInfo != nil {
+		runnerFallbackInfo = r.FallbackInfo
+	}
+
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:          acpCommand,
 		ACPServer:           acpServer,
@@ -511,10 +631,22 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		Processors:          processors,
 		HookManager:         hookMgr,
 		QueueConfig:         queueConfig,
+		Runner:              r,
 		ActionButtonsConfig: actionButtonsConfig,
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
+					"session_id":   sessionID,
+					"is_streaming": isStreaming,
+				})
+			}
+		},
+		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
+			sm.SetCachedPlanState(sessionID, entries)
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -537,12 +669,22 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	sm.mu.Unlock()
 
 	if sm.logger != nil {
-		sm.logger.Info("Created background session",
+		sm.logger.Debug("Created background session",
 			"session_id", bs.GetSessionID(),
 			"acp_id", bs.GetACPID(),
 			"acp_server", acpServer,
 			"working_dir", workingDir,
 			"total_sessions", len(sm.sessions))
+	}
+
+	// Notify about runner fallback if it occurred
+	if runnerFallbackInfo != nil && sm.eventsManager != nil {
+		sm.eventsManager.Broadcast(WSMsgTypeRunnerFallback, map[string]interface{}{
+			"session_id":     bs.GetSessionID(),
+			"requested_type": runnerFallbackInfo.RequestedType,
+			"fallback_type":  runnerFallbackInfo.FallbackType,
+			"reason":         runnerFallbackInfo.Reason,
+		})
 	}
 
 	return bs, nil
@@ -553,6 +695,34 @@ func (sm *SessionManager) SessionCount() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return len(sm.sessions)
+}
+
+// ActiveSessionCount returns the number of active (running) sessions.
+// M3: This is used by the health check endpoint.
+func (sm *SessionManager) ActiveSessionCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	count := 0
+	for _, bs := range sm.sessions {
+		if !bs.IsClosed() {
+			count++
+		}
+	}
+	return count
+}
+
+// PromptingSessionCount returns the number of sessions currently processing prompts.
+// M3: This is used by the health check endpoint.
+func (sm *SessionManager) PromptingSessionCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	count := 0
+	for _, bs := range sm.sessions {
+		if bs.IsPrompting() {
+			count++
+		}
+	}
+	return count
 }
 
 // GetSession returns a running session by ID, or nil if not found.
@@ -631,26 +801,30 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		workspaceUUID = sm.defaultWorkspace.UUID
 	}
 
-	// Get session metadata for ACP command and ACP session ID
+	// Get session metadata for ACP session ID and server name
 	var acpSessionID string
 	if store != nil {
 		if meta, err := store.GetMetadata(sessionID); err == nil {
 			// Get ACP session ID for potential resumption
 			acpSessionID = meta.ACPSessionID
 
-			// If still no ACP command, try to get it from session metadata
-			// This handles the case where the workspace configuration is not available
-			// (e.g., server restarted without the same --dir flags)
-			if acpCommand == "" && meta.ACPCommand != "" {
-				acpCommand = meta.ACPCommand
-				if sm.logger != nil {
-					sm.logger.Info("Using ACP command from session metadata",
-						"session_id", sessionID,
-						"acp_command", acpCommand)
-				}
-			}
+			// Use ACP server from metadata if not available from workspace config
 			if acpServer == "" && meta.ACPServer != "" {
 				acpServer = meta.ACPServer
+			}
+		}
+	}
+
+	// If we have an ACP server name but no command, look it up from global config
+	// This ensures we always use the current global config for the ACP command
+	if acpCommand == "" && acpServer != "" && sm.mittoConfig != nil {
+		if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+			acpCommand = server.Command
+			if sm.logger != nil {
+				sm.logger.Debug("Using ACP command from global config",
+					"session_id", sessionID,
+					"acp_server", acpServer,
+					"acp_command", acpCommand)
 			}
 		}
 	}
@@ -690,6 +864,12 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		fileLinksConfig = globalConv.FileLinks
 	}
 
+	// Create restricted runner if configured
+	r, err := sm.createRunner(workingDir, acpServer)
+	if err != nil {
+		return nil, err
+	}
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
@@ -705,10 +885,22 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		Processors:          processors,
 		HookManager:         hookMgr,
 		QueueConfig:         queueConfig,
+		Runner:              r,
 		ActionButtonsConfig: actionButtonsConfig,
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
+					"session_id":   sessionID,
+					"is_streaming": isStreaming,
+				})
+			}
+		},
+		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
+			sm.SetCachedPlanState(sessionID, entries)
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -750,20 +942,59 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 }
 
 // CloseSession closes a session and removes it from the manager.
+// Also clears any cached plan state for the session.
 func (sm *SessionManager) CloseSession(sessionID, reason string) {
 	sm.mu.Lock()
 	bs := sm.sessions[sessionID]
 	delete(sm.sessions, sessionID)
 	sm.mu.Unlock()
 
+	// Clear cached plan state when session is closed/deleted
+	sm.ClearCachedPlanState(sessionID)
+
 	if bs != nil {
 		bs.Close(reason)
 		if sm.logger != nil {
-			sm.logger.Info("Closed background session",
+			sm.logger.Debug("Closed background session",
 				"session_id", sessionID,
 				"reason", reason)
 		}
 	}
+}
+
+// CloseSessionGracefully waits for any active response to complete before closing the session.
+// This is used when archiving a conversation to avoid interrupting an in-progress response.
+// Returns true if the session was closed, false if the timeout expired while waiting.
+func (sm *SessionManager) CloseSessionGracefully(sessionID, reason string, timeout time.Duration) bool {
+	sm.mu.Lock()
+	bs := sm.sessions[sessionID]
+	sm.mu.Unlock()
+
+	if bs == nil {
+		// Session not running, nothing to close
+		return true
+	}
+
+	// Wait for any active response to complete
+	if bs.IsPrompting() {
+		if sm.logger != nil {
+			sm.logger.Info("Waiting for response to complete before closing session",
+				"session_id", sessionID,
+				"timeout", timeout)
+		}
+		if !bs.WaitForResponseComplete(timeout) {
+			if sm.logger != nil {
+				sm.logger.Warn("Timeout waiting for response to complete",
+					"session_id", sessionID,
+					"timeout", timeout)
+			}
+			return false
+		}
+	}
+
+	// Now close the session
+	sm.CloseSession(sessionID, reason)
+	return true
 }
 
 // ListRunningSessions returns the IDs of all running sessions.
@@ -799,6 +1030,74 @@ func (sm *SessionManager) CloseAll(reason string) {
 	}
 }
 
+// SetCachedPlanState stores the last known agent plan entries for a session.
+// This is used to restore the agent plan panel when switching back to a conversation.
+// The state is in-memory only and does not persist across server restarts.
+func (sm *SessionManager) SetCachedPlanState(sessionID string, entries []PlanEntry) {
+	sm.planStateMu.Lock()
+	defer sm.planStateMu.Unlock()
+
+	if sm.planState == nil {
+		sm.planState = make(map[string][]PlanEntry)
+	}
+
+	if len(entries) == 0 {
+		// Clear the entry if empty
+		delete(sm.planState, sessionID)
+		return
+	}
+
+	// Make a copy to avoid external modification
+	entriesCopy := make([]PlanEntry, len(entries))
+	copy(entriesCopy, entries)
+	sm.planState[sessionID] = entriesCopy
+
+	if sm.logger != nil {
+		sm.logger.Debug("Cached plan state",
+			"session_id", sessionID,
+			"entry_count", len(entries))
+	}
+}
+
+// GetCachedPlanState returns the cached agent plan entries for a session.
+// Returns nil if no plan state is cached for the session.
+// The returned slice is a copy, safe to modify.
+func (sm *SessionManager) GetCachedPlanState(sessionID string) []PlanEntry {
+	sm.planStateMu.RLock()
+	defer sm.planStateMu.RUnlock()
+
+	if sm.planState == nil {
+		return nil
+	}
+
+	entries, ok := sm.planState[sessionID]
+	if !ok || len(entries) == 0 {
+		return nil
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]PlanEntry, len(entries))
+	copy(result, entries)
+	return result
+}
+
+// ClearCachedPlanState removes the cached plan state for a session.
+// Called when a session is deleted or when a new prompt starts (plan becomes stale).
+func (sm *SessionManager) ClearCachedPlanState(sessionID string) {
+	sm.planStateMu.Lock()
+	defer sm.planStateMu.Unlock()
+
+	if sm.planState == nil {
+		return
+	}
+
+	delete(sm.planState, sessionID)
+
+	if sm.logger != nil {
+		sm.logger.Debug("Cleared cached plan state", "session_id", sessionID)
+	}
+}
+
 // ProcessPendingQueues checks all persisted sessions for queued messages and
 // auto-resumes sessions that have pending queue items and meet the criteria
 // for dequeuing (agent idle, delay elapsed). This is called on server startup.
@@ -825,6 +1124,11 @@ func (sm *SessionManager) ProcessPendingQueues() {
 	for _, meta := range sessions {
 		// Skip non-active sessions
 		if meta.Status != session.SessionStatusActive && meta.Status != "" {
+			continue
+		}
+
+		// Skip archived sessions - they should not have their ACP started automatically
+		if meta.Archived {
 			continue
 		}
 
@@ -876,7 +1180,8 @@ func (sm *SessionManager) ProcessPendingQueues() {
 			continue
 		}
 
-		// Try to process the queued message (this respects the delay)
+		// Try to process the queued message immediately
+		// Note: On startup, the delay is skipped because lastResponseComplete is zero
 		// Run in a goroutine so we don't block startup
 		go func(session *BackgroundSession, sessionID string) {
 			if session.TryProcessQueuedMessage() {

@@ -20,14 +20,15 @@ When you hover over a prompt button, a tooltip shows its description (if provide
 Prompts can be defined in multiple locations. When prompts have the same name,
 higher-priority sources override lower-priority ones.
 
-| Priority    | Source                       | Location                     |
-| ----------- | ---------------------------- | ---------------------------- |
-| 1 (lowest)  | Built-in defaults            | `config/config.default.yaml` |
-| 2           | Global prompts directory     | `MITTO_DIR/prompts/*.md`     |
-| 3           | Additional prompts dirs      | `prompts_dirs` in settings   |
-| 4           | User settings file           | `MITTO_DIR/settings.yaml`    |
-| 5           | Workspace prompts dirs       | `prompts_dirs` in `.mittorc` |
-| 6 (highest) | Workspace `.mittorc` prompts | `prompts:` in `.mittorc`     |
+| Priority    | Source                        | Location                         |
+| ----------- | ----------------------------- | -------------------------------- |
+| 1 (lowest)  | Built-in defaults             | `config/config.default.yaml`     |
+| 2           | Global prompts directory      | `MITTO_DIR/prompts/*.md`         |
+| 3           | Additional prompts dirs       | `prompts_dirs` in settings       |
+| 4           | User settings file            | `MITTO_DIR/settings.yaml`        |
+| 5           | Default workspace prompts dir | `$WORKSPACE/.mitto/prompts/*.md` |
+| 6           | Workspace prompts dirs        | `prompts_dirs` in `.mittorc`     |
+| 7 (highest) | Workspace `.mittorc` prompts  | `prompts:` in `.mittorc`         |
 
 ### 1. Built-in Default Prompts
 
@@ -78,7 +79,39 @@ prompts:
     backgroundColor: "#E8F5E9"
 ```
 
-### 4. Workspace `.mittorc` File
+### 4. Default Workspace Prompts Directory
+
+Mitto automatically searches for prompts in the `.mitto/prompts/` directory at the root
+of each workspace. This allows you to store project-specific prompts directly in your
+repository without any additional configuration.
+
+```
+my-project/
+├── .mitto/
+│   └── prompts/
+│       ├── code-review.md
+│       ├── deploy.md
+│       └── run-tests.md
+├── src/
+└── package.json
+```
+
+This directory is automatically searched when you open the workspace - no `.mittorc`
+configuration is required. The prompts use the same markdown format as global prompts
+(see [File Format](#file-format-for-global-prompts)).
+
+**Benefits:**
+
+- **Zero configuration** - Just create the directory and add prompts
+- **Version controlled** - Commit prompts alongside your code
+- **Team sharing** - Share project-specific prompts with your team
+- **Portable** - Prompts travel with the repository
+
+**Priority:** Default workspace prompts are searched after global prompts but before
+`prompts_dirs` configured in `.mittorc`. Prompts with the same name in higher-priority
+sources will override those in `.mitto/prompts/`.
+
+### 5. Workspace `.mittorc` File
 
 Define workspace-specific prompts in a `.mittorc` file at the root of your project:
 
@@ -143,8 +176,9 @@ prompts:
 
 **Priority order within workspace:**
 
-1. Prompts from `prompts_dirs` (in order listed)
-2. Inline `prompts:` entries (highest priority)
+1. Default `.mitto/prompts/` directory (lowest priority, automatically searched)
+2. Prompts from `prompts_dirs` (in order listed)
+3. Inline `prompts:` entries (highest priority)
 
 ### Example: Team Shared Prompts
 
@@ -166,8 +200,9 @@ In this setup:
 
 1. `MITTO_DIR/prompts/` is always searched first
 2. `/Users/Shared/team-prompts/` is searched next (from global config)
-3. `my-project/.prompts/` is searched (from workspace config)
-4. Inline prompts from `.mittorc` have highest priority
+3. `my-project/.mitto/prompts/` is searched (default workspace prompts)
+4. `my-project/.prompts/` is searched (from workspace `prompts_dirs`)
+5. Inline prompts from `.mittorc` have highest priority
 
 ## File Format for Global Prompts
 

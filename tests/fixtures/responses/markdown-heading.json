@@ -1,0 +1,26 @@
+{
+  "scenario": "markdown-heading",
+  "description": "Test markdown-heading",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:heading-split"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": [
+            "# Main ",
+            "Title\n\n",
+            "Some content here.\n\n",
+            "## Sub",
+            "section\n\n",
+            "More content."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

@@ -309,6 +309,41 @@ func TestDefaultConverter(t *testing.T) {
 	}
 }
 
+// TestMermaidWithSanitization verifies mermaid blocks are preserved through sanitization.
+func TestMermaidWithSanitization(t *testing.T) {
+	converter := DefaultConverter()
+
+	markdown := "```mermaid\ngraph TD\n    A --> B\n```"
+	result, err := converter.Convert(markdown)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	t.Logf("Input markdown:\n%s", markdown)
+	t.Logf("Output HTML:\n%s", result)
+
+	// Check that the mermaid class is preserved
+	if !strings.Contains(result, `class="mermaid"`) {
+		t.Errorf("Expected class=\"mermaid\" to be preserved after sanitization, got:\n%s", result)
+	}
+
+	// Check that the pre element exists
+	if !strings.Contains(result, "<pre") {
+		t.Errorf("Expected <pre> element, got:\n%s", result)
+	}
+
+	// Check that the code fence markers are NOT in the output (they should be parsed, not shown)
+	if strings.Contains(result, "```") {
+		t.Errorf("Code fence markers should not appear in HTML output, got:\n%s", result)
+	}
+
+	// Check that the word "mermaid" as language identifier is NOT in the content
+	// (it should only appear in class="mermaid", not as visible text)
+	if strings.Contains(result, ">mermaid<") || strings.Contains(result, "```mermaid") {
+		t.Errorf("Language identifier 'mermaid' should not appear as content, got:\n%s", result)
+	}
+}
+
 // TestIsTableSeparator tests table separator detection.
 func TestIsTableSeparator(t *testing.T) {
 	tests := []struct {

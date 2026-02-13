@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/inercia/mitto/internal/auxiliary"
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/secrets"
 )
 
@@ -35,6 +37,7 @@ type ConfigSaveRequest struct {
 	} `json:"web"`
 	UI            *configPkg.UIConfig            `json:"ui,omitempty"`
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
+	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
 }
 
 // handleConfig handles GET and POST /api/config.
@@ -74,6 +77,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if s.config.MittoConfig != nil {
 		response["web"] = s.config.MittoConfig.Web
 		response["ui"] = s.config.MittoConfig.UI
+		response["session"] = s.config.MittoConfig.Session
 		response["conversations"] = s.config.MittoConfig.Conversations
 
 		// Merge prompts from global files and settings
@@ -166,6 +170,35 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	if conflictErr := s.checkWorkspaceConflicts(&req); conflictErr != nil {
 		s.writeConfigError(w, conflictErr)
 		return
+	}
+
+	// Validate restricted_runner field for all workspaces and check platform support
+	for i, ws := range req.Workspaces {
+		tempWs := configPkg.WorkspaceSettings{RestrictedRunner: ws.RestrictedRunner}
+		if err := tempWs.ValidateRestrictedRunner(); err != nil {
+			s.writeConfigError(w, &configValidationError{
+				StatusCode: http.StatusBadRequest,
+				Message:    fmt.Sprintf("workspaces[%d].restricted_runner: %s", i, err.Error()),
+			})
+			return
+		}
+
+		// Check if runner is supported on this platform (pre-flight validation)
+		if ws.RestrictedRunner != "" && ws.RestrictedRunner != "exec" {
+			// Create a temporary runner to check platform support
+			runnerType := ws.RestrictedRunner
+			warning := checkRunnerSupport(runnerType)
+			if warning != "" {
+				// Add warning to response (don't fail, just warn)
+				// The warning will be shown in the UI
+				if s.logger != nil {
+					s.logger.Warn("Runner may not be supported on this platform",
+						"workspace", ws.WorkingDir,
+						"runner_type", runnerType,
+						"warning", warning)
+				}
+			}
+		}
 	}
 
 	// Build new settings (also stores password in Keychain on macOS)
@@ -337,9 +370,11 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		newUIConfig = *req.UI
 	}
 
-	// Preserve Session config (not exposed in web UI)
+	// Use Session from request if provided, otherwise preserve existing
 	var sessionConfig *configPkg.SessionConfig
-	if s.config.MittoConfig != nil {
+	if req.Session != nil {
+		sessionConfig = req.Session
+	} else if s.config.MittoConfig != nil {
 		sessionConfig = s.config.MittoConfig.Session
 	}
 
@@ -389,12 +424,13 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		}
 	}
 
-	// Update ACP servers, prompts, web config, UI config, and conversations config
+	// Update ACP servers, prompts, web config, UI config, session config, and conversations config
 	if s.config.MittoConfig != nil {
 		s.config.MittoConfig.ACPServers = newACPServers
 		s.config.MittoConfig.Prompts = settings.Prompts
 		s.config.MittoConfig.Web = runtimeWebConfig
 		s.config.MittoConfig.UI = settings.UI
+		s.config.MittoConfig.Session = settings.Session
 		s.config.MittoConfig.Conversations = settings.Conversations
 
 		// Update session manager's global conversations config so new sessions use the updated settings
@@ -410,13 +446,14 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
 	for i, ws := range req.Workspaces {
 		newWorkspaces[i] = configPkg.WorkspaceSettings{
-			UUID:       ws.UUID,
-			ACPServer:  ws.ACPServer,
-			ACPCommand: acpCommandMap[ws.ACPServer],
-			WorkingDir: ws.WorkingDir,
-			Name:       ws.Name,
-			Color:      ws.Color,
-			Code:       ws.Code,
+			UUID:             ws.UUID,
+			ACPServer:        ws.ACPServer,
+			ACPCommand:       acpCommandMap[ws.ACPServer],
+			WorkingDir:       ws.WorkingDir,
+			RestrictedRunner: ws.RestrictedRunner,
+			Name:             ws.Name,
+			Color:            ws.Color,
+			Code:             ws.Code,
 		}
 	}
 	s.sessionManager.SetWorkspaces(newWorkspaces)
@@ -473,14 +510,11 @@ func (s *Server) ensureExternalListenerStarted() {
 		return
 	}
 
-	actualPort, err := s.StartExternalListener(port)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to start external listener", "error", err)
-		}
-	} else if s.logger != nil {
-		s.logger.Info("External listener started", "port", actualPort)
+	_, err := s.StartExternalListener(port)
+	if err != nil && s.logger != nil {
+		s.logger.Error("Failed to start external listener", "error", err)
 	}
+	// Note: StartExternalListener already logs success
 }
 
 // applyAuthChanges handles dynamic changes to authentication and external access.
@@ -550,4 +584,90 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 	}
 
 	// Case 4: Auth was disabled and still disabled -> nothing to do
+}
+
+// RunnerInfo contains information about a runner type.
+type RunnerInfo struct {
+	Type        string `json:"type"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Supported   bool   `json:"supported"`
+	Warning     string `json:"warning,omitempty"`
+}
+
+// handleSupportedRunners handles GET /api/supported-runners.
+// Returns a list of runner types with their support status on the current platform.
+func (s *Server) handleSupportedRunners(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	runners := []RunnerInfo{
+		{
+			Type:        "exec",
+			Label:       "exec (no restrictions)",
+			Description: "No sandboxing - runs with full system access",
+			Supported:   true,
+		},
+		{
+			Type:        "sandbox-exec",
+			Label:       "sandbox-exec (macOS)",
+			Description: "macOS native sandboxing",
+			Supported:   runtime.GOOS == "darwin",
+			Warning:     checkRunnerSupport("sandbox-exec"),
+		},
+		{
+			Type:        "firejail",
+			Label:       "firejail (Linux)",
+			Description: "Linux sandboxing with firejail",
+			Supported:   runtime.GOOS == "linux",
+			Warning:     checkRunnerSupport("firejail"),
+		},
+		{
+			Type:        "docker",
+			Label:       "docker (all platforms)",
+			Description: "Docker container sandboxing",
+			Supported:   true, // Available on all platforms if Docker is installed
+			Warning:     checkRunnerSupport("docker"),
+		},
+	}
+
+	writeJSONOK(w, runners)
+}
+
+// checkRunnerSupport checks if a runner type is supported on the current platform.
+// Returns a warning message if the runner may not work, or empty string if it should work.
+func checkRunnerSupport(runnerType string) string {
+	switch runnerType {
+	case "sandbox-exec":
+		if runtime.GOOS != "darwin" {
+			return "sandbox-exec is only available on macOS"
+		}
+	case "firejail":
+		if runtime.GOOS != "linux" {
+			return "firejail is only available on Linux"
+		}
+	case "docker":
+		// Try to create a temporary runner to check if docker is available
+		// This is a lightweight check - the actual runner creation will do full validation
+		testRunner, err := runner.NewRunner(nil, nil, map[string]*configPkg.WorkspaceRunnerConfig{
+			"docker": {
+				Type: "docker",
+				Restrictions: &configPkg.RunnerRestrictions{
+					Docker: &configPkg.DockerRestrictions{
+						Image: "alpine:latest",
+					},
+				},
+			},
+		}, "", nil)
+		if err != nil {
+			return "Docker may not be available: " + err.Error()
+		}
+		if testRunner != nil && testRunner.Type() == "exec" {
+			// Fallback occurred
+			return "Docker is not available on this system"
+		}
+	}
+	return ""
 }

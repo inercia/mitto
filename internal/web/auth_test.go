@@ -1,3 +1,7 @@
+// Package web provides HTTP server and authentication functionality.
+//
+// Auth tests use table-driven test patterns for comprehensive coverage.
+// See TestAuthManager_ValidateCredentials, TestParseClientIP, etc. for examples.
 package web
 
 import (
@@ -560,6 +564,7 @@ func TestAuthManager_isPublicPath(t *testing.T) {
 		// API public paths (with prefix)
 		{"login endpoint", "/mitto/api/login", true},
 		{"csrf-token endpoint", "/mitto/api/csrf-token", true},
+		{"supported-runners endpoint", "/mitto/api/supported-runners", true},
 
 		// Non-public paths
 		{"sessions endpoint", "/mitto/api/sessions", false},

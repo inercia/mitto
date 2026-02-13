@@ -36,7 +36,7 @@ function getTokenFromCookie() {
 async function fetchCSRFToken() {
   const prefix = getApiPrefix();
   const response = await fetch(prefix + "/api/csrf-token", {
-    credentials: "same-origin", // Include cookies
+    credentials: "include", // Include cookies for cross-origin requests (external access via Tailscale)
   });
   if (!response.ok) {
     throw new Error("Failed to fetch CSRF token");
@@ -128,9 +128,11 @@ export async function secureFetch(url, options = {}) {
   const method = options.method || "GET";
 
   // Always include credentials for session cookie handling
+  // Use "include" instead of "same-origin" to support cross-origin requests
+  // (e.g., external access via Tailscale or ngrok)
   const fetchOptions = {
     ...options,
-    credentials: "same-origin",
+    credentials: "include",
   };
 
   let response;
@@ -192,7 +194,7 @@ export function checkAuth(response) {
 export async function authFetch(url, options = {}) {
   const response = await fetch(url, {
     ...options,
-    credentials: "same-origin",
+    credentials: "include", // Support cross-origin requests (external access via Tailscale)
   });
   return handleUnauthorized(response);
 }

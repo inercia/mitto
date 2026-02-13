@@ -53,14 +53,13 @@ resp := CancelledPermissionResponse()
 
 The `Connection` struct in `connection.go` manages the ACP process lifecycle. Key testable behaviors:
 
-| Method | Test Scenarios |
-|--------|----------------|
-| `NewConnection()` | Empty command, invalid command, valid command with mock ACP |
-| `Initialize()` | Successful handshake, output callback receives "Connected" message |
-| `NewSession()` | Session creation, session ID populated |
-| `Prompt()` | With session, without session (error), response handling |
-| `Cancel()` | With/without active session |
-| `Close()` | Normal close, double close, nil cmd edge case |
-| `Done()` | Returns valid channel, not closed while active |
-| `HasImageSupport()` | Before/after Initialize |
-
+| Method              | Test Scenarios                                                     |
+| ------------------- | ------------------------------------------------------------------ |
+| `NewConnection()`   | Empty command, invalid command, valid command with mock ACP        |
+| `Initialize()`      | Successful handshake, output callback receives "Connected" message |
+| `NewSession()`      | Session creation, session ID populated                             |
+| `Prompt()`          | With session, without session (error), response handling           |
+| `Cancel()`          | With/without active session                                        |
+| `Close()`           | Normal close, double close, nil cmd edge case                      |
+| `Done()`            | Returns valid channel, not closed while active                     |
+| `HasImageSupport()` | Before/after Initialize                                            |

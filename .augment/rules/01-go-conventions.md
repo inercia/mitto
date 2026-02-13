@@ -55,6 +55,7 @@ func (bs *BackgroundSession) GetNextSeq() int64 {
 ```
 
 **Benefits:**
+
 - Testable: Mock `SeqProvider` in tests
 - Decoupled: `WebClient` doesn't import `BackgroundSession`
 - Flexible: Any type implementing `GetNextSeq()` works
@@ -81,7 +82,7 @@ type Store struct {
 func (s *Store) SomeMethod() error {
     s.mu.Lock()
     defer s.mu.Unlock()
-    
+
     if s.closed {
         return ErrStoreClosed
     }
@@ -226,7 +227,7 @@ clientLogger := logging.WithClient(logger, clientID, sessionID)
 ```
 
 **Best practices:**
+
 - Use `logging.WithSession*` to avoid repeating `session_id` in every log call
 - Pass loggers down through constructors, not as method parameters
 - Use `Debug` for high-frequency events, `Info` for significant state changes
-

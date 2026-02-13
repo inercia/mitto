@@ -16,12 +16,12 @@ globs:
 
 ## Key Functions
 
-| Function | Purpose |
-|----------|---------|
-| `LoadSettings()` | Load from `settings.json`, create from defaults if missing |
-| `Load(path)` | Load from specific file (YAML or JSON) |
-| `SaveSettings(settings)` | Save to `settings.json` |
-| `ConfigToSettings(cfg)` | Convert Config → Settings for JSON |
+| Function                 | Purpose                                                    |
+| ------------------------ | ---------------------------------------------------------- |
+| `LoadSettings()`         | Load from `settings.json`, create from defaults if missing |
+| `Load(path)`             | Load from specific file (YAML or JSON)                     |
+| `SaveSettings(settings)` | Save to `settings.json`                                    |
+| `ConfigToSettings(cfg)`  | Convert Config → Settings for JSON                         |
 
 ## Config vs Settings Types
 
@@ -54,9 +54,8 @@ See [docs/devel/message-queue.md](../docs/devel/message-queue.md) for details.
 
 ## Workspace Persistence
 
-| Startup Mode | Source | Persistence |
-|--------------|--------|-------------|
-| CLI with `--dir` | CLI flags | NOT saved |
+| Startup Mode        | Source            | Persistence      |
+| ------------------- | ----------------- | ---------------- |
+| CLI with `--dir`    | CLI flags         | NOT saved        |
 | CLI without `--dir` | `workspaces.json` | Saved on changes |
-| macOS app | `workspaces.json` | Saved on changes |
-
+| macOS app           | `workspaces.json` | Saved on changes |

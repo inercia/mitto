@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint deps-go deps-js deps build-mac-app clean-mac-app build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint deps-go deps-js deps tailwind build-mac-app clean-mac-app test-webviewlog build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -81,21 +81,26 @@ test-integration-client: build build-mock-acp
 	@echo "Running client integration tests..."
 	$(GOTEST) -v -tags=integration ./tests/integration/client/...
 
+# Run runner integration tests (platform-specific)
+test-integration-runner: build
+	@echo "Running runner integration tests..."
+	$(GOTEST) -v ./internal/runner/... -run TestRunnerFallback
+
 # Run all integration tests (Go-based, uses mock ACP)
 test-integration: test-integration-go
 
 # Run UI tests with Playwright
-test-ui: build deps-js build-mock-acp
+test-ui: build tailwind build-mock-acp
 	@echo "Running UI tests..."
 	npx playwright test --config=tests/ui/playwright.config.ts
 
 # Run UI tests in headed mode (visible browser)
-test-ui-headed: build deps-js build-mock-acp
+test-ui-headed: build tailwind build-mock-acp
 	@echo "Running UI tests (headed)..."
 	npx playwright test --config=tests/ui/playwright.config.ts --headed
 
 # Run UI tests in debug mode
-test-ui-debug: build deps-js build-mock-acp
+test-ui-debug: build tailwind build-mock-acp
 	@echo "Running UI tests (debug)..."
 	npx playwright test --config=tests/ui/playwright.config.ts --debug
 
@@ -171,7 +176,7 @@ lint:
 # Usage: make ci
 # =============================================================================
 
-ci: deps build-mock-acp build
+ci: deps tailwind build-mock-acp build
 	@echo "=============================================="
 	@echo "Running CI checks locally..."
 	@echo "=============================================="
@@ -206,6 +211,11 @@ deps-js:
 		echo "Installing JavaScript dependencies..."; \
 		$(NPM) install; \
 	fi
+
+# Build Tailwind CSS (generates web/static/tailwind.css)
+tailwind: deps-js
+	@echo "Building Tailwind CSS..."
+	$(NPM) run tailwind
 
 # Download all dependencies
 deps: deps-go deps-js
@@ -260,6 +270,19 @@ build-mac-app: deps-go
 # Clean macOS app bundle
 clean-mac-app:
 	rm -rf "$(APP_BUNDLE)"
+	rm -f webviewlog_test
+
+# Test WebView console logging (macOS only)
+# Compiles and runs the Objective-C unit tests for webviewlog_darwin.m
+test-webviewlog:
+	@echo "Compiling WebView logger tests..."
+	@clang -framework Foundation \
+		-o webviewlog_test \
+		cmd/mitto-app/webviewlog_darwin.m \
+		platform/mac/tests/webviewlog_darwin_test.m
+	@echo "Running tests..."
+	@./webviewlog_test
+	@rm -f webviewlog_test
 
 # =============================================================================
 # Homebrew Packaging

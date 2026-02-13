@@ -4,7 +4,8 @@ description: "Rebase changes on top of main"
 backgroundColor: "#B2DFDB"
 ---
 
-Rebase the current branch onto the target branch, resolving conflicts and pushing the result.
+Rebase the current branch onto the target branch,
+resolving conflicts and pushing the result.
 
 ### 1. Check Repository Status
 
@@ -22,43 +23,108 @@ git status
 ```
 
 **If there are uncommitted changes:**
+
 - Ask the user whether to stash, commit, or discard them before proceeding
 - Do not proceed with rebase until working directory is clean
 
-### 2. Identify Target Branch
+### 2. Identify Target Remote and Branch
 
-First, check if there's an open Pull Request for the current branch to determine the real merge target:
+**IMPORTANT:** Never assume which remote to use. Users working with forks typically have:
+- `origin` pointing to their fork
+- `upstream` pointing to the main repository
 
-```bash
-# Check if gh CLI is available and if there's an open PR for this branch
-gh pr view --json baseRefName,number,title 2>/dev/null
-```
-
-**If a Pull Request exists:**
-- Use the `baseRefName` from the PR response as the target branch
-- This ensures we rebase onto the actual branch where the PR will be merged
-
-**If no Pull Request exists or gh is not available:**
-- Fall back to detecting the default branch:
+#### Step 2a: List Available Remotes
 
 ```bash
-# Identify the default branch (usually main or master)
-git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'
+# List all configured remotes
+git remote -v
 ```
+
+#### Step 2b: Check for Existing Pull Request
+
+Use the GitHub API (via `github-api` tool) to detect if there's an open PR for the current branch:
+
+```
+GET /repos/{owner}/{repo}/pulls?head={username}:{current-branch}&state=open
+```
+
+**If a PR exists:**
+- Extract the `base.ref` (target branch name, e.g., `main`)
+- Extract the `base.repo.full_name` to identify the target repository
+- Match the target repository to a configured remote:
+  - Compare `base.repo.clone_url` or `base.repo.ssh_url` with `git remote -v` output
+  - This determines whether to use `origin`, `upstream`, or another remote
+
+**Example:** If PR targets `upstream-org/repo:main` and your remotes are:
+- `origin` → `your-fork/repo`
+- `upstream` → `upstream-org/repo`
+
+Then use `upstream/main` as the rebase target.
+
+#### Step 2c: If No PR Exists, Infer Target
+
+When no PR exists, gather information to determine the likely target:
+
+```bash
+# Check upstream tracking configuration for current branch
+git config --get branch.$(git branch --show-current).remote
+git config --get branch.$(git branch --show-current).merge
+
+# Check default branch for each remote
+git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
+git symbolic-ref refs/remotes/upstream/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
+
+# If symbolic-ref fails, check remote's default branch
+git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}'
+git remote show upstream 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}'
+```
+
+**Priority order for inference:**
+1. **Tracking branch**: If the current branch tracks a remote branch, use that remote
+2. **`upstream` remote**: If present, likely the main repo in a fork workflow
+3. **`origin` remote**: Common default, but may be user's fork
+
+#### Step 2d: Confirm with User
+
+**Always ask the user to confirm** if any of these conditions apply:
+- Multiple remotes are configured (e.g., both `origin` and `upstream`)
+- The detected remote differs from `origin`
+- No tracking information exists and no PR was found
+- The current branch name suggests it might target a non-default branch
+
+Present the decision to the user:
+
+```
+🔍 Remote Detection Results:
+
+Available remotes:
+  - origin → git@github.com:your-username/repo.git
+  - upstream → git@github.com:upstream-org/repo.git
+
+Detected target: upstream/main
+Reason: [PR #123 targets upstream-org/repo:main | upstream remote typically represents the main repository | tracking branch configured]
+
+Is this correct? (yes/no/specify different target)
+```
+
+**Do not proceed** until the user confirms the target remote and branch.
 
 ### 3. Fetch Upstream Changes
 
 Fetch the latest changes from the remote repository:
 
 ```bash
-# Fetch all remotes
+# Fetch the confirmed target remote
+git fetch <target-remote>
+
+# Optionally fetch all remotes for completeness
 git fetch --all
 ```
 
 Show the user what commits will be rebased:
 
 ```bash
-git log --oneline origin/<target-branch>..HEAD
+git log --oneline <target-remote>/<target-branch>..HEAD
 ```
 
 ### 4. Handle Rebase State
@@ -71,10 +137,10 @@ git log --oneline origin/<target-branch>..HEAD
 
 **If no rebase is in progress:**
 
-Start the rebase onto the target branch:
+Start the rebase onto the confirmed target (from Step 2):
 
 ```bash
-git rebase origin/<target-branch>
+git rebase <target-remote>/<target-branch>
 ```
 
 ### 5. Conflict Resolution
@@ -134,32 +200,43 @@ git rebase --continue
 
 **Iterate** through this process until all conflicts are resolved and the rebase completes.
 
-### 6. Push Changes
-
-Once the rebase completes successfully:
-
-```bash
-# Force push with lease for safety (prevents overwriting others' changes)
-git push --force-with-lease origin HEAD
-```
+### 6. Report
 
 Report the result:
 
 ```console
 ✅ Rebase completed successfully!
 
-Rebased X commits onto origin/<target-branch>
-Branch has been pushed to remote.
+Rebased X commits onto <target-remote>/<target-branch>
 
 To verify the result:
 - View commit history: git log --oneline -10
-- Compare with remote: git diff origin/<current-branch>
+- Compare with target: git log --oneline <target-remote>/<target-branch>..HEAD
 ```
+
+### 7. Submit changes
+
+Suggest the user to submit changes by pushing to their remote branch.
+
+**Important:** After a rebase, you'll typically need to force push:
+
+```bash
+# Push to origin (your fork) - NOT the upstream remote
+git push --force-with-lease origin <current-branch>
+```
+
+**Note:** If working with a fork workflow:
+- Push to `origin` (your fork), not `upstream` (the main repo)
+- The PR will automatically update with the rebased commits
 
 ## Rules
 
+- Think carefully before stashing, committing or discarding uncommitted changes: no changes should be lost !!!
+- **Never assume which remote to use** - always detect and confirm with the user
+- Ask the user if not sure what to do
 - Always fetch before rebasing to have the latest upstream changes
 - Never force push without `--force-with-lease` to prevent data loss
+- **When pushing after rebase:** Push to the branch's tracking remote (usually `origin`), not necessarily the rebase target remote
 - If the rebase becomes too complex (many conflicts, repeated issues), offer to abort: `git rebase --abort`
 - Preserve commit messages and authorship during rebase
 - If unsure about a conflict resolution, always ask the user

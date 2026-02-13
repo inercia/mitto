@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -84,6 +88,18 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 	}
 
 	s.log("Prompt received: %s", message)
+
+	// Check for special REPLAY: prefix to replay events from a file
+	// Format: REPLAY:filename.jsonl
+	if strings.HasPrefix(message, "REPLAY:") {
+		filename := strings.TrimPrefix(message, "REPLAY:")
+		filename = strings.TrimSpace(filename)
+		s.log("Replay requested: %s", filename)
+		s.executeReplay(filename, s.defaultDelay)
+		// Note: end_turn is sent after executeReplay returns, which already
+		// includes delays between chunks. No additional delay needed.
+		return s.sendResponse(req.ID, PromptResponse{StopReason: "end_turn"})
+	}
 
 	// Find matching scenario
 	actions := s.findMatchingActions(message)
@@ -186,5 +202,71 @@ func (s *MockACPServer) executeAction(action Action) {
 
 	case "error":
 		s.log("Simulating error: %s", action.Message)
+
+	case "replay":
+		s.executeReplay(action.File, delay)
+	}
+}
+
+// executeReplay replays events from a JSONL file.
+// The file should contain events in the same format as events.jsonl files.
+// Only agent_message events are replayed as streaming chunks.
+func (s *MockACPServer) executeReplay(filename string, delay time.Duration) {
+	// Try to find the file in various locations
+	paths := []string{
+		filename,
+		filepath.Join(s.scenarioDir, filename),
+		filepath.Join(s.scenarioDir, "..", "replay", filename),
+		filepath.Join("tests/fixtures/replay", filename),
+	}
+
+	var file *os.File
+	var err error
+	for _, path := range paths {
+		file, err = os.Open(path)
+		if err == nil {
+			s.log("Replaying events from: %s", path)
+			break
+		}
+	}
+	if file == nil {
+		s.log("Could not find replay file %s in any location", filename)
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var event ReplayEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			s.log("Error parsing replay event: %v", err)
+			continue
+		}
+
+		// Only replay agent_message events as streaming chunks
+		if event.Type == "agent_message" {
+			var data ReplayAgentMessageData
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				s.log("Error parsing agent_message data: %v", err)
+				continue
+			}
+
+			// Send the text as a single chunk (preserving exact content)
+			s.sendSessionUpdate(SessionUpdate{
+				AgentMessageChunk: &AgentMessageChunk{
+					Content: ContentBlock{Type: "text", Text: data.Text},
+				},
+			})
+			time.Sleep(delay)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		s.log("Error reading replay file: %v", err)
 	}
 }

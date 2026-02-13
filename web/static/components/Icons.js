@@ -525,16 +525,142 @@ export function DragHandleIcon({ className = "w-4 h-4" }) {
  */
 export function QueueIcon({ className = "w-4 h-4" }) {
   return html`
-    <svg
-      class="${className}"
-      fill="currentColor"
-      viewBox="0 0 24 24"
-    >
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
       <!-- Top arrow -->
       <path d="M12 3L6 9h4v4h4V9h4L12 3z" />
       <!-- Stacked layers below -->
       <path d="M6 15h12v2H6v-2z" opacity="0.7" />
       <path d="M6 19h12v2H6v-2z" opacity="0.4" />
+    </svg>
+  `;
+}
+
+/**
+ * Horizontal grip/handle icon for resize operations
+ * Shows a pill-shaped horizontal line that indicates "drag here"
+ * @param {string} className - CSS classes (default: 'w-8 h-1')
+ */
+export function GripIcon({ className = "w-8 h-1" }) {
+  return html`
+    <svg class="${className}" viewBox="0 0 32 6" fill="currentColor">
+      <rect x="0" y="0" width="32" height="6" rx="3" />
+    </svg>
+  `;
+}
+
+/**
+ * Pin icon (outline) for unpinned state
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PinIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M16 3.5l-4 4-5-1.5-1.5 1.5 4 4-5 6.5 6.5-5 4 4 1.5-1.5-1.5-5 4-4-3-3z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Pin filled icon for pinned state
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PinFilledIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
+      <path
+        d="M16 3.5l-4 4-5-1.5-1.5 1.5 4 4-5 6.5 6.5-5 4 4 1.5-1.5-1.5-5 4-4-3-3z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Archive icon (outline) for unarchived state
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ArchiveIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Archive filled icon for archived state
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ArchiveFilledIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
+      <path
+        d="M20 2H4c-1.1 0-2 .9-2 2v2c0 .55.45 1 1 1h18c.55 0 1-.45 1-1V4c0-1.1-.9-2-2-2z"
+      />
+      <path d="M19 8H5v10c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V8zm-7 8h-2v-4h2v4z" />
+    </svg>
+  `;
+}
+
+/**
+ * List/no-grouping icon (horizontal lines)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function ListIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M4 6h16M4 12h16M4 18h16"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Chevron right icon (for collapsed groups)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ChevronRightIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M9 5l7 7-7 7"
+      />
     </svg>
   `;
 }

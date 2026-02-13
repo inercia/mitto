@@ -51,6 +51,11 @@ func (s *Store) sessionDir(sessionID string) string {
 	return filepath.Join(s.baseDir, sessionID)
 }
 
+// SessionDir returns the directory path for a session (exported).
+func (s *Store) SessionDir(sessionID string) string {
+	return s.sessionDir(sessionID)
+}
+
 // eventsPath returns the events file path for a session.
 func (s *Store) eventsPath(sessionID string) string {
 	return filepath.Join(s.sessionDir(sessionID), eventsFileName)
@@ -110,7 +115,7 @@ func (s *Store) Create(meta Metadata) error {
 		return err
 	}
 
-	log.Info("session created",
+	log.Debug("session created",
 		"session_id", meta.SessionID,
 		"acp_server", meta.ACPServer,
 		"working_dir", meta.WorkingDir,
@@ -160,9 +165,99 @@ func (s *Store) AppendEvent(sessionID string, event Event) error {
 		return fmt.Errorf("failed to write event: %w", err)
 	}
 
+	// L1: Structured logging for event persistence
+	log := logging.Session()
+	log.Debug("event_persisted",
+		"session_id", sessionID,
+		"seq", event.Seq,
+		"event_type", event.Type,
+		"event_count", meta.EventCount+1)
+
 	// Update metadata
 	meta.EventCount++
 	meta.UpdatedAt = time.Now()
+	// Track last user message time for sorting conversations
+	if event.Type == EventTypeUserPrompt {
+		meta.LastUserMessageAt = event.Timestamp
+	}
+	return s.writeMetadata(meta)
+}
+
+// RecordEvent persists an event with its pre-assigned sequence number.
+// Unlike AppendEvent, this method does NOT reassign the seq field.
+// The event.Seq must be > 0 (assigned by the caller).
+// This is used for immediate persistence where seq is assigned at streaming time.
+func (s *Store) RecordEvent(sessionID string, event Event) error {
+	log := logging.Session()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	// Validate seq is pre-assigned
+	if event.Seq <= 0 {
+		return fmt.Errorf("event.Seq must be > 0, got %d", event.Seq)
+	}
+
+	// Read metadata to validate seq ordering
+	meta, err := s.readMetadata(sessionID)
+	if err != nil {
+		return err
+	}
+
+	// Validate monotonic ordering: event.Seq should be EventCount + 1
+	// With emit-time seq assignment, this should always match.
+	// Log at DEBUG level as a safety check - mismatches indicate a bug.
+	expectedSeq := int64(meta.EventCount + 1)
+	if event.Seq != expectedSeq {
+		log.Debug("seq_mismatch_on_persist",
+			"session_id", sessionID,
+			"event_seq", event.Seq,
+			"expected_seq", expectedSeq,
+			"event_type", event.Type)
+		// Continue anyway - the event has the seq assigned at streaming time
+	}
+
+	eventsPath := s.eventsPath(sessionID)
+	f, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("failed to open events file: %w", err)
+	}
+	defer f.Close()
+
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+
+	// Note: We do NOT reassign event.Seq - it's already set by the caller
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("failed to write event: %w", err)
+	}
+
+	log.Debug("event_recorded",
+		"session_id", sessionID,
+		"seq", event.Seq,
+		"event_type", event.Type,
+		"event_count", meta.EventCount+1)
+
+	// Update metadata
+	meta.EventCount++
+	meta.UpdatedAt = time.Now()
+	// Track the highest seq seen (for immediate persistence)
+	if event.Seq > meta.MaxSeq {
+		meta.MaxSeq = event.Seq
+	}
 	// Track last user message time for sorting conversations
 	if event.Type == EventTypeUserPrompt {
 		meta.LastUserMessageAt = event.Timestamp
@@ -394,7 +489,7 @@ func (s *Store) Delete(sessionID string) error {
 		return err
 	}
 
-	log.Info("session deleted", "session_id", sessionID, "session_dir", sessionDir)
+	log.Debug("session deleted", "session_id", sessionID, "session_dir", sessionDir)
 	return nil
 }
 
@@ -409,6 +504,143 @@ func (s *Store) Exists(sessionID string) bool {
 
 	_, err := os.Stat(s.metadataPath(sessionID))
 	return err == nil
+}
+
+// CountSessions returns the number of stored sessions.
+// M3: This is used by the health check endpoint.
+func (s *Store) CountSessions() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return 0, ErrStoreClosed
+	}
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read sessions directory: %w", err)
+	}
+
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			// Check if it has a metadata file (valid session)
+			metaPath := filepath.Join(s.baseDir, entry.Name(), "metadata.json")
+			if _, err := os.Stat(metaPath); err == nil {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+// CleanupArchivedSessions deletes archived sessions older than the specified retention period.
+// Returns the number of sessions deleted and any error encountered.
+// If retentionPeriod is "never" or empty, no cleanup is performed.
+// Supported values: "1d" (1 day), "1w" (1 week), "1m" (1 month), "3m" (3 months).
+func (s *Store) CleanupArchivedSessions(retentionPeriod string) (int, error) {
+	log := logging.Session()
+
+	// Parse retention period
+	maxAge, err := parseRetentionPeriod(retentionPeriod)
+	if err != nil {
+		return 0, err
+	}
+	if maxAge == 0 {
+		// "never" or empty - no cleanup
+		return 0, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return 0, ErrStoreClosed
+	}
+
+	sessions, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read sessions directory: %w", err)
+	}
+
+	now := time.Now()
+	var totalDeleted int
+	var deleteErrors []error
+
+	for _, sessionEntry := range sessions {
+		if !sessionEntry.IsDir() {
+			continue
+		}
+
+		sessionID := sessionEntry.Name()
+
+		// Read session metadata
+		meta, err := s.readMetadata(sessionID)
+		if err != nil {
+			continue // Skip sessions with invalid metadata
+		}
+
+		// Only process archived sessions
+		if !meta.Archived {
+			continue
+		}
+
+		// Check if archived_at is older than retention period
+		if meta.ArchivedAt.IsZero() {
+			// Archived but no timestamp - use updated_at as fallback
+			if now.Sub(meta.UpdatedAt) <= maxAge {
+				continue
+			}
+		} else {
+			if now.Sub(meta.ArchivedAt) <= maxAge {
+				continue
+			}
+		}
+
+		// Delete the session
+		sessionDir := s.sessionDir(sessionID)
+		if err := os.RemoveAll(sessionDir); err != nil {
+			deleteErrors = append(deleteErrors, fmt.Errorf("failed to delete session %s: %w", sessionID, err))
+			continue
+		}
+
+		totalDeleted++
+		log.Info("deleted archived session",
+			"session_id", sessionID,
+			"archived_at", meta.ArchivedAt,
+			"age", now.Sub(meta.ArchivedAt))
+	}
+
+	if totalDeleted > 0 {
+		log.Info("archived session cleanup completed",
+			"deleted_count", totalDeleted,
+			"retention_period", retentionPeriod)
+	}
+
+	if len(deleteErrors) > 0 {
+		return totalDeleted, fmt.Errorf("encountered %d errors during cleanup", len(deleteErrors))
+	}
+
+	return totalDeleted, nil
+}
+
+// parseRetentionPeriod converts a retention period string to a duration.
+// Returns 0 for "never" or empty string (no cleanup).
+func parseRetentionPeriod(period string) (time.Duration, error) {
+	switch period {
+	case "", "never":
+		return 0, nil
+	case "1d":
+		return 24 * time.Hour, nil
+	case "1w":
+		return 7 * 24 * time.Hour, nil
+	case "1m":
+		return 30 * 24 * time.Hour, nil
+	case "3m":
+		return 90 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("invalid retention period: %s", period)
+	}
 }
 
 // Close closes the store.

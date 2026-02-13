@@ -73,7 +73,7 @@ test.describe("Initial UI Elements", () => {
     selectors,
     timeouts,
   }) => {
-    // The send button with "Send" text
+    // The send button (icon-only, paper plane)
     const sendButton = page.locator(selectors.sendButton);
     await expect(sendButton).toBeVisible({ timeout: timeouts.appReady });
   });

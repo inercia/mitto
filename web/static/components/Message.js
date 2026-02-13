@@ -1,7 +1,7 @@
 // Mitto Web Interface - Message Component
 // Renders different types of messages (user, agent, thought, tool, error, system)
 
-const { html, useMemo } = window.preact;
+const { html, useMemo, useEffect, useRef } = window.preact;
 
 import {
   ROLE_USER,
@@ -168,10 +168,7 @@ export function Message({ message, isLast, isStreaming }) {
   if (isThought) {
     const showCursor = isLast && isStreaming && !message.complete;
     // Linkify URLs in thought text
-    const linkedText = useMemo(
-      () => linkifyUrls(message.text),
-      [message.text],
-    );
+    const linkedText = useMemo(() => linkifyUrls(message.text), [message.text]);
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
@@ -266,12 +263,35 @@ export function Message({ message, isLast, isStreaming }) {
   // Agent message (HTML content)
   if (isAgent) {
     const showCursor = isLast && isStreaming && !message.complete;
+    const agentMessageRef = useRef(null);
+
+    // Trigger mermaid diagram rendering after the HTML is inserted.
+    //
+    // We render on every HTML update (not just when complete) because:
+    // 1. The backend's MarkdownBuffer ensures mermaid blocks are only flushed
+    //    when complete (opening and closing fences detected)
+    // 2. The renderMermaidDiagrams function uses a content-based cache, so
+    //    previously rendered diagrams are instantly restored from cache
+    // 3. This provides better UX by showing diagrams as soon as they're ready
+    //
+    // The cache prevents re-rendering: when innerHTML is replaced during streaming,
+    // the same diagram content will hit the cache and reuse the existing SVG.
+    useEffect(() => {
+      if (
+        agentMessageRef.current &&
+        typeof window.renderMermaidDiagrams === "function"
+      ) {
+        window.renderMermaidDiagrams(agentMessageRef.current);
+      }
+    }, [message.html]);
+
     return html`
       <div class="message-enter flex justify-start mb-3">
         <div
           class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-gray-100 rounded-bl-sm"
         >
           <div
+            ref=${agentMessageRef}
             class="markdown-content text-sm ${showCursor
               ? "streaming-cursor"
               : ""}"

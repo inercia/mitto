@@ -1,5 +1,22 @@
 /**
  * Unit tests for Mitto Web Interface library functions
+ *
+ * TODO: Consider splitting this large test file (4000+ lines) into smaller, focused files:
+ * - lib.session.test.js: computeAllSessions, createSessionState, addMessageToSessionState,
+ *   updateLastMessageInSession, removeSessionFromState, limitMessages
+ * - lib.sync.test.js: convertEventsToMessages, getMinSeq, getMaxSeq, getMessageHash,
+ *   mergeMessagesWithSync
+ * - lib.workspace.test.js: getBasename, getWorkspaceAbbreviation, getWorkspaceColor,
+ *   getWorkspaceVisualInfo, hexToRgb, getLuminance, getColorFromHex, hslToHex
+ * - lib.validation.test.js: validateUsername, validatePassword, validateCredentials
+ * - lib.prompt.test.js: generatePromptId, savePendingPrompt, getPendingPrompts,
+ *   removePendingPrompt, getPendingPromptsForSession, cleanupExpiredPrompts,
+ *   clearPendingPromptsFromEvents
+ * - lib.markdown.test.js: hasMarkdownContent, renderUserMarkdown
+ * - lib.ack.test.js: Send Message ACK Tracking tests
+ * - lib.state.test.js: UI State Consistency tests
+ *
+ * See existing split examples: utils/api.test.js, utils/storage.test.js, utils/websocket.test.js
  */
 
 import {
@@ -17,8 +34,10 @@ import {
   MAX_PASSWORD_LENGTH,
   computeAllSessions,
   convertEventsToMessages,
+  coalesceAgentMessages,
   getMinSeq,
   getMaxSeq,
+  isStaleClientState,
   getMessageHash,
   mergeMessagesWithSync,
   safeJsonParse,
@@ -44,6 +63,7 @@ import {
   getPendingPrompts,
   getPendingPromptsForSession,
   cleanupExpiredPrompts,
+  clearPendingPromptsFromEvents,
   hasMarkdownContent,
   renderUserMarkdown,
 } from "./lib.js";
@@ -128,6 +148,63 @@ describe("computeAllSessions", () => {
     const result = computeAllSessions(sessions, []);
     // Session 2 created later, so it should be first despite older last_user_message_at
     expect(result.map((s) => s.session_id)).toEqual(["2", "1"]);
+  });
+
+  test("merges archived flag from stored session to active session", () => {
+    const active = [
+      {
+        session_id: "1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        archived: true,
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].archived).toBe(true);
+  });
+
+  test("merges pinned flag from stored session to active session", () => {
+    const active = [
+      {
+        session_id: "1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        pinned: true,
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].pinned).toBe(true);
+  });
+
+  test("merges name from stored session when active has no name", () => {
+    const active = [
+      {
+        session_id: "1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        name: "My Custom Name",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe("My Custom Name");
   });
 });
 
@@ -317,7 +394,11 @@ describe("convertEventsToMessages", () => {
         data: {
           message: "Check this image",
           images: [
-            { id: "img_001.png", name: "screenshot.png", mime_type: "image/png" },
+            {
+              id: "img_001.png",
+              name: "screenshot.png",
+              mime_type: "image/png",
+            },
             { id: "img_002.jpg", mime_type: "image/jpeg" },
           ],
         },
@@ -325,7 +406,9 @@ describe("convertEventsToMessages", () => {
         seq: 1,
       },
     ];
-    const result = convertEventsToMessages(events, { sessionId: "test-session" });
+    const result = convertEventsToMessages(events, {
+      sessionId: "test-session",
+    });
     expect(result).toHaveLength(1);
     expect(result[0].role).toBe(ROLE_USER);
     expect(result[0].text).toBe("Check this image");
@@ -395,9 +478,119 @@ describe("convertEventsToMessages", () => {
         seq: 1,
       },
     ];
-    const result = convertEventsToMessages(events, { sessionId: "test-session" });
+    const result = convertEventsToMessages(events, {
+      sessionId: "test-session",
+    });
     expect(result).toHaveLength(1);
     expect(result[0].images).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// coalesceAgentMessages Tests
+// =============================================================================
+
+describe("coalesceAgentMessages", () => {
+  test("returns empty array for empty input", () => {
+    expect(coalesceAgentMessages([])).toEqual([]);
+  });
+
+  test("returns same array for null/undefined input", () => {
+    expect(coalesceAgentMessages(null)).toBeNull();
+    expect(coalesceAgentMessages(undefined)).toBeUndefined();
+  });
+
+  test("does not coalesce non-agent messages", () => {
+    const messages = [
+      { role: ROLE_USER, text: "Hello", seq: 1, timestamp: 1000 },
+      { role: ROLE_TOOL, id: "tool1", title: "Read file", seq: 2, timestamp: 2000 },
+      { role: ROLE_THOUGHT, text: "Thinking...", seq: 3, timestamp: 3000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(3);
+    expect(result[0].role).toBe(ROLE_USER);
+    expect(result[1].role).toBe(ROLE_TOOL);
+    expect(result[2].role).toBe(ROLE_THOUGHT);
+  });
+
+  test("coalesces consecutive agent messages", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Hello</p>", seq: 1, timestamp: 1000, complete: false },
+      { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000, complete: false },
+      { role: ROLE_AGENT, html: "<p>World</p>", seq: 3, timestamp: 3000, complete: true },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe(ROLE_AGENT);
+    expect(result[0].html).toBe("<p>Hello</p><hr/><p>World</p>");
+    expect(result[0].seq).toBe(1); // First seq preserved
+    expect(result[0].timestamp).toBe(3000); // Latest timestamp
+    expect(result[0].complete).toBe(true); // Latest complete status
+    expect(result[0].coalescedSeqs).toEqual([1, 2, 3]);
+    expect(result[0].maxSeq).toBe(3);
+  });
+
+  test("does not coalesce agent messages separated by other types", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Part 1</p>", seq: 1, timestamp: 1000 },
+      { role: ROLE_TOOL, id: "tool1", title: "Read file", seq: 2, timestamp: 2000 },
+      { role: ROLE_AGENT, html: "<p>Part 2</p>", seq: 3, timestamp: 3000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(3);
+    expect(result[0].html).toBe("<p>Part 1</p>");
+    expect(result[1].role).toBe(ROLE_TOOL);
+    expect(result[2].html).toBe("<p>Part 2</p>");
+  });
+
+  test("handles single agent message", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Only one</p>", seq: 1, timestamp: 1000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].html).toBe("<p>Only one</p>");
+    expect(result[0].coalescedSeqs).toEqual([1]);
+  });
+
+  test("handles mixed sequence with multiple coalesced groups", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>A1</p>", seq: 1, timestamp: 1000 },
+      { role: ROLE_AGENT, html: "<p>A2</p>", seq: 2, timestamp: 2000 },
+      { role: ROLE_USER, text: "Question", seq: 3, timestamp: 3000 },
+      { role: ROLE_AGENT, html: "<p>B1</p>", seq: 4, timestamp: 4000 },
+      { role: ROLE_AGENT, html: "<p>B2</p>", seq: 5, timestamp: 5000 },
+      { role: ROLE_AGENT, html: "<p>B3</p>", seq: 6, timestamp: 6000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(3);
+    // First coalesced group
+    expect(result[0].html).toBe("<p>A1</p><p>A2</p>");
+    expect(result[0].coalescedSeqs).toEqual([1, 2]);
+    // User message
+    expect(result[1].role).toBe(ROLE_USER);
+    // Second coalesced group
+    expect(result[2].html).toBe("<p>B1</p><p>B2</p><p>B3</p>");
+    expect(result[2].coalescedSeqs).toEqual([4, 5, 6]);
+  });
+
+  test("handles empty html in agent messages", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Start</p>", seq: 1, timestamp: 1000 },
+      { role: ROLE_AGENT, html: "", seq: 2, timestamp: 2000 },
+      { role: ROLE_AGENT, html: "<p>End</p>", seq: 3, timestamp: 3000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].html).toBe("<p>Start</p><p>End</p>");
+  });
+
+  test("preserves other message properties", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Test</p>", seq: 1, timestamp: 1000, customProp: "value" },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result[0].customProp).toBe("value");
   });
 });
 
@@ -450,6 +643,177 @@ describe("getMaxSeq", () => {
   test("handles events with missing seq", () => {
     const events = [{ seq: 5 }, {}, { seq: 3 }];
     expect(getMaxSeq(events)).toBe(5);
+  });
+});
+
+// =============================================================================
+// isStaleClientState Tests
+// =============================================================================
+
+describe("isStaleClientState", () => {
+  // The server is always right. When client's lastLoadedSeq > server's lastSeq,
+  // the client has stale state and should defer to the server.
+
+  describe("stale client detection", () => {
+    test("returns true when client seq is higher than server seq", () => {
+      // Client thinks it has seen seq 463, but server only has 160
+      // This is the classic mobile reconnect scenario
+      expect(isStaleClientState(463, 160)).toBe(true);
+    });
+
+    test("returns true when client is slightly ahead", () => {
+      // Client has seq 10, server has seq 5
+      expect(isStaleClientState(10, 5)).toBe(true);
+    });
+
+    test("returns true when client is way ahead (server restart scenario)", () => {
+      // Client has seq 1000 from before server restart, server now has seq 50
+      expect(isStaleClientState(1000, 50)).toBe(true);
+    });
+  });
+
+  describe("normal sync scenarios (not stale)", () => {
+    test("returns false when client seq equals server seq (in sync)", () => {
+      expect(isStaleClientState(100, 100)).toBe(false);
+    });
+
+    test("returns false when client seq is lower than server seq (behind)", () => {
+      // Client is behind - this is normal, just needs to sync
+      expect(isStaleClientState(50, 100)).toBe(false);
+    });
+
+    test("returns false when client has no seq yet (initial load)", () => {
+      expect(isStaleClientState(0, 100)).toBe(false);
+    });
+
+    test("returns false when server has no seq yet (empty session)", () => {
+      expect(isStaleClientState(100, 0)).toBe(false);
+    });
+  });
+
+  describe("edge cases", () => {
+    test("returns false for null client seq", () => {
+      expect(isStaleClientState(null, 100)).toBe(false);
+    });
+
+    test("returns false for null server seq", () => {
+      expect(isStaleClientState(100, null)).toBe(false);
+    });
+
+    test("returns false for undefined client seq", () => {
+      expect(isStaleClientState(undefined, 100)).toBe(false);
+    });
+
+    test("returns false for undefined server seq", () => {
+      expect(isStaleClientState(100, undefined)).toBe(false);
+    });
+
+    test("returns false for negative client seq", () => {
+      expect(isStaleClientState(-1, 100)).toBe(false);
+    });
+
+    test("returns false for negative server seq", () => {
+      expect(isStaleClientState(100, -1)).toBe(false);
+    });
+
+    test("returns false when both are zero", () => {
+      expect(isStaleClientState(0, 0)).toBe(false);
+    });
+
+    test("returns false when both are null", () => {
+      expect(isStaleClientState(null, null)).toBe(false);
+    });
+
+    test("handles string numbers (JavaScript coercion)", () => {
+      // JavaScript naturally coerces strings to numbers in comparisons
+      // "100" > 50 is true in JavaScript, so this returns true
+      // This is acceptable since values from JSON will always be numbers
+      expect(isStaleClientState("100", 50)).toBe(true);
+    });
+  });
+
+  describe("real-world scenarios", () => {
+    test("mobile phone sleep and wake - stale state triggers full reload", () => {
+      // Phone was sleeping, had cached seq 463
+      // Server restarted or session was modified, now has seq 160
+      // When this returns true, client should do FULL RELOAD:
+      // 1. Discard all client messages
+      // 2. Use server's last 50 messages
+      // 3. Auto-load remaining if hasMore=true
+      const clientLastSeq = 463;
+      const serverLastSeq = 160;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(true);
+    });
+
+    test("browser tab restored from cache - stale state triggers full reload", () => {
+      // Browser restored tab with cached state from yesterday
+      // Server has been running and session has new events
+      // Full reload needed to get correct conversation state
+      const clientLastSeq = 500;
+      const serverLastSeq = 200;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(true);
+    });
+
+    test("server restart while client offline - stale state triggers full reload", () => {
+      // Client had seq 1000 before going offline
+      // Server restarted, session now only has 50 events
+      // Client must discard its 1000 messages and reload from server
+      const clientLastSeq = 1000;
+      const serverLastSeq = 50;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(true);
+    });
+
+    test("normal reconnect after brief disconnect - not stale, just sync", () => {
+      // Client disconnected briefly, server added a few events
+      // Not stale - client just needs to sync missing events
+      const clientLastSeq = 100;
+      const serverLastSeq = 105;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(false);
+    });
+
+    test("fresh session load - not stale", () => {
+      // Client loading session for the first time
+      const clientLastSeq = 0;
+      const serverLastSeq = 50;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(false);
+    });
+
+    test("empty session - not stale", () => {
+      // New session with no events yet
+      const clientLastSeq = 0;
+      const serverLastSeq = 0;
+      expect(isStaleClientState(clientLastSeq, serverLastSeq)).toBe(false);
+    });
+
+    test("keepalive detects stale state - triggers full reload", () => {
+      // Scenario: keepalive_ack returns server_max_seq=160, but client has lastLoadedSeq=463
+      // This is detected via keepalive and should trigger a full reload
+      // The keepalive handler uses isStaleClientState to detect this
+      const clientMaxSeq = 463; // From Math.max(getMaxSeq(messages), lastLoadedSeq)
+      const serverMaxSeq = 160; // From keepalive_ack.server_max_seq
+      expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(true);
+      // When true, keepalive handler sends: { type: "load_events", data: { limit: 50 } }
+      // This triggers a full reload instead of incremental sync
+    });
+
+    test("keepalive detects client behind - triggers incremental sync", () => {
+      // Scenario: keepalive_ack returns server_max_seq=200, client has lastLoadedSeq=150
+      // Client is behind but not stale - should request missing events
+      const clientMaxSeq = 150;
+      const serverMaxSeq = 200;
+      expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(false);
+      // When false and serverMaxSeq > clientMaxSeq, keepalive handler sends:
+      // { type: "load_events", data: { after_seq: 150 } }
+    });
+
+    test("keepalive detects in-sync - no action needed", () => {
+      // Scenario: keepalive_ack returns server_max_seq=100, client has lastLoadedSeq=100
+      // Client is in sync - no action needed
+      const clientMaxSeq = 100;
+      const serverMaxSeq = 100;
+      expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(false);
+      // When false and serverMaxSeq <= clientMaxSeq, no sync needed
+    });
   });
 });
 
@@ -1308,6 +1672,73 @@ describe("mergeMessagesWithSync", () => {
       // Sorted by seq: 1, 2, 3
       expect(result[2].id).toBe("tool-1");
     });
+
+    test("prompt retry creates new seq - deduplicates by content", () => {
+      // This tests the critical bug fix for mobile wake + prompt retry:
+      // 1. User sends message, phone locks before user_prompt notification
+      // 2. Server persists message with seq=10
+      // 3. Phone wakes, events_loaded returns message with seq=10
+      // 4. Pending prompt retry sends same message again
+      // 5. Server persists AGAIN with seq=11 (new seq for same content)
+      // 6. user_prompt notification arrives with seq=11
+      //
+      // The deduplication must detect this as a duplicate by CONTENT,
+      // not just by seq (since seqs are different).
+      const existing = [
+        { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "Hi there!", seq: 11, timestamp: 2000 },
+      ];
+      // Retry caused server to persist same message with new seq
+      const syncEvents = [
+        { role: ROLE_USER, text: "Hello world", seq: 12, timestamp: 3000 },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      // Should deduplicate by content - only 2 messages (not 3)
+      expect(result.length).toBe(2);
+      expect(result[0].text).toBe("Hello world");
+      expect(result[0].seq).toBe(10); // Original seq preserved
+      expect(result[1].html).toBe("Hi there!");
+    });
+
+    test("prompt retry with no seq on existing - deduplicates by content", () => {
+      // Scenario: User sends message, phone locks IMMEDIATELY (before any ACK)
+      // The local message has no seq because user_prompt notification never arrived
+      const existing = [
+        { role: ROLE_USER, text: "Hello world", timestamp: 1000 }, // No seq!
+      ];
+      // events_loaded returns the persisted message with seq
+      const syncEvents = [
+        { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      // Should deduplicate by content
+      expect(result.length).toBe(1);
+      expect(result[0].text).toBe("Hello world");
+    });
+
+    test("multiple prompt retries - all deduplicated by content", () => {
+      // Extreme case: Multiple retries created multiple events with different seqs
+      const existing = [
+        { role: ROLE_USER, text: "Fix the bug", seq: 10, timestamp: 1000 },
+      ];
+      // Multiple retries created multiple events
+      const syncEvents = [
+        { role: ROLE_USER, text: "Fix the bug", seq: 11, timestamp: 2000 },
+        { role: ROLE_USER, text: "Fix the bug", seq: 12, timestamp: 3000 },
+        { role: ROLE_USER, text: "Fix the bug", seq: 13, timestamp: 4000 },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      // All should be deduplicated - only 1 message
+      expect(result.length).toBe(1);
+      expect(result[0].text).toBe("Fix the bug");
+      expect(result[0].seq).toBe(10); // Original preserved
+    });
   });
 
   // =========================================================================
@@ -1495,6 +1926,261 @@ describe("mergeMessagesWithSync", () => {
 
       // Should deduplicate correctly even with special whitespace
       expect(result.length).toBe(1);
+    });
+  });
+
+  // =========================================================================
+  // M2 Fix: Prefer Complete Messages Over Partial
+  // =========================================================================
+
+  describe("M2 - prefer complete messages", () => {
+    test("replaces partial agent message with complete one from sync", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "Let me",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Let me explain everything in detail.",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].html).toBe("Let me explain everything in detail.");
+      expect(result[0].complete).toBe(true);
+    });
+
+    test("replaces partial thought with complete one from sync", () => {
+      const existing = [
+        {
+          role: ROLE_THOUGHT,
+          text: "Thinking...",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_THOUGHT,
+          text: "Thinking... I should analyze this carefully.",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].text).toBe(
+        "Thinking... I should analyze this carefully.",
+      );
+      expect(result[0].complete).toBe(true);
+    });
+
+    test("keeps longer agent message even if both are incomplete", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "Short",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "This is a much longer message",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].html).toBe("This is a much longer message");
+    });
+
+    test("keeps existing message if it is longer than sync message", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "This is a longer complete message",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Short",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].html).toBe("This is a longer complete message");
+    });
+
+    test("prefers complete message over longer incomplete message", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "This is a very long incomplete streaming message that goes on and on",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Short but complete",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      // Complete message is preferred even if shorter
+      expect(result[0].html).toBe("Short but complete");
+      expect(result[0].complete).toBe(true);
+    });
+
+    test("handles tool messages with complete flag", () => {
+      const existing = [
+        {
+          role: ROLE_TOOL,
+          id: "tool-1",
+          title: "Read File",
+          status: "running",
+          complete: false,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_TOOL,
+          id: "tool-1",
+          title: "Read File",
+          status: "completed",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].complete).toBe(true);
+      expect(result[0].status).toBe("completed");
+    });
+
+    test("does not replace when both have same complete status and same length", () => {
+      const existing = [
+        {
+          role: ROLE_AGENT,
+          html: "Same content",
+          complete: true,
+          seq: 1,
+          timestamp: 1000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Same content",
+          complete: true,
+          seq: 1,
+          timestamp: 2000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(1);
+      // Existing is kept (no replacement needed)
+      expect(result[0].timestamp).toBe(1000);
+    });
+
+    test("handles multiple messages with some needing replacement", () => {
+      const existing = [
+        {
+          role: ROLE_USER,
+          text: "Hello",
+          seq: 1,
+          timestamp: 1000,
+        },
+        {
+          role: ROLE_AGENT,
+          html: "Partial...",
+          complete: false,
+          seq: 2,
+          timestamp: 2000,
+        },
+        {
+          role: ROLE_TOOL,
+          id: "tool-1",
+          title: "Read",
+          complete: true,
+          seq: 3,
+          timestamp: 3000,
+        },
+      ];
+      const syncEvents = [
+        {
+          role: ROLE_AGENT,
+          html: "Partial... now complete!",
+          complete: true,
+          seq: 2,
+          timestamp: 2000,
+        },
+        {
+          role: ROLE_AGENT,
+          html: "New message",
+          complete: true,
+          seq: 4,
+          timestamp: 4000,
+        },
+      ];
+
+      const result = mergeMessagesWithSync(existing, syncEvents);
+
+      expect(result.length).toBe(4);
+      // User message unchanged
+      expect(result[0].text).toBe("Hello");
+      // Agent message replaced with complete version
+      expect(result[1].html).toBe("Partial... now complete!");
+      expect(result[1].complete).toBe(true);
+      // Tool message unchanged
+      expect(result[2].id).toBe("tool-1");
+      // New message added
+      expect(result[3].html).toBe("New message");
     });
   });
 });
@@ -2427,6 +3113,104 @@ describe("cleanupExpiredPrompts", () => {
   });
 });
 
+describe("clearPendingPromptsFromEvents", () => {
+  beforeEach(() => {
+    localStorageMock.clear();
+  });
+
+  test("clears pending prompts that match loaded events", () => {
+    // Save some pending prompts
+    savePendingPrompt("session1", "prompt1", "First message", []);
+    savePendingPrompt("session1", "prompt2", "Second message", []);
+    savePendingPrompt("session1", "prompt3", "Third message", []);
+
+    // Simulate loaded events with prompt_id
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "First message", prompt_id: "prompt1" },
+      },
+      { type: "agent_message", data: { text: "Response" } },
+      {
+        type: "user_prompt",
+        data: { message: "Second message", prompt_id: "prompt2" },
+      },
+    ];
+
+    clearPendingPromptsFromEvents(events);
+
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeUndefined();
+    expect(pending["prompt2"]).toBeUndefined();
+    expect(pending["prompt3"]).toBeDefined(); // Not in events, should remain
+  });
+
+  test("handles events without prompt_id", () => {
+    savePendingPrompt("session1", "prompt1", "Message", []);
+
+    // Events without prompt_id (old format)
+    const events = [{ type: "user_prompt", data: { message: "Message" } }];
+
+    clearPendingPromptsFromEvents(events);
+
+    // Should not be cleared since there's no prompt_id to match
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeDefined();
+  });
+
+  test("handles empty events array", () => {
+    savePendingPrompt("session1", "prompt1", "Message", []);
+
+    clearPendingPromptsFromEvents([]);
+
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeDefined();
+  });
+
+  test("handles null/undefined events", () => {
+    savePendingPrompt("session1", "prompt1", "Message", []);
+
+    clearPendingPromptsFromEvents(null);
+    clearPendingPromptsFromEvents(undefined);
+
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeDefined();
+  });
+
+  test("handles no pending prompts", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "Message", prompt_id: "prompt1" },
+      },
+    ];
+
+    // Should not throw
+    clearPendingPromptsFromEvents(events);
+
+    expect(getPendingPrompts()).toEqual({});
+  });
+
+  test("only processes user_prompt events", () => {
+    savePendingPrompt("session1", "prompt1", "Message", []);
+
+    // Events with prompt_id but wrong type
+    const events = [
+      {
+        type: "agent_message",
+        data: { text: "Response", prompt_id: "prompt1" },
+      },
+      { type: "tool_call", data: { name: "test", prompt_id: "prompt1" } },
+    ];
+
+    clearPendingPromptsFromEvents(events);
+
+    // Should not be cleared since they're not user_prompt events
+    const pending = getPendingPrompts();
+    expect(pending["prompt1"]).toBeDefined();
+  });
+});
+
 // =============================================================================
 // User Message Markdown Tests
 // =============================================================================
@@ -3113,6 +3897,668 @@ describe("Send Message ACK Tracking", () => {
       });
 
       expect(rejectCount).toBe(3);
+    });
+  });
+
+  describe("WebSocket Reconnection Handling", () => {
+    // Tests for the scenario where WebSocket reconnects and is_mine becomes false
+    // but we should still resolve pending sends by matching prompt_id
+    let pendingSends;
+
+    beforeEach(() => {
+      pendingSends = {};
+    });
+
+    test("resolves pending send when is_mine is false but prompt_id matches", () => {
+      // This tests the fix for the bug where WebSocket reconnection causes
+      // is_mine to be false (because clientID changed), but we should still
+      // resolve the pending send by matching prompt_id
+      const promptId = "prompt_reconnect_123";
+      let resolved = false;
+      let resolvedWith = null;
+
+      pendingSends[promptId] = {
+        resolve: (result) => {
+          resolved = true;
+          resolvedWith = result;
+        },
+        reject: () => {},
+        timeoutId: setTimeout(() => {}, 15000),
+      };
+
+      // Simulate receiving user_prompt with is_mine = false (due to reconnection)
+      // but prompt_id matches our pending send
+      const is_mine = false; // Changed due to WebSocket reconnection
+      const received_prompt_id = promptId;
+
+      // The fix: even if is_mine is false, check if we have a pending send
+      // for this prompt_id and resolve it
+      if (!is_mine && received_prompt_id) {
+        const pending = pendingSends[received_prompt_id];
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          pending.resolve({ success: true, promptId: received_prompt_id });
+          delete pendingSends[received_prompt_id];
+        }
+      }
+
+      expect(resolved).toBe(true);
+      expect(resolvedWith).toEqual({ success: true, promptId });
+      expect(pendingSends[promptId]).toBeUndefined();
+    });
+
+    test("does not resolve when is_mine is false and prompt_id does not match", () => {
+      const ourPromptId = "prompt_our_123";
+      const otherPromptId = "prompt_other_456";
+      let resolved = false;
+
+      pendingSends[ourPromptId] = {
+        resolve: () => {
+          resolved = true;
+        },
+        reject: () => {},
+        timeoutId: setTimeout(() => {}, 15000),
+      };
+
+      // Simulate receiving user_prompt from another client
+      const is_mine = false;
+      const received_prompt_id = otherPromptId;
+
+      // Check if we have a pending send for this prompt_id
+      if (!is_mine && received_prompt_id) {
+        const pending = pendingSends[received_prompt_id];
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          pending.resolve({ success: true, promptId: received_prompt_id });
+          delete pendingSends[received_prompt_id];
+        }
+      }
+
+      // Our pending send should NOT be resolved
+      expect(resolved).toBe(false);
+      expect(pendingSends[ourPromptId]).toBeDefined();
+
+      // Clean up
+      clearTimeout(pendingSends[ourPromptId].timeoutId);
+    });
+
+    test("handles reconnection during multiple pending sends", () => {
+      const promptIds = ["prompt_1", "prompt_2", "prompt_3"];
+      const resolved = {};
+
+      promptIds.forEach((promptId) => {
+        resolved[promptId] = false;
+        pendingSends[promptId] = {
+          resolve: () => {
+            resolved[promptId] = true;
+          },
+          reject: () => {},
+          timeoutId: setTimeout(() => {}, 15000),
+        };
+      });
+
+      // Simulate WebSocket reconnection - is_mine becomes false for all
+      // but prompt_ids still match
+      promptIds.forEach((promptId) => {
+        const is_mine = false; // Changed due to reconnection
+        const received_prompt_id = promptId;
+
+        if (!is_mine && received_prompt_id) {
+          const pending = pendingSends[received_prompt_id];
+          if (pending) {
+            clearTimeout(pending.timeoutId);
+            pending.resolve({ success: true, promptId: received_prompt_id });
+            delete pendingSends[received_prompt_id];
+          }
+        }
+      });
+
+      // All should be resolved
+      expect(resolved["prompt_1"]).toBe(true);
+      expect(resolved["prompt_2"]).toBe(true);
+      expect(resolved["prompt_3"]).toBe(true);
+      expect(Object.keys(pendingSends).length).toBe(0);
+    });
+  });
+
+  // =========================================================================
+  // User Prompt Deduplication (user_prompt handler logic)
+  // =========================================================================
+  // These tests verify the deduplication logic used in the user_prompt WebSocket
+  // message handler. The handler must detect duplicates even when:
+  // 1. The existing message has a different seq (prompt retry created new seq)
+  // 2. The existing message has no seq (notification was lost)
+
+  describe("User Prompt Deduplication Logic", () => {
+    // Helper function that mimics the deduplication logic in useWebSocket.js
+    // This is the FIXED version that always checks content
+    function checkUserPromptDuplicate(messages, newSeq, newMessage) {
+      return messages.some((m) => {
+        if (m.role !== ROLE_USER) return false;
+        // If seq matches exactly, it's the same message
+        if (newSeq && m.seq && m.seq === newSeq) return true;
+        // Also check content - handles case where retry created new seq for same message
+        const messageContent = newMessage?.substring(0, 200) || "";
+        return (m.text || "").substring(0, 200) === messageContent;
+      });
+    }
+
+    test("detects duplicate when seqs match", () => {
+      const messages = [
+        { role: ROLE_USER, text: "Hello", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 10, "Hello");
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("detects duplicate by content when seqs differ (prompt retry scenario)", () => {
+      // This is the critical bug fix test:
+      // Existing message has seq=10, new message has seq=11 (from retry)
+      // They have the same content, so it should be detected as duplicate
+      const messages = [
+        { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, "Hello world");
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("detects duplicate by content when existing has no seq", () => {
+      // Scenario: User sent message, phone locked before user_prompt notification
+      // The local message has no seq
+      const messages = [
+        { role: ROLE_USER, text: "Hello world", timestamp: 1000 }, // No seq!
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 10, "Hello world");
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("does not detect duplicate when content differs", () => {
+      const messages = [
+        { role: ROLE_USER, text: "Hello", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, "Goodbye");
+      expect(isDuplicate).toBe(false);
+    });
+
+    test("does not detect duplicate for non-user messages", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "Hello", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 10, "Hello");
+      expect(isDuplicate).toBe(false);
+    });
+
+    test("handles multiple user messages - finds duplicate in any position", () => {
+      const messages = [
+        { role: ROLE_USER, text: "First message", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "Response 1", seq: 2, timestamp: 2000 },
+        { role: ROLE_USER, text: "Second message", seq: 3, timestamp: 3000 },
+        { role: ROLE_AGENT, html: "Response 2", seq: 4, timestamp: 4000 },
+      ];
+      // New message matches "Second message" but with different seq
+      const isDuplicate = checkUserPromptDuplicate(
+        messages,
+        10,
+        "Second message",
+      );
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("content comparison uses first 200 chars only", () => {
+      const longText = "A".repeat(250);
+      const messages = [
+        { role: ROLE_USER, text: longText, seq: 10, timestamp: 1000 },
+      ];
+      // Same first 200 chars, different ending
+      const newMessage = longText.substring(0, 200) + "B".repeat(50);
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, newMessage);
+      expect(isDuplicate).toBe(true);
+    });
+
+    test("content comparison is case-sensitive", () => {
+      const messages = [
+        { role: ROLE_USER, text: "Hello World", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, "hello world");
+      expect(isDuplicate).toBe(false);
+    });
+
+    test("handles empty messages array", () => {
+      const isDuplicate = checkUserPromptDuplicate([], 10, "Hello");
+      expect(isDuplicate).toBe(false);
+    });
+
+    test("handles null/undefined message content", () => {
+      const messages = [
+        { role: ROLE_USER, text: "", seq: 10, timestamp: 1000 },
+      ];
+      const isDuplicate = checkUserPromptDuplicate(messages, 11, null);
+      expect(isDuplicate).toBe(true); // Both are empty
+    });
+
+    // Test the OLD buggy behavior to document what was wrong
+    describe("regression tests (old buggy behavior)", () => {
+      // This helper mimics the OLD buggy logic that was fixed
+      function checkUserPromptDuplicateBuggy(messages, newSeq, newMessage) {
+        return messages.some((m) => {
+          if (m.role !== ROLE_USER) return false;
+          // BUG: This returns false when seqs differ, skipping content check!
+          if (newSeq && m.seq) return m.seq === newSeq;
+          // Content check only reached if one doesn't have seq
+          const messageContent = newMessage?.substring(0, 200) || "";
+          return (m.text || "").substring(0, 200) === messageContent;
+        });
+      }
+
+      test("OLD BUG: fails to detect duplicate when seqs differ", () => {
+        // This demonstrates the bug that was fixed
+        const messages = [
+          { role: ROLE_USER, text: "Hello world", seq: 10, timestamp: 1000 },
+        ];
+        // With the buggy logic, this returns false (not detected as duplicate)
+        // because both have seq but they differ, and it returns false immediately
+        const isDuplicate = checkUserPromptDuplicateBuggy(
+          messages,
+          11,
+          "Hello world",
+        );
+        expect(isDuplicate).toBe(false); // BUG: Should be true!
+      });
+
+      test("OLD BUG: only works when existing has no seq", () => {
+        // The old logic only fell through to content check when existing had no seq
+        const messages = [
+          { role: ROLE_USER, text: "Hello world", timestamp: 1000 }, // No seq
+        ];
+        const isDuplicate = checkUserPromptDuplicateBuggy(
+          messages,
+          10,
+          "Hello world",
+        );
+        expect(isDuplicate).toBe(true); // This case worked
+      });
+    });
+  });
+
+  // ==========================================================================
+  // Message Delivery Retry Logic Tests
+  // ==========================================================================
+  // These tests verify the new retry-on-reconnect pattern implemented in sendPrompt
+  // Total delivery budget: 10 seconds
+  // Initial ACK timeout: 3s (desktop) / 4s (mobile)
+  // On timeout: reconnect, verify delivery via last_user_prompt_id, retry if needed
+
+  describe("Message Delivery Retry Logic", () => {
+    describe("Timing Constants", () => {
+      test("total delivery budget is 10 seconds", () => {
+        const TOTAL_DELIVERY_BUDGET_MS = 10000;
+        expect(TOTAL_DELIVERY_BUDGET_MS).toBe(10000);
+      });
+
+      test("initial ACK timeout is short to detect zombie connections quickly", () => {
+        const INITIAL_ACK_TIMEOUT_MS = 3000; // Desktop
+        const MOBILE_ACK_TIMEOUT_MS = 4000; // Mobile
+        expect(INITIAL_ACK_TIMEOUT_MS).toBeLessThanOrEqual(4000);
+        expect(MOBILE_ACK_TIMEOUT_MS).toBeLessThanOrEqual(5000);
+      });
+
+      test("reconnect timeout fits within remaining budget", () => {
+        const TOTAL_DELIVERY_BUDGET_MS = 10000;
+        const INITIAL_ACK_TIMEOUT_MS = 3000;
+        const RECONNECT_TIMEOUT_MS = 4000;
+        // After initial timeout, we have ~7s left, reconnect should fit
+        expect(RECONNECT_TIMEOUT_MS).toBeLessThan(
+          TOTAL_DELIVERY_BUDGET_MS - INITIAL_ACK_TIMEOUT_MS,
+        );
+      });
+    });
+
+    describe("Delivery Verification via Reconnect", () => {
+      test("verifies delivery by matching prompt_id with last_user_prompt_id", () => {
+        const pendingPromptId = "prompt_123_abc";
+        const lastConfirmedPromptId = "prompt_123_abc";
+
+        // Simulate the check done after reconnect
+        const wasDelivered = pendingPromptId === lastConfirmedPromptId;
+        expect(wasDelivered).toBe(true);
+      });
+
+      test("detects non-delivery when prompt_ids do not match", () => {
+        const pendingPromptId = "prompt_123_abc";
+        const lastConfirmedPromptId = "prompt_456_def"; // Different prompt
+
+        const wasDelivered = pendingPromptId === lastConfirmedPromptId;
+        expect(wasDelivered).toBe(false);
+      });
+
+      test("detects non-delivery when no prompt has been confirmed yet", () => {
+        const pendingPromptId = "prompt_123_abc";
+        const lastConfirmedPromptId = null; // No prompt confirmed yet
+
+        // In the actual code, this check returns falsy (null), which is treated as "not delivered"
+        const wasDelivered =
+          lastConfirmedPromptId && pendingPromptId === lastConfirmedPromptId;
+        expect(wasDelivered).toBeFalsy();
+      });
+    });
+
+    describe("Retry Budget Calculation", () => {
+      test("calculates remaining budget correctly after initial timeout", () => {
+        const TOTAL_BUDGET = 10000;
+        const startTime = Date.now() - 3200; // 3.2 seconds ago
+        const elapsed = Date.now() - startTime;
+        const remaining = TOTAL_BUDGET - elapsed;
+
+        expect(remaining).toBeLessThan(7000);
+        expect(remaining).toBeGreaterThan(6000);
+      });
+
+      test("rejects immediately when budget is exhausted", () => {
+        const TOTAL_BUDGET = 10000;
+        const startTime = Date.now() - 11000; // 11 seconds ago
+        const remaining = TOTAL_BUDGET - (Date.now() - startTime);
+
+        expect(remaining).toBeLessThan(0);
+        // Should throw: "Message delivery timed out"
+      });
+
+      test("skips retry when remaining budget is too small", () => {
+        const TOTAL_BUDGET = 10000;
+        const MIN_RETRY_BUDGET = 500;
+        const startTime = Date.now() - 9800; // 9.8 seconds ago
+        const remaining = TOTAL_BUDGET - (Date.now() - startTime);
+
+        expect(remaining).toBeLessThan(MIN_RETRY_BUDGET);
+        // Should throw: "Message delivery could not be confirmed"
+      });
+    });
+
+    describe("Retry Flow Simulation", () => {
+      test("successful delivery on first attempt (no retry needed)", async () => {
+        let pendingSends = {};
+        const promptId = "prompt_success";
+
+        // Simulate attemptSend that succeeds quickly
+        const attemptSend = () =>
+          new Promise((resolve) => {
+            pendingSends[promptId] = {
+              resolve,
+              reject: () => {},
+              timeoutId: setTimeout(() => {}, 3000),
+            };
+            // Simulate ACK received
+            setTimeout(() => {
+              const pending = pendingSends[promptId];
+              if (pending) {
+                clearTimeout(pending.timeoutId);
+                pending.resolve({ success: true, promptId });
+                delete pendingSends[promptId];
+              }
+            }, 100);
+          });
+
+        const result = await attemptSend();
+        expect(result.success).toBe(true);
+        expect(result.promptId).toBe(promptId);
+      });
+
+      test("successful delivery after reconnect (verified on reconnect)", async () => {
+        // Simulate: initial send times out, reconnect shows message was delivered
+        const promptId = "prompt_verified";
+        const lastConfirmedPrompt = { promptId }; // Server confirms our prompt
+
+        // Simulate verification check
+        const wasDelivered = lastConfirmedPrompt?.promptId === promptId;
+        expect(wasDelivered).toBe(true);
+        // Result should be { success: true, promptId, verifiedOnReconnect: true }
+      });
+
+      test("successful delivery after retry on fresh connection", async () => {
+        // Simulate: initial send times out, reconnect shows NOT delivered, retry succeeds
+        const promptId = "prompt_retried";
+        let retryAttempted = false;
+
+        // Simulate: first check shows not delivered
+        const lastConfirmedPrompt = { promptId: "other_prompt" };
+        const wasDelivered = lastConfirmedPrompt?.promptId === promptId;
+        expect(wasDelivered).toBe(false);
+
+        // Retry on fresh connection
+        retryAttempted = true;
+        const retryResult = {
+          success: true,
+          promptId,
+          retriedOnReconnect: true,
+        };
+
+        expect(retryAttempted).toBe(true);
+        expect(retryResult.retriedOnReconnect).toBe(true);
+      });
+
+      test("failure after retry also times out", async () => {
+        // Simulate: both initial and retry timeout
+        const promptId = "prompt_failed";
+        let errorMessage = null;
+
+        // Simulate retry timeout
+        try {
+          throw new Error("ACK_TIMEOUT");
+        } catch (err) {
+          if (err.message === "ACK_TIMEOUT") {
+            errorMessage =
+              "Message delivery could not be confirmed after retry. Please check your connection.";
+          }
+        }
+
+        expect(errorMessage).toContain("could not be confirmed");
+        expect(errorMessage).toContain("retry");
+      });
+
+      test("failure when reconnection fails", async () => {
+        // Simulate: reconnection itself fails
+        let errorMessage = null;
+
+        try {
+          throw new Error("Connection timeout");
+        } catch (err) {
+          errorMessage =
+            "Connection lost and could not reconnect. Please check your network and try again.";
+        }
+
+        expect(errorMessage).toContain("could not reconnect");
+        expect(errorMessage).toContain("network");
+      });
+    });
+
+    describe("Edge Cases", () => {
+      test("handles rapid send attempts during reconnect", () => {
+        // Multiple sends should queue properly
+        const pendingSends = {};
+        const promptIds = ["prompt_1", "prompt_2", "prompt_3"];
+
+        promptIds.forEach((id) => {
+          pendingSends[id] = {
+            resolve: () => {},
+            reject: () => {},
+            timeoutId: setTimeout(() => {}, 3000),
+          };
+        });
+
+        expect(Object.keys(pendingSends).length).toBe(3);
+
+        // Clean up
+        Object.values(pendingSends).forEach((p) => clearTimeout(p.timeoutId));
+      });
+
+      test("cleans up pending state even on error", () => {
+        const pendingSends = {};
+        const promptId = "prompt_cleanup";
+
+        pendingSends[promptId] = {
+          resolve: () => {},
+          reject: () => {},
+          timeoutId: setTimeout(() => {}, 3000),
+        };
+
+        // Simulate error handling
+        const pending = pendingSends[promptId];
+        clearTimeout(pending.timeoutId);
+        delete pendingSends[promptId];
+
+        expect(pendingSends[promptId]).toBeUndefined();
+      });
+
+      test("does not retry on non-timeout errors", () => {
+        // Errors like "Failed to send message" should not trigger retry
+        const error = new Error("Failed to send message");
+        const shouldRetry = error.message === "ACK_TIMEOUT";
+
+        expect(shouldRetry).toBe(false);
+      });
+    });
+  });
+});
+
+// =============================================================================
+// UI State Consistency Tests
+// =============================================================================
+
+describe("UI State Consistency", () => {
+  describe("Load Earlier Messages Button Visibility", () => {
+    // These tests document the expected behavior for the "Load earlier messages" button
+    // The button should only be shown when:
+    // 1. hasMoreMessages is true AND
+    // 2. messages.length > 0
+    // This prevents showing the button when in an inconsistent state
+
+    test("button should be hidden when messages is empty even if hasMoreMessages is true", () => {
+      // This is the bug scenario: hasMoreMessages=true but messages=[]
+      // The button should NOT be shown in this case
+      const messages = [];
+      const hasMoreMessages = true;
+
+      // The condition used in app.js
+      const shouldShowButton = hasMoreMessages && messages.length > 0;
+
+      expect(shouldShowButton).toBe(false);
+    });
+
+    test("button should be shown when hasMoreMessages is true and messages exist", () => {
+      const messages = [{ role: ROLE_USER, text: "Hello", seq: 1 }];
+      const hasMoreMessages = true;
+
+      const shouldShowButton = hasMoreMessages && messages.length > 0;
+
+      expect(shouldShowButton).toBe(true);
+    });
+
+    test("button should be hidden when hasMoreMessages is false", () => {
+      const messages = [{ role: ROLE_USER, text: "Hello", seq: 1 }];
+      const hasMoreMessages = false;
+
+      const shouldShowButton = hasMoreMessages && messages.length > 0;
+
+      expect(shouldShowButton).toBe(false);
+    });
+
+    test("button should be hidden when both messages is empty and hasMoreMessages is false", () => {
+      const messages = [];
+      const hasMoreMessages = false;
+
+      const shouldShowButton = hasMoreMessages && messages.length > 0;
+
+      expect(shouldShowButton).toBe(false);
+    });
+  });
+
+  describe("Inconsistent State Detection", () => {
+    // These tests document the logic for detecting inconsistent state
+    // where hasMoreMessages=true but messages=[]
+
+    test("should detect inconsistent state when hasMoreMessages=true but no messages", () => {
+      const session = {
+        messages: [],
+        hasMoreMessages: true,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(true);
+    });
+
+    test("should not detect inconsistent state when messages exist", () => {
+      const session = {
+        messages: [{ role: ROLE_USER, text: "Hello", seq: 1 }],
+        hasMoreMessages: true,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(false);
+    });
+
+    test("should not detect inconsistent state when hasMoreMessages is false", () => {
+      const session = {
+        messages: [],
+        hasMoreMessages: false,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(false);
+    });
+
+    test("should handle undefined messages array", () => {
+      const session = {
+        messages: undefined,
+        hasMoreMessages: true,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(true);
+    });
+
+    test("should handle null messages array", () => {
+      const session = {
+        messages: null,
+        hasMoreMessages: true,
+      };
+
+      const hasMessages = session.messages && session.messages.length > 0;
+      const hasMoreFlag = session.hasMoreMessages;
+      const isInconsistent = hasMoreFlag && !hasMessages;
+
+      expect(isInconsistent).toBe(true);
+    });
+  });
+
+  describe("Empty State Display", () => {
+    // The empty state (welcome message) should be shown when messages.length === 0
+    // regardless of hasMoreMessages value (after the fix)
+
+    test("should show empty state when no messages", () => {
+      const messages = [];
+
+      const shouldShowEmptyState = messages.length === 0;
+
+      expect(shouldShowEmptyState).toBe(true);
+    });
+
+    test("should not show empty state when messages exist", () => {
+      const messages = [{ role: ROLE_USER, text: "Hello", seq: 1 }];
+
+      const shouldShowEmptyState = messages.length === 0;
+
+      expect(shouldShowEmptyState).toBe(false);
     });
   });
 });

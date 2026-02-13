@@ -68,6 +68,61 @@
   overflow-x: hidden;
 }
 
+/* Messages container scrollbar - show scrollbar for better Edge compatibility.
+   Edge (Chromium) can have scrolling issues when scrollbar is hidden with
+   flex-col-reverse layouts. We show a thin, styled scrollbar instead. */
+.messages-container-reverse {
+  -ms-overflow-style: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+.messages-container-reverse::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+.messages-container-reverse::-webkit-scrollbar-track {
+  background: transparent;
+}
+.messages-container-reverse::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+.messages-container-reverse::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Light theme scrollbar for messages container */
+.light .messages-container-reverse {
+  scrollbar-color: #cbd5e1 transparent;
+}
+.light .messages-container-reverse::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+.light .messages-container-reverse::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Messages container styles for progressive loading.
+   Note: The actual column-reverse is applied inline to the inner messages wrapper
+   (the div with class="max-w-2xl mx-auto flex flex-col-reverse") so that:
+   - First DOM child (newest message) appears at visual BOTTOM
+   - Last DOM child (oldest message) appears at visual TOP
+   - New messages added to DOM start appear at visual bottom
+   - Older messages loaded for infinite scroll appear at visual top
+
+   IMPORTANT: Do NOT use justify-content: flex-end here!
+   It breaks scrollHeight calculation in browsers - scrollHeight equals clientHeight
+   even when content overflows, making scroll detection impossible.
+   Instead, we use min-height: 100% on the inner wrapper to push content to bottom. */
+.messages-container-reverse {
+  display: block;
+}
+
+/* Inner messages wrapper: min-height pushes content to bottom via flex-col-reverse */
+.messages-container-reverse > .flex-col-reverse {
+  min-height: 100%;
+}
+
 /* Message animation */
 @keyframes fadeIn {
   from {
@@ -80,7 +135,7 @@
   }
 }
 .message-enter {
-  animation: fadeIn 0.2s ease-out;
+  animation: fadeIn 0.2s ease-out forwards;
 }
 
 /* Session swipe transition animations */
@@ -360,6 +415,48 @@
   color: #f472b6;
 }
 
+/* Mermaid diagrams */
+.markdown-content .mermaid-diagram {
+  margin: 1em 0;
+  padding: 1rem;
+  background: #1e293b;
+  border-radius: 0.5rem;
+  border: 1px solid #334155;
+  overflow-x: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.markdown-content .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Mermaid source block (before rendering) */
+.markdown-content pre.mermaid {
+  background: #1e293b;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin: 0.75em 0;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  font-size: 0.875em;
+  line-height: 1.5;
+}
+
+/* Error state for failed mermaid diagrams */
+.markdown-content pre.mermaid.mermaid-error {
+  border-color: #991b1b;
+  background: #1f1b1b;
+}
+
+.markdown-content .mermaid-error-message {
+  color: #f87171;
+  font-size: 0.75em;
+  margin-top: 0.5em;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
 /* Links */
 .markdown-content a {
   color: #60a5fa;
@@ -537,6 +634,27 @@ a.mailto-link:hover {
 
 .light .markdown-content em {
   color: #475569;
+}
+
+/* Light theme mermaid diagrams */
+.light .markdown-content .mermaid-diagram {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.light .markdown-content pre.mermaid {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #64748b;
+}
+
+.light .markdown-content pre.mermaid.mermaid-error {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+.light .markdown-content .mermaid-error-message {
+  color: #dc2626;
 }
 
 /* =============================================================================
@@ -740,14 +858,79 @@ a.mailto-link:hover {
 }
 
 /* =============================================================================
+   Input Font Family Classes (applied to compose/input textarea)
+   ============================================================================= */
+
+/* Font family stacks for each option */
+.input-font-system textarea.bg-mitto-input-box {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+.input-font-sans-serif textarea.bg-mitto-input-box {
+  font-family: sans-serif;
+}
+
+.input-font-serif textarea.bg-mitto-input-box {
+  font-family: Georgia, "Times New Roman", Times, serif;
+}
+
+.input-font-monospace textarea.bg-mitto-input-box {
+  font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+.input-font-menlo textarea.bg-mitto-input-box {
+  font-family: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+}
+
+.input-font-monaco textarea.bg-mitto-input-box {
+  font-family: Monaco, Menlo, Consolas, "Courier New", monospace;
+}
+
+.input-font-consolas textarea.bg-mitto-input-box {
+  font-family: Consolas, Monaco, Menlo, "Courier New", monospace;
+}
+
+.input-font-courier-new textarea.bg-mitto-input-box {
+  font-family: "Courier New", Courier, monospace;
+}
+
+.input-font-jetbrains-mono textarea.bg-mitto-input-box {
+  font-family: "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
+}
+
+.input-font-sf-mono textarea.bg-mitto-input-box {
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+.input-font-cascadia-code textarea.bg-mitto-input-box {
+  font-family: "Cascadia Code", "Cascadia Mono", Consolas, "Courier New",
+    monospace;
+}
+
+/* =============================================================================
    Scroll to Bottom Button
    ============================================================================= */
 
+/* Wrapper centers the button over the content area (max-w-2xl = 672px) */
+.scroll-to-bottom-wrapper {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  /* Match the content area max-width and centering */
+  max-width: 42rem; /* 2xl = 672px */
+  margin: 0 auto;
+}
+
 .scroll-to-bottom-btn {
-  position: fixed;
+  position: relative;
   bottom: 100px;
-  left: 50%;
-  transform: translateX(-50%);
   width: 44px;
   height: 44px;
   border-radius: 50%;
@@ -761,17 +944,18 @@ a.mailto-link:hover {
   transition: all 0.2s ease;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   z-index: 50;
+  pointer-events: auto;
 }
 
 .scroll-to-bottom-btn:hover {
   background: #475569;
   color: #f1f5f9;
-  transform: translateX(-50%) translateY(-2px);
+  transform: translateY(-2px);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
 }
 
 .scroll-to-bottom-btn:active {
-  transform: translateX(-50%) translateY(0);
+  transform: translateY(0);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
@@ -971,6 +1155,84 @@ a.mailto-link:hover {
   background: #94a3b8;
 }
 
+/* =============================================================================
+   Agent Plan Panel - Light Theme
+   ============================================================================= */
+
+.light .agent-plan-panel {
+  background: rgba(226, 232, 240, 0.97);
+  border-color: #cbd5e1;
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.25),
+    0 8px 16px rgba(0, 0, 0, 0.15),
+    0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.light .agent-plan-header {
+  border-color: #e2e8f0;
+}
+
+.light .agent-plan-header:hover {
+  background: rgba(241, 245, 249, 0.8);
+}
+
+.light .agent-plan-item {
+  border-color: rgba(226, 232, 240, 0.5);
+}
+
+.light .agent-plan-item:hover {
+  background: rgba(241, 245, 249, 0.8);
+}
+
+/* Task text color in light mode - override text-gray-200 */
+.light .agent-plan-item .text-gray-200 {
+  color: #1e293b;
+}
+
+/* Status icon colors in light mode - darker for visibility */
+.light .agent-plan-item .text-green-400 {
+  color: #16a34a;
+}
+
+.light .agent-plan-item .text-blue-400 {
+  color: #2563eb;
+}
+
+/* Priority badge colors in light mode */
+.light .agent-plan-item .text-red-400 {
+  color: #dc2626;
+}
+
+.light .agent-plan-item .text-yellow-400 {
+  color: #ca8a04;
+}
+
+.light .agent-plan-list::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+.light .agent-plan-list::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Agent plan indicator in light mode */
+.light .agent-plan-indicator {
+  background: rgba(226, 232, 240, 0.9);
+}
+
+.light .agent-plan-indicator:hover {
+  background: rgba(203, 213, 225, 0.9);
+}
+
+/* Indicator text colors in light mode */
+.light .agent-plan-indicator .text-gray-300 {
+  color: #1e293b;
+}
+
+.light .agent-plan-indicator .text-blue-400 {
+  color: #2563eb;
+}
+
 /* Action Buttons - Hide raw mitto-action tags in rendered content
    These tags are parsed by the backend and rendered as buttons,
    but this CSS ensures they're hidden if parsing fails or during streaming */
@@ -1087,6 +1349,24 @@ mitto-action {
   color: white;
 }
 
+/* Textarea improving overlay */
+.textarea-improving-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.85);
+  border-radius: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 10;
+  backdrop-filter: blur(2px);
+}
+
 /* Light theme */
 .light .action-toolbar-btn {
   background: #e2e8f0;
@@ -1106,13 +1386,25 @@ mitto-action {
   color: #94a3b8;
 }
 
-/* Chat input button container - smaller buttons aligned with textarea */
+.light .textarea-improving-overlay {
+  background: rgba(241, 245, 249, 0.9);
+}
+
+.light .textarea-improving-overlay .text-blue-300 {
+  color: #1e40af;
+}
+
+.light .textarea-improving-overlay .text-blue-400 {
+  color: #2563eb;
+}
+
+/* Chat input button container - smaller buttons aligned with textarea bottom */
 .chat-input-buttons {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  align-self: stretch; /* Stretch to match textarea height */
-  justify-content: flex-end; /* Align buttons to the bottom */
+  align-self: flex-end; /* Align to bottom of flex container */
+  margin-bottom: 5px; /* Fine-tune alignment with textarea bottom */
 }
 
 .chat-input-buttons > div {
@@ -1213,4 +1505,30 @@ mitto-action {
   background-color: #6b7280 !important; /* gray-500 */
   color: #000000 !important;
   transform: scale(0.98);
+}
+
+/* =============================================================================
+ * Swipe-to-Delete Styles
+ * ============================================================================= */
+
+/* Container needs touch-action for proper swipe handling */
+.session-item-container {
+  touch-action: pan-y pinch-zoom;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Prevent text selection during swipe */
+.session-item-container * {
+  -webkit-user-drag: none;
+}
+
+/* Delete background styles */
+.session-item-container .bg-red-600 {
+  background: linear-gradient(90deg, #dc2626 0%, #b91c1c 100%);
+}
+
+/* Light theme adjustments for swipe delete */
+.light .session-item-container .bg-red-600 {
+  background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
 }

@@ -151,7 +151,7 @@ export function convertHTTPFileURLToFile(httpUrl) {
     workspacePath = getCurrentWorkspace();
     if (!workspacePath) {
       console.warn(
-        "Cannot convert HTTP file URL to file://: workspace path not available"
+        "Cannot convert HTTP file URL to file://: workspace path not available",
       );
       return null;
     }
@@ -182,8 +182,13 @@ export function convertHTTPFileURLToViewer(httpUrl) {
 
   // Build the viewer URL using the same origin and API prefix
   // Static files are served at the same prefix as the API (e.g., /mitto/viewer.html)
+  //
+  // IMPORTANT: Old recordings may have links without the API prefix (e.g., /api/files?...)
+  // When the parsed apiPrefix is empty but we know the current page has a prefix,
+  // we should use the current prefix to ensure the viewer URL works correctly.
   const viewerUrl = new URL(parsed.url.origin);
-  viewerUrl.pathname = parsed.apiPrefix + "/viewer.html";
+  const apiPrefix = parsed.apiPrefix || getAPIPrefix();
+  viewerUrl.pathname = apiPrefix + "/viewer.html";
 
   // Use UUID if available, otherwise fall back to legacy workspace path
   if (parsed.workspaceUUID) {
@@ -232,9 +237,18 @@ function getCurrentWorkspaceUUID() {
 
 /**
  * Gets the API prefix for the current page.
+ * This uses the server-injected window.mittoApiPrefix value if available,
+ * which is the authoritative source for the API prefix.
  * @returns {string} The API prefix (e.g., "/mitto" or "")
  */
 export function getAPIPrefix() {
+  // First, check for the server-injected API prefix (most reliable)
+  // This is set in index.html by the server at runtime
+  if (window.mittoApiPrefix !== undefined) {
+    return window.mittoApiPrefix;
+  }
+
+  // Fallback: try to detect from the URL path
   // The API prefix is typically the path before /api/
   // For example, if we're at /mitto/index.html, the prefix is /mitto
   const path = window.location.pathname;
@@ -325,6 +339,36 @@ export function hasNativeImagePicker() {
 }
 
 // =============================================================================
+// File Picker Helper
+// =============================================================================
+
+/**
+ * Opens a native file picker dialog and returns the selected file paths.
+ * In the native macOS app, uses the bound native function.
+ * Returns a Promise that resolves to an array of file paths or empty array if cancelled.
+ * @returns {Promise<string[]|null>} Array of paths, or null if native picker unavailable
+ */
+export async function pickFiles() {
+  if (typeof window.mittoPickFiles === "function") {
+    // Native macOS app - use bound function
+    // The webview binding returns a Promise
+    const result = await window.mittoPickFiles();
+    return result || [];
+  }
+  // Web browser - no native file picker available
+  // The caller should use a file input as fallback
+  return null; // null indicates native picker is not available
+}
+
+/**
+ * Check if the native file picker is available (running in macOS app)
+ * @returns {boolean}
+ */
+export function hasNativeFilePicker() {
+  return typeof window.mittoPickFiles === "function";
+}
+
+// =============================================================================
 // Context Menu Helper
 // =============================================================================
 
@@ -363,7 +407,7 @@ export function fixViewerURLIfNeeded(url) {
           "[Mitto] Fixed old viewer URL:",
           url,
           "->",
-          parsed.toString()
+          parsed.toString(),
         );
         return parsed.toString();
       }

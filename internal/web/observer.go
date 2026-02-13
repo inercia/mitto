@@ -7,6 +7,17 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
+// PlanEntry represents a single task in the agent's execution plan.
+// This mirrors the ACP protocol's PlanEntry structure.
+type PlanEntry struct {
+	// Content is a human-readable description of what this task aims to accomplish.
+	Content string `json:"content"`
+	// Priority indicates the relative importance of this task (high, medium, low).
+	Priority string `json:"priority"`
+	// Status is the current execution status (pending, in_progress, completed).
+	Status string `json:"status"`
+}
+
 // SessionObserver defines the interface for receiving session events.
 // This allows multiple clients (WebSocket connections) to observe a single session.
 //
@@ -35,7 +46,8 @@ type SessionObserver interface {
 
 	// OnPlan is called when a plan update occurs.
 	// seq is the sequence number for this plan event.
-	OnPlan(seq int64)
+	// entries contains the list of plan tasks with their status.
+	OnPlan(seq int64, entries []PlanEntry)
 
 	// OnFileWrite is called when a file is written.
 	// seq is the sequence number for this file write event.
@@ -63,8 +75,9 @@ type SessionObserver interface {
 	// senderID identifies which observer sent the prompt (for deduplication).
 	// promptID is the client-generated ID for delivery confirmation.
 	// imageIDs contains IDs of any attached images.
+	// fileIDs contains IDs of any attached files.
 	// seq is the sequence number for this user prompt event.
-	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs []string)
+	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string)
 
 	// OnError is called when an error occurs.
 	OnError(message string)
@@ -82,4 +95,14 @@ type SessionObserver interface {
 
 	// OnQueueMessageSent is called after a queued message was delivered.
 	OnQueueMessageSent(messageID string)
+
+	// OnAvailableCommandsUpdated is called when the agent sends available slash commands.
+	// Commands are sent shortly after session creation and may be updated during the session.
+	OnAvailableCommandsUpdated(commands []AvailableCommand)
+
+	// OnACPStopped is called when the ACP connection for this session is stopped.
+	// This happens when the session is archived or explicitly closed.
+	// reason indicates why the session was stopped (e.g., "archived", "archived_timeout").
+	// Observers should update their state to prevent further prompts.
+	OnACPStopped(reason string)
 }

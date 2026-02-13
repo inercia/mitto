@@ -23,7 +23,13 @@ This document covers web server settings, authentication, security, and deployme
 
 ## Basic Configuration
 
-Start by creating a `~/.mittorc` like:
+Start by creating a default configuration file:
+
+```bash
+mitto config create
+```
+
+This creates `~/.mittorc` with sensible defaults. Review and customize the file for your environment:
 
 ```yaml
 acp:
@@ -36,7 +42,7 @@ web:
   theme: v2 # UI theme: "default" or "v2"
 ```
 
-and then start the Web server with:
+Then start the Web server with:
 
 ```bash
 # Start with default settings in a specific directory

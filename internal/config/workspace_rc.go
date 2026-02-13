@@ -14,7 +14,7 @@ import (
 const WorkspaceRCFileName = ".mittorc"
 
 // WorkspaceRC represents workspace-specific configuration loaded from .mittorc.
-// Supports prompts, prompts_dirs, and conversations sections; other sections are ignored.
+// Supports prompts, prompts_dirs, conversations, and restricted_runners sections; other sections are ignored.
 type WorkspaceRC struct {
 	// Prompts is the list of workspace-specific prompts.
 	Prompts []WebPrompt `json:"prompts,omitempty"`
@@ -24,11 +24,26 @@ type WorkspaceRC struct {
 	PromptsDirs []string `json:"prompts_dirs,omitempty"`
 	// Conversations contains workspace-specific conversation processing configuration.
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
+	// RestrictedRunners contains per-runner-type overrides for this workspace.
+	// Key is the runner type (e.g., "exec", "sandbox-exec", "firejail", "docker").
+	// When a workspace uses a runner of type X, it applies the config for type X.
+	// This allows workspace-specific restrictions based on runner type.
+	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
 	// LoadedAt is the time when this config was loaded.
 	LoadedAt time.Time `json:"-"`
 	// FileModTime is the modification time of the .mittorc file when loaded.
 	// Used to detect file changes efficiently.
 	FileModTime time.Time `json:"-"`
+}
+
+// GetRunnerConfigForType returns the runner config for a specific runner type.
+// Returns nil if no config exists for the runner type.
+func (rc *WorkspaceRC) GetRunnerConfigForType(runnerType string) *WorkspaceRunnerConfig {
+	if rc == nil || rc.RestrictedRunners == nil {
+		return nil
+	}
+
+	return rc.RestrictedRunners[runnerType]
 }
 
 // rawWorkspaceRC is used for YAML unmarshaling of workspace .mittorc files.
@@ -53,6 +68,8 @@ type rawWorkspaceRC struct {
 			} `yaml:"processors"`
 		} `yaml:"processing"`
 	} `yaml:"conversations"`
+	// RestrictedRunners section for per-agent runner overrides
+	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 }
 
 // LoadWorkspaceRC loads the .mittorc file from a workspace directory.
@@ -154,6 +171,9 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			}
 		}
 	}
+
+	// Copy per-agent restricted runner configs
+	rc.RestrictedRunners = raw.RestrictedRunners
 
 	return rc, nil
 }

@@ -170,6 +170,18 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Clean existing *.md files in the builtin directory before deploying
+	// This ensures removed prompts don't linger
+	existingFiles, err := filepath.Glob(filepath.Join(builtinDir, "*.md"))
+	if err != nil {
+		return fmt.Errorf("failed to list existing prompts: %w", err)
+	}
+	for _, f := range existingFiles {
+		if err := os.Remove(f); err != nil {
+			return fmt.Errorf("failed to remove old prompt %s: %w", filepath.Base(f), err)
+		}
+	}
+
 	// Deploy with force=true to overwrite existing files
 	result, err := embeddedconfig.DeployBuiltinPrompts(builtinDir, true)
 	if err != nil {

@@ -69,12 +69,13 @@ brew install --cask mitto-app   # macOS app (includes CLI)
 #### Manual Download
 
 Download the latest release from the [releases page](https://github.com/inercia/mitto/releases):
+
 - **macOS**: Download `Mitto-darwin-*.dmg` for the native app, or `mitto-darwin-*.tar.gz` for CLI only
 - **Linux**: Download `mitto-linux-*.tar.gz`
 
 ### Configure
 
-- For **Mac OS**, just open the Mitto application and follow the instructions.
+- For **Mac OS**, just open the Mitto application from your `/Applications` folder and follow the instructions.
 
 - For **Linux**, follow the instructions [here](docs/config/web/README.md).
 

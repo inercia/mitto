@@ -39,8 +39,16 @@ const (
 	// BuiltinPromptsDirName is the name of the builtin prompts subdirectory.
 	BuiltinPromptsDirName = "builtin"
 
+	// WorkspaceConfigDirName is the name of the workspace-specific config directory.
+	// This directory is located at the root of a workspace (e.g., $WORKSPACE/.mitto/).
+	WorkspaceConfigDirName = ".mitto"
+
 	// AuthSessionsFileName is the name of the auth sessions file.
 	AuthSessionsFileName = "auth_sessions.json"
+
+	// UIPreferencesFileName is the name of the UI preferences file.
+	// This stores client-side UI state like grouping mode and expanded groups.
+	UIPreferencesFileName = "ui_preferences.json"
 )
 
 var (
@@ -163,6 +171,59 @@ func EnsureDir() error {
 	return nil
 }
 
+// LogsDir returns the platform-specific logs directory path for Mitto.
+// The directory is determined in the following order:
+//  1. Platform-specific default:
+//     - macOS: ~/Library/Logs/Mitto
+//     - Linux: $XDG_STATE_HOME/mitto or ~/.local/state/mitto
+//     - Windows: %LOCALAPPDATA%\Mitto\Logs
+//
+// This function only returns the path; it does not create the directory.
+// Use EnsureLogsDir() to create the directory if needed.
+func LogsDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS: ~/Library/Logs/Mitto (standard macOS logs location)
+		return filepath.Join(homeDir, "Library", "Logs", "Mitto"), nil
+
+	case "windows":
+		// Windows: %LOCALAPPDATA%\Mitto\Logs
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = filepath.Join(homeDir, "AppData", "Local")
+		}
+		return filepath.Join(localAppData, "Mitto", "Logs"), nil
+
+	default:
+		// Linux and other Unix-like systems: $XDG_STATE_HOME/mitto or ~/.local/state/mitto
+		// XDG_STATE_HOME is the standard location for state files including logs
+		stateDir := os.Getenv("XDG_STATE_HOME")
+		if stateDir == "" {
+			stateDir = filepath.Join(homeDir, ".local", "state")
+		}
+		return filepath.Join(stateDir, "mitto"), nil
+	}
+}
+
+// EnsureLogsDir creates the Mitto logs directory if it doesn't exist.
+func EnsureLogsDir() error {
+	dir, err := LogsDir()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create logs directory %s: %w", dir, err)
+	}
+
+	return nil
+}
+
 // SettingsPath returns the full path to the settings.json file.
 func SettingsPath() (string, error) {
 	dir, err := Dir()
@@ -219,6 +280,13 @@ func BuiltinPromptsDir() (string, error) {
 	return filepath.Join(promptsDir, BuiltinPromptsDirName), nil
 }
 
+// WorkspacePromptsDir returns the full path to the default workspace prompts directory.
+// This is $WORKSPACE/.mitto/prompts/ and is automatically searched for prompts
+// when a workspace is active, without requiring explicit configuration in .mittorc.
+func WorkspacePromptsDir(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, PromptsDirName)
+}
+
 // AuthSessionsPath returns the full path to the auth_sessions.json file.
 // This file stores authenticated user sessions so they persist across server restarts.
 func AuthSessionsPath() (string, error) {
@@ -227,6 +295,18 @@ func AuthSessionsPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, AuthSessionsFileName), nil
+}
+
+// UIPreferencesPath returns the full path to the ui_preferences.json file.
+// This file stores client-side UI state like grouping mode and expanded groups.
+// It's used by the macOS app where localStorage doesn't persist across launches
+// due to random port allocation (each port is a different origin).
+func UIPreferencesPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, UIPreferencesFileName), nil
 }
 
 // ResetCache clears the cached directory path.

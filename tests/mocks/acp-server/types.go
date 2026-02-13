@@ -225,4 +225,23 @@ type Action struct {
 	Title   string   `json:"title,omitempty"`
 	Status  string   `json:"status,omitempty"`
 	Message string   `json:"message,omitempty"`
+	File    string   `json:"file,omitempty"` // For replay action: path to events.jsonl file
+}
+
+// ReplayEvent represents an event from an events.jsonl file for replay.
+type ReplayEvent struct {
+	Seq       int64           `json:"seq"`
+	Type      string          `json:"type"`
+	Timestamp string          `json:"timestamp"`
+	Data      json.RawMessage `json:"data"`
+}
+
+// ReplayAgentMessageData is the data for agent_message events in replay files.
+type ReplayAgentMessageData struct {
+	Text string `json:"text"` // Raw markdown text (not HTML)
+}
+
+// ReplayUserPromptData is the data for user_prompt events in replay files.
+type ReplayUserPromptData struct {
+	Message string `json:"message"`
 }

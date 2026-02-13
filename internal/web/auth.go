@@ -518,14 +518,22 @@ func (a *AuthManager) InvalidateSession(token string) {
 }
 
 // SetSessionCookie sets the authentication cookie on the response.
-func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, session *AuthSession) {
+// The request is used to determine if we're on localhost (to set Secure flag appropriately).
+func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, r *http.Request, session *AuthSession) {
 	logger := logging.Auth()
+
+	// Determine if we should set Secure flag.
+	// WKWebView (macOS app) doesn't send Secure cookies over http://localhost,
+	// so we need to set Secure=false for localhost connections.
+	// For external/HTTPS connections, we always want Secure=true.
+	secure := !isLocalhostRequest(r)
+
 	cookie := &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    session.Token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true, // Always set Secure; browsers will handle appropriately
+		Secure:   secure,
 		// Use Lax instead of Strict to allow cookies to be sent on same-site navigations
 		// Strict would block cookies on navigation from external links (e.g., bookmarks)
 		SameSite: http.SameSiteLaxMode,
@@ -543,13 +551,17 @@ func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, session *AuthSessi
 }
 
 // ClearSessionCookie removes the authentication cookie.
-func (a *AuthManager) ClearSessionCookie(w http.ResponseWriter) {
+// The request is used to determine if we're on localhost (to set Secure flag appropriately).
+func (a *AuthManager) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	// Match the Secure flag from SetSessionCookie for consistency
+	secure := !isLocalhostRequest(r)
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -561,8 +573,8 @@ func (a *AuthManager) GetSessionFromRequest(r *http.Request) (*AuthSession, bool
 
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		// Log at INFO level to help debug auth issues
-		logger.Info("AUTH: No session cookie found",
+		// Log at DEBUG level - routine check on every request
+		logger.Debug("AUTH: No session cookie found",
 			"error", err,
 			"cookie_name", sessionCookieName,
 			"path", r.URL.Path,
@@ -572,12 +584,12 @@ func (a *AuthManager) GetSessionFromRequest(r *http.Request) (*AuthSession, bool
 
 	session, valid := a.ValidateSession(cookie.Value)
 	if !valid {
-		logger.Info("AUTH: Session cookie invalid or expired",
+		logger.Debug("AUTH: Session cookie invalid or expired",
 			"token_prefix", cookie.Value[:min(8, len(cookie.Value))]+"...",
 			"path", r.URL.Path,
 		)
 	} else {
-		logger.Info("AUTH: Session cookie valid",
+		logger.Debug("AUTH: Session cookie valid",
 			"username", session.Username,
 			"expires_at", session.ExpiresAt,
 			"path", r.URL.Path,
@@ -590,16 +602,19 @@ func (a *AuthManager) GetSessionFromRequest(r *http.Request) (*AuthSession, bool
 var publicStaticPaths = map[string]bool{
 	"/auth.html":               true,
 	"/auth.js":                 true,
+	"/tailwind.css":            true, // Required by auth.html for styling
 	"/tailwind-config-auth.js": true,
 	"/styles.css":              true,
 	"/styles-v2.css":           true,
 	"/favicon.ico":             true,
+	"/favicon.png":             true, // Referenced by auth.html
 }
 
 // publicAPIPaths are API paths (without prefix) that don't require authentication.
 var publicAPIPaths = map[string]bool{
-	"/api/login":      true,
-	"/api/csrf-token": true, // CSRF token endpoint must be accessible before login
+	"/api/login":             true,
+	"/api/csrf-token":        true, // CSRF token endpoint must be accessible before login
+	"/api/supported-runners": true, // Platform information endpoint (no sensitive data)
 }
 
 // isPublicPath checks if a path is public (no auth required).
@@ -609,7 +624,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 
 	// Check static paths (exact match) - at root level
 	if publicStaticPaths[path] {
-		logger.Info("AUTH: isPublicPath: MATCHED static path", "path", path)
+		logger.Debug("AUTH: isPublicPath: MATCHED static path", "path", path)
 		return true
 	}
 
@@ -617,7 +632,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	if a.apiPrefix != "" {
 		for staticPath := range publicStaticPaths {
 			if path == a.apiPrefix+staticPath {
-				logger.Info("AUTH: isPublicPath: MATCHED prefixed static path", "path", path)
+				logger.Debug("AUTH: isPublicPath: MATCHED prefixed static path", "path", path)
 				return true
 			}
 		}
@@ -627,7 +642,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	for apiPath := range publicAPIPaths {
 		fullAPIPath := a.apiPrefix + apiPath
 		if path == fullAPIPath {
-			logger.Info("AUTH: isPublicPath: MATCHED API path", "path", path, "api_path", fullAPIPath)
+			logger.Debug("AUTH: isPublicPath: MATCHED API path", "path", path, "api_path", fullAPIPath)
 			return true
 		}
 	}
@@ -637,7 +652,7 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	for p := range publicStaticPaths {
 		staticPathsList = append(staticPathsList, p)
 	}
-	logger.Info("AUTH: isPublicPath: NO MATCH",
+	logger.Debug("AUTH: isPublicPath: NO MATCH",
 		"path", path,
 		"api_prefix", a.apiPrefix,
 		"known_static_paths", staticPathsList,
@@ -653,6 +668,26 @@ func isLoopbackIP(ipStr string) bool {
 		return false
 	}
 	return ip.IsLoopback()
+}
+
+// isLocalhostRequest checks if the request is coming from/to localhost.
+// This is used to determine if we should set the Secure flag on cookies.
+// WKWebView (macOS app) connects via http://127.0.0.1:PORT and doesn't
+// handle Secure cookies properly over non-HTTPS localhost connections.
+func isLocalhostRequest(r *http.Request) bool {
+	// Check the Host header - this tells us what the client connected to
+	host := r.Host
+	if host == "" {
+		host = r.URL.Host
+	}
+
+	// Strip port if present
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+
+	// Check if host is localhost or 127.0.0.1
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 // contextKey is a type for context keys used by the auth package.
@@ -705,7 +740,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 
 		// Log external connection attempts
 		if isExternal {
-			logger.Info("AUTH: External connection",
+			logger.Debug("AUTH: External connection",
 				"client_ip", clientIP,
 				"path", r.URL.Path,
 				"is_loopback", isLoopbackIP(clientIP),
@@ -721,9 +756,9 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 
 		// Allow public paths without authentication
 		isPublic := a.isPublicPath(r.URL.Path)
-		// Log ALL public path checks to help debug auth issues
+		// Log public path checks at DEBUG level - routine checks
 		if isPublic {
-			logger.Info("AUTH: Bypass - public path",
+			logger.Debug("AUTH: Bypass - public path",
 				"path", r.URL.Path,
 				"raw_uri", r.RequestURI,
 				"client_ip", clientIP,
@@ -731,8 +766,8 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Log when we're NOT treating something as public
-		logger.Info("AUTH: Required for path",
+		// Log when we're NOT treating something as public (DEBUG - routine check)
+		logger.Debug("AUTH: Required for path",
 			"path", r.URL.Path,
 			"raw_uri", r.RequestURI,
 			"client_ip", clientIP,
@@ -776,7 +811,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		logger.Info("AUTH: Session validated",
+		logger.Debug("AUTH: Session validated",
 			"path", r.URL.Path,
 			"client_ip", clientIP,
 			"username", session.Username,
@@ -938,7 +973,7 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		"username", req.Username,
 	)
 
-	a.SetSessionCookie(w, session)
+	a.SetSessionCookie(w, r, session)
 	writeJSON(w, http.StatusOK, LoginResponse{Success: true})
 }
 
@@ -954,7 +989,7 @@ func (a *AuthManager) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		a.InvalidateSession(session.Token)
 	}
 
-	a.ClearSessionCookie(w)
+	a.ClearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 

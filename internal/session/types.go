@@ -16,6 +16,12 @@ type SessionStore interface {
 	// The event's Seq field is automatically assigned based on the current event count.
 	AppendEvent(sessionID string, event Event) error
 
+	// RecordEvent persists an event with its pre-assigned sequence number.
+	// Unlike AppendEvent, this method does NOT reassign the seq field.
+	// The event.Seq must be > 0 (assigned by the caller).
+	// This is used for immediate persistence where seq is assigned at streaming time.
+	RecordEvent(sessionID string, event Event) error
+
 	// GetMetadata retrieves the metadata for a session.
 	GetMetadata(sessionID string) (Metadata, error)
 
@@ -94,13 +100,18 @@ type Event struct {
 
 // UserPromptData contains data for a user prompt event.
 type UserPromptData struct {
-	Message string     `json:"message"`
-	Images  []ImageRef `json:"images,omitempty"`
+	Message  string     `json:"message"`
+	Images   []ImageRef `json:"images,omitempty"`
+	Files    []FileRef  `json:"files,omitempty"`
+	PromptID string     `json:"prompt_id,omitempty"` // Client-generated ID for delivery confirmation
 }
 
 // AgentMessageData contains data for an agent message event.
+// Note: The field is named "Text" for historical reasons but actually contains
+// HTML (converted from markdown by the web layer's MarkdownBuffer).
+// The JSON field name "html" is used for consistency with frontend expectations.
 type AgentMessageData struct {
-	Text string `json:"text"`
+	Text string `json:"html"` // Contains HTML content (despite field name)
 }
 
 // AgentThoughtData contains data for an agent thought event.
@@ -131,11 +142,14 @@ type PlanData struct {
 }
 
 // PlanEntry represents a single entry in a plan.
+// This mirrors the ACP protocol's PlanEntry structure.
 type PlanEntry struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Status   string `json:"status"`
-	Priority string `json:"priority,omitempty"`
+	// Content is a human-readable description of what this task aims to accomplish.
+	Content string `json:"content"`
+	// Priority indicates the relative importance of this task (high, medium, low).
+	Priority string `json:"priority"`
+	// Status is the current execution status (pending, in_progress, completed).
+	Status string `json:"status"`
 }
 
 // PermissionData contains data for a permission event.
@@ -175,15 +189,20 @@ type Metadata struct {
 	SessionID         string        `json:"session_id"`
 	Name              string        `json:"name,omitempty"` // User-friendly session name
 	ACPServer         string        `json:"acp_server"`
-	ACPCommand        string        `json:"acp_command,omitempty"`    // Shell command used to start the ACP server
 	ACPSessionID      string        `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
 	WorkingDir        string        `json:"working_dir"`
 	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`
 	LastUserMessageAt time.Time     `json:"last_user_message_at,omitempty"` // Time of last user prompt
 	EventCount        int           `json:"event_count"`
+	MaxSeq            int64         `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
 	Status            SessionStatus `json:"status"`
 	Description       string        `json:"description,omitempty"`
+	Pinned            bool          `json:"pinned,omitempty"`            // Deprecated: use Archived instead. If true, session cannot be deleted
+	Archived          bool          `json:"archived,omitempty"`          // If true, session is archived (hidden from main list by default)
+	ArchivedAt        time.Time     `json:"archived_at,omitempty"`       // Time when session was archived (cleared when unarchived)
+	RunnerType        string        `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted  bool          `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
 }
 
 // LockStatus represents the current activity status of a locked session.
