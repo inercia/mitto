@@ -309,10 +309,10 @@ func TestEventOrdering_MultipleToolCallsWithMessages(t *testing.T) {
 	}
 }
 
-// TestEventOrdering_BufferedMarkdownPreservesFirstSeq verifies that when
-// multiple markdown chunks are buffered together, the sequence number from
-// the first chunk is preserved.
-func TestEventOrdering_BufferedMarkdownPreservesFirstSeq(t *testing.T) {
+// TestEventOrdering_BufferedMarkdownEmitsContiguousSeq verifies that when
+// multiple markdown chunks are buffered together, sequence numbers are
+// assigned at emit time (not receive time), resulting in contiguous seq numbers.
+func TestEventOrdering_BufferedMarkdownEmitsContiguousSeq(t *testing.T) {
 	collector := &eventCollector{}
 	seqCounter := int64(0)
 
@@ -330,15 +330,16 @@ func TestEventOrdering_BufferedMarkdownPreservesFirstSeq(t *testing.T) {
 	ctx := context.Background()
 
 	// Send multiple chunks that will be buffered together (a list)
-	// Each chunk gets a seq assigned, but only the first should be used
-	sendAgentMessage(t, client, ctx, "1. First item\n")  // seq=1
-	sendAgentMessage(t, client, ctx, "2. Second item\n") // seq=2
-	sendAgentMessage(t, client, ctx, "3. Third item\n")  // seq=3
+	// With emit-time seq assignment, no seq is assigned yet
+	sendAgentMessage(t, client, ctx, "1. First item\n")  // buffered, no seq
+	sendAgentMessage(t, client, ctx, "2. Second item\n") // buffered, no seq
+	sendAgentMessage(t, client, ctx, "3. Third item\n")  // buffered, no seq
 
 	// Tool call arrives mid-list - it should be BUFFERED (not break the list)
-	sendToolCall(t, client, ctx, "tool-1", "Test", acp.ToolCallStatusInProgress) // seq=4
+	sendToolCall(t, client, ctx, "tool-1", "Test", acp.ToolCallStatusInProgress) // buffered, no seq
 
 	// Flush to emit all buffered content
+	// Seq is assigned at emit time: message gets seq=1, tool_call gets seq=2
 	client.FlushMarkdown()
 
 	time.Sleep(100 * time.Millisecond)
@@ -349,20 +350,20 @@ func TestEventOrdering_BufferedMarkdownPreservesFirstSeq(t *testing.T) {
 		t.Fatalf("expected at least 2 events, got %d", len(events))
 	}
 
-	// The buffered message should have seq=1 (from first chunk)
+	// The buffered message should have seq=1 (assigned at emit time)
 	if events[0].Type != "message" {
 		t.Errorf("first event should be message, got %s", events[0].Type)
 	}
 	if events[0].Seq != 1 {
-		t.Errorf("buffered message seq = %d, want 1 (from first chunk)", events[0].Seq)
+		t.Errorf("buffered message seq = %d, want 1 (assigned at emit time)", events[0].Seq)
 	}
 
-	// Tool call should have seq=4 and come AFTER the list (not break it)
+	// Tool call should have seq=2 (contiguous, assigned at emit time)
 	if events[1].Type != "tool_call" {
 		t.Errorf("second event should be tool_call, got %s", events[1].Type)
 	}
-	if events[1].Seq != 4 {
-		t.Errorf("tool_call seq = %d, want 4", events[1].Seq)
+	if events[1].Seq != 2 {
+		t.Errorf("tool_call seq = %d, want 2 (contiguous seq)", events[1].Seq)
 	}
 }
 

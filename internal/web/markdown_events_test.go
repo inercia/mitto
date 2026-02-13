@@ -90,11 +90,13 @@ func replayEventFixture(t *testing.T, fixture EventFixture, cfg ReplayConfig) Ev
 	var flushes []FlushResult
 	var toolCalls []ToolCallResult
 	var mu sync.Mutex
+	var seqCounter int64
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
+		seqCounter++
 		flushes = append(flushes, FlushResult{
-			Seq:       seq,
+			Seq:       seqCounter,
 			HTML:      html,
 			Timestamp: time.Now(),
 		})
@@ -127,7 +129,7 @@ func replayEventFixture(t *testing.T, fixture EventFixture, cfg ReplayConfig) Ev
 				continue
 			}
 			if msgData, ok := data.(session.AgentMessageData); ok {
-				buffer.Write(event.Seq, msgData.Text)
+				buffer.Write(msgData.Text)
 			}
 
 		case session.EventTypeToolCall:
@@ -316,11 +318,13 @@ func TestEventReplay_CodeBlockLongPause(t *testing.T) {
 func TestEventReplay_NaturalFlush(t *testing.T) {
 	var flushes []FlushResult
 	var mu sync.Mutex
+	var seqCounter int64
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
+		seqCounter++
 		flushes = append(flushes, FlushResult{
-			Seq:       seq,
+			Seq:       seqCounter,
 			HTML:      html,
 			Timestamp: time.Now(),
 		})
@@ -339,8 +343,8 @@ func TestEventReplay_NaturalFlush(t *testing.T) {
 		"\n", // Paragraph break
 	}
 
-	for i, chunk := range chunks {
-		buffer.Write(int64(i+1), chunk)
+	for _, chunk := range chunks {
+		buffer.Write(chunk)
 		time.Sleep(50 * time.Millisecond) // Small delay
 	}
 

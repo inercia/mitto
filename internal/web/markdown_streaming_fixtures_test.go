@@ -79,14 +79,13 @@ func streamFixture(t *testing.T, content string, opts ...streamOption) Streaming
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	lines := strings.Split(content, "\n")
-	seq := int64(1)
 
 	for i, line := range lines {
 		// Add newline back except for the last empty line
@@ -102,8 +101,7 @@ func streamFixture(t *testing.T, content string, opts ...streamOption) Streaming
 				if end > len(chunk) {
 					end = len(chunk)
 				}
-				buffer.Write(seq, chunk[j:end])
-				seq++
+				buffer.Write(chunk[j:end])
 				if cfg.delayBetween > 0 {
 					time.Sleep(cfg.delayBetween)
 				}
@@ -111,8 +109,7 @@ func streamFixture(t *testing.T, content string, opts ...streamOption) Streaming
 		} else {
 			// Stream line by line
 			if chunk != "" {
-				buffer.Write(seq, chunk)
-				seq++
+				buffer.Write(chunk)
 			}
 		}
 
@@ -341,16 +338,16 @@ func TestStreamingFixtures_CodeBlockWithInactivityTimeout(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Stream a simple code block with a pause in the middle
-	buffer.Write(1, "```go\n")
-	buffer.Write(2, "func main() {\n")
-	buffer.Write(3, "    fmt.Println(\"Hello\")\n")
+	buffer.Write("```go\n")
+	buffer.Write("func main() {\n")
+	buffer.Write("    fmt.Println(\"Hello\")\n")
 
 	// Wait for inactivity timeout (2.5 seconds)
 	time.Sleep(2500 * time.Millisecond)
@@ -377,9 +374,9 @@ func TestStreamingFixtures_CodeBlockWithInactivityTimeout(t *testing.T) {
 	}
 
 	// Complete the code block
-	buffer.Write(4, "}\n")
-	buffer.Write(5, "```\n")
-	buffer.Write(6, "\nSome text after.\n")
+	buffer.Write("}\n")
+	buffer.Write("```\n")
+	buffer.Write("\nSome text after.\n")
 
 	buffer.Close()
 
@@ -414,7 +411,7 @@ func TestStreamingFixtures_ListUnmatchedBold_NoPrematureFlush(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -430,8 +427,8 @@ func TestStreamingFixtures_ListUnmatchedBold_NoPrematureFlush(t *testing.T) {
 		"messaging works after refresh** - New messages\n", // Closing **
 	}
 
-	for i, chunk := range chunks {
-		buffer.Write(int64(i+1), chunk)
+	for _, chunk := range chunks {
+		buffer.Write(chunk)
 	}
 
 	mu.Lock()
@@ -651,15 +648,15 @@ func TestStreamingFixtures_SoftTimeoutRespectsBlocks(t *testing.T) {
 			var results []string
 			var mu sync.Mutex
 
-			buffer := NewMarkdownBuffer(func(seq int64, html string) {
+			buffer := NewMarkdownBuffer(func(html string) {
 				mu.Lock()
 				results = append(results, html)
 				mu.Unlock()
 			})
 
 			// Stream character by character with small delays
-			for i, char := range tc.content {
-				buffer.Write(int64(i+1), string(char))
+			for _, char := range tc.content {
+				buffer.Write(string(char))
 				time.Sleep(10 * time.Millisecond)
 			}
 
@@ -725,7 +722,7 @@ func TestStreamingFixtures_ParagraphThenList(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -742,8 +739,8 @@ func TestStreamingFixtures_ParagraphThenList(t *testing.T) {
 		"The final HTML still shows the issue.\n",
 	}
 
-	for i, chunk := range chunks {
-		buffer.Write(int64(i+1), chunk)
+	for _, chunk := range chunks {
+		buffer.Write(chunk)
 	}
 
 	buffer.Close()
@@ -799,7 +796,7 @@ func TestStreamingFixtures_ListItemWithParentheses(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -818,8 +815,8 @@ func TestStreamingFixtures_ListItemWithParentheses(t *testing.T) {
 		"The final HTML still shows the issue.\n",
 	}
 
-	for i, chunk := range chunks {
-		buffer.Write(int64(i+1), chunk)
+	for _, chunk := range chunks {
+		buffer.Write(chunk)
 	}
 
 	buffer.Close()
@@ -867,7 +864,7 @@ func TestStreamingFixtures_ListItemSplitByBlankLine(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -884,8 +881,8 @@ func TestStreamingFixtures_ListItemSplitByBlankLine(t *testing.T) {
 		"The final paragraph.\n",
 	}
 
-	for i, chunk := range chunks {
-		buffer.Write(int64(i+1), chunk)
+	for _, chunk := range chunks {
+		buffer.Write(chunk)
 	}
 
 	buffer.Close()
@@ -933,7 +930,7 @@ func TestStreamingFixtures_ListItemWithCodeAndParens(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
@@ -957,8 +954,8 @@ func TestStreamingFixtures_ListItemWithCodeAndParens(t *testing.T) {
 		"inactivity timeout flushes. This prevents the 2-second timeout from flushing content with broken formatting.\n",
 	}
 
-	for i, chunk := range chunks {
-		buffer.Write(int64(i+1), chunk)
+	for _, chunk := range chunks {
+		buffer.Write(chunk)
 	}
 
 	buffer.Close()
@@ -1055,11 +1052,13 @@ func TestJoinListItemContinuations(t *testing.T) {
 func TestStreamingFixtures_ListSplitAtApostrophe(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
+	var seqCounter int64
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
+		seqCounter++
 		results = append(results, html)
-		t.Logf("Flush seq=%d len=%d: %q", seq, len(html), html[:min(100, len(html))])
+		t.Logf("Flush seq=%d len=%d: %q", seqCounter, len(html), html[:min(100, len(html))])
 		mu.Unlock()
 	})
 
@@ -1081,7 +1080,7 @@ func TestStreamingFixtures_ListSplitAtApostrophe(t *testing.T) {
 	}
 
 	for i, chunk := range chunks {
-		buffer.Write(int64(i+1), chunk)
+		buffer.Write(chunk)
 		// Very long delay after list item 1 to trigger inactivity timeout (2s)
 		if i == 2 { // After "'s a\n"
 			t.Log("Waiting 2.5s to trigger inactivity timeout...")
@@ -1171,7 +1170,7 @@ func TestStreamingFixtures_UnmatchedFormattingRecovery(t *testing.T) {
 			var results []string
 			var mu sync.Mutex
 
-			buffer := NewMarkdownBuffer(func(seq int64, html string) {
+			buffer := NewMarkdownBuffer(func(html string) {
 				mu.Lock()
 				results = append(results, html)
 				mu.Unlock()
@@ -1181,7 +1180,7 @@ func TestStreamingFixtures_UnmatchedFormattingRecovery(t *testing.T) {
 			lines := strings.Split(tc.content, "\n")
 			for i, line := range lines {
 				if i < len(lines)-1 || line != "" {
-					buffer.Write(int64(i+1), line+"\n")
+					buffer.Write(line + "\n")
 				}
 			}
 

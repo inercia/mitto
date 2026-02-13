@@ -596,7 +596,7 @@ func TestMarkdownBuffer_LargeContent(t *testing.T) {
 		var flushCount int
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			mu.Lock()
 			flushCount++
 			mu.Unlock()
@@ -604,7 +604,7 @@ func TestMarkdownBuffer_LargeContent(t *testing.T) {
 
 		// Write a very large paragraph (> 4KB)
 		largeText := strings.Repeat("x", 5000) + "\n\n"
-		buffer.Write(1, largeText)
+		buffer.Write(largeText)
 		buffer.Close()
 
 		mu.Lock()
@@ -619,17 +619,17 @@ func TestMarkdownBuffer_LargeContent(t *testing.T) {
 		var flushCount int
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			mu.Lock()
 			flushCount++
 			mu.Unlock()
 		})
 
 		// Start a code block
-		buffer.Write(1, "```\n")
+		buffer.Write("```\n")
 		// Write content that exceeds maxCodeBlockBufferSize (64KB)
 		for i := 0; i < 70; i++ {
-			buffer.Write(int64(i+2), strings.Repeat("x", 1000)+"\n")
+			buffer.Write(strings.Repeat("x", 1000) + "\n")
 		}
 		buffer.Close()
 
@@ -654,16 +654,16 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
 		})
 
 		// Start a list but don't end it
-		buffer.Write(1, "Summary:\n\n")
-		buffer.Write(2, "1. First item\n")
-		buffer.Write(3, "2. Second item\n")
+		buffer.Write("Summary:\n\n")
+		buffer.Write("1. First item\n")
+		buffer.Write("2. Second item\n")
 		// Agent stops responding here (no blank line to end list)
 
 		// Wait for inactivity timeout (2 seconds + buffer)
@@ -702,16 +702,16 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
 		})
 
 		// Start a code block but don't close it
-		buffer.Write(1, "```python\n")
-		buffer.Write(2, "def hello():\n")
-		buffer.Write(3, "    print('world')\n")
+		buffer.Write("```python\n")
+		buffer.Write("def hello():\n")
+		buffer.Write("    print('world')\n")
 		// Agent stops responding here (no closing ```)
 
 		// Wait for inactivity timeout
@@ -746,16 +746,16 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
 		})
 
 		// Start a table but don't end it
-		buffer.Write(1, "| A | B |\n")
-		buffer.Write(2, "|---|---|\n")
-		buffer.Write(3, "| 1 | 2 |\n")
+		buffer.Write("| A | B |\n")
+		buffer.Write("|---|---|\n")
+		buffer.Write("| 1 | 2 |\n")
 		// Agent stops responding here (no blank line to end table)
 
 		// Wait for inactivity timeout
@@ -787,14 +787,14 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
 		})
 
 		// Write normal content (not in a block)
-		buffer.Write(1, "Hello world\n\n")
+		buffer.Write("Hello world\n\n")
 
 		// Wait for soft timeout (200ms + buffer)
 		time.Sleep(400 * time.Millisecond)
@@ -816,11 +816,11 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 	t.Run("empty_input", func(t *testing.T) {
 		var flushCount int
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			flushCount++
 		})
 
-		buffer.Write(1, "")
+		buffer.Write("")
 		buffer.Close()
 
 		if flushCount != 0 {
@@ -830,11 +830,11 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("only_newlines", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			outputs = append(outputs, html)
 		})
 
-		buffer.Write(1, "\n\n\n\n")
+		buffer.Write("\n\n\n\n")
 		buffer.Close()
 
 		// Should produce empty or minimal output
@@ -846,11 +846,11 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("unclosed_code_block", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			outputs = append(outputs, html)
 		})
 
-		buffer.Write(1, "```\ncode without closing\n")
+		buffer.Write("```\ncode without closing\n")
 		buffer.Close()
 
 		combined := strings.Join(outputs, "")
@@ -861,13 +861,13 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("list_at_end_of_input", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			outputs = append(outputs, html)
 		})
 
 		// List without trailing blank line
-		buffer.Write(1, "1. First\n")
-		buffer.Write(2, "2. Second\n")
+		buffer.Write("1. First\n")
+		buffer.Write("2. Second\n")
 		buffer.Close()
 
 		combined := strings.Join(outputs, "")
@@ -881,14 +881,14 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("table_at_end_of_input", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			outputs = append(outputs, html)
 		})
 
 		// Table without trailing blank line
-		buffer.Write(1, "| A | B |\n")
-		buffer.Write(2, "|---|---|\n")
-		buffer.Write(3, "| 1 | 2 |\n")
+		buffer.Write("| A | B |\n")
+		buffer.Write("|---|---|\n")
+		buffer.Write("| 1 | 2 |\n")
 		buffer.Close()
 
 		combined := strings.Join(outputs, "")
@@ -899,15 +899,15 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("mixed_list_markers", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(seq int64, html string) {
+		buffer := NewMarkdownBuffer(func(html string) {
 			outputs = append(outputs, html)
 		})
 
 		// Different unordered list markers
-		buffer.Write(1, "- Dash\n")
-		buffer.Write(2, "* Star\n")
-		buffer.Write(3, "+ Plus\n")
-		buffer.Write(4, "\n")
+		buffer.Write("- Dash\n")
+		buffer.Write("* Star\n")
+		buffer.Write("+ Plus\n")
+		buffer.Write("\n")
 		buffer.Close()
 
 		combined := strings.Join(outputs, "")

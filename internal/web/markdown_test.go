@@ -12,13 +12,13 @@ func TestMarkdownBuffer_BasicWrite(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
-	buffer.Write(1, "Hello, world!\n\n")
+	buffer.Write("Hello, world!\n\n")
 	buffer.Close()
 
 	mu.Lock()
@@ -38,13 +38,13 @@ func TestMarkdownBuffer_CodeBlock(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
-	buffer.Write(1, "```go\nfunc main() {}\n```\n")
+	buffer.Write("```go\nfunc main() {}\n```\n")
 	buffer.Close()
 
 	mu.Lock()
@@ -60,14 +60,14 @@ func TestMarkdownBuffer_ParagraphBreakFlush(t *testing.T) {
 	flushCount := 0
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		flushCount++
 		mu.Unlock()
 	})
 
 	// Double newline should trigger flush
-	buffer.Write(1, "First paragraph.\n\n")
+	buffer.Write("First paragraph.\n\n")
 
 	// Give time for flush
 	time.Sleep(50 * time.Millisecond)
@@ -87,7 +87,7 @@ func TestMarkdownBuffer_MaxBufferSize(t *testing.T) {
 	flushCount := 0
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		flushCount++
 		mu.Unlock()
@@ -96,7 +96,7 @@ func TestMarkdownBuffer_MaxBufferSize(t *testing.T) {
 	// Write more than maxBufferSize (4096) bytes with newlines
 	// Each line is 100 chars + newline, so 50 lines = 5050 bytes
 	for i := 0; i < 50; i++ {
-		buffer.Write(int64(i+1), strings.Repeat("x", 100)+"\n")
+		buffer.Write(strings.Repeat("x", 100) + "\n")
 	}
 
 	mu.Lock()
@@ -114,14 +114,14 @@ func TestMarkdownBuffer_FlushOnTimeout(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Write a complete line without triggering immediate flush conditions
-	buffer.Write(1, "partial content\n")
+	buffer.Write("partial content\n")
 
 	// Wait for timeout flush (default 200ms)
 	time.Sleep(300 * time.Millisecond)
@@ -141,13 +141,13 @@ func TestMarkdownBuffer_Close(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
-	buffer.Write(1, "final content")
+	buffer.Write("final content")
 	buffer.Close()
 
 	mu.Lock()
@@ -162,11 +162,11 @@ func TestMarkdownBuffer_Close(t *testing.T) {
 func TestMarkdownBuffer_Reset(t *testing.T) {
 	flushCount := 0
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		flushCount++
 	})
 
-	buffer.Write(1, "some content")
+	buffer.Write("some content")
 	buffer.Reset()
 	buffer.Close()
 
@@ -180,17 +180,17 @@ func TestMarkdownBuffer_CodeBlockDetection(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Write opening fence - should not flush yet
-	buffer.Write(1, "```python\n")
-	buffer.Write(2, "print('hello')\n")
+	buffer.Write("```python\n")
+	buffer.Write("print('hello')\n")
 	// Write closing fence - should trigger flush
-	buffer.Write(3, "```\n")
+	buffer.Write("```\n")
 
 	// Give time for processing
 	time.Sleep(50 * time.Millisecond)
@@ -210,14 +210,14 @@ func TestMarkdownBuffer_NestedCodeBlocks(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Markdown with code block containing backticks in content
-	buffer.Write(1, "```\nsome `inline` code\n```\n")
+	buffer.Write("```\nsome `inline` code\n```\n")
 	buffer.Close()
 
 	mu.Lock()
@@ -232,7 +232,7 @@ func TestMarkdownBuffer_NestedCodeBlocks(t *testing.T) {
 func TestMarkdownBuffer_EmptyFlush(t *testing.T) {
 	flushCount := 0
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		flushCount++
 	})
 
@@ -250,7 +250,7 @@ func TestMarkdownBuffer_ConcurrentWrites(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -262,7 +262,7 @@ func TestMarkdownBuffer_ConcurrentWrites(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			buffer.Write(int64(n+1), "chunk ")
+			buffer.Write("chunk ")
 		}(i)
 	}
 	wg.Wait()
@@ -285,15 +285,15 @@ func TestMarkdownBuffer_CodeBlockNoTimeoutFlush(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Write opening fence
-	buffer.Write(1, "```go\n")
-	buffer.Write(2, "func main() {\n")
+	buffer.Write("```go\n")
+	buffer.Write("func main() {\n")
 
 	// Wait longer than the timeout (200ms)
 	time.Sleep(350 * time.Millisecond)
@@ -308,7 +308,7 @@ func TestMarkdownBuffer_CodeBlockNoTimeoutFlush(t *testing.T) {
 	}
 
 	// Now close the code block
-	buffer.Write(3, "}\n```\n")
+	buffer.Write("}\n```\n")
 
 	// Give time for the flush
 	time.Sleep(50 * time.Millisecond)
@@ -353,16 +353,16 @@ func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Write opening fence and some code
-	buffer.Write(1, "```go\n")
-	buffer.Write(2, "func main() {\n")
-	buffer.Write(3, "    fmt.Println(\"Hello\")\n")
+	buffer.Write("```go\n")
+	buffer.Write("func main() {\n")
+	buffer.Write("    fmt.Println(\"Hello\")\n")
 
 	// Wait longer than the inactivity timeout (2 seconds)
 	time.Sleep(2500 * time.Millisecond)
@@ -377,7 +377,7 @@ func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	}
 
 	// Now close the code block
-	buffer.Write(4, "}\n```\n")
+	buffer.Write("}\n```\n")
 
 	// Give time for the flush
 	time.Sleep(50 * time.Millisecond)
@@ -420,18 +420,18 @@ func TestMarkdownBuffer_ListNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Write a numbered list - should not be split mid-list
-	buffer.Write(1, "Here are the changes:\n\n")
-	buffer.Write(2, "1. First item\n")
-	buffer.Write(3, "2. Second item\n")
-	buffer.Write(4, "3. Third item\n")
-	buffer.Write(5, "\n") // End of list (double newline)
+	buffer.Write("Here are the changes:\n\n")
+	buffer.Write("1. First item\n")
+	buffer.Write("2. Second item\n")
+	buffer.Write("3. Third item\n")
+	buffer.Write("\n") // End of list (double newline)
 	buffer.Close()
 
 	mu.Lock()
@@ -460,18 +460,18 @@ func TestMarkdownBuffer_UnorderedListNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Write an unordered list
-	buffer.Write(1, "Items:\n\n")
-	buffer.Write(2, "- Apple\n")
-	buffer.Write(3, "- Banana\n")
-	buffer.Write(4, "- Cherry\n")
-	buffer.Write(5, "\n") // End of list
+	buffer.Write("Items:\n\n")
+	buffer.Write("- Apple\n")
+	buffer.Write("- Banana\n")
+	buffer.Write("- Cherry\n")
+	buffer.Write("\n") // End of list
 	buffer.Close()
 
 	mu.Lock()
@@ -493,7 +493,7 @@ func TestMarkdownBuffer_NumberedListWithBlankLines(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -523,8 +523,8 @@ Some text after the list.
 `
 
 	// Simulate streaming by writing chunks
-	for i, char := range markdown {
-		buffer.Write(int64(i+1), string(char))
+	for _, char := range markdown {
+		buffer.Write(string(char))
 	}
 	buffer.Close()
 
@@ -561,7 +561,7 @@ func TestMarkdownBuffer_NumberedListWithBlankLines_Streaming(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
@@ -582,8 +582,8 @@ func TestMarkdownBuffer_NumberedListWithBlankLines_Streaming(t *testing.T) {
 		"Some text after.\n",
 	}
 
-	for i, line := range lines {
-		buffer.Write(int64(i+1), line)
+	for _, line := range lines {
+		buffer.Write(line)
 	}
 	buffer.Close()
 
@@ -610,19 +610,19 @@ func TestMarkdownBuffer_TableNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Write a markdown table - should not be split mid-table
-	buffer.Write(1, "Here is a table:\n\n")
-	buffer.Write(2, "| Category | Example Services |\n")
-	buffer.Write(3, "|----------|------------------|\n")
-	buffer.Write(4, "| Category A | Service 1, Service 2 |\n")
-	buffer.Write(5, "| Category B | Service 3, Service 4 |\n")
-	buffer.Write(6, "\n") // End of table (blank line)
+	buffer.Write("Here is a table:\n\n")
+	buffer.Write("| Category | Example Services |\n")
+	buffer.Write("|----------|------------------|\n")
+	buffer.Write("| Category A | Service 1, Service 2 |\n")
+	buffer.Write("| Category B | Service 3, Service 4 |\n")
+	buffer.Write("\n") // End of table (blank line)
 	buffer.Close()
 
 	mu.Lock()
@@ -651,19 +651,19 @@ func TestMarkdownBuffer_LargeTableNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Write a larger table that might exceed buffer thresholds
-	buffer.Write(1, "| What Happened | Example Services | Description |\n")
-	buffer.Write(2, "|---------------|------------------|-------------|\n")
+	buffer.Write("| What Happened | Example Services | Description |\n")
+	buffer.Write("|---------------|------------------|-------------|\n")
 	for i := 0; i < 20; i++ {
-		buffer.Write(int64(i+3), "| Row "+string(rune('A'+i))+" | Service ABC, Service DEF, Service GHI | Long description text here |\n")
+		buffer.Write("| Row " + string(rune('A'+i)) + " | Service ABC, Service DEF, Service GHI | Long description text here |\n")
 	}
-	buffer.Write(23, "\n") // End of table
+	buffer.Write("\n") // End of table
 	buffer.Close()
 
 	mu.Lock()
@@ -681,21 +681,21 @@ func TestMarkdownBuffer_TableWithTimeoutNoSplit(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Write table rows with pauses that would normally trigger timeout flush
-	buffer.Write(1, "| Header 1 | Header 2 |\n")
+	buffer.Write("| Header 1 | Header 2 |\n")
 	time.Sleep(100 * time.Millisecond) // Would trigger flush if not in table
-	buffer.Write(2, "|----------|----------|\n")
+	buffer.Write("|----------|----------|\n")
 	time.Sleep(100 * time.Millisecond)
-	buffer.Write(3, "| Cell 1 | Cell 2 |\n")
+	buffer.Write("| Cell 1 | Cell 2 |\n")
 	time.Sleep(100 * time.Millisecond)
-	buffer.Write(4, "| Cell 3 | Cell 4 |\n")
-	buffer.Write(5, "\n") // End of table
+	buffer.Write("| Cell 3 | Cell 4 |\n")
+	buffer.Write("\n") // End of table
 
 	// Wait a bit for potential timeout flush
 	time.Sleep(300 * time.Millisecond)
@@ -722,17 +722,17 @@ func TestMarkdownBuffer_BoldTextNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Write bold text on a single line that could be split mid-bold
-	buffer.Write(1, "Here is some **bold text that is important")
+	buffer.Write("Here is some **bold text that is important")
 	time.Sleep(100 * time.Millisecond) // Would trigger flush if not detecting unmatched **
-	buffer.Write(2, "** and more text\n")
-	buffer.Write(3, "\n") // End of paragraph
+	buffer.Write("** and more text\n")
+	buffer.Write("\n") // End of paragraph
 	buffer.Close()
 
 	mu.Lock()
@@ -755,17 +755,17 @@ func TestMarkdownBuffer_InlineCodeNoSplit(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Write inline code that might be split
-	buffer.Write(1, "Use the `some_function")
+	buffer.Write("Use the `some_function")
 	time.Sleep(100 * time.Millisecond) // Would trigger flush if not detecting unmatched `
-	buffer.Write(2, "_name` method\n")
-	buffer.Write(3, "\n") // End of paragraph
+	buffer.Write("_name` method\n")
+	buffer.Write("\n") // End of paragraph
 	buffer.Close()
 
 	mu.Lock()
@@ -788,14 +788,14 @@ func TestMarkdownBuffer_SafeFlush_InTable(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Write table header
-	buffer.Write(1, "| File | Issue | Severity |\n")
+	buffer.Write("| File | Issue | Severity |\n")
 
 	// Try SafeFlush while in table - should NOT flush
 	flushed := buffer.SafeFlush()
@@ -810,8 +810,8 @@ func TestMarkdownBuffer_SafeFlush_InTable(t *testing.T) {
 	mu.Unlock()
 
 	// Write separator and data
-	buffer.Write(2, "|------|-------|----------|\n")
-	buffer.Write(3, "| auth.go | Missing check | High |\n")
+	buffer.Write("|------|-------|----------|\n")
+	buffer.Write("| auth.go | Missing check | High |\n")
 
 	// Still in table (no empty line yet)
 	flushed = buffer.SafeFlush()
@@ -820,7 +820,7 @@ func TestMarkdownBuffer_SafeFlush_InTable(t *testing.T) {
 	}
 
 	// End table with empty line - this triggers auto-flush due to double newline
-	buffer.Write(4, "\n")
+	buffer.Write("\n")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -841,15 +841,15 @@ func TestMarkdownBuffer_SafeFlush_InCodeBlock(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Write code block start
-	buffer.Write(1, "```go\n")
-	buffer.Write(2, "func main() {\n")
+	buffer.Write("```go\n")
+	buffer.Write("func main() {\n")
 
 	// Try SafeFlush while in code block - should NOT flush
 	flushed := buffer.SafeFlush()
@@ -864,8 +864,8 @@ func TestMarkdownBuffer_SafeFlush_InCodeBlock(t *testing.T) {
 	mu.Unlock()
 
 	// Write code block end - this triggers auto-flush
-	buffer.Write(3, "}\n")
-	buffer.Write(4, "```\n")
+	buffer.Write("}\n")
+	buffer.Write("```\n")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -886,14 +886,14 @@ func TestMarkdownBuffer_SafeFlush_InList(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Write list items
-	buffer.Write(1, "- Item 1\n")
+	buffer.Write("- Item 1\n")
 
 	// Try SafeFlush while in list - should NOT flush
 	flushed := buffer.SafeFlush()
@@ -908,7 +908,7 @@ func TestMarkdownBuffer_SafeFlush_InList(t *testing.T) {
 	mu.Unlock()
 
 	// Add more items
-	buffer.Write(2, "- Item 2\n")
+	buffer.Write("- Item 2\n")
 
 	// Still in list
 	flushed = buffer.SafeFlush()
@@ -917,7 +917,7 @@ func TestMarkdownBuffer_SafeFlush_InList(t *testing.T) {
 	}
 
 	// Empty line after list - should NOT flush yet (might be between list items)
-	buffer.Write(3, "\n")
+	buffer.Write("\n")
 
 	mu.Lock()
 	if len(results) > 0 {
@@ -926,7 +926,7 @@ func TestMarkdownBuffer_SafeFlush_InList(t *testing.T) {
 	mu.Unlock()
 
 	// Non-list content after blank line ends the list and triggers flush
-	buffer.Write(4, "Some paragraph text.\n")
+	buffer.Write("Some paragraph text.\n")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -950,24 +950,24 @@ func TestMarkdownBuffer_ListWithUnmatchedBold(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Write list items with item 4 having unmatched bold
-	buffer.Write(1, "1. **First item** - Description\n")
-	buffer.Write(2, "2. **Second item** - Description\n")
-	buffer.Write(3, "3. **Third item** - Description\n")
-	buffer.Write(4, "4. **Real-time\n") // Unmatched bold!
+	buffer.Write("1. **First item** - Description\n")
+	buffer.Write("2. **Second item** - Description\n")
+	buffer.Write("3. **Third item** - Description\n")
+	buffer.Write("4. **Real-time\n") // Unmatched bold!
 
 	// Blank line - would normally end the list
-	buffer.Write(5, "\n")
+	buffer.Write("\n")
 
 	// Non-list content - this triggers "list has ended" logic
 	// But the closing ** is in this content!
-	buffer.Write(6, "messaging works after refresh** - New messages\n")
+	buffer.Write("messaging works after refresh** - New messages\n")
 
 	mu.Lock()
 	// At this point, the list should NOT have been flushed because of unmatched **
@@ -1012,15 +1012,15 @@ func TestMarkdownBuffer_ToolCallDoesNotSplitTable(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		results = append(results, html)
 		mu.Unlock()
 	})
 
 	// Simulate table streaming
-	buffer.Write(1, "| File | Issue | Severity |\n")
-	buffer.Write(2, "|------|-------|----------|\n")
+	buffer.Write("| File | Issue | Severity |\n")
+	buffer.Write("|------|-------|----------|\n")
 
 	// Simulate tool call event - using SafeFlush (what WebClient does now)
 	flushed := buffer.SafeFlush()
@@ -1029,8 +1029,8 @@ func TestMarkdownBuffer_ToolCallDoesNotSplitTable(t *testing.T) {
 	}
 
 	// Continue table
-	buffer.Write(3, "| auth.go | Missing | High |\n")
-	buffer.Write(4, "\n") // End of table
+	buffer.Write("| auth.go | Missing | High |\n")
+	buffer.Write("\n") // End of table
 
 	// Final flush
 	buffer.Flush()
@@ -1059,20 +1059,20 @@ func TestMarkdownBuffer_MermaidDiagram(t *testing.T) {
 	var result strings.Builder
 	var mu sync.Mutex
 
-	buffer := NewMarkdownBuffer(func(seq int64, html string) {
+	buffer := NewMarkdownBuffer(func(html string) {
 		mu.Lock()
 		result.WriteString(html)
 		mu.Unlock()
 	})
 
 	// Write a mermaid diagram block
-	buffer.Write(1, "Here is a diagram:\n\n")
-	buffer.Write(1, "```mermaid\n")
-	buffer.Write(1, "graph TD\n")
-	buffer.Write(1, "    A[Start] --> B{Decision}\n")
-	buffer.Write(1, "    B -->|Yes| C[Action]\n")
-	buffer.Write(1, "```\n\n")
-	buffer.Write(1, "And some text after.\n")
+	buffer.Write("Here is a diagram:\n\n")
+	buffer.Write("```mermaid\n")
+	buffer.Write("graph TD\n")
+	buffer.Write("    A[Start] --> B{Decision}\n")
+	buffer.Write("    B -->|Yes| C[Action]\n")
+	buffer.Write("```\n\n")
+	buffer.Write("And some text after.\n")
 
 	buffer.Close()
 
@@ -1140,7 +1140,7 @@ func TestMarkdownBuffer_StreamingFixtures(t *testing.T) {
 			var result strings.Builder
 			var mu sync.Mutex
 
-			buffer := NewMarkdownBuffer(func(seq int64, html string) {
+			buffer := NewMarkdownBuffer(func(html string) {
 				mu.Lock()
 				result.WriteString(html)
 				mu.Unlock()
@@ -1151,7 +1151,7 @@ func TestMarkdownBuffer_StreamingFixtures(t *testing.T) {
 			for i, line := range lines {
 				// Add newline back except for the last empty line
 				if i < len(lines)-1 || line != "" {
-					buffer.Write(int64(i+1), line+"\n")
+					buffer.Write(line + "\n")
 				}
 			}
 			buffer.Close()

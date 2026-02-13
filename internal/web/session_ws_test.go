@@ -788,3 +788,170 @@ func TestSessionWSClient_OnAvailableCommandsUpdated_Empty(t *testing.T) {
 		t.Error("Expected available_commands_updated message but got none")
 	}
 }
+
+// =============================================================================
+// max_seq Piggybacking Tests
+// =============================================================================
+
+// mockBackgroundSessionForMaxSeq is a mock that implements GetMaxAssignedSeq.
+type mockBackgroundSessionForMaxSeq struct {
+	maxAssignedSeq int64
+	isPrompting    bool
+	isClosed       bool
+	mu             sync.Mutex
+}
+
+func (m *mockBackgroundSessionForMaxSeq) GetMaxAssignedSeq() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maxAssignedSeq
+}
+
+func (m *mockBackgroundSessionForMaxSeq) IsPrompting() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.isPrompting
+}
+
+func (m *mockBackgroundSessionForMaxSeq) IsClosed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.isClosed
+}
+
+func (m *mockBackgroundSessionForMaxSeq) setMaxAssignedSeq(v int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxAssignedSeq = v
+}
+
+// TestGetServerMaxSeq_WithBackgroundSession tests that getServerMaxSeq
+// returns the correct value when a BackgroundSession is active.
+func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
+	// Note: When we create a session with Start() and End(), it adds 2 extra events:
+	// - session_start (1 event)
+	// - session_end (1 event)
+	// So if we record N agent messages, the total event count is N + 2.
+	tests := []struct {
+		name           string
+		persistedCount int   // Number of agent messages to record
+		assignedSeq    int64 // Simulated assigned seq from BackgroundSession
+		wantMaxSeq     int64 // Expected max seq (max of persisted+2 and assignedSeq)
+	}{
+		{
+			name:           "assigned seq higher than persisted",
+			persistedCount: 50,
+			assignedSeq:    100,
+			wantMaxSeq:     100, // assignedSeq wins (100 > 52)
+		},
+		{
+			name:           "persisted count higher than assigned",
+			persistedCount: 100,
+			assignedSeq:    50,
+			wantMaxSeq:     102, // persisted wins (100 + 2 = 102 > 50)
+		},
+		{
+			name:           "equal values accounting for overhead",
+			persistedCount: 73,
+			assignedSeq:    75,
+			wantMaxSeq:     75, // 73 + 2 = 75, equal to assignedSeq
+		},
+		{
+			name:           "no events yet",
+			persistedCount: 0,
+			assignedSeq:    0,
+			wantMaxSeq:     0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a temporary store with the specified event count
+			tmpDir := t.TempDir()
+			store, err := session.NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore failed: %v", err)
+			}
+			defer store.Close()
+
+			sessionID := "test-session-" + tt.name
+
+			// Create session with events
+			if tt.persistedCount > 0 {
+				rec := session.NewRecorderWithID(store, sessionID)
+				if err := rec.Start("test-server", "/tmp"); err != nil {
+					t.Fatalf("Start failed: %v", err)
+				}
+				for i := 0; i < tt.persistedCount; i++ {
+					rec.RecordAgentMessage("<p>test</p>")
+				}
+				_ = rec.End("test complete")
+			}
+
+			// Create mock background session
+			mockBg := &mockBackgroundSessionForMaxSeq{
+				maxAssignedSeq: tt.assignedSeq,
+			}
+
+			// Create client with the mock
+			client := &SessionWSClient{
+				sessionID: sessionID,
+				store:     store,
+				bgSession: &BackgroundSession{
+					nextSeq: tt.assignedSeq + 1, // nextSeq is assignedSeq + 1
+				},
+			}
+
+			// Override bgSession's GetMaxAssignedSeq by setting nextSeq directly
+			// (we can't easily mock the interface, so we test the real implementation)
+			got := client.getServerMaxSeq()
+
+			// The expected value is max(persistedCount, assignedSeq)
+			// But since we're using the real BackgroundSession, we need to account
+			// for how it calculates GetMaxAssignedSeq
+			_ = mockBg // unused in this test, but shows the pattern
+
+			if got != tt.wantMaxSeq {
+				t.Errorf("getServerMaxSeq() = %d, want %d", got, tt.wantMaxSeq)
+			}
+		})
+	}
+}
+
+// TestGetServerMaxSeq_NoBackgroundSession tests that getServerMaxSeq
+// returns the persisted event count when no BackgroundSession is active.
+func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-no-bg"
+
+	// Create session with 25 agent messages
+	// Note: Start() adds session_start event, End() adds session_end event
+	// So total events = 25 + 2 = 27
+	rec := session.NewRecorderWithID(store, sessionID)
+	if err := rec.Start("test-server", "/tmp"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	for i := 0; i < 25; i++ {
+		rec.RecordAgentMessage("<p>test</p>")
+	}
+	_ = rec.End("test complete")
+
+	// Create client without background session
+	client := &SessionWSClient{
+		sessionID: sessionID,
+		store:     store,
+		bgSession: nil, // No background session
+	}
+
+	got := client.getServerMaxSeq()
+	// Expected: 25 agent messages + 1 session_start + 1 session_end = 27
+	if got != 27 {
+		t.Errorf("getServerMaxSeq() = %d, want 27 (25 messages + 2 system events)", got)
+	}
+}
