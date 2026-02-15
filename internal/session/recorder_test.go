@@ -35,7 +35,7 @@ func TestRecorder_StartAndEnd(t *testing.T) {
 	}
 
 	// End the session
-	if err := recorder.End("user_quit"); err != nil {
+	if err := recorder.End(SessionEndData{Reason: "user_quit"}); err != nil {
 		t.Fatalf("End failed: %v", err)
 	}
 
@@ -235,7 +235,7 @@ func TestRecorder_Resume(t *testing.T) {
 	}
 
 	// End the session
-	if err := recorder1.End("user_quit"); err != nil {
+	if err := recorder1.End(SessionEndData{Reason: "user_quit"}); err != nil {
 		t.Fatalf("End failed: %v", err)
 	}
 
@@ -308,7 +308,7 @@ func TestRecorder_ResumeCompletedSessionUpdatesStatus(t *testing.T) {
 	}
 
 	// End the session - this should set status to completed
-	if err := recorder1.End("server_shutdown"); err != nil {
+	if err := recorder1.End(SessionEndData{Reason: "server_shutdown"}); err != nil {
 		t.Fatalf("End failed: %v", err)
 	}
 
@@ -337,7 +337,7 @@ func TestRecorder_ResumeCompletedSessionUpdatesStatus(t *testing.T) {
 	}
 
 	// End the session again
-	if err := recorder2.End("server_shutdown"); err != nil {
+	if err := recorder2.End(SessionEndData{Reason: "server_shutdown"}); err != nil {
 		t.Fatalf("Second End failed: %v", err)
 	}
 
@@ -1101,7 +1101,7 @@ func TestRecorder_EndIsIdempotent(t *testing.T) {
 
 	// Call End multiple times (simulates shutdown scenarios with multiple signals)
 	for i := 0; i < 5; i++ {
-		if err := recorder.End("server_shutdown"); err != nil {
+		if err := recorder.End(SessionEndData{Reason: "server_shutdown"}); err != nil {
 			t.Errorf("End call %d failed: %v", i+1, err)
 		}
 	}
@@ -1157,7 +1157,7 @@ func TestRecorder_ConcurrentEnd(t *testing.T) {
 
 	for g := 0; g < numGoroutines; g++ {
 		go func() {
-			recorder.End("concurrent_shutdown")
+			recorder.End(SessionEndData{Reason: "concurrent_shutdown"})
 			done <- true
 		}()
 	}
@@ -1201,7 +1201,7 @@ func TestRecorder_EndOnNeverStartedSession(t *testing.T) {
 	recorder := NewRecorder(store)
 
 	// End without starting - should be a no-op
-	if err := recorder.End("user_quit"); err != nil {
+	if err := recorder.End(SessionEndData{Reason: "user_quit"}); err != nil {
 		t.Errorf("End on unstarted session should not error, got: %v", err)
 	}
 
@@ -1214,6 +1214,91 @@ func TestRecorder_EndOnNeverStartedSession(t *testing.T) {
 		if len(events) > 0 {
 			t.Errorf("Expected 0 events for never-started session, got %d", len(events))
 		}
+	}
+}
+
+// TestRecorder_EndUsesMaxSeqNotEventCount tests that session_end events use
+// MaxSeq + 1 for their sequence number, not EventCount + 1.
+// This is important when message coalescing causes MaxSeq >> EventCount.
+func TestRecorder_EndUsesMaxSeqNotEventCount(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Record a few events normally (seq 2, 3, 4 - session_start is seq 1)
+	for i := 0; i < 3; i++ {
+		if err := recorder.RecordUserPrompt("message"); err != nil {
+			t.Fatalf("RecordUserPrompt failed: %v", err)
+		}
+	}
+
+	// Now simulate message coalescing by recording events with high seq numbers
+	// using RecordEventWithSeq (like the streaming layer does)
+	highSeqEvents := []Event{
+		{Seq: 100, Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "coalesced 1"}},
+		{Seq: 200, Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "coalesced 2"}},
+		{Seq: 500, Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "coalesced 3"}},
+	}
+	for _, e := range highSeqEvents {
+		if err := recorder.RecordEventWithSeq(e); err != nil {
+			t.Fatalf("RecordEventWithSeq failed: %v", err)
+		}
+	}
+
+	// Verify metadata state before End
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	// EventCount = 1 (session_start) + 3 (user_prompt) + 3 (agent_message) = 7
+	if meta.EventCount != 7 {
+		t.Errorf("Expected EventCount=7, got %d", meta.EventCount)
+	}
+	// MaxSeq should be 500 (highest seq recorded)
+	if meta.MaxSeq != 500 {
+		t.Errorf("Expected MaxSeq=500, got %d", meta.MaxSeq)
+	}
+
+	// End the session
+	if err := recorder.End(SessionEndData{Reason: "test_shutdown"}); err != nil {
+		t.Fatalf("End failed: %v", err)
+	}
+
+	// Read all events and check the session_end seq
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Find the session_end event
+	var sessionEndEvent *Event
+	for i := range events {
+		if events[i].Type == EventTypeSessionEnd {
+			sessionEndEvent = &events[i]
+			break
+		}
+	}
+
+	if sessionEndEvent == nil {
+		t.Fatal("session_end event not found")
+	}
+
+	// The critical assertion: session_end should use MaxSeq + 1, not EventCount + 1
+	// If the bug exists, seq would be 8 (EventCount + 1)
+	// With the fix, seq should be 501 (MaxSeq + 1)
+	expectedSeq := int64(501)
+	if sessionEndEvent.Seq != expectedSeq {
+		t.Errorf("session_end seq = %d, want %d (MaxSeq + 1, not EventCount + 1)",
+			sessionEndEvent.Seq, expectedSeq)
 	}
 }
 
@@ -1259,7 +1344,7 @@ func TestRecorder_SuspendThenResumeThenEnd(t *testing.T) {
 	}
 
 	// End the session
-	if err := recorder.End("test_complete"); err != nil {
+	if err := recorder.End(SessionEndData{Reason: "test_complete"}); err != nil {
 		t.Fatalf("End failed: %v", err)
 	}
 
@@ -1315,7 +1400,7 @@ func TestRecorder_MultipleResumeEndCycles(t *testing.T) {
 		}
 
 		// End the session
-		if err := recorder.End("cycle_end"); err != nil {
+		if err := recorder.End(SessionEndData{Reason: "cycle_end"}); err != nil {
 			t.Fatalf("Cycle %d: End failed: %v", cycle, err)
 		}
 
@@ -1394,7 +1479,7 @@ func TestRecorder_EndAfterSuspendWithoutResume(t *testing.T) {
 	}
 
 	// Now try to End - should be a no-op since session is not started
-	if err := recorder.End("should_be_noop"); err != nil {
+	if err := recorder.End(SessionEndData{Reason: "should_be_noop"}); err != nil {
 		t.Errorf("End after Suspend should not error, got: %v", err)
 	}
 
@@ -1459,7 +1544,7 @@ func TestRecorder_ConcurrentRecordingAndEnd(t *testing.T) {
 	endDone := make(chan bool)
 	go func() {
 		// Small delay to allow some events to be recorded
-		recorder.End("concurrent_end")
+		recorder.End(SessionEndData{Reason: "concurrent_end"})
 		endDone <- true
 	}()
 

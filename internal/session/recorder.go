@@ -282,8 +282,9 @@ func (r *Recorder) Suspend() error {
 	return nil
 }
 
-// End ends the recording session.
-func (r *Recorder) End(reason string) error {
+// End ends the recording session with the given end data.
+// The SessionEndData struct can include additional context like signal, event count, etc.
+func (r *Recorder) End(data SessionEndData) error {
 	log := logging.Session()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -296,11 +297,24 @@ func (r *Recorder) End(reason string) error {
 	// if End is called multiple times (e.g., during shutdown)
 	r.started = false
 
-	// Record session end event
-	if err := r.store.AppendEvent(r.sessionID, Event{
+	// Get the correct sequence number for session_end.
+	// Due to message coalescing during streaming, MaxSeq can be much higher than EventCount.
+	// We must use MaxSeq + 1 to ensure session_end appears after all streamed events.
+	maxSeq := r.MaxSeq()
+	eventCount := int64(r.EventCount())
+	var nextSeq int64
+	if maxSeq > eventCount {
+		nextSeq = maxSeq + 1
+	} else {
+		nextSeq = eventCount + 1
+	}
+
+	// Record session end event with the correct sequence number
+	if err := r.store.RecordEvent(r.sessionID, Event{
+		Seq:       nextSeq,
 		Type:      EventTypeSessionEnd,
 		Timestamp: time.Now(),
-		Data:      SessionEndData{Reason: reason},
+		Data:      data,
 	}); err != nil {
 		return err
 	}
@@ -312,7 +326,13 @@ func (r *Recorder) End(reason string) error {
 		return err
 	}
 
-	log.Debug("session recording ended", "session_id", r.sessionID, "reason", reason)
+	log.Debug("session recording ended",
+		"session_id", r.sessionID,
+		"reason", data.Reason,
+		"signal", data.Signal,
+		"event_count", data.EventCount,
+		"was_prompting", data.WasPrompting,
+		"acp_connected", data.ACPConnected)
 	return nil
 }
 
