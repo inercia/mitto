@@ -3,8 +3,11 @@ package web
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
+	"strings"
 	"time"
 )
 
@@ -181,19 +184,36 @@ func requestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Han
 			defer func() {
 				if rec := recover(); rec != nil {
 					// Check if this is the known TimeoutHandler nil pointer issue
-					// by looking at the panic value. If it's a runtime error about
-					// nil pointer dereference, we can safely ignore it as the timeout
-					// response has already been sent to the client.
-					// For other panics, re-panic to let them propagate.
+					// by looking at the panic value AND the stack trace to confirm
+					// it originated from http.TimeoutHandler.
 					if err, ok := rec.(error); ok {
 						if err.Error() == "runtime error: invalid memory address or nil pointer dereference" {
-							// This is the known TimeoutHandler issue - the client
-							// already received a timeout response, so we can safely
-							// ignore this panic.
-							return
+							// Get the stack trace to verify this is from TimeoutHandler
+							buf := make([]byte, 4096)
+							n := runtime.Stack(buf, false)
+							stackTrace := string(buf[:n])
+
+							// Check if the panic originated from http.TimeoutHandler
+							if strings.Contains(stackTrace, "net/http.(*timeoutWriter)") ||
+								strings.Contains(stackTrace, "net/http.TimeoutHandler") {
+								// This is the known TimeoutHandler issue - log it and continue.
+								// The client already received a timeout response.
+								slog.Debug("Recovered from TimeoutHandler nil pointer panic",
+									"method", r.Method,
+									"path", r.URL.Path,
+									"remote_addr", r.RemoteAddr,
+								)
+								return
+							}
 						}
 					}
-					// Re-panic for unexpected errors
+					// Log and re-panic for unexpected errors
+					slog.Error("Unexpected panic in request handler",
+						"panic", rec,
+						"method", r.Method,
+						"path", r.URL.Path,
+						"remote_addr", r.RemoteAddr,
+					)
 					panic(rec)
 				}
 			}()

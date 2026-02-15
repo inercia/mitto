@@ -128,7 +128,7 @@ func (s *Server) handleWorkspaceUserDataSchema(w http.ResponseWriter, r *http.Re
 	// Get the schema from workspace RC
 	schema := s.sessionManager.GetUserDataSchema(workingDir)
 
-	// Return empty schema if none defined (allows any attributes)
+	// Return empty schema if none defined (no attributes allowed - validation will reject any)
 	if schema == nil {
 		writeJSONOK(w, map[string]interface{}{
 			"fields":      []interface{}{},

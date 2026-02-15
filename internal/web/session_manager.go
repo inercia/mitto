@@ -351,7 +351,7 @@ func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Tim
 
 // GetUserDataSchema returns the user data schema defined in the workspace's .mittorc file.
 // Returns nil if no .mittorc exists or if it has no user_data schema section.
-// A nil schema means any attributes are allowed.
+// A nil schema means no custom user data attributes are allowed (validation will reject any).
 func (sm *SessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema {
 	if sm.workspaceRCCache == nil || workingDir == "" {
 		return nil

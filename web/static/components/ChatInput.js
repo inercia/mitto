@@ -616,9 +616,9 @@ export function ChatInput({
         const data = await response.json();
         setPeriodicPrompt(text.trim());
         setIsPeriodicLocked(true);
-        // Update next scheduled time from server response
+        // Update next scheduled time from server response (keep as ISO string for consistency)
         if (data.next_scheduled_at) {
-          setPeriodicNextScheduledAt(new Date(data.next_scheduled_at));
+          setPeriodicNextScheduledAt(data.next_scheduled_at);
         }
       } else {
         console.error("Failed to lock periodic prompt");
