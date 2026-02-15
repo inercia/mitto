@@ -1086,6 +1086,68 @@ a.mailto-link:hover {
   animation: queueDropdownSlideOut 0.15s ease-in forwards;
 }
 
+/* =============================================================================
+   Conversation Properties Panel
+   ============================================================================= */
+
+/* Panel slide animation (from right) */
+@keyframes propertiesPanelSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes propertiesPanelSlideOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+}
+
+/* Backdrop fade animation */
+@keyframes propertiesBackdropFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes propertiesBackdropFadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.properties-panel {
+  animation: propertiesPanelSlideIn 0.2s ease-out forwards;
+}
+
+.properties-panel.closing {
+  animation: propertiesPanelSlideOut 0.15s ease-in forwards;
+}
+
+.properties-backdrop {
+  animation: propertiesBackdropFadeIn 0.2s ease-out forwards;
+}
+
+.properties-backdrop.closing {
+  animation: propertiesBackdropFadeOut 0.15s ease-in forwards;
+}
+
 /* Queue dropdown list scrollbar */
 .queue-dropdown-list::-webkit-scrollbar {
   width: 6px;
@@ -1531,4 +1593,16 @@ mitto-action {
 /* Light theme adjustments for swipe delete */
 .light .session-item-container .bg-red-600 {
   background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
+}
+
+/* =============================================================================
+   Utility Classes
+   ============================================================================= */
+
+.no-underline {
+  text-decoration: none !important;
+}
+
+.no-underline:hover {
+  text-decoration: none !important;
 }

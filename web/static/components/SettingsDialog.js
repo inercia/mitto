@@ -32,6 +32,9 @@ import {
   DragHandleIcon,
 } from "./Icons.js";
 
+// Import constants
+import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
+
 // Import WorkspaceBadge from app.js - we'll need to pass it as a prop or extract it
 // For now, we'll receive it as a prop
 
@@ -317,6 +320,11 @@ export function SettingsDialog({
 
   // Input font family setting (web UI)
   const [inputFontFamily, setInputFontFamily] = useState("system");
+
+  // Conversation cycling mode setting (web UI) - default: "all"
+  const [conversationCyclingMode, setConversationCyclingMode] = useState(
+    CYCLING_MODE.ALL,
+  );
 
   // Follow system theme setting (client-side, stored in localStorage)
   const [followSystemTheme, setFollowSystemTheme] = useState(() => {
@@ -616,6 +624,11 @@ export function SettingsDialog({
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
+      // Load conversation cycling mode setting (web UI) - default to "all"
+      setConversationCyclingMode(
+        config.ui?.web?.conversation_cycling_mode || CYCLING_MODE.ALL,
+      );
+
       // Set default server for new workspace
       if (servers.length > 0) {
         setNewWorkspaceServer(servers[0].name);
@@ -698,6 +711,7 @@ export function SettingsDialog({
         // Web-specific UI settings
         web: {
           input_font_family: inputFontFamily,
+          conversation_cycling_mode: conversationCyclingMode,
         },
       };
 
@@ -2096,6 +2110,35 @@ export function SettingsDialog({
                             <option value="jetbrains-mono">JetBrains Mono</option>
                             <option value="sf-mono">SF Mono</option>
                             <option value="cascadia-code">Cascadia Code</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div
+                        class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                      >
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Conversation cycling
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Which conversations to include when using
+                              keyboard/swipe navigation
+                            </div>
+                          </div>
+                          <select
+                            value=${conversationCyclingMode}
+                            onChange=${(e) =>
+                              setConversationCyclingMode(e.target.value)}
+                            class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                          >
+                            ${CYCLING_MODE_OPTIONS.map(
+                              (opt) => html`
+                                <option key=${opt.value} value=${opt.value}>
+                                  ${opt.label}
+                                </option>
+                              `,
+                            )}
                           </select>
                         </div>
                       </div>
