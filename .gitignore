@@ -164,3 +164,6 @@ test-results/
 
 # Local workspace config
 .mitto/
+
+# Playwright CLI testing artifacts
+.playwright-cli/
