@@ -21,6 +21,8 @@ var (
 	ErrPeriodicNotFound = errors.New("periodic prompt not found")
 	// ErrInvalidFrequency is returned when the frequency configuration is invalid.
 	ErrInvalidFrequency = errors.New("invalid frequency configuration")
+	// ErrPromptEmpty is returned when the prompt text is empty.
+	ErrPromptEmpty = errors.New("prompt cannot be empty")
 )
 
 // FrequencyUnit represents the time unit for periodic scheduling.
@@ -114,7 +116,7 @@ type PeriodicPrompt struct {
 // Validate checks if the periodic prompt configuration is valid.
 func (p *PeriodicPrompt) Validate() error {
 	if p.Prompt == "" {
-		return fmt.Errorf("prompt cannot be empty")
+		return ErrPromptEmpty
 	}
 	return p.Frequency.Validate()
 }

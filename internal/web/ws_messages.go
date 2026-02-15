@@ -132,7 +132,13 @@ const (
 
 	// WSMsgTypePeriodicUpdated notifies that a session's periodic prompt state changed.
 	// Sent on /api/events to all connected clients when periodic is enabled/disabled.
-	// Data: { "session_id": string, "periodic_enabled": bool }
+	// Data: {
+	//   "session_id": string,
+	//   "periodic_configured": bool,
+	//   "periodic_enabled": bool,
+	//   "frequency": { "value": number, "unit": string, "at"?: string },  // if configured
+	//   "next_scheduled_at": string  // ISO 8601, if enabled and scheduled
+	// }
 	WSMsgTypePeriodicUpdated = "periodic_updated"
 
 	// WSMsgTypePeriodicStarted notifies that a periodic prompt was delivered.

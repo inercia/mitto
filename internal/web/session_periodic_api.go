@@ -87,8 +87,7 @@ func (s *Server) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessi
 	}
 
 	if err := ps.Set(p); err != nil {
-		if err == session.ErrInvalidFrequency ||
-			(err != nil && err.Error() == "prompt cannot be empty") {
+		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -124,7 +123,7 @@ func (s *Server) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, ses
 			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
 			return
 		}
-		if err == session.ErrInvalidFrequency {
+		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

@@ -2130,7 +2130,8 @@ export function useWebSocket() {
       case "config_option_changed":
         // Config option changed (by user or agent)
         // Update the current_value for the specified config option
-        if (msg.data?.config_id && msg.data?.value) {
+        // Use !== undefined to allow falsy values like empty strings
+        if (msg.data?.config_id && msg.data?.value !== undefined) {
           console.log(
             `Config option changed: ${msg.data.config_id} = ${msg.data.value}`,
           );
@@ -3413,7 +3414,8 @@ export function useWebSocket() {
   // For mode changes, use configId "mode" with the desired mode value
   const setConfigOption = useCallback(
     (configId, value) => {
-      if (!activeSessionId || !configId || !value) return;
+      // Use value == null to allow falsy values like empty strings
+      if (!activeSessionId || !configId || value == null) return;
       console.log(`Setting config option: ${configId} = ${value}`);
       sendToSession(activeSessionId, {
         type: "set_config_option",

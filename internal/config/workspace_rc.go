@@ -25,7 +25,7 @@ type WorkspaceRC struct {
 	// Conversations contains workspace-specific conversation processing configuration.
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 	// UserDataSchema defines the allowed user data fields for conversations in this workspace.
-	// If nil, any user data attributes are allowed.
+	// If nil or empty, no custom user data attributes are allowed and any provided attributes will be rejected.
 	UserDataSchema *UserDataSchema `json:"user_data_schema,omitempty"`
 	// RestrictedRunners contains per-runner-type overrides for this workspace.
 	// Key is the runner type (e.g., "exec", "sandbox-exec", "firejail", "docker").
