@@ -24,6 +24,9 @@ type WorkspaceRC struct {
 	PromptsDirs []string `json:"prompts_dirs,omitempty"`
 	// Conversations contains workspace-specific conversation processing configuration.
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
+	// UserDataSchema defines the allowed user data fields for conversations in this workspace.
+	// If nil, any user data attributes are allowed.
+	UserDataSchema *UserDataSchema `json:"user_data_schema,omitempty"`
 	// RestrictedRunners contains per-runner-type overrides for this workspace.
 	// Key is the runner type (e.g., "exec", "sandbox-exec", "firejail", "docker").
 	// When a workspace uses a runner of type X, it applies the config for type X.
@@ -57,7 +60,7 @@ type rawWorkspaceRC struct {
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
-	// Conversations section for message processing
+	// Conversations section for message processing and user data schema
 	Conversations *struct {
 		Processing *struct {
 			Override   bool `yaml:"override"`
@@ -67,6 +70,11 @@ type rawWorkspaceRC struct {
 				Text     string `yaml:"text"`
 			} `yaml:"processors"`
 		} `yaml:"processing"`
+		// UserData defines the schema for custom user data attributes
+		UserData []struct {
+			Name string `yaml:"name"`
+			Type string `yaml:"type"`
+		} `yaml:"user_data"`
 	} `yaml:"conversations"`
 	// RestrictedRunners section for per-agent runner overrides
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -168,6 +176,24 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 					Override:   raw.Conversations.Processing.Override,
 					Processors: processors,
 				},
+			}
+		}
+	}
+
+	// Copy user data schema from conversations.user_data
+	if raw.Conversations != nil && len(raw.Conversations.UserData) > 0 {
+		fields := make([]UserDataSchemaField, 0, len(raw.Conversations.UserData))
+		for _, f := range raw.Conversations.UserData {
+			if f.Name != "" {
+				fields = append(fields, UserDataSchemaField{
+					Name: f.Name,
+					Type: UserDataAttributeType(f.Type),
+				})
+			}
+		}
+		if len(fields) > 0 {
+			rc.UserDataSchema = &UserDataSchema{
+				Fields: fields,
 			}
 		}
 	}

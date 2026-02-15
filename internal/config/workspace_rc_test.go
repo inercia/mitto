@@ -557,3 +557,97 @@ conversations:
 		t.Fatalf("Processors count = %d, want 1", len(rc.Conversations.Processing.Processors))
 	}
 }
+
+func TestParseWorkspaceRC_UserDataSchema(t *testing.T) {
+	yaml := `
+conversations:
+  user_data:
+    - name: "JIRA ticket"
+      type: url
+    - name: "Description"
+      type: string
+    - name: "Notes"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+
+	if rc.UserDataSchema == nil {
+		t.Fatal("UserDataSchema is nil")
+	}
+
+	if len(rc.UserDataSchema.Fields) != 3 {
+		t.Fatalf("UserDataSchema.Fields count = %d, want 3", len(rc.UserDataSchema.Fields))
+	}
+
+	// Check first field (JIRA ticket with url type)
+	if rc.UserDataSchema.Fields[0].Name != "JIRA ticket" {
+		t.Errorf("Field 0 name = %q, want %q", rc.UserDataSchema.Fields[0].Name, "JIRA ticket")
+	}
+	if rc.UserDataSchema.Fields[0].Type != UserDataTypeURL {
+		t.Errorf("Field 0 type = %q, want %q", rc.UserDataSchema.Fields[0].Type, UserDataTypeURL)
+	}
+
+	// Check second field (Description with string type)
+	if rc.UserDataSchema.Fields[1].Name != "Description" {
+		t.Errorf("Field 1 name = %q, want %q", rc.UserDataSchema.Fields[1].Name, "Description")
+	}
+	if rc.UserDataSchema.Fields[1].Type != UserDataTypeString {
+		t.Errorf("Field 1 type = %q, want %q", rc.UserDataSchema.Fields[1].Type, UserDataTypeString)
+	}
+
+	// Check third field (Notes with empty type - defaults to string)
+	if rc.UserDataSchema.Fields[2].Name != "Notes" {
+		t.Errorf("Field 2 name = %q, want %q", rc.UserDataSchema.Fields[2].Name, "Notes")
+	}
+	// Empty type is stored as-is; DefaultType() handles the conversion at validation time
+	if rc.UserDataSchema.Fields[2].Type != "" {
+		t.Errorf("Field 2 type = %q, want empty string", rc.UserDataSchema.Fields[2].Type)
+	}
+}
+
+func TestParseWorkspaceRC_UserDataSchemaWithProcessors(t *testing.T) {
+	yaml := `
+conversations:
+  processing:
+    processors:
+      - when: first
+        position: before
+        text: "System context"
+  user_data:
+    - name: "Priority"
+      type: string
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+
+	// Check processing config is present
+	if rc.Conversations == nil || rc.Conversations.Processing == nil {
+		t.Fatal("Conversations.Processing is nil")
+	}
+	if len(rc.Conversations.Processing.Processors) != 1 {
+		t.Fatalf("Processors count = %d, want 1", len(rc.Conversations.Processing.Processors))
+	}
+
+	// Check user data schema is also present
+	if rc.UserDataSchema == nil {
+		t.Fatal("UserDataSchema is nil")
+	}
+	if len(rc.UserDataSchema.Fields) != 1 {
+		t.Fatalf("UserDataSchema.Fields count = %d, want 1", len(rc.UserDataSchema.Fields))
+	}
+	if rc.UserDataSchema.Fields[0].Name != "Priority" {
+		t.Errorf("Field 0 name = %q, want %q", rc.UserDataSchema.Fields[0].Name, "Priority")
+	}
+}
