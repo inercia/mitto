@@ -181,7 +181,13 @@ type SessionStartData struct {
 
 // SessionEndData contains data for session end event.
 type SessionEndData struct {
-	Reason string `json:"reason"` // "user_quit", "error", "timeout", etc.
+	Reason string `json:"reason"` // "user_quit", "error", "timeout", "server_shutdown", etc.
+
+	// Optional context fields (omitted if empty/zero)
+	Signal       string `json:"signal,omitempty"`        // Signal that triggered shutdown (e.g., "SIGINT", "SIGTERM")
+	EventCount   int    `json:"event_count,omitempty"`   // Number of events in session at shutdown
+	WasPrompting bool   `json:"was_prompting,omitempty"` // Whether a response was in progress
+	ACPConnected bool   `json:"acp_connected,omitempty"` // Whether ACP connection was active
 }
 
 // Metadata contains session metadata stored separately from the event log.
@@ -203,6 +209,7 @@ type Metadata struct {
 	ArchivedAt        time.Time     `json:"archived_at,omitempty"`       // Time when session was archived (cleared when unarchived)
 	RunnerType        string        `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
 	RunnerRestricted  bool          `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
+	CurrentModeID     string        `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
 }
 
 // LockStatus represents the current activity status of a locked session.

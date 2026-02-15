@@ -83,6 +83,12 @@ func (s *Store) ActionButtons(sessionID string) *ActionButtonsStore {
 	return NewActionButtonsStore(s.sessionDir(sessionID))
 }
 
+// Periodic returns a PeriodicStore instance for managing the periodic prompt of a session.
+// The returned PeriodicStore is safe for concurrent use.
+func (s *Store) Periodic(sessionID string) *PeriodicStore {
+	return NewPeriodicStore(s.sessionDir(sessionID))
+}
+
 // Create creates a new session with the given metadata.
 func (s *Store) Create(meta Metadata) error {
 	log := logging.Session()
