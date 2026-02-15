@@ -218,6 +218,15 @@ type ConfirmationsConfig struct {
 	QuitWithRunningSessions *bool `json:"quit_with_running_sessions,omitempty"`
 }
 
+// Conversation cycling mode constants.
+// These determine which conversations are included when cycling with keyboard shortcuts or gestures.
+const (
+	// CyclingModeAll cycles through all non-archived conversations (default).
+	CyclingModeAll = "all"
+	// CyclingModeVisibleGroups cycles only through conversations in expanded/open groups.
+	CyclingModeVisibleGroups = "visible_groups"
+)
+
 // WebUIConfig represents web-specific UI configuration.
 type WebUIConfig struct {
 	// InputFontFamily is the font family for the compose/input box.
@@ -225,6 +234,12 @@ type WebUIConfig struct {
 	// or specific fonts: "menlo", "monaco", "consolas", "courier-new",
 	// "jetbrains-mono", "sf-mono", "cascadia-code"
 	InputFontFamily string `json:"input_font_family,omitempty"`
+
+	// ConversationCyclingMode controls which conversations are included when cycling
+	// with keyboard shortcuts (Cmd+Ctrl+Up/Down) or mobile swipe gestures.
+	// Options: "all" (default) - all non-archived conversations
+	//          "visible_groups" - only conversations in expanded groups
+	ConversationCyclingMode string `json:"conversation_cycling_mode,omitempty"`
 }
 
 // UIConfig represents UI configuration for the desktop app.
@@ -860,7 +875,8 @@ type rawConfig struct {
 			QuitWithRunningSessions *bool `yaml:"quit_with_running_sessions"`
 		} `yaml:"confirmations"`
 		Web *struct {
-			InputFontFamily string `yaml:"input_font_family"`
+			InputFontFamily         string `yaml:"input_font_family"`
+			ConversationCyclingMode string `yaml:"conversation_cycling_mode"`
 		} `yaml:"web"`
 		Mac *struct {
 			Hotkeys *struct {
@@ -1041,7 +1057,8 @@ func Parse(data []byte) (*Config, error) {
 		// Populate Web-specific config
 		if raw.UI.Web != nil {
 			cfg.UI.Web = &WebUIConfig{
-				InputFontFamily: raw.UI.Web.InputFontFamily,
+				InputFontFamily:         raw.UI.Web.InputFontFamily,
+				ConversationCyclingMode: raw.UI.Web.ConversationCyclingMode,
 			}
 		}
 
