@@ -797,3 +797,329 @@ func TestWebSocketReconnection(t *testing.T) {
 		t.Errorf("Expected 1 client after reconnect, got %d", count)
 	}
 }
+
+// --- Config Options WebSocket Tests ---
+
+// TestSessionWS_ConnectedMessage_IncludesConfigOptions tests that the connected
+// message includes config_options when available.
+func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
+	mux := http.NewServeMux()
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	mux.HandleFunc("/api/sessions/test-session/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		wsConn := &WSConn{
+			conn:   conn,
+			send:   make(chan []byte, 64),
+			config: DefaultWebSocketSecurityConfig(),
+		}
+
+		// Start write pump
+		go wsConn.WritePump(r.Context(), nil)
+
+		// Send connected message with config_options
+		wsConn.SendMessage(WSMsgTypeConnected, map[string]interface{}{
+			"session_id": "test-session",
+			"client_id":  "test-client",
+			"acp_server": "test-server",
+			"config_options": []SessionConfigOption{
+				{
+					ID:           ConfigOptionCategoryMode,
+					Name:         "Mode",
+					Description:  "Session operating mode",
+					Category:     ConfigOptionCategoryMode,
+					Type:         ConfigOptionTypeSelect,
+					CurrentValue: "code",
+					Options: []SessionConfigOptionValue{
+						{Value: "ask", Name: "Ask", Description: "Ask questions"},
+						{Value: "code", Name: "Code", Description: "Make code changes"},
+					},
+				},
+			},
+		})
+
+		// Keep connection open briefly
+		time.Sleep(100 * time.Millisecond)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	conn := connectTestWS(t, server, "/api/sessions/test-session/ws")
+	defer conn.Close()
+
+	// Read connected message
+	connectedMsg := readWSMessage(t, conn, 2*time.Second)
+	if connectedMsg.Type != WSMsgTypeConnected {
+		t.Errorf("Expected %q, got %q", WSMsgTypeConnected, connectedMsg.Type)
+	}
+
+	// Parse the data
+	var connectedData struct {
+		SessionID     string                `json:"session_id"`
+		ClientID      string                `json:"client_id"`
+		ConfigOptions []SessionConfigOption `json:"config_options"`
+	}
+	if err := json.Unmarshal(connectedMsg.Data, &connectedData); err != nil {
+		t.Fatalf("Failed to unmarshal connected data: %v", err)
+	}
+
+	// Verify config_options
+	if len(connectedData.ConfigOptions) != 1 {
+		t.Fatalf("Expected 1 config option, got %d", len(connectedData.ConfigOptions))
+	}
+
+	modeOpt := connectedData.ConfigOptions[0]
+	if modeOpt.ID != ConfigOptionCategoryMode {
+		t.Errorf("Config option ID = %q, want %q", modeOpt.ID, ConfigOptionCategoryMode)
+	}
+	if modeOpt.Category != ConfigOptionCategoryMode {
+		t.Errorf("Config option Category = %q, want %q", modeOpt.Category, ConfigOptionCategoryMode)
+	}
+	if modeOpt.Type != ConfigOptionTypeSelect {
+		t.Errorf("Config option Type = %q, want %q", modeOpt.Type, ConfigOptionTypeSelect)
+	}
+	if modeOpt.CurrentValue != "code" {
+		t.Errorf("Config option CurrentValue = %q, want %q", modeOpt.CurrentValue, "code")
+	}
+	if len(modeOpt.Options) != 2 {
+		t.Errorf("Expected 2 options, got %d", len(modeOpt.Options))
+	}
+}
+
+// TestSessionWS_ConfigOptionChanged_Broadcast tests that config option changes
+// are broadcast to connected clients.
+func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
+	eventsManager := NewGlobalEventsManager()
+
+	mux := http.NewServeMux()
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+
+		wsConn := &WSConn{
+			conn:   conn,
+			send:   make(chan []byte, 64),
+			config: DefaultWebSocketSecurityConfig(),
+		}
+
+		client := &GlobalEventsClient{
+			wsConn: wsConn,
+			done:   make(chan struct{}),
+		}
+
+		eventsManager.Register(client)
+		defer eventsManager.Unregister(client)
+
+		// Send connected message
+		wsConn.SendMessage(WSMsgTypeConnected, map[string]string{
+			"acp_server": "test-server",
+		})
+
+		// Start write pump
+		go wsConn.WritePump(r.Context(), client.done)
+
+		// Read pump
+		for {
+			_, err := wsConn.ReadMessage()
+			if err != nil {
+				return
+			}
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Connect a client
+	conn := connectTestWS(t, server, "/api/events")
+	defer conn.Close()
+
+	// Read connected message
+	readWSMessage(t, conn, 2*time.Second)
+
+	// Broadcast a config option changed event
+	eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+		"session_id": "test-session",
+		"config_id":  ConfigOptionCategoryMode,
+		"value":      "architect",
+	})
+
+	// Read the broadcast message
+	changedMsg := readWSMessage(t, conn, 2*time.Second)
+	if changedMsg.Type != WSMsgTypeConfigOptionChanged {
+		t.Errorf("Expected %q, got %q", WSMsgTypeConfigOptionChanged, changedMsg.Type)
+	}
+
+	// Verify the data
+	var changedData struct {
+		SessionID string `json:"session_id"`
+		ConfigID  string `json:"config_id"`
+		Value     string `json:"value"`
+	}
+	if err := json.Unmarshal(changedMsg.Data, &changedData); err != nil {
+		t.Fatalf("Failed to unmarshal changed data: %v", err)
+	}
+
+	if changedData.SessionID != "test-session" {
+		t.Errorf("session_id = %q, want %q", changedData.SessionID, "test-session")
+	}
+	if changedData.ConfigID != ConfigOptionCategoryMode {
+		t.Errorf("config_id = %q, want %q", changedData.ConfigID, ConfigOptionCategoryMode)
+	}
+	if changedData.Value != "architect" {
+		t.Errorf("value = %q, want %q", changedData.Value, "architect")
+	}
+}
+
+// TestSessionWS_SetConfigOption_MessageFormat tests the set_config_option message format.
+func TestSessionWS_SetConfigOption_MessageFormat(t *testing.T) {
+	// Test that the set_config_option message can be properly formatted and parsed
+	msg := WSMessage{
+		Type: WSMsgTypeSetConfigOption,
+	}
+	data := map[string]string{
+		"config_id": ConfigOptionCategoryMode,
+		"value":     "code",
+	}
+	msg.Data, _ = json.Marshal(data)
+
+	// Marshal and parse back
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	parsed, err := ParseMessage(msgBytes)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	if parsed.Type != WSMsgTypeSetConfigOption {
+		t.Errorf("Type = %q, want %q", parsed.Type, WSMsgTypeSetConfigOption)
+	}
+
+	var parsedData struct {
+		ConfigID string `json:"config_id"`
+		Value    string `json:"value"`
+	}
+	if err := json.Unmarshal(parsed.Data, &parsedData); err != nil {
+		t.Fatalf("Failed to unmarshal data: %v", err)
+	}
+
+	if parsedData.ConfigID != ConfigOptionCategoryMode {
+		t.Errorf("config_id = %q, want %q", parsedData.ConfigID, ConfigOptionCategoryMode)
+	}
+	if parsedData.Value != "code" {
+		t.Errorf("value = %q, want %q", parsedData.Value, "code")
+	}
+}
+
+// TestSessionConfigOption_JSONSerialization tests that SessionConfigOption
+// serializes correctly to JSON for WebSocket transmission.
+func TestSessionConfigOption_JSONSerialization(t *testing.T) {
+	opt := SessionConfigOption{
+		ID:           ConfigOptionCategoryMode,
+		Name:         "Mode",
+		Description:  "Session operating mode",
+		Category:     ConfigOptionCategoryMode,
+		Type:         ConfigOptionTypeSelect,
+		CurrentValue: "code",
+		Options: []SessionConfigOptionValue{
+			{Value: "ask", Name: "Ask", Description: "Ask questions without making changes"},
+			{Value: "code", Name: "Code", Description: "Make code changes"},
+			{Value: "architect", Name: "Architect"}, // No description
+		},
+	}
+
+	// Serialize to JSON
+	data, err := json.Marshal(opt)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	// Parse back
+	var parsed SessionConfigOption
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+
+	// Verify all fields
+	if parsed.ID != opt.ID {
+		t.Errorf("ID = %q, want %q", parsed.ID, opt.ID)
+	}
+	if parsed.Name != opt.Name {
+		t.Errorf("Name = %q, want %q", parsed.Name, opt.Name)
+	}
+	if parsed.Description != opt.Description {
+		t.Errorf("Description = %q, want %q", parsed.Description, opt.Description)
+	}
+	if parsed.Category != opt.Category {
+		t.Errorf("Category = %q, want %q", parsed.Category, opt.Category)
+	}
+	if parsed.Type != opt.Type {
+		t.Errorf("Type = %q, want %q", parsed.Type, opt.Type)
+	}
+	if parsed.CurrentValue != opt.CurrentValue {
+		t.Errorf("CurrentValue = %q, want %q", parsed.CurrentValue, opt.CurrentValue)
+	}
+	if len(parsed.Options) != len(opt.Options) {
+		t.Fatalf("Options length = %d, want %d", len(parsed.Options), len(opt.Options))
+	}
+
+	// Verify options
+	for i, parsedOpt := range parsed.Options {
+		origOpt := opt.Options[i]
+		if parsedOpt.Value != origOpt.Value {
+			t.Errorf("Options[%d].Value = %q, want %q", i, parsedOpt.Value, origOpt.Value)
+		}
+		if parsedOpt.Name != origOpt.Name {
+			t.Errorf("Options[%d].Name = %q, want %q", i, parsedOpt.Name, origOpt.Name)
+		}
+		if parsedOpt.Description != origOpt.Description {
+			t.Errorf("Options[%d].Description = %q, want %q", i, parsedOpt.Description, origOpt.Description)
+		}
+	}
+}
+
+// TestSessionConfigOption_OmitEmptyFields tests that empty optional fields
+// are omitted from JSON serialization.
+func TestSessionConfigOption_OmitEmptyFields(t *testing.T) {
+	opt := SessionConfigOption{
+		ID:           "model",
+		Name:         "Model",
+		Type:         ConfigOptionTypeSelect,
+		CurrentValue: "gpt-4",
+		Options: []SessionConfigOptionValue{
+			{Value: "gpt-4", Name: "GPT-4"},
+		},
+		// Description and Category are intentionally empty
+	}
+
+	data, err := json.Marshal(opt)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	// Check that empty fields are omitted
+	dataStr := string(data)
+	if strings.Contains(dataStr, `"description"`) {
+		t.Error("Empty description should be omitted from JSON")
+	}
+	if strings.Contains(dataStr, `"category"`) {
+		t.Error("Empty category should be omitted from JSON")
+	}
+}
