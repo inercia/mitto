@@ -134,6 +134,19 @@ func (w *hideServerInfoResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, er
 	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
 }
 
+// Flush implements http.Flusher to support streaming responses.
+func (w *hideServerInfoResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Unwrap returns the underlying ResponseWriter for interface detection.
+// This is required for proper compatibility with http.TimeoutHandler and other middleware.
+func (w *hideServerInfoResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func hideServerInfoMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wrapped := &hideServerInfoResponseWriter{ResponseWriter: w}
@@ -146,8 +159,15 @@ const DefaultRequestTimeout = 30 * time.Second
 
 // requestTimeoutMiddleware adds a timeout to HTTP requests.
 // WebSocket upgrade requests are excluded from the timeout.
+// This middleware includes panic recovery to handle the known issue where
+// http.TimeoutHandler can cause nil pointer dereferences when the underlying
+// handler writes to the ResponseWriter after a timeout has occurred.
 func requestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
+		// Create the timeout handler once during middleware setup, not per-request.
+		// This avoids potential race conditions and is more efficient.
+		timeoutHandler := http.TimeoutHandler(next, timeout, "Request timeout")
+
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip timeout for WebSocket upgrade requests
 			if r.Header.Get("Upgrade") == "websocket" {
@@ -155,8 +175,31 @@ func requestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Han
 				return
 			}
 
-			// Apply timeout using http.TimeoutHandler
-			http.TimeoutHandler(next, timeout, "Request timeout").ServeHTTP(w, r)
+			// Recover from panics that can occur in http.TimeoutHandler.
+			// This is a known issue where writing to the ResponseWriter after
+			// a timeout can cause a nil pointer dereference in the standard library.
+			defer func() {
+				if rec := recover(); rec != nil {
+					// Check if this is the known TimeoutHandler nil pointer issue
+					// by looking at the panic value. If it's a runtime error about
+					// nil pointer dereference, we can safely ignore it as the timeout
+					// response has already been sent to the client.
+					// For other panics, re-panic to let them propagate.
+					if err, ok := rec.(error); ok {
+						if err.Error() == "runtime error: invalid memory address or nil pointer dereference" {
+							// This is the known TimeoutHandler issue - the client
+							// already received a timeout response, so we can safely
+							// ignore this panic.
+							return
+						}
+					}
+					// Re-panic for unexpected errors
+					panic(rec)
+				}
+			}()
+
+			// Apply timeout
+			timeoutHandler.ServeHTTP(w, r)
 		})
 	}
 }

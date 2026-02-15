@@ -416,11 +416,9 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 	fullHTML := wrapMarkdownHTML(htmlContent, displayPath)
 
 	// Set headers
+	// Note: CSP header is set by cspNonceMiddleware which replaces {{CSP_NONCE}} in the HTML
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// Permissive CSP for styled HTML with syntax highlighting and Mermaid.js CDN
-	w.Header().Set("Content-Security-Policy",
-		"default-src 'self' 'unsafe-inline'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net")
 
 	w.Write([]byte(fullHTML))
 }
@@ -541,7 +539,7 @@ func wrapMarkdownHTML(content, filename string) string {
 </head>
 <body>
     <article>%s</article>
-    <script type="module">
+    <script type="module" nonce="{{CSP_NONCE}}">
         // Check if there are any mermaid blocks to render
         const mermaidBlocks = document.querySelectorAll('pre.mermaid');
         if (mermaidBlocks.length > 0) {

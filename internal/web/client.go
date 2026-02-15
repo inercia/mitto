@@ -2,6 +2,9 @@ package web
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 
@@ -22,6 +25,7 @@ type SeqProvider interface {
 type WebClient struct {
 	autoApprove bool
 	seqProvider SeqProvider
+	logger      *slog.Logger
 
 	// Callbacks for file operations (not buffered)
 	onFileWrite          func(seq int64, path string, size int)
@@ -49,12 +53,63 @@ type AvailableCommand struct {
 	InputHint string `json:"input_hint,omitempty"`
 }
 
+// SessionConfigOption represents a configurable session option.
+// This type mirrors the ACP configOptions structure and supports both:
+// - Legacy "modes" API (converted to configOptions with category "mode")
+// - Newer "configOptions" API (used directly when available)
+// See https://agentclientprotocol.com/protocol/session-config-options
+type SessionConfigOption struct {
+	// ID is the unique identifier for this option (e.g., "mode", "model").
+	ID string `json:"id"`
+	// Name is the human-readable label for the option (e.g., "Session Mode", "Model").
+	Name string `json:"name"`
+	// Description provides more details about what this option controls.
+	Description string `json:"description,omitempty"`
+	// Category is semantic metadata for UX (e.g., "mode", "model", "thought_level").
+	// For legacy modes, this is always "mode".
+	Category string `json:"category,omitempty"`
+	// Type is the input control type. Currently only "select" is supported.
+	Type string `json:"type"`
+	// CurrentValue is the currently selected value for this option.
+	CurrentValue string `json:"current_value"`
+	// Options are the available values for this option.
+	Options []SessionConfigOptionValue `json:"options"`
+}
+
+// SessionConfigOptionValue represents a selectable value for a config option.
+type SessionConfigOptionValue struct {
+	// Value is the identifier used when setting this option.
+	Value string `json:"value"`
+	// Name is the human-readable name to display.
+	Name string `json:"name"`
+	// Description explains what this value does.
+	Description string `json:"description,omitempty"`
+}
+
+// ConfigOptionCategory constants for well-known categories.
+const (
+	ConfigOptionCategoryMode         = "mode"
+	ConfigOptionCategoryModel        = "model"
+	ConfigOptionCategoryThoughtLevel = "thought_level"
+)
+
+// ConfigOptionType constants for option types.
+const (
+	// ConfigOptionTypeSelect is a dropdown/select control.
+	ConfigOptionTypeSelect = "select"
+	// ConfigOptionTypeToggle is a boolean toggle control (future).
+	ConfigOptionTypeToggle = "toggle"
+)
+
 // WebClientConfig holds configuration for creating a WebClient.
 type WebClientConfig struct {
 	AutoApprove bool
 	// SeqProvider provides sequence numbers for event ordering.
 	// Required for correct ordering of events when content is buffered.
 	SeqProvider SeqProvider
+	// Logger for debug logging of ACP SDK events (optional).
+	// When set to DEBUG level, logs timing of events from ACP SDK.
+	Logger *slog.Logger
 	// Callbacks for different event types (all include seq for ordering)
 	OnAgentMessage       func(seq int64, html string)
 	OnAgentThought       func(seq int64, text string)
@@ -76,6 +131,7 @@ func NewWebClient(config WebClientConfig) *WebClient {
 	c := &WebClient{
 		autoApprove:          config.AutoApprove,
 		seqProvider:          config.SeqProvider,
+		logger:               config.Logger,
 		onFileWrite:          config.OnFileWrite,
 		onFileRead:           config.OnFileRead,
 		onPermission:         config.OnPermission,
@@ -113,7 +169,46 @@ func NewWebClient(config WebClientConfig) *WebClient {
 // in the middle of a markdown block (list, table, code block) and emitted
 // after the block completes. This prevents tool calls from breaking lists.
 func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
+	// Log event arrival time from ACP SDK (DEBUG level only).
+	// This helps diagnose whether events arrive in bursts from ACP or are delayed in our processing.
+	receiveTime := time.Now()
 	u := params.Update
+
+	// Determine event type for logging
+	var eventType string
+	var eventDetail string
+	switch {
+	case u.AgentMessageChunk != nil:
+		eventType = "agent_message_chunk"
+		if u.AgentMessageChunk.Content.Text != nil {
+			eventDetail = fmt.Sprintf("len=%d", len(u.AgentMessageChunk.Content.Text.Text))
+		}
+	case u.AgentThoughtChunk != nil:
+		eventType = "agent_thought_chunk"
+	case u.ToolCall != nil:
+		eventType = "tool_call"
+		eventDetail = u.ToolCall.Title
+	case u.ToolCallUpdate != nil:
+		eventType = "tool_call_update"
+		eventDetail = string(u.ToolCallUpdate.ToolCallId)
+	case u.Plan != nil:
+		eventType = "plan"
+	case u.AvailableCommandsUpdate != nil:
+		eventType = "available_commands"
+	case u.CurrentModeUpdate != nil:
+		eventType = "current_mode"
+	default:
+		eventType = "unknown"
+	}
+
+	if c.logger != nil {
+		c.logger.Debug("acp_sdk_event_received",
+			"event_type", eventType,
+			"event_detail", eventDetail,
+			"receive_time_ns", receiveTime.UnixNano(),
+			"receive_time", receiveTime.Format("15:04:05.000000"),
+		)
+	}
 
 	switch {
 	case u.AgentMessageChunk != nil:

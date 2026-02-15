@@ -39,15 +39,14 @@ func TestHandleListSessions_EmptyStore(t *testing.T) {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	var response struct {
-		Sessions []interface{} `json:"sessions"`
-	}
+	// Response is an array directly, not wrapped in an object
+	var response []interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	if len(response.Sessions) != 0 {
-		t.Errorf("Sessions count = %d, want 0", len(response.Sessions))
+	if len(response) != 0 {
+		t.Errorf("Sessions count = %d, want 0", len(response))
 	}
 }
 
