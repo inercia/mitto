@@ -622,6 +622,52 @@ export function ArchiveFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Periodic/repeat icon (circular arrow) for recurring conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PeriodicIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Periodic filled icon for active periodic state
+ * Shows a filled circular badge with contrasting white arrows inside
+ * Creates an "inverted" look compared to the outline PeriodicIcon
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PeriodicFilledIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" viewBox="0 0 24 24">
+      <!-- Filled circle background using currentColor (will be blue/colored) -->
+      <circle cx="12" cy="12" r="11" fill="currentColor" />
+      <!-- Refresh/sync arrows in white for contrast against colored circle -->
+      <g fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <!-- Top-right arrow pointing down-left (refresh from top) -->
+        <path d="M16.5 8.5A5 5 0 0 0 8 8" />
+        <polyline points="17 5 17 9 13 9" />
+        <!-- Bottom-left arrow pointing up-right (refresh from bottom) -->
+        <path d="M7.5 15.5A5 5 0 0 0 16 16" />
+        <polyline points="7 19 7 15 11 15" />
+      </g>
+    </svg>
+  `;
+}
+
+/**
  * List/no-grouping icon (horizontal lines)
  * @param {string} className - CSS classes (default: 'w-5 h-5')
  */
@@ -661,6 +707,69 @@ export function ChevronRightIcon({ className = "w-4 h-4" }) {
         stroke-width="2"
         d="M9 5l7 7-7 7"
       />
+    </svg>
+  `;
+}
+
+// Lock icon (closed padlock) - for locked periodic prompt state
+export function LockIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <!-- Closed padlock: shackle is closed (connected to body) -->
+      <rect
+        x="5"
+        y="11"
+        width="14"
+        height="10"
+        rx="2"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M8 11V7a4 4 0 018 0v4"
+      />
+      <circle cx="12" cy="16" r="1" fill="currentColor" />
+    </svg>
+  `;
+}
+
+// Unlock icon (open padlock) - for unlocked periodic prompt state
+export function UnlockIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <!-- Open padlock: shackle is open (right side lifted up) -->
+      <rect
+        x="5"
+        y="11"
+        width="14"
+        height="10"
+        rx="2"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <!-- Open shackle: left side goes down to body, right side is lifted -->
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M8 11V7a4 4 0 017.5-2"
+      />
+      <circle cx="12" cy="16" r="1" fill="currentColor" />
     </svg>
   `;
 }
