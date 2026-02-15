@@ -27,6 +27,7 @@ topic.
 | 📋 **Overview**      | [overview.md](overview.md)           | File locations, formats, complete examples    |
 | ⚡ **Prompts**       | [prompts.md](prompts.md)             | Quick actions and predefined prompts          |
 | 💬 **Conversations** | [conversations.md](conversations.md) | Message processors (prepend/append)           |
+| 📝 **User Data**     | [user-data.md](user-data.md)         | Custom metadata for conversations             |
 | 🔗 **Hooks**         | [hooks.md](hooks.md)                 | External command-based message transformation |
 
 ## Quick Reference
@@ -46,6 +47,7 @@ topic.
 | Global prompts      | [Prompts](prompts.md)             | Global Prompts Directory       |
 | Project prompts     | [Workspace](web/workspace.md)     | Prompts                        |
 | System prompts      | [Conversations](conversations.md) | System Prompt on First Message |
+| User data schema    | [User Data](user-data.md)         | Schema, Types, Validation      |
 | External hooks      | [Hooks](hooks.md)                 | Hook Configuration Schema      |
 
 ## Configuration File Locations

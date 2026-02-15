@@ -195,6 +195,7 @@ Result sent to ACP server (original message recorded in history)
 
 ## Related Documentation
 
+- [User Data](user-data.md) - Custom metadata for conversations
 - [Workspace Configuration](web/workspace.md) - Project-specific `.mittorc` files
 - [Configuration Overview](overview.md) - Global configuration options
 - [Message Hooks](hooks.md) - External command-based hooks
