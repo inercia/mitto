@@ -151,15 +151,74 @@ func AnalyzeFollowUpQuestions(ctx context.Context, userPrompt, agentMessage stri
 
 	prompt := fmt.Sprintf(AnalyzeFollowUpQuestionsPromptTemplate, truncatedUserPrompt, truncatedAgentMsg)
 
+	// Log the request being sent to auxiliary session
+	if manager.logger != nil {
+		manager.logger.Debug("auxiliary follow-up analysis: sending request",
+			"session_id", manager.sessionID,
+			"user_prompt_length", len(truncatedUserPrompt),
+			"agent_message_length", len(truncatedAgentMsg),
+			"user_prompt_preview", truncateForLog(truncatedUserPrompt, 100),
+			"agent_message_preview", truncateForLog(truncatedAgentMsg, 200),
+		)
+	}
+
 	response, err := manager.Prompt(ctx, prompt)
 	if err != nil {
+		if manager.logger != nil {
+			manager.logger.Debug("auxiliary follow-up analysis: request failed",
+				"session_id", manager.sessionID,
+				"error", err.Error(),
+			)
+		}
 		return nil, fmt.Errorf("failed to analyze follow-up questions: %w", err)
+	}
+
+	// Log the raw response from auxiliary session
+	if manager.logger != nil {
+		manager.logger.Debug("auxiliary follow-up analysis: received response",
+			"session_id", manager.sessionID,
+			"response_length", len(response),
+			"response", truncateForLog(response, 500),
+		)
 	}
 
 	// Parse JSON response - returns empty slice if parsing fails (not an error)
 	suggestions := parseFollowUpSuggestions(response)
 
+	// Log the parsing result
+	if manager.logger != nil {
+		if len(suggestions) == 0 {
+			manager.logger.Debug("auxiliary follow-up analysis: no suggestions found",
+				"session_id", manager.sessionID,
+				"raw_response", truncateForLog(response, 300),
+			)
+		} else {
+			// Log each suggestion for debugging
+			labels := make([]string, len(suggestions))
+			for i, s := range suggestions {
+				labels[i] = s.Label
+			}
+			manager.logger.Debug("auxiliary follow-up analysis: parsed suggestions",
+				"session_id", manager.sessionID,
+				"suggestion_count", len(suggestions),
+				"labels", labels,
+			)
+		}
+	}
+
 	return suggestions, nil
+}
+
+// truncateForLog truncates a string to maxLen characters for logging,
+// appending "..." if truncated.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen < 4 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // parseFollowUpSuggestions parses the JSON response from the auxiliary conversation.

@@ -235,3 +235,64 @@ func TestValidateSuggestions_Truncation(t *testing.T) {
 		t.Errorf("Value should end with '...', got %q", result[0].Value[997:])
 	}
 }
+
+func TestTruncateForLog(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{
+			name:   "short string unchanged",
+			input:  "hello",
+			maxLen: 10,
+			want:   "hello",
+		},
+		{
+			name:   "exact length unchanged",
+			input:  "hello",
+			maxLen: 5,
+			want:   "hello",
+		},
+		{
+			name:   "long string truncated",
+			input:  "hello world",
+			maxLen: 8,
+			want:   "hello...",
+		},
+		{
+			name:   "very short maxLen",
+			input:  "hello",
+			maxLen: 3,
+			want:   "hel",
+		},
+		{
+			name:   "maxLen of 4",
+			input:  "hello world",
+			maxLen: 4,
+			want:   "h...",
+		},
+		{
+			name:   "empty string",
+			input:  "",
+			maxLen: 10,
+			want:   "",
+		},
+		{
+			name:   "realistic log preview",
+			input:  "This is a long agent response that needs to be truncated for logging",
+			maxLen: 30,
+			want:   "This is a long agent respon...",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateForLog(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncateForLog(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
+	}
+}
