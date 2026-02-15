@@ -879,7 +879,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 				for i := 0; i < tt.persistedCount; i++ {
 					rec.RecordAgentMessage("<p>test</p>")
 				}
-				_ = rec.End("test complete")
+				_ = rec.End(session.SessionEndData{Reason: "test complete"})
 			}
 
 			// Create mock background session
@@ -934,7 +934,7 @@ func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
 	for i := 0; i < 25; i++ {
 		rec.RecordAgentMessage("<p>test</p>")
 	}
-	_ = rec.End("test complete")
+	_ = rec.End(session.SessionEndData{Reason: "test complete"})
 
 	// Create client without background session
 	client := &SessionWSClient{

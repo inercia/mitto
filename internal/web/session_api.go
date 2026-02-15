@@ -134,6 +134,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSONCreated(w, sessionData)
 }
 
+// SessionListResponse extends session.Metadata with additional runtime fields.
+type SessionListResponse struct {
+	session.Metadata
+	// PeriodicEnabled is true when a periodic config exists for this session.
+	// This determines UI mode (shows frequency panel and lock/unlock buttons).
+	// Note: This indicates config existence, not whether periodic runs are active.
+	PeriodicEnabled bool `json:"periodic_enabled"`
+}
+
 // handleListSessions handles GET /api/sessions
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	// Use the server's session store (owned by the server, not closed by this handler)
@@ -157,7 +166,23 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
-	writeJSONOK(w, sessions)
+	// Build response with periodic_enabled status
+	response := make([]SessionListResponse, len(sessions))
+	for i, meta := range sessions {
+		response[i] = SessionListResponse{
+			Metadata:        meta,
+			PeriodicEnabled: false, // Default to false
+		}
+		// Check if a periodic config exists for this session
+		// PeriodicEnabled = true means UI shows periodic mode (frequency panel, lock/unlock buttons)
+		periodicStore := store.Periodic(meta.SessionID)
+		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
+			// Periodic config exists - session is in periodic mode
+			response[i].PeriodicEnabled = true
+		}
+	}
+
+	writeJSONOK(w, response)
 }
 
 // handleSessionDetail handles GET, PATCH, DELETE {prefix}/api/sessions/{id}, GET {prefix}/api/sessions/{id}/events,
@@ -187,6 +212,8 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isImagesRequest := len(parts) > 1 && parts[1] == "images"
 	isFilesRequest := len(parts) > 1 && parts[1] == "files"
 	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
+	isUserDataRequest := len(parts) > 1 && parts[1] == "user-data"
+	isPeriodicRequest := len(parts) > 1 && parts[1] == "periodic"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
@@ -224,6 +251,18 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			queuePath = "/" + parts[2]
 		}
 		s.handleSessionQueue(w, r, sessionID, queuePath)
+		return
+	}
+
+	// Handle user data operations
+	if isUserDataRequest {
+		s.handleSessionUserData(w, r, sessionID)
+		return
+	}
+
+	// Handle periodic prompt operations
+	if isPeriodicRequest {
+		s.handleSessionPeriodic(w, r, sessionID)
 		return
 	}
 

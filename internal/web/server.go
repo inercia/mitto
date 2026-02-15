@@ -147,6 +147,9 @@ type Server struct {
 	// Queue title worker for generating titles for queued messages
 	queueTitleWorker *QueueTitleWorker
 
+	// Periodic runner for scheduled prompt delivery
+	periodicRunner *PeriodicRunner
+
 	// Access logger for security-relevant events (nil if disabled)
 	accessLogger *AccessLogger
 
@@ -373,6 +376,11 @@ func NewServer(config Config) (*Server, error) {
 		})
 	}
 
+	// Initialize periodic runner for scheduled prompt delivery
+	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
+	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
+	s.periodicRunner.Start()
+
 	// Set up routes
 	mux := http.NewServeMux()
 
@@ -392,6 +400,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/sessions/", s.handleSessionDetail)
 	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
+	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
 	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
@@ -542,6 +551,11 @@ func (s *Server) Shutdown() error {
 	// Close queue title worker
 	if s.queueTitleWorker != nil {
 		s.queueTitleWorker.Close()
+	}
+
+	// Stop periodic runner
+	if s.periodicRunner != nil {
+		s.periodicRunner.Stop()
 	}
 
 	// Close access logger
@@ -704,6 +718,49 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	}
 }
 
+// BroadcastPeriodicUpdated notifies all connected clients that a session's periodic state changed.
+// This includes the full periodic config so clients can update their frequency panels.
+//
+// The broadcast includes:
+// - periodic_configured: true if a periodic config exists (controls UI mode)
+// - periodic_enabled: true if periodic runs are active (controls lock state)
+func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
+	data := map[string]interface{}{
+		"session_id": sessionID,
+	}
+
+	if periodic != nil {
+		// periodic_configured: true means the session is in periodic mode (shows periodic UI)
+		data["periodic_configured"] = true
+		// periodic_enabled: true means periodic runs are active (locked state)
+		data["periodic_enabled"] = periodic.Enabled
+		data["frequency"] = map[string]interface{}{
+			"value": periodic.Frequency.Value,
+			"unit":  periodic.Frequency.Unit,
+		}
+		if periodic.Frequency.At != "" {
+			data["frequency"].(map[string]interface{})["at"] = periodic.Frequency.At
+		}
+		if periodic.NextScheduledAt != nil && !periodic.NextScheduledAt.IsZero() {
+			data["next_scheduled_at"] = periodic.NextScheduledAt.Format(time.RFC3339)
+		}
+	} else {
+		// No periodic config - session is not in periodic mode
+		data["periodic_configured"] = false
+		data["periodic_enabled"] = false
+	}
+
+	s.eventsManager.Broadcast(WSMsgTypePeriodicUpdated, data)
+
+	if s.logger != nil {
+		configured := periodic != nil
+		enabled := periodic != nil && periodic.Enabled
+		s.logger.Debug("Broadcast periodic updated", "session_id", sessionID,
+			"periodic_configured", configured, "periodic_enabled", enabled,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
 // BroadcastSessionStreaming notifies all connected clients that a session's streaming state changed.
 // This is called when a session starts (user sends a prompt) or stops streaming (agent completes).
 func (s *Server) BroadcastSessionStreaming(sessionID string, isStreaming bool) {
@@ -752,6 +809,20 @@ func (s *Server) BroadcastACPStartFailed(sessionID, errorMsg string) {
 
 	if s.logger != nil {
 		s.logger.Warn("Broadcast ACP start failed", "session_id", sessionID, "error", errorMsg,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastPeriodicStarted notifies all connected clients that a periodic prompt was delivered.
+// This allows the frontend to show a toast notification and native OS notification.
+func (s *Server) BroadcastPeriodicStarted(sessionID, sessionName string) {
+	s.eventsManager.Broadcast(WSMsgTypePeriodicStarted, map[string]string{
+		"session_id":   sessionID,
+		"session_name": sessionName,
+	})
+
+	if s.logger != nil {
+		s.logger.Info("Broadcast periodic started", "session_id", sessionID, "session_name", sessionName,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

@@ -167,6 +167,12 @@ func (w *cspNonceResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, io.ErrUnexpectedEOF
 }
 
+// Unwrap returns the underlying ResponseWriter for interface detection.
+// This is required for proper compatibility with http.TimeoutHandler and other middleware.
+func (w *cspNonceResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // cspNonceMiddlewareOptions contains options for the CSP nonce middleware.
 type cspNonceMiddlewareOptions struct {
 	config    SecurityConfig

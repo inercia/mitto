@@ -231,6 +231,19 @@ func (w *accessLogResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) 
 	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
 }
 
+// Flush implements http.Flusher to support streaming responses.
+func (w *accessLogResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Unwrap returns the underlying ResponseWriter for interface detection.
+// This is required for proper compatibility with http.TimeoutHandler and other middleware.
+func (w *accessLogResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // Middleware returns an HTTP middleware that logs security-relevant access events.
 // Only external connections and security-relevant paths are logged.
 func (a *AccessLogger) Middleware(next http.Handler) http.Handler {

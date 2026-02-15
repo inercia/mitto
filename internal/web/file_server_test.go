@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
@@ -546,9 +547,15 @@ func TestFileServer_MarkdownRenderingSecurityHeaders(t *testing.T) {
 		t.Error("Expected X-Content-Type-Options: nosniff")
 	}
 
-	csp := w.Header().Get("Content-Security-Policy")
-	if csp == "" {
-		t.Error("Expected Content-Security-Policy header to be set")
+	// Note: Content-Security-Policy is set by cspNonceMiddleware, not the handler.
+	// When the handler is wrapped by the middleware in the actual server, CSP will be set
+	// with a nonce for the inline script in the rendered markdown.
+	// Here we just verify the handler doesn't error without the middleware.
+
+	// Verify the HTML contains the nonce placeholder (will be replaced by middleware)
+	body := w.Body.String()
+	if !strings.Contains(body, "{{CSP_NONCE}}") {
+		t.Error("Expected rendered HTML to contain {{CSP_NONCE}} placeholder for middleware injection")
 	}
 }
 
