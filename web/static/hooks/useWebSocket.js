@@ -174,6 +174,10 @@ export function useWebSocket() {
   // { sessionId, sessionName, timestamp }
   const [backgroundCompletion, setBackgroundCompletion] = useState(null);
 
+  // Track periodic session starts for toast notifications
+  // { sessionId, sessionName, timestamp }
+  const [periodicStarted, setPeriodicStarted] = useState(null);
+
   // Queue length for the active session
   const [queueLength, setQueueLength] = useState(0);
 
@@ -192,6 +196,11 @@ export function useWebSocket() {
   // Available slash commands for the active session (from ACP agent)
   // Array of { name: string, description: string, input_hint?: string }
   const [availableCommands, setAvailableCommands] = useState([]);
+
+  // Session config options from the ACP agent (unified format for modes and other settings)
+  // Array of { id: string, name: string, description?: string, category?: string, type: string, current_value: string, options: [] }
+  // See https://agentclientprotocol.com/protocol/session-config-options
+  const [configOptions, setConfigOptions] = useState([]);
 
   const eventsWsRef = useRef(null);
   const reconnectRef = useRef(null);
@@ -766,6 +775,15 @@ export function useWebSocket() {
           setAvailableCommands(msg.data.available_commands);
         }
 
+        // Update session config options from agent
+        // This is the unified format that includes modes and other settings
+        if (msg.data.config_options) {
+          setConfigOptions(msg.data.config_options);
+        } else {
+          // Clear config options if not provided
+          setConfigOptions([]);
+        }
+
         // Store last confirmed prompt info for delivery verification on reconnect
         // This helps verify if a pending prompt was actually delivered when
         // reconnecting after a zombie WebSocket timeout
@@ -805,6 +823,9 @@ export function useWebSocket() {
                   msg.data.runner_restricted ?? session.info?.runner_restricted,
                 // Preserve archived flag from existing session info (set by switchSession)
                 archived: session.info?.archived || false,
+                // Periodic enabled state from server
+                periodic_enabled:
+                  msg.data.periodic_enabled ?? session.info?.periodic_enabled ?? false,
               },
               isStreaming: msg.data.is_prompting || false,
             },
@@ -2020,18 +2041,29 @@ export function useWebSocket() {
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
+
+          // For archived sessions, show a neutral system message
+          // For other stop reasons (errors, crashes), show an error message
+          const reason = msg.data?.reason || "unknown reason";
+          const isArchived =
+            reason === "archived" || reason === "archived_timeout";
+          const messageRole = isArchived ? "system" : "error";
+          const messageText = isArchived
+            ? "Session archived. Unarchive to continue."
+            : `Session stopped: ${reason}. Unarchive to continue.`;
+
           return {
             ...prev,
             [sessionId]: {
               ...session,
               isRunning: false,
               isStreaming: false,
-              // Add a system message to inform the user
+              // Add a system/error message to inform the user
               messages: [
                 ...session.messages,
                 {
-                  role: "error",
-                  text: `Session stopped: ${msg.data?.reason || "unknown reason"}. Unarchive to continue.`,
+                  role: messageRole,
+                  text: messageText,
                   timestamp: Date.now(),
                 },
               ],
@@ -2092,6 +2124,23 @@ export function useWebSocket() {
             `Available commands updated: ${msg.data.commands.length} commands`,
           );
           setAvailableCommands(msg.data.commands);
+        }
+        break;
+
+      case "config_option_changed":
+        // Config option changed (by user or agent)
+        // Update the current_value for the specified config option
+        if (msg.data?.config_id && msg.data?.value) {
+          console.log(
+            `Config option changed: ${msg.data.config_id} = ${msg.data.value}`,
+          );
+          setConfigOptions((prev) =>
+            prev.map((opt) =>
+              opt.id === msg.data.config_id
+                ? { ...opt, current_value: msg.data.value }
+                : opt,
+            ),
+          );
         }
         break;
     }
@@ -2590,6 +2639,72 @@ export function useWebSocket() {
         });
         break;
 
+      case "periodic_updated":
+        // Update session periodic state
+        // This is broadcast when any session's periodic state changes
+        //
+        // Two separate concepts:
+        // - periodic_configured: true if periodic config exists (determines UI mode - shows frequency panel)
+        // - periodic_enabled: true if periodic runs are active (determines lock state)
+        //
+        // Also includes frequency and next_scheduled_at for cross-client sync
+        console.log(
+          `[global] Session periodic state changed: ${msg.data.session_id} -> configured=${msg.data.periodic_configured}, enabled=${msg.data.periodic_enabled}`,
+        );
+        // Update in stored sessions (for sidebar display - uses periodic_configured for UI)
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, periodic_enabled: msg.data.periodic_configured }
+              : s,
+          ),
+        );
+        // Also update in active sessions
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              info: {
+                ...session.info,
+                // Use periodic_configured for UI mode (shows frequency panel, lock/unlock buttons)
+                periodic_enabled: msg.data.periodic_configured,
+              },
+            },
+          };
+        });
+        // Dispatch custom event for ChatInput to handle frequency and lock state updates
+        // This allows the frequency panel to update in real-time when another client changes it
+        window.dispatchEvent(
+          new CustomEvent("mitto:periodic_config_updated", {
+            detail: {
+              sessionId: msg.data.session_id,
+              // periodicConfigured controls UI mode
+              periodicConfigured: msg.data.periodic_configured,
+              // periodicEnabled controls lock state (whether runs are active)
+              periodicEnabled: msg.data.periodic_enabled,
+              frequency: msg.data.frequency,
+              nextScheduledAt: msg.data.next_scheduled_at,
+            },
+          }),
+        );
+        break;
+
+      case "periodic_started":
+        // A periodic prompt was delivered to a session
+        // Show toast notification and trigger native notification if enabled
+        console.log(
+          `[global] Periodic started: ${msg.data.session_id} (${msg.data.session_name})`,
+        );
+        setPeriodicStarted({
+          sessionId: msg.data.session_id,
+          sessionName: msg.data.session_name,
+          timestamp: Date.now(),
+        });
+        break;
+
       case "session_deleted": {
         const deletedId = msg.data.session_id;
         setStoredSessions((prev) =>
@@ -2627,6 +2742,33 @@ export function useWebSocket() {
         delete sessionReconnectAttemptsRef.current[deletedId];
         break;
       }
+
+      case "acp_started":
+        // Server notifies that the ACP connection for a session was started
+        // This is broadcast to all clients after unarchiving a session
+        console.log("ACP started for session:", msg.data?.session_id);
+        // Update session state to allow prompts
+        setSessions((prev) => {
+          const session = prev[msg.data?.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              isRunning: true,
+              // Add a system message to inform the user
+              messages: [
+                ...session.messages,
+                {
+                  role: "system",
+                  text: "Session resumed. You can continue the conversation.",
+                  timestamp: Date.now(),
+                },
+              ],
+            },
+          };
+        });
+        break;
 
       case "acp_start_failed":
         // Server notifies that the ACP server failed to start
@@ -3267,6 +3409,20 @@ export function useWebSocket() {
     sendToSession(activeSessionId, { type: "force_reset" });
   }, [activeSessionId, sendToSession]);
 
+  // Change a session config option value
+  // For mode changes, use configId "mode" with the desired mode value
+  const setConfigOption = useCallback(
+    (configId, value) => {
+      if (!activeSessionId || !configId || !value) return;
+      console.log(`Setting config option: ${configId} = ${value}`);
+      sendToSession(activeSessionId, {
+        type: "set_config_option",
+        data: { config_id: configId, value: value },
+      });
+    },
+    [activeSessionId, sendToSession],
+  );
+
   // Retry pending prompts for a session (called on reconnect or visibility change)
   const retryPendingPrompts = useCallback(
     (sessionId) => {
@@ -3754,6 +3910,11 @@ export function useWebSocket() {
     setBackgroundCompletion(null);
   }, []);
 
+  // Clear periodic started notification
+  const clearPeriodicStarted = useCallback(() => {
+    setPeriodicStarted(null);
+  }, []);
+
   return {
     connected: eventsConnected,
     messages,
@@ -3781,6 +3942,8 @@ export function useWebSocket() {
     fetchStoredSessions,
     backgroundCompletion,
     clearBackgroundCompletion,
+    periodicStarted,
+    clearPeriodicStarted,
     queueLength,
     queueMessages,
     queueConfig,
@@ -3795,5 +3958,7 @@ export function useWebSocket() {
     refreshWorkspaces: fetchWorkspaces,
     forceReconnectActiveSession,
     availableCommands,
+    configOptions,
+    setConfigOption,
   };
 }

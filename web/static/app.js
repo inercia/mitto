@@ -23,6 +23,7 @@ import {
   computeAllSessions,
   convertEventsToMessages,
   coalesceAgentMessages,
+  COALESCE_DEFAULTS,
   safeJsonParse,
   limitMessages,
   getWorkspaceVisualInfo,
@@ -82,6 +83,8 @@ import {
   AgentPlanPanel,
   AgentPlanIndicator,
 } from "./components/AgentPlanPanel.js";
+import { ConversationPropertiesPanel } from "./components/ConversationPropertiesPanel.js";
+import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
 import {
   SpinnerIcon,
   CloseIcon,
@@ -107,10 +110,12 @@ import {
   ArchiveIcon,
   ArchiveFilledIcon,
   ListIcon,
+  PeriodicIcon,
+  PeriodicFilledIcon,
 } from "./components/Icons.js";
 
 // Import constants
-import { KEYBOARD_SHORTCUTS } from "./constants.js";
+import { KEYBOARD_SHORTCUTS, CYCLING_MODE } from "./constants.js";
 
 // =============================================================================
 // File Link Helpers
@@ -401,125 +406,8 @@ function WorkspacePill({
   `;
 }
 
-// =============================================================================
-// Session Properties Dialog Component
-// =============================================================================
-
-function SessionPropertiesDialog({
-  isOpen,
-  session,
-  onSave,
-  onCancel,
-  workspaces = [],
-}) {
-  const [name, setName] = useState("");
-  const inputRef = useRef(null);
-
-  const sessionName = session?.name || session?.description || "Untitled";
-  const workingDir = session?.working_dir || session?.info?.working_dir || "";
-  const acpServer = session?.acp_server || session?.info?.acp_server || "";
-  // Look up workspace for customization
-  const workspace = workspaces.find((ws) => ws.working_dir === workingDir);
-
-  useEffect(() => {
-    if (isOpen) {
-      setName(sessionName);
-      setTimeout(() => inputRef.current?.focus(), 100);
-    }
-  }, [isOpen, sessionName]);
-
-  if (!isOpen) return null;
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    onSave(name.trim() || "Untitled");
-  };
-
-  return html`
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick=${onCancel}
-    >
-      <div
-        class="bg-mitto-sidebar rounded-xl p-6 w-96 shadow-2xl"
-        onClick=${(e) => e.stopPropagation()}
-      >
-        <h3 class="text-lg font-semibold mb-4">Session Properties</h3>
-        <form onSubmit=${handleSubmit}>
-          <!-- Session Name (editable) -->
-          <div class="mb-4">
-            <label class="block text-sm text-gray-400 mb-1">Name</label>
-            <input
-              ref=${inputRef}
-              type="text"
-              value=${name}
-              onInput=${(e) => setName(e.target.value)}
-              class="w-full bg-slate-800 text-white rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Session name"
-            />
-          </div>
-
-          <!-- Workspace Info (read-only) -->
-          ${(workingDir || acpServer) &&
-          html`
-            <div
-              class="mb-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700"
-            >
-              <div class="text-xs text-gray-500 uppercase tracking-wide mb-3">
-                Workspace
-              </div>
-              ${workingDir &&
-              html`
-                <${WorkspaceBadge}
-                  path=${workingDir}
-                  customColor=${workspace?.color}
-                  customCode=${workspace?.code}
-                  customName=${workspace?.name}
-                  size="md"
-                  showPath=${true}
-                  className="mb-3"
-                />
-              `}
-              ${acpServer &&
-              html`
-                <div
-                  class="flex items-center gap-2 ${workingDir
-                    ? "ml-13 pl-0.5"
-                    : ""}"
-                >
-                  <${ServerIcon}
-                    className="w-4 h-4 text-gray-400 flex-shrink-0"
-                  />
-                  <span
-                    class="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs"
-                  >
-                    ${acpServer}
-                  </span>
-                </div>
-              `}
-            </div>
-          `}
-
-          <div class="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick=${onCancel}
-              class="px-4 py-2 rounded-lg hover:bg-slate-700 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
-            >
-              Save
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  `;
-}
+// NOTE: SessionPropertiesDialog has been removed.
+// Session properties are now edited via the ConversationPropertiesPanel (right sidebar).
 
 // =============================================================================
 // Delete Confirmation Dialog
@@ -993,6 +881,7 @@ function SessionItem({
   badgeClickEnabled = false,
   onBadgeClick,
   hasQueuedMessages = false,
+  isSessionStreaming = false,
 }) {
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
@@ -1000,8 +889,72 @@ function SessionItem({
   // Check if session is archived
   const isArchived = session.archived || false;
 
-  // Archive button should be disabled if there are queued messages (can't archive with pending messages)
-  const canArchive = !hasQueuedMessages;
+  // Check if periodic is enabled for this session
+  const isPeriodicEnabled = session.periodic_enabled || false;
+
+  // Archive button should be disabled if:
+  // 1. There are queued messages (can't archive with pending messages)
+  // 2. The session is streaming (agent is responding - archiving would block for up to 5 minutes)
+  const canArchive = !hasQueuedMessages && !isSessionStreaming;
+
+  // Get the reason why archiving is blocked (for tooltip)
+  const archiveBlockedReason = hasQueuedMessages
+    ? "Clear queue before archiving"
+    : isSessionStreaming
+      ? "Wait for response to complete"
+      : null;
+
+  // Toggle periodic prompt enabled/disabled
+  const handleTogglePeriodic = useCallback(
+    async (e) => {
+      if (e) e.stopPropagation();
+      try {
+        // Get current periodic config first
+        const getResponse = await secureFetch(
+          apiUrl(`/api/sessions/${session.session_id}/periodic`),
+        );
+        if (getResponse.status === 404) {
+          // No periodic configured - create one with enabled=false (unlocked/paused)
+          // User will configure prompt in the textarea and lock it to enable periodic runs
+          // Default to 1 hour - frequent enough to be useful, but not overwhelming
+          const createResponse = await secureFetch(
+            apiUrl(`/api/sessions/${session.session_id}/periodic`),
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                prompt: "(pending)", // Placeholder - user must set via lock button
+                frequency: { value: 1, unit: "hours" },
+                enabled: false, // Start unlocked - user must lock to enable periodic runs
+              }),
+            },
+          );
+          if (!createResponse.ok) {
+            console.error("Failed to create periodic config");
+          }
+          // Server broadcasts the update
+          return;
+        }
+        if (!getResponse.ok) {
+          console.error("Failed to get periodic config");
+          return;
+        }
+        // Periodic config exists - DELETE to convert back to regular conversation
+        // This removes periodic entirely (regardless of locked/unlocked state)
+        const response = await secureFetch(
+          apiUrl(`/api/sessions/${session.session_id}/periodic`),
+          { method: "DELETE" },
+        );
+        if (!response.ok) {
+          console.error("Failed to delete periodic config");
+        }
+        // Server broadcasts the update, no need to update local state
+      } catch (err) {
+        console.error("Failed to toggle periodic:", err);
+      }
+    },
+    [session.session_id],
+  );
 
   // Get working_dir from session, or fall back to global map
   const workingDir =
@@ -1123,7 +1076,7 @@ function SessionItem({
   const contextMenuItems = [
     {
       label: !canArchive
-        ? "Clear queue to archive"
+        ? archiveBlockedReason
         : isArchived
           ? "Unarchive"
           : "Archive",
@@ -1134,10 +1087,22 @@ function SessionItem({
       disabled: !canArchive,
     },
     {
-      label: "Rename",
+      label: "Properties",
       icon: html`<${EditIcon} />`,
       onClick: () => handleRename(),
     },
+    // Hide periodic option for archived sessions
+    ...(isArchived
+      ? []
+      : [
+          {
+            label: isPeriodicEnabled ? "Disable Periodic" : "Enable Periodic",
+            icon: isPeriodicEnabled
+              ? html`<${PeriodicFilledIcon} />`
+              : html`<${PeriodicIcon} />`,
+            onClick: () => handleTogglePeriodic(),
+          },
+        ]),
     {
       label: "Delete",
       icon: html`<${TrashIcon} />`,
@@ -1278,7 +1243,7 @@ function SessionItem({
                   ? "hover:bg-slate-600 text-gray-500"
                   : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
               title="${!canArchive
-                ? "Clear queue before archiving"
+                ? archiveBlockedReason
                 : isArchived
                   ? "Unarchive"
                   : "Archive"}"
@@ -1290,10 +1255,26 @@ function SessionItem({
             <button
               onClick=${handleRename}
               class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
-              title="Rename"
+              title="Properties"
             >
               <${EditIcon} className="w-4 h-4" />
             </button>
+            ${!isArchived &&
+            html`<button
+              onClick=${handleTogglePeriodic}
+              class="p-1.5 ${isPeriodicEnabled
+                ? "bg-white hover:bg-gray-100 dark:bg-slate-600 dark:hover:bg-slate-500"
+                : "bg-slate-700 hover:bg-slate-600"} rounded transition-colors ${isPeriodicEnabled
+                ? "text-blue-600 dark:text-blue-400"
+                : "text-gray-300 hover:text-white"}"
+              title="${isPeriodicEnabled
+                ? "Periodic enabled - click to disable"
+                : "Periodic disabled - click to enable"}"
+            >
+              ${isPeriodicEnabled
+                ? html`<${PeriodicFilledIcon} className="w-4 h-4" />`
+                : html`<${PeriodicIcon} className="w-4 h-4" />`}
+            </button>`}
             <button
               onClick=${handleDelete}
               class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
@@ -1494,6 +1475,8 @@ function SessionList({
     // Only the active session can have queued messages
     const hasQueuedMessages =
       session.session_id === activeSessionId && queueLength > 0;
+    // Check if the session is currently streaming (agent is responding)
+    const isSessionStreaming = session.isStreaming || false;
 
     return html`
       <${SessionItem}
@@ -1510,6 +1493,7 @@ function SessionList({
         badgeClickEnabled=${badgeClickEnabled}
         onBadgeClick=${onBadgeClick}
         hasQueuedMessages=${hasQueuedMessages}
+        isSessionStreaming=${isSessionStreaming}
       />
     `;
   };
@@ -1817,6 +1801,8 @@ function App() {
     fetchStoredSessions,
     backgroundCompletion,
     clearBackgroundCompletion,
+    periodicStarted,
+    clearPeriodicStarted,
     queueLength,
     queueMessages,
     queueConfig,
@@ -1831,9 +1817,12 @@ function App() {
     refreshWorkspaces,
     forceReconnectActiveSession,
     availableCommands,
+    configOptions,
+    setConfigOption,
   } = useWebSocket();
 
   const [showSidebar, setShowSidebar] = useState(false);
+  const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
   const [showQueueDropdown, setShowQueueDropdown] = useState(false);
   const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
   const [isMovingQueueMessage, setIsMovingQueueMessage] = useState(false);
@@ -1866,14 +1855,15 @@ function App() {
   // headers, horizontal rules, etc.), creating separate events. This is correct for
   // tracking and sync, but creates a poor visual experience where each flush appears
   // as a separate message bubble. This combines them for rendering.
+  //
+  // EXPERIMENT: hrBreaksCoalescing - when enabled, <hr/> elements break coalescing,
+  // creating visual separation between sections. See COALESCE_DEFAULTS in lib.js.
   const displayMessages = useMemo(() => {
-    return coalesceAgentMessages(messages);
+    return coalesceAgentMessages(messages, {
+      hrBreaksCoalescing: COALESCE_DEFAULTS.hrBreaksCoalescing,
+    });
   }, [messages]);
 
-  const [renameDialog, setRenameDialog] = useState({
-    isOpen: false,
-    session: null,
-  });
   const [deleteDialog, setDeleteDialog] = useState({
     isOpen: false,
     session: null,
@@ -1901,6 +1891,8 @@ function App() {
   const [swipeArrow, setSwipeArrow] = useState(null); // 'left' or 'right' for arrow indicator
   const [toastVisible, setToastVisible] = useState(false);
   const [toastData, setToastData] = useState(null); // { sessionId, sessionName }
+  const [periodicToastVisible, setPeriodicToastVisible] = useState(false);
+  const [periodicToastData, setPeriodicToastData] = useState(null); // { sessionId, sessionName }
   const [runnerFallbackWarning, setRunnerFallbackWarning] = useState(null); // { requestedType, fallbackType, reason }
   const [acpStartFailedError, setAcpStartFailedError] = useState(null); // { session_id, error }
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
@@ -2075,6 +2067,54 @@ function App() {
     }
   }, [toastVisible, toastData]);
 
+  // Ref to track periodic toast hide timer
+  const periodicToastTimerRef = useRef(null);
+
+  // Show toast and native notification when a periodic prompt starts
+  useEffect(() => {
+    if (periodicStarted) {
+      // Clear any existing timer
+      if (periodicToastTimerRef.current) {
+        clearTimeout(periodicToastTimerRef.current);
+      }
+
+      // Check if native notifications are enabled (macOS app only)
+      const useNativeNotification =
+        window.mittoNativeNotificationsEnabled &&
+        typeof window.mittoShowNativeNotification === "function";
+
+      if (useNativeNotification) {
+        // Show native macOS notification
+        window.mittoShowNativeNotification(
+          periodicStarted.sessionName || "Periodic Conversation",
+          "Periodic run started",
+          periodicStarted.sessionId,
+        );
+      }
+
+      // Always show in-app toast (in addition to native notification if enabled)
+      setPeriodicToastData(periodicStarted);
+      setPeriodicToastVisible(true);
+      clearPeriodicStarted();
+
+      // Set timer to hide toast after 5 seconds
+      periodicToastTimerRef.current = setTimeout(() => {
+        setPeriodicToastVisible(false);
+        periodicToastTimerRef.current = null;
+      }, 5000);
+    }
+  }, [periodicStarted, clearPeriodicStarted]);
+
+  // Clear periodic toast data after exit animation completes
+  useEffect(() => {
+    if (!periodicToastVisible && periodicToastData) {
+      const clearTimer = setTimeout(() => {
+        setPeriodicToastData(null);
+      }, 200);
+      return () => clearTimeout(clearTimer);
+    }
+  }, [periodicToastVisible, periodicToastData]);
+
   // Listen for runner fallback events
   useEffect(() => {
     const handleRunnerFallback = (event) => {
@@ -2114,11 +2154,14 @@ function App() {
     };
   }, []);
 
-  // Cleanup timer on unmount
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
+      }
+      if (periodicToastTimerRef.current) {
+        clearTimeout(periodicToastTimerRef.current);
       }
     };
   }, []);
@@ -2185,35 +2228,106 @@ function App() {
     debounceMs: 500, // Prevent rapid-fire loading
   });
 
+  // Conversation cycling mode setting (web UI, default: "all" - cycle through all non-archived)
+  const [conversationCyclingMode, setConversationCyclingMode] = useState(
+    CYCLING_MODE.ALL,
+  );
+
+  // Track expanded groups version for re-computing navigableSessions in "visible_groups" mode
+  // This increments whenever groups are expanded/collapsed or grouping mode changes
+  const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
+
+  // Track grouping mode for navigation (needed for "visible_groups" cycling mode)
+  const [groupingModeForNav, setGroupingModeForNav] = useState(() =>
+    getGroupingMode(),
+  );
+
   // Sessions available for navigation (excludes archived sessions)
   // Navigation via keyboard shortcuts and swipe gestures should skip archived conversations
+  // In "visible_groups" cycling mode, also skip sessions in collapsed groups
   const navigableSessions = useMemo(() => {
-    return allSessions.filter((s) => !s.archived);
-  }, [allSessions]);
+    // First filter out archived sessions (always)
+    const nonArchived = allSessions.filter((s) => !s.archived);
+
+    // If cycling mode is "all", return all non-archived sessions
+    if (conversationCyclingMode !== CYCLING_MODE.VISIBLE_GROUPS) {
+      return nonArchived;
+    }
+
+    // In "visible_groups" mode, only include sessions that are in expanded groups
+    // If no grouping (mode === "none"), all sessions are visible (no groups to collapse)
+    if (groupingModeForNav === "none") {
+      // Check if "__all__" section is expanded (used when there are archived sessions)
+      // Default to true for "__all__" section
+      if (isGroupExpanded("__all__")) {
+        return nonArchived;
+      }
+      return []; // __all__ section is collapsed, no sessions navigable
+    }
+
+    // Filter sessions based on their group's expanded state
+    return nonArchived.filter((session) => {
+      let groupKey;
+      if (groupingModeForNav === "server") {
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        groupKey = session.acp_server || storedSession?.acp_server || "Unknown";
+      } else {
+        // folder mode
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        const workingDir =
+          session.working_dir ||
+          storedSession?.working_dir ||
+          getGlobalWorkingDir(session.session_id) ||
+          "";
+        groupKey = workingDir || "Unknown";
+      }
+      return isGroupExpanded(groupKey);
+    });
+  }, [
+    allSessions,
+    storedSessions,
+    conversationCyclingMode,
+    groupingModeForNav,
+    expandedGroupsVersion, // Re-compute when groups are toggled
+  ]);
 
   // Navigate to previous/next session with animation direction (wraps around for swipe gestures)
   // Skips archived sessions
   const navigateToPreviousSession = useCallback(() => {
-    if (navigableSessions.length <= 1) return;
+    if (navigableSessions.length === 0) return;
     const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
-    if (currentIndex === -1) return;
+    // If current session is not in navigableSessions (e.g., in a collapsed group),
+    // jump to the last navigable session
     const prevIndex =
-      currentIndex === 0 ? navigableSessions.length - 1 : currentIndex - 1;
+      currentIndex === -1
+        ? navigableSessions.length - 1
+        : currentIndex === 0
+          ? navigableSessions.length - 1
+          : currentIndex - 1;
     setSwipeDirection("right"); // Content slides in from left
     setSwipeArrow("right"); // Show right arrow (user swiped right)
     switchSession(navigableSessions[prevIndex].session_id);
   }, [navigableSessions, activeSessionId, switchSession]);
 
   const navigateToNextSession = useCallback(() => {
-    if (navigableSessions.length <= 1) return;
+    if (navigableSessions.length === 0) return;
     const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
-    if (currentIndex === -1) return;
+    // If current session is not in navigableSessions (e.g., in a collapsed group),
+    // jump to the first navigable session
     const nextIndex =
-      currentIndex === navigableSessions.length - 1 ? 0 : currentIndex + 1;
+      currentIndex === -1
+        ? 0
+        : currentIndex === navigableSessions.length - 1
+          ? 0
+          : currentIndex + 1;
     setSwipeDirection("left"); // Content slides in from right
     setSwipeArrow("left"); // Show left arrow (user swiped left)
     switchSession(navigableSessions[nextIndex].session_id);
@@ -2223,11 +2337,17 @@ function App() {
   // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
   // Skips archived sessions
   const navigateToSessionAbove = useCallback(() => {
-    if (navigableSessions.length <= 1) return;
+    if (navigableSessions.length === 0) return;
     const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
-    if (currentIndex === -1 || currentIndex === 0) return; // Already at top or not found
+    // If current session is not in navigableSessions (e.g., in a collapsed group),
+    // jump to the last navigable session (conceptually "above" since list goes down)
+    if (currentIndex === -1) {
+      switchSession(navigableSessions[navigableSessions.length - 1].session_id);
+      return;
+    }
+    if (currentIndex === 0) return; // Already at top
     switchSession(navigableSessions[currentIndex - 1].session_id);
   }, [navigableSessions, activeSessionId, switchSession]);
 
@@ -2235,12 +2355,17 @@ function App() {
   // Note: No swipe animation - only swipe gestures should trigger horizontal scroll effect
   // Skips archived sessions
   const navigateToSessionBelow = useCallback(() => {
-    if (navigableSessions.length <= 1) return;
+    if (navigableSessions.length === 0) return;
     const currentIndex = navigableSessions.findIndex(
       (s) => s.session_id === activeSessionId,
     );
-    if (currentIndex === -1 || currentIndex === navigableSessions.length - 1)
-      return; // Already at bottom or not found
+    // If current session is not in navigableSessions (e.g., in a collapsed group),
+    // jump to the first navigable session (conceptually "below" since list goes down)
+    if (currentIndex === -1) {
+      switchSession(navigableSessions[0].session_id);
+      return;
+    }
+    if (currentIndex === navigableSessions.length - 1) return; // Already at bottom
     switchSession(navigableSessions[currentIndex + 1].session_id);
   }, [navigableSessions, activeSessionId, switchSession]);
 
@@ -2429,6 +2554,10 @@ function App() {
         if (config?.ui?.web?.input_font_family) {
           setInputFontFamily(config.ui.web.input_font_family);
         }
+        // Load conversation cycling mode setting (web UI, default: "all")
+        if (config?.ui?.web?.conversation_cycling_mode) {
+          setConversationCyclingMode(config.ui.web.conversation_cycling_mode);
+        }
         // Check if ACP servers or workspaces are configured - if not, force open settings
         // Skip this if config is read-only (user manages config via file) or if external connection
         const noAcpServers =
@@ -2445,6 +2574,35 @@ function App() {
         }
       })
       .catch((err) => console.error("Failed to fetch config:", err));
+  }, []);
+
+  // Listen for grouping mode and expanded groups changes for "visible_groups" cycling mode
+  useEffect(() => {
+    const handleExpandedGroupsChanged = () => {
+      setExpandedGroupsVersion((v) => v + 1);
+    };
+    const handleGroupingModeChanged = (e) => {
+      setGroupingModeForNav(e.detail.mode);
+      setExpandedGroupsVersion((v) => v + 1);
+    };
+    window.addEventListener(
+      "mitto-expanded-groups-changed",
+      handleExpandedGroupsChanged,
+    );
+    window.addEventListener(
+      "mitto-grouping-mode-changed",
+      handleGroupingModeChanged,
+    );
+    return () => {
+      window.removeEventListener(
+        "mitto-expanded-groups-changed",
+        handleExpandedGroupsChanged,
+      );
+      window.removeEventListener(
+        "mitto-grouping-mode-changed",
+        handleGroupingModeChanged,
+      );
+    };
   }, []);
 
   // Fetch workspace prompts with conditional request support (If-Modified-Since)
@@ -3501,6 +3659,15 @@ function App() {
     setPlanUserPinned(false);
   }, []);
 
+  // Properties panel handlers
+  const handleTogglePropertiesPanel = useCallback(() => {
+    setShowPropertiesPanel((prev) => !prev);
+  }, []);
+
+  const handleClosePropertiesPanel = useCallback(() => {
+    setShowPropertiesPanel(false);
+  }, []);
+
   // Track user messages for plan expiration - called when user sends a prompt
   const trackUserMessageForPlanExpiration = useCallback(
     (sessionId) => {
@@ -3610,6 +3777,7 @@ function App() {
   const handleSelectSession = (sessionId) => {
     switchSession(sessionId);
     setShowSidebar(false);
+    setShowPropertiesPanel(false);
   };
 
   // Handle badge click action - calls API to execute configured command
@@ -3635,19 +3803,19 @@ function App() {
     [badgeClickEnabled],
   );
 
-  const handleRenameSession = (session) => {
-    setRenameDialog({ isOpen: true, session });
-  };
-
-  const handleSaveRename = (newName) => {
-    const session = renameDialog.session;
-    if (!session) return;
-
-    // Rename via WebSocket - this persists to storage and broadcasts to all clients
-    renameSession(session.session_id, newName);
-
-    setRenameDialog({ isOpen: false, session: null });
-  };
+  // Open the properties panel for a session (used by pencil button in session list)
+  const handleOpenSessionProperties = useCallback(
+    (session) => {
+      // Switch to the session if not already active
+      if (session.session_id !== activeSessionId) {
+        switchSession(session.session_id);
+        setShowSidebar(false);
+      }
+      // Open the properties panel
+      setShowPropertiesPanel(true);
+    },
+    [activeSessionId, switchSession],
+  );
 
   const handleDeleteSession = async (session) => {
     // If confirmation is disabled, delete immediately
@@ -3712,15 +3880,6 @@ function App() {
 
   return html`
     <div class="h-screen-safe flex">
-      <!-- Session Properties Dialog -->
-      <${SessionPropertiesDialog}
-        isOpen=${renameDialog.isOpen}
-        session=${renameDialog.session}
-        onSave=${handleSaveRename}
-        onCancel=${() => setRenameDialog({ isOpen: false, session: null })}
-        workspaces=${workspaces}
-      />
-
       <!-- Delete Dialog -->
       <${DeleteDialog}
         isOpen=${deleteDialog.isOpen}
@@ -3771,6 +3930,10 @@ function App() {
               }
               // Reload input font family setting
               setInputFontFamily(config?.ui?.web?.input_font_family || "system");
+              // Reload conversation cycling mode setting
+              setConversationCyclingMode(
+                config?.ui?.web?.conversation_cycling_mode || CYCLING_MODE.ALL,
+              );
             }
           } catch (err) {
             console.error("Failed to reload config after save:", err);
@@ -3805,6 +3968,31 @@ function App() {
               >${toastData.sessionName}</span
             >
             <span class="text-xs opacity-75">finished</span>
+          </div>
+        </div>
+      `}
+
+      <!-- Periodic started toast -->
+      ${periodicToastData &&
+      html`
+        <div
+          class="fixed top-4 left-1/2 -translate-x-1/2 z-50 ${periodicToastVisible
+            ? "toast-enter"
+            : "toast-exit"}"
+          onClick=${() => {
+            switchSession(periodicToastData.sessionId);
+            setPeriodicToastVisible(false);
+            setTimeout(() => setPeriodicToastData(null), 200);
+          }}
+        >
+          <div
+            class="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-full shadow-lg cursor-pointer hover:bg-indigo-500 transition-colors"
+          >
+            <span class="text-lg">🔄</span>
+            <span class="text-sm font-medium truncate max-w-[200px]"
+              >${periodicToastData.sessionName}</span
+            >
+            <span class="text-xs opacity-75">periodic run started</span>
           </div>
         </div>
       `}
@@ -3897,7 +4085,7 @@ function App() {
           activeSessionId=${activeSessionId}
           onSelect=${handleSelectSession}
           onNewSession=${handleNewSession}
-          onRename=${handleRenameSession}
+          onRename=${handleOpenSessionProperties}
           onDelete=${handleDeleteSession}
           onArchive=${handleArchiveSession}
           workspaces=${workspaces}
@@ -3926,7 +4114,7 @@ function App() {
               activeSessionId=${activeSessionId}
               onSelect=${handleSelectSession}
               onNewSession=${handleNewSession}
-              onRename=${handleRenameSession}
+              onRename=${handleOpenSessionProperties}
               onDelete=${handleDeleteSession}
               onArchive=${handleArchiveSession}
               onClose=${() => setShowSidebar(false)}
@@ -3967,9 +4155,11 @@ function App() {
             <${MenuIcon} className="w-6 h-6" />
           </button>
           <h1
-            class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] ${!activeSessionId
+            class="font-bold text-xl truncate max-w-[300px] sm:max-w-[400px] no-underline ${!activeSessionId
               ? "text-gray-500"
-              : ""}"
+              : "cursor-pointer hover:text-blue-400 transition-colors"}"
+            onClick=${activeSessionId ? handleTogglePropertiesPanel : undefined}
+            title=${activeSessionId ? "Click to view properties" : ""}
           >
             ${activeSessionId
               ? sessionInfo?.name || "New conversation"
@@ -4229,9 +4419,22 @@ function App() {
             showQueueDropdown=${showQueueDropdown}
             actionButtons=${actionButtons}
             availableCommands=${availableCommands}
+            periodicEnabled=${sessionInfo?.periodic_enabled || false}
           />
         </div>
       </div>
+
+      <!-- Conversation Properties Panel (fixed overlay on left) -->
+      <${ConversationPropertiesPanel}
+        isOpen=${showPropertiesPanel}
+        onClose=${handleClosePropertiesPanel}
+        sessionId=${activeSessionId}
+        sessionInfo=${sessionInfo}
+        onRename=${renameSession}
+        isStreaming=${isStreaming}
+        configOptions=${configOptions}
+        onSetConfigOption=${setConfigOption}
+      />
     </div>
   `;
 }

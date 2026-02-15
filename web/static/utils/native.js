@@ -44,11 +44,13 @@ export function openFileURL(url) {
 }
 
 /**
- * Converts a file:// URL to an HTTP viewer URL.
+ * Converts a file:// URL to an HTTP URL for viewing.
  * This is used in web browser mode where file:// URLs are blocked.
- * Opens the file in a syntax-highlighted viewer page.
+ * - Markdown files (.md, .markdown) are opened via /api/files with render=html
+ *   so they are rendered as HTML for better viewing.
+ * - Other files are opened in the syntax-highlighted viewer page.
  * @param {string} fileUrl - The file:// URL to convert
- * @returns {string|null} The HTTP URL for the viewer, or null if conversion failed
+ * @returns {string|null} The HTTP URL, or null if conversion failed
  */
 export function convertFileURLToHTTP(fileUrl) {
   if (!fileUrl || !fileUrl.startsWith("file://")) {
@@ -75,7 +77,7 @@ export function convertFileURLToHTTP(fileUrl) {
     }
   }
 
-  // Build the HTTP URL for the viewer page (with syntax highlighting)
+  // Build the HTTP URL
   // Use workspace UUID for secure file links
   const apiPrefix = getAPIPrefix();
   const workspaceUUID = getCurrentWorkspaceUUID();
@@ -83,6 +85,16 @@ export function convertFileURLToHTTP(fileUrl) {
     console.warn("Cannot convert file URL: no workspace UUID available");
     return null;
   }
+
+  // Check if this is a markdown file - these should be rendered as HTML directly
+  // rather than opened in the syntax-highlighted viewer
+  const ext = relativePath.split(".").pop()?.toLowerCase() || "";
+  if (ext === "md" || ext === "markdown") {
+    // Use the API endpoint with render=html for markdown files
+    return `${apiPrefix}/api/files?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}&render=html`;
+  }
+
+  // For other files, use the viewer page with syntax highlighting
   return `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
 }
 

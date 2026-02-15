@@ -2,6 +2,25 @@
 // Centralized configuration values and constants
 
 /**
+ * Conversation cycling mode constants.
+ * Determines which conversations are included when cycling with keyboard shortcuts or gestures.
+ */
+export const CYCLING_MODE = {
+  /** Cycle through all non-archived conversations (default) */
+  ALL: "all",
+  /** Cycle only through conversations in expanded/open groups */
+  VISIBLE_GROUPS: "visible_groups",
+};
+
+/**
+ * Conversation cycling mode options for the settings UI dropdown.
+ */
+export const CYCLING_MODE_OPTIONS = [
+  { value: CYCLING_MODE.ALL, label: "All conversations" },
+  { value: CYCLING_MODE.VISIBLE_GROUPS, label: "Visible groups only" },
+];
+
+/**
  * Keyboard shortcuts configuration
  * Used by the KeyboardShortcutsDialog to display available shortcuts
  *

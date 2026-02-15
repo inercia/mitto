@@ -349,6 +349,13 @@ export function setGroupingMode(mode) {
     }
     // Also save to server for persistence across app launches
     saveUIPreferencesToServer(getCurrentUIPreferences());
+    // Dispatch event for components that need to react to grouping mode changes
+    // (e.g., App component for navigableSessions filtering in "visible_groups" cycling mode)
+    window.dispatchEvent(
+      new CustomEvent("mitto-grouping-mode-changed", {
+        detail: { mode },
+      }),
+    );
   } catch (e) {
     console.warn("Failed to save grouping mode to localStorage:", e);
   }
@@ -407,6 +414,13 @@ export function setGroupExpanded(groupKey, expanded) {
     localStorage.setItem(EXPANDED_GROUPS_KEY, JSON.stringify(groups));
     // Also save to server for persistence across app launches
     saveUIPreferencesToServer(getCurrentUIPreferences());
+    // Dispatch event for components that need to react to expanded groups changes
+    // (e.g., App component for navigableSessions filtering in "visible_groups" cycling mode)
+    window.dispatchEvent(
+      new CustomEvent("mitto-expanded-groups-changed", {
+        detail: { groupKey, expanded },
+      }),
+    );
   } catch (e) {
     console.warn("Failed to save expanded group state to localStorage:", e);
   }

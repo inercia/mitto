@@ -323,7 +323,7 @@ export function computeAllSessions(activeSessions, storedSessions) {
     // Get working_dir from: stored session, global map, or existing value
     const workingDir = stored?.working_dir || globalWd || s.working_dir || "";
 
-    // Always merge stored properties (archived, name, pinned, isStreaming) if stored session exists
+    // Always merge stored properties (archived, name, pinned, isStreaming, periodic_enabled) if stored session exists
     if (stored) {
       return {
         ...s,
@@ -336,6 +336,8 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // For isStreaming: active session takes precedence (it has real-time state),
         // but also consider stored session's value from global events
         isStreaming: s.isStreaming || stored.isStreaming || false,
+        // Periodic enabled state (from stored session, updated via WebSocket)
+        periodic_enabled: stored.periodic_enabled || false,
       };
     }
 
@@ -438,6 +440,34 @@ export function convertEventsToMessages(events, options = {}) {
 }
 
 /**
+ * Default options for coalesceAgentMessages.
+ * These can be overridden by passing an options object.
+ */
+export const COALESCE_DEFAULTS = {
+  /**
+   * EXPERIMENTAL: When true, horizontal rules (<hr/>) act as coalescing breaks.
+   * This creates visual separation between sections, improving readability
+   * when the agent sends multiple logical sections in rapid succession.
+   *
+   * Set to true to enable this experiment.
+   */
+  hrBreaksCoalescing: true, // EXPERIMENT ENABLED
+};
+
+/**
+ * Check if a message contains only an <hr/> element.
+ * Used to detect horizontal rules that should act as visual breaks.
+ *
+ * @param {string} html - The HTML content to check
+ * @returns {boolean} True if the content is only an <hr/> element
+ */
+function isHrOnlyMessage(html) {
+  if (!html) return false;
+  // Match <hr>, <hr/>, <hr /> with optional whitespace
+  return /^\s*<hr\s*\/?>\s*$/i.test(html.trim());
+}
+
+/**
  * Coalesce consecutive agent messages into single messages for display.
  *
  * The backend's MarkdownBuffer flushes content at semantic boundaries (paragraphs,
@@ -449,29 +479,50 @@ export function convertEventsToMessages(events, options = {}) {
  * while preserving the original messages for internal tracking.
  *
  * @param {Array} messages - Array of message objects (in chronological order)
+ * @param {Object} options - Optional configuration
+ * @param {boolean} options.hrBreaksCoalescing - When true, <hr/> elements break coalescing
  * @returns {Array} Array of messages with consecutive agent messages coalesced
  *
  * @example
- * // Input: [agent(seq:1, "Hello"), agent(seq:2, "<hr/>"), agent(seq:3, "World")]
+ * // Default: Input: [agent(seq:1, "Hello"), agent(seq:2, "<hr/>"), agent(seq:3, "World")]
  * // Output: [agent(seq:1, "Hello<hr/>World", coalescedSeqs:[1,2,3])]
+ *
+ * @example
+ * // With hrBreaksCoalescing: Input: [agent(seq:1, "Hello"), agent(seq:2, "<hr/>"), agent(seq:3, "World")]
+ * // Output: [agent(seq:1, "Hello"), agent(seq:3, "World")]
+ * // Note: The <hr/> message is dropped as a visual separator
  */
-export function coalesceAgentMessages(messages) {
+export function coalesceAgentMessages(messages, options = {}) {
   if (!messages || messages.length === 0) {
     return messages;
   }
+
+  const { hrBreaksCoalescing = COALESCE_DEFAULTS.hrBreaksCoalescing } = options;
 
   const result = [];
   let currentCoalesced = null;
 
   for (const msg of messages) {
-    // Only coalesce agent messages
-    if (msg.role !== ROLE_AGENT) {
+    // Check if this is an HR-only message that should break coalescing
+    const isHrBreak =
+      hrBreaksCoalescing &&
+      msg.role === ROLE_AGENT &&
+      isHrOnlyMessage(msg.html);
+
+    // Non-agent messages always break coalescing
+    // HR-only messages break coalescing when hrBreaksCoalescing is enabled
+    if (msg.role !== ROLE_AGENT || isHrBreak) {
       // Flush any pending coalesced message
       if (currentCoalesced) {
         result.push(currentCoalesced);
         currentCoalesced = null;
       }
-      result.push(msg);
+
+      // HR-only messages are dropped (they served as visual separators)
+      // Non-agent messages are always included
+      if (!isHrBreak) {
+        result.push(msg);
+      }
       continue;
     }
 

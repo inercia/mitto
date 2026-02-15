@@ -9,9 +9,11 @@ import {
   hasNativeFilePicker,
   pickFiles,
 } from "../utils/native.js";
-import { secureFetch } from "../utils/csrf.js";
+import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
+import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
+import { LockIcon, UnlockIcon } from "./Icons.js";
 
 /**
  * Calculate contrasting text color (black or white) for a given background color.
@@ -140,6 +142,7 @@ function sortPromptsByColor(prompts) {
  * @param {boolean} props.showQueueDropdown - Whether the queue dropdown is currently visible
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
+ * @param {boolean} props.periodicEnabled - Whether periodic prompts are enabled (disables queue buttons)
  */
 export function ChatInput({
   onSend,
@@ -162,6 +165,7 @@ export function ChatInput({
   showQueueDropdown = false,
   actionButtons = [],
   availableCommands = [],
+  periodicEnabled = false,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -225,6 +229,17 @@ export function ChatInput({
   const [showSlashPicker, setShowSlashPicker] = useState(false);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
 
+  // Periodic prompt lock state
+  // When locked, the prompt is saved to the periodic config and textarea is read-only
+  const [isPeriodicLocked, setIsPeriodicLocked] = useState(false);
+  const [isPeriodicSaving, setIsPeriodicSaving] = useState(false);
+  const [periodicPrompt, setPeriodicPrompt] = useState(""); // The saved periodic prompt
+  const [periodicFrequency, setPeriodicFrequency] = useState({
+    value: 1,
+    unit: "hours",
+  });
+  const [periodicNextScheduledAt, setPeriodicNextScheduledAt] = useState(null);
+
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
   useEffect(() => {
@@ -247,7 +262,139 @@ export function ChatInput({
     setImproveError(null);
     setShowSlashPicker(false);
     setSlashSelectedIndex(0);
+    // Reset periodic lock state when session changes
+    setIsPeriodicLocked(false);
+    setIsPeriodicSaving(false);
+    setPeriodicPrompt("");
+    setPeriodicFrequency({ value: 1, unit: "hours" });
+    setPeriodicNextScheduledAt(null);
   }, [sessionId]);
+
+  // Fetch periodic config when periodic is enabled for this session
+  useEffect(() => {
+    if (!periodicEnabled || !sessionId) {
+      setIsPeriodicLocked(false);
+      setPeriodicPrompt("");
+      setPeriodicFrequency({ value: 1, unit: "hours" });
+      setPeriodicNextScheduledAt(null);
+      return;
+    }
+
+    const fetchPeriodicConfig = async () => {
+      try {
+        const response = await authFetch(
+          apiUrl(`/api/sessions/${sessionId}/periodic`),
+        );
+        if (response.ok) {
+          const config = await response.json();
+          // Always update frequency
+          if (config.frequency) {
+            setPeriodicFrequency(config.frequency);
+          }
+          // Update next_scheduled_at (only set if enabled)
+          if (config.enabled && config.next_scheduled_at) {
+            setPeriodicNextScheduledAt(config.next_scheduled_at);
+          } else {
+            setPeriodicNextScheduledAt(null);
+          }
+          // Set prompt and locked state based on the enabled field
+          // Treat "(pending)" placeholder as unlocked - user needs to set a real prompt
+          const isPendingPlaceholder = config.prompt === "(pending)";
+          if (config.prompt && !isPendingPlaceholder) {
+            setPeriodicPrompt(config.prompt);
+            // Lock state is based on enabled field from backend
+            setIsPeriodicLocked(config.enabled === true);
+            // Set the draft to the periodic prompt
+            if (onDraftChange) {
+              onDraftChange(sessionId, config.prompt);
+            }
+          } else {
+            setPeriodicPrompt("");
+            setIsPeriodicLocked(false);
+            // Clear the draft for pending placeholder
+            if (onDraftChange) {
+              onDraftChange(sessionId, "");
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch periodic config:", err);
+      }
+    };
+
+    fetchPeriodicConfig();
+  }, [periodicEnabled, sessionId, onDraftChange]);
+
+  // Listen for periodic config updates from other clients via WebSocket
+  useEffect(() => {
+    const handlePeriodicConfigUpdated = (event) => {
+      const {
+        sessionId: updatedSessionId,
+        periodicConfigured,
+        periodicEnabled: newPeriodicEnabled,
+        frequency,
+        nextScheduledAt,
+      } = event.detail;
+      // Only update if this is for our session
+      if (updatedSessionId !== sessionId) return;
+
+      // Update frequency if provided
+      if (frequency) {
+        setPeriodicFrequency(frequency);
+      }
+
+      // If periodic config was deleted (not configured), reset state
+      if (periodicConfigured === false) {
+        setIsPeriodicLocked(false);
+        setPeriodicNextScheduledAt(null);
+        setPeriodicPrompt("");
+        return;
+      }
+
+      // If periodic run is disabled (unlocked), update lock state
+      if (newPeriodicEnabled === false) {
+        setIsPeriodicLocked(false);
+        setPeriodicNextScheduledAt(null);
+        // Don't clear the prompt - user may want to re-enable without re-typing
+        return;
+      }
+
+      // If periodic run is enabled (locked), fetch the full config for the prompt
+      if (newPeriodicEnabled === true) {
+        // Update next scheduled time
+        if (nextScheduledAt) {
+          setPeriodicNextScheduledAt(nextScheduledAt);
+        }
+        // Fetch the full config to get the prompt
+        authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
+          .then((response) => response.json())
+          .then((config) => {
+            const isPendingPlaceholder = config.prompt === "(pending)";
+            if (config.prompt && !isPendingPlaceholder) {
+              setPeriodicPrompt(config.prompt);
+              setIsPeriodicLocked(true);
+              if (onDraftChange) {
+                onDraftChange(sessionId, config.prompt);
+              }
+            }
+          })
+          .catch((err) =>
+            console.error("Failed to fetch periodic config:", err),
+          );
+      }
+    };
+
+    window.addEventListener(
+      "mitto:periodic_config_updated",
+      handlePeriodicConfigUpdated,
+    );
+    return () => {
+      window.removeEventListener(
+        "mitto:periodic_config_updated",
+        handlePeriodicConfigUpdated,
+      );
+    };
+  }, [sessionId, onDraftChange]);
 
   // Compute slash command filter from current text (text after '/' when text starts with '/')
   const slashFilter =
@@ -450,6 +597,80 @@ export function ChatInput({
       }
     }
   };
+
+  // Handle locking the periodic prompt (saves to backend and enables periodic run)
+  const handleLockPeriodicPrompt = useCallback(async () => {
+    if (!sessionId || !text.trim() || isPeriodicSaving) return;
+
+    setIsPeriodicSaving(true);
+    try {
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: text.trim(), enabled: true }),
+        },
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setPeriodicPrompt(text.trim());
+        setIsPeriodicLocked(true);
+        // Update next scheduled time from server response
+        if (data.next_scheduled_at) {
+          setPeriodicNextScheduledAt(new Date(data.next_scheduled_at));
+        }
+      } else {
+        console.error("Failed to lock periodic prompt");
+      }
+    } catch (err) {
+      console.error("Failed to lock periodic prompt:", err);
+    } finally {
+      setIsPeriodicSaving(false);
+    }
+  }, [sessionId, text, isPeriodicSaving]);
+
+  // Handle unlocking the periodic prompt (allows editing and disables periodic run)
+  const handleUnlockPeriodicPrompt = useCallback(async () => {
+    if (!sessionId || isPeriodicSaving) return;
+
+    setIsPeriodicSaving(true);
+    try {
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        },
+      );
+      if (response.ok) {
+        setIsPeriodicLocked(false);
+        setPeriodicNextScheduledAt(null); // Clear next scheduled time when disabled
+        // Focus the textarea so user can start editing
+        if (textareaRef.current) {
+          textareaRef.current.focus();
+        }
+      } else {
+        console.error("Failed to unlock periodic prompt");
+      }
+    } catch (err) {
+      console.error("Failed to unlock periodic prompt:", err);
+    } finally {
+      setIsPeriodicSaving(false);
+    }
+  }, [sessionId, isPeriodicSaving]);
+
+  // Handle frequency change from the PeriodicFrequencyPanel
+  const handlePeriodicFrequencyChange = useCallback(
+    (newFrequency, newNextScheduledAt) => {
+      setPeriodicFrequency(newFrequency);
+      if (newNextScheduledAt) {
+        setPeriodicNextScheduledAt(newNextScheduledAt);
+      }
+    },
+    [],
+  );
 
   // Handle slash command selection
   const handleSlashCommandSelect = useCallback(
@@ -1084,10 +1305,25 @@ export function ChatInput({
         onChange=${handleFileInputChange}
       />
 
+      <!-- Periodic Frequency Panel (shown when periodic is enabled) -->
+      <!-- Part of normal document flow - pushes conversation area up -->
+      <!-- Editable when unlocked, read-only when locked -->
+      <div class="max-w-4xl mx-auto">
+        <${PeriodicFrequencyPanel}
+          isOpen=${periodicEnabled}
+          disabled=${isPeriodicLocked}
+          sessionId=${sessionId}
+          frequency=${periodicFrequency}
+          onFrequencyChange=${handlePeriodicFrequencyChange}
+          nextScheduledAt=${periodicNextScheduledAt}
+        />
+      </div>
+
       ${hasActionButtons &&
       !isStreaming &&
       !isReadOnly &&
       !noSession &&
+      !periodicEnabled &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
           <div class="flex flex-wrap gap-2">
@@ -1434,14 +1670,22 @@ export function ChatInput({
             onPaste=${handlePaste}
             onFocus=${handleTextareaFocus}
             onBlur=${handleTextareaBlur}
-            placeholder=${getPlaceholder()}
+            placeholder=${periodicEnabled
+              ? isPeriodicLocked
+                ? "Periodic prompt locked — click 🔓 to edit"
+                : "Type your recurring prompt, then click 🔒 to activate"
+              : getPlaceholder()}
             rows="3"
             class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
             isReadOnly ||
-            isImproving
+            isImproving ||
+            (periodicEnabled && isPeriodicLocked)
               ? "opacity-50 cursor-not-allowed"
-              : ""}"
-            disabled=${isFullyDisabled || isReadOnly || isImproving}
+              : ""} ${periodicEnabled && isPeriodicLocked ? "bg-slate-800" : ""}"
+            disabled=${isFullyDisabled ||
+            isReadOnly ||
+            isImproving ||
+            (periodicEnabled && isPeriodicLocked)}
           />
 
           <!-- Improving prompt overlay with spinner -->
@@ -1558,38 +1802,13 @@ export function ChatInput({
             </div>
           `}
 
-          <!-- Send/Stop button (top) - with prompts dropdown -->
+          <!-- Send/Stop button OR Lock/Unlock button for periodic sessions -->
           <div class="flex gap-1">
-            ${isStreaming
-              ? html`
-                  <!-- Stop button - uses action-toolbar-btn style but with red background -->
-                  <button
-                    type="button"
-                    onClick=${onCancel}
-                    class="action-toolbar-btn"
-                    style="background: #dc2626 !important; border-color: #ef4444 !important; color: white !important; opacity: 1; transform: none;"
-                    title="Stop streaming"
-                  >
-                    <svg
-                      class="w-5 h-5"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <rect
-                        x="6"
-                        y="6"
-                        width="12"
-                        height="12"
-                        rx="2"
-                        stroke-width="2"
-                      />
-                    </svg>
-                  </button>
-                `
-              : isSending
+            ${periodicEnabled
+              ? // Periodic session: show lock/unlock button
+                isPeriodicSaving
                 ? html`
-                    <!-- Sending spinner - uses action-toolbar-btn disabled style -->
+                    <!-- Saving spinner -->
                     <button
                       type="button"
                       disabled
@@ -1617,67 +1836,156 @@ export function ChatInput({
                       </svg>
                     </button>
                   `
-                : html`
-                    <!-- Send button - uses action-toolbar-btn style, paper plane arrow pointing right -->
+                : isPeriodicLocked
+                  ? html`
+                      <!-- Locked state: show lock icon, click to unlock -->
+                      <button
+                        type="button"
+                        onClick=${handleUnlockPeriodicPrompt}
+                        class="action-toolbar-btn"
+                        style="background: #2563eb !important; border-color: #3b82f6 !important; color: white !important; opacity: 1; transform: none;"
+                        title="Unlock to edit periodic prompt"
+                      >
+                        <${LockIcon} className="w-5 h-5" />
+                      </button>
+                    `
+                  : html`
+                      <!-- Unlocked state: show unlock icon, click to lock -->
+                      <button
+                        type="button"
+                        onClick=${handleLockPeriodicPrompt}
+                        disabled=${!text.trim()}
+                        class="action-toolbar-btn"
+                        style="opacity: 1; transform: none;"
+                        title=${!text.trim()
+                          ? "Enter a prompt to lock"
+                          : "Lock periodic prompt"}
+                      >
+                        <${UnlockIcon} className="w-5 h-5" />
+                      </button>
+                    `
+              : // Normal session: show send/stop button
+                isStreaming
+                ? html`
+                    <!-- Stop button - uses action-toolbar-btn style but with red background -->
                     <button
-                      type="submit"
-                      disabled=${isFullyDisabled ||
-                      (!text.trim() && !hasPendingAttachments) ||
-                      isReadOnly ||
-                      isImproving ||
-                      isQueueFull}
-                      class="action-toolbar-btn ${isQueueFull
-                        ? "queue-full"
-                        : ""}"
-                      style="${isQueueFull
-                        ? "background: #ea580c !important; border-color: #f97316 !important; color: white !important; opacity: 1; transform: none;"
-                        : "opacity: 1; transform: none;"}"
-                      title=${isQueueFull
-                        ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
-                        : "Send message"}
+                      type="button"
+                      onClick=${onCancel}
+                      class="action-toolbar-btn"
+                      style="background: #dc2626 !important; border-color: #ef4444 !important; color: white !important; opacity: 1; transform: none;"
+                      title="Stop streaming"
                     >
-                      ${isQueueFull
-                        ? html`
-                            <!-- Queue full icon -->
-                            <svg
-                              class="w-5 h-5"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-                              />
-                            </svg>
-                          `
-                        : html`
-                            <!-- Paper plane / send arrow pointing RIGHT (like WhatsApp) -->
-                            <svg
-                              class="w-5 h-5"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
-                              />
-                            </svg>
-                          `}
+                      <svg
+                        class="w-5 h-5"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <rect
+                          x="6"
+                          y="6"
+                          width="12"
+                          height="12"
+                          rx="2"
+                          stroke-width="2"
+                        />
+                      </svg>
                     </button>
-                  `}
+                  `
+                : isSending
+                  ? html`
+                      <!-- Sending spinner - uses action-toolbar-btn disabled style -->
+                      <button
+                        type="button"
+                        disabled
+                        class="action-toolbar-btn"
+                        style="opacity: 1; transform: none;"
+                      >
+                        <svg
+                          class="w-5 h-5 animate-spin"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                        >
+                          <circle
+                            class="opacity-25"
+                            cx="12"
+                            cy="12"
+                            r="10"
+                            stroke="currentColor"
+                            stroke-width="4"
+                          ></circle>
+                          <path
+                            class="opacity-75"
+                            fill="currentColor"
+                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                          ></path>
+                        </svg>
+                      </button>
+                    `
+                  : html`
+                      <!-- Send button - uses action-toolbar-btn style, paper plane arrow pointing right -->
+                      <button
+                        type="submit"
+                        disabled=${isFullyDisabled ||
+                        (!text.trim() && !hasPendingAttachments) ||
+                        isReadOnly ||
+                        isImproving ||
+                        isQueueFull}
+                        class="action-toolbar-btn ${isQueueFull
+                          ? "queue-full"
+                          : ""}"
+                        style="${isQueueFull
+                          ? "background: #ea580c !important; border-color: #f97316 !important; color: white !important; opacity: 1; transform: none;"
+                          : "opacity: 1; transform: none;"}"
+                        title=${isQueueFull
+                          ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
+                          : "Send message"}
+                      >
+                        ${isQueueFull
+                          ? html`
+                              <!-- Queue full icon -->
+                              <svg
+                                class="w-5 h-5"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  stroke-width="2"
+                                  d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                                />
+                              </svg>
+                            `
+                          : html`
+                              <!-- Paper plane / send arrow pointing RIGHT (like WhatsApp) -->
+                              <svg
+                                class="w-5 h-5"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  stroke-width="2"
+                                  d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
+                                />
+                              </svg>
+                            `}
+                      </button>
+                    `}
             ${hasPrompts &&
             html`
               <!-- Prompts dropdown toggle - uses action-toolbar-btn style -->
+              <!-- Disabled when periodic is locked (prompt is fixed) -->
               <button
                 type="button"
                 onClick=${handleTogglePrompts}
-                disabled=${isFullyDisabled || isReadOnly}
+                disabled=${isFullyDisabled ||
+                isReadOnly ||
+                (periodicEnabled && isPeriodicLocked)}
                 class="action-toolbar-btn"
                 style="opacity: 1; transform: none;"
                 title="Insert predefined prompt"
@@ -1702,6 +2010,7 @@ export function ChatInput({
           </div>
 
           <!-- Queue button group (bottom) - uses action-toolbar-btn style -->
+          <!-- Disabled when periodic prompts are enabled (queue is disabled for periodic sessions) -->
           <div class="flex gap-1">
             <!-- Add to Queue button -->
             <button
@@ -1710,10 +2019,13 @@ export function ChatInput({
               disabled=${isFullyDisabled ||
               (!text.trim() && !hasPendingAttachments) ||
               isReadOnly ||
-              isImproving}
+              isImproving ||
+              periodicEnabled}
               class="action-toolbar-btn"
               style="opacity: 1; transform: none;"
-              title="Add to queue (⌘/Ctrl+Enter)"
+              title=${periodicEnabled
+                ? "Queue disabled for periodic sessions"
+                : "Add to queue (⌘/Ctrl+Enter)"}
             >
               <!-- Plus icon -->
               <svg
@@ -1738,16 +2050,17 @@ export function ChatInput({
                   "[DEBUG] Queue toggle button clicked, onToggleQueue=",
                   typeof onToggleQueue,
                 );
-                if (onToggleQueue) onToggleQueue();
+                if (!periodicEnabled && onToggleQueue) onToggleQueue();
               }}
+              disabled=${periodicEnabled}
               data-queue-toggle
               class="action-toolbar-btn relative"
-              style="${showQueueDropdown
+              style="${showQueueDropdown && !periodicEnabled
                 ? "background: #2563eb !important; border-color: #3b82f6 !important; color: white !important; opacity: 1; transform: none;"
                 : "opacity: 1; transform: none;"}"
-              title="${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown
-                ? "hide"
-                : "show"} queue"
+              title=${periodicEnabled
+                ? "Queue disabled for periodic sessions"
+                : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
             >
               <!-- Queue/list icon -->
               <svg
@@ -1764,6 +2077,7 @@ export function ChatInput({
                 />
               </svg>
               ${queueLength > 0 &&
+              !periodicEnabled &&
               html` <span class="queue-badge">${queueLength}</span> `}
             </button>
           </div>
