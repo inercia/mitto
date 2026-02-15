@@ -130,6 +130,16 @@ const (
 	// Data: { "session_id": string, "is_streaming": bool }
 	WSMsgTypeSessionStreaming = "session_streaming"
 
+	// WSMsgTypePeriodicUpdated notifies that a session's periodic prompt state changed.
+	// Sent on /api/events to all connected clients when periodic is enabled/disabled.
+	// Data: { "session_id": string, "periodic_enabled": bool }
+	WSMsgTypePeriodicUpdated = "periodic_updated"
+
+	// WSMsgTypePeriodicStarted notifies that a periodic prompt was delivered.
+	// Sent on /api/events to all connected clients when a scheduled periodic run starts.
+	// Data: { "session_id": string, "session_name": string }
+	WSMsgTypePeriodicStarted = "periodic_started"
+
 	// WSMsgTypeAgentMessage contains HTML-rendered agent response content.
 	// Sent incrementally as the agent generates output.
 	// Data: { "html": string }
@@ -278,6 +288,17 @@ const (
 	// These commands can be used for autocomplete in the chat input.
 	// Data: { "session_id": string, "commands": []{ "name": string, "description": string, "input_hint": string (optional) } }
 	WSMsgTypeAvailableCommandsUpdated = "available_commands_updated"
+
+	// WSMsgTypeConfigOptionChanged notifies that a session config option has changed.
+	// Sent when any config option is changed either by the client or by the agent.
+	// For backward compatibility with legacy modes, config_id will be "mode" for mode changes.
+	// Data: { "session_id": string, "config_id": string, "value": string }
+	WSMsgTypeConfigOptionChanged = "config_option_changed"
+
+	// WSMsgTypeSetConfigOption is sent from the frontend to change a config option value.
+	// For backward compatibility with legacy modes, use config_id "mode" for mode changes.
+	// Data: { "config_id": string, "value": string }
+	WSMsgTypeSetConfigOption = "set_config_option"
 )
 
 // =============================================================================

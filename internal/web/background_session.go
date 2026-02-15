@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os/exec"
 	"sort"
@@ -119,6 +120,14 @@ type BackgroundSession struct {
 	restartCount int         // Number of restarts in current window
 	restartTimes []time.Time // Timestamps of recent restarts (for rate limiting)
 	restartMu    sync.Mutex  // Protects restart tracking fields
+
+	// Session config options - configurable settings for the session
+	// This supports both legacy "modes" API and newer "configOptions" API.
+	// See https://agentclientprotocol.com/protocol/session-config-options
+	configMu        sync.RWMutex
+	configOptions   []SessionConfigOption                          // All config options (includes mode if available)
+	onConfigChanged func(sessionID string, configID, value string) // Called when any config option changes
+	usesLegacyModes bool                                           // True if using legacy modes API (not configOptions)
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -149,6 +158,11 @@ type BackgroundSessionConfig struct {
 	// OnPlanStateChanged is called when the agent plan state changes.
 	// Used to cache plan state in SessionManager for restoration on conversation switch.
 	OnPlanStateChanged func(sessionID string, entries []PlanEntry)
+
+	// OnConfigOptionChanged is called when any session config option changes.
+	// Used to broadcast config changes to all connected clients.
+	// The configID identifies which option changed, and value is the new value.
+	OnConfigOptionChanged func(sessionID string, configID, value string)
 }
 
 // NewBackgroundSession creates a new background session.
@@ -174,6 +188,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		runner:                  cfg.Runner,
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
+		onConfigChanged:         cfg.OnConfigOptionChanged,
 		acpCommand:              cfg.ACPCommand, // Store for restart
 	}
 	// Initialize condition variable for prompt completion waiting
@@ -243,7 +258,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	if err := bs.startACPProcess(cfg.ACPCommand, cfg.WorkingDir, ""); err != nil {
 		cancel()
 		if bs.recorder != nil {
-			bs.recorder.End("failed_to_start")
+			bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
 		}
 		return nil, err
 	}
@@ -299,6 +314,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		runner:                  config.Runner,
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
+		onConfigChanged:         config.OnConfigOptionChanged,
 		acpCommand:              config.ACPCommand, // Store for restart
 	}
 	// Initialize condition variable for prompt completion waiting
@@ -361,7 +377,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	if err := bs.startACPProcess(config.ACPCommand, config.WorkingDir, config.ACPSessionID); err != nil {
 		cancel()
 		if bs.recorder != nil {
-			bs.recorder.End("failed_to_start")
+			bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
 		}
 		return nil, err
 	}
@@ -699,7 +715,27 @@ func (bs *BackgroundSession) Close(reason string) {
 		if reason == "server_shutdown" {
 			bs.recorder.Suspend()
 		} else {
-			bs.recorder.End(reason)
+			// Build session end data with context about the session state
+			endData := session.SessionEndData{
+				Reason:       reason,
+				WasPrompting: bs.IsPrompting(),
+				ACPConnected: bs.acpClient != nil,
+			}
+
+			// Extract signal from reason if present (e.g., "signal:SIGINT")
+			if strings.HasPrefix(reason, "signal:") {
+				endData.Signal = strings.TrimPrefix(reason, "signal:")
+				endData.Reason = "server_shutdown"
+			}
+
+			// Get event count from store if available
+			if bs.store != nil {
+				if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil {
+					endData.EventCount = meta.EventCount
+				}
+			}
+
+			bs.recorder.End(endData)
 		}
 	}
 }
@@ -1055,6 +1091,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, workingDir, acpSessio
 	webClientConfig := WebClientConfig{
 		AutoApprove:          bs.autoApprove,
 		SeqProvider:          bs, // BackgroundSession implements SeqProvider
+		Logger:               bs.logger,
 		OnAgentMessage:       bs.onAgentMessage,
 		OnAgentThought:       bs.onAgentThought,
 		OnToolCall:           bs.onToolCall,
@@ -1146,6 +1183,8 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, workingDir, acpSessio
 		})
 		if err == nil {
 			bs.acpID = acpSessionID
+			// Store available modes from session load
+			bs.setSessionModes(loadResp.Modes)
 			if bs.logger != nil {
 				bs.logger.Info("Resumed ACP session",
 					"acp_session_id", acpSessionID)
@@ -1189,6 +1228,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, workingDir, acpSessio
 	}
 
 	bs.acpID = string(sessResp.SessionId)
+
+	// Store available modes from session setup
+	bs.setSessionModes(sessResp.Modes)
 
 	if bs.logger != nil {
 		bs.logger.Info("Created new ACP session",
@@ -2506,16 +2548,208 @@ func (bs *BackgroundSession) AvailableCommands() []AvailableCommand {
 }
 
 // onCurrentModeChanged handles the session mode change notification from the agent.
-// This is logged at DEBUG level to help with debugging session configuration.
+// This updates the stored config option and notifies observers.
+// This is called for legacy modes API - converts to config option format internally.
 func (bs *BackgroundSession) onCurrentModeChanged(modeID string) {
 	if bs.IsClosed() {
 		return
 	}
 
-	if bs.logger != nil {
-		bs.logger.Debug("Session mode changed",
-			"new_mode_id", modeID)
+	// Update the mode config option's current value
+	bs.configMu.Lock()
+	for i := range bs.configOptions {
+		if bs.configOptions[i].Category == ConfigOptionCategoryMode {
+			bs.configOptions[i].CurrentValue = modeID
+			break
+		}
 	}
+	bs.configMu.Unlock()
+
+	// Persist to metadata
+	bs.persistConfigValue(ConfigOptionCategoryMode, modeID)
+
+	if bs.logger != nil {
+		bs.logger.Debug("Session mode changed (via agent)",
+			"mode_id", modeID)
+	}
+
+	// Notify callback - use "mode" as the configID for legacy mode changes
+	if bs.onConfigChanged != nil {
+		bs.onConfigChanged(bs.persistedID, ConfigOptionCategoryMode, modeID)
+	}
+}
+
+// setSessionModes converts legacy modes API response to config options format.
+// This allows transparent support for both legacy modes and newer configOptions.
+func (bs *BackgroundSession) setSessionModes(modes *acp.SessionModeState) {
+	if modes == nil {
+		return
+	}
+
+	// Convert legacy modes to a single "mode" config option
+	options := make([]SessionConfigOptionValue, len(modes.AvailableModes))
+	for i, m := range modes.AvailableModes {
+		desc := ""
+		if m.Description != nil {
+			desc = *m.Description
+		}
+		options[i] = SessionConfigOptionValue{
+			Value:       string(m.Id),
+			Name:        m.Name,
+			Description: desc,
+		}
+	}
+
+	modeOption := SessionConfigOption{
+		ID:           ConfigOptionCategoryMode, // Use "mode" as ID for legacy modes
+		Name:         "Mode",
+		Description:  "Session operating mode",
+		Category:     ConfigOptionCategoryMode,
+		Type:         ConfigOptionTypeSelect,
+		CurrentValue: string(modes.CurrentModeId),
+		Options:      options,
+	}
+
+	bs.configMu.Lock()
+	bs.configOptions = []SessionConfigOption{modeOption}
+	bs.usesLegacyModes = true
+	bs.configMu.Unlock()
+
+	// Persist initial value to metadata
+	bs.persistConfigValue(ConfigOptionCategoryMode, string(modes.CurrentModeId))
+}
+
+// ConfigOptions returns a copy of all session config options.
+func (bs *BackgroundSession) ConfigOptions() []SessionConfigOption {
+	bs.configMu.RLock()
+	defer bs.configMu.RUnlock()
+
+	if bs.configOptions == nil {
+		return nil
+	}
+	result := make([]SessionConfigOption, len(bs.configOptions))
+	copy(result, bs.configOptions)
+	return result
+}
+
+// GetConfigValue returns the current value for a specific config option.
+func (bs *BackgroundSession) GetConfigValue(configID string) string {
+	bs.configMu.RLock()
+	defer bs.configMu.RUnlock()
+
+	for _, opt := range bs.configOptions {
+		if opt.ID == configID {
+			return opt.CurrentValue
+		}
+	}
+	return ""
+}
+
+// SetConfigOption changes a session config option value.
+// For legacy modes (category "mode"), this calls SetSessionMode.
+// For future configOptions API, it would call SetConfigOption.
+func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, value string) error {
+	if bs.IsClosed() {
+		return fmt.Errorf("session is closed")
+	}
+
+	if bs.acpConn == nil {
+		return fmt.Errorf("no ACP connection")
+	}
+
+	// Find the config option and validate the value
+	bs.configMu.RLock()
+	var found *SessionConfigOption
+	for i := range bs.configOptions {
+		if bs.configOptions[i].ID == configID {
+			found = &bs.configOptions[i]
+			break
+		}
+	}
+	bs.configMu.RUnlock()
+
+	if found == nil {
+		return fmt.Errorf("unknown config option: %s", configID)
+	}
+
+	// Validate the value is one of the allowed options
+	valid := false
+	for _, opt := range found.Options {
+		if opt.Value == value {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("invalid value for %s: %s", configID, value)
+	}
+
+	// Determine how to set the value based on the category and API availability
+	if found.Category == ConfigOptionCategoryMode && bs.usesLegacyModes {
+		// Use legacy SetSessionMode API
+		_, err := bs.acpConn.SetSessionMode(ctx, acp.SetSessionModeRequest{
+			SessionId: acp.SessionId(bs.acpID),
+			ModeId:    acp.SessionModeId(value),
+		})
+		if err != nil {
+			if bs.logger != nil {
+				bs.logger.Error("Failed to set session mode",
+					"config_id", configID,
+					"value", value,
+					"error", err)
+			}
+			return fmt.Errorf("failed to set %s: %w", configID, err)
+		}
+	} else {
+		// Future: Use SetConfigOption API when available in SDK
+		// For now, only mode category is supported via legacy API
+		return fmt.Errorf("config option %s is not supported by current agent", configID)
+	}
+
+	// Update local state
+	bs.configMu.Lock()
+	for i := range bs.configOptions {
+		if bs.configOptions[i].ID == configID {
+			bs.configOptions[i].CurrentValue = value
+			break
+		}
+	}
+	bs.configMu.Unlock()
+
+	// Persist to metadata
+	bs.persistConfigValue(configID, value)
+
+	if bs.logger != nil {
+		bs.logger.Info("Config option changed",
+			"config_id", configID,
+			"value", value)
+	}
+
+	// Notify callback
+	if bs.onConfigChanged != nil {
+		bs.onConfigChanged(bs.persistedID, configID, value)
+	}
+
+	return nil
+}
+
+// persistConfigValue saves a config option value to metadata.
+func (bs *BackgroundSession) persistConfigValue(configID, value string) {
+	if bs.store == nil {
+		return
+	}
+
+	// For mode category, store in CurrentModeID for backward compatibility
+	if configID == ConfigOptionCategoryMode {
+		if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+			m.CurrentModeID = value
+		}); err != nil && bs.logger != nil {
+			bs.logger.Warn("Failed to persist config value to metadata",
+				"config_id", configID,
+				"error", err)
+		}
+	}
+	// Future: For other config options, store in a ConfigValues map
 }
 
 // formatACPError transforms ACP errors into user-friendly messages.
