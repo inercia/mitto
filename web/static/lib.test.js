@@ -35,6 +35,7 @@ import {
   computeAllSessions,
   convertEventsToMessages,
   coalesceAgentMessages,
+  COALESCE_DEFAULTS,
   getMinSeq,
   getMaxSeq,
   isStaleClientState,
@@ -516,13 +517,13 @@ describe("coalesceAgentMessages", () => {
   test("coalesces consecutive agent messages", () => {
     const messages = [
       { role: ROLE_AGENT, html: "<p>Hello</p>", seq: 1, timestamp: 1000, complete: false },
-      { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000, complete: false },
+      { role: ROLE_AGENT, html: "<p>Middle</p>", seq: 2, timestamp: 2000, complete: false },
       { role: ROLE_AGENT, html: "<p>World</p>", seq: 3, timestamp: 3000, complete: true },
     ];
     const result = coalesceAgentMessages(messages);
     expect(result).toHaveLength(1);
     expect(result[0].role).toBe(ROLE_AGENT);
-    expect(result[0].html).toBe("<p>Hello</p><hr/><p>World</p>");
+    expect(result[0].html).toBe("<p>Hello</p><p>Middle</p><p>World</p>");
     expect(result[0].seq).toBe(1); // First seq preserved
     expect(result[0].timestamp).toBe(3000); // Latest timestamp
     expect(result[0].complete).toBe(true); // Latest complete status
@@ -591,6 +592,132 @@ describe("coalesceAgentMessages", () => {
     ];
     const result = coalesceAgentMessages(messages);
     expect(result[0].customProp).toBe("value");
+  });
+
+  // Tests for hrBreaksCoalescing option (EXPERIMENTAL)
+  describe("with hrBreaksCoalescing option", () => {
+    test("HR breaks coalescing when enabled", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "<p>Part 1</p>", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000 },
+        { role: ROLE_AGENT, html: "<p>Part 2</p>", seq: 3, timestamp: 3000 },
+      ];
+      const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: true });
+      expect(result).toHaveLength(2);
+      expect(result[0].html).toBe("<p>Part 1</p>");
+      expect(result[0].coalescedSeqs).toEqual([1]);
+      expect(result[1].html).toBe("<p>Part 2</p>");
+      expect(result[1].coalescedSeqs).toEqual([3]);
+    });
+
+    test("HR does NOT break coalescing when explicitly disabled", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "<p>Part 1</p>", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000 },
+        { role: ROLE_AGENT, html: "<p>Part 2</p>", seq: 3, timestamp: 3000 },
+      ];
+      // Explicitly disable hrBreaksCoalescing
+      const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: false });
+      expect(result).toHaveLength(1);
+      expect(result[0].html).toBe("<p>Part 1</p><hr/><p>Part 2</p>");
+      expect(result[0].coalescedSeqs).toEqual([1, 2, 3]);
+    });
+
+    test("recognizes various HR formats", () => {
+      // Test different HR format variations
+      const hrFormats = ["<hr>", "<hr/>", "<hr />", "  <hr/>  ", "\n<hr/>\n"];
+
+      for (const hrFormat of hrFormats) {
+        const messages = [
+          { role: ROLE_AGENT, html: "<p>Before</p>", seq: 1, timestamp: 1000 },
+          { role: ROLE_AGENT, html: hrFormat, seq: 2, timestamp: 2000 },
+          { role: ROLE_AGENT, html: "<p>After</p>", seq: 3, timestamp: 3000 },
+        ];
+        const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: true });
+        expect(result).toHaveLength(2);
+        expect(result[0].html).toBe("<p>Before</p>");
+        expect(result[1].html).toBe("<p>After</p>");
+      }
+    });
+
+    test("does not treat non-HR content as break", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "<p>Part 1</p>", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "<p>Contains <hr/> inside</p>", seq: 2, timestamp: 2000 },
+        { role: ROLE_AGENT, html: "<p>Part 2</p>", seq: 3, timestamp: 3000 },
+      ];
+      const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: true });
+      // Should coalesce because the HR is embedded in content, not standalone
+      expect(result).toHaveLength(1);
+      expect(result[0].coalescedSeqs).toEqual([1, 2, 3]);
+    });
+
+    test("handles multiple HR breaks", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "<p>Section 1</p>", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000 },
+        { role: ROLE_AGENT, html: "<p>Section 2</p>", seq: 3, timestamp: 3000 },
+        { role: ROLE_AGENT, html: "<hr/>", seq: 4, timestamp: 4000 },
+        { role: ROLE_AGENT, html: "<p>Section 3</p>", seq: 5, timestamp: 5000 },
+      ];
+      const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: true });
+      expect(result).toHaveLength(3);
+      expect(result[0].html).toBe("<p>Section 1</p>");
+      expect(result[1].html).toBe("<p>Section 2</p>");
+      expect(result[2].html).toBe("<p>Section 3</p>");
+    });
+
+    test("handles HR at start of messages", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "<hr/>", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "<p>After HR</p>", seq: 2, timestamp: 2000 },
+      ];
+      const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: true });
+      expect(result).toHaveLength(1);
+      expect(result[0].html).toBe("<p>After HR</p>");
+    });
+
+    test("handles HR at end of messages", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "<p>Before HR</p>", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000 },
+      ];
+      const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: true });
+      expect(result).toHaveLength(1);
+      expect(result[0].html).toBe("<p>Before HR</p>");
+    });
+
+    test("handles consecutive HRs", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "<p>Content</p>", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000 },
+        { role: ROLE_AGENT, html: "<hr/>", seq: 3, timestamp: 3000 },
+        { role: ROLE_AGENT, html: "<p>More</p>", seq: 4, timestamp: 4000 },
+      ];
+      const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: true });
+      expect(result).toHaveLength(2);
+      expect(result[0].html).toBe("<p>Content</p>");
+      expect(result[1].html).toBe("<p>More</p>");
+    });
+
+    test("works with tool calls between agent messages", () => {
+      const messages = [
+        { role: ROLE_AGENT, html: "<p>Part 1</p>", seq: 1, timestamp: 1000 },
+        { role: ROLE_AGENT, html: "<hr/>", seq: 2, timestamp: 2000 },
+        { role: ROLE_TOOL, id: "tool1", title: "Read", seq: 3, timestamp: 3000 },
+        { role: ROLE_AGENT, html: "<p>Part 2</p>", seq: 4, timestamp: 4000 },
+      ];
+      const result = coalesceAgentMessages(messages, { hrBreaksCoalescing: true });
+      expect(result).toHaveLength(3);
+      expect(result[0].html).toBe("<p>Part 1</p>");
+      expect(result[1].role).toBe(ROLE_TOOL);
+      expect(result[2].html).toBe("<p>Part 2</p>");
+    });
+  });
+
+  test("COALESCE_DEFAULTS exists and has expected structure", () => {
+    expect(COALESCE_DEFAULTS).toBeDefined();
+    expect(typeof COALESCE_DEFAULTS.hrBreaksCoalescing).toBe("boolean");
   });
 });
 
