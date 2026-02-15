@@ -54,7 +54,38 @@ type NewSessionParams struct {
 }
 
 type NewSessionResult struct {
+	SessionID string            `json:"sessionId"`
+	Modes     *SessionModeState `json:"modes,omitempty"`
+}
+
+// SessionModeState represents the set of modes and the one currently active.
+type SessionModeState struct {
+	AvailableModes []SessionMode `json:"availableModes"`
+	CurrentModeID  string        `json:"currentModeId"`
+}
+
+// SessionMode represents a single mode option.
+type SessionMode struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+}
+
+// SetSessionModeParams is the request to change the session mode.
+type SetSessionModeParams struct {
 	SessionID string `json:"sessionId"`
+	ModeID    string `json:"modeId"`
+}
+
+// SetSessionModeResult is the response after changing the session mode.
+type SetSessionModeResult struct {
+	// Empty response on success
+}
+
+// SessionCurrentModeUpdate is sent when the current mode changes.
+type SessionCurrentModeUpdate struct {
+	SessionUpdate string `json:"sessionUpdate"`
+	CurrentModeID string `json:"currentModeId"`
 }
 
 type PromptParams struct {
@@ -84,11 +115,12 @@ type SessionNotification struct {
 }
 
 type SessionUpdate struct {
-	AgentMessageChunk *AgentMessageChunk `json:"-"` // Tagged union - use custom marshal
-	AgentThoughtChunk *AgentThoughtChunk `json:"-"` // Tagged union - use custom marshal
-	ToolCall          *ToolCall          `json:"-"` // Tagged union - use custom marshal
-	ToolCallUpdate    *ToolCallUpdate    `json:"-"` // Tagged union - use custom marshal
-	Plan              *Plan              `json:"-"` // Tagged union - use custom marshal
+	AgentMessageChunk *AgentMessageChunk        `json:"-"` // Tagged union - use custom marshal
+	AgentThoughtChunk *AgentThoughtChunk        `json:"-"` // Tagged union - use custom marshal
+	ToolCall          *ToolCall                 `json:"-"` // Tagged union - use custom marshal
+	ToolCallUpdate    *ToolCallUpdate           `json:"-"` // Tagged union - use custom marshal
+	Plan              *Plan                     `json:"-"` // Tagged union - use custom marshal
+	CurrentModeUpdate *SessionCurrentModeUpdate `json:"-"` // Tagged union - use custom marshal
 }
 
 // MarshalJSON implements the ACP SDK's tagged union format.
@@ -143,6 +175,15 @@ func (u SessionUpdate) MarshalJSON() ([]byte, error) {
 		}{
 			SessionUpdate: "plan",
 			Description:   u.Plan.Description,
+		})
+	}
+	if u.CurrentModeUpdate != nil {
+		return json.Marshal(struct {
+			SessionUpdate string `json:"sessionUpdate"`
+			CurrentModeID string `json:"currentModeId"`
+		}{
+			SessionUpdate: "current_mode_update",
+			CurrentModeID: u.CurrentModeUpdate.CurrentModeID,
 		})
 	}
 	return []byte("{}"), nil

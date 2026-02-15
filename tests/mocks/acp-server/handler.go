@@ -26,6 +26,8 @@ func (s *MockACPServer) handleMessage(line string) error {
 		return s.handlePrompt(req)
 	case "session/cancel", "acp/cancelPrompt":
 		return s.handleCancelPrompt(req)
+	case "session/set_mode", "session/setMode", "acp/setSessionMode":
+		return s.handleSetSessionMode(req)
 	case "shutdown":
 		return s.handleShutdown(req)
 	default:
@@ -62,9 +64,69 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 	}
 
 	s.sessionID = fmt.Sprintf("mock-session-%d", time.Now().UnixNano())
-	s.log("Created session: %s (workdir: %s)", s.sessionID, workdir)
+	s.currentMode = defaultModes.CurrentModeID // Reset to default mode
+	s.log("Created session: %s (workdir: %s, mode: %s)", s.sessionID, workdir, s.currentMode)
 
-	return s.sendResponse(req.ID, NewSessionResult{SessionID: s.sessionID})
+	// Return session with modes
+	result := NewSessionResult{
+		SessionID: s.sessionID,
+		Modes: &SessionModeState{
+			CurrentModeID:  s.currentMode,
+			AvailableModes: defaultModes.AvailableModes,
+		},
+	}
+
+	return s.sendResponse(req.ID, result)
+}
+
+// handleSetSessionMode handles session mode change requests.
+func (s *MockACPServer) handleSetSessionMode(req JSONRPCRequest) error {
+	var params SetSessionModeParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return s.sendError(req.ID, -32602, "Invalid params", nil)
+	}
+
+	// Validate the mode exists
+	validMode := false
+	for _, mode := range defaultModes.AvailableModes {
+		if mode.ID == params.ModeID {
+			validMode = true
+			break
+		}
+	}
+
+	if !validMode {
+		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid mode: %s", params.ModeID), nil)
+	}
+
+	// Update the current mode
+	s.currentMode = params.ModeID
+	s.log("Session mode changed: %s -> %s", s.sessionID, s.currentMode)
+
+	// Send success response
+	if err := s.sendResponse(req.ID, SetSessionModeResult{}); err != nil {
+		return err
+	}
+
+	// Send notification about mode change
+	return s.sendCurrentModeUpdate(params.ModeID)
+}
+
+// sendCurrentModeUpdate sends a session update notification for mode change.
+func (s *MockACPServer) sendCurrentModeUpdate(modeID string) error {
+	notification := SessionNotification{
+		JSONRPC: "2.0",
+		Method:  "session/update",
+	}
+	notification.Params.SessionID = s.sessionID
+	notification.Params.Update = SessionUpdate{
+		CurrentModeUpdate: &SessionCurrentModeUpdate{
+			SessionUpdate: "current_mode_update",
+			CurrentModeID: modeID,
+		},
+	}
+
+	return s.sendNotification(notification)
 }
 
 func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {

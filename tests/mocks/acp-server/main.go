@@ -57,9 +57,22 @@ type MockACPServer struct {
 	verbose      bool
 	sessionID    string
 	initialized  bool
+	currentMode  string // Current session mode ID
 	reader       *bufio.Reader
 	writer       io.Writer
 }
+
+// Default modes provided by the mock server
+var defaultModes = &SessionModeState{
+	CurrentModeID: "code",
+	AvailableModes: []SessionMode{
+		{ID: "ask", Name: "Ask", Description: strPtr("Ask questions and get answers without making changes")},
+		{ID: "code", Name: "Code", Description: strPtr("Make code changes and modifications")},
+		{ID: "architect", Name: "Architect", Description: strPtr("Plan and design system architecture")},
+	},
+}
+
+func strPtr(s string) *string { return &s }
 
 // NewMockACPServer creates a new mock ACP server
 func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bool) *MockACPServer {
@@ -68,6 +81,7 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 		scenarioDir:  scenarioDir,
 		defaultDelay: defaultDelay,
 		verbose:      verbose,
+		currentMode:  defaultModes.CurrentModeID, // Initialize with default mode
 		reader:       bufio.NewReader(os.Stdin),
 		writer:       os.Stdout,
 	}

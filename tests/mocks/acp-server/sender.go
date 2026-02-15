@@ -52,3 +52,7 @@ func (s *MockACPServer) sendSessionUpdate(update SessionUpdate) error {
 
 	return s.send(notification)
 }
+
+func (s *MockACPServer) sendNotification(notification SessionNotification) error {
+	return s.send(notification)
+}
