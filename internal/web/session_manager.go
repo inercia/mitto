@@ -349,6 +349,31 @@ func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Tim
 	return sm.workspaceRCCache.GetLastModified(workingDir)
 }
 
+// GetUserDataSchema returns the user data schema defined in the workspace's .mittorc file.
+// Returns nil if no .mittorc exists or if it has no user_data schema section.
+// A nil schema means any attributes are allowed.
+func (sm *SessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return nil
+	}
+
+	rc, err := sm.workspaceRCCache.Get(workingDir)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Warn("Failed to load workspace .mittorc for user data schema",
+				"working_dir", workingDir,
+				"error", err)
+		}
+		return nil
+	}
+
+	if rc == nil {
+		return nil
+	}
+
+	return rc.UserDataSchema
+}
+
 // AddWorkspace adds a new workspace to the manager.
 // If workspaces were not loaded from CLI flags and a save callback is set,
 // the workspaces will be persisted to disk.
@@ -647,6 +672,15 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
+		OnConfigOptionChanged: func(sessionID string, configID, value string) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+					"session_id": sessionID,
+					"config_id":  configID,
+					"value":      value,
+				})
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -900,6 +934,15 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		},
 		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
+		},
+		OnConfigOptionChanged: func(sessionID string, configID, value string) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+					"session_id": sessionID,
+					"config_id":  configID,
+					"value":      value,
+				})
+			}
 		},
 	})
 	if err != nil {

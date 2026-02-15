@@ -2507,3 +2507,514 @@ func (e *testError) Error() string {
 func containsIgnoreCase(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
+
+// --- Config Options Tests ---
+
+// TestBackgroundSession_SetSessionModes_ConvertsToConfigOptions tests that legacy
+// modes are correctly converted to the config options format.
+func TestBackgroundSession_SetSessionModes_ConvertsToConfigOptions(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	description1 := "Ask questions without making changes"
+	description2 := "Make code changes"
+
+	modes := &acp.SessionModeState{
+		CurrentModeId: "ask",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description1},
+			{Id: "code", Name: "Code", Description: &description2},
+			{Id: "architect", Name: "Architect"}, // No description
+		},
+	}
+
+	bs.setSessionModes(modes)
+
+	// Verify config options were created
+	configOptions := bs.ConfigOptions()
+	if len(configOptions) != 1 {
+		t.Fatalf("ConfigOptions() length = %d, want 1", len(configOptions))
+	}
+
+	modeOption := configOptions[0]
+
+	// Verify the mode config option structure
+	if modeOption.ID != ConfigOptionCategoryMode {
+		t.Errorf("ID = %q, want %q", modeOption.ID, ConfigOptionCategoryMode)
+	}
+	if modeOption.Name != "Mode" {
+		t.Errorf("Name = %q, want %q", modeOption.Name, "Mode")
+	}
+	if modeOption.Category != ConfigOptionCategoryMode {
+		t.Errorf("Category = %q, want %q", modeOption.Category, ConfigOptionCategoryMode)
+	}
+	if modeOption.Type != ConfigOptionTypeSelect {
+		t.Errorf("Type = %q, want %q", modeOption.Type, ConfigOptionTypeSelect)
+	}
+	if modeOption.CurrentValue != "ask" {
+		t.Errorf("CurrentValue = %q, want %q", modeOption.CurrentValue, "ask")
+	}
+
+	// Verify options
+	if len(modeOption.Options) != 3 {
+		t.Fatalf("Options length = %d, want 3", len(modeOption.Options))
+	}
+
+	// Verify first option
+	if modeOption.Options[0].Value != "ask" {
+		t.Errorf("Options[0].Value = %q, want %q", modeOption.Options[0].Value, "ask")
+	}
+	if modeOption.Options[0].Name != "Ask" {
+		t.Errorf("Options[0].Name = %q, want %q", modeOption.Options[0].Name, "Ask")
+	}
+	if modeOption.Options[0].Description != description1 {
+		t.Errorf("Options[0].Description = %q, want %q", modeOption.Options[0].Description, description1)
+	}
+
+	// Verify option without description
+	if modeOption.Options[2].Description != "" {
+		t.Errorf("Options[2].Description = %q, want empty", modeOption.Options[2].Description)
+	}
+
+	// Verify usesLegacyModes flag
+	bs.configMu.RLock()
+	usesLegacy := bs.usesLegacyModes
+	bs.configMu.RUnlock()
+	if !usesLegacy {
+		t.Error("usesLegacyModes should be true after setSessionModes")
+	}
+}
+
+// TestBackgroundSession_SetSessionModes_NilModes tests that nil modes are handled gracefully.
+func TestBackgroundSession_SetSessionModes_NilModes(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	// Should not panic
+	bs.setSessionModes(nil)
+
+	// Config options should be empty/nil
+	configOptions := bs.ConfigOptions()
+	if len(configOptions) != 0 {
+		t.Errorf("ConfigOptions() length = %d, want 0", len(configOptions))
+	}
+}
+
+// TestBackgroundSession_ConfigOptions_ReturnsCopy tests that ConfigOptions returns
+// a copy, not a reference to the internal slice.
+func TestBackgroundSession_ConfigOptions_ReturnsCopy(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	description := "Test description"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "ask",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// Get config options
+	options1 := bs.ConfigOptions()
+	options2 := bs.ConfigOptions()
+
+	// Modify the first copy
+	if len(options1) > 0 {
+		options1[0].CurrentValue = "modified"
+	}
+
+	// Second copy should be unaffected
+	if len(options2) > 0 && options2[0].CurrentValue == "modified" {
+		t.Error("ConfigOptions() should return a copy, not a reference")
+	}
+}
+
+// TestBackgroundSession_GetConfigValue tests getting config values.
+func TestBackgroundSession_GetConfigValue(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	description := "Test mode"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "code",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+			{Id: "code", Name: "Code", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// Get mode value
+	value := bs.GetConfigValue(ConfigOptionCategoryMode)
+	if value != "code" {
+		t.Errorf("GetConfigValue(%q) = %q, want %q", ConfigOptionCategoryMode, value, "code")
+	}
+
+	// Get non-existent config
+	value = bs.GetConfigValue("nonexistent")
+	if value != "" {
+		t.Errorf("GetConfigValue(%q) = %q, want empty", "nonexistent", value)
+	}
+}
+
+// TestBackgroundSession_OnCurrentModeChanged tests that mode changes from the agent
+// update the config options and notify callbacks.
+func TestBackgroundSession_OnCurrentModeChanged(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	// Set up modes first
+	description := "Test mode"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "ask",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+			{Id: "code", Name: "Code", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// Track callback calls
+	var callbackCalls []struct {
+		sessionID string
+		configID  string
+		value     string
+	}
+	var callbackMu sync.Mutex
+	bs.onConfigChanged = func(sessionID, configID, value string) {
+		callbackMu.Lock()
+		callbackCalls = append(callbackCalls, struct {
+			sessionID string
+			configID  string
+			value     string
+		}{sessionID, configID, value})
+		callbackMu.Unlock()
+	}
+	bs.persistedID = "test-session"
+
+	// Simulate mode change from agent
+	bs.onCurrentModeChanged("code")
+
+	// Verify current value was updated
+	value := bs.GetConfigValue(ConfigOptionCategoryMode)
+	if value != "code" {
+		t.Errorf("GetConfigValue after mode change = %q, want %q", value, "code")
+	}
+
+	// Verify callback was called
+	callbackMu.Lock()
+	numCalls := len(callbackCalls)
+	callbackMu.Unlock()
+	if numCalls != 1 {
+		t.Fatalf("Callback called %d times, want 1", numCalls)
+	}
+
+	callbackMu.Lock()
+	call := callbackCalls[0]
+	callbackMu.Unlock()
+	if call.sessionID != "test-session" {
+		t.Errorf("Callback sessionID = %q, want %q", call.sessionID, "test-session")
+	}
+	if call.configID != ConfigOptionCategoryMode {
+		t.Errorf("Callback configID = %q, want %q", call.configID, ConfigOptionCategoryMode)
+	}
+	if call.value != "code" {
+		t.Errorf("Callback value = %q, want %q", call.value, "code")
+	}
+}
+
+// TestBackgroundSession_OnCurrentModeChanged_Closed tests that mode changes are
+// ignored when the session is closed.
+func TestBackgroundSession_OnCurrentModeChanged_Closed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	bs := &BackgroundSession{
+		ctx:       ctx,
+		cancel:    cancel,
+		observers: make(map[SessionObserver]struct{}),
+	}
+
+	// Set up modes
+	description := "Test mode"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "ask",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// Close the session properly using the Close method which sets closed flag
+	bs.Close("test")
+
+	// Track callback calls
+	callbackCalled := false
+	bs.onConfigChanged = func(sessionID, configID, value string) {
+		callbackCalled = true
+	}
+
+	// Try to change mode - should be ignored
+	bs.onCurrentModeChanged("code")
+
+	if callbackCalled {
+		t.Error("Callback should not be called when session is closed")
+	}
+
+	// Value should still be "ask"
+	value := bs.GetConfigValue(ConfigOptionCategoryMode)
+	if value != "ask" {
+		t.Errorf("GetConfigValue after ignored mode change = %q, want %q", value, "ask")
+	}
+}
+
+// TestBackgroundSession_SetConfigOption_NoACP tests SetConfigOption error handling
+// when there's no ACP connection.
+func TestBackgroundSession_SetConfigOption_NoACP(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		ctx:     ctx,
+		cancel:  cancel,
+		acpConn: nil, // No ACP connection
+	}
+
+	// Set up modes
+	description := "Test mode"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "ask",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+			{Id: "code", Name: "Code", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// Try to set config option - should fail
+	err := bs.SetConfigOption(context.Background(), ConfigOptionCategoryMode, "code")
+	if err == nil {
+		t.Error("SetConfigOption should fail when there's no ACP connection")
+	}
+	if !strings.Contains(err.Error(), "no ACP connection") {
+		t.Errorf("Error message = %q, should contain 'no ACP connection'", err.Error())
+	}
+}
+
+// TestBackgroundSession_SetConfigOption_InvalidConfigID tests SetConfigOption error
+// handling for unknown config IDs.
+func TestBackgroundSession_SetConfigOption_InvalidConfigID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a mock ACP connection (we just need it to not be nil)
+	// Use a type assertion trick to create a non-nil pointer without actually initializing
+	var mockConn *acp.ClientSideConnection
+	// We can't easily create a real ClientSideConnection, so test the error path differently
+	// by verifying that after passing acpConn check, we get the right error
+
+	bs := &BackgroundSession{
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	// Set up modes - but don't set acpConn so we get "no ACP connection" error first
+	// This tests that order of checks: IsClosed -> acpConn -> configID validation
+	description := "Test mode"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "ask",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// First verify no ACP connection error
+	err := bs.SetConfigOption(context.Background(), "unknown_config", "value")
+	if err == nil {
+		t.Error("SetConfigOption should fail when no ACP connection")
+	}
+	if !strings.Contains(err.Error(), "no ACP connection") {
+		t.Errorf("Error message = %q, should contain 'no ACP connection'", err.Error())
+	}
+
+	// Note: Testing unknown config ID validation requires a real ACP connection
+	// which requires a full mock ACP server setup. The unit test above verifies
+	// the earlier check in the code path.
+	_ = mockConn // silence unused variable warning
+}
+
+// TestBackgroundSession_SetConfigOption_InvalidValue tests SetConfigOption error
+// handling for invalid values.
+// Note: Full validation testing requires a mock ACP server. This test verifies
+// the code path up to the ACP connection check.
+func TestBackgroundSession_SetConfigOption_InvalidValue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	// Set up modes - but no acpConn, so we get "no ACP connection" error
+	// The invalid value check happens after the ACP connection check
+	description := "Test mode"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "ask",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// Try to set a value - should fail with no ACP connection
+	err := bs.SetConfigOption(context.Background(), ConfigOptionCategoryMode, "invalid_mode")
+	if err == nil {
+		t.Error("SetConfigOption should fail when no ACP connection")
+	}
+	if !strings.Contains(err.Error(), "no ACP connection") {
+		t.Errorf("Error message = %q, should contain 'no ACP connection'", err.Error())
+	}
+
+	// Note: Testing invalid value validation requires a real ACP connection
+	// which requires a full mock ACP server setup. Integration tests cover this.
+}
+
+// TestBackgroundSession_SetConfigOption_Closed tests SetConfigOption error handling
+// when the session is closed.
+func TestBackgroundSession_SetConfigOption_Closed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	bs := &BackgroundSession{
+		ctx:       ctx,
+		cancel:    cancel,
+		observers: make(map[SessionObserver]struct{}),
+	}
+
+	// Close the session properly using the Close method which sets closed flag
+	bs.Close("test")
+
+	// Try to set config option - should fail
+	err := bs.SetConfigOption(context.Background(), ConfigOptionCategoryMode, "code")
+	if err == nil {
+		t.Error("SetConfigOption should fail when session is closed")
+	}
+	if !strings.Contains(err.Error(), "session is closed") {
+		t.Errorf("Error message = %q, should contain 'session is closed'", err.Error())
+	}
+}
+
+// TestBackgroundSession_ConfigOptions_Empty tests that ConfigOptions returns nil
+// when no config options are set.
+func TestBackgroundSession_ConfigOptions_Empty(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	configOptions := bs.ConfigOptions()
+	if configOptions != nil {
+		t.Errorf("ConfigOptions() = %v, want nil", configOptions)
+	}
+}
+
+// TestBackgroundSession_SetSessionModes_PersistsToMetadata tests that the initial
+// mode is persisted to metadata.
+func TestBackgroundSession_SetSessionModes_PersistsToMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-mode-persist"
+
+	// Create session in store
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: sessionID,
+		store:       store,
+	}
+
+	// Set modes
+	description := "Test mode"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "code",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+			{Id: "code", Name: "Code", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// Verify metadata was updated
+	updatedMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updatedMeta.CurrentModeID != "code" {
+		t.Errorf("Metadata.CurrentModeID = %q, want %q", updatedMeta.CurrentModeID, "code")
+	}
+}
+
+// TestBackgroundSession_OnCurrentModeChanged_PersistsToMetadata tests that mode
+// changes from the agent are persisted to metadata.
+func TestBackgroundSession_OnCurrentModeChanged_PersistsToMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-mode-change-persist"
+
+	// Create session in store
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		persistedID: sessionID,
+		store:       store,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+
+	// Set initial modes
+	description := "Test mode"
+	modes := &acp.SessionModeState{
+		CurrentModeId: "ask",
+		AvailableModes: []acp.SessionMode{
+			{Id: "ask", Name: "Ask", Description: &description},
+			{Id: "code", Name: "Code", Description: &description},
+		},
+	}
+	bs.setSessionModes(modes)
+
+	// Simulate mode change from agent
+	bs.onCurrentModeChanged("code")
+
+	// Verify metadata was updated
+	updatedMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updatedMeta.CurrentModeID != "code" {
+		t.Errorf("Metadata.CurrentModeID = %q, want %q", updatedMeta.CurrentModeID, "code")
+	}
+}

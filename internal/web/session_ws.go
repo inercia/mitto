@@ -239,6 +239,16 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			c.logger.Warn("Failed to get metadata for connected message", "error", err)
 		}
 
+		// Get periodic prompts state
+		// periodic_enabled = true means a periodic config exists (session is in periodic mode)
+		// This determines UI mode (shows frequency panel and lock/unlock buttons)
+		periodicStore := c.store.Periodic(c.sessionID)
+		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
+			data["periodic_enabled"] = true
+		} else {
+			data["periodic_enabled"] = false
+		}
+
 		// Get queue length for the session
 		queue := c.store.Queue(c.sessionID)
 		if queueLen, err := queue.Len(); err == nil {
@@ -271,6 +281,14 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 	if bs != nil {
 		if commands := bs.AvailableCommands(); len(commands) > 0 {
 			data["available_commands"] = commands
+		}
+	}
+
+	// Include session config options from the agent
+	// This includes modes (converted to config option format) and any other config options
+	if bs != nil {
+		if configOptions := bs.ConfigOptions(); len(configOptions) > 0 {
+			data["config_options"] = configOptions
 		}
 	}
 
@@ -386,6 +404,17 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			return
 		}
 		c.handleKeepalive(data.ClientTime, data.LastSeenSeq)
+
+	case WSMsgTypeSetConfigOption:
+		var data struct {
+			ConfigID string `json:"config_id"`
+			Value    string `json:"value"`
+		}
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
+		c.handleSetConfigOption(data.ConfigID, data.Value)
 	}
 }
 
@@ -851,6 +880,43 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 		"queue_length":   queueLength,
 		"status":         status,
 	})
+}
+
+// handleSetConfigOption handles a request to change a session config option value.
+// This sends the request to the ACP agent and broadcasts the change.
+// For legacy modes, use configID "mode" with the desired mode value.
+func (c *SessionWSClient) handleSetConfigOption(configID, value string) {
+	if configID == "" {
+		c.sendError("config_id is required")
+		return
+	}
+	if value == "" {
+		c.sendError("value is required")
+		return
+	}
+
+	if c.bgSession == nil {
+		c.sendError("No active session")
+		return
+	}
+
+	// Call the background session to set the config option
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := c.bgSession.SetConfigOption(ctx, configID, value); err != nil {
+		if c.logger != nil {
+			c.logger.Error("Failed to set config option",
+				"config_id", configID,
+				"value", value,
+				"error", err)
+		}
+		c.sendError("Failed to set config: " + err.Error())
+		return
+	}
+
+	// The config change will be broadcast to all clients via the onConfigChanged callback
+	// which is set up in SessionManager
 }
 
 // getServerMaxSeq returns the highest sequence number for this session.
@@ -1463,6 +1529,16 @@ func (c *SessionWSClient) OnAvailableCommandsUpdated(commands []AvailableCommand
 	c.sendMessage(WSMsgTypeAvailableCommandsUpdated, map[string]interface{}{
 		"session_id": c.sessionID,
 		"commands":   commands,
+	})
+}
+
+// OnConfigOptionChanged is called when a session config option changes.
+// This is used to notify clients of mode changes and other config option updates.
+func (c *SessionWSClient) OnConfigOptionChanged(configID, value string) {
+	c.sendMessage(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+		"session_id": c.sessionID,
+		"config_id":  configID,
+		"value":      value,
 	})
 }
 
