@@ -502,7 +502,7 @@ func TestRecorder_WithPruneConfig(t *testing.T) {
 	}
 
 	// End the session
-	if err := recorder.End("user_quit"); err != nil {
+	if err := recorder.End(SessionEndData{Reason: "user_quit"}); err != nil {
 		t.Fatalf("End failed: %v", err)
 	}
 }
