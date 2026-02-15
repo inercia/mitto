@@ -37,7 +37,12 @@ Before creating commits, verify we're on an appropriate branch:
    - Ask if they want to:
      - **Create a feature branch** - suggest a name based on the changes (e.g., `feat/add-feature-x` or `fix/issue-description`)
      - **Continue on current branch** - proceed with commits on the protected branch
-3. If already on a feature branch, proceed normally
+3. If already on a feature branch,
+   - fetch latest changes in the target branch (usually "main") and rebase the
+      current branch on top of them.
+   - Ask if they want to:
+     - **Create a new feature branch** - suggest a name based on the changes (e.g., `feat/add-feature-x` or `fix/issue-description`)
+     - **Continue on the current feature branch** - proceed with commits on this branch
 
 ### 2. Analyze Changes
 
