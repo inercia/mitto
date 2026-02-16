@@ -298,3 +298,97 @@ func TestConnection_Done(t *testing.T) {
 		// Expected
 	}
 }
+
+// TestNewConnection_ShellQuotingErrors tests that invalid shell quoting is rejected.
+// This is a regression test for https://github.com/inercia/mitto/issues/16
+func TestNewConnection_ShellQuotingErrors(t *testing.T) {
+	testCases := []struct {
+		name    string
+		command string
+		errMsg  string
+	}{
+		{
+			name:    "unclosed single quote",
+			command: "sh -c 'unclosed",
+			errMsg:  "failed to parse command", // shlex parsing error
+		},
+		{
+			name:    "unclosed double quote",
+			command: `sh -c "unclosed`,
+			errMsg:  "failed to parse command", // shlex parsing error
+		},
+		{
+			name:    "empty command",
+			command: "",
+			errMsg:  "empty command",
+		},
+		{
+			name:    "only whitespace",
+			command: "   ",
+			errMsg:  "empty command",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			_, err := NewConnection(ctx, tc.command, "", true, nil, nil, nil)
+
+			if err == nil {
+				t.Errorf("Expected error for command %q, got nil", tc.command)
+				return
+			}
+			if !strings.Contains(err.Error(), tc.errMsg) {
+				t.Errorf("Error should contain %q, got: %v", tc.errMsg, err)
+			}
+		})
+	}
+}
+
+// TestNewConnection_ShellQuotingSuccess tests that properly quoted commands are parsed correctly.
+// This is a regression test for https://github.com/inercia/mitto/issues/16
+// Before the fix, commands like: sh -c 'cd /dir && cmd' would be incorrectly split into:
+//
+//	["sh", "-c", "'cd", "/dir", "&&", "cmd'"]
+//
+// After the fix using shlex, they are correctly split into:
+//
+//	["sh", "-c", "cd /dir && cmd"]
+func TestNewConnection_ShellQuotingSuccess(t *testing.T) {
+	// These commands should parse correctly and create a connection.
+	// We close them immediately to avoid resource leaks.
+	testCases := []struct {
+		name    string
+		command string
+	}{
+		{
+			name:    "simple command",
+			command: "echo hello",
+		},
+		{
+			name:    "single quoted argument",
+			command: "sh -c 'echo hello world'",
+		},
+		{
+			name:    "double quoted argument",
+			command: `sh -c "echo hello world"`,
+		},
+		{
+			name:    "complex single quoted shell command",
+			command: "sh -c 'cd /tmp && echo test'",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn, err := NewConnection(ctx, tc.command, "", true, nil, nil, nil)
+			if err != nil {
+				t.Errorf("Unexpected error for command %q: %v", tc.command, err)
+				return
+			}
+			// Clean up
+			conn.Close()
+		})
+	}
+}
