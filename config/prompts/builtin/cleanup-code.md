@@ -1,7 +1,7 @@
 ---
 name: "Cleanup Code"
 description: "Remove dead code, unused imports, and outdated documentation"
-backgroundColor: "#E8F5E9"
+backgroundColor: "#C8E6C9"
 ---
 
 Analyze the codebase for cleanup opportunities and propose a prioritized list of changes.
