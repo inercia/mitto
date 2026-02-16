@@ -925,7 +925,7 @@ To use `cwd`, you must use the default `exec` runner (no restrictions):
 acp:
   - my-agent:
       command: my-agent --acp
-      cwd: /home/user/my-project  # Only works with exec runner
+      cwd: /home/user/my-project # Only works with exec runner
 ```
 
 See [ACP Server Configuration](web/acp.md) for more details on the `cwd` option.

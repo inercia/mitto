@@ -1,4 +1,3 @@
-
 # Scanner Defense
 
 When external access is enabled (`external_port >= 0`), Mitto automatically activates

@@ -658,61 +658,61 @@ func TestDataURLImages(t *testing.T) {
 	redPixelBase64 := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
 
 	tests := []struct {
-		name                       string
-		markdown                   string
-		wantImgTag                 bool
-		wantDataURLNoSanitization  bool // Expected when NOT sanitizing
+		name                        string
+		markdown                    string
+		wantImgTag                  bool
+		wantDataURLNoSanitization   bool // Expected when NOT sanitizing
 		wantDataURLWithSanitization bool // Expected when sanitizing (bluemonday blocks SVG)
 	}{
 		{
-			name:                       "data URL PNG image",
-			markdown:                   "![red pixel](data:image/png;base64," + redPixelBase64 + ")",
-			wantImgTag:                 true,
-			wantDataURLNoSanitization:  true,
+			name:                        "data URL PNG image",
+			markdown:                    "![red pixel](data:image/png;base64," + redPixelBase64 + ")",
+			wantImgTag:                  true,
+			wantDataURLNoSanitization:   true,
 			wantDataURLWithSanitization: true,
 		},
 		{
-			name:                       "data URL with alt text",
-			markdown:                   "Here is an inline image: ![inline graphic](data:image/png;base64," + redPixelBase64 + ")",
-			wantImgTag:                 true,
-			wantDataURLNoSanitization:  true,
+			name:                        "data URL with alt text",
+			markdown:                    "Here is an inline image: ![inline graphic](data:image/png;base64," + redPixelBase64 + ")",
+			wantImgTag:                  true,
+			wantDataURLNoSanitization:   true,
 			wantDataURLWithSanitization: true,
 		},
 		{
-			name:                       "data URL JPEG image",
-			markdown:                   "![photo](data:image/jpeg;base64,/9j/4AAQSkZJRg==)",
-			wantImgTag:                 true,
-			wantDataURLNoSanitization:  true,
+			name:                        "data URL JPEG image",
+			markdown:                    "![photo](data:image/jpeg;base64,/9j/4AAQSkZJRg==)",
+			wantImgTag:                  true,
+			wantDataURLNoSanitization:   true,
 			wantDataURLWithSanitization: true,
 		},
 		{
-			name:                       "data URL GIF image",
-			markdown:                   "![animation](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)",
-			wantImgTag:                 true,
-			wantDataURLNoSanitization:  true,
+			name:                        "data URL GIF image",
+			markdown:                    "![animation](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)",
+			wantImgTag:                  true,
+			wantDataURLNoSanitization:   true,
 			wantDataURLWithSanitization: true,
 		},
 		{
 			// WebP is a modern image format also supported
-			name:                       "data URL WebP image",
-			markdown:                   "![webp](data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=)",
-			wantImgTag:                 true,
-			wantDataURLNoSanitization:  true,
+			name:                        "data URL WebP image",
+			markdown:                    "![webp](data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=)",
+			wantImgTag:                  true,
+			wantDataURLNoSanitization:   true,
 			wantDataURLWithSanitization: true,
 		},
 		{
 			// SVG data URLs are blocked for security - SVG can contain embedded JavaScript
-			name:                       "data URL SVG image - blocked for security",
-			markdown:                   "![icon](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=)",
-			wantImgTag:                 true,
-			wantDataURLNoSanitization:  true,  // Goldmark renders it
+			name:                        "data URL SVG image - blocked for security",
+			markdown:                    "![icon](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=)",
+			wantImgTag:                  true,
+			wantDataURLNoSanitization:   true,  // Goldmark renders it
 			wantDataURLWithSanitization: false, // bluemonday's AllowDataURIImages() blocks SVG
 		},
 		{
-			name:                       "regular https image still works",
-			markdown:                   "![photo](https://example.com/image.png)",
-			wantImgTag:                 true,
-			wantDataURLNoSanitization:  false,
+			name:                        "regular https image still works",
+			markdown:                    "![photo](https://example.com/image.png)",
+			wantImgTag:                  true,
+			wantDataURLNoSanitization:   false,
 			wantDataURLWithSanitization: false,
 		},
 	}
