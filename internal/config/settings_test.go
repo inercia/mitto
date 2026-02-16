@@ -80,8 +80,8 @@ func TestLoadSettings_ReadsExistingSettings(t *testing.T) {
 func TestConfigToSettings_RoundTrip(t *testing.T) {
 	original := &Config{
 		ACPServers: []ACPServer{
-			{Name: "server1", Command: "cmd1"},
-			{Name: "server2", Command: "cmd2"},
+			{Name: "server1", Command: "cmd1", Cwd: "/home/user/projects"},
+			{Name: "server2", Command: "cmd2"}, // no cwd
 		},
 		Web: WebConfig{
 			Host:  "0.0.0.0",
@@ -106,6 +106,9 @@ func TestConfigToSettings_RoundTrip(t *testing.T) {
 		}
 		if result.ACPServers[i].Command != original.ACPServers[i].Command {
 			t.Errorf("ACPServers[%d].Command = %q, want %q", i, result.ACPServers[i].Command, original.ACPServers[i].Command)
+		}
+		if result.ACPServers[i].Cwd != original.ACPServers[i].Cwd {
+			t.Errorf("ACPServers[%d].Cwd = %q, want %q", i, result.ACPServers[i].Cwd, original.ACPServers[i].Cwd)
 		}
 	}
 	if result.Web.Host != original.Web.Host {

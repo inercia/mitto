@@ -43,6 +43,9 @@ type WorkspaceSettings struct {
 	ACPServer string `json:"acp_server"`
 	// ACPCommand is the shell command to start the ACP server
 	ACPCommand string `json:"acp_command"`
+	// ACPCwd is the working directory for the ACP server process.
+	// If empty, the ACP process inherits the current working directory.
+	ACPCwd string `json:"acp_cwd,omitempty"`
 	// WorkingDir is the absolute path to the working directory
 	WorkingDir string `json:"working_dir"`
 	// RestrictedRunner is the runner type to use for this workspace.

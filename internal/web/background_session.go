@@ -115,8 +115,9 @@ type BackgroundSession struct {
 	// ACP process restart tracking
 	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
 	// To prevent infinite restart loops, we limit restarts to maxACPRestarts within
-	// acpRestartWindow. The acpCommand is stored so we can restart the process.
+	// acpRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
 	acpCommand   string      // Command used to start ACP process (for restart)
+	acpCwd       string      // Working directory for ACP process (for restart)
 	restartCount int         // Number of restarts in current window
 	restartTimes []time.Time // Timestamps of recent restarts (for rate limiting)
 	restartMu    sync.Mutex  // Protects restart tracking fields
@@ -134,6 +135,7 @@ type BackgroundSession struct {
 type BackgroundSessionConfig struct {
 	PersistedID  string
 	ACPCommand   string
+	ACPCwd       string // Working directory for the ACP process (not the session working dir)
 	ACPServer    string
 	ACPSessionID string // ACP-assigned session ID for resumption (optional)
 	WorkingDir   string
@@ -190,6 +192,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
 		acpCommand:              cfg.ACPCommand, // Store for restart
+		acpCwd:                  cfg.ACPCwd,     // Store for restart
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -255,7 +258,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	}
 
 	// Start ACP process (no ACP session ID for new sessions)
-	if err := bs.startACPProcess(cfg.ACPCommand, cfg.WorkingDir, ""); err != nil {
+	if err := bs.startACPProcess(cfg.ACPCommand, cfg.ACPCwd, cfg.WorkingDir, ""); err != nil {
 		cancel()
 		if bs.recorder != nil {
 			bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
@@ -316,6 +319,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
 		acpCommand:              config.ACPCommand, // Store for restart
+		acpCwd:                  config.ACPCwd,     // Store for restart
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -374,7 +378,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	// Start ACP process, passing the ACP session ID for potential resumption
-	if err := bs.startACPProcess(config.ACPCommand, config.WorkingDir, config.ACPSessionID); err != nil {
+	if err := bs.startACPProcess(config.ACPCommand, config.ACPCwd, config.WorkingDir, config.ACPSessionID); err != nil {
 		cancel()
 		if bs.recorder != nil {
 			bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
@@ -870,7 +874,7 @@ func (bs *BackgroundSession) restartACPProcess() error {
 	bs.recordRestart()
 
 	// Start a new ACP process, attempting to resume the session
-	err := bs.startACPProcess(bs.acpCommand, bs.workingDir, bs.acpID)
+	err := bs.startACPProcess(bs.acpCommand, bs.acpCwd, bs.workingDir, bs.acpID)
 	if err != nil {
 		if bs.logger != nil {
 			bs.logger.Error("Failed to restart ACP process",
@@ -901,8 +905,9 @@ func (bs *BackgroundSession) restartACPProcess() error {
 // startACPProcess starts the ACP server process and initializes the connection.
 // If acpSessionID is provided and the agent supports session loading, it attempts
 // to resume that session. Otherwise, it creates a new session.
+// The acpCwd parameter sets the working directory for the ACP process itself.
 // This method includes retry logic for transient failures during startup.
-func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionID string) error {
+func (bs *BackgroundSession) startACPProcess(acpCommand, acpCwd, workingDir, acpSessionID string) error {
 	var lastErr error
 	for attempt := 0; attempt < maxACPStartRetries; attempt++ {
 		if attempt > 0 {
@@ -920,7 +925,7 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, workingDir, acpSessionI
 			}
 		}
 
-		err := bs.doStartACPProcess(acpCommand, workingDir, acpSessionID)
+		err := bs.doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID)
 		if err == nil {
 			return nil
 		}
@@ -1015,7 +1020,7 @@ func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector) {
 	}()
 }
 
-func (bs *BackgroundSession) doStartACPProcess(acpCommand, workingDir, acpSessionID string) error {
+func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID string) error {
 	args := strings.Fields(acpCommand)
 	if len(args) == 0 {
 		return &sessionError{"empty ACP command"}
@@ -1035,6 +1040,12 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, workingDir, acpSessio
 	// Use runner if configured, otherwise direct execution
 	if bs.runner != nil {
 		// Use restricted runner with RunWithPipes
+		// Note: acpCwd is not supported with restricted runners
+		if acpCwd != "" && bs.logger != nil {
+			bs.logger.Warn("cwd is not supported with restricted runners, ignoring",
+				"cwd", acpCwd,
+				"runner_type", bs.runner.Type())
+		}
 		if bs.logger != nil {
 			bs.logger.Info("starting ACP process through restricted runner",
 				"runner_type", bs.runner.Type(),
@@ -1054,6 +1065,16 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, workingDir, acpSessio
 	} else {
 		// Direct execution (no restrictions)
 		cmd = exec.CommandContext(bs.ctx, args[0], args[1:]...)
+
+		// Set working directory for the ACP process if specified
+		if acpCwd != "" {
+			cmd.Dir = acpCwd
+			if bs.logger != nil {
+				bs.logger.Info("setting ACP process working directory",
+					"cwd", acpCwd,
+					"command", acpCommand)
+			}
+		}
 
 		stdin, err = cmd.StdinPipe()
 		if err != nil {

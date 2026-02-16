@@ -29,9 +29,15 @@ type Connection struct {
 //
 // If r is provided, the process is started through the restricted runner.
 // If r is nil, the process is started directly (no restrictions).
+//
+// The cwd parameter sets the working directory for the ACP process.
+// If empty, the process inherits the current working directory.
+// Note: cwd is only supported for direct execution (when r is nil).
+// When using a restricted runner, cwd is ignored (logged as warning if set).
 func NewConnection(
 	ctx context.Context,
 	command string,
+	cwd string,
 	autoApprove bool,
 	output func(string),
 	logger *slog.Logger,
@@ -59,6 +65,13 @@ func NewConnection(
 		// Create a cancellable context so we can terminate the process in Close()
 		var runCtx context.Context
 		runCtx, cancel = context.WithCancel(ctx)
+
+		// Note: cwd is not supported with restricted runners
+		if cwd != "" && logger != nil {
+			logger.Warn("cwd is not supported with restricted runners, ignoring",
+				"cwd", cwd,
+				"runner_type", r.Type())
+		}
 
 		if logger != nil {
 			logger.Info("starting ACP process through restricted runner",
@@ -88,6 +101,16 @@ func NewConnection(
 		// Direct execution (no restrictions)
 		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Stderr = os.Stderr
+
+		// Set working directory for the ACP process if specified
+		if cwd != "" {
+			cmd.Dir = cwd
+			if logger != nil {
+				logger.Info("setting ACP process working directory",
+					"cwd", cwd,
+					"command", command)
+			}
+		}
 
 		stdin, err = cmd.StdinPipe()
 		if err != nil {

@@ -17,6 +17,10 @@ type ACPServer struct {
 	Name string
 	// Command is the shell command to start the ACP server
 	Command string
+	// Cwd is the working directory for the ACP server process.
+	// If empty, the process inherits the current working directory.
+	// This eliminates the need for shell tricks like 'sh -c "cd /some/dir && command"'.
+	Cwd string
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt
 	// RestrictedRunners contains per-runner-type configuration for this agent.
@@ -819,6 +823,7 @@ type Config struct {
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
 type rawACPServerConfig struct {
 	Command string `yaml:"command"`
+	Cwd     string `yaml:"cwd"`
 	Prompts []struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
@@ -978,6 +983,7 @@ func Parse(data []byte) (*Config, error) {
 			acpServer := ACPServer{
 				Name:              name,
 				Command:           server.Command,
+				Cwd:               server.Cwd,
 				RestrictedRunners: server.RestrictedRunners,
 			}
 			// Copy server-specific prompts

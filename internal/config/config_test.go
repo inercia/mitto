@@ -55,6 +55,35 @@ web:
 	}
 }
 
+func TestParse_ACPServerCwd(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      cwd: "/home/user/projects"
+  - claude:
+      command: "claude-code --acp"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.ACPServers) != 2 {
+		t.Errorf("ACPServers count = %d, want 2", len(cfg.ACPServers))
+	}
+
+	// First server should have cwd set
+	if cfg.ACPServers[0].Cwd != "/home/user/projects" {
+		t.Errorf("first server cwd = %q, want %q", cfg.ACPServers[0].Cwd, "/home/user/projects")
+	}
+
+	// Second server should have empty cwd
+	if cfg.ACPServers[1].Cwd != "" {
+		t.Errorf("second server cwd = %q, want empty string", cfg.ACPServers[1].Cwd)
+	}
+}
+
 func TestParse_EmptyACPServers(t *testing.T) {
 	yaml := `
 acp: []
