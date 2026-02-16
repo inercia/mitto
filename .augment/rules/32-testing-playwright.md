@@ -111,7 +111,27 @@ export const timeouts = {
 
 ---
 
-## Manual Testing Workflow
+## Manual Testing with Playwright MCP
+
+**⚠️ IMPORTANT: When doing manual browser testing, you MUST use the Playwright MCP tools instead of playwright-cli.**
+
+The Playwright MCP provides these tools for browser automation:
+
+| Tool | Description |
+|------|-------------|
+| `browser_navigate_playwright` | Navigate to a URL |
+| `browser_snapshot_playwright` | Capture accessibility snapshot (preferred for interaction) |
+| `browser_take_screenshot_playwright` | Take a screenshot |
+| `browser_click_playwright` | Click on an element by ref |
+| `browser_type_playwright` | Type text into an element |
+| `browser_fill_form_playwright` | Fill form fields |
+| `browser_press_key_playwright` | Press a key |
+| `browser_hover_playwright` | Hover over an element |
+| `browser_wait_for_playwright` | Wait for text or time |
+| `browser_console_messages_playwright` | Get console messages (for error checking) |
+| `browser_close_playwright` | Close the browser |
+
+### Manual Testing Workflow
 
 When running tests manually (not via `make test-ui`), you MUST create a proper test config:
 
@@ -145,13 +165,59 @@ web:
 EOF
 ```
 
-### Step 3: Start Server and Run Tests
+### Step 3: Start Server
 
 ```bash
 mitto web --config $TEST_DIR/.mittorc --dir $TEST_DIR/workspace --debug &
 sleep 2
 curl -s http://127.0.0.1:8089/api/config > /dev/null && echo "Ready!"
+```
 
+### Step 4: Use Playwright MCP Tools
+
+Navigate to the app:
+```
+Tool: browser_navigate_playwright
+Parameters: { "url": "http://127.0.0.1:8089" }
+```
+
+Take a snapshot to see element refs:
+```
+Tool: browser_snapshot_playwright
+Parameters: {}
+```
+
+Interact with elements using refs from the snapshot:
+```
+Tool: browser_click_playwright
+Parameters: { "ref": "e3", "element": "description" }
+
+Tool: browser_type_playwright
+Parameters: { "ref": "e5", "text": "test message" }
+
+Tool: browser_press_key_playwright
+Parameters: { "key": "Enter" }
+```
+
+### Step 5: Cleanup
+
+Close the browser and stop the server:
+```
+Tool: browser_close_playwright
+Parameters: {}
+```
+
+```bash
+pkill -f "mitto web.*8089" || true
+```
+
+---
+
+## Automated Testing with `make test-ui`
+
+For automated Playwright tests (npm-based), use the existing test infrastructure:
+
+```bash
 npx playwright test --headed
 # or interactive mode:
 npx playwright codegen http://127.0.0.1:8089
