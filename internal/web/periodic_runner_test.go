@@ -309,3 +309,120 @@ func TestTruncatePrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestPeriodicRunner_TriggerNow_NoStore(t *testing.T) {
+	runner := NewPeriodicRunner(nil, nil, nil)
+	err := runner.TriggerNow("test-session")
+	if err != ErrSessionStoreNotAvailable {
+		t.Errorf("TriggerNow() error = %v, want %v", err, ErrSessionStoreNotAvailable)
+	}
+}
+
+func TestPeriodicRunner_TriggerNow_SessionNotFound(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	err = runner.TriggerNow("nonexistent-session")
+	if err != session.ErrSessionNotFound {
+		t.Errorf("TriggerNow() error = %v, want %v", err, session.ErrSessionNotFound)
+	}
+}
+
+func TestPeriodicRunner_TriggerNow_NoPeriodicConfig(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create a session without periodic config
+	meta := session.Metadata{
+		SessionID:  "test-session-1",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	err = runner.TriggerNow(meta.SessionID)
+	if err != session.ErrPeriodicNotFound {
+		t.Errorf("TriggerNow() error = %v, want %v", err, session.ErrPeriodicNotFound)
+	}
+}
+
+func TestPeriodicRunner_TriggerNow_NotEnabled(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-2",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	// Create a periodic config with enabled=false
+	periodicStore := store.Periodic(meta.SessionID)
+	err = periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   false,
+	})
+	if err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	err = runner.TriggerNow(meta.SessionID)
+	if err != ErrPeriodicNotEnabled {
+		t.Errorf("TriggerNow() error = %v, want %v", err, ErrPeriodicNotEnabled)
+	}
+}
+
+func TestPeriodicRunner_TriggerNow_NoSessionManager(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create a session
+	meta := session.Metadata{
+		SessionID:  "test-session-3",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	// Create an enabled periodic config
+	periodicStore := store.Periodic(meta.SessionID)
+	err = periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	// Runner without session manager
+	runner := NewPeriodicRunner(store, nil, nil)
+	err = runner.TriggerNow(meta.SessionID)
+	if err != ErrSessionManagerNotAvailable {
+		t.Errorf("TriggerNow() error = %v, want %v", err, ErrSessionManagerNotAvailable)
+	}
+}
