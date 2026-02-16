@@ -579,11 +579,12 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	globalConv := sm.globalConversations
 	hookMgr := sm.hookManager
 
-	// Determine ACP command, server, and workspace UUID from workspace configuration
-	var acpCommand, acpServer, workspaceUUID string
+	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
+	var acpCommand, acpCwd, acpServer, workspaceUUID string
 
 	if workspace != nil {
 		acpCommand = workspace.ACPCommand
+		acpCwd = workspace.ACPCwd
 		acpServer = workspace.ACPServer
 		workspaceUUID = workspace.UUID
 		if workingDir == "" {
@@ -591,10 +592,12 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		}
 	} else if ws, ok := sm.workspaces[workingDir]; ok {
 		acpCommand = ws.ACPCommand
+		acpCwd = ws.ACPCwd
 		acpServer = ws.ACPServer
 		workspaceUUID = ws.UUID
 	} else if sm.defaultWorkspace != nil {
 		acpCommand = sm.defaultWorkspace.ACPCommand
+		acpCwd = sm.defaultWorkspace.ACPCwd
 		acpServer = sm.defaultWorkspace.ACPServer
 		workspaceUUID = sm.defaultWorkspace.UUID
 	}
@@ -647,6 +650,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:          acpCommand,
+		ACPCwd:              acpCwd,
 		ACPServer:           acpServer,
 		WorkingDir:          workingDir,
 		AutoApprove:         sm.autoApprove,
@@ -823,14 +827,16 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	globalConv := sm.globalConversations
 	hookMgr := sm.hookManager
 
-	// Determine ACP command, server, and workspace UUID from workspace configuration
-	var acpCommand, acpServer, workspaceUUID string
+	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
+	var acpCommand, acpCwd, acpServer, workspaceUUID string
 	if ws, ok := sm.workspaces[workingDir]; ok {
 		acpCommand = ws.ACPCommand
+		acpCwd = ws.ACPCwd
 		acpServer = ws.ACPServer
 		workspaceUUID = ws.UUID
 	} else if sm.defaultWorkspace != nil {
 		acpCommand = sm.defaultWorkspace.ACPCommand
+		acpCwd = sm.defaultWorkspace.ACPCwd
 		acpServer = sm.defaultWorkspace.ACPServer
 		workspaceUUID = sm.defaultWorkspace.UUID
 	}
@@ -854,6 +860,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	if acpCommand == "" && acpServer != "" && sm.mittoConfig != nil {
 		if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
 			acpCommand = server.Command
+			acpCwd = server.Cwd // Also get cwd from server config
 			if sm.logger != nil {
 				sm.logger.Debug("Using ACP command from global config",
 					"session_id", sessionID,
@@ -909,6 +916,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
 		PersistedID:         sessionID,
 		ACPCommand:          acpCommand,
+		ACPCwd:              acpCwd,
 		ACPServer:           acpServer,
 		ACPSessionID:        acpSessionID,
 		WorkingDir:          workingDir,

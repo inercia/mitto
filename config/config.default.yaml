@@ -8,9 +8,16 @@
 # ACP (Agent Communication Protocol) servers
 # Prompts are now loaded from MITTO_DIR/prompts/builtin/ directory
 # Run 'mitto prompts update-builtin' to update builtin prompts after upgrading
+#
+# Each server supports:
+#   command: Shell command to start the ACP server
+#   cwd: (optional) Working directory for the ACP server process
+#        Eliminates the need for shell tricks like 'sh -c "cd /path && command"'
+#        Note: cwd is only supported with direct execution (not restricted runners)
 acp:
   - auggie:
       command: auggie --allow-indexing --acp
+      # cwd: /path/to/working/directory  # Optional: set process working directory
 
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest

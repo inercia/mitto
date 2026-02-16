@@ -115,6 +115,8 @@ type ACPServerSettings struct {
 	Name string `json:"name"`
 	// Command is the shell command to start the ACP server
 	Command string `json:"command"`
+	// Cwd is the working directory for the ACP server process
+	Cwd string `json:"cwd,omitempty"`
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt `json:"prompts,omitempty"`
 	// RestrictedRunners contains per-runner-type configuration for this agent

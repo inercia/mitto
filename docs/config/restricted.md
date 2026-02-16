@@ -915,6 +915,21 @@ Balance security with usability:
 
 If a configured runner is unavailable, Mitto will log a warning and fall back to `exec`.
 
+### Working Directory (cwd) Option
+
+The ACP server `cwd` option (for setting the process working directory) is **not supported** with restricted runners. If `cwd` is specified for an agent using a restricted runner, a warning will be logged and the setting will be ignored.
+
+To use `cwd`, you must use the default `exec` runner (no restrictions):
+
+```yaml
+acp:
+  - my-agent:
+      command: my-agent --acp
+      cwd: /home/user/my-project  # Only works with exec runner
+```
+
+See [ACP Server Configuration](web/acp.md) for more details on the `cwd` option.
+
 ### MCP Server Compatibility
 
 Restricted runners have limited MCP server support:

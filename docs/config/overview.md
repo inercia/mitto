@@ -45,12 +45,16 @@ acp:
       command: npx -y @zed-industries/claude-code-acp@latest
   - copilot:
       command: copilot --acp
+  - my-agent:
+      command: my-agent --acp
+      cwd: /home/user/my-project  # Optional: working directory for the process
 ```
 
 Each server has:
 
 - **name** (key): Identifier used to reference the server
 - **command**: Shell command to start the ACP server
+- **cwd** (optional): Working directory for the ACP server process
 
 The first server in the list is the default.
 
@@ -176,6 +180,11 @@ When using `settings.json`, the format is slightly different:
     {
       "name": "claude-code",
       "command": "npx -y @zed-industries/claude-code-acp@latest"
+    },
+    {
+      "name": "my-agent",
+      "command": "my-agent --acp",
+      "cwd": "/home/user/my-project"
     }
   ],
   "web": {

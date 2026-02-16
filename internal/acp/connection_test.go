@@ -41,7 +41,7 @@ func getMockACPPath(t *testing.T) string {
 
 func TestNewConnection_EmptyCommand(t *testing.T) {
 	ctx := context.Background()
-	_, err := NewConnection(ctx, "", true, nil, nil, nil)
+	_, err := NewConnection(ctx, "", "", true, nil, nil, nil)
 	if err == nil {
 		t.Error("NewConnection should fail with empty command")
 	}
@@ -52,7 +52,7 @@ func TestNewConnection_EmptyCommand(t *testing.T) {
 
 func TestNewConnection_InvalidCommand(t *testing.T) {
 	ctx := context.Background()
-	_, err := NewConnection(ctx, "/nonexistent/command/that/does/not/exist", true, nil, nil, nil)
+	_, err := NewConnection(ctx, "/nonexistent/command/that/does/not/exist", "", true, nil, nil, nil)
 	if err == nil {
 		t.Error("NewConnection should fail with invalid command")
 	}
@@ -64,7 +64,7 @@ func TestNewConnection_WithMockACP(t *testing.T) {
 	defer cancel()
 
 	var output strings.Builder
-	conn, err := NewConnection(ctx, mockPath, true, func(msg string) {
+	conn, err := NewConnection(ctx, mockPath, "", true, func(msg string) {
 		output.WriteString(msg)
 	}, nil, nil)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestConnection_Initialize(t *testing.T) {
 	defer cancel()
 
 	var output strings.Builder
-	conn, err := NewConnection(ctx, mockPath, true, func(msg string) {
+	conn, err := NewConnection(ctx, mockPath, "", true, func(msg string) {
 		output.WriteString(msg)
 	}, nil, nil)
 	if err != nil {
@@ -113,7 +113,7 @@ func TestConnection_HasImageSupport_BeforeInitialize(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := NewConnection(ctx, mockPath, true, nil, nil, nil)
+	conn, err := NewConnection(ctx, mockPath, "", true, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewConnection failed: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestConnection_NewSession(t *testing.T) {
 	defer cancel()
 
 	var output strings.Builder
-	conn, err := NewConnection(ctx, mockPath, true, func(msg string) {
+	conn, err := NewConnection(ctx, mockPath, "", true, func(msg string) {
 		output.WriteString(msg)
 	}, nil, nil)
 	if err != nil {
@@ -166,7 +166,7 @@ func TestConnection_Prompt(t *testing.T) {
 	defer cancel()
 
 	var output strings.Builder
-	conn, err := NewConnection(ctx, mockPath, true, func(msg string) {
+	conn, err := NewConnection(ctx, mockPath, "", true, func(msg string) {
 		output.WriteString(msg)
 	}, nil, nil)
 	if err != nil {
@@ -202,7 +202,7 @@ func TestConnection_Prompt_NoSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := NewConnection(ctx, mockPath, true, nil, nil, nil)
+	conn, err := NewConnection(ctx, mockPath, "", true, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewConnection failed: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestConnection_Cancel_NoSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := NewConnection(ctx, mockPath, true, nil, nil, nil)
+	conn, err := NewConnection(ctx, mockPath, "", true, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewConnection failed: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestConnection_Close(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := NewConnection(ctx, mockPath, true, nil, nil, nil)
+	conn, err := NewConnection(ctx, mockPath, "", true, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewConnection failed: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestConnection_Done(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := NewConnection(ctx, mockPath, true, nil, nil, nil)
+	conn, err := NewConnection(ctx, mockPath, "", true, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewConnection failed: %v", err)
 	}

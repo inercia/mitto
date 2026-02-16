@@ -24,6 +24,22 @@ Each entry consists of:
 
 - **name** - A unique identifier for the server
 - **command** - The shell command to start the ACP server
+- **cwd** (optional) - The working directory for the ACP server process
+
+### Working Directory (cwd)
+
+The `cwd` option sets the working directory in which the ACP server process will run. This is useful when the agent needs to be started from a specific directory, eliminating the need for shell tricks like `sh -c 'cd /some/dir && command'`:
+
+```yaml
+acp:
+  - my-agent:
+      command: my-agent --acp
+      cwd: /home/user/my-project
+```
+
+This is cleaner than using shell wrappers and is consistent with how many tools handle working directories (e.g., VS Code tasks, Docker Compose, systemd `WorkingDirectory=`).
+
+> **Note:** When using [restricted runners](../restricted.md), the `cwd` option is not supported. A warning will be logged if `cwd` is specified with a restricted runner.
 
 ### Per-Server Prompts
 
