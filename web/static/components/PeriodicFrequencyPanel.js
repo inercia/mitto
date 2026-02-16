@@ -4,6 +4,7 @@
 const { useState, useEffect, useCallback, useMemo, html } = window.preact;
 
 import { PeriodicFilledIcon } from "./Icons.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
 
@@ -54,6 +55,7 @@ function localToUtcTime(localTime) {
  * @param {Object} props.frequency - Current frequency config { value, unit, at } (at is in UTC)
  * @param {Function} props.onFrequencyChange - Callback when frequency is updated
  * @param {string} props.nextScheduledAt - ISO timestamp of next scheduled run
+ * @param {boolean} props.isStreaming - Whether the agent is currently responding (disables immediate delivery)
  */
 export function PeriodicFrequencyPanel({
   isOpen,
@@ -62,6 +64,7 @@ export function PeriodicFrequencyPanel({
   frequency = { value: 1, unit: "hours" },
   onFrequencyChange,
   nextScheduledAt,
+  isStreaming = false,
 }) {
   // Local state for editing
   const [localValue, setLocalValue] = useState(frequency.value || 1);
@@ -71,6 +74,12 @@ export function PeriodicFrequencyPanel({
   const [isSaving, setIsSaving] = useState(false);
   // Local estimated next run time (updated immediately on frequency change)
   const [localNextScheduledAt, setLocalNextScheduledAt] = useState(nextScheduledAt);
+  // Triggering immediate delivery
+  const [isTriggering, setIsTriggering] = useState(false);
+  // Confirmation dialog state
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  // Error dialog state (for showing errors like "session busy")
+  const [errorMessage, setErrorMessage] = useState(null);
 
   // Calculate estimated next run time based on frequency
   const calculateNextRun = useCallback((value, unit) => {
@@ -205,6 +214,58 @@ export function PeriodicFrequencyPanel({
     }
   }, [localValue, localUnit, localAt, frequency.at, saveFrequency]);
 
+  // Handle click on the periodic icon when locked - show confirmation dialog
+  const handleIconClick = useCallback(() => {
+    // Only allow clicking when locked (disabled=true), not already triggering,
+    // and the agent is not currently responding
+    if (!disabled || isTriggering || !sessionId || isStreaming) return;
+    // Show the confirmation dialog
+    setShowConfirmDialog(true);
+  }, [disabled, isTriggering, sessionId, isStreaming]);
+
+  // Handle confirmation of immediate delivery
+  const handleConfirmImmediateDelivery = useCallback(async () => {
+    if (!sessionId) return;
+
+    setIsTriggering(true);
+    try {
+      const response = await secureFetch(
+        apiUrl(`/api/sessions/${sessionId}/periodic/run-now`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Failed to trigger immediate delivery:", errorText);
+        // Show error to user if it's a known condition
+        if (response.status === 409) {
+          setErrorMessage("Session is currently processing a prompt. Please wait and try again.");
+        }
+      }
+      // Success - the WebSocket will notify us of the periodic_started event
+      setShowConfirmDialog(false);
+    } catch (err) {
+      console.error("Failed to trigger immediate delivery:", err);
+    } finally {
+      setIsTriggering(false);
+    }
+  }, [sessionId]);
+
+  // Handle cancellation of the confirmation dialog
+  const handleCancelConfirmDialog = useCallback(() => {
+    if (!isTriggering) {
+      setShowConfirmDialog(false);
+    }
+  }, [isTriggering]);
+
+  // Handle closing the error dialog
+  const handleCloseErrorDialog = useCallback(() => {
+    setErrorMessage(null);
+  }, []);
+
   // Panel classes - part of normal document flow (not absolute positioned)
   // This ensures it pushes the conversation area up instead of overlaying it
   // Uses lighter background for better readability and contrast
@@ -228,6 +289,30 @@ export function PeriodicFrequencyPanel({
     : null;
 
   return html`
+    <!-- Confirmation dialog for immediate delivery -->
+    <${ConfirmDialog}
+      isOpen=${showConfirmDialog}
+      title="Run Now"
+      message="Do you want to send this message now?"
+      confirmLabel="Send"
+      cancelLabel="Cancel"
+      confirmVariant="primary"
+      isLoading=${isTriggering}
+      onConfirm=${handleConfirmImmediateDelivery}
+      onCancel=${handleCancelConfirmDialog}
+    />
+
+    <!-- Error dialog for showing errors -->
+    <${ConfirmDialog}
+      isOpen=${errorMessage !== null}
+      title="Error"
+      message=${errorMessage || ""}
+      confirmLabel="OK"
+      confirmVariant="primary"
+      onConfirm=${handleCloseErrorDialog}
+      onCancel=${handleCloseErrorDialog}
+    />
+
     <div
       class="${panelClasses}"
       style="${panelStyle}"
@@ -236,8 +321,44 @@ export function PeriodicFrequencyPanel({
       <div
         class="h-full px-4 flex items-center gap-3 text-sm"
       >
-        <!-- Clock icon -->
-        <${PeriodicFilledIcon} className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+        <!-- Periodic icon - clickable when locked to trigger immediate delivery -->
+        <!-- Disabled when agent is streaming (isStreaming) or already triggering -->
+        ${disabled
+          ? html`
+              <button
+                type="button"
+                onClick=${handleIconClick}
+                disabled=${isTriggering || isStreaming}
+                class="flex-shrink-0 p-0 border-0 bg-transparent transition-opacity ${isTriggering || isStreaming ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:opacity-80"}"
+                title=${isStreaming ? "Wait for agent to finish responding" : "Click to run this periodic prompt now"}
+                data-testid="periodic-run-now-button"
+              >
+                ${isTriggering
+                  ? html`
+                      <svg
+                        class="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          class="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          stroke-width="4"
+                        ></circle>
+                        <path
+                          class="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        ></path>
+                      </svg>
+                    `
+                  : html`<${PeriodicFilledIcon} className="w-4 h-4 text-blue-600 dark:text-blue-400" />`}
+              </button>
+            `
+          : html`<${PeriodicFilledIcon} className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0" />`}
 
         <!-- Run every label -->
         <span class="text-slate-600 dark:text-gray-300 flex-shrink-0">Run every</span>

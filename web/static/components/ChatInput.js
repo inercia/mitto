@@ -1316,6 +1316,7 @@ export function ChatInput({
           frequency=${periodicFrequency}
           onFrequencyChange=${handlePeriodicFrequencyChange}
           nextScheduledAt=${periodicNextScheduledAt}
+          isStreaming=${isStreaming}
         />
       </div>
 
