@@ -133,6 +133,7 @@ export function renderUserMarkdown(text) {
     const rawHtml = window.marked.parse(text);
 
     // Sanitize HTML to prevent XSS
+    // See: https://github.com/inercia/mitto/issues/20 for data URL image support
     const cleanHtml = window.DOMPurify.sanitize(rawHtml, {
       USE_PROFILES: { html: true },
       ALLOWED_TAGS: [
@@ -153,6 +154,7 @@ export function renderUserMarkdown(text) {
         "h5",
         "h6",
         "a",
+        "img", // Allow img tags for inline/data URL images
         "table",
         "thead",
         "tbody",
@@ -163,8 +165,13 @@ export function renderUserMarkdown(text) {
         "del",
         "span",
       ],
-      ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
+      ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "src", "alt"],
       ALLOW_DATA_ATTR: false,
+      // Allow data: URIs only on img elements for specific image types
+      // Note: SVG (image/svg+xml) is NOT allowed as it can contain scripts
+      DATA_URI_TAGS: ["img"],
+      ALLOWED_URI_REGEXP:
+        /^(?:(?:https?|mailto|file):|data:image\/(?:png|jpeg|gif|webp);base64,|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
     });
 
     return cleanHtml;
