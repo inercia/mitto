@@ -1,7 +1,7 @@
 ---
 name: "Optimize"
 description: "Identify and propose performance improvements"
-backgroundColor: "#F8BBD9"
+backgroundColor: "#C8E6C9"
 ---
 
 Analyze the code for performance issues and propose a prioritized list of optimizations.
@@ -89,4 +89,3 @@ After completing approved changes:
 - **Document tradeoffs**: Note memory vs speed, complexity vs performance
 - **Verify correctness**: Run tests after each optimization
 - **Measure improvements**: Quantify the improvement when possible
-
