@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/google/shlex"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/auxiliary"
@@ -1021,7 +1022,12 @@ func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector) {
 }
 
 func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID string) error {
-	args := strings.Fields(acpCommand)
+	// Parse command using shell-aware tokenization
+	// This handles quoted strings correctly, e.g., sh -c 'cd /dir && cmd'
+	args, err := shlex.Split(acpCommand)
+	if err != nil {
+		return &sessionError{fmt.Sprintf("failed to parse ACP command %q: %v", acpCommand, err)}
+	}
 	if len(args) == 0 {
 		return &sessionError{"empty ACP command"}
 	}
@@ -1031,7 +1037,6 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	var stderr runner.ReadCloser
 	var wait func() error
 	var cmd *exec.Cmd
-	var err error
 
 	// Create stderr collector to capture output for error reporting
 	// Keep last 8KB of stderr output
