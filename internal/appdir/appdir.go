@@ -49,6 +49,9 @@ const (
 	// UIPreferencesFileName is the name of the UI preferences file.
 	// This stores client-side UI state like grouping mode and expanded groups.
 	UIPreferencesFileName = "ui_preferences.json"
+
+	// DefenseBlocklistFileName is the name of the scanner defense blocklist file.
+	DefenseBlocklistFileName = "scanner_blocklist.json"
 )
 
 var (
@@ -307,6 +310,16 @@ func UIPreferencesPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, UIPreferencesFileName), nil
+}
+
+// DefenseBlocklistPath returns the full path to the scanner_blocklist.json file.
+// This file stores blocked IPs for the scanner defense system.
+func DefenseBlocklistPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, DefenseBlocklistFileName), nil
 }
 
 // ResetCache clears the cached directory path.
