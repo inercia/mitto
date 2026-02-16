@@ -14,6 +14,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/msghooks"
@@ -155,6 +156,9 @@ type Server struct {
 
 	// MCP debug server for exposing debugging tools
 	mcpServer *mcpserver.Server
+
+	// Scanner defense for blocking malicious IPs at the connection level
+	defense *defense.ScannerDefense
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -326,6 +330,29 @@ func NewServer(config Config) (*Server, error) {
 
 	eventsManager := NewGlobalEventsManager()
 
+	// Initialize scanner defense
+	// Enabled by default when external access is configured (ExternalPort >= 0)
+	var scannerDefense *defense.ScannerDefense
+	var webConfig *configPkg.WebConfig
+	if config.MittoConfig != nil {
+		webConfig = &config.MittoConfig.Web
+	}
+	if shouldEnableScannerDefense(webConfig) {
+		defenseConfig := configToDefenseConfig(getScannerDefenseConfig(webConfig), true)
+		var err error
+		scannerDefense, err = defense.New(defenseConfig, logger)
+		if err != nil {
+			logger.Warn("Failed to initialize scanner defense", "error", err)
+			// Continue without defense - graceful degradation
+		} else {
+			logger.Info("Scanner defense enabled",
+				"component", "defense",
+				"blocked_ips", scannerDefense.BlockedCount(),
+				"external_port", config.MittoConfig.Web.ExternalPort,
+			)
+		}
+	}
+
 	s := &Server{
 		config:            config,
 		logger:            logger,
@@ -340,6 +367,7 @@ func NewServer(config Config) (*Server, error) {
 		wsSecurityConfig:  wsSecurityConfig,
 		proxyChecker:      proxyChecker,
 		accessLogger:      accessLogger,
+		defense:           scannerDefense,
 	}
 
 	// Set events manager in session manager for broadcasting
@@ -490,6 +518,11 @@ func NewServer(config Config) (*Server, error) {
 		handler = s.accessLogger.Middleware(handler)
 	}
 
+	// 8. Defense recording middleware for request analysis
+	if s.defense != nil {
+		handler = s.defenseRecordingMiddleware(handler)
+	}
+
 	s.httpServer = &http.Server{Handler: handler}
 
 	logger.Info("Web server initialized", "acp_server", config.ACPServer, "api_prefix", apiPrefix)
@@ -504,6 +537,7 @@ func NewServer(config Config) (*Server, error) {
 }
 
 // Serve starts the HTTP server on the given listener.
+// Note: Scanner defense is only applied to the external listener, not this local listener.
 func (s *Server) Serve(listener net.Listener) error {
 	return s.httpServer.Serve(listener)
 }
@@ -566,6 +600,11 @@ func (s *Server) Shutdown() error {
 	// Stop MCP debug server
 	if s.mcpServer != nil {
 		s.mcpServer.Stop()
+	}
+
+	// Close scanner defense (persists blocklist)
+	if s.defense != nil {
+		s.defense.Close()
 	}
 
 	return s.httpServer.Shutdown(context.Background())

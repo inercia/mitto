@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/inercia/mitto/internal/defense"
 )
 
 // SetExternalPort sets the port to use for external access.
@@ -56,6 +58,37 @@ func (s *Server) StartExternalListener(port int) (int, error) {
 	s.externalListener = listener
 	s.externalPort = actualPort
 
+	// Wrap listener with scanner defense if enabled
+	// This blocks malicious IPs at the TCP level before HTTP processing
+	serveListener := listener
+	if s.defense != nil {
+		filteredListener := defense.NewFilteredListener(listener, s.defense, s.logger)
+
+		// Set callback to log blocked connections to access.log
+		if s.accessLogger != nil {
+			filteredListener.SetBlockedCallback(func(ip, reason string) {
+				s.accessLogger.Write(LogEntry{
+					Timestamp:    time.Now(),
+					ClientIP:     ip,
+					Method:       "-",
+					Path:         "-",
+					StatusCode:   0,
+					EventType:    "blocked_listener",
+					ErrorMessage: reason,
+					IsExternal:   true,
+				})
+			})
+		}
+
+		serveListener = filteredListener
+		if s.logger != nil {
+			s.logger.Info("Scanner defense active on external listener",
+				"component", "defense",
+				"blocked_ips", s.defense.BlockedCount(),
+			)
+		}
+	}
+
 	// Create a separate HTTP server for external connections that marks all requests
 	// as external. This ensures auth is required even for localhost connections.
 	externalServer := &http.Server{
@@ -66,7 +99,7 @@ func (s *Server) StartExternalListener(port int) (int, error) {
 	// Serve on the external listener in a goroutine
 	// Capture externalServer locally to avoid race with stopExternalListenerLocked
 	go func() {
-		if err := externalServer.Serve(listener); err != nil {
+		if err := externalServer.Serve(serveListener); err != nil {
 			// Ignore errors if we're shutting down or the listener was closed
 			s.externalMu.Lock()
 			isShuttingDown := s.externalListener == nil
