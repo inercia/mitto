@@ -1883,16 +1883,15 @@ export function useWebSocket() {
               return prev;
             }
 
-            // Check if this message already exists (by seq if available, or by content)
-            // Note: We always check content because a prompt retry can result in a new seq
-            // for the same message content (server assigns new seq on each persist).
+            // Check if this message already exists (by seq number)
+            // Only dedupe by seq - content deduplication was too aggressive and blocked
+            // legitimate periodic prompts (same text sent on each run).
+            // The seq number is authoritative: if the server sends a new seq, it's a new message.
             const alreadyExists = session.messages.some((m) => {
               if (m.role !== ROLE_USER) return false;
               // If seq matches exactly, it's the same message
               if (seq && m.seq && m.seq === seq) return true;
-              // Also check content - handles case where retry created new seq for same message
-              const messageContent = message?.substring(0, 200) || "";
-              return (m.text || "").substring(0, 200) === messageContent;
+              return false;
             });
 
             if (alreadyExists) {
