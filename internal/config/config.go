@@ -124,6 +124,10 @@ type WebSecurity struct {
 	// MaxWSMessageSize is the maximum size of a WebSocket message in bytes.
 	// Default: 65536 (64KB)
 	MaxWSMessageSize int64 `json:"max_ws_message_size,omitempty"`
+
+	// ScannerDefense contains configuration for blocking malicious IPs at the TCP level.
+	// When external access is enabled (ExternalPort >= 0), scanner defense is enabled by default.
+	ScannerDefense *ScannerDefenseConfig `json:"scanner_defense,omitempty"`
 }
 
 // HotkeyConfig represents a keyboard shortcut configuration.

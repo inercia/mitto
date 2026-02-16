@@ -67,6 +67,19 @@ web:
   #   # Maximum WebSocket message size in bytes
   #   max_ws_message_size: 65536     # Default: 64KB
 
+  # Scanner Defense (only applies to external listener)
+  # Automatically blocks IPs that exhibit scanner-like behavior:
+  # - Requesting paths that don't exist on the server
+  # - Accessing known vulnerability probe paths
+  # - Sending too many suspicious requests in a short time
+  #
+  # scanner_defense:
+  #   enabled: true           # Enable scanner defense (default: true when external access is enabled)
+  #   block_duration: 1h      # How long to block offending IPs (default: 1h)
+  #   max_suspicious: 3       # Block after this many suspicious requests (default: 3)
+  #   window: 1m              # Time window for counting suspicious requests (default: 1m)
+  #   log_blocked: true       # Log when requests are blocked (default: true)
+
 # UI settings
 # ui:
 #   # Confirmation dialogs - set to false to skip confirmations
