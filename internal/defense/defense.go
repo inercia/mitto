@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// NOTE: The Blocklist also exposes isWhitelisted() but that's private.
+// We add IsWhitelisted() as a public method to allow callers to skip
+// unnecessary processing for whitelisted IPs.
+
 // cleanupInterval is how often expired entries are cleaned up.
 const cleanupInterval = 5 * time.Minute
 
@@ -20,6 +24,7 @@ type ScannerDefense struct {
 	metrics   *IPMetrics
 	logger    *slog.Logger
 	stopCh    chan struct{}
+	wg        sync.WaitGroup // waits for cleanup goroutine to exit
 	stopped   bool
 }
 
@@ -55,6 +60,7 @@ func New(config Config, logger *slog.Logger) (*ScannerDefense, error) {
 	}
 
 	// Start background cleanup goroutine
+	d.wg.Add(1)
 	go d.cleanupLoop()
 
 	return d, nil
@@ -81,6 +87,11 @@ func (d *ScannerDefense) GetBlockReason(ip string) string {
 // This is called by middleware after the request is processed.
 func (d *ScannerDefense) RecordRequest(ip string, req *RequestInfo) {
 	if !d.config.Enabled {
+		return
+	}
+
+	// Skip whitelisted IPs - no need to collect metrics or analyze them
+	if d.blocklist.IsWhitelisted(ip) {
 		return
 	}
 
@@ -147,6 +158,8 @@ func (d *ScannerDefense) persistBlocklist() {
 
 // cleanupLoop runs background cleanup of expired entries.
 func (d *ScannerDefense) cleanupLoop() {
+	defer d.wg.Done()
+
 	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
 
@@ -183,17 +196,20 @@ func (d *ScannerDefense) cleanup() {
 // Close stops background goroutines and persists the blocklist.
 func (d *ScannerDefense) Close() error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	if d.stopped {
+		d.mu.Unlock()
 		return nil
 	}
 	d.stopped = true
 
 	// Stop cleanup goroutine
 	close(d.stopCh)
+	d.mu.Unlock()
 
-	// Final persist
+	// Wait for cleanup goroutine to exit before persisting
+	d.wg.Wait()
+
+	// Final persist (safe now - no concurrent access from cleanup goroutine)
 	d.persistBlocklist()
 
 	d.logger.Info("defense_closed",

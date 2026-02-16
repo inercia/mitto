@@ -240,10 +240,13 @@ export function PeriodicFrequencyPanel({
       if (!response.ok) {
         const errorText = await response.text();
         console.error("Failed to trigger immediate delivery:", errorText);
-        // Show error to user if it's a known condition
+        // Show error to user
         if (response.status === 409) {
           setErrorMessage("Session is currently processing a prompt. Please wait and try again.");
+        } else {
+          setErrorMessage("Failed to trigger immediate delivery. Please try again.");
         }
+        return; // Don't close dialog on error
       }
       // Success - the WebSocket will notify us of the periodic_started event
       setShowConfirmDialog(false);
