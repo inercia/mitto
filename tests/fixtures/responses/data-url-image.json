@@ -1,0 +1,58 @@
+{
+  "scenario": "data-url-image",
+  "description": "Test data URL images in markdown (issue #20)",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:data-url-image"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 50,
+          "chunks": [
+            "Here is an inline image using a data URL:\n\n",
+            "![red pixel](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==)\n\n",
+            "The image above should display as a red 1x1 pixel."
+          ]
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:data-url-gif"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 50,
+          "chunks": [
+            "Here is a GIF data URL image:\n\n",
+            "![transparent gif](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)\n\n",
+            "This is a 1x1 transparent GIF."
+          ]
+        }
+      ]
+    },
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:data-url-svg-blocked"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 50,
+          "chunks": [
+            "Here is an SVG data URL (should be blocked for security):\n\n",
+            "![svg icon](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=)\n\n",
+            "The SVG should NOT display because it can contain scripts."
+          ]
+        }
+      ]
+    }
+  ]
+}
+

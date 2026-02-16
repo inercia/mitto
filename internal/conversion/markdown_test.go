@@ -344,6 +344,204 @@ func TestMermaidWithSanitization(t *testing.T) {
 	}
 }
 
+// TestCodeBlocksWithLanguageIdentifiers tests that fenced code blocks with
+// various language identifiers are rendered correctly.
+// This is a regression test for: https://github.com/inercia/mitto/issues/22
+//
+// Note: When syntax highlighting is enabled (DefaultConverter), the language-xxx
+// class may not appear on the <code> element because the highlighter uses
+// inline <span> elements for token coloring instead.
+func TestCodeBlocksWithLanguageIdentifiers(t *testing.T) {
+	converter := DefaultConverter()
+
+	testCases := []struct {
+		name            string
+		markdown        string
+		wantPreCode     bool   // Expect <pre><code> structure
+		wantContent     string // Content that must be present in the code block (may be inside spans)
+		notWantInOutput string // String that should NOT appear in output
+	}{
+		{
+			name:            "python",
+			markdown:        "Here is code:\n\n```python\ndef hello():\n    print(\"Hello\")\n```\n\nAfter code.",
+			wantPreCode:     true,
+			wantContent:     "def",
+			notWantInOutput: "```python",
+		},
+		{
+			name:            "javascript",
+			markdown:        "```javascript\nconsole.log('hello');\n```",
+			wantPreCode:     true,
+			wantContent:     "console",
+			notWantInOutput: "```javascript",
+		},
+		{
+			name:            "html",
+			markdown:        "```html\n<div class=\"test\">Hello</div>\n```",
+			wantPreCode:     true,
+			wantContent:     "div",
+			notWantInOutput: "```html",
+		},
+		{
+			name:            "yaml",
+			markdown:        "```yaml\nkey: value\nnested:\n  item: 1\n```",
+			wantPreCode:     true,
+			wantContent:     "key",
+			notWantInOutput: "```yaml",
+		},
+		{
+			name:            "json",
+			markdown:        "```json\n{\"key\": \"value\"}\n```",
+			wantPreCode:     true,
+			wantContent:     "key",
+			notWantInOutput: "```json",
+		},
+		{
+			name:            "go",
+			markdown:        "```go\nfunc main() {\n    fmt.Println(\"Hello\")\n}\n```",
+			wantPreCode:     true,
+			wantContent:     "func",
+			notWantInOutput: "```go",
+		},
+		{
+			name:            "no language",
+			markdown:        "```\nplain code\n```",
+			wantPreCode:     true,
+			wantContent:     "plain code",
+			notWantInOutput: "```\n",
+		},
+		{
+			name:            "bash",
+			markdown:        "```bash\necho \"Hello World\"\n```",
+			wantPreCode:     true,
+			wantContent:     "echo",
+			notWantInOutput: "```bash",
+		},
+		{
+			name:            "mermaid",
+			markdown:        "```mermaid\ngraph TD\n    A --> B\n```",
+			wantPreCode:     true,
+			wantContent:     "graph TD",
+			notWantInOutput: "```mermaid",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := converter.Convert(tc.markdown)
+			if err != nil {
+				t.Fatalf("Convert failed: %v", err)
+			}
+
+			t.Logf("Input:\n%s", tc.markdown)
+			t.Logf("Output:\n%s", result)
+
+			// Check for <pre> structure (code blocks use <pre>)
+			if tc.wantPreCode {
+				if !strings.Contains(result, "<pre") {
+					t.Errorf("Expected <pre> tag, got:\n%s", result)
+				}
+			}
+
+			// Check content is present (may be inside span elements for highlighting)
+			if tc.wantContent != "" {
+				if !strings.Contains(result, tc.wantContent) {
+					t.Errorf("Expected content %q in output, got:\n%s", tc.wantContent, result)
+				}
+			}
+
+			// Check that raw markdown fence is NOT in output
+			if tc.notWantInOutput != "" {
+				if strings.Contains(result, tc.notWantInOutput) {
+					t.Errorf("Output should NOT contain %q, got:\n%s", tc.notWantInOutput, result)
+				}
+			}
+
+			// Check that code block is properly closed
+			if tc.wantPreCode {
+				if !strings.Contains(result, "</pre>") {
+					t.Errorf("Expected </pre> closing tag, got:\n%s", result)
+				}
+			}
+
+			// Issue #22: Verify text after closing fence is rendered correctly
+			// and NOT rendered as monospace/code
+			if strings.Contains(tc.markdown, "After code.") {
+				if !strings.Contains(result, "<p>After code.</p>") {
+					t.Errorf("Text after code block should be in <p> tag, got:\n%s", result)
+				}
+			}
+		})
+	}
+}
+
+// TestCodeBlockNotGarbled tests that code blocks with language identifiers
+// don't produce garbled output as described in issue #22.
+// The issue states: "an empty monospace block appears before the code,
+// and the text after the closing fence is rendered as monospace too"
+func TestCodeBlockNotGarbled(t *testing.T) {
+	converter := DefaultConverter()
+
+	// This is the exact scenario from the issue
+	markdown := `Here is some Python code:
+
+` + "```python" + `
+def hello():
+    print("Hello, World!")
+` + "```" + `
+
+This text should NOT be monospace.`
+
+	result, err := converter.Convert(markdown)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	t.Logf("Input markdown:\n%s", markdown)
+	t.Logf("Output HTML:\n%s", result)
+
+	// 1. Check that there's no empty <pre> or <code> block
+	if strings.Contains(result, "<pre></pre>") || strings.Contains(result, "<code></code>") {
+		t.Errorf("Found empty <pre> or <code> block - this is the garbled output bug")
+	}
+
+	// 2. Check that the text after the code block is in a <p> tag, not <pre>/<code>
+	// Find where "This text" appears and ensure it's not inside a code block
+	if !strings.Contains(result, "<p>This text should NOT be monospace.</p>") {
+		// Check if it's incorrectly wrapped in pre/code
+		if strings.Contains(result, "<pre>") && strings.Contains(result, "This text should NOT be monospace") {
+			// Check if the text appears after the closing </pre>
+			preCloseIndex := strings.LastIndex(result, "</pre>")
+			textIndex := strings.Index(result, "This text should NOT be monospace")
+			if textIndex < preCloseIndex {
+				t.Errorf("Text after code fence is inside <pre> block - this is the garbled output bug\n%s", result)
+			}
+		}
+		// Just warn if the exact format is different but acceptable
+		if !strings.Contains(result, "This text should NOT be monospace") {
+			t.Errorf("Text after code block is missing entirely, got:\n%s", result)
+		}
+	}
+
+	// 3. The language identifier should NOT appear as visible text
+	// (it should be stripped from output or only in class attributes)
+	if strings.Contains(result, ">python<") || strings.Contains(result, "```python") {
+		t.Errorf("Language identifier 'python' appears as visible text, got:\n%s", result)
+	}
+
+	// 4. The code block should have proper <pre><code> structure
+	// Note: With syntax highlighting enabled, the language class may not be present
+	// because the highlighter uses inline spans for token coloring
+	if !strings.Contains(result, "<pre><code") {
+		t.Errorf("Expected <pre><code> structure, got:\n%s", result)
+	}
+
+	// 5. Verify the code content is present
+	if !strings.Contains(result, "def") || !strings.Contains(result, "hello") {
+		t.Errorf("Expected code content to be present, got:\n%s", result)
+	}
+}
+
 // TestIsTableSeparator tests table separator detection.
 func TestIsTableSeparator(t *testing.T) {
 	tests := []struct {
@@ -451,4 +649,119 @@ func TestConverter_MalformedTable(t *testing.T) {
 	if strings.Contains(result, "|---") {
 		t.Errorf("Raw markdown separator should not appear in output: %s", result)
 	}
+}
+
+// TestDataURLImages tests that images with data: URLs are rendered correctly.
+// See: https://github.com/inercia/mitto/issues/20
+func TestDataURLImages(t *testing.T) {
+	// A minimal 1x1 red PNG image as base64
+	redPixelBase64 := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+
+	tests := []struct {
+		name                       string
+		markdown                   string
+		wantImgTag                 bool
+		wantDataURLNoSanitization  bool // Expected when NOT sanitizing
+		wantDataURLWithSanitization bool // Expected when sanitizing (bluemonday blocks SVG)
+	}{
+		{
+			name:                       "data URL PNG image",
+			markdown:                   "![red pixel](data:image/png;base64," + redPixelBase64 + ")",
+			wantImgTag:                 true,
+			wantDataURLNoSanitization:  true,
+			wantDataURLWithSanitization: true,
+		},
+		{
+			name:                       "data URL with alt text",
+			markdown:                   "Here is an inline image: ![inline graphic](data:image/png;base64," + redPixelBase64 + ")",
+			wantImgTag:                 true,
+			wantDataURLNoSanitization:  true,
+			wantDataURLWithSanitization: true,
+		},
+		{
+			name:                       "data URL JPEG image",
+			markdown:                   "![photo](data:image/jpeg;base64,/9j/4AAQSkZJRg==)",
+			wantImgTag:                 true,
+			wantDataURLNoSanitization:  true,
+			wantDataURLWithSanitization: true,
+		},
+		{
+			name:                       "data URL GIF image",
+			markdown:                   "![animation](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)",
+			wantImgTag:                 true,
+			wantDataURLNoSanitization:  true,
+			wantDataURLWithSanitization: true,
+		},
+		{
+			// WebP is a modern image format also supported
+			name:                       "data URL WebP image",
+			markdown:                   "![webp](data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=)",
+			wantImgTag:                 true,
+			wantDataURLNoSanitization:  true,
+			wantDataURLWithSanitization: true,
+		},
+		{
+			// SVG data URLs are blocked for security - SVG can contain embedded JavaScript
+			name:                       "data URL SVG image - blocked for security",
+			markdown:                   "![icon](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=)",
+			wantImgTag:                 true,
+			wantDataURLNoSanitization:  true,  // Goldmark renders it
+			wantDataURLWithSanitization: false, // bluemonday's AllowDataURIImages() blocks SVG
+		},
+		{
+			name:                       "regular https image still works",
+			markdown:                   "![photo](https://example.com/image.png)",
+			wantImgTag:                 true,
+			wantDataURLNoSanitization:  false,
+			wantDataURLWithSanitization: false,
+		},
+	}
+
+	// Test without sanitization (goldmark should render all data URLs including SVG)
+	t.Run("without sanitization", func(t *testing.T) {
+		converter := NewConverter() // No sanitization
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result, err := converter.Convert(tt.markdown)
+				if err != nil {
+					t.Fatalf("Convert failed: %v", err)
+				}
+
+				hasImgTag := strings.Contains(result, "<img")
+				if hasImgTag != tt.wantImgTag {
+					t.Errorf("img tag presence: got %v, want %v\nresult: %s", hasImgTag, tt.wantImgTag, result)
+				}
+
+				hasDataURL := strings.Contains(result, "data:image/")
+				if hasDataURL != tt.wantDataURLNoSanitization {
+					t.Errorf("data URL presence: got %v, want %v\nresult: %s", hasDataURL, tt.wantDataURLNoSanitization, result)
+				}
+			})
+		}
+	})
+
+	// Test with sanitization - bluemonday blocks SVG but allows png/jpeg/gif/webp
+	t.Run("with sanitization", func(t *testing.T) {
+		converter := DefaultConverter() // Uses CreateSanitizer()
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result, err := converter.Convert(tt.markdown)
+				if err != nil {
+					t.Fatalf("Convert failed: %v", err)
+				}
+
+				hasImgTag := strings.Contains(result, "<img")
+				if hasImgTag != tt.wantImgTag {
+					t.Errorf("img tag presence: got %v, want %v\nresult: %s", hasImgTag, tt.wantImgTag, result)
+				}
+
+				hasDataURL := strings.Contains(result, "data:image/")
+				if hasDataURL != tt.wantDataURLWithSanitization {
+					t.Errorf("data URL presence: got %v, want %v\nresult: %s", hasDataURL, tt.wantDataURLWithSanitization, result)
+				}
+			})
+		}
+	})
 }

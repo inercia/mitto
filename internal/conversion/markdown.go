@@ -3,6 +3,8 @@ package conversion
 
 import (
 	"bytes"
+	"encoding/base64"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -14,6 +16,11 @@ import (
 	"github.com/yuin/goldmark/renderer/html"
 	"go.abhg.dev/goldmark/mermaid"
 )
+
+// dataURIImagePrefixNoSVG matches data URI image prefixes for safe image types only.
+// Explicitly excludes SVG (image/svg+xml) because SVG can contain embedded JavaScript.
+// See: https://github.com/inercia/mitto/issues/20
+var dataURIImagePrefixNoSVG = regexp.MustCompile(`^image/(gif|jpeg|png|webp);base64,`)
 
 // Converter handles markdown-to-HTML conversion with configurable options.
 type Converter struct {
@@ -120,6 +127,24 @@ func CreateSanitizer() *bluemonday.Policy {
 
 	// Allow file:// URLs for file links (added by FileLinker post-processing)
 	p.AllowURLSchemes("http", "https", "mailto", "file")
+
+	// Allow data: URI images (png, jpeg, gif, webp only - NOT svg for security)
+	// This enables inline base64-encoded images in markdown.
+	// NOTE: We use a custom policy instead of AllowDataURIImages() because
+	// bluemonday's built-in function allows SVG, which can contain scripts.
+	// See: https://github.com/inercia/mitto/issues/20
+	p.RequireParseableURLs(true)
+	p.AllowURLSchemeWithCustomPolicy("data", func(u *url.URL) bool {
+		if u.RawQuery != "" || u.Fragment != "" {
+			return false
+		}
+		matched := dataURIImagePrefixNoSVG.FindString(u.Opaque)
+		if matched == "" {
+			return false
+		}
+		_, err := base64.StdEncoding.DecodeString(u.Opaque[len(matched):])
+		return err == nil
+	})
 
 	// Allow class attribute on anchor tags for file-link styling
 	p.AllowAttrs("class").Matching(bluemonday.SpaceSeparatedTokens).OnElements("a")
