@@ -291,5 +291,79 @@ test.describe("Markdown Chunk Rendering", () => {
     await expect(link).toBeVisible();
     await expect(link).toContainText("documentation");
   });
+
+  /**
+   * Regression test for: https://github.com/inercia/mitto/issues/22
+   * Tests that text AFTER a code block with language identifier is NOT rendered as monospace.
+   * The issue reported: "an empty monospace block appears before the code,
+   * and the text after the closing fence is rendered as monospace too"
+   */
+  test("should not render text after code block as monospace (issue #22)", async ({
+    page,
+    helpers,
+    selectors,
+    timeouts,
+  }) => {
+    // Trigger the markdown-code-block scenario which has text after the code block
+    await helpers.sendMessage(page, "TEST:code-block-split");
+    await helpers.waitForAgentResponse(page);
+    await page.waitForTimeout(1000);
+
+    const messagesContainer = page.locator(selectors.messagesContainer);
+    const agentMessage = page.locator(selectors.agentMessage).last();
+
+    // 1. Verify the code block exists and has proper structure
+    const codeBlock = messagesContainer.locator("pre code");
+    await expect(codeBlock).toBeVisible({ timeout: timeouts.agentResponse });
+
+    // 2. Verify there are no empty pre or code elements (the "garbled output" bug)
+    const emptyPre = await messagesContainer.locator("pre:empty").count();
+    const emptyCode = await messagesContainer.locator("code:empty").count();
+    expect(emptyPre).toBe(0);
+    expect(emptyCode).toBe(0);
+
+    // 3. Verify "That's the code." (text after code block) is NOT inside pre/code
+    // Get the HTML content of the agent message
+    const agentHtml = await agentMessage.innerHTML();
+
+    // The text "That's the code." should be in a <p> tag, not inside <pre> or <code>
+    // Parse the HTML to check structure
+    const textAfterCode = "That's the code.";
+
+    // Verify the text exists
+    await expect(agentMessage).toContainText(textAfterCode);
+
+    // Get all <p> tags and verify the text is in one of them
+    const paragraphs = agentMessage.locator("p");
+    const paragraphCount = await paragraphs.count();
+    let foundInParagraph = false;
+    for (let i = 0; i < paragraphCount; i++) {
+      const text = await paragraphs.nth(i).textContent();
+      if (text && text.includes(textAfterCode)) {
+        foundInParagraph = true;
+        break;
+      }
+    }
+    expect(foundInParagraph).toBe(true);
+
+    // 4. Verify the language identifier "python" is NOT visible as text content
+    const fullText = await agentMessage.textContent();
+    expect(fullText).not.toContain("```python");
+    expect(fullText).not.toContain("```\npython");
+
+    // 5. Verify text before code block ("Here's some code:") is also in a <p> tag
+    const textBeforeCode = "Here's some code:";
+    await expect(agentMessage).toContainText(textBeforeCode);
+
+    let foundBeforeInParagraph = false;
+    for (let i = 0; i < paragraphCount; i++) {
+      const text = await paragraphs.nth(i).textContent();
+      if (text && text.includes(textBeforeCode)) {
+        foundBeforeInParagraph = true;
+        break;
+      }
+    }
+    expect(foundBeforeInParagraph).toBe(true);
+  });
 });
 
