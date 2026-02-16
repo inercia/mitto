@@ -262,7 +262,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Handle periodic prompt operations
 	if isPeriodicRequest {
-		s.handleSessionPeriodic(w, r, sessionID)
+		// Check for sub-paths like /periodic/run-now
+		periodicSubPath := ""
+		if len(parts) > 2 {
+			periodicSubPath = parts[2]
+		}
+		s.handleSessionPeriodic(w, r, sessionID, periodicSubPath)
 		return
 	}
 

@@ -22,7 +22,8 @@ type PeriodicPromptPatchRequest struct {
 
 // handleSessionPeriodic handles periodic prompt operations for a session.
 // Routes: GET, PUT, PATCH, DELETE /api/sessions/{id}/periodic
-func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request, sessionID string) {
+// Route: POST /api/sessions/{id}/periodic/run-now (immediate delivery)
+func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request, sessionID, subPath string) {
 	store := s.Store()
 	if store == nil {
 		http.Error(w, "Session store not available", http.StatusInternalServerError)
@@ -36,6 +37,12 @@ func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request, s
 			return
 		}
 		http.Error(w, "Failed to get session", http.StatusInternalServerError)
+		return
+	}
+
+	// Handle run-now sub-path
+	if subPath == "run-now" {
+		s.handleRunPeriodicNow(w, r, sessionID)
 		return
 	}
 
@@ -164,5 +171,51 @@ func (s *Server) handleDeletePeriodic(w http.ResponseWriter, sessionID string, p
 	// Broadcast periodic disabled to all clients (nil means deleted)
 	s.BroadcastPeriodicUpdated(sessionID, nil)
 
+	writeNoContent(w)
+}
+
+// handleRunPeriodicNow handles POST /api/sessions/{id}/periodic/run-now
+// Triggers immediate delivery of the periodic prompt, bypassing the normal schedule.
+func (s *Server) handleRunPeriodicNow(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	// Check if periodic runner is available
+	if s.periodicRunner == nil {
+		http.Error(w, "Periodic runner not available", http.StatusInternalServerError)
+		return
+	}
+
+	// Trigger immediate delivery
+	if err := s.periodicRunner.TriggerNow(sessionID); err != nil {
+		switch err {
+		case session.ErrPeriodicNotFound:
+			http.Error(w, "No periodic prompt configured", http.StatusNotFound)
+		case ErrPeriodicNotEnabled:
+			http.Error(w, "Periodic is not enabled for this session", http.StatusBadRequest)
+		case ErrSessionBusy:
+			http.Error(w, "Session is currently processing a prompt", http.StatusConflict)
+		default:
+			if s.logger != nil {
+				s.logger.Error("Failed to trigger periodic prompt", "error", err, "session_id", sessionID)
+			}
+			http.Error(w, "Failed to trigger periodic prompt", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Return success with the updated periodic config
+	store := s.Store()
+	if store != nil {
+		periodicStore := store.Periodic(sessionID)
+		if updated, err := periodicStore.Get(); err == nil {
+			writeJSONOK(w, updated)
+			return
+		}
+	}
+
+	// Fallback: just return success status
 	writeNoContent(w)
 }

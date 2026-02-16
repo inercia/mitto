@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -11,6 +12,14 @@ import (
 const (
 	// DefaultPollInterval is the default interval between periodic prompt checks.
 	DefaultPollInterval = 1 * time.Minute
+)
+
+// Errors for periodic runner operations.
+var (
+	ErrSessionStoreNotAvailable   = errors.New("session store not available")
+	ErrSessionManagerNotAvailable = errors.New("session manager not available")
+	ErrPeriodicNotEnabled         = errors.New("periodic is not enabled for this session")
+	ErrSessionBusy                = errors.New("session is currently processing a prompt")
 )
 
 // PeriodicStartedCallback is called when a periodic prompt is delivered.
@@ -103,6 +112,75 @@ func (r *PeriodicRunner) IsRunning() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.running
+}
+
+// TriggerNow immediately delivers the periodic prompt for a session,
+// bypassing the normal schedule check. This is used for manual "run now" requests.
+// Returns an error if the delivery fails or the session is not configured for periodic prompts.
+func (r *PeriodicRunner) TriggerNow(sessionID string) error {
+	if r.store == nil {
+		return ErrSessionStoreNotAvailable
+	}
+
+	// Get session metadata
+	meta, err := r.store.GetMetadata(sessionID)
+	if err != nil {
+		return err
+	}
+
+	// Get periodic config for this session
+	periodicStore := r.store.Periodic(sessionID)
+	periodic, err := periodicStore.Get()
+	if err != nil {
+		return err
+	}
+
+	// Check if enabled
+	if !periodic.Enabled {
+		return ErrPeriodicNotEnabled
+	}
+
+	// Check if session manager is available
+	if r.sessionManager == nil {
+		return ErrSessionManagerNotAvailable
+	}
+
+	// Check if session is running (has an active ACP connection)
+	bs := r.sessionManager.GetSession(sessionID)
+	if bs == nil {
+		// Session not running - auto-resume it to deliver the periodic prompt
+		if r.logger != nil {
+			r.logger.Debug("Auto-resuming session for immediate periodic delivery",
+				"session_id", sessionID,
+				"session_name", meta.Name)
+		}
+
+		bs, err = r.sessionManager.ResumeSession(sessionID, meta.Name, meta.WorkingDir)
+		if err != nil {
+			return err
+		}
+
+		if r.logger != nil {
+			r.logger.Info("Session auto-resumed for immediate periodic delivery",
+				"session_id", sessionID,
+				"session_name", meta.Name)
+		}
+	}
+
+	// Check if session is currently processing a prompt
+	if bs.IsPrompting() {
+		return ErrSessionBusy
+	}
+
+	if r.logger != nil {
+		r.logger.Info("Triggering immediate periodic delivery",
+			"session_id", sessionID,
+			"session_name", meta.Name,
+			"prompt_preview", truncatePrompt(periodic.Prompt, 100))
+	}
+
+	// Deliver the prompt
+	return r.deliverPrompt(bs, meta.Name, periodic, periodicStore)
 }
 
 // pollLoop is the main polling loop that checks for due prompts.
