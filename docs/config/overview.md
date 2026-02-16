@@ -47,7 +47,7 @@ acp:
       command: copilot --acp
   - my-agent:
       command: my-agent --acp
-      cwd: /home/user/my-project  # Optional: working directory for the process
+      cwd: /home/user/my-project # Optional: working directory for the process
 ```
 
 Each server has:
