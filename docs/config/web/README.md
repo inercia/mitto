@@ -14,6 +14,7 @@ This document covers web server settings, authentication, security, and deployme
 - [Predefined Prompts](#predefined-prompts)
 - [Authentication](#authentication)
 - [Security Configuration](#security-configuration)
+  - [Scanner Defense](#scanner-defense)
 - [Lifecycle Hooks](#lifecycle-hooks)
 - [Multi-Workspace Support](#multi-workspace-support)
 - [Reverse Proxy Setup](#reverse-proxy-setup)
@@ -193,6 +194,40 @@ web:
     max_ws_connections_per_ip: 10 # Default: 10
     max_ws_message_size: 65536 # Default: 64KB
 ```
+
+### Scanner Defense
+
+Scanner Defense automatically blocks malicious IPs at the TCP connection level on the
+**external listener only**. It is **enabled by default when external access is configured**
+(`external_port >= 0`). The localhost listener is not affected.
+
+```yaml
+web:
+  external_port: 8443 # Enables scanner defense automatically
+
+  security:
+    scanner_defense:
+      # Override defaults (all optional):
+      rate_limit: 100 # Max requests per minute
+      rate_window_seconds: 60 # Rate limit window
+      error_rate_threshold: 0.9 # 90% error rate triggers block
+      min_requests: 10 # Min requests before error analysis
+      suspicious_path_threshold: 5 # Suspicious path hits before block
+      block_duration_seconds: 86400 # Block for 24 hours
+      whitelist: # Additional whitelisted IPs
+        - 10.0.0.0/8
+```
+
+To disable scanner defense:
+
+```yaml
+web:
+  security:
+    scanner_defense:
+      enabled: false
+```
+
+See [External Access - Scanner Defense](../ext-access.md#scanner-defense) for detailed configuration options.
 
 ### Lifetime hooks and External Access Tunnels
 
