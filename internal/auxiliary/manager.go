@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/coder/acp-go-sdk"
-	"github.com/google/shlex"
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 )
 
@@ -48,13 +47,9 @@ func (m *Manager) start(ctx context.Context) error {
 	}
 
 	// Parse command using shell-aware tokenization
-	// This handles quoted strings correctly, e.g., sh -c 'cd /dir && cmd'
-	args, err := shlex.Split(m.command)
+	args, err := mittoAcp.ParseCommand(m.command)
 	if err != nil {
-		return fmt.Errorf("failed to parse ACP command %q: %w", m.command, err)
-	}
-	if len(args) == 0 {
-		return fmt.Errorf("empty ACP command")
+		return err
 	}
 
 	// Create a long-lived context for the auxiliary session

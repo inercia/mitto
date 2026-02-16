@@ -8,7 +8,6 @@ import (
 	"os/exec"
 
 	"github.com/coder/acp-go-sdk"
-	"github.com/google/shlex"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
 )
@@ -44,13 +43,9 @@ func NewConnection(
 	r *runner.Runner, // optional restricted runner
 ) (*Connection, error) {
 	// Parse command into args using shell-aware tokenization
-	// This handles quoted strings correctly, e.g., sh -c 'cd /dir && cmd'
-	args, err := shlex.Split(command)
+	args, err := ParseCommand(command)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse command %q: %w", command, err)
-	}
-	if len(args) == 0 {
-		return nil, fmt.Errorf("empty command")
+		return nil, err
 	}
 
 	var stdin runner.WriteCloser

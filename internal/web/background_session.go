@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
-	"github.com/google/shlex"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/auxiliary"
@@ -1023,13 +1022,9 @@ func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector) {
 
 func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID string) error {
 	// Parse command using shell-aware tokenization
-	// This handles quoted strings correctly, e.g., sh -c 'cd /dir && cmd'
-	args, err := shlex.Split(acpCommand)
+	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
-		return &sessionError{fmt.Sprintf("failed to parse ACP command %q: %v", acpCommand, err)}
-	}
-	if len(args) == 0 {
-		return &sessionError{"empty ACP command"}
+		return &sessionError{err.Error()}
 	}
 
 	var stdin runner.WriteCloser
