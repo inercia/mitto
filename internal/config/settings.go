@@ -89,6 +89,26 @@ func (c *SessionConfig) GetArchiveRetentionPeriod() string {
 	return c.ArchiveRetentionPeriod
 }
 
+// ScannerDefenseConfig holds configuration for the scanner defense system.
+type ScannerDefenseConfig struct {
+	// Enabled controls whether scanner defense is active.
+	Enabled bool `json:"enabled"`
+	// RateLimit is the maximum number of requests per RateWindowSeconds before blocking.
+	RateLimit int `json:"rate_limit,omitempty"`
+	// RateWindowSeconds is the rate limiting window in seconds.
+	RateWindowSeconds int `json:"rate_window_seconds,omitempty"`
+	// ErrorRateThreshold is the error rate (0.0-1.0) above which an IP is blocked.
+	ErrorRateThreshold float64 `json:"error_rate_threshold,omitempty"`
+	// MinRequestsForAnalysis is the minimum requests needed before analyzing error rates.
+	MinRequestsForAnalysis int `json:"min_requests,omitempty"`
+	// SuspiciousPathThreshold is the number of suspicious path hits that trigger a block.
+	SuspiciousPathThreshold int `json:"suspicious_path_threshold,omitempty"`
+	// BlockDurationSeconds is how long an IP remains blocked in seconds.
+	BlockDurationSeconds int `json:"block_duration_seconds,omitempty"`
+	// Whitelist contains CIDR notation ranges that should never be blocked.
+	Whitelist []string `json:"whitelist,omitempty"`
+}
+
 // ACPServerSettings is the JSON representation of an ACP server.
 type ACPServerSettings struct {
 	// Name is the identifier for this ACP server
