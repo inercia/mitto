@@ -89,9 +89,7 @@ func (m *IPMetrics) GetStats(ip string) *IPStats {
 	// Return a copy
 	statsCopy := *stats
 	statsCopy.RecentRequests = make([]RequestInfo, len(stats.RecentRequests))
-	for i, req := range stats.RecentRequests {
-		statsCopy.RecentRequests[i] = req
-	}
+	copy(statsCopy.RecentRequests, stats.RecentRequests)
 	return &statsCopy
 }
 
