@@ -44,6 +44,9 @@ var SuspiciousPaths = []string{
 }
 
 // suspiciousUserAgents contains known scanner/bot user agent patterns.
+// Note: curl/, python-requests, and go-http-client are intentionally included
+// because Mitto has its own dedicated client - any requests from generic HTTP
+// clients to external endpoints are unauthorized and likely malicious probes.
 var suspiciousUserAgents = []string{
 	"sqlmap",
 	"nikto",
@@ -56,7 +59,7 @@ var suspiciousUserAgents = []string{
 	"ffuf",
 	"nuclei",
 	"httpx",
-	"curl/", // Often used by scanners, but be careful - legitimate use exists
+	"curl/",
 	"python-requests",
 	"go-http-client",
 	"scanner",
@@ -65,10 +68,11 @@ var suspiciousUserAgents = []string{
 }
 
 // IsSuspiciousPath checks if a path matches known scanner patterns.
+// Uses HasPrefix only to avoid false positives (e.g., /admin-dashboard should not match /admin).
 func IsSuspiciousPath(path string) bool {
 	lowerPath := strings.ToLower(path)
 	for _, suspicious := range SuspiciousPaths {
-		if strings.HasPrefix(lowerPath, suspicious) || strings.Contains(lowerPath, suspicious) {
+		if strings.HasPrefix(lowerPath, suspicious) {
 			return true
 		}
 	}

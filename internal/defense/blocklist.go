@@ -1,6 +1,7 @@
 package defense
 
 import (
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -26,6 +27,7 @@ type Blocklist struct {
 }
 
 // NewBlocklist creates a new blocklist with the given whitelist CIDRs.
+// Invalid CIDR entries are logged as warnings and skipped.
 func NewBlocklist(whitelist []string) *Blocklist {
 	b := &Blocklist{
 		entries: make(map[string]*BlockEntry),
@@ -44,6 +46,13 @@ func NewBlocklist(whitelist []string) *Blocklist {
 					bits = 128
 				}
 				ipNet = &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
+			} else {
+				// Neither valid CIDR nor IP - log warning
+				slog.Warn("invalid_whitelist_entry",
+					"component", "defense",
+					"entry", cidr,
+					"error", "not a valid CIDR or IP address",
+				)
 			}
 		}
 		if ipNet != nil {
@@ -67,6 +76,12 @@ func (b *Blocklist) isWhitelisted(ipStr string) bool {
 		}
 	}
 	return false
+}
+
+// IsWhitelisted is the public version of isWhitelisted.
+// It allows callers to skip unnecessary processing for whitelisted IPs.
+func (b *Blocklist) IsWhitelisted(ipStr string) bool {
+	return b.isWhitelisted(ipStr)
 }
 
 // Contains checks if an IP is currently blocked (not whitelisted and not expired).

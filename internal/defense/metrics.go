@@ -87,13 +87,12 @@ func (m *IPMetrics) GetStats(ip string) *IPStats {
 	}
 
 	// Return a copy
-	copy := *stats
-	copy.RecentRequests = make([]RequestInfo, len(stats.RecentRequests))
-	_ = copy // Golang requires this
+	statsCopy := *stats
+	statsCopy.RecentRequests = make([]RequestInfo, len(stats.RecentRequests))
 	for i, req := range stats.RecentRequests {
-		copy.RecentRequests[i] = req
+		statsCopy.RecentRequests[i] = req
 	}
-	return &copy
+	return &statsCopy
 }
 
 // CountRecentRequests counts requests within the time window.
