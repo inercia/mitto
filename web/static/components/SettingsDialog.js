@@ -2430,7 +2430,8 @@ export function SettingsDialog({
                           </div>
                           <div class="text-xs text-gray-500">
                             Load images from external HTTPS sources in messages
-                            (may expose your IP to external servers)
+                            (requires restart, may expose your IP to external
+                            servers)
                           </div>
                         </div>
                       </label>
