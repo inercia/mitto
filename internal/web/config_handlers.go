@@ -308,6 +308,14 @@ func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 // IMPORTANT: Only servers with Source != SourceRCFile are saved to settings.json.
 // RC file servers are preserved from the RC file and not duplicated in settings.
 func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, error) {
+	// Build a map of existing server settings for preserving fields not exposed in UI
+	existingServers := make(map[string]configPkg.ACPServer)
+	if s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			existingServers[srv.Name] = srv
+		}
+	}
+
 	// Build new ACP servers - ONLY include servers that are NOT from the RC file.
 	// RC file servers are managed in .mittorc and should not be duplicated in settings.json.
 	// This allows users to:
@@ -319,13 +327,23 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		if srv.Source == configPkg.SourceRCFile {
 			continue
 		}
-		newACPServers = append(newACPServers, configPkg.ACPServerSettings{
+
+		newServer := configPkg.ACPServerSettings{
 			Name:    srv.Name,
 			Command: srv.Command,
 			Source:  configPkg.SourceSettings, // Mark as settings-sourced
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field
-		})
+		}
+
+		// Preserve Cwd and RestrictedRunners from existing server if present
+		// These fields are not exposed in the UI but should not be lost on save
+		if existing, ok := existingServers[srv.Name]; ok {
+			newServer.Cwd = existing.Cwd
+			newServer.RestrictedRunners = existing.RestrictedRunners
+		}
+
+		newACPServers = append(newACPServers, newServer)
 	}
 
 	// Build new web config (preserve existing settings, update auth and host)
