@@ -25,6 +25,9 @@ type ACPServer struct {
 	Prompts []WebPrompt
 	// RestrictedRunners contains per-runner-type configuration for this agent.
 	RestrictedRunners map[string]*WorkspaceRunnerConfig
+	// Source indicates where this server configuration originated from.
+	// Used for config layering: servers from RC file are read-only in the UI.
+	Source ConfigItemSource
 }
 
 // PromptSource indicates where a prompt originated from.

@@ -35,6 +35,12 @@ type LoadResult struct {
 	Source ConfigSource
 	// SourcePath is the path to the configuration file (empty for embedded defaults).
 	SourcePath string
+	// RCFilePath is the path to the RC file if one was used in the merge.
+	// This is set even when Source is ConfigSourceSettingsJSON if an RC file was merged.
+	RCFilePath string
+	// HasRCFileServers indicates whether any ACP servers came from the RC file.
+	// When true, those servers should be treated as read-only in the UI.
+	HasRCFileServers bool
 }
 
 // Settings represents the persisted Mitto settings in JSON format.
@@ -121,6 +127,9 @@ type ACPServerSettings struct {
 	Prompts []WebPrompt `json:"prompts,omitempty"`
 	// RestrictedRunners contains per-runner-type configuration for this agent
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
+	// Source indicates where this server configuration originated from.
+	// Used for config layering: servers from RC file are read-only in the UI.
+	Source ConfigItemSource `json:"source,omitempty"`
 }
 
 // ToConfig converts Settings to the internal Config struct.
@@ -334,41 +343,127 @@ func SaveSettings(settings *Settings) error {
 	return fileutil.WriteJSONAtomic(settingsPath, settings, 0644)
 }
 
-// LoadSettingsWithFallback loads configuration with the following hierarchy:
-//  1. If an RC file exists (~/.mittorc), use it exclusively (ignores settings.json)
-//  2. If no RC file exists, use settings.json (creates from defaults if needed)
+// LoadSettingsWithFallback loads configuration using a layered approach:
+//  1. Load settings.json as the base (creates from defaults if needed)
+//  2. If an RC file exists (~/.mittorc), merge its ACP servers into the config
 //
-// This is intended for the macOS native app which can work without an RC file.
+// The RC file servers have higher priority and will override settings servers with the same name.
+// RC file servers are marked with Source=SourceRCFile and are read-only in the UI.
+// Settings servers are marked with Source=SourceSettings and can be edited via UI.
+//
+// Non-ACP settings (web, ui, etc.) come from settings.json when no RC file exists,
+// or from the RC file when one exists (for backward compatibility).
 func LoadSettingsWithFallback() (*LoadResult, error) {
-	// Check for RC file first (highest priority)
+	// Check for RC file
 	rcPath, err := appdir.RCFilePath()
 	if err != nil {
 		return nil, fmt.Errorf("failed to check RC file: %w", err)
 	}
 
-	if rcPath != "" {
-		// RC file exists - use it exclusively
-		cfg, err := Load(rcPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load RC file %s: %w", rcPath, err)
-		}
-		return &LoadResult{
-			Config:     cfg,
-			Source:     ConfigSourceRCFile,
-			SourcePath: rcPath,
-		}, nil
-	}
-
-	// No RC file - fall back to settings.json (existing behavior)
-	cfg, err := LoadSettings()
+	// Always ensure settings.json exists (needed for UI settings persistence)
+	settingsPath, err := appdir.SettingsPath()
 	if err != nil {
 		return nil, err
 	}
 
-	settingsPath, _ := appdir.SettingsPath()
+	// Ensure Mitto directory exists
+	if err := appdir.EnsureDir(); err != nil {
+		return nil, fmt.Errorf("failed to create Mitto directory: %w", err)
+	}
+
+	// Create settings.json from defaults if it doesn't exist
+	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
+		if err := createDefaultSettings(); err != nil {
+			return nil, fmt.Errorf("failed to create default settings: %w", err)
+		}
+	}
+
+	// Load settings.json
+	var settings Settings
+	if err := fileutil.ReadJSON(settingsPath, &settings); err != nil {
+		return nil, fmt.Errorf("failed to read settings file %s: %w", settingsPath, err)
+	}
+
+	// Mark all settings servers with their source
+	for i := range settings.ACPServers {
+		settings.ACPServers[i].Source = SourceSettings
+	}
+
+	// Convert settings to config
+	settingsCfg := settings.ToConfig()
+
+	// Handle keychain password loading
+	if err := loadKeychainPassword(settingsCfg); err != nil {
+		// Non-fatal, just log and continue
+		_ = err
+	}
+
+	// If no RC file, return settings-only config
+	if rcPath == "" {
+		// Validate at least one ACP server
+		if len(settingsCfg.ACPServers) == 0 {
+			return nil, fmt.Errorf("no ACP servers configured in settings")
+		}
+		return &LoadResult{
+			Config:           settingsCfg,
+			Source:           ConfigSourceSettingsJSON,
+			SourcePath:       settingsPath,
+			HasRCFileServers: false,
+		}, nil
+	}
+
+	// RC file exists - load and merge
+	rcCfg, err := Load(rcPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load RC file %s: %w", rcPath, err)
+	}
+
+	// Mark all RC file servers with their source
+	for i := range rcCfg.ACPServers {
+		rcCfg.ACPServers[i].Source = SourceRCFile
+	}
+
+	// Merge ACP servers: RC file servers take priority
+	mergeResult := MergeACPServers(rcCfg.ACPServers, settingsCfg.ACPServers)
+
+	// Build the final merged config
+	// Use RC file config as base (for non-ACP settings like web, prompts, etc.)
+	// but override ACP servers with the merged list
+	mergedCfg := rcCfg
+	mergedCfg.ACPServers = mergeResult.Items
+
+	// Validate at least one ACP server
+	if len(mergedCfg.ACPServers) == 0 {
+		return nil, fmt.Errorf("no ACP servers configured")
+	}
+
 	return &LoadResult{
-		Config:     cfg,
-		Source:     ConfigSourceSettingsJSON,
-		SourcePath: settingsPath,
+		Config:           mergedCfg,
+		Source:           ConfigSourceRCFile, // Primary source is RC file
+		SourcePath:       rcPath,
+		RCFilePath:       rcPath,
+		HasRCFileServers: mergeResult.HasRCFileItems,
 	}, nil
+}
+
+// loadKeychainPassword loads the external access password from keychain if available.
+func loadKeychainPassword(cfg *Config) error {
+	if cfg.Web.Auth == nil || cfg.Web.Auth.Simple == nil {
+		return nil
+	}
+	if !secrets.IsSupported() {
+		return nil
+	}
+	if cfg.Web.Auth.Simple.Password != "" {
+		// Password already set, no need to load from keychain
+		return nil
+	}
+	password, err := secrets.GetExternalAccessPassword()
+	if err != nil {
+		return err
+	}
+	if password != "" {
+		cfg.Web.Auth.Simple.Password = password
+	}
+	return nil
 }

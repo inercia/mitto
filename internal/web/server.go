@@ -48,11 +48,15 @@ type Config struct {
 	// OnWorkspaceSave is called when workspaces are modified (only if FromCLI is false).
 	OnWorkspaceSave WorkspaceSaveFunc
 	// ConfigReadOnly indicates that configuration was loaded from a custom config file
-	// (via --config flag or RC file). When true, the Settings dialog is disabled in the UI.
+	// (via --config flag). When true, the Settings dialog is disabled in the UI.
+	// Note: RC file config is NOT fully read-only anymore - users can add servers via UI.
 	ConfigReadOnly bool
 	// RCFilePath is the path to the RC file if config was loaded from one.
-	// This is used to show the user which file is being used when ConfigReadOnly is true.
+	// This is used to show the user which file is being used.
 	RCFilePath string
+	// HasRCFileServers indicates whether any ACP servers came from the RC file.
+	// When true, those servers are marked as read-only in the UI (cannot edit/delete).
+	HasRCFileServers bool
 	// PromptsCache provides cached access to global prompts from MITTO_DIR/prompts/.
 	// If nil, global file prompts are not loaded.
 	PromptsCache *configPkg.PromptsCache

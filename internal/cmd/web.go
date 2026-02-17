@@ -155,11 +155,17 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		onWorkspaceSave = config.SaveWorkspaces
 	}
 
-	// Determine if config is read-only and get RC file path if applicable
-	configReadOnly := configPath != "" || (configResult != nil && configResult.Source == config.ConfigSourceRCFile)
+	// Determine if config is fully read-only (only when using --config flag)
+	// Note: RC file config is NOT fully read-only anymore with config layering.
+	// Users can add new servers via UI (saved to settings.json), but RC file servers are read-only.
+	configReadOnly := configPath != ""
+
+	// Get RC file path and whether any servers came from it
 	var rcFilePath string
-	if configResult != nil && configResult.Source == config.ConfigSourceRCFile {
-		rcFilePath = configResult.SourcePath
+	var hasRCFileServers bool
+	if configResult != nil {
+		rcFilePath = configResult.RCFilePath
+		hasRCFileServers = configResult.HasRCFileServers
 	}
 
 	// Initialize prompts cache for global prompts from MITTO_DIR/prompts/
@@ -175,17 +181,18 @@ func runWeb(cmd *cobra.Command, args []string) error {
 
 	// Create web server with workspaces
 	srv, err := web.NewServer(web.Config{
-		Workspaces:      webWorkspaces,
-		AutoApprove:     autoApprove,
-		Debug:           debug,
-		MittoConfig:     cfg,
-		StaticDir:       staticDir,
-		FromCLI:         fromCLI,
-		OnWorkspaceSave: onWorkspaceSave,
-		ConfigReadOnly:  configReadOnly,
-		RCFilePath:      rcFilePath,
-		PromptsCache:    promptsCache,
-		AccessLog:       accessLogConfig,
+		Workspaces:       webWorkspaces,
+		AutoApprove:      autoApprove,
+		Debug:            debug,
+		MittoConfig:      cfg,
+		StaticDir:        staticDir,
+		FromCLI:          fromCLI,
+		OnWorkspaceSave:  onWorkspaceSave,
+		ConfigReadOnly:   configReadOnly,
+		RCFilePath:       rcFilePath,
+		HasRCFileServers: hasRCFileServers,
+		PromptsCache:     promptsCache,
+		AccessLog:        accessLogConfig,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
