@@ -318,6 +318,9 @@ export function SettingsDialog({
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
 
+  // External images settings (advanced) - disabled by default for security
+  const [externalImagesEnabled, setExternalImagesEnabled] = useState(false);
+
   // Input font family setting (web UI)
   const [inputFontFamily, setInputFontFamily] = useState("system");
 
@@ -621,6 +624,11 @@ export function SettingsDialog({
         config.conversations?.action_buttons?.enabled !== false,
       );
 
+      // Load external images settings (advanced) - disabled by default for security
+      setExternalImagesEnabled(
+        config.conversations?.external_images?.enabled === true,
+      );
+
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -740,6 +748,9 @@ export function SettingsDialog({
       const conversationsConfig = {
         action_buttons: {
           enabled: actionButtonsEnabled,
+        },
+        external_images: {
+          enabled: externalImagesEnabled,
         },
       };
 
@@ -2400,6 +2411,26 @@ export function SettingsDialog({
                           <div class="text-xs text-gray-500">
                             Analyze agent responses to suggest clickable
                             follow-up options (uses auxiliary conversation)
+                          </div>
+                        </div>
+                      </label>
+                      <label
+                        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${externalImagesEnabled}
+                          onChange=${(e) =>
+                            setExternalImagesEnabled(e.target.checked)}
+                          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                        />
+                        <div class="flex-1">
+                          <div class="font-medium text-sm">
+                            Allow External Images
+                          </div>
+                          <div class="text-xs text-gray-500">
+                            Load images from external HTTPS sources in messages
+                            (may expose your IP to external servers)
                           </div>
                         </div>
                       </label>
