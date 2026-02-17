@@ -18,10 +18,10 @@ import (
 type ConfigSaveRequest struct {
 	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
 	ACPServers []struct {
-		Name    string                       `json:"name"`
-		Command string                       `json:"command"`
-		Prompts []configPkg.WebPrompt        `json:"prompts,omitempty"`
-		Source  configPkg.ConfigItemSource   `json:"source,omitempty"` // Source of the server (rcfile, settings)
+		Name    string                     `json:"name"`
+		Command string                     `json:"command"`
+		Prompts []configPkg.WebPrompt      `json:"prompts,omitempty"`
+		Source  configPkg.ConfigItemSource `json:"source,omitempty"` // Source of the server (rcfile, settings)
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`

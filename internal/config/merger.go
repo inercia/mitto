@@ -222,4 +222,3 @@ func MergeACPServerSettings(rcfileServers, settingsServers []ACPServerSettings) 
 func GetSettingsOnlyServerSettings(servers []ACPServerSettings) []ACPServerSettings {
 	return FilterBySource(servers, ACPServerSettingsMerger.GetSource, SourceSettings)
 }
-

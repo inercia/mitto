@@ -19,14 +19,14 @@ func TestGenericMerger_UnionStrategy(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		rcfileItems    []ACPServer
-		settingsItems  []ACPServer
-		wantCount      int
-		wantRCFile     bool
-		wantSettings   bool
-		wantNames      []string
-		wantSources    []ConfigItemSource
+		name          string
+		rcfileItems   []ACPServer
+		settingsItems []ACPServer
+		wantCount     int
+		wantRCFile    bool
+		wantSettings  bool
+		wantNames     []string
+		wantSources   []ConfigItemSource
 	}{
 		{
 			name: "both sources with overlap",
@@ -35,7 +35,7 @@ func TestGenericMerger_UnionStrategy(t *testing.T) {
 				{Name: "claude", Command: "claude --acp"},
 			},
 			settingsItems: []ACPServer{
-				{Name: "claude", Command: "claude --different"},  // duplicate - should be skipped
+				{Name: "claude", Command: "claude --different"}, // duplicate - should be skipped
 				{Name: "custom", Command: "custom-agent --acp"},
 			},
 			wantCount:    3,
@@ -45,16 +45,16 @@ func TestGenericMerger_UnionStrategy(t *testing.T) {
 			wantSources:  []ConfigItemSource{SourceRCFile, SourceRCFile, SourceSettings},
 		},
 		{
-			name:        "only rcfile items",
+			name: "only rcfile items",
 			rcfileItems: []ACPServer{
 				{Name: "auggie", Command: "auggie --acp"},
 			},
-			settingsItems:  nil,
-			wantCount:      1,
-			wantRCFile:     true,
-			wantSettings:   false,
-			wantNames:      []string{"auggie"},
-			wantSources:    []ConfigItemSource{SourceRCFile},
+			settingsItems: nil,
+			wantCount:     1,
+			wantRCFile:    true,
+			wantSettings:  false,
+			wantNames:     []string{"auggie"},
+			wantSources:   []ConfigItemSource{SourceRCFile},
 		},
 		{
 			name:        "only settings items",
@@ -69,14 +69,14 @@ func TestGenericMerger_UnionStrategy(t *testing.T) {
 			wantSources:  []ConfigItemSource{SourceSettings},
 		},
 		{
-			name:           "empty both",
-			rcfileItems:    nil,
-			settingsItems:  nil,
-			wantCount:      0,
-			wantRCFile:     false,
-			wantSettings:   false,
-			wantNames:      nil,
-			wantSources:    nil,
+			name:          "empty both",
+			rcfileItems:   nil,
+			settingsItems: nil,
+			wantCount:     0,
+			wantRCFile:    false,
+			wantSettings:  false,
+			wantNames:     nil,
+			wantSources:   nil,
 		},
 	}
 
