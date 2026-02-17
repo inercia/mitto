@@ -30,6 +30,7 @@ import {
   FolderIcon,
   LightningIcon,
   DragHandleIcon,
+  LockIcon,
 } from "./Icons.js";
 
 // Import constants
@@ -266,6 +267,9 @@ export function SettingsDialog({
 
   // Stored sessions for checking workspace usage
   const [storedSessions, setStoredSessions] = useState([]);
+
+  // Orphaned workspaces (filtered out due to missing servers)
+  const [orphanedWorkspaces, setOrphanedWorkspaces] = useState([]);
 
   // Supported runners (fetched from server based on platform)
   const [supportedRunners, setSupportedRunners] = useState([]);
@@ -525,6 +529,7 @@ export function SettingsDialog({
       // - Must reference an existing ACP server
       const serverNames = new Set(servers.map((s) => s.name));
       const rawWorkspaces = config.workspaces || [];
+      const orphaned = []; // Track workspaces with missing servers
       const validWorkspaces = rawWorkspaces.filter((ws) => {
         // Check for valid working_dir
         if (
@@ -541,11 +546,19 @@ export function SettingsDialog({
             "Filtering out workspace with invalid/missing ACP server:",
             ws,
           );
+          // Track orphaned workspaces (those with missing servers)
+          if (ws.acp_server) {
+            orphaned.push({
+              working_dir: ws.working_dir,
+              missing_server: ws.acp_server,
+            });
+          }
           return false;
         }
         return true;
       });
       setWorkspaces(validWorkspaces);
+      setOrphanedWorkspaces(orphaned);
 
       // Load auth settings - check if external access is enabled
       // External access is enabled if auth is configured OR host is 0.0.0.0
@@ -766,10 +779,12 @@ export function SettingsDialog({
         .filter((p) => !p.source || p.source === "settings")
         .map(({ source, ...rest }) => rest); // Remove source field before saving
 
-      // ACP servers are saved without prompts (prompts come from files with acps: field)
+      // ACP servers are saved with source field so backend can filter out RC file servers
+      // (RC file servers are managed in .mittorc, not settings.json)
       const acpServersToSave = acpServers.map((srv) => ({
         name: srv.name,
         command: srv.command,
+        source: srv.source || "settings", // Default to settings if not specified
       }));
 
       const config = {
@@ -1012,6 +1027,7 @@ export function SettingsDialog({
       {
         name: newServerName.trim(),
         command: newServerCommand.trim(),
+        source: "settings", // New servers added via UI are saved to settings.json
       },
     ]);
     setNewServerName("");
@@ -1043,6 +1059,7 @@ export function SettingsDialog({
               name: newName.trim(),
               command: newCommand.trim(),
               prompts: s.prompts, // Preserve existing prompts (read-only from files)
+              source: s.source, // Preserve source (rcfile or settings)
             }
           : s,
       ),
@@ -1196,6 +1213,39 @@ export function SettingsDialog({
                         to work on different projects simultaneously.
                       </p>
                     </div>
+
+                    ${orphanedWorkspaces.length > 0 &&
+                    html`
+                      <div
+                        class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg"
+                      >
+                        <div class="flex items-start gap-2">
+                          <span class="text-amber-400 text-lg">⚠️</span>
+                          <div class="flex-1">
+                            <p class="text-amber-400 text-sm font-medium mb-1">
+                              ${orphanedWorkspaces.length} workspace${orphanedWorkspaces.length > 1 ? 's' : ''} removed due to missing server${orphanedWorkspaces.length > 1 ? 's' : ''}
+                            </p>
+                            <p class="text-amber-300/80 text-xs mb-2">
+                              The following workspace${orphanedWorkspaces.length > 1 ? 's reference servers that no longer exist' : ' references a server that no longer exists'}.
+                              This can happen if a server was removed from your .mittorc file.
+                            </p>
+                            <ul class="text-xs text-amber-300/70 space-y-1">
+                              ${orphanedWorkspaces.map(
+                                (ow) => html`
+                                  <li key=${ow.working_dir} class="flex items-center gap-1">
+                                    <span class="text-amber-400">•</span>
+                                    <span class="font-mono truncate" title=${ow.working_dir}>${ow.working_dir}</span>
+                                    <span class="text-amber-500/70">→</span>
+                                    <span class="text-red-400/80">${ow.missing_server}</span>
+                                    <span class="text-amber-500/50">(missing)</span>
+                                  </li>
+                                `,
+                              )}
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                    `}
 
                     <div class="flex items-center justify-between">
                       <p class="text-gray-400 text-sm">
@@ -1556,12 +1606,15 @@ export function SettingsDialog({
                       : html`
                           <div class="space-y-2">
                             ${acpServers.map(
-                              (srv) => html`
+                              (srv) => {
+                                // RC file servers are read-only (cannot edit/delete)
+                                const isRCFile = srv.source === "rcfile";
+                                return html`
                                 <div
                                   key=${srv.name}
-                                  class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 hover:bg-slate-700/30 transition-colors group"
+                                  class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile ? '' : 'hover:bg-slate-700/30'} transition-colors group ${isRCFile ? 'opacity-80' : ''}"
                                 >
-                                  ${editingServer === srv.name
+                                  ${editingServer === srv.name && !isRCFile
                                     ? html`
                                         <${ServerEditForm}
                                           server=${srv}
@@ -1578,6 +1631,16 @@ export function SettingsDialog({
                                               class="font-medium text-sm flex items-center gap-2"
                                             >
                                               ${srv.name}
+                                              ${isRCFile && html`
+                                                <span
+                                                  class="flex items-center gap-1 text-xs text-amber-400"
+                                                  title="This server is defined in .mittorc and cannot be modified here"
+                                                >
+                                                  <${LockIcon}
+                                                    className="w-3 h-3"
+                                                  />
+                                                </span>
+                                              `}
                                               ${srv.prompts?.length > 0 &&
                                               html`
                                                 <span
@@ -1597,28 +1660,31 @@ export function SettingsDialog({
                                               title=${srv.command}
                                             >
                                               ${srv.command}
+                                              ${isRCFile && html`<span class="ml-2 text-amber-500/70">(from .mittorc)</span>`}
                                             </div>
                                           </div>
-                                          <button
-                                            onClick=${() =>
-                                              setEditingServer(srv.name)}
-                                            class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                            title="Edit server"
-                                          >
-                                            <${EditIcon} className="w-4 h-4" />
-                                          </button>
-                                          <button
-                                            onClick=${() =>
-                                              removeServer(srv.name)}
-                                            class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                            title="Remove server"
-                                          >
-                                            <${TrashIcon} className="w-4 h-4" />
-                                          </button>
+                                          ${!isRCFile && html`
+                                            <button
+                                              onClick=${() =>
+                                                setEditingServer(srv.name)}
+                                              class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                              title="Edit server"
+                                            >
+                                              <${EditIcon} className="w-4 h-4" />
+                                            </button>
+                                            <button
+                                              onClick=${() =>
+                                                removeServer(srv.name)}
+                                              class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                              title="Remove server"
+                                            >
+                                              <${TrashIcon} className="w-4 h-4" />
+                                            </button>
+                                          `}
                                         </div>
                                       `}
                                 </div>
-                              `,
+                              `}
                             )}
                           </div>
                         `}

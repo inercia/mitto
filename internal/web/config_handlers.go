@@ -18,9 +18,10 @@ import (
 type ConfigSaveRequest struct {
 	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
 	ACPServers []struct {
-		Name    string                `json:"name"`
-		Command string                `json:"command"`
-		Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
+		Name    string                       `json:"name"`
+		Command string                       `json:"command"`
+		Prompts []configPkg.WebPrompt        `json:"prompts,omitempty"`
+		Source  configPkg.ConfigItemSource   `json:"source,omitempty"` // Source of the server (rcfile, settings)
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
@@ -101,12 +102,14 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response["prompts"] = mergedPrompts
 
 		// Convert ACP servers to JSON-friendly format
+		// Include source field so frontend knows which servers are from RC file (read-only)
 		// Only include file-based prompts that explicitly list this ACP server in their acps: field
 		acpServers := make([]map[string]interface{}, len(s.config.MittoConfig.ACPServers))
 		for i, srv := range s.config.MittoConfig.ACPServers {
 			acpServers[i] = map[string]interface{}{
 				"name":    srv.Name,
 				"command": srv.Command,
+				"source":  string(srv.Source), // Include source for frontend read-only indication
 			}
 
 			// Get file-based prompts that explicitly target this ACP server
@@ -126,6 +129,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		response["acp_servers"] = acpServers
+
+		// Include flag indicating if any servers came from RC file
+		response["has_rcfile_servers"] = s.config.HasRCFileServers
 	}
 
 	writeJSONOK(w, response)
@@ -298,16 +304,28 @@ func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 // It also handles secure storage of the external access password on supported platforms.
 // On macOS, the password is stored in the Keychain and omitted from settings.json.
 // On other platforms, the password is stored in settings.json.
+//
+// IMPORTANT: Only servers with Source != SourceRCFile are saved to settings.json.
+// RC file servers are preserved from the RC file and not duplicated in settings.
 func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, error) {
-	// Build new ACP servers (without per-server prompts - those come from files only)
-	newACPServers := make([]configPkg.ACPServerSettings, len(req.ACPServers))
-	for i, srv := range req.ACPServers {
-		newACPServers[i] = configPkg.ACPServerSettings{
+	// Build new ACP servers - ONLY include servers that are NOT from the RC file.
+	// RC file servers are managed in .mittorc and should not be duplicated in settings.json.
+	// This allows users to:
+	// 1. Have a base set of servers in .mittorc (read-only, version controlled)
+	// 2. Add custom servers via UI that are saved to settings.json
+	var newACPServers []configPkg.ACPServerSettings
+	for _, srv := range req.ACPServers {
+		// Skip RC file servers - they are managed in .mittorc, not settings.json
+		if srv.Source == configPkg.SourceRCFile {
+			continue
+		}
+		newACPServers = append(newACPServers, configPkg.ACPServerSettings{
 			Name:    srv.Name,
 			Command: srv.Command,
+			Source:  configPkg.SourceSettings, // Mark as settings-sourced
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field
-		}
+		})
 	}
 
 	// Build new web config (preserve existing settings, update auth and host)

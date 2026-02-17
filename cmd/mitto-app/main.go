@@ -944,11 +944,14 @@ func run() error {
 	// Create web server
 	// For macOS app, workspaces are persisted to workspaces.json
 	// If no workspaces exist, the frontend will show the Settings dialog
-	// If config came from RC file, settings are read-only
-	configReadOnly := configResult != nil && configResult.Source == config.ConfigSourceRCFile
+	// Note: RC file config is NOT fully read-only anymore with config layering.
+	// Users can add new servers via UI (saved to settings.json), but RC file servers are read-only.
+	configReadOnly := false // macOS app config is never fully read-only
 	var rcFilePath string
-	if configReadOnly {
-		rcFilePath = configResult.SourcePath
+	var hasRCFileServers bool
+	if configResult != nil {
+		rcFilePath = configResult.RCFilePath
+		hasRCFileServers = configResult.HasRCFileServers
 	}
 
 	// Initialize prompts cache for global prompts from MITTO_DIR/prompts/
@@ -963,16 +966,17 @@ func run() error {
 	accessLogConfig := resolveAccessLogConfigApp(cfg)
 
 	webConfig := web.Config{
-		Workspaces:      workspaces,
-		AutoApprove:     false,
-		Debug:           false,
-		MittoConfig:     cfg,
-		FromCLI:         false, // macOS app always uses file-based persistence
-		OnWorkspaceSave: onWorkspaceSave,
-		ConfigReadOnly:  configReadOnly,
-		RCFilePath:      rcFilePath,
-		PromptsCache:    promptsCache,
-		AccessLog:       accessLogConfig,
+		Workspaces:       workspaces,
+		AutoApprove:      false,
+		Debug:            false,
+		MittoConfig:      cfg,
+		FromCLI:          false, // macOS app always uses file-based persistence
+		OnWorkspaceSave:  onWorkspaceSave,
+		ConfigReadOnly:   configReadOnly,
+		RCFilePath:       rcFilePath,
+		HasRCFileServers: hasRCFileServers,
+		PromptsCache:     promptsCache,
+		AccessLog:        accessLogConfig,
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)
