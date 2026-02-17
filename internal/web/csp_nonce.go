@@ -41,14 +41,15 @@ func generateCSPNonce() (string, error) {
 // cspNonceResponseWriter wraps http.ResponseWriter to inject CSP nonces and API prefix into HTML responses.
 type cspNonceResponseWriter struct {
 	http.ResponseWriter
-	nonce         string
-	apiPrefix     string
-	isExternal    bool
-	config        SecurityConfig
-	statusCode    int
-	headerWritten bool
-	buffer        *bytes.Buffer
-	isHTML        bool
+	nonce               string
+	apiPrefix           string
+	isExternal          bool
+	allowExternalImages bool
+	config              SecurityConfig
+	statusCode          int
+	headerWritten       bool
+	buffer              *bytes.Buffer
+	isHTML              bool
 }
 
 // WriteHeader captures the status code and checks if this is an HTML response.
@@ -147,10 +148,18 @@ func (w *cspNonceResponseWriter) setCSPHeader(includeNonce bool) {
 		scriptSrc = "'self' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net"
 	}
 
+	// Build img-src based on configuration
+	// By default, only allow self, data URLs, and blob URLs for security
+	// When external images are enabled, also allow HTTPS sources
+	imgSrc := "'self' data: blob:"
+	if w.allowExternalImages {
+		imgSrc = "'self' data: blob: https:"
+	}
+
 	csp := "default-src 'self'; " +
 		"script-src " + scriptSrc + "; " +
 		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; " +
-		"img-src 'self' data: blob:; " +
+		"img-src " + imgSrc + "; " +
 		"font-src 'self' https://fonts.gstatic.com; " +
 		"connect-src 'self' ws: wss:; " +
 		"frame-ancestors 'none'; " +
@@ -175,8 +184,9 @@ func (w *cspNonceResponseWriter) Unwrap() http.ResponseWriter {
 
 // cspNonceMiddlewareOptions contains options for the CSP nonce middleware.
 type cspNonceMiddlewareOptions struct {
-	config    SecurityConfig
-	apiPrefix string
+	config              SecurityConfig
+	apiPrefix           string
+	allowExternalImages bool
 }
 
 // cspNonceMiddlewareWithOptions creates a CSP nonce middleware with additional options.
@@ -197,11 +207,12 @@ func cspNonceMiddlewareWithOptions(opts cspNonceMiddlewareOptions) func(http.Han
 
 			// Wrap the response writer to inject nonces, API prefix, and external connection status
 			wrapped := &cspNonceResponseWriter{
-				ResponseWriter: w,
-				nonce:          nonce,
-				apiPrefix:      opts.apiPrefix,
-				isExternal:     IsExternalConnection(r),
-				config:         opts.config,
+				ResponseWriter:      w,
+				nonce:               nonce,
+				apiPrefix:           opts.apiPrefix,
+				isExternal:          IsExternalConnection(r),
+				allowExternalImages: opts.allowExternalImages,
+				config:              opts.config,
 			}
 
 			// Serve the request

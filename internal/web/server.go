@@ -502,9 +502,14 @@ func NewServer(config Config) (*Server, error) {
 	// This must come after security headers but before hide server info
 	// so that CSP headers are properly set with nonces for HTML responses.
 	// Also injects the API prefix for frontend JavaScript to use.
+	allowExternalImages := false
+	if config.MittoConfig != nil && config.MittoConfig.Conversations != nil {
+		allowExternalImages = config.MittoConfig.Conversations.AreExternalImagesEnabled()
+	}
 	handler = cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{
-		config:    headerSecurityConfig,
-		apiPrefix: apiPrefix,
+		config:              headerSecurityConfig,
+		apiPrefix:           apiPrefix,
+		allowExternalImages: allowExternalImages,
 	})(handler)
 
 	// 6. Hide server info (outermost to catch all responses)
