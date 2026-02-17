@@ -410,3 +410,63 @@ func TestCSPNonceMiddleware_WriteHeaderNonHTML(t *testing.T) {
 		t.Errorf("Status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
+
+func TestCSPNonceMiddleware_ExternalImagesDisabled(t *testing.T) {
+	// Create a handler that returns HTML
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<!DOCTYPE html><html><body>Test</body></html>`))
+	})
+
+	// Test with external images disabled (default)
+	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{
+		config:              DefaultSecurityConfig(),
+		allowExternalImages: false,
+	})(handler)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	csp := rec.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("Content-Security-Policy header not set")
+	}
+
+	// Should contain img-src without https:
+	if !strings.Contains(csp, "img-src 'self' data: blob:") {
+		t.Errorf("CSP should contain 'img-src 'self' data: blob:', got: %s", csp)
+	}
+	// Should NOT contain https: in img-src
+	if strings.Contains(csp, "img-src 'self' data: blob: https:") {
+		t.Errorf("CSP should NOT contain https: in img-src when external images disabled, got: %s", csp)
+	}
+}
+
+func TestCSPNonceMiddleware_ExternalImagesEnabled(t *testing.T) {
+	// Create a handler that returns HTML
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<!DOCTYPE html><html><body>Test</body></html>`))
+	})
+
+	// Test with external images enabled
+	wrapped := cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{
+		config:              DefaultSecurityConfig(),
+		allowExternalImages: true,
+	})(handler)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	csp := rec.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("Content-Security-Policy header not set")
+	}
+
+	// Should contain img-src with https:
+	if !strings.Contains(csp, "img-src 'self' data: blob: https:") {
+		t.Errorf("CSP should contain 'img-src 'self' data: blob: https:', got: %s", csp)
+	}
+}
