@@ -211,7 +211,7 @@ If you want to allow external images (e.g., when working with AI that generates 
 1. Open Settings (⚙️ button)
 2. Go to the **UI** tab
 3. Under **Advanced**, enable **Allow External Images**
-4. Save and refresh the page
+4. Save your settings and restart Mitto for the change to take effect
 
 **Via Configuration:**
 
