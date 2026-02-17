@@ -336,11 +336,21 @@ Mitto automatically sets security headers:
 - `X-Frame-Options: DENY`
 - `X-XSS-Protection: 1; mode=block`
 - `Referrer-Policy: strict-origin-when-cross-origin`
-- `Content-Security-Policy` (restricts script sources)
+- `Content-Security-Policy` (restricts script and image sources)
 - `Cross-Origin-Opener-Policy: same-origin`
 - `Cross-Origin-Resource-Policy: same-origin`
 
 HSTS is enabled when using HTTPS.
+
+### Content Security Policy (CSP)
+
+The CSP restricts what resources can be loaded:
+
+- **Scripts**: Only from same origin and trusted CDNs (with nonces)
+- **Images**: By default, only same-origin, data URLs, and blob URLs
+- **Styles**: Same origin plus trusted font CDNs
+
+**External Images**: By default, external images (e.g., `https://example.com/image.png`) are blocked by CSP for privacy. To allow them, see [Conversation Configuration](../conversations.md#external-images).
 
 ---
 
