@@ -170,9 +170,16 @@ web:
 # When enabled, agent messages are analyzed asynchronously to identify
 # questions or follow-up prompts, and suggested response buttons are
 # displayed to the user.
+#
+# External images configuration
+# When enabled, the Content Security Policy allows loading images from
+# external HTTPS sources in rendered markdown content. Disabled by default
+# for privacy (external images can track when you view messages).
 conversations:
   action_buttons:
     enabled: true  # Enable follow-up suggestions by default
+  # external_images:
+  #   enabled: false  # Allow external HTTPS images (default: false)
 
 # Restricted Runner Configuration (Advanced)
 # By default, agents run with no restrictions (exec runner).
