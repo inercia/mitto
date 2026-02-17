@@ -1,7 +1,12 @@
 ---
-description: Markdown-to-HTML conversion, file link detection, and sanitization
+description: Markdown-to-HTML conversion, Mermaid diagrams, file link detection, and sanitization
 globs:
   - "internal/conversion/**/*"
+keywords:
+  - mermaid
+  - diagram
+  - flowchart
+  - goldmark
 ---
 
 # Conversion Package
@@ -132,6 +137,39 @@ Run tests:
 ```bash
 go test ./internal/conversion/...
 ```
+
+## Mermaid Diagram Support
+
+The converter supports Mermaid diagrams via the `goldmark-mermaid` extension:
+
+```go
+// Backend renders ```mermaid blocks as <pre class="mermaid">
+&mermaid.Extender{
+    RenderMode: mermaid.RenderModeClient,  // Client-side rendering
+    NoScript:   true,                       // We load Mermaid.js ourselves
+}
+```
+
+**How it works:**
+
+1. **Backend**: Goldmark converts ` ```mermaid` blocks to `<pre class="mermaid">`
+2. **Frontend**: `preact-loader.js` dynamically loads Mermaid.js from CDN when needed
+3. **Rendering**: `window.renderMermaidDiagrams(container)` converts `<pre class="mermaid">` to SVG
+
+**Test data**: `testdata/mermaid_diagram.md` and `testdata/mermaid_diagram.html`
+
+**Frontend integration** (see `20-web-frontend-core.md`):
+
+```javascript
+// In Message.js - trigger rendering after HTML insertion
+useEffect(() => {
+  if (agentMessageRef.current && window.renderMermaidDiagrams) {
+    window.renderMermaidDiagrams(agentMessageRef.current);
+  }
+}, [message.html]);
+```
+
+**Note**: CDN-hosted Mermaid.js (`cdn.jsdelivr.net`) may be blocked by browser tracking protection (Firefox, Safari). If diagrams don't render, check browser console for tracking prevention warnings.
 
 ## Security
 

@@ -20,9 +20,10 @@ keywords:
 
 ## Technology Stack
 
-- **No build step**: Preact + HTM loaded from CDN
+- **No build step**: Preact + HTM loaded from local vendor files
 - **Styling**: Tailwind CSS via Play CDN
 - **Markdown**: marked.js + DOMPurify for user message rendering
+- **Diagrams**: Mermaid.js loaded dynamically from CDN when needed
 - **Embedding**: `go:embed` directive in `web/embed.go`
 - **Single binary**: All assets embedded in Go binary
 
@@ -131,6 +132,49 @@ const {
   html,
 } = window.preact;
 ```
+
+## Mermaid Diagram Integration
+
+Mermaid.js is loaded dynamically from CDN only when mermaid diagrams are present:
+
+```javascript
+// preact-loader.js - Mermaid integration
+window.mermaidReady = false;
+window.mermaidLoading = false;
+window.mermaidRenderQueue = [];
+window.mermaidSvgCache = new Map();  // Cache for streaming updates
+
+// Load from CDN when needed
+async function loadMermaid() {
+  const script = document.createElement("script");
+  script.src = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
+  // ...
+}
+
+// Render diagrams in a container
+window.renderMermaidDiagrams = renderMermaidInContainer;
+```
+
+**Usage in Message component:**
+
+```javascript
+// Message.js - trigger rendering after HTML insertion
+useEffect(() => {
+  if (agentMessageRef.current && window.renderMermaidDiagrams) {
+    window.renderMermaidDiagrams(agentMessageRef.current);
+  }
+}, [message.html]);
+```
+
+**How it works:**
+
+1. Backend converts ` ```mermaid` to `<pre class="mermaid">`
+2. `renderMermaidDiagrams()` finds `<pre class="mermaid">` elements
+3. Loads Mermaid.js from CDN if not already loaded
+4. Renders diagrams to SVG, replacing `<pre>` with `<div class="mermaid-diagram">`
+5. Caches rendered SVGs for streaming updates (content-based hash)
+
+**Known issue**: Firefox/Safari tracking protection may block CDN resources.
 
 ## Memory Management
 

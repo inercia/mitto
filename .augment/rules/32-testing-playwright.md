@@ -1,6 +1,15 @@
 ---
-type: "agent_requested"
-description: "Playwright UI tests, test fixtures, selectors, 'mitto web' setup, and browser testing patternsrying or testing "
+description: Playwright UI tests, mock ACP scenarios, browser-specific testing, test fixtures, and selectors
+globs:
+  - "tests/ui/**/*"
+  - "tests/fixtures/responses/**/*"
+keywords:
+  - playwright
+  - e2e
+  - ui test
+  - browser test
+  - mock acp
+  - test scenario
 ---
 
 # Playwright UI Testing
@@ -270,3 +279,89 @@ npx playwright codegen http://127.0.0.1:8089
 - **Port 8089** - Recommended to avoid conflicts with dev server on 8080
 - **Mock ACP** - For deterministic testing
 - **Never use auth in test configs** - Will trigger keychain prompts
+
+---
+
+## Mock ACP Server Scenarios
+
+The mock ACP server (`tests/mocks/acp-server/`) responds to specific message patterns with predefined responses. Scenarios are defined in `tests/fixtures/responses/*.json`:
+
+| Scenario File | Trigger Pattern | Description |
+|---------------|-----------------|-------------|
+| `simple-greeting.json` | Default | Basic agent response |
+| `mermaid-diagram.json` | `(?i)show.*mermaid` | Mermaid flowchart |
+| `markdown-code-block.json` | `(?i)code.*block` | Code with syntax highlighting |
+| `error-response.json` | `(?i)error` | Error message |
+| `tool-calls-interleaved.json` | `(?i)tool` | Tool usage simulation |
+
+### Using Test Scenarios
+
+To trigger a specific scenario, send a message matching the pattern:
+
+```javascript
+// Trigger mermaid diagram
+await textarea.fill("Show mermaid test");
+await sendButton.click();
+
+// Wait for rendered diagram
+const diagram = page.locator(".mermaid-diagram");
+await expect(diagram.first()).toBeVisible({ timeout: 10000 });
+```
+
+### Adding New Scenarios
+
+Create a new JSON file in `tests/fixtures/responses/`:
+
+```json
+{
+  "scenario": "my-scenario",
+  "description": "Description of what this tests",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)my.*pattern"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 50,
+          "chunks": ["Response ", "content ", "here"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## Browser-Specific Testing
+
+The Playwright config (`tests/ui/playwright.config.ts`) only runs Chromium by default. To test other browsers:
+
+```typescript
+// Uncomment in playwright.config.ts
+projects: [
+  { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+  { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+  { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+],
+```
+
+```bash
+# Install additional browsers
+npx playwright install firefox webkit
+
+# Run tests on specific browser
+npx playwright test --project=firefox
+```
+
+### Known Browser-Specific Issues
+
+| Issue | Browser | Cause |
+|-------|---------|-------|
+| CDN resources blocked | Firefox, Safari | Tracking Prevention blocks `cdn.jsdelivr.net` |
+| Mermaid not rendering | Firefox | Tracking Prevention blocks Mermaid.js CDN |
+
+**Workaround for testing**: Disable tracking protection in browser settings, or use Chromium for reliable testing
