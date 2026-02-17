@@ -1555,6 +1555,92 @@ conversations:
 	}
 }
 
+func TestExternalImagesConfig(t *testing.T) {
+	t.Run("nil config returns false", func(t *testing.T) {
+		var nilConfig *ExternalImagesConfig
+		if nilConfig.IsEnabled() {
+			t.Error("nil config should return false")
+		}
+	})
+
+	t.Run("nil Enabled returns false", func(t *testing.T) {
+		cfg := &ExternalImagesConfig{Enabled: nil}
+		if cfg.IsEnabled() {
+			t.Error("nil Enabled should return false")
+		}
+	})
+
+	t.Run("explicit false returns false", func(t *testing.T) {
+		enabled := false
+		cfg := &ExternalImagesConfig{Enabled: &enabled}
+		if cfg.IsEnabled() {
+			t.Error("explicit false should return false")
+		}
+	})
+
+	t.Run("explicit true returns true", func(t *testing.T) {
+		enabled := true
+		cfg := &ExternalImagesConfig{Enabled: &enabled}
+		if !cfg.IsEnabled() {
+			t.Error("explicit true should return true")
+		}
+	})
+}
+
+func TestConversationsConfig_AreExternalImagesEnabled(t *testing.T) {
+	t.Run("nil config returns false", func(t *testing.T) {
+		var nilConfig *ConversationsConfig
+		if nilConfig.AreExternalImagesEnabled() {
+			t.Error("nil config should return false")
+		}
+	})
+
+	t.Run("nil ExternalImages returns false", func(t *testing.T) {
+		cfg := &ConversationsConfig{ExternalImages: nil}
+		if cfg.AreExternalImagesEnabled() {
+			t.Error("nil ExternalImages should return false")
+		}
+	})
+
+	t.Run("enabled true returns true", func(t *testing.T) {
+		enabled := true
+		cfg := &ConversationsConfig{
+			ExternalImages: &ExternalImagesConfig{Enabled: &enabled},
+		}
+		if !cfg.AreExternalImagesEnabled() {
+			t.Error("enabled true should return true")
+		}
+	})
+}
+
+func TestParse_ExternalImagesConfig(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test --acp"
+conversations:
+  external_images:
+    enabled: true
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if cfg.Conversations.ExternalImages == nil {
+		t.Fatal("Conversations.ExternalImages is nil")
+	}
+	if !cfg.Conversations.ExternalImages.IsEnabled() {
+		t.Error("ExternalImages.IsEnabled() should be true")
+	}
+	if !cfg.Conversations.AreExternalImagesEnabled() {
+		t.Error("AreExternalImagesEnabled() should be true")
+	}
+}
+
 func TestMergePrompts(t *testing.T) {
 	// Note: globalFile prompts should have Source=PromptSourceFile set by ToWebPrompt()
 	// when loaded from files. Here we simulate that.
