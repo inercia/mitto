@@ -461,6 +461,9 @@ type ConversationsConfig struct {
 	// FileLinks contains configuration for file path recognition and linking.
 	// May be nil to use default behavior (enabled).
 	FileLinks *FileLinksConfig `json:"file_links,omitempty" yaml:"file_links,omitempty"`
+	// ExternalImages contains configuration for loading external images.
+	// May be nil to use default behavior (disabled for security).
+	ExternalImages *ExternalImagesConfig `json:"external_images,omitempty" yaml:"external_images,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -514,6 +517,25 @@ func (f *FileLinksConfig) IsAllowOutsideWorkspace() bool {
 		return false // Default: only workspace files
 	}
 	return *f.AllowOutsideWorkspace
+}
+
+// ExternalImagesConfig configures external image loading in messages.
+// When enabled, the Content Security Policy (CSP) allows loading images
+// from external HTTPS sources in rendered markdown content.
+type ExternalImagesConfig struct {
+	// Enabled controls whether external images are allowed.
+	// When true, the CSP img-src directive includes 'https:'.
+	// Default: false (only self, data:, and blob: are allowed)
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+}
+
+// IsEnabled returns whether external images are allowed.
+// Safe to call on nil receiver - returns false (the default) if not configured.
+func (e *ExternalImagesConfig) IsEnabled() bool {
+	if e == nil || e.Enabled == nil {
+		return false // Default: disabled for security
+	}
+	return *e.Enabled
 }
 
 // DefaultQueueMaxSize is the default maximum number of messages allowed in a queue.
@@ -623,6 +645,15 @@ func (c *ConversationsConfig) AreActionButtonsEnabled() bool {
 		return false
 	}
 	return c.ActionButtons.IsEnabled()
+}
+
+// AreExternalImagesEnabled returns whether external images are allowed.
+// Safe to call on nil receiver - returns false (the default) if not configured.
+func (c *ConversationsConfig) AreExternalImagesEnabled() bool {
+	if c == nil {
+		return false
+	}
+	return c.ExternalImages.IsEnabled()
 }
 
 // MergeProcessors combines global and workspace processors according to precedence rules.
@@ -926,6 +957,9 @@ type rawConfig struct {
 		ActionButtons *struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"action_buttons"`
+		ExternalImages *struct {
+			Enabled *bool `yaml:"enabled"`
+		} `yaml:"external_images"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1154,8 +1188,16 @@ func Parse(data []byte) (*Config, error) {
 			}
 		}
 
+		// Parse external images config
+		if raw.Conversations.ExternalImages != nil {
+			cfg.Conversations.ExternalImages = &ExternalImagesConfig{
+				Enabled: raw.Conversations.ExternalImages.Enabled,
+			}
+		}
+
 		// If no config was actually set, nil out the conversations config
-		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil && cfg.Conversations.ActionButtons == nil {
+		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
+			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil {
 			cfg.Conversations = nil
 		}
 	}
