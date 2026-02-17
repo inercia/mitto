@@ -52,7 +52,7 @@ alwaysApply: true
 - **20-29**: Frontend (components, state, hooks)
 - **30-39**: Testing (unit, integration, UI, anti-patterns)
 - **40-49**: Debugging (MCP tools, log files, MCP server development)
-- **99**: Local development (not committed)
+- **98-99**: Local/private (not committed)
 
 ### Quick Index
 
@@ -63,6 +63,7 @@ alwaysApply: true
 | 20-29 | Frontend        | `20-web-frontend-core.md`, `21-web-frontend-state.md`, `27-web-frontend-sync.md`       |
 | 30-39 | Testing         | `30-testing-unit.md`, `34-anti-patterns.md`                                            |
 | 40-49 | Debugging       | `40-mcp-debugging.md`, `41-debugging-logs.md`, `42-mcpserver-development.md`           |
+| 98-99 | Private         | `98-release.md`, `99-local.md` *(not committed)*                                       |
 
 ## When to Update Rules
 

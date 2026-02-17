@@ -160,6 +160,7 @@ test-results/
 # -----------------------------------------------------------------------------
 # Local Augment Rules (not committed)
 # -----------------------------------------------------------------------------
+.augment/rules/98-release.md
 .augment/rules/99-local.md
 
 # Local workspace config

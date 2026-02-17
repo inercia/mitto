@@ -31,7 +31,7 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `03-cli.md`                     | Working on `internal/cmd/` or `cmd/mitto/`                                                                                                |
 | `04-acp.md`                     | Working on `internal/acp/`                                                                                                                |
 | `05-msghooks.md`                | Working on message hooks (`internal/msghooks/`)                                                                                           |
-| `06-conversion.md`              | Markdown-to-HTML conversion (`internal/conversion/`)                                                                                      |
+| `06-conversion.md`              | Markdown-to-HTML conversion, Mermaid diagrams (`internal/conversion/`)                                                                                      |
 | `07-regex-patterns.md`          | Keywords: regex, regexp, pattern, URL detection, linkify                                                                                  |
 | `08-config.md`                  | Working on configuration (`internal/config/`)                                                                                             |
 | **macOS App (09, 13)**          |                                                                                                                                           |
@@ -44,7 +44,7 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `14-web-backend-auth.md`        | Authentication middleware, public paths, session management                                                                               |
 | `15-web-backend-session-lifecycle.md` | Session lifecycle (archive/unarchive), ACP connection lifecycle, graceful shutdown                                                  |
 | **Web Frontend (20-27)**        |                                                                                                                                           |
-| `20-web-frontend-core.md`       | Component structure, Preact/HTM, CDN setup                                                                                                |
+| `20-web-frontend-core.md`       | Component structure, Preact/HTM, Mermaid integration                                                                                                |
 | `21-web-frontend-state.md`      | State management, refs, useCallback, useLayoutEffect                                                                                      |
 | `22-web-frontend-websocket.md`  | Frontend patterns for WebSocket, keepalive (→ [websockets/](../docs/devel/websockets/) for protocol)                                      |
 | `23-web-frontend-mobile.md`     | Mobile wake resync, zombie connections, localStorage                                                                                      |
@@ -55,16 +55,16 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | **Testing (30-34)**             |                                                                                                                                           |
 | `30-testing-unit.md`            | Go unit tests (`*_test.go`)                                                                                                               |
 | `31-testing-integration.md`     | Integration tests, mock ACP server                                                                                                        |
-| `32-testing-playwright.md`      | Playwright UI tests                                                                                                                       |
+| `32-testing-playwright.md`      | Playwright UI tests, mock ACP scenarios, browser-specific testing                                                                                                                       |
 | `33-testing-js.md`              | JavaScript unit tests (lib.test.js)                                                                                                       |
 | `34-anti-patterns.md`           | Common anti-patterns, lessons learned, best practices                                                                                     |
 | **Debugging (40-42)**           |                                                                                                                                           |
 | `40-mcp-debugging.md`           | Using MCP tools for debugging (events.jsonl, conversation inspection)                                                                     |
 | `41-debugging-logs.md`          | Log file debugging (mitto.log, webview.log, access.log)                                                                                   |
 | `42-mcpserver-development.md`   | MCP server development patterns, adding tools                                                                                             |
-| **Release & CI (50, 99)**       |                                                                                                                                           |
-| `50-release.md`                 | Release workflow, version tagging, Homebrew tap updates, CI/CD                                                                            |
-| `99-local.md`                   | Local development notes, GitHub CLI authentication                                                                                        |
+| **Local/Private (98-99)**       | *Not committed to git*                                                                                                                    |
+| `98-release.md`                 | Release workflow, version tagging, Homebrew tap updates, CI/CD                                                                            |
+| `99-local.md`                   | Local development notes, GitHub CLI authentication, `gh` fallback                                                                         |
 
 ## Package Structure
 
