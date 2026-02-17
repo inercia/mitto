@@ -699,3 +699,51 @@ When viewing an archived session:
 3. Do NOT show active indicator
 
 See `15-web-backend-session-lifecycle.md` for complete lifecycle patterns.
+
+## GitHub API/MCP Anti-Patterns
+
+### ❌ Don't: Assume MCP GitHub Tools Always Work
+
+```
+// BAD: Assuming MCP tool will succeed
+Tool: add_issue_comment_github-adobe-corp
+Error: 404 Not Found - repo doesn't exist on corporate GitHub
+
+Tool: add_issue_comment_github-ghec
+Error: 403 Unauthorized - Enterprise Managed User can't access public repos
+```
+
+**Problem**: MCP GitHub tools may fail due to:
+- Wrong GitHub instance (corporate vs public)
+- Enterprise Managed User restrictions
+- Authentication scope limitations
+
+### ✅ Do: Use `gh` CLI as Fallback
+
+```bash
+# GOOD: Use gh CLI when MCP tools fail
+# Note: Replace 'inercia/mitto' with your actual repository (e.g., 'youruser/mitto' for forks)
+gh issue comment 23 --repo inercia/mitto --body 'Comment text'
+# Returns: https://github.com/inercia/mitto/issues/23#issuecomment-123456789
+```
+
+**Pattern**: When MCP GitHub tools fail, fall back to `gh` CLI which uses local authentication.
+
+### 13. CDN Resources May Be Blocked by Tracking Prevention
+
+When loading libraries from CDN (like Mermaid.js from `cdn.jsdelivr.net`), browsers with tracking prevention enabled may block the requests:
+
+```javascript
+// Console warning in Firefox
+// "Tracking Prevention blocked access to storage for https://cdn.jsdelivr.net/..."
+```
+
+**Symptoms**:
+- Feature works in Chromium but not Firefox/Safari
+- Console shows tracking prevention warnings
+- Library fails to load silently
+
+**Considerations**:
+- Test in multiple browsers with different privacy settings
+- Consider bundling critical libraries instead of CDN loading
+- Document browser-specific limitations in issue responses
