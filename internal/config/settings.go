@@ -432,6 +432,13 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 	mergedCfg := rcCfg
 	mergedCfg.ACPServers = mergeResult.Items
 
+	// Load keychain password for the merged config
+	// This is needed because settingsCfg had the password loaded but we used rcCfg as base
+	if err := loadKeychainPassword(mergedCfg); err != nil {
+		// Non-fatal, just log and continue
+		_ = err
+	}
+
 	// Validate at least one ACP server
 	if len(mergedCfg.ACPServers) == 0 {
 		return nil, fmt.Errorf("no ACP servers configured")
