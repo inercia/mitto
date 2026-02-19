@@ -391,3 +391,34 @@ func RCFilePath() (string, error) {
 
 	return "", nil
 }
+
+// MittoCLIPath returns the path to the mitto CLI executable.
+// It searches for the executable in the following order:
+//  1. Bundled with macOS app: Mitto.app/Contents/MacOS/mitto
+//  2. System PATH lookup: "mitto"
+//
+// For macOS app bundles, the CLI is bundled alongside the main executable
+// to support MCP STDIO proxy functionality.
+//
+// Returns the full path to the executable, or "mitto" to rely on PATH lookup.
+func MittoCLIPath() string {
+	// Get the current executable path
+	execPath, err := os.Executable()
+	if err != nil {
+		return "mitto" // Fall back to PATH lookup
+	}
+
+	// Check if we're running inside a macOS app bundle
+	// App bundle structure: Mitto.app/Contents/MacOS/mitto-app
+	execDir := filepath.Dir(execPath)
+	if runtime.GOOS == "darwin" && filepath.Base(execDir) == "MacOS" {
+		// Check if mitto CLI exists in the same directory
+		bundledCLI := filepath.Join(execDir, "mitto")
+		if _, err := os.Stat(bundledCLI); err == nil {
+			return bundledCLI
+		}
+	}
+
+	// Fall back to PATH lookup
+	return "mitto"
+}
