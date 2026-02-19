@@ -250,6 +250,9 @@ build-mac-app: deps-go
 	@# Build the Go binary with CGO enabled (required for webview)
 	@echo "Compiling $(APP_BINARY)..."
 	CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o "$(APP_BUNDLE)/Contents/MacOS/$(APP_BINARY)" ./cmd/mitto-app
+	@# Build and bundle the CLI binary (used for MCP STDIO proxy)
+	@echo "Compiling $(BINARY_NAME) CLI..."
+	$(GOBUILD) $(LDFLAGS) -o "$(APP_BUNDLE)/Contents/MacOS/$(BINARY_NAME)" ./cmd/mitto
 	@# Copy Info.plist
 	@cp platform/mac/Info.plist "$(APP_BUNDLE)/Contents/"
 	@# Copy icon
@@ -259,6 +262,8 @@ build-mac-app: deps-go
 	@codesign --force --deep --sign - --entitlements platform/mac/Entitlements.plist "$(APP_BUNDLE)"
 	@echo ""
 	@echo "✅ Built $(APP_BUNDLE)"
+	@echo "   - $(APP_BINARY) (macOS app)"
+	@echo "   - $(BINARY_NAME) (CLI for MCP proxy)"
 	@echo ""
 	@echo "To run the app:"
 	@echo "  open $(APP_BUNDLE)"
