@@ -178,6 +178,10 @@ export function useWebSocket() {
   // { sessionId, sessionName, timestamp }
   const [periodicStarted, setPeriodicStarted] = useState(null);
 
+  // Track background UI prompts for toast notifications
+  // { sessionId, sessionName, question, timestamp }
+  const [backgroundUIPrompt, setBackgroundUIPrompt] = useState(null);
+
   // Queue length for the active session
   const [queueLength, setQueueLength] = useState(0);
 
@@ -724,8 +728,7 @@ export function useWebSocket() {
       "";
     // Check if session is archived (from session info or stored session)
     // Archived sessions should not be marked as "active" since they have no ACP connection
-    const isArchived =
-      data.info?.archived || storedSession?.archived || false;
+    const isArchived = data.info?.archived || storedSession?.archived || false;
     return {
       session_id: id,
       name: data.info?.name || "New conversation",
@@ -825,7 +828,9 @@ export function useWebSocket() {
                 archived: session.info?.archived || false,
                 // Periodic enabled state from server
                 periodic_enabled:
-                  msg.data.periodic_enabled ?? session.info?.periodic_enabled ?? false,
+                  msg.data.periodic_enabled ??
+                  session.info?.periodic_enabled ??
+                  false,
               },
               isStreaming: msg.data.is_prompting || false,
             },
@@ -1201,6 +1206,14 @@ export function useWebSocket() {
           const sessionName = currentSession?.info?.name || "Conversation";
           const question = msg.data.question || "Agent needs input";
 
+          // Set background UI prompt state for in-app toast
+          setBackgroundUIPrompt({
+            sessionId,
+            sessionName,
+            question,
+            timestamp: Date.now(),
+          });
+
           // Check if native notifications are enabled (macOS app only)
           const useNativeNotification =
             window.mittoNativeNotificationsEnabled &&
@@ -1211,7 +1224,11 @@ export function useWebSocket() {
             console.log(
               "[UIPrompt] Showing native notification for background prompt",
             );
-            window.mittoShowNativeNotification(sessionName, question, sessionId);
+            window.mittoShowNativeNotification(
+              sessionName,
+              question,
+              sessionId,
+            );
           }
         }
 
@@ -1999,11 +2016,16 @@ export function useWebSocket() {
 
             console.log(
               "user_prompt: Adding message to UI:",
-              "prompt_id:", prompt_id,
-              "seq:", seq,
-              "sender_id:", sender_id,
-              "message_preview:", message?.substring(0, 50),
-              "existing_messages:", session.messages.length,
+              "prompt_id:",
+              prompt_id,
+              "seq:",
+              seq,
+              "sender_id:",
+              sender_id,
+              "message_preview:",
+              message?.substring(0, 50),
+              "existing_messages:",
+              session.messages.length,
             );
             let messages = [...session.messages];
             // Mark any previous streaming message as complete
@@ -2030,9 +2052,12 @@ export function useWebSocket() {
             messages = limitMessages([...messages, userMessage]);
             console.log(
               "user_prompt: Message added successfully:",
-              "new_message_count:", messages.length,
-              "last_message_role:", messages[messages.length - 1]?.role,
-              "last_message_text_preview:", messages[messages.length - 1]?.text?.substring(0, 30),
+              "new_message_count:",
+              messages.length,
+              "last_message_role:",
+              messages[messages.length - 1]?.role,
+              "last_message_text_preview:",
+              messages[messages.length - 1]?.text?.substring(0, 30),
             );
             return { ...prev, [sessionId]: { ...session, messages } };
           });
@@ -2891,7 +2916,9 @@ export function useWebSocket() {
         if (msg.data) {
           // Dispatch event for components that need to update (e.g., ConversationPropertiesPanel)
           window.dispatchEvent(
-            new CustomEvent("mitto:session_settings_updated", { detail: msg.data }),
+            new CustomEvent("mitto:session_settings_updated", {
+              detail: msg.data,
+            }),
           );
         }
         break;
@@ -4039,6 +4066,11 @@ export function useWebSocket() {
     setPeriodicStarted(null);
   }, []);
 
+  // Clear background UI prompt notification
+  const clearBackgroundUIPrompt = useCallback(() => {
+    setBackgroundUIPrompt(null);
+  }, []);
+
   // Send UI prompt answer (yes/no or select response)
   const sendUIPromptAnswer = useCallback(
     (sessionId, requestId, optionId, label) => {
@@ -4115,6 +4147,8 @@ export function useWebSocket() {
     clearBackgroundCompletion,
     periodicStarted,
     clearPeriodicStarted,
+    backgroundUIPrompt,
+    clearBackgroundUIPrompt,
     queueLength,
     queueMessages,
     queueConfig,

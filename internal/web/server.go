@@ -383,7 +383,8 @@ func NewServer(config Config) (*Server, error) {
 	// Initialize MCP server.
 	// This serves both global tools and session-scoped tools.
 	// Check if MCP server is enabled (default: true)
-	mcpEnabled := config.MittoConfig.MCP.IsEnabled()
+	// Guard against nil config (can happen in tests)
+	mcpEnabled := config.MittoConfig != nil && config.MittoConfig.MCP.IsEnabled()
 	if mcpEnabled {
 		// Get MCP host and port from config, or use defaults
 		mcpHost := config.MittoConfig.MCP.GetHost()

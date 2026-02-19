@@ -135,15 +135,15 @@ Provides session persistence for recording, storing, and replaying ACP interacti
 
 See [Session Management](session-management.md) for detailed documentation.
 
-### `internal/mcpserver` - MCP Protocol Servers
+### `internal/mcpserver` - MCP Protocol Server
 
-Implements MCP (Model Context Protocol) servers for tool exposure.
+Implements MCP (Model Context Protocol) server for tool exposure.
 
 **Key Components:**
 
-- **Server**: Global debug server for external tools (port 5757)
-- **SessionServer**: Per-session MCP server with session-scoped tools
-- **Session Tools**: Tools that operate within session context (`mitto_get_current_session`, etc.)
+- **Server**: Single global MCP server for external tools (debug port 5757)
+- **Session Routing**: Session registration and `session_id`-based routing within the global server
+- **Session-Scoped Tools**: Tools that operate within a specific session context (`mitto_get_current_session`, etc.)
 
 See [MCP Documentation](mcp.md) for detailed documentation.
 
@@ -262,20 +262,26 @@ Sessions can have individual feature flags stored in their metadata:
 - Frontend can dynamically render settings UI from flag registry
 - Easy to add new flags without schema changes
 
-### 7. Per-Session MCP Servers
+### 7. Global MCP Server & Session Registration
 
-Each conversation can have its own MCP server:
+Mitto runs a single, long-lived MCP server process that is shared across conversations:
 
-- **Isolation**: Sessions have separate MCP servers on random ports
-- **Context-aware tools**: Tools know which session they serve (`is_current` marker)
-- **Flag-gated**: MCP server only created when relevant flags are enabled
-- **Lifecycle-bound**: Server starts with session, stops on archive/delete
+- **Global process**: One MCP server instance per Mitto runtime, not per session
+- **Port management**: The MCP server listens on a stable, configured port instead of random per-session ports
+- **Capability registry**: Tools and capabilities are registered globally with the MCP server
+- **Flag-gated features**: Security-sensitive tools are only exposed when the corresponding feature flags are enabled
+
+Sessions integrate with the global MCP server via registration:
+
+- **Session registration**: Each ACP session registers itself with the MCP server (e.g., session ID, working directory, metadata)
+- **Context scoping**: Tools receive the active session context so they can behave in a session-aware way
+- **Lifecycle hooks**: Session registration is updated or removed on archive/delete without restarting the MCP server
 
 This enables:
 
-- Different tool sets per conversation
-- Session-scoped operations (e.g., "current conversation" tools)
-- Secure opt-in for AI introspection capabilities
+- Different tool behavior per conversation while reusing a single MCP server
+- Session-scoped operations (e.g., "current conversation" tools) based on the registered session context
+- Secure, centralized control over which tools are available and under what conditions
 
 See [MCP Documentation](mcp.md) for implementation details.
 

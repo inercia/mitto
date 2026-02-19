@@ -21,4 +21,4 @@ Update the developer and architecture documentation to reflect the changes we ju
 - Document design decisions and trade-offs.
 - Follow the existing documentation style and structure.
 - Cross-reference related documentation.
-- Use mermaid driagrams when helpful.
+- Use mermaid diagrams when helpful.

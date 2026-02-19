@@ -45,6 +45,11 @@ type PromptsWatcher struct {
 	// When ref count reaches 0, the watch is removed.
 	dirRefCounts map[string]int
 
+	// actualWatchedPaths maps target dir -> actual watched path.
+	// When target doesn't exist, we watch the parent instead.
+	// This allows Unsubscribe to remove the correct watch.
+	actualWatchedPaths map[string]string
+
 	// subscriberDirs tracks which directories each subscriber is watching.
 	subscriberDirs map[PromptsSubscriber]map[string]struct{}
 
@@ -77,15 +82,16 @@ func NewPromptsWatcher(logger *slog.Logger) (*PromptsWatcher, error) {
 	}
 
 	pw := &PromptsWatcher{
-		watcher:        watcher,
-		dirRefCounts:   make(map[string]int),
-		subscriberDirs: make(map[PromptsSubscriber]map[string]struct{}),
-		subscribers:    make(map[PromptsSubscriber]struct{}),
-		debounceDelay:  DebounceDelay,
-		pendingChanges: make(map[string]struct{}),
-		logger:         logger,
-		done:           make(chan struct{}),
-		stopped:        make(chan struct{}),
+		watcher:            watcher,
+		dirRefCounts:       make(map[string]int),
+		actualWatchedPaths: make(map[string]string),
+		subscriberDirs:     make(map[PromptsSubscriber]map[string]struct{}),
+		subscribers:        make(map[PromptsSubscriber]struct{}),
+		debounceDelay:      DebounceDelay,
+		pendingChanges:     make(map[string]struct{}),
+		logger:             logger,
+		done:               make(chan struct{}),
+		stopped:            make(chan struct{}),
 	}
 
 	return pw, nil
@@ -178,11 +184,17 @@ func (pw *PromptsWatcher) Unsubscribe(sub PromptsSubscriber) {
 		if pw.dirRefCounts[dir] <= 0 {
 			// No more subscribers for this directory - remove watch
 			delete(pw.dirRefCounts, dir)
-			if err := pw.watcher.Remove(dir); err != nil && pw.logger != nil {
+			// Use the actual watched path (could be parent if target didn't exist)
+			actualPath := pw.actualWatchedPaths[dir]
+			if actualPath == "" {
+				actualPath = dir
+			}
+			delete(pw.actualWatchedPaths, dir)
+			if err := pw.watcher.Remove(actualPath); err != nil && pw.logger != nil {
 				// Ignore errors for directories that don't exist
 				if !os.IsNotExist(err) {
 					pw.logger.Debug("Failed to remove watch",
-						"dir", dir, "error", err)
+						"dir", dir, "actual_path", actualPath, "error", err)
 				}
 			}
 		}
@@ -214,6 +226,7 @@ func (pw *PromptsWatcher) addWatch(dir string) error {
 	info, err := os.Stat(dir)
 	if err == nil && info.IsDir() {
 		// Directory exists - watch it directly
+		pw.actualWatchedPaths[dir] = dir
 		return pw.watcher.Add(dir)
 	}
 
@@ -238,6 +251,8 @@ func (pw *PromptsWatcher) addWatch(dir string) error {
 			"target", dir, "parent", parent)
 	}
 
+	// Track that we're watching parent instead of target
+	pw.actualWatchedPaths[dir] = parent
 	return pw.watcher.Add(parent)
 }
 
@@ -351,21 +366,28 @@ func (pw *PromptsWatcher) firePendingChanges() {
 		Timestamp:   time.Now(),
 	}
 
-	// Get subscribers interested in these directories
+	// Get subscribers interested in these directories (deduplicated)
 	pw.mu.RLock()
-	subscribersToNotify := make([]PromptsSubscriber, 0)
+	subscriberSet := make(map[PromptsSubscriber]struct{})
 	for sub, dirs := range pw.subscriberDirs {
+	changedLoop:
 		for _, changedDir := range changedDirs {
 			// Check if subscriber is watching this directory or a parent
 			for watchedDir := range dirs {
 				if changedDir == watchedDir || strings.HasPrefix(changedDir, watchedDir+string(filepath.Separator)) {
-					subscribersToNotify = append(subscribersToNotify, sub)
-					break
+					subscriberSet[sub] = struct{}{}
+					break changedLoop // Found a match, no need to check more dirs
 				}
 			}
 		}
 	}
 	pw.mu.RUnlock()
+
+	// Convert set to slice
+	subscribersToNotify := make([]PromptsSubscriber, 0, len(subscriberSet))
+	for sub := range subscriberSet {
+		subscribersToNotify = append(subscribersToNotify, sub)
+	}
 
 	if pw.logger != nil {
 		pw.logger.Debug("Notifying subscribers of prompts changes",

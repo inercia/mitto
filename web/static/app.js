@@ -2195,15 +2195,23 @@ function App() {
     };
   }, []);
 
+  // Ref to track hook-failed toast hide timer
+  const hookFailedTimerRef = useRef(null);
+
   // Listen for hook failed events
   useEffect(() => {
     const handleHookFailed = (event) => {
       const data = event.detail;
       if (data) {
         setHookFailedError(data);
+        // Clear any existing timer
+        if (hookFailedTimerRef.current) {
+          clearTimeout(hookFailedTimerRef.current);
+        }
         // Auto-hide after 10 seconds
-        setTimeout(() => {
+        hookFailedTimerRef.current = setTimeout(() => {
           setHookFailedError(null);
+          hookFailedTimerRef.current = null;
         }, 10000);
       }
     };
@@ -2221,6 +2229,12 @@ function App() {
       }
       if (periodicToastTimerRef.current) {
         clearTimeout(periodicToastTimerRef.current);
+      }
+      if (uiPromptToastTimerRef.current) {
+        clearTimeout(uiPromptToastTimerRef.current);
+      }
+      if (hookFailedTimerRef.current) {
+        clearTimeout(hookFailedTimerRef.current);
       }
     };
   }, []);

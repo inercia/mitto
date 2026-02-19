@@ -545,7 +545,10 @@ export function coalesceAgentMessages(messages, options = {}) {
         // Track all coalesced sequence numbers (for debugging)
         coalescedSeqs: [...(currentCoalesced.coalescedSeqs || []), msg.seq],
         // Use the highest seq for deduplication purposes
-        maxSeq: Math.max(currentCoalesced.maxSeq || currentCoalesced.seq, msg.seq),
+        maxSeq: Math.max(
+          currentCoalesced.maxSeq || currentCoalesced.seq,
+          msg.seq,
+        ),
       };
     } else {
       // Start a new coalesced message
