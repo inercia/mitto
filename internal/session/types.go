@@ -76,6 +76,7 @@ const (
 	EventTypeError          EventType = "error"
 	EventTypeSessionStart   EventType = "session_start"
 	EventTypeSessionEnd     EventType = "session_end"
+	EventTypeUIPromptAnswer EventType = "ui_prompt_answer"
 )
 
 // SessionStatus represents the status of a session.
@@ -192,24 +193,25 @@ type SessionEndData struct {
 
 // Metadata contains session metadata stored separately from the event log.
 type Metadata struct {
-	SessionID         string        `json:"session_id"`
-	Name              string        `json:"name,omitempty"` // User-friendly session name
-	ACPServer         string        `json:"acp_server"`
-	ACPSessionID      string        `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
-	WorkingDir        string        `json:"working_dir"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
-	LastUserMessageAt time.Time     `json:"last_user_message_at,omitempty"` // Time of last user prompt
-	EventCount        int           `json:"event_count"`
-	MaxSeq            int64         `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
-	Status            SessionStatus `json:"status"`
-	Description       string        `json:"description,omitempty"`
-	Pinned            bool          `json:"pinned,omitempty"`            // Deprecated: use Archived instead. If true, session cannot be deleted
-	Archived          bool          `json:"archived,omitempty"`          // If true, session is archived (hidden from main list by default)
-	ArchivedAt        time.Time     `json:"archived_at,omitempty"`       // Time when session was archived (cleared when unarchived)
-	RunnerType        string        `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
-	RunnerRestricted  bool          `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
-	CurrentModeID     string        `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
+	SessionID         string          `json:"session_id"`
+	Name              string          `json:"name,omitempty"` // User-friendly session name
+	ACPServer         string          `json:"acp_server"`
+	ACPSessionID      string          `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
+	WorkingDir        string          `json:"working_dir"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	LastUserMessageAt time.Time       `json:"last_user_message_at,omitempty"` // Time of last user prompt
+	EventCount        int             `json:"event_count"`
+	MaxSeq            int64           `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
+	Status            SessionStatus   `json:"status"`
+	Description       string          `json:"description,omitempty"`
+	Pinned            bool            `json:"pinned,omitempty"`            // Deprecated: use Archived instead. If true, session cannot be deleted
+	Archived          bool            `json:"archived,omitempty"`          // If true, session is archived (hidden from main list by default)
+	ArchivedAt        time.Time       `json:"archived_at,omitempty"`       // Time when session was archived (cleared when unarchived)
+	RunnerType        string          `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted  bool            `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
+	CurrentModeID     string          `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
+	AdvancedSettings  map[string]bool `json:"advanced_settings,omitempty"` // Per-session feature flags (flag name → enabled)
 }
 
 // LockStatus represents the current activity status of a locked session.
