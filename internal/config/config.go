@@ -831,6 +831,43 @@ type WorkspaceRunnerConfig struct {
 	MergeStrategy string `json:"merge_strategy,omitempty" yaml:"merge_strategy,omitempty"`
 }
 
+// MCPConfig contains configuration for the MCP (Model Context Protocol) server.
+// The MCP server provides debugging tools and UI prompt functionality to AI agents.
+type MCPConfig struct {
+	// Enabled controls whether the MCP server is started. Default: true.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Host is the address to bind the MCP server to. Default: "127.0.0.1".
+	Host string `json:"host,omitempty" yaml:"host,omitempty"`
+	// Port is the port to listen on. Default: 5757.
+	// Use 0 to let the system pick a free port.
+	Port *int `json:"port,omitempty" yaml:"port,omitempty"`
+}
+
+// IsEnabled returns whether the MCP server should be started.
+func (c *MCPConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true // Default: enabled
+	}
+	return *c.Enabled
+}
+
+// GetHost returns the host to bind the MCP server to.
+func (c *MCPConfig) GetHost() string {
+	if c == nil || c.Host == "" {
+		return "127.0.0.1" // Default: localhost only
+	}
+	return c.Host
+}
+
+// GetPort returns the port for the MCP server.
+// Returns -1 if not configured (use default), or the configured port.
+func (c *MCPConfig) GetPort() int {
+	if c == nil || c.Port == nil {
+		return -1 // Signal to use default
+	}
+	return *c.Port
+}
+
 // Config represents the complete Mitto configuration.
 type Config struct {
 	// ACPServers is the list of configured ACP servers (order matters - first is default)
@@ -852,6 +889,8 @@ type Config struct {
 	// RestrictedRunners contains per-runner-type global configuration.
 	// Key is the runner type (e.g., "exec", "sandbox-exec", "firejail", "docker").
 	RestrictedRunners map[string]*WorkspaceRunnerConfig
+	// MCP contains MCP (Model Context Protocol) server configuration
+	MCP *MCPConfig
 }
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
@@ -966,6 +1005,12 @@ type rawConfig struct {
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
+	// MCP is the MCP server configuration
+	MCP *struct {
+		Enabled *bool  `yaml:"enabled"`
+		Host    string `yaml:"host"`
+		Port    *int   `yaml:"port"`
+	} `yaml:"mcp"`
 }
 
 // Load reads and parses the configuration file from the given path.
@@ -1207,6 +1252,15 @@ func Parse(data []byte) (*Config, error) {
 
 	// Copy restricted runners (top-level per-runner-type config)
 	cfg.RestrictedRunners = raw.RestrictedRunners
+
+	// Parse MCP config
+	if raw.MCP != nil {
+		cfg.MCP = &MCPConfig{
+			Enabled: raw.MCP.Enabled,
+			Host:    raw.MCP.Host,
+			Port:    raw.MCP.Port,
+		}
+	}
 
 	return cfg, nil
 }
