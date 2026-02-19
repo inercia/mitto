@@ -1217,3 +1217,27 @@ a:hover {
 .v2-theme:not(.dark) .session-item-container .bg-red-700:hover {
   background: #b91c1c !important;
 }
+
+/* =============================================================================
+   UI Prompt Panel (MCP tool prompts)
+   ============================================================================= */
+
+/* Light theme - light background with dark text for contrast */
+.v2-theme:not(.dark) .ui-prompt-panel {
+  background: #ffffff !important;
+  border: 1px solid #dc2626 !important;
+}
+
+.v2-theme:not(.dark) .ui-prompt-question {
+  color: #18181b !important;
+}
+
+/* Dark theme - dark background with light text for contrast */
+.v2-theme.dark .ui-prompt-panel {
+  background: rgba(30, 41, 59, 0.95) !important;
+  border: 1px solid #ff5c5c !important;
+}
+
+.v2-theme.dark .ui-prompt-question {
+  color: #e5e7eb !important;
+}

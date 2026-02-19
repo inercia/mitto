@@ -11,9 +11,60 @@ import {
   CheckIcon,
   FolderIcon,
   PeriodicFilledIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
 } from "./Icons.js";
 import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
+
+/**
+ * TriStateCheckbox - A checkbox with three states: unset, enabled, disabled
+ * @param {Object} props
+ * @param {boolean|null} props.value - Current value (null = unset, true = enabled, false = disabled)
+ * @param {Function} props.onChange - Callback when value changes
+ * @param {boolean} props.disabled - Whether the checkbox is disabled
+ * @param {string} props.title - Tooltip text
+ */
+function TriStateCheckbox({ value, onChange, disabled = false, title = "" }) {
+  const handleClick = useCallback(() => {
+    if (disabled) return;
+    // Cycle through: unset -> true -> false -> unset
+    // But for simplicity, clicking always toggles between true/false
+    // If unset, set to true; if true, set to false; if false, set to true
+    if (value === null || value === undefined) {
+      onChange(true);
+    } else {
+      onChange(!value);
+    }
+  }, [value, onChange, disabled]);
+
+  const isUnset = value === null || value === undefined;
+  const isEnabled = value === true;
+
+  return html`
+    <button
+      type="button"
+      class="relative w-5 h-5 rounded border-2 transition-colors flex items-center justify-center
+        ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
+        ${isUnset
+          ? "border-slate-500 bg-slate-700"
+          : isEnabled
+            ? "border-blue-500 bg-blue-500"
+            : "border-slate-500 bg-slate-700"}"
+      onClick=${handleClick}
+      disabled=${disabled}
+      title=${title}
+    >
+      ${isUnset
+        ? html`<span class="text-slate-500 text-xs font-medium">—</span>`
+        : isEnabled
+          ? html`<svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+            </svg>`
+          : null}
+    </button>
+  `;
+}
 
 /**
  * Convert UTC time (HH:MM) to local time for display.
@@ -197,6 +248,14 @@ export function ConversationPropertiesPanel({
   // Periodic config state
   const [periodicConfig, setPeriodicConfig] = useState(null);
 
+  // Advanced settings (feature flags) state
+  const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
+  const [availableFlags, setAvailableFlags] = useState([]);
+  const [sessionSettings, setSessionSettings] = useState({});
+  const [isLoadingFlags, setIsLoadingFlags] = useState(false);
+  const [savingFlags, setSavingFlags] = useState({}); // Track which flags are being saved
+  const [flagsError, setFlagsError] = useState(null);
+
   // State for dynamic relative time updates (triggers re-render every 30 seconds)
   const [, setTimeNow] = useState(Date.now());
 
@@ -219,19 +278,23 @@ export function ConversationPropertiesPanel({
     setEditingAttribute(null);
     setUserDataError(null);
     setPeriodicConfig(null);
+    setFlagsError(null);
+    setSavingFlags({});
   }, [sessionId, isOpen]);
 
-  // Fetch user data, schema, and periodic config when panel opens
+  // Fetch user data, schema, periodic config, and flags when panel opens
   useEffect(() => {
     if (!isOpen || !sessionId || !sessionInfo?.working_dir) return;
 
     const fetchData = async () => {
       setIsLoadingUserData(true);
+      setIsLoadingFlags(true);
       setUserDataError(null);
+      setFlagsError(null);
 
       try {
-        // Fetch user data, schema, and periodic config in parallel
-        const [userDataRes, schemaRes, periodicRes] = await Promise.all([
+        // Fetch user data, schema, periodic config, available flags, and session settings in parallel
+        const [userDataRes, schemaRes, periodicRes, flagsRes, settingsRes] = await Promise.all([
           authFetch(apiUrl(`/api/sessions/${sessionId}/user-data`)),
           authFetch(
             apiUrl(
@@ -239,6 +302,8 @@ export function ConversationPropertiesPanel({
             ),
           ),
           authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`)),
+          authFetch(apiUrl("/api/advanced-flags")),
+          authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
         ]);
 
         if (userDataRes.ok) {
@@ -261,11 +326,23 @@ export function ConversationPropertiesPanel({
           // No periodic config or error - clear state
           setPeriodicConfig(null);
         }
+
+        if (flagsRes.ok) {
+          const flags = await flagsRes.json();
+          setAvailableFlags(flags || []);
+        }
+
+        if (settingsRes.ok) {
+          const settingsData = await settingsRes.json();
+          setSessionSettings(settingsData.settings || {});
+        }
       } catch (err) {
-        console.error("Failed to fetch user data:", err);
+        console.error("Failed to fetch panel data:", err);
         setUserDataError("Failed to load user data");
+        setFlagsError("Failed to load settings");
       } finally {
         setIsLoadingUserData(false);
+        setIsLoadingFlags(false);
       }
     };
 
@@ -287,6 +364,24 @@ export function ConversationPropertiesPanel({
       attributeInputRef.current.select();
     }
   }, [editingAttribute]);
+
+  // Listen for WebSocket session_settings_updated events to keep UI in sync
+  useEffect(() => {
+    if (!isOpen || !sessionId) return;
+
+    const handleSettingsUpdated = (event) => {
+      const { session_id, settings } = event.detail || {};
+      if (session_id === sessionId && settings) {
+        console.log("[ConversationPropertiesPanel] Settings updated via WebSocket:", settings);
+        setSessionSettings(settings);
+      }
+    };
+
+    window.addEventListener("mitto:session_settings_updated", handleSettingsUpdated);
+    return () => {
+      window.removeEventListener("mitto:session_settings_updated", handleSettingsUpdated);
+    };
+  }, [isOpen, sessionId]);
 
   // Handle title edit start
   const handleStartEditTitle = useCallback(() => {
@@ -411,6 +506,42 @@ export function ConversationPropertiesPanel({
       return attr?.value || "";
     },
     [userData.attributes],
+  );
+
+  // Handle flag value change
+  const handleFlagChange = useCallback(
+    async (flagName, newValue) => {
+      if (!sessionId) return;
+
+      // Mark flag as saving
+      setSavingFlags((prev) => ({ ...prev, [flagName]: true }));
+      setFlagsError(null);
+
+      try {
+        const res = await secureFetch(
+          apiUrl(`/api/sessions/${sessionId}/settings`),
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ settings: { [flagName]: newValue } }),
+          },
+        );
+
+        if (res.ok) {
+          const data = await res.json();
+          setSessionSettings(data.settings || {});
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          setFlagsError(errorData.message || "Failed to save setting");
+        }
+      } catch (err) {
+        console.error("Failed to save flag:", err);
+        setFlagsError("Failed to save setting");
+      } finally {
+        setSavingFlags((prev) => ({ ...prev, [flagName]: false }));
+      }
+    },
+    [sessionId],
   );
 
   // Check if schema has fields
@@ -733,6 +864,84 @@ export function ConversationPropertiesPanel({
           </label>
           ${renderUserDataSection()}
         </div>
+
+        <!-- Advanced Section (Collapsible) -->
+        ${renderAdvancedSection()}
+      </div>
+    `;
+  }
+
+  function renderAdvancedSection() {
+    // Only show if there are available flags
+    if (!availableFlags || availableFlags.length === 0) {
+      return null;
+    }
+
+    return html`
+      <div class="pt-4">
+        <!-- Collapsible Header -->
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-300 transition-colors"
+          style="background: transparent; border: none; padding: 0; cursor: pointer;"
+          onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
+        >
+          <span class="transition-transform ${isAdvancedExpanded ? "" : "-rotate-90"}">
+            <${ChevronDownIcon} className="w-4 h-4" />
+          </span>
+          <span>Advanced</span>
+        </button>
+
+        <!-- Expanded Content -->
+        ${isAdvancedExpanded && html`
+          <div class="mt-3 space-y-3">
+            ${isLoadingFlags
+              ? html`<div class="text-sm text-slate-500">Loading...</div>`
+              : html`
+                  ${flagsError && html`
+                    <div class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1">
+                      ${flagsError}
+                    </div>
+                  `}
+                  ${availableFlags.map((flag) => {
+                    const currentValue = sessionSettings[flag.name];
+                    const isSaving = savingFlags[flag.name];
+
+                    return html`
+                      <div key=${flag.name} class="flex items-start gap-3">
+                        <div class="pt-0.5">
+                          ${isSaving
+                            ? html`
+                                <div class="w-5 h-5 flex items-center justify-center">
+                                  <div class="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                                </div>
+                              `
+                            : html`
+                                <${TriStateCheckbox}
+                                  value=${currentValue}
+                                  onChange=${(newValue) => handleFlagChange(flag.name, newValue)}
+                                  title=${flag.description || flag.label}
+                                />
+                              `}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                          <label class="block text-sm text-slate-300 cursor-pointer"
+                            onClick=${() => !isSaving && handleFlagChange(flag.name, currentValue === true ? false : true)}
+                          >
+                            ${flag.label}
+                          </label>
+                          ${flag.description && html`
+                            <p class="text-xs text-slate-500 mt-0.5">
+                              ${flag.description}
+                            </p>
+                          `}
+                        </div>
+                      </div>
+                    `;
+                  })}
+                `}
+          </div>
+        `}
       </div>
     `;
   }
