@@ -137,11 +137,20 @@ func runMCPProxy(ctx context.Context, targetURL string) error {
 			continue
 		}
 
+		// Extract request ID from the JSON-RPC message for error responses
+		var reqID interface{}
+		var reqMsg struct {
+			ID interface{} `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &reqMsg); err == nil {
+			reqID = reqMsg.ID
+		}
+
 		// Forward to HTTP server
 		resp, newSessionID, err := forwardToHTTP(ctx, client, targetURL, trimmed, mcpSessionID)
 		if err != nil {
-			// Write JSON-RPC error response
-			writeJSONRPCError(os.Stdout, nil, -32603, fmt.Sprintf("proxy error: %v", err))
+			// Write JSON-RPC error response with original request ID
+			writeJSONRPCError(os.Stdout, reqID, -32603, fmt.Sprintf("proxy error: %v", err))
 			continue
 		}
 
@@ -217,6 +226,11 @@ func forwardToHTTP(ctx context.Context, client *http.Client, targetURL, jsonBody
 // The Streamable HTTP transport sends responses as SSE events with "message" type.
 func parseSSEResponse(r io.Reader) ([]byte, error) {
 	scanner := bufio.NewScanner(r)
+	// Set a larger buffer to handle large MCP tool responses (e.g., mitto_get_config)
+	// Default is 64KB which may be too small for some responses
+	const maxScannerBuffer = 1024 * 1024 // 1MB
+	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
+
 	var result bytes.Buffer
 	var dataBuffer bytes.Buffer
 

@@ -2435,8 +2435,10 @@ func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 }
 
 // onMittoToolCall is called when any mitto_* tool call is detected.
-// It registers the request_id with the global MCP server for correlation with MCP requests.
-// All mitto_* tools use request_id for automatic session detection.
+// It registers a correlation ID (requestID) with the global MCP server to associate
+// MCP tool requests with this ACP session. This enables session-aware tool behavior
+// even when the MCP client doesn't know which session it's operating in.
+// Note: requestID here is a correlation ID, not to be confused with session_id.
 func (bs *BackgroundSession) onMittoToolCall(requestID string) {
 	if bs.IsClosed() {
 		return
