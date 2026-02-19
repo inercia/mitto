@@ -1037,7 +1037,11 @@ func run() error {
 		if actualExternalPort > 0 {
 			hookPort = actualExternalPort
 		}
-		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort)
+		// Set up failure callback to broadcast to UI clients
+		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+		})
+		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
 
 	// Clear WKWebView cache before creating the webview
