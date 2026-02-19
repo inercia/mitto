@@ -290,3 +290,116 @@ func TestLoadSettings_NoSessionConfig(t *testing.T) {
 		t.Errorf("Session config should be nil when not configured, got %+v", cfg.Session)
 	}
 }
+
+func TestLoadSettingsWithFallback_MergesWebAuthFromSettings(t *testing.T) {
+	// This test verifies that when an RC file exists, Web.Auth settings
+	// from settings.json are preserved in the merged config.
+	// This is important because Auth settings are configured via the UI
+	// and saved to settings.json, not in the RC file.
+
+	// Use temp dir for both MITTO_DIR and HOME (for RC file)
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("HOME", tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	// Create settings.json with auth configured
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	settingsWithAuth := `{
+  "acp_servers": [
+    {"name": "settings-server", "command": "settings-cmd"}
+  ],
+  "web": {
+    "host": "0.0.0.0",
+    "external_port": 8080,
+    "auth": {
+      "simple": {
+        "username": "admin",
+        "password": "test-password"
+      }
+    },
+    "hooks": {
+      "up": {"command": "tailscale funnel $PORT"},
+      "down": {"command": "pkill tailscale"}
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(settingsWithAuth), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	// Create RC file WITHOUT auth (typical setup - RC file has ACP servers,
+	// settings.json has UI-configured settings like auth)
+	rcPath := filepath.Join(tmpDir, ".mittorc")
+	rcWithoutAuth := `
+acp:
+  - rc-server:
+      command: "rc-cmd"
+`
+	if err := os.WriteFile(rcPath, []byte(rcWithoutAuth), 0644); err != nil {
+		t.Fatalf("failed to create .mittorc: %v", err)
+	}
+
+	// Load settings with fallback
+	result, err := LoadSettingsWithFallback()
+	if err != nil {
+		t.Fatalf("LoadSettingsWithFallback() failed: %v", err)
+	}
+
+	cfg := result.Config
+
+	// Verify Auth was merged from settings.json
+	if cfg.Web.Auth == nil {
+		t.Fatal("Web.Auth should not be nil - it should be merged from settings.json")
+	}
+	if cfg.Web.Auth.Simple == nil {
+		t.Fatal("Web.Auth.Simple should not be nil")
+	}
+	if cfg.Web.Auth.Simple.Username != "admin" {
+		t.Errorf("Web.Auth.Simple.Username = %q, want %q", cfg.Web.Auth.Simple.Username, "admin")
+	}
+	// Password might be loaded from keychain on macOS, or from settings on other platforms
+	// On non-macOS, it should be "test-password"
+	// On macOS, loadKeychainPassword might have been called, but since we're using
+	// test data (not real keychain), the password should remain as-is
+	if cfg.Web.Auth.Simple.Password != "test-password" {
+		t.Errorf("Web.Auth.Simple.Password = %q, want %q", cfg.Web.Auth.Simple.Password, "test-password")
+	}
+
+	// Verify Host was merged from settings.json (external access enabled)
+	if cfg.Web.Host != "0.0.0.0" {
+		t.Errorf("Web.Host = %q, want %q", cfg.Web.Host, "0.0.0.0")
+	}
+
+	// Verify ExternalPort was merged from settings.json
+	if cfg.Web.ExternalPort != 8080 {
+		t.Errorf("Web.ExternalPort = %d, want %d", cfg.Web.ExternalPort, 8080)
+	}
+
+	// Verify Hooks were merged from settings.json
+	if cfg.Web.Hooks.Up.Command != "tailscale funnel $PORT" {
+		t.Errorf("Web.Hooks.Up.Command = %q, want %q", cfg.Web.Hooks.Up.Command, "tailscale funnel $PORT")
+	}
+	if cfg.Web.Hooks.Down.Command != "pkill tailscale" {
+		t.Errorf("Web.Hooks.Down.Command = %q, want %q", cfg.Web.Hooks.Down.Command, "pkill tailscale")
+	}
+
+	// Verify ACP servers include both RC file and settings servers
+	// RC file servers have priority and come first
+	if len(cfg.ACPServers) < 2 {
+		t.Errorf("expected at least 2 ACP servers, got %d", len(cfg.ACPServers))
+	}
+
+	// First server should be from RC file
+	foundRCServer := false
+	for _, srv := range cfg.ACPServers {
+		if srv.Name == "rc-server" {
+			foundRCServer = true
+			break
+		}
+	}
+	if !foundRCServer {
+		t.Error("expected to find rc-server in merged config")
+	}
+}
