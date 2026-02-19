@@ -16,20 +16,40 @@ import (
 	"github.com/inercia/mitto/internal/logging"
 )
 
+// HookFailure contains information about a hook that failed to execute.
+type HookFailure struct {
+	Name     string // Hook name
+	ExitCode int    // Exit code (-1 if killed by signal)
+	Error    string // Error message
+}
+
 // Process manages a running hook command and its lifecycle.
 // It is safe for concurrent use.
 type Process struct {
-	name string
-	cmd  *exec.Cmd
-	mu   sync.Mutex
-	done bool
+	name      string
+	cmd       *exec.Cmd
+	mu        sync.Mutex
+	done      bool
+	onFailure func(HookFailure) // Optional callback for failure notification
+}
+
+// StartUpOption is a functional option for StartUp.
+type StartUpOption func(*Process)
+
+// WithOnFailure sets a callback that will be invoked if the hook fails.
+// The callback receives information about the failure including the hook name,
+// exit code, and error message.
+func WithOnFailure(fn func(HookFailure)) StartUpOption {
+	return func(p *Process) {
+		p.onFailure = fn
+	}
 }
 
 // StartUp starts the web.hooks.up command asynchronously and returns
 // a Process that can be used to stop it during shutdown.
 // It replaces ${PORT} in the command with the actual port number.
 // Returns nil if the command fails to start.
-func StartUp(hook config.WebHook, port int) *Process {
+func StartUp(hook config.WebHook, port int, opts ...StartUpOption) *Process {
 	if hook.Command == "" {
 		return nil
 	}
@@ -63,6 +83,11 @@ func StartUp(hook config.WebHook, port int) *Process {
 		cmd:  cmd,
 	}
 
+	// Apply options
+	for _, opt := range opts {
+		opt(hp)
+	}
+
 	// Start the command
 	if err := cmd.Start(); err != nil {
 		fmt.Printf("⚠️  Hook start error: %v\n", err)
@@ -70,6 +95,14 @@ func StartUp(hook config.WebHook, port int) *Process {
 			"name", hookName,
 			"error", err,
 		)
+		// Notify about startup failure
+		if hp.onFailure != nil {
+			hp.onFailure(HookFailure{
+				Name:     hookName,
+				ExitCode: -1,
+				Error:    err.Error(),
+			})
+		}
 		return nil
 	}
 
@@ -83,6 +116,7 @@ func StartUp(hook config.WebHook, port int) *Process {
 		err := cmd.Wait()
 		hp.mu.Lock()
 		hp.done = true
+		onFailure := hp.onFailure
 		hp.mu.Unlock()
 
 		// Get exit code for logging
@@ -108,6 +142,14 @@ func StartUp(hook config.WebHook, port int) *Process {
 				"exit_code", exitCode,
 				"error", err,
 			)
+			// Notify about runtime failure
+			if onFailure != nil {
+				onFailure(HookFailure{
+					Name:     hookName,
+					ExitCode: exitCode,
+					Error:    err.Error(),
+				})
+			}
 		} else {
 			fmt.Printf("🔗 Hook '%s' completed (exit code 0)\n", hookName)
 			logger.Info("Up hook completed successfully",

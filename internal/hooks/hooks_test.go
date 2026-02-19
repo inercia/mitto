@@ -103,6 +103,41 @@ func TestStartUp_ExitWithError(t *testing.T) {
 	}
 }
 
+func TestStartUp_WithOnFailure(t *testing.T) {
+	// Test that the onFailure callback is called when the hook fails
+	var failureCalled bool
+	var receivedFailure HookFailure
+
+	hook := config.WebHook{Command: "exit 42", Name: "test-callback-hook"}
+	onFailure := WithOnFailure(func(failure HookFailure) {
+		failureCalled = true
+		receivedFailure = failure
+	})
+	hp := StartUp(hook, 8080, onFailure)
+	if hp == nil {
+		t.Fatal("StartUp returned nil for valid command")
+	}
+
+	// Wait for the hook to complete
+	time.Sleep(150 * time.Millisecond)
+
+	if !failureCalled {
+		t.Error("onFailure callback was not called")
+	}
+
+	if receivedFailure.Name != "test-callback-hook" {
+		t.Errorf("Expected hook name 'test-callback-hook', got '%s'", receivedFailure.Name)
+	}
+
+	if receivedFailure.ExitCode != 42 {
+		t.Errorf("Expected exit code 42, got %d", receivedFailure.ExitCode)
+	}
+
+	if receivedFailure.Error == "" {
+		t.Error("Expected error message, got empty string")
+	}
+}
+
 func TestStartUp_InvalidCommand(t *testing.T) {
 	// Test with a command that fails to start
 	// Note: "sh -c" will still start, but the command inside may fail
