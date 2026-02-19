@@ -163,6 +163,9 @@ type Server struct {
 
 	// Scanner defense for blocking malicious IPs at the connection level
 	defense *defense.ScannerDefense
+
+	// Prompts watcher for monitoring prompt file changes
+	promptsWatcher *configPkg.PromptsWatcher
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -377,24 +380,37 @@ func NewServer(config Config) (*Server, error) {
 	// Set events manager in session manager for broadcasting
 	sessionMgr.SetEventsManager(eventsManager)
 
-	// Initialize MCP debug server (always on 127.0.0.1 for security)
-	mcpSrv, err := mcpserver.NewServer(
-		mcpserver.Config{Port: mcpserver.DefaultPort},
-		mcpserver.Dependencies{
-			Store:          store,
-			Config:         config.MittoConfig,
-			SessionManager: &sessionManagerAdapter{sm: sessionMgr},
-		},
-	)
-	if err != nil {
-		logger.Warn("Failed to create MCP debug server", "error", err)
-	} else {
-		s.mcpServer = mcpSrv
-		if err := mcpSrv.Start(context.Background()); err != nil {
-			logger.Warn("Failed to start MCP debug server", "error", err)
+	// Initialize MCP server.
+	// This serves both global tools and session-scoped tools.
+	// Check if MCP server is enabled (default: true)
+	mcpEnabled := config.MittoConfig.MCP.IsEnabled()
+	if mcpEnabled {
+		// Get MCP host and port from config, or use defaults
+		mcpHost := config.MittoConfig.MCP.GetHost()
+		mcpPort := config.MittoConfig.MCP.GetPort()
+
+		mcpSrv, err := mcpserver.NewServer(
+			mcpserver.Config{Host: mcpHost, Port: mcpPort},
+			mcpserver.Dependencies{
+				Store:          store,
+				Config:         config.MittoConfig,
+				SessionManager: &sessionManagerAdapter{sm: sessionMgr},
+			},
+		)
+		if err != nil {
+			logger.Warn("Failed to create MCP server", "error", err)
 		} else {
-			logger.Info("MCP debug server started", "port", mcpSrv.Port())
+			s.mcpServer = mcpSrv
+			if err := mcpSrv.Start(context.Background()); err != nil {
+				logger.Warn("Failed to start MCP server", "error", err)
+			} else {
+				logger.Info("MCP server started", "port", mcpSrv.Port())
+			}
+			// Pass MCP server to session manager for session registration
+			sessionMgr.SetGlobalMCPServer(mcpSrv)
 		}
+	} else {
+		logger.Info("MCP server disabled by configuration")
 	}
 
 	// Initialize queue title worker
@@ -412,6 +428,18 @@ func NewServer(config Config) (*Server, error) {
 	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
 	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
 	s.periodicRunner.Start()
+
+	// Initialize prompts watcher for monitoring prompt file changes
+	if promptsWatcher, err := configPkg.NewPromptsWatcher(logger); err != nil {
+		logger.Warn("Failed to create prompts watcher", "error", err)
+	} else {
+		s.promptsWatcher = promptsWatcher
+		// Subscribe the server to receive prompts change notifications
+		// The server will broadcast these to all connected clients
+		s.promptsWatcher.Subscribe(s, s.getPromptsWatchDirs())
+		s.promptsWatcher.Start()
+		logger.Info("Prompts watcher started", "dirs", s.getPromptsWatchDirs())
+	}
 
 	// Set up routes
 	mux := http.NewServeMux()
@@ -435,6 +463,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
 	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
+	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.handleAdvancedFlags)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
@@ -616,6 +645,11 @@ func (s *Server) Shutdown() error {
 		s.defense.Close()
 	}
 
+	// Close prompts watcher
+	if s.promptsWatcher != nil {
+		s.promptsWatcher.Close()
+	}
+
 	return s.httpServer.Shutdown(context.Background())
 }
 
@@ -754,6 +788,23 @@ func (s *Server) BroadcastSessionArchived(sessionID string, archived bool) {
 	}
 }
 
+// BroadcastSessionSettingsUpdated notifies all connected clients that a session's advanced settings changed.
+func (s *Server) BroadcastSessionSettingsUpdated(sessionID string, settings map[string]bool) {
+	// Ensure we send an empty object instead of null for nil maps
+	if settings == nil {
+		settings = map[string]bool{}
+	}
+	s.eventsManager.Broadcast(WSMsgTypeSessionSettingsUpdated, map[string]interface{}{
+		"session_id": sessionID,
+		"settings":   settings,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session settings updated", "session_id", sessionID,
+			"settings_count", len(settings), "clients", s.eventsManager.ClientCount())
+	}
+}
+
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	s.eventsManager.Broadcast(WSMsgTypeSessionDeleted, map[string]string{
@@ -875,6 +926,21 @@ func (s *Server) BroadcastPeriodicStarted(sessionID, sessionName string) {
 	}
 }
 
+// BroadcastHookFailed notifies all connected clients that a lifecycle hook failed.
+// This allows the frontend to show a toast notification about the hook failure.
+func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string) {
+	s.eventsManager.Broadcast(WSMsgTypeHookFailed, map[string]interface{}{
+		"name":      name,
+		"exit_code": exitCode,
+		"error":     errorMsg,
+	})
+
+	if s.logger != nil {
+		s.logger.Warn("Broadcast hook failed", "name", name, "exit_code", exitCode, "error", errorMsg,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
 // sessionManagerAdapter adapts SessionManager to mcpserver.SessionManager interface.
 type sessionManagerAdapter struct {
 	sm *SessionManager
@@ -892,4 +958,53 @@ func (a *sessionManagerAdapter) GetSession(sessionID string) mcpserver.Backgroun
 // ListRunningSessions returns the IDs of all running sessions.
 func (a *sessionManagerAdapter) ListRunningSessions() []string {
 	return a.sm.ListRunningSessions()
+}
+
+// =============================================================================
+// PromptsSubscriber implementation
+// =============================================================================
+
+// OnPromptsChanged is called by the PromptsWatcher when prompt files change.
+// It broadcasts the change to all connected clients via the global events WebSocket.
+func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
+	if s.eventsManager == nil {
+		return
+	}
+
+	// Force reload the prompts cache so next API call gets fresh data
+	if s.config.PromptsCache != nil {
+		if _, err := s.config.PromptsCache.ForceReload(); err != nil && s.logger != nil {
+			s.logger.Warn("Failed to reload prompts cache after file change", "error", err)
+		}
+	}
+
+	// Broadcast to all connected clients
+	s.eventsManager.Broadcast(WSMsgTypePromptsChanged, map[string]interface{}{
+		"changed_dirs": event.ChangedDirs,
+		"timestamp":    event.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcasted prompts_changed event",
+			"changed_dirs", event.ChangedDirs,
+			"client_count", s.eventsManager.ClientCount())
+	}
+}
+
+// getPromptsWatchDirs returns the directories to watch for prompt file changes.
+// This includes the default MITTO_DIR/prompts/ and any additional configured directories.
+func (s *Server) getPromptsWatchDirs() []string {
+	var dirs []string
+
+	// Always watch the default prompts directory
+	if promptsDir, err := appdir.PromptsDir(); err == nil {
+		dirs = append(dirs, promptsDir)
+	}
+
+	// Add additional directories from global config
+	if s.config.MittoConfig != nil && len(s.config.MittoConfig.PromptsDirs) > 0 {
+		dirs = append(dirs, s.config.MittoConfig.PromptsDirs...)
+	}
+
+	return dirs
 }
