@@ -1,5 +1,5 @@
 ---
-description: Session Store, Recorder, Player, Lock, Queue, ActionButtonsStore, and auxiliary package for title generation
+description: Session Store, Recorder, Player, Lock, Queue, ActionButtonsStore, Flags, and auxiliary package
 globs:
   - "internal/session/**/*"
   - "internal/auxiliary/**/*"
@@ -12,6 +12,8 @@ keywords:
   - queue
   - action buttons
   - title generation
+  - flags
+  - AdvancedSettings
 ---
 
 # Session Package Patterns
@@ -28,6 +30,7 @@ keywords:
 | `Lock`               | Session locking, heartbeat, cleanup         | Yes (mutex + goroutine) |
 | `Queue`              | Message queue for busy agent                | Yes (mutex)             |
 | `ActionButtonsStore` | Follow-up suggestions persistence           | Yes (mutex)             |
+| `Flags`              | Available feature flags registry            | N/A (read-only)         |
 
 ## Immediate Persistence (Web Interface)
 
@@ -133,3 +136,28 @@ abStore.Clear()
 - Separate file (`action_buttons.json`) - not in events.jsonl (transient UI state, not history)
 - Delete file on clear (vs writing empty) - reduces disk clutter
 - Two-tier cache in BackgroundSession: memory (fast) + disk (persistent)
+
+## Feature Flags (AdvancedSettings)
+
+Per-session feature flags are stored in metadata. See `16-web-backend-settings.md` for full patterns.
+
+```go
+// Define flag in flags.go
+const FlagNewFeature = "new_feature"
+
+var AvailableFlags = []FlagDefinition{
+    {Name: FlagNewFeature, Label: "New Feature", Description: "...", Default: false},
+}
+
+// Check flag value (handles nil map safely)
+enabled := session.GetFlagValue(meta.AdvancedSettings, session.FlagCanDoIntrospection)
+
+// Get default value
+defaultVal := session.GetFlagDefault(session.FlagNewFeature)
+```
+
+**Key patterns**:
+
+- All flags default to `false` (opt-in model)
+- Use `GetFlagValue()` to safely check nil maps
+- Flags stored in `metadata.json` as `advanced_settings` map

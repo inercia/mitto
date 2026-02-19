@@ -37,12 +37,13 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | **macOS App (09, 13)**          |                                                                                                                                           |
 | `09-macos-app.md`               | macOS app core: WKWebView, icon, native functions, `*.m`, `*.h`                                                                           |
 | `13-macos-keyboard-gestures.md` | Keyboard shortcuts, trackpad gestures, menu items                                                                                         |
-| **Web Backend (10-15)**         |                                                                                                                                           |
+| **Web Backend (10-16)**         |                                                                                                                                           |
 | `10-web-backend-core.md`        | Server, routing, HTTP handlers (`internal/web/server.go`)                                                                                 |
 | `11-web-backend-sequences.md`   | Backend patterns for sequences, observers, MarkdownBuffer (→ [websockets/](../docs/devel/websockets/) for protocol)                       |
 | `12-web-backend-actions.md`     | Follow-up suggestions, action buttons                                                                                                     |
 | `14-web-backend-auth.md`        | Authentication middleware, public paths, session management                                                                               |
 | `15-web-backend-session-lifecycle.md` | Session lifecycle (archive/unarchive), ACP connection lifecycle, graceful shutdown                                                  |
+| `16-web-backend-settings.md`    | Per-session advanced settings (feature flags), settings API, `AdvancedSettings`                                                           |
 | **Web Frontend (20-27)**        |                                                                                                                                           |
 | `20-web-frontend-core.md`       | Component structure, Preact/HTM, Mermaid integration                                                                                                |
 | `21-web-frontend-state.md`      | State management, refs, useCallback, useLayoutEffect                                                                                      |
@@ -52,12 +53,16 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `25-web-frontend-components.md` | UI components (ChatInput, QueueDropdown, Icons)                                                                                           |
 | `26-web-frontend-hooks.md`      | Custom hooks (useResizeHandle, useSwipeNavigation)                                                                                        |
 | `27-web-frontend-sync.md`       | Sequence sync, stale client detection, deduplication                                                                                      |
-| **Testing (30-34)**             |                                                                                                                                           |
+| **Testing & Anti-Patterns (30-38)** |                                                                                                                                       |
 | `30-testing-unit.md`            | Go unit tests (`*_test.go`)                                                                                                               |
 | `31-testing-integration.md`     | Integration tests, mock ACP server                                                                                                        |
-| `32-testing-playwright.md`      | Playwright UI tests, mock ACP scenarios, browser-specific testing                                                                                                                       |
+| `32-testing-playwright.md`      | Playwright UI tests, mock ACP scenarios, browser-specific testing                                                                         |
 | `33-testing-js.md`              | JavaScript unit tests (lib.test.js)                                                                                                       |
-| `34-anti-patterns.md`           | Common anti-patterns, lessons learned, best practices                                                                                     |
+| `34-anti-patterns.md`           | Testing anti-patterns, general lessons learned (index to 35-38)                                                                           |
+| `35-anti-patterns-text.md`      | Text/HTML processing anti-patterns                                                                                                        |
+| `36-anti-patterns-websocket.md` | WebSocket/async anti-patterns, race conditions                                                                                            |
+| `37-anti-patterns-mobile.md`    | Mobile/WKWebView anti-patterns, localStorage issues                                                                                       |
+| `38-anti-patterns-session.md`   | Session lifecycle anti-patterns                                                                                                           |
 | **Debugging (40-42)**           |                                                                                                                                           |
 | `40-mcp-debugging.md`           | Using MCP tools for debugging (events.jsonl, conversation inspection)                                                                     |
 | `41-debugging-logs.md`          | Log file debugging (mitto.log, webview.log, access.log)                                                                                   |
@@ -77,8 +82,9 @@ internal/auxiliary/   → Hidden ACP session for utility tasks
 internal/client/      → Go client for Mitto REST API + WebSocket (used in tests)
 internal/config/      → Configuration loading (YAML/JSON)
 internal/conversion/  → Markdown-to-HTML conversion, file link detection
+internal/mcpserver/   → MCP servers (global debug + per-session)
 internal/msghooks/    → Message hooks (pre/post processing via external commands)
-internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue)
+internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue/Flags)
 internal/web/         → Web interface server (HTTP, WebSocket, MarkdownBuffer)
 web/static/           → Frontend (Preact/HTM)
   ├── components/     → UI components (ChatInput, QueueDropdown, Message, etc.)

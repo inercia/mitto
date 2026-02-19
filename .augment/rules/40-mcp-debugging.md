@@ -7,9 +7,9 @@ keywords:
   - conversation inspection
   - event replay
   - troubleshoot
-  - get_runtime_info
-  - list_conversations
-  - get_config
+  - mitto_get_runtime_info
+  - mitto_list_conversations
+  - mitto_get_config
 ---
 
 # Using MCP Tools for Debugging
@@ -21,7 +21,7 @@ Mitto includes a built-in MCP (Model Context Protocol) server that exposes debug
 
 ## Available MCP Tools
 
-### 1. `list_conversations`
+### 1. `mitto_list_conversations`
 
 Lists all conversations with metadata:
 
@@ -32,11 +32,11 @@ Lists all conversations with metadata:
 - **Session folder path** (contains `events.jsonl`)
 - Runtime: `is_running`, `is_prompting`, `last_seq`
 
-### 2. `get_config`
+### 2. `mitto_get_config`
 
 Returns the current effective Mitto configuration (sanitized).
 
-### 3. `get_runtime_info`
+### 3. `mitto_get_runtime_info`
 
 Returns runtime information:
 

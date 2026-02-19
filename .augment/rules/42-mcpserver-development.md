@@ -9,15 +9,41 @@ keywords:
   - mcp-go
   - Streamable HTTP
   - STDIO mode
+  - session registration
+  - session_id parameter
 ---
 
 # MCP Server Development
 
-The Mitto MCP server (`internal/mcpserver/`) provides debugging tools via the Model Context Protocol.
+The Mitto MCP server (`internal/mcpserver/`) provides a **single global server** with two types of tools:
+
+1. **Global tools** - Always available (list conversations, get config, runtime info)
+2. **Session-scoped tools** - Require `session_id` parameter (UI prompts, send prompt, get current session)
+
+## Architecture
+
+All agents connect to the same MCP server at `http://127.0.0.1:5757/mcp`. Session-scoped tools use a `session_id` parameter to identify the target session.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Global MCP Server                        │
+│                  http://127.0.0.1:5757/mcp                  │
+├─────────────────────────────────────────────────────────────┤
+│  Global Tools (no session_id):                              │
+│  • mitto_list_conversations (always available)              │
+│  • mitto_get_config                                         │
+│  • mitto_get_runtime_info                                   │
+├─────────────────────────────────────────────────────────────┤
+│  Session-Scoped Tools (require session_id):                 │
+│  • mitto_get_current_session                                │
+│  • mitto_send_prompt_to_conversation                        │
+│  • mitto_ui_ask_yes_no / _options_buttons / _options_combo  │
+├─────────────────────────────────────────────────────────────┤
+│  Session Registry: Maps session_id → UIPrompter             │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Transport Modes
-
-The server supports two transport modes:
 
 | Mode               | Use Case                          | Configuration                                   |
 | ------------------ | --------------------------------- | ----------------------------------------------- |
@@ -98,13 +124,13 @@ func (s *Server) handleListItems(ctx context.Context, req mcp.CallToolRequest) (
 func (s *Server) registerTools() {
     // Tool with no input parameters
     mcp.AddTool(s.mcpServer, mcp.Tool{
-        Name:        "get_runtime_info",
+        Name:        "mitto_get_runtime_info",
         Description: "Get runtime information including OS, architecture, log file paths",
     }, s.handleGetRuntimeInfo)
 
     // Tool with input parameters
     mcp.AddTool(s.mcpServer, mcp.Tool{
-        Name:        "get_conversation",
+        Name:        "mitto_get_conversation",
         Description: "Get details of a specific conversation",
         InputSchema: mcp.ToolInputSchema{
             Type: "object",
@@ -204,3 +230,113 @@ Call list_conversations_mitto-debug to see available sessions
 ```
 
 See `40-mcp-debugging.md` for using MCP tools for debugging.
+
+## Session Registration
+
+Sessions register with the global MCP server to enable session-scoped tools.
+
+### Registering a Session
+
+```go
+// In BackgroundSession.startSessionMcpServer()
+
+// Register this session with the global MCP server
+if bs.globalMcpServer != nil {
+    bs.globalMcpServer.RegisterSession(bs.persistedID, bs, bs.logger)
+}
+```
+
+### Unregistering a Session
+
+```go
+// In BackgroundSession.stopSessionMcpServer()
+
+if bs.globalMcpServer != nil {
+    bs.globalMcpServer.UnregisterSession(bs.persistedID)
+}
+```
+
+### Session-Scoped Tool Pattern
+
+Session-scoped tools require a `session_id` parameter and check permissions at runtime:
+
+```go
+// Input type includes session_id
+type MyToolInput struct {
+    SessionID string `json:"session_id"`
+    // ... other parameters
+}
+
+func (s *Server) handleMyTool(
+    ctx context.Context,
+    req *mcp.CallToolRequest,
+    input MyToolInput,
+) (*mcp.CallToolResult, MyToolOutput, error) {
+    // 1. Validate session_id is provided
+    if input.SessionID == "" {
+        return nil, MyToolOutput{}, fmt.Errorf("session_id is required")
+    }
+
+    // 2. Check session is registered (running)
+    reg := s.getSession(input.SessionID)
+    if reg == nil {
+        return nil, MyToolOutput{}, fmt.Errorf("session not found: %s", input.SessionID)
+    }
+
+    // 3. Check permissions (if flag required)
+    if !s.checkSessionFlag(input.SessionID, session.FlagMyFeature) {
+        return nil, MyToolOutput{}, permissionError("my_tool", session.FlagMyFeature, "My Feature")
+    }
+
+    // 4. Use reg.uiPrompter for UI prompts
+    // 5. Implement the tool logic
+    return nil, output, nil
+}
+```
+
+### Adding New Flags
+
+1. Define the flag in `internal/session/flags.go`:
+
+```go
+const FlagNewFeature = "new_feature"
+
+var AvailableFlags = []FlagDefinition{
+    // ... existing flags ...
+    {
+        Name:        FlagNewFeature,
+        Label:       "New Feature",
+        Description: "Description for the UI",
+        Default:     false,
+    },
+}
+```
+
+2. Check the flag in tool handlers:
+
+```go
+if !s.checkSessionFlag(input.SessionID, session.FlagNewFeature) {
+    return nil, MyToolOutput{}, permissionError("my_tool", session.FlagNewFeature, "New Feature")
+}
+```
+
+### Session Lifecycle
+
+Sessions are registered/unregistered by `BackgroundSession`:
+
+| Event | Action |
+|-------|--------|
+| Session start | `registerWithGlobalMCP()` registers session |
+| Session archive | `unregisterFromGlobalMCP()` unregisters session |
+| Session unarchive | `registerWithGlobalMCP()` re-registers session |
+| Session delete | `unregisterFromGlobalMCP()` unregisters session |
+| Server shutdown | All sessions automatically unregistered |
+
+### Key Points
+
+- **No per-session MCP servers** - All tools are on the global server
+- **`session_id` parameter** - All session-scoped tools require this
+- **Permission checks at runtime** - Use `checkSessionFlag()` helper
+- **UI prompt routing** - Via registered `UIPrompter`
+
+See `docs/devel/mcp.md` for detailed documentation.
