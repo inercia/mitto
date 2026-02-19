@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -17,6 +18,22 @@ type PlanEntry struct {
 	// Status is the current execution status (pending, in_progress, completed).
 	Status string `json:"status"`
 }
+
+// Type aliases for UI prompt types from mcpserver package.
+// This avoids duplication while keeping the types accessible in the web package.
+type (
+	UIPromptType     = mcpserver.UIPromptType
+	UIPromptOption   = mcpserver.UIPromptOption
+	UIPromptRequest  = mcpserver.UIPromptRequest
+	UIPromptResponse = mcpserver.UIPromptResponse
+)
+
+// Re-export UI prompt type constants for convenience.
+const (
+	UIPromptTypeYesNo   = mcpserver.UIPromptTypeYesNo
+	UIPromptTypeSelect  = mcpserver.UIPromptTypeSelect
+	UIPromptTypeOptions = mcpserver.UIPromptTypeOptions
+)
 
 // SessionObserver defines the interface for receiving session events.
 // This allows multiple clients (WebSocket connections) to observe a single session.
@@ -105,4 +122,14 @@ type SessionObserver interface {
 	// reason indicates why the session was stopped (e.g., "archived", "archived_timeout").
 	// Observers should update their state to prevent further prompts.
 	OnACPStopped(reason string)
+
+	// OnUIPrompt is called when an MCP tool requests user input via the UI.
+	// The observer should display the prompt with the specified options and
+	// respond by calling HandleUIPromptAnswer on the BackgroundSession.
+	OnUIPrompt(req UIPromptRequest)
+
+	// OnUIPromptDismiss is called when a UI prompt should be dismissed.
+	// This happens when the prompt times out, is cancelled, or is replaced.
+	// reason can be: "timeout", "cancelled", "replaced"
+	OnUIPromptDismiss(requestID string, reason string)
 }

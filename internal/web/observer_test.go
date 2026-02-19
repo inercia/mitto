@@ -91,6 +91,14 @@ func (m *mockObserver) OnACPStopped(reason string) {
 	// no-op for testing
 }
 
+func (m *mockObserver) OnUIPrompt(req UIPromptRequest) {
+	// no-op for testing
+}
+
+func (m *mockObserver) OnUIPromptDismiss(requestID string, reason string) {
+	// no-op for testing
+}
+
 func TestSessionObserver_Interface(t *testing.T) {
 	// Verify mockObserver implements SessionObserver
 	var _ SessionObserver = (*mockObserver)(nil)

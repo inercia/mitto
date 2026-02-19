@@ -415,10 +415,28 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			return
 		}
 		c.handleSetConfigOption(data.ConfigID, data.Value)
+
+	case WSMsgTypeUIPromptAnswer:
+		var data struct {
+			RequestID string `json:"request_id"`
+			OptionID  string `json:"option_id"`
+			Label     string `json:"label"`
+		}
+		if err := json.Unmarshal(msg.Data, &data); err != nil {
+			c.sendError("Invalid message data")
+			return
+		}
+		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label)
 	}
 }
 
 func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, imageIDs, fileIDs []string) {
+	// If bgSession is nil, try to attach to a running session.
+	// This handles the case where the session was unarchived after this client connected.
+	if c.bgSession == nil {
+		c.tryAttachToSession()
+	}
+
 	if c.bgSession == nil {
 		c.sendPromptError("Session not running. Create or resume the session first.", promptID)
 		return
@@ -481,6 +499,30 @@ func (c *SessionWSClient) handlePermissionAnswer(optionID string, cancel bool) {
 	case c.permissionChan <- resp:
 	default:
 	}
+}
+
+func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label string) {
+	// Try to attach to session if unarchived after client connected
+	if c.bgSession == nil {
+		c.tryAttachToSession()
+	}
+
+	if c.bgSession == nil {
+		c.sendError("Session not running")
+		return
+	}
+
+	if c.logger != nil {
+		c.logger.Debug("UI prompt answer received",
+			"session_id", c.sessionID,
+			"client_id", c.clientID,
+			"request_id", requestID,
+			"option_id", optionID,
+			"label", label)
+	}
+
+	// Forward the answer to the background session
+	c.bgSession.HandleUIPromptAnswer(requestID, optionID, label)
 }
 
 func (c *SessionWSClient) handleSync(afterSeq int64) {
@@ -895,6 +937,11 @@ func (c *SessionWSClient) handleSetConfigOption(configID, value string) {
 		return
 	}
 
+	// Try to attach to session if unarchived after client connected
+	if c.bgSession == nil {
+		c.tryAttachToSession()
+	}
+
 	if c.bgSession == nil {
 		c.sendError("No active session")
 		return
@@ -999,6 +1046,49 @@ func (c *SessionWSClient) sendPromptError(message string, promptID string) {
 		"message":    message,
 		"session_id": c.sessionID,
 		"prompt_id":  promptID,
+	})
+}
+
+// tryAttachToSession attempts to attach to a running BackgroundSession.
+// This is called when bgSession is nil but the session may have been resumed
+// (e.g., after unarchiving). If successful, the client is added as an observer.
+func (c *SessionWSClient) tryAttachToSession() {
+	if c.server.sessionManager == nil {
+		return
+	}
+
+	bs := c.server.sessionManager.GetSession(c.sessionID)
+	if bs == nil {
+		return
+	}
+
+	// Attach to the session
+	c.bgSession = bs
+
+	// Add as observer if initial load is done
+	c.initialLoadMu.Lock()
+	shouldAddObserver := c.initialLoadDone
+	c.initialLoadMu.Unlock()
+
+	if shouldAddObserver {
+		bs.AddObserver(c)
+		if c.logger != nil {
+			c.logger.Debug("Attached to session after unarchive",
+				"session_id", c.sessionID,
+				"acp_id", bs.GetACPID(),
+				"observer_count", bs.ObserverCount())
+		}
+	} else {
+		if c.logger != nil {
+			c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
+				"session_id", c.sessionID,
+				"acp_id", bs.GetACPID())
+		}
+	}
+
+	// Send a notification to the client that the session is now running
+	c.sendMessage(WSMsgTypeACPStarted, map[string]interface{}{
+		"session_id": c.sessionID,
 	})
 }
 
@@ -1554,6 +1644,44 @@ func (c *SessionWSClient) OnACPStopped(reason string) {
 	}
 	c.sendMessage(WSMsgTypeACPStopped, map[string]interface{}{
 		"session_id": c.sessionID,
+		"reason":     reason,
+	})
+}
+
+// OnUIPrompt is called when an MCP tool requests user input via the UI.
+// The client should display the prompt with the specified options.
+func (c *SessionWSClient) OnUIPrompt(req UIPromptRequest) {
+	if c.logger != nil {
+		c.logger.Debug("UI prompt sent to client",
+			"session_id", c.sessionID,
+			"client_id", c.clientID,
+			"request_id", req.RequestID,
+			"prompt_type", req.Type,
+			"question", req.Question,
+			"option_count", len(req.Options))
+	}
+	c.sendMessage(WSMsgTypeUIPrompt, map[string]interface{}{
+		"session_id":      c.sessionID,
+		"request_id":      req.RequestID,
+		"prompt_type":     req.Type,
+		"question":        req.Question,
+		"options":         req.Options,
+		"timeout_seconds": req.TimeoutSeconds,
+	})
+}
+
+// OnUIPromptDismiss is called when a UI prompt should be dismissed.
+func (c *SessionWSClient) OnUIPromptDismiss(requestID string, reason string) {
+	if c.logger != nil {
+		c.logger.Debug("UI prompt dismiss sent to client",
+			"session_id", c.sessionID,
+			"client_id", c.clientID,
+			"request_id", requestID,
+			"reason", reason)
+	}
+	c.sendMessage(WSMsgTypeUIPromptDismiss, map[string]interface{}{
+		"session_id": c.sessionID,
+		"request_id": requestID,
 		"reason":     reason,
 	})
 }
