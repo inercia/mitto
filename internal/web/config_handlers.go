@@ -12,6 +12,7 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/secrets"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // ConfigSaveRequest represents the request body for saving configuration.
@@ -670,6 +671,17 @@ func (s *Server) handleSupportedRunners(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSONOK(w, runners)
+}
+
+// handleAdvancedFlags handles GET /api/advanced-flags.
+// Returns the list of available advanced setting flags that can be configured per-session.
+func (s *Server) handleAdvancedFlags(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	writeJSONOK(w, session.AvailableFlags)
 }
 
 // checkRunnerSupport checks if a runner type is supported on the current platform.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/msghooks"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
@@ -77,6 +78,10 @@ type SessionManager struct {
 	// within the same server session. Automatically cleared on server restart.
 	// Used to restore the agent plan panel when switching back to a conversation.
 	planState map[string][]PlanEntry
+
+	// mcpServer is the global MCP server for session registration.
+	// Sessions register with this server to enable session-scoped MCP tools.
+	mcpServer *mcpserver.Server
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -507,6 +512,14 @@ func (sm *SessionManager) SetEventsManager(eventsManager *GlobalEventsManager) {
 	sm.eventsManager = eventsManager
 }
 
+// SetGlobalMCPServer sets the global MCP server for session registration.
+// Sessions will register with this server to enable session-scoped MCP tools.
+func (sm *SessionManager) SetGlobalMCPServer(srv *mcpserver.Server) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.mcpServer = srv
+}
+
 // SetMittoConfig sets the full Mitto configuration.
 // This is used to look up agent-specific runner configurations.
 func (sm *SessionManager) SetMittoConfig(cfg *config.Config) {
@@ -665,6 +678,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		GlobalMCPServer:     sm.mcpServer,
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -932,6 +946,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		GlobalMCPServer:     sm.mcpServer,
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
