@@ -245,6 +245,7 @@ func (s *MockACPServer) executeAction(action Action) {
 				ToolCallID: action.ID,
 				Title:      action.Title,
 				Status:     action.Status,
+				RawInput:   action.RawInput,
 			},
 		})
 		time.Sleep(delay)

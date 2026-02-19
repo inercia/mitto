@@ -1,0 +1,48 @@
+{
+  "scenario": "ui-prompt-combo",
+  "description": "Test UI prompt combo/dropdown from MCP tool",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)show.*dropdown|test.*combo|ui.*prompt"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": ["Let me show you a dropdown selection. "],
+          "delay_ms": 50
+        },
+        {
+          "type": "tool_call",
+          "id": "tool-ui-combo-1",
+          "title": "mitto_ui_options_combo",
+          "status": "running",
+          "raw_input": {
+            "session_id": "test-session-12345",
+            "question": "Please select your favorite color:",
+            "options": ["Red", "Green", "Blue", "Yellow"],
+            "timeout_seconds": 60
+          },
+          "delay_ms": 100
+        },
+        {
+          "type": "delay",
+          "delay_ms": 5000
+        },
+        {
+          "type": "tool_update",
+          "id": "tool-ui-combo-1",
+          "status": "completed",
+          "delay_ms": 50
+        },
+        {
+          "type": "agent_message",
+          "chunks": ["You selected an option! ", "Great choice."],
+          "delay_ms": 50
+        }
+      ]
+    }
+  ]
+}
+

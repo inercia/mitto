@@ -150,11 +150,13 @@ func (u SessionUpdate) MarshalJSON() ([]byte, error) {
 			ToolCallID    string `json:"toolCallId"`
 			Title         string `json:"title"`
 			Status        string `json:"status"`
+			RawInput      any    `json:"rawInput,omitempty"`
 		}{
 			SessionUpdate: "tool_call",
 			ToolCallID:    u.ToolCall.ToolCallID,
 			Title:         u.ToolCall.Title,
 			Status:        u.ToolCall.Status,
+			RawInput:      u.ToolCall.RawInput,
 		})
 	}
 	if u.ToolCallUpdate != nil {
@@ -228,6 +230,7 @@ type ToolCall struct {
 	ToolCallID string `json:"toolCallId"`
 	Title      string `json:"title"`
 	Status     string `json:"status"`
+	RawInput   any    `json:"rawInput,omitempty"` // For mitto_* tools, includes session_id for correlation
 }
 
 type ToolCallUpdate struct {
@@ -258,15 +261,16 @@ type Trigger struct {
 }
 
 type Action struct {
-	Type    string   `json:"type"`
-	DelayMs int      `json:"delay_ms,omitempty"`
-	Chunks  []string `json:"chunks,omitempty"`
-	Text    string   `json:"text,omitempty"`
-	ID      string   `json:"id,omitempty"`
-	Title   string   `json:"title,omitempty"`
-	Status  string   `json:"status,omitempty"`
-	Message string   `json:"message,omitempty"`
-	File    string   `json:"file,omitempty"` // For replay action: path to events.jsonl file
+	Type     string   `json:"type"`
+	DelayMs  int      `json:"delay_ms,omitempty"`
+	Chunks   []string `json:"chunks,omitempty"`
+	Text     string   `json:"text,omitempty"`
+	ID       string   `json:"id,omitempty"`
+	Title    string   `json:"title,omitempty"`
+	Status   string   `json:"status,omitempty"`
+	Message  string   `json:"message,omitempty"`
+	File     string   `json:"file,omitempty"`      // For replay action: path to events.jsonl file
+	RawInput any      `json:"raw_input,omitempty"` // For tool_call action: tool input parameters
 }
 
 // ReplayEvent represents an event from an events.jsonl file for replay.
