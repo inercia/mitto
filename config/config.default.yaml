@@ -22,6 +22,9 @@ acp:
   - claude-code:
       command: npx -y @zed-industries/claude-code-acp@latest
 
+  - cursor:
+      command: npx -y @blowmage/cursor-agent-acp
+
 # Web server configuration
 web:
   host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security

@@ -432,8 +432,36 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 	mergedCfg := rcCfg
 	mergedCfg.ACPServers = mergeResult.Items
 
+	// Merge Web settings from settings.json into the merged config
+	// These settings are typically configured via the UI and saved to settings.json,
+	// not in the RC file. We need to preserve them even when an RC file is used.
+	//
+	// Auth settings (username/password for external access)
+	if settingsCfg.Web.Auth != nil {
+		mergedCfg.Web.Auth = settingsCfg.Web.Auth
+	}
+
+	// ExternalPort (external access port configuration)
+	if mergedCfg.Web.ExternalPort == 0 && settingsCfg.Web.ExternalPort != 0 {
+		mergedCfg.Web.ExternalPort = settingsCfg.Web.ExternalPort
+	}
+
+	// Hooks (lifecycle hooks for tunneling etc.) - merge if not set in RC file
+	if mergedCfg.Web.Hooks.Up.Command == "" && settingsCfg.Web.Hooks.Up.Command != "" {
+		mergedCfg.Web.Hooks.Up = settingsCfg.Web.Hooks.Up
+	}
+	if mergedCfg.Web.Hooks.Down.Command == "" && settingsCfg.Web.Hooks.Down.Command != "" {
+		mergedCfg.Web.Hooks.Down = settingsCfg.Web.Hooks.Down
+	}
+
+	// Host setting (for external access - 0.0.0.0 vs 127.0.0.1)
+	// If settings.json has 0.0.0.0 (external access enabled), use it
+	if settingsCfg.Web.Host == "0.0.0.0" {
+		mergedCfg.Web.Host = settingsCfg.Web.Host
+	}
+
 	// Load keychain password for the merged config
-	// This is needed because settingsCfg had the password loaded but we used rcCfg as base
+	// This loads the password from keychain if Auth is configured but password is empty
 	if err := loadKeychainPassword(mergedCfg); err != nil {
 		// Non-fatal, just log and continue
 		_ = err
