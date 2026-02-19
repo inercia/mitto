@@ -2,8 +2,10 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -33,6 +35,8 @@ type WebClient struct {
 	onPermission         func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
 	onAvailableCommands  func(commands []AvailableCommand)
 	onCurrentModeChanged func(modeID string)
+	// onMittoToolCall is called when any mitto_* tool call is detected.
+	onMittoToolCall func(requestID string)
 
 	// Stream buffer for all streaming events (markdown, thoughts, tool calls, etc.)
 	// This ensures correct ordering even when markdown content is buffered.
@@ -121,6 +125,11 @@ type WebClientConfig struct {
 	OnPermission         func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
 	OnAvailableCommands  func(commands []AvailableCommand)
 	OnCurrentModeChanged func(modeID string)
+	// OnMittoToolCall is called when any mitto_* tool call is detected.
+	// This allows registering the request_id for correlation with MCP requests.
+	// The callback receives the request_id extracted from the tool call arguments.
+	// All mitto_* tools use request_id for automatic session detection.
+	OnMittoToolCall func(requestID string)
 	// FileLinksConfig configures file path detection and linking in agent messages.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
@@ -137,6 +146,7 @@ func NewWebClient(config WebClientConfig) *WebClient {
 		onPermission:         config.OnPermission,
 		onAvailableCommands:  config.OnAvailableCommands,
 		onCurrentModeChanged: config.OnCurrentModeChanged,
+		onMittoToolCall:      config.OnMittoToolCall,
 	}
 
 	// Create stream buffer that handles all streaming events.
@@ -232,6 +242,15 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
 		status := string(u.ToolCall.Status)
 		c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
+
+		// Check if this is any mitto_* tool call and extract session_id for correlation.
+		// The tool title contains the tool name (e.g., "mitto_get_current_session_mitto-debug").
+		// All mitto_* tools use session_id for automatic session detection.
+		if c.onMittoToolCall != nil && strings.Contains(u.ToolCall.Title, "mitto_") {
+			if sessionID := extractMittoSessionID(u.ToolCall.RawInput); sessionID != "" {
+				c.onMittoToolCall(sessionID)
+			}
+		}
 
 	case u.ToolCallUpdate != nil:
 		// Seq is assigned at emit time by StreamBuffer.
@@ -381,4 +400,45 @@ func (c *WebClient) FlushMarkdown() {
 // Close cleans up resources.
 func (c *WebClient) Close() {
 	c.streamBuffer.Close()
+}
+
+// extractMittoSessionID extracts the session_id from a mitto_* tool call's RawInput.
+// The RawInput can be a map[string]any, a JSON string, or a struct with a SessionID field.
+// Returns empty string if session_id is not found or extraction fails.
+func extractMittoSessionID(rawInput any) string {
+	if rawInput == nil {
+		return ""
+	}
+
+	// Try direct map access
+	if m, ok := rawInput.(map[string]any); ok {
+		if sessionID, ok := m["session_id"].(string); ok {
+			return sessionID
+		}
+	}
+
+	// Try JSON string
+	if s, ok := rawInput.(string); ok {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(s), &m); err == nil {
+			if sessionID, ok := m["session_id"].(string); ok {
+				return sessionID
+			}
+		}
+	}
+
+	// Try marshaling to JSON then unmarshaling to map
+	data, err := json.Marshal(rawInput)
+	if err != nil {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return ""
+	}
+	if sessionID, ok := m["session_id"].(string); ok {
+		return sessionID
+	}
+
+	return ""
 }

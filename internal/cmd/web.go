@@ -246,7 +246,11 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		if actualExternalPort > 0 {
 			hookPort = actualExternalPort
 		}
-		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort)
+		// Set up failure callback to broadcast to UI clients
+		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+		})
+		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
 	if upHook == nil && debug {
 		// Log why hook wasn't started

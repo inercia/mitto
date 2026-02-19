@@ -214,6 +214,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
 	isUserDataRequest := len(parts) > 1 && parts[1] == "user-data"
 	isPeriodicRequest := len(parts) > 1 && parts[1] == "periodic"
+	isSettingsRequest := len(parts) > 1 && parts[1] == "settings"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
@@ -268,6 +269,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			periodicSubPath = parts[2]
 		}
 		s.handleSessionPeriodic(w, r, sessionID, periodicSubPath)
+		return
+	}
+
+	// Handle advanced settings operations
+	if isSettingsRequest {
+		s.handleSessionSettings(w, r, sessionID)
 		return
 	}
 

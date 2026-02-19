@@ -600,3 +600,72 @@ func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 		t.Errorf("AgentCompleted = false, want true")
 	}
 }
+
+func TestHandleAdvancedFlags(t *testing.T) {
+	server := &Server{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/advanced-flags", nil)
+	w := httptest.NewRecorder()
+
+	server.handleAdvancedFlags(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Verify response contains JSON
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+
+	// Parse response
+	var flags []struct {
+		Name        string `json:"name"`
+		Label       string `json:"label"`
+		Description string `json:"description"`
+		Default     bool   `json:"default"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&flags); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	// Should have at least the can_do_introspection flag
+	if len(flags) < 1 {
+		t.Fatalf("Expected at least 1 flag, got %d", len(flags))
+	}
+
+	// Find can_do_introspection flag
+	found := false
+	for _, flag := range flags {
+		if flag.Name == "can_do_introspection" {
+			found = true
+			if flag.Label == "" {
+				t.Error("can_do_introspection should have a label")
+			}
+			if flag.Description == "" {
+				t.Error("can_do_introspection should have a description")
+			}
+			if flag.Default != false {
+				t.Errorf("can_do_introspection default should be false, got %v", flag.Default)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("can_do_introspection flag not found in response")
+	}
+}
+
+func TestHandleAdvancedFlags_MethodNotAllowed(t *testing.T) {
+	server := &Server{}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/advanced-flags", nil)
+	w := httptest.NewRecorder()
+
+	server.handleAdvancedFlags(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
