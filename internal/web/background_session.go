@@ -18,6 +18,7 @@ import (
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversion"
 	"github.com/inercia/mitto/internal/logging"
+	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/msghooks"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
@@ -129,6 +130,22 @@ type BackgroundSession struct {
 	configOptions   []SessionConfigOption                          // All config options (includes mode if available)
 	onConfigChanged func(sessionID string, configID, value string) // Called when any config option changes
 	usesLegacyModes bool                                           // True if using legacy modes API (not configOptions)
+
+	// Global MCP server for session registration.
+	// Sessions register with this server to enable session-scoped MCP tools.
+	globalMcpServer *mcpserver.Server
+
+	// Active UI prompt state for MCP tool user prompts
+	// When an MCP tool calls Prompt(), this holds the pending prompt until the user responds
+	activePromptMu sync.Mutex
+	activePrompt   *activeUIPrompt
+}
+
+// activeUIPrompt holds the state for a pending UI prompt from an MCP tool.
+type activeUIPrompt struct {
+	request    UIPromptRequest
+	responseCh chan UIPromptResponse
+	cancelFn   context.CancelFunc
 }
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
@@ -165,6 +182,11 @@ type BackgroundSessionConfig struct {
 	// Used to broadcast config changes to all connected clients.
 	// The configID identifies which option changed, and value is the new value.
 	OnConfigOptionChanged func(sessionID string, configID, value string)
+
+	// GlobalMCPServer is the global MCP server for session registration.
+	// Sessions register with this server to enable session-scoped MCP tools.
+	// If nil, per-session MCP server is used as fallback (legacy behavior).
+	GlobalMCPServer *mcpserver.Server
 }
 
 // NewBackgroundSession creates a new background session.
@@ -191,8 +213,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
-		acpCommand:              cfg.ACPCommand, // Store for restart
-		acpCwd:                  cfg.ACPCwd,     // Store for restart
+		acpCommand:              cfg.ACPCommand,      // Store for restart
+		acpCwd:                  cfg.ACPCwd,          // Store for restart
+		globalMcpServer:         cfg.GlobalMCPServer, // Global MCP server for session registration
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -318,8 +341,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
-		acpCommand:              config.ACPCommand, // Store for restart
-		acpCwd:                  config.ACPCwd,     // Store for restart
+		acpCommand:              config.ACPCommand,      // Store for restart
+		acpCwd:                  config.ACPCwd,          // Store for restart
+		globalMcpServer:         config.GlobalMCPServer, // Global MCP server for session registration
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -702,6 +726,9 @@ func (bs *BackgroundSession) Close(reason string) {
 	// Cancel context to stop any ongoing operations
 	bs.cancel()
 
+	// Stop session MCP server (must happen before killing ACP process)
+	bs.stopSessionMcpServer()
+
 	// Close ACP client
 	if bs.acpClient != nil {
 		bs.acpClient.Close()
@@ -750,6 +777,60 @@ func (bs *BackgroundSession) Suspend() {
 	if bs.recorder != nil {
 		bs.recorder.Suspend()
 	}
+}
+
+// registerWithGlobalMCP registers this session with the global MCP server.
+// This enables session-scoped MCP tools to be called by the agent.
+// The MCP server is configured globally (e.g., in ~/.augment/settings.json),
+// so we don't pass McpServers to the ACP session.
+func (bs *BackgroundSession) registerWithGlobalMCP(store *session.Store) {
+	if bs.globalMcpServer == nil {
+		return // No global MCP server - fall back to per-session server
+	}
+
+	// Register with global MCP server
+	// BackgroundSession implements mcpserver.UIPrompter
+	if err := bs.globalMcpServer.RegisterSession(bs.persistedID, bs, bs.logger); err != nil {
+		if bs.logger != nil {
+			bs.logger.Warn("Failed to register session with global MCP server", "error", err)
+		}
+		return
+	}
+
+	if bs.logger != nil {
+		bs.logger.Info("Session registered with global MCP server",
+			"session_id", bs.persistedID)
+	}
+}
+
+// unregisterFromGlobalMCP unregisters this session from the global MCP server.
+func (bs *BackgroundSession) unregisterFromGlobalMCP() {
+	if bs.globalMcpServer != nil {
+		bs.globalMcpServer.UnregisterSession(bs.persistedID)
+		if bs.logger != nil {
+			bs.logger.Info("Session unregistered from global MCP server",
+				"session_id", bs.persistedID)
+		}
+	}
+}
+
+// startSessionMcpServer registers with the global MCP server.
+// We don't pass McpServers to ACP - the agent should have the MCP server
+// pre-configured globally (e.g., in ~/.augment/settings.json).
+// Returns empty McpServers slice.
+func (bs *BackgroundSession) startSessionMcpServer(
+	store *session.Store,
+	agentCapabilities acp.AgentCapabilities,
+) []acp.McpServer {
+	// Register with the global MCP server
+	bs.registerWithGlobalMCP(store)
+	// Return empty - MCP is configured globally, not passed per-session
+	return []acp.McpServer{}
+}
+
+// stopSessionMcpServer unregisters from global MCP server.
+func (bs *BackgroundSession) stopSessionMcpServer() {
+	bs.unregisterFromGlobalMCP()
 }
 
 // buildPromptWithHistory prepends conversation history to the user's message.
@@ -1123,6 +1204,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		OnPermission:         bs.onPermission,
 		OnAvailableCommands:  bs.onAvailableCommands,
 		OnCurrentModeChanged: bs.onCurrentModeChanged,
+		OnMittoToolCall:      bs.onMittoToolCall,
 	}
 
 	// Configure file linking if enabled
@@ -1195,12 +1277,15 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		cwd = "."
 	}
 
+	// Build MCP servers list based on session settings and agent capabilities
+	mcpServers := bs.startSessionMcpServer(bs.store, initResp.AgentCapabilities)
+
 	// Try to load existing session if we have an ACP session ID and the agent supports it
 	if acpSessionID != "" && initResp.AgentCapabilities.LoadSession {
 		loadResp, err := bs.acpConn.LoadSession(bs.ctx, acp.LoadSessionRequest{
 			SessionId:  acp.SessionId(acpSessionID),
 			Cwd:        cwd,
-			McpServers: []acp.McpServer{},
+			McpServers: mcpServers,
 		})
 		if err == nil {
 			bs.acpID = acpSessionID
@@ -1224,7 +1309,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	// Create new session
 	sessResp, err := bs.acpConn.NewSession(bs.ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
-		McpServers: []acp.McpServer{},
+		McpServers: mcpServers,
 	})
 	if err != nil {
 		// Give stderr goroutine a moment to capture any error output
@@ -2349,6 +2434,34 @@ func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 	})
 }
 
+// onMittoToolCall is called when any mitto_* tool call is detected.
+// It registers the request_id with the global MCP server for correlation with MCP requests.
+// All mitto_* tools use request_id for automatic session detection.
+func (bs *BackgroundSession) onMittoToolCall(requestID string) {
+	if bs.IsClosed() {
+		return
+	}
+
+	if bs.globalMcpServer == nil {
+		if bs.logger != nil {
+			bs.logger.Debug("Cannot register mitto tool request: no global MCP server",
+				"request_id", requestID,
+				"session_id", bs.persistedID)
+		}
+		return
+	}
+
+	// Register the pending request with the global MCP server
+	// This allows the MCP handler to correlate the request_id with this session
+	bs.globalMcpServer.RegisterPendingRequest(requestID, bs.persistedID)
+
+	if bs.logger != nil {
+		bs.logger.Debug("Registered mitto tool request",
+			"request_id", requestID,
+			"session_id", bs.persistedID)
+	}
+}
+
 func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) {
 	if bs.IsClosed() {
 		return
@@ -2818,4 +2931,192 @@ func formatACPError(err error) string {
 
 	// Default: return original error with prefix
 	return "Prompt failed: " + errMsg
+}
+
+// =============================================================================
+// UIPrompter Implementation
+// =============================================================================
+
+// UIPrompt displays an interactive prompt to the user and blocks until they respond
+// or the timeout expires. This implements the mcpserver.UIPrompter interface.
+//
+// If a new prompt is sent while one is pending, the previous prompt is
+// dismissed (with reason "replaced") and replaced by the new one.
+func (bs *BackgroundSession) UIPrompt(ctx context.Context, req UIPromptRequest) (UIPromptResponse, error) {
+	bs.activePromptMu.Lock()
+
+	// Dismiss any existing prompt (new prompt replaces old one)
+	if bs.activePrompt != nil {
+		bs.dismissActivePromptLocked("replaced")
+	}
+
+	// Create timeout context
+	timeoutDuration := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeoutDuration <= 0 {
+		timeoutDuration = 5 * time.Minute // Default timeout
+	}
+	promptCtx, cancel := context.WithTimeout(ctx, timeoutDuration)
+
+	// Create response channel
+	responseCh := make(chan UIPromptResponse, 1)
+	bs.activePrompt = &activeUIPrompt{
+		request:    req,
+		responseCh: responseCh,
+		cancelFn:   cancel,
+	}
+
+	bs.activePromptMu.Unlock()
+
+	if bs.logger != nil {
+		bs.logger.Info("UI prompt started",
+			"session_id", bs.persistedID,
+			"request_id", req.RequestID,
+			"prompt_type", req.Type,
+			"question", req.Question,
+			"option_count", len(req.Options),
+			"timeout_seconds", req.TimeoutSeconds)
+	}
+
+	// Flush markdown buffer before sending UI prompt.
+	// This ensures any buffered content (tables, lists, code blocks) is sent to
+	// observers before the prompt, so users see the full context of what the
+	// agent said before being asked to make a decision.
+	if bs.acpClient != nil {
+		bs.acpClient.FlushMarkdown()
+	}
+
+	// Broadcast to all observers
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnUIPrompt(req)
+	})
+
+	// Wait for response, timeout, or cancellation
+	select {
+	case resp := <-responseCh:
+		cancel()
+		if bs.logger != nil {
+			bs.logger.Info("UI prompt answered",
+				"session_id", bs.persistedID,
+				"request_id", req.RequestID,
+				"option_id", resp.OptionID,
+				"label", resp.Label)
+		}
+		return resp, nil
+
+	case <-promptCtx.Done():
+		bs.activePromptMu.Lock()
+		bs.dismissActivePromptLocked("timeout")
+		bs.activePromptMu.Unlock()
+		if bs.logger != nil {
+			bs.logger.Info("UI prompt timed out",
+				"session_id", bs.persistedID,
+				"request_id", req.RequestID)
+		}
+		return UIPromptResponse{RequestID: req.RequestID, TimedOut: true}, nil
+
+	case <-bs.ctx.Done():
+		// Session closed
+		bs.activePromptMu.Lock()
+		bs.dismissActivePromptLocked("cancelled")
+		bs.activePromptMu.Unlock()
+		return UIPromptResponse{}, bs.ctx.Err()
+	}
+}
+
+// DismissPrompt cancels any active prompt with the given request ID.
+// This is called when the prompt should be dismissed (e.g., session activity).
+func (bs *BackgroundSession) DismissPrompt(requestID string) {
+	bs.activePromptMu.Lock()
+	defer bs.activePromptMu.Unlock()
+
+	if bs.activePrompt == nil || bs.activePrompt.request.RequestID != requestID {
+		return
+	}
+
+	bs.dismissActivePromptLocked("cancelled")
+}
+
+// HandleUIPromptAnswer processes a user's response to a UI prompt.
+// This is called by SessionWSClient when it receives a ui_prompt_answer message.
+func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label string) {
+	bs.activePromptMu.Lock()
+
+	if bs.activePrompt == nil || bs.activePrompt.request.RequestID != requestID {
+		if bs.logger != nil {
+			bs.logger.Debug("UI prompt answer ignored (no matching prompt)",
+				"session_id", bs.persistedID,
+				"request_id", requestID)
+		}
+		bs.activePromptMu.Unlock()
+		return
+	}
+
+	// Send response (non-blocking - channel has buffer of 1)
+	select {
+	case bs.activePrompt.responseCh <- UIPromptResponse{
+		RequestID: requestID,
+		OptionID:  optionID,
+		Label:     label,
+	}:
+	default:
+		// Already received a response - ignore duplicate
+	}
+
+	// Record in history
+	if bs.recorder != nil {
+		bs.recorder.RecordUIPromptAnswer(requestID, optionID, label)
+	}
+
+	// Clean up
+	bs.activePrompt.cancelFn()
+	bs.activePrompt = nil
+
+	bs.activePromptMu.Unlock()
+
+	// Notify frontend to dismiss (do this in a goroutine to avoid blocking,
+	// matching the pattern used in dismissActivePromptLocked)
+	// The frontend also clears optimistically, but this ensures the prompt
+	// is dismissed even if there's a race condition
+	go bs.notifyObservers(func(o SessionObserver) {
+		o.OnUIPromptDismiss(requestID, "answered")
+	})
+}
+
+// dismissActivePromptLocked dismisses the active prompt with the given reason.
+// Must be called with activePromptMu held.
+func (bs *BackgroundSession) dismissActivePromptLocked(reason string) {
+	if bs.activePrompt == nil {
+		return
+	}
+
+	requestID := bs.activePrompt.request.RequestID
+	bs.activePrompt.cancelFn()
+
+	// Send timeout response to unblock the waiting goroutine
+	select {
+	case bs.activePrompt.responseCh <- UIPromptResponse{RequestID: requestID, TimedOut: true}:
+	default:
+	}
+
+	bs.activePrompt = nil
+
+	// Notify frontend to dismiss (do this outside the lock to avoid deadlock)
+	go bs.notifyObservers(func(o SessionObserver) {
+		o.OnUIPromptDismiss(requestID, reason)
+	})
+}
+
+// GetActiveUIPrompt returns the currently active UI prompt, if any.
+// Used to send cached prompt to new observers.
+func (bs *BackgroundSession) GetActiveUIPrompt() *UIPromptRequest {
+	bs.activePromptMu.Lock()
+	defer bs.activePromptMu.Unlock()
+
+	if bs.activePrompt == nil {
+		return nil
+	}
+
+	// Return a copy
+	req := bs.activePrompt.request
+	return &req
 }

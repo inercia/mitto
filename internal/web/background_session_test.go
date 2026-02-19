@@ -341,6 +341,14 @@ func (m *mockSessionObserver) OnACPStopped(reason string) {
 	m.acpStoppedReasons = append(m.acpStoppedReasons, reason)
 }
 
+func (m *mockSessionObserver) OnUIPrompt(req UIPromptRequest) {
+	// no-op for testing
+}
+
+func (m *mockSessionObserver) OnUIPromptDismiss(requestID string, reason string) {
+	// no-op for testing
+}
+
 func (m *mockSessionObserver) getACPStoppedReasons() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1675,7 +1683,9 @@ func TestBackgroundSession_Close_DifferentReasons(t *testing.T) {
 
 // trackingObserver is a minimal observer that tracks specific callbacks for testing.
 type trackingObserver struct {
-	onACPStopped func(reason string)
+	onACPStopped      func(reason string)
+	onUIPrompt        func(req UIPromptRequest)
+	onUIPromptDismiss func(requestID string, reason string)
 }
 
 func (o *trackingObserver) OnAgentMessage(seq int64, html string)             {}
@@ -1702,6 +1712,16 @@ func (o *trackingObserver) OnACPStopped(reason string) {
 }
 func (o *trackingObserver) OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
+}
+func (o *trackingObserver) OnUIPrompt(req UIPromptRequest) {
+	if o.onUIPrompt != nil {
+		o.onUIPrompt(req)
+	}
+}
+func (o *trackingObserver) OnUIPromptDismiss(requestID string, reason string) {
+	if o.onUIPromptDismiss != nil {
+		o.onUIPromptDismiss(requestID, reason)
+	}
 }
 
 // =============================================================================
@@ -3017,4 +3037,294 @@ func TestBackgroundSession_OnCurrentModeChanged_PersistsToMetadata(t *testing.T)
 	if updatedMeta.CurrentModeID != "code" {
 		t.Errorf("Metadata.CurrentModeID = %q, want %q", updatedMeta.CurrentModeID, "code")
 	}
+}
+
+// =============================================================================
+// Session MCP Server Tests
+// =============================================================================
+
+func TestStartSessionMcpServer_ReturnsEmptySlice(t *testing.T) {
+	// With the global MCP server architecture, startSessionMcpServer should always
+	// return an empty slice (MCP is configured globally, not passed per-session).
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-mcp-global"
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		persistedID: sessionID,
+		store:       store,
+		ctx:         ctx,
+		// Note: globalMcpServer is nil, so registration will be skipped
+	}
+
+	// Agent supports HTTP MCP
+	agentCaps := acp.AgentCapabilities{
+		McpCapabilities: acp.McpCapabilities{
+			Http: true,
+		},
+	}
+
+	mcpServers := bs.startSessionMcpServer(store, agentCaps)
+
+	// With global MCP server architecture, no McpServers are passed to ACP
+	if len(mcpServers) != 0 {
+		t.Errorf("Expected empty MCP servers slice (using global server), got %d", len(mcpServers))
+	}
+}
+
+// TestUIPrompt tests the UI prompt functionality
+func TestUIPrompt(t *testing.T) {
+	t.Run("basic flow", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		bs := &BackgroundSession{
+			observers:   make(map[SessionObserver]struct{}),
+			ctx:         ctx,
+			cancel:      cancel,
+			persistedID: "test-session-123",
+		}
+
+		// Track what the observer receives
+		var receivedPrompt UIPromptRequest
+		var promptReceived bool
+		promptCh := make(chan struct{}, 1)
+
+		observer := &trackingObserver{
+			onUIPrompt: func(req UIPromptRequest) {
+				receivedPrompt = req
+				promptReceived = true
+				promptCh <- struct{}{}
+			},
+		}
+		bs.AddObserver(observer)
+
+		// Start a goroutine to answer the prompt
+		go func() {
+			<-promptCh // Wait for prompt to be sent
+			time.Sleep(50 * time.Millisecond)
+			bs.HandleUIPromptAnswer("test-request-001", "yes", "Deploy Now")
+		}()
+
+		// Send a UI prompt
+		req := UIPromptRequest{
+			RequestID:      "test-request-001",
+			Type:           UIPromptTypeYesNo,
+			Question:       "Do you want to deploy?",
+			Options:        []UIPromptOption{{ID: "yes", Label: "Deploy Now"}, {ID: "no", Label: "Cancel"}},
+			TimeoutSeconds: 5,
+		}
+
+		resp, err := bs.UIPrompt(ctx, req)
+		if err != nil {
+			t.Fatalf("UIPrompt failed: %v", err)
+		}
+
+		if !promptReceived {
+			t.Error("Observer should have received OnUIPrompt call")
+		}
+		if receivedPrompt.RequestID != "test-request-001" {
+			t.Errorf("OnUIPrompt request ID = %q, want %q", receivedPrompt.RequestID, "test-request-001")
+		}
+		if resp.OptionID != "yes" {
+			t.Errorf("Response option ID = %q, want %q", resp.OptionID, "yes")
+		}
+		if resp.Label != "Deploy Now" {
+			t.Errorf("Response label = %q, want %q", resp.Label, "Deploy Now")
+		}
+		if resp.TimedOut {
+			t.Error("Response should not be timed out")
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		bs := &BackgroundSession{
+			observers:   make(map[SessionObserver]struct{}),
+			ctx:         ctx,
+			cancel:      cancel,
+			persistedID: "test-session-123",
+		}
+
+		// Track dismiss calls
+		var dismissReceived bool
+		observer := &trackingObserver{
+			onUIPrompt: func(req UIPromptRequest) {},
+			onUIPromptDismiss: func(requestID string, reason string) {
+				dismissReceived = true
+			},
+		}
+		bs.AddObserver(observer)
+
+		// Send a UI prompt with very short timeout (no answer)
+		req := UIPromptRequest{
+			RequestID:      "test-request-timeout",
+			Type:           UIPromptTypeYesNo,
+			Question:       "This will timeout",
+			Options:        []UIPromptOption{{ID: "yes", Label: "Yes"}},
+			TimeoutSeconds: 1, // 1 second timeout
+		}
+
+		resp, err := bs.UIPrompt(ctx, req)
+		if err != nil {
+			t.Fatalf("UIPrompt failed: %v", err)
+		}
+
+		if !resp.TimedOut {
+			t.Error("Response should be timed out")
+		}
+
+		// Wait for dismiss notification
+		time.Sleep(100 * time.Millisecond)
+		if !dismissReceived {
+			t.Error("Observer should have received OnUIPromptDismiss call")
+		}
+	})
+
+	t.Run("replace prompt", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		bs := &BackgroundSession{
+			observers:   make(map[SessionObserver]struct{}),
+			ctx:         ctx,
+			cancel:      cancel,
+			persistedID: "test-session-123",
+		}
+
+		var promptCount int
+		var dismissReasons []string
+		var mu sync.Mutex
+		firstPromptReceived := make(chan struct{}, 1)
+		secondPromptReceived := make(chan struct{}, 1)
+
+		observer := &trackingObserver{
+			onUIPrompt: func(req UIPromptRequest) {
+				mu.Lock()
+				promptCount++
+				count := promptCount
+				mu.Unlock()
+				switch count {
+				case 1:
+					firstPromptReceived <- struct{}{}
+				case 2:
+					secondPromptReceived <- struct{}{}
+				}
+			},
+			onUIPromptDismiss: func(requestID string, reason string) {
+				mu.Lock()
+				dismissReasons = append(dismissReasons, reason)
+				mu.Unlock()
+			},
+		}
+		bs.AddObserver(observer)
+
+		// Start first prompt (don't answer it)
+		firstPromptDone := make(chan struct{})
+		go func() {
+			defer close(firstPromptDone)
+			req1 := UIPromptRequest{
+				RequestID:      "first-prompt",
+				Type:           UIPromptTypeYesNo,
+				Question:       "First question",
+				Options:        []UIPromptOption{{ID: "yes", Label: "Yes"}},
+				TimeoutSeconds: 30,
+			}
+			bs.UIPrompt(ctx, req1)
+		}()
+
+		// Wait for first prompt to be sent to observer
+		select {
+		case <-firstPromptReceived:
+		case <-time.After(2 * time.Second):
+			t.Fatal("First prompt was not received by observer")
+		}
+
+		// Send second prompt in a goroutine
+		secondPromptDone := make(chan UIPromptResponse)
+		go func() {
+			req2 := UIPromptRequest{
+				RequestID:      "second-prompt",
+				Type:           UIPromptTypeYesNo,
+				Question:       "Second question",
+				Options:        []UIPromptOption{{ID: "yes", Label: "Yes"}},
+				TimeoutSeconds: 5,
+			}
+			resp, _ := bs.UIPrompt(ctx, req2)
+			secondPromptDone <- resp
+		}()
+
+		// Wait for second prompt to be sent to observer
+		select {
+		case <-secondPromptReceived:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Second prompt was not received by observer")
+		}
+
+		// Now answer the second prompt
+		bs.HandleUIPromptAnswer("second-prompt", "yes", "Yes")
+
+		// Get response
+		var resp UIPromptResponse
+		select {
+		case resp = <-secondPromptDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Second prompt did not complete")
+		}
+
+		// Verify second prompt was answered
+		if resp.OptionID != "yes" {
+			t.Errorf("Response option ID = %q, want %q", resp.OptionID, "yes")
+		}
+
+		// Wait for first prompt to complete (it should have been replaced)
+		select {
+		case <-firstPromptDone:
+		case <-time.After(2 * time.Second):
+			t.Error("First prompt goroutine did not complete")
+		}
+
+		// Wait for async dismiss notification (sent via goroutine)
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify we got 2 prompts
+		mu.Lock()
+		pc := promptCount
+		reasons := dismissReasons
+		mu.Unlock()
+
+		if pc != 2 {
+			t.Errorf("Prompt count = %d, want 2", pc)
+		}
+
+		// Verify first prompt was dismissed with "replaced" reason
+		foundReplaced := false
+		for _, r := range reasons {
+			if r == "replaced" {
+				foundReplaced = true
+				break
+			}
+		}
+		if !foundReplaced {
+			t.Errorf("Expected 'replaced' in dismiss reasons, got %v", reasons)
+		}
+	})
 }
