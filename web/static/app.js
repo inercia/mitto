@@ -1803,6 +1803,8 @@ function App() {
     clearBackgroundCompletion,
     periodicStarted,
     clearPeriodicStarted,
+    backgroundUIPrompt,
+    clearBackgroundUIPrompt,
     queueLength,
     queueMessages,
     queueConfig,
@@ -1895,6 +1897,8 @@ function App() {
   const [toastData, setToastData] = useState(null); // { sessionId, sessionName }
   const [periodicToastVisible, setPeriodicToastVisible] = useState(false);
   const [periodicToastData, setPeriodicToastData] = useState(null); // { sessionId, sessionName }
+  const [uiPromptToastVisible, setUIPromptToastVisible] = useState(false);
+  const [uiPromptToastData, setUIPromptToastData] = useState(null); // { sessionId, sessionName, question }
   const [runnerFallbackWarning, setRunnerFallbackWarning] = useState(null); // { requestedType, fallbackType, reason }
   const [acpStartFailedError, setAcpStartFailedError] = useState(null); // { session_id, error }
   const [hookFailedError, setHookFailedError] = useState(null); // { name, exit_code, error }
@@ -2117,6 +2121,40 @@ function App() {
       return () => clearTimeout(clearTimer);
     }
   }, [periodicToastVisible, periodicToastData]);
+
+  // Ref to track UI prompt toast hide timer
+  const uiPromptToastTimerRef = useRef(null);
+
+  // Show toast when a UI prompt arrives in a background session
+  useEffect(() => {
+    if (backgroundUIPrompt) {
+      // Clear any existing timer
+      if (uiPromptToastTimerRef.current) {
+        clearTimeout(uiPromptToastTimerRef.current);
+      }
+
+      // Show in-app toast (native notification is handled in useWebSocket)
+      setUIPromptToastData(backgroundUIPrompt);
+      setUIPromptToastVisible(true);
+      clearBackgroundUIPrompt();
+
+      // Set timer to hide toast after 8 seconds (longer for questions)
+      uiPromptToastTimerRef.current = setTimeout(() => {
+        setUIPromptToastVisible(false);
+        uiPromptToastTimerRef.current = null;
+      }, 8000);
+    }
+  }, [backgroundUIPrompt, clearBackgroundUIPrompt]);
+
+  // Clear UI prompt toast data after exit animation completes
+  useEffect(() => {
+    if (!uiPromptToastVisible && uiPromptToastData) {
+      const clearTimer = setTimeout(() => {
+        setUIPromptToastData(null);
+      }, 200);
+      return () => clearTimeout(clearTimer);
+    }
+  }, [uiPromptToastVisible, uiPromptToastData]);
 
   // Listen for runner fallback events
   useEffect(() => {
@@ -2765,7 +2803,11 @@ function App() {
     window.addEventListener("mitto:prompts_changed", handlePromptsChanged);
     return () =>
       window.removeEventListener("mitto:prompts_changed", handlePromptsChanged);
-  }, [sessionInfo?.working_dir, sessionInfo?.acp_server, fetchWorkspacePrompts]);
+  }, [
+    sessionInfo?.working_dir,
+    sessionInfo?.acp_server,
+    fetchWorkspacePrompts,
+  ]);
 
   // Refetch global prompts when ACP server changes
   // This ensures prompts with "acps" restrictions are filtered correctly per workspace
@@ -3639,9 +3681,7 @@ function App() {
 
         // Schedule plan erasure after delay
         planCompletionTimersRef.current[sessionId] = setTimeout(() => {
-          console.log(
-            `[Plan] Erasing completed plan for session ${sessionId}`,
-          );
+          console.log(`[Plan] Erasing completed plan for session ${sessionId}`);
           delete planCompletionTimersRef.current[sessionId];
 
           // Close panel first (triggers CSS transition)
@@ -3987,7 +4027,9 @@ function App() {
                 );
               }
               // Reload input font family setting
-              setInputFontFamily(config?.ui?.web?.input_font_family || "system");
+              setInputFontFamily(
+                config?.ui?.web?.input_font_family || "system",
+              );
               // Reload conversation cycling mode setting
               setConversationCyclingMode(
                 config?.ui?.web?.conversation_cycling_mode || CYCLING_MODE.ALL,
@@ -4051,6 +4093,31 @@ function App() {
               >${periodicToastData.sessionName}</span
             >
             <span class="text-xs opacity-75">periodic run started</span>
+          </div>
+        </div>
+      `}
+
+      <!-- UI prompt in background session toast -->
+      ${uiPromptToastData &&
+      html`
+        <div
+          class="fixed top-4 left-1/2 -translate-x-1/2 z-50 ${uiPromptToastVisible
+            ? "toast-enter"
+            : "toast-exit"}"
+          onClick=${() => {
+            switchSession(uiPromptToastData.sessionId);
+            setUIPromptToastVisible(false);
+            setTimeout(() => setUIPromptToastData(null), 200);
+          }}
+        >
+          <div
+            class="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-full shadow-lg cursor-pointer hover:bg-amber-500 transition-colors"
+          >
+            <span class="text-lg">❓</span>
+            <span class="text-sm font-medium">Question in</span>
+            <span class="text-sm font-medium truncate max-w-[200px]"
+              >${uiPromptToastData.sessionName}</span
+            >
           </div>
         </div>
       `}
