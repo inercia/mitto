@@ -19,7 +19,14 @@ function utcToLocalTime(utcTime) {
   // Create a Date object for today at the UTC time
   const now = new Date();
   const utcDate = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes, 0),
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      hours,
+      minutes,
+      0,
+    ),
   );
   // Format in local time
   return utcDate.toLocaleTimeString(undefined, {
@@ -39,7 +46,14 @@ function localToUtcTime(localTime) {
   const [hours, minutes] = localTime.split(":").map(Number);
   // Create a Date object for today at the local time
   const now = new Date();
-  const localDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
+  const localDate = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    hours,
+    minutes,
+    0,
+  );
   // Get UTC hours and minutes
   const utcHours = localDate.getUTCHours().toString().padStart(2, "0");
   const utcMinutes = localDate.getUTCMinutes().toString().padStart(2, "0");
@@ -73,7 +87,8 @@ export function PeriodicFrequencyPanel({
   const [localAt, setLocalAt] = useState(utcToLocalTime(frequency.at) || "");
   const [isSaving, setIsSaving] = useState(false);
   // Local estimated next run time (updated immediately on frequency change)
-  const [localNextScheduledAt, setLocalNextScheduledAt] = useState(nextScheduledAt);
+  const [localNextScheduledAt, setLocalNextScheduledAt] =
+    useState(nextScheduledAt);
   // Triggering immediate delivery
   const [isTriggering, setIsTriggering] = useState(false);
   // Confirmation dialog state
@@ -169,14 +184,11 @@ export function PeriodicFrequencyPanel({
   );
 
   // Handle value change
-  const handleValueChange = useCallback(
-    (e) => {
-      const newValue = parseInt(e.target.value, 10) || 1;
-      const clampedValue = Math.max(1, Math.min(999, newValue));
-      setLocalValue(clampedValue);
-    },
-    [],
-  );
+  const handleValueChange = useCallback((e) => {
+    const newValue = parseInt(e.target.value, 10) || 1;
+    const clampedValue = Math.max(1, Math.min(999, newValue));
+    setLocalValue(clampedValue);
+  }, []);
 
   // Handle value blur - save on blur
   const handleValueBlur = useCallback(() => {
@@ -242,9 +254,13 @@ export function PeriodicFrequencyPanel({
         console.error("Failed to trigger immediate delivery:", errorText);
         // Show error to user
         if (response.status === 409) {
-          setErrorMessage("Session is currently processing a prompt. Please wait and try again.");
+          setErrorMessage(
+            "Session is currently processing a prompt. Please wait and try again.",
+          );
         } else {
-          setErrorMessage("Failed to trigger immediate delivery. Please try again.");
+          setErrorMessage(
+            "Failed to trigger immediate delivery. Please try again.",
+          );
         }
         return; // Don't close dialog on error
       }
@@ -273,13 +289,13 @@ export function PeriodicFrequencyPanel({
   // This ensures it pushes the conversation area up instead of overlaying it
   // Uses lighter background for better readability and contrast
   const panelClasses = `periodic-frequency-panel w-full bg-slate-100 dark:bg-slate-700/95 backdrop-blur-sm border border-slate-300 dark:border-slate-600 rounded-lg overflow-hidden transition-all duration-300 ease-out ${
-    isOpen ? "opacity-100 mb-3" : "opacity-0 pointer-events-none h-0 border-0 mb-0"
+    isOpen
+      ? "opacity-100 mb-3"
+      : "opacity-0 pointer-events-none h-0 border-0 mb-0"
   }`;
 
   // Fixed single-row height when open
-  const panelStyle = isOpen
-    ? "height: 44px;"
-    : "height: 0px;";
+  const panelStyle = isOpen ? "height: 44px;" : "height: 0px;";
 
   // Format next scheduled time for display (uses local state for immediate feedback)
   const nextTimeDisplay = localNextScheduledAt
@@ -321,9 +337,7 @@ export function PeriodicFrequencyPanel({
       style="${panelStyle}"
       data-testid="periodic-frequency-panel"
     >
-      <div
-        class="h-full px-4 flex items-center gap-3 text-sm"
-      >
+      <div class="h-full px-4 flex items-center gap-3 text-sm">
         <!-- Periodic icon - clickable when locked to trigger immediate delivery -->
         <!-- Disabled when agent is streaming (isStreaming) or already triggering -->
         ${disabled
@@ -332,8 +346,13 @@ export function PeriodicFrequencyPanel({
                 type="button"
                 onClick=${handleIconClick}
                 disabled=${isTriggering || isStreaming}
-                class="flex-shrink-0 p-0 border-0 bg-transparent transition-opacity ${isTriggering || isStreaming ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:opacity-80"}"
-                title=${isStreaming ? "Wait for agent to finish responding" : "Click to run this periodic prompt now"}
+                class="flex-shrink-0 p-0 border-0 bg-transparent transition-opacity ${isTriggering ||
+                isStreaming
+                  ? "opacity-50 cursor-not-allowed"
+                  : "cursor-pointer hover:opacity-80"}"
+                title=${isStreaming
+                  ? "Wait for agent to finish responding"
+                  : "Click to run this periodic prompt now"}
                 data-testid="periodic-run-now-button"
               >
                 ${isTriggering
@@ -358,13 +377,19 @@ export function PeriodicFrequencyPanel({
                         ></path>
                       </svg>
                     `
-                  : html`<${PeriodicFilledIcon} className="w-4 h-4 text-blue-600 dark:text-blue-400" />`}
+                  : html`<${PeriodicFilledIcon}
+                      className="w-4 h-4 text-blue-600 dark:text-blue-400"
+                    />`}
               </button>
             `
-          : html`<${PeriodicFilledIcon} className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0" />`}
+          : html`<${PeriodicFilledIcon}
+              className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0"
+            />`}
 
         <!-- Run every label -->
-        <span class="text-slate-600 dark:text-gray-300 flex-shrink-0">Run every</span>
+        <span class="text-slate-600 dark:text-gray-300 flex-shrink-0"
+          >Run every</span
+        >
 
         <!-- Numeric input -->
         <input
@@ -375,7 +400,10 @@ export function PeriodicFrequencyPanel({
           onInput=${handleValueChange}
           onBlur=${handleValueBlur}
           disabled=${isSaving || disabled}
-          class="w-16 h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving || disabled ? "opacity-50 cursor-not-allowed" : ""}"
+          class="w-16 h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-center text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving ||
+          disabled
+            ? "opacity-50 cursor-not-allowed"
+            : ""}"
         />
 
         <!-- Unit dropdown -->
@@ -383,7 +411,10 @@ export function PeriodicFrequencyPanel({
           value=${localUnit}
           onChange=${handleUnitChange}
           disabled=${isSaving || disabled}
-          class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving || disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}"
+          class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving ||
+          disabled
+            ? "opacity-50 cursor-not-allowed"
+            : "cursor-pointer"}"
         >
           <option value="minutes">minutes</option>
           <option value="hours">hours</option>
@@ -393,14 +424,19 @@ export function PeriodicFrequencyPanel({
         <!-- Time picker (only shown for daily schedules) -->
         ${localUnit === "days" &&
         html`
-          <span class="text-slate-600 dark:text-gray-300 flex-shrink-0">at</span>
+          <span class="text-slate-600 dark:text-gray-300 flex-shrink-0"
+            >at</span
+          >
           <input
             type="time"
             value=${localAt}
             onInput=${handleAtChange}
             onBlur=${handleAtBlur}
             disabled=${isSaving || disabled}
-            class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving || disabled ? "opacity-50 cursor-not-allowed" : ""}"
+            class="h-8 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${isSaving ||
+            disabled
+              ? "opacity-50 cursor-not-allowed"
+              : ""}"
             placeholder="HH:MM"
           />
         `}
@@ -443,4 +479,3 @@ export function PeriodicFrequencyPanel({
     </div>
   `;
 }
-

@@ -1223,21 +1223,41 @@ export function SettingsDialog({
                           <span class="text-amber-400 text-lg">⚠️</span>
                           <div class="flex-1">
                             <p class="text-amber-400 text-sm font-medium mb-1">
-                              ${orphanedWorkspaces.length} workspace${orphanedWorkspaces.length > 1 ? 's' : ''} removed due to missing server${orphanedWorkspaces.length > 1 ? 's' : ''}
+                              ${orphanedWorkspaces.length}
+                              workspace${orphanedWorkspaces.length > 1
+                                ? "s"
+                                : ""}
+                              removed due to missing
+                              server${orphanedWorkspaces.length > 1 ? "s" : ""}
                             </p>
                             <p class="text-amber-300/80 text-xs mb-2">
-                              The following workspace${orphanedWorkspaces.length > 1 ? 's reference servers that no longer exist' : ' references a server that no longer exists'}.
-                              This can happen if a server was removed from your .mittorc file.
+                              The following
+                              workspace${orphanedWorkspaces.length > 1
+                                ? "s reference servers that no longer exist"
+                                : " references a server that no longer exists"}.
+                              This can happen if a server was removed from your
+                              .mittorc file.
                             </p>
                             <ul class="text-xs text-amber-300/70 space-y-1">
                               ${orphanedWorkspaces.map(
                                 (ow) => html`
-                                  <li key=${ow.working_dir} class="flex items-center gap-1">
+                                  <li
+                                    key=${ow.working_dir}
+                                    class="flex items-center gap-1"
+                                  >
                                     <span class="text-amber-400">•</span>
-                                    <span class="font-mono truncate" title=${ow.working_dir}>${ow.working_dir}</span>
+                                    <span
+                                      class="font-mono truncate"
+                                      title=${ow.working_dir}
+                                      >${ow.working_dir}</span
+                                    >
                                     <span class="text-amber-500/70">→</span>
-                                    <span class="text-red-400/80">${ow.missing_server}</span>
-                                    <span class="text-amber-500/50">(missing)</span>
+                                    <span class="text-red-400/80"
+                                      >${ow.missing_server}</span
+                                    >
+                                    <span class="text-amber-500/50"
+                                      >(missing)</span
+                                    >
                                   </li>
                                 `,
                               )}
@@ -1605,14 +1625,17 @@ export function SettingsDialog({
                         `
                       : html`
                           <div class="space-y-2">
-                            ${acpServers.map(
-                              (srv) => {
-                                // RC file servers are read-only (cannot edit/delete)
-                                const isRCFile = srv.source === "rcfile";
-                                return html`
+                            ${acpServers.map((srv) => {
+                              // RC file servers are read-only (cannot edit/delete)
+                              const isRCFile = srv.source === "rcfile";
+                              return html`
                                 <div
                                   key=${srv.name}
-                                  class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile ? '' : 'hover:bg-slate-700/30'} transition-colors group ${isRCFile ? 'opacity-80' : ''}"
+                                  class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isRCFile
+                                    ? ""
+                                    : "hover:bg-slate-700/30"} transition-colors group ${isRCFile
+                                    ? "opacity-80"
+                                    : ""}"
                                 >
                                   ${editingServer === srv.name && !isRCFile
                                     ? html`
@@ -1631,7 +1654,8 @@ export function SettingsDialog({
                                               class="font-medium text-sm flex items-center gap-2"
                                             >
                                               ${srv.name}
-                                              ${isRCFile && html`
+                                              ${isRCFile &&
+                                              html`
                                                 <span
                                                   class="flex items-center gap-1 text-xs text-amber-400"
                                                   title="This server is defined in .mittorc and cannot be modified here"
@@ -1660,17 +1684,24 @@ export function SettingsDialog({
                                               title=${srv.command}
                                             >
                                               ${srv.command}
-                                              ${isRCFile && html`<span class="ml-2 text-amber-500/70">(from .mittorc)</span>`}
+                                              ${isRCFile &&
+                                              html`<span
+                                                class="ml-2 text-amber-500/70"
+                                                >(from .mittorc)</span
+                                              >`}
                                             </div>
                                           </div>
-                                          ${!isRCFile && html`
+                                          ${!isRCFile &&
+                                          html`
                                             <button
                                               onClick=${() =>
                                                 setEditingServer(srv.name)}
                                               class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                               title="Edit server"
                                             >
-                                              <${EditIcon} className="w-4 h-4" />
+                                              <${EditIcon}
+                                                className="w-4 h-4"
+                                              />
                                             </button>
                                             <button
                                               onClick=${() =>
@@ -1678,14 +1709,16 @@ export function SettingsDialog({
                                               class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                                               title="Remove server"
                                             >
-                                              <${TrashIcon} className="w-4 h-4" />
+                                              <${TrashIcon}
+                                                className="w-4 h-4"
+                                              />
                                             </button>
                                           `}
                                         </div>
                                       `}
                                 </div>
-                              `}
-                            )}
+                              `;
+                            })}
                           </div>
                         `}
                   </div>
@@ -2166,14 +2199,17 @@ export function SettingsDialog({
                       >
                         <div class="flex items-center justify-between">
                           <div>
-                            <div class="font-medium text-sm">Input box font</div>
+                            <div class="font-medium text-sm">
+                              Input box font
+                            </div>
                             <div class="text-xs text-gray-500">
                               Font family for the message compose area
                             </div>
                           </div>
                           <select
                             value=${inputFontFamily}
-                            onChange=${(e) => setInputFontFamily(e.target.value)}
+                            onChange=${(e) =>
+                              setInputFontFamily(e.target.value)}
                             class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
                           >
                             <option value="system">System Default</option>
@@ -2184,7 +2220,9 @@ export function SettingsDialog({
                             <option value="monaco">Monaco</option>
                             <option value="consolas">Consolas</option>
                             <option value="courier-new">Courier New</option>
-                            <option value="jetbrains-mono">JetBrains Mono</option>
+                            <option value="jetbrains-mono">
+                              JetBrains Mono
+                            </option>
                             <option value="sf-mono">SF Mono</option>
                             <option value="cascadia-code">Cascadia Code</option>
                           </select>

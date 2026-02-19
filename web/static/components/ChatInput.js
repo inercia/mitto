@@ -1239,7 +1239,8 @@ export function ChatInput({
     const currentText = text;
 
     // Build new text with insertion
-    const newText = currentText.slice(0, start) + textToInsert + currentText.slice(end);
+    const newText =
+      currentText.slice(0, start) + textToInsert + currentText.slice(end);
     setText(newText);
 
     // Set cursor position after inserted text (after React re-render)
@@ -1268,7 +1269,10 @@ export function ChatInput({
           .filter(Boolean);
 
         // If we found relative paths for ALL files, insert them as text
-        if (relativePaths.length === filePaths.length && relativePaths.length > 0) {
+        if (
+          relativePaths.length === filePaths.length &&
+          relativePaths.length > 0
+        ) {
           // Insert relative paths, separated by spaces if multiple
           const pathsText = relativePaths.join(" ");
           insertTextAtCursor(pathsText);
@@ -1511,7 +1515,9 @@ export function ChatInput({
                   <option value="">Select an option...</option>
                   ${activeUIPrompt.options?.map(
                     (opt) => html`
-                      <option key=${opt.id} value=${opt.id}>${opt.label}</option>
+                      <option key=${opt.id} value=${opt.id}>
+                        ${opt.label}
+                      </option>
                     `,
                   )}
                 </select>
@@ -1535,7 +1541,6 @@ export function ChatInput({
           </div>
         </div>
       `}
-
       ${hasActionButtons &&
       !isStreaming &&
       !isReadOnly &&
@@ -1898,7 +1903,9 @@ export function ChatInput({
             isImproving ||
             (periodicEnabled && isPeriodicLocked)
               ? "opacity-50 cursor-not-allowed"
-              : ""} ${periodicEnabled && isPeriodicLocked ? "bg-slate-800" : ""}"
+              : ""} ${periodicEnabled && isPeriodicLocked
+              ? "bg-slate-800"
+              : ""}"
             disabled=${isFullyDisabled ||
             isReadOnly ||
             isImproving ||

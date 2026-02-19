@@ -75,7 +75,9 @@ export function ConfirmDialog({
           <button
             onClick=${handleCancel}
             disabled=${isLoading}
-            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${isLoading ? "opacity-50 cursor-not-allowed" : ""}"
+            class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${isLoading
+              ? "opacity-50 cursor-not-allowed"
+              : ""}"
             data-testid="confirm-dialog-close"
           >
             <${CloseIcon} className="w-5 h-5" />
@@ -88,13 +90,13 @@ export function ConfirmDialog({
         </div>
 
         <!-- Footer with buttons -->
-        <div
-          class="flex justify-end gap-3 p-4 border-t border-slate-700"
-        >
+        <div class="flex justify-end gap-3 p-4 border-t border-slate-700">
           <button
             onClick=${handleCancel}
             disabled=${isLoading}
-            class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors ${isLoading ? "opacity-50 cursor-not-allowed" : ""}"
+            class="px-4 py-2 text-sm hover:bg-slate-700 rounded-lg transition-colors ${isLoading
+              ? "opacity-50 cursor-not-allowed"
+              : ""}"
             data-testid="confirm-dialog-cancel"
           >
             ${cancelLabel}
@@ -102,16 +104,14 @@ export function ConfirmDialog({
           <button
             onClick=${handleConfirm}
             disabled=${isLoading}
-            class="px-4 py-2 text-sm ${confirmButtonClass} text-white rounded-lg transition-colors flex items-center gap-2 ${isLoading ? "opacity-75" : ""}"
+            class="px-4 py-2 text-sm ${confirmButtonClass} text-white rounded-lg transition-colors flex items-center gap-2 ${isLoading
+              ? "opacity-75"
+              : ""}"
             data-testid="confirm-dialog-confirm"
           >
             ${isLoading &&
             html`
-              <svg
-                class="w-4 h-4 animate-spin"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
+              <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                 <circle
                   class="opacity-25"
                   cx="12"
@@ -134,4 +134,3 @@ export function ConfirmDialog({
     </div>
   `;
 }
-
