@@ -47,10 +47,10 @@ function TriStateCheckbox({ value, onChange, disabled = false, title = "" }) {
       class="relative w-5 h-5 rounded border-2 transition-colors flex items-center justify-center
         ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
         ${isUnset
-          ? "border-slate-500 bg-slate-700"
-          : isEnabled
-            ? "border-blue-500 bg-blue-500"
-            : "border-slate-500 bg-slate-700"}"
+        ? "border-slate-500 bg-slate-700"
+        : isEnabled
+          ? "border-blue-500 bg-blue-500"
+          : "border-slate-500 bg-slate-700"}"
       onClick=${handleClick}
       disabled=${disabled}
       title=${title}
@@ -58,8 +58,18 @@ function TriStateCheckbox({ value, onChange, disabled = false, title = "" }) {
       ${isUnset
         ? html`<span class="text-slate-500 text-xs font-medium">—</span>`
         : isEnabled
-          ? html`<svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+          ? html`<svg
+              class="w-3 h-3 text-white"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="3"
+                d="M5 13l4 4L19 7"
+              />
             </svg>`
           : null}
     </button>
@@ -77,7 +87,14 @@ function utcToLocalTimeDisplay(utcTime) {
   // Create a Date object for today at the UTC time
   const now = new Date();
   const utcDate = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes, 0),
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      hours,
+      minutes,
+      0,
+    ),
   );
   // Format in local time with AM/PM
   return utcDate.toLocaleTimeString(undefined, {
@@ -188,7 +205,8 @@ function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
       disabled=${isStreaming}
       title=${isStreaming
         ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
-        : configOption.description || `Select ${configOption.name.toLowerCase()}`}
+        : configOption.description ||
+          `Select ${configOption.name.toLowerCase()}`}
     >
       ${configOption.options?.map(
         (opt) => html`
@@ -294,17 +312,18 @@ export function ConversationPropertiesPanel({
 
       try {
         // Fetch user data, schema, periodic config, available flags, and session settings in parallel
-        const [userDataRes, schemaRes, periodicRes, flagsRes, settingsRes] = await Promise.all([
-          authFetch(apiUrl(`/api/sessions/${sessionId}/user-data`)),
-          authFetch(
-            apiUrl(
-              `/api/workspace/user-data-schema?working_dir=${encodeURIComponent(sessionInfo.working_dir)}`,
+        const [userDataRes, schemaRes, periodicRes, flagsRes, settingsRes] =
+          await Promise.all([
+            authFetch(apiUrl(`/api/sessions/${sessionId}/user-data`)),
+            authFetch(
+              apiUrl(
+                `/api/workspace/user-data-schema?working_dir=${encodeURIComponent(sessionInfo.working_dir)}`,
+              ),
             ),
-          ),
-          authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`)),
-          authFetch(apiUrl("/api/advanced-flags")),
-          authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
-        ]);
+            authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`)),
+            authFetch(apiUrl("/api/advanced-flags")),
+            authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
+          ]);
 
         if (userDataRes.ok) {
           const data = await userDataRes.json();
@@ -372,14 +391,23 @@ export function ConversationPropertiesPanel({
     const handleSettingsUpdated = (event) => {
       const { session_id, settings } = event.detail || {};
       if (session_id === sessionId && settings) {
-        console.log("[ConversationPropertiesPanel] Settings updated via WebSocket:", settings);
+        console.log(
+          "[ConversationPropertiesPanel] Settings updated via WebSocket:",
+          settings,
+        );
         setSessionSettings(settings);
       }
     };
 
-    window.addEventListener("mitto:session_settings_updated", handleSettingsUpdated);
+    window.addEventListener(
+      "mitto:session_settings_updated",
+      handleSettingsUpdated,
+    );
     return () => {
-      window.removeEventListener("mitto:session_settings_updated", handleSettingsUpdated);
+      window.removeEventListener(
+        "mitto:session_settings_updated",
+        handleSettingsUpdated,
+      );
     };
   }, [isOpen, sessionId]);
 
@@ -764,21 +792,30 @@ export function ConversationPropertiesPanel({
               html`
                 <div class="flex items-center justify-between">
                   <button
-                    class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${configOption.current_value === "true" ? "bg-blue-600" : "bg-slate-600"}"
+                    class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 ${configOption.current_value ===
+                    "true"
+                      ? "bg-blue-600"
+                      : "bg-slate-600"}"
                     role="switch"
                     aria-checked=${configOption.current_value === "true"}
                     onClick=${() =>
                       onSetConfigOption?.(
                         configOption.id,
-                        configOption.current_value === "true" ? "false" : "true",
+                        configOption.current_value === "true"
+                          ? "false"
+                          : "true",
                       )}
                     disabled=${isStreaming}
                     title=${isStreaming
                       ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
-                      : configOption.description || `Toggle ${configOption.name.toLowerCase()}`}
+                      : configOption.description ||
+                        `Toggle ${configOption.name.toLowerCase()}`}
                   >
                     <span
-                      class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${configOption.current_value === "true" ? "translate-x-5" : "translate-x-0"}"
+                      class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${configOption.current_value ===
+                      "true"
+                        ? "translate-x-5"
+                        : "translate-x-0"}"
                     />
                   </button>
                 </div>
@@ -886,20 +923,28 @@ export function ConversationPropertiesPanel({
           style="background: transparent; border: none; padding: 0; cursor: pointer;"
           onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
         >
-          <span class="transition-transform ${isAdvancedExpanded ? "" : "-rotate-90"}">
+          <span
+            class="transition-transform ${isAdvancedExpanded
+              ? ""
+              : "-rotate-90"}"
+          >
             <${ChevronDownIcon} className="w-4 h-4" />
           </span>
           <span>Advanced</span>
         </button>
 
         <!-- Expanded Content -->
-        ${isAdvancedExpanded && html`
+        ${isAdvancedExpanded &&
+        html`
           <div class="mt-3 space-y-3">
             ${isLoadingFlags
               ? html`<div class="text-sm text-slate-500">Loading...</div>`
               : html`
-                  ${flagsError && html`
-                    <div class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1">
+                  ${flagsError &&
+                  html`
+                    <div
+                      class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1"
+                    >
                       ${flagsError}
                     </div>
                   `}
@@ -912,25 +957,37 @@ export function ConversationPropertiesPanel({
                         <div class="pt-0.5">
                           ${isSaving
                             ? html`
-                                <div class="w-5 h-5 flex items-center justify-center">
-                                  <div class="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                                <div
+                                  class="w-5 h-5 flex items-center justify-center"
+                                >
+                                  <div
+                                    class="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"
+                                  ></div>
                                 </div>
                               `
                             : html`
                                 <${TriStateCheckbox}
                                   value=${currentValue}
-                                  onChange=${(newValue) => handleFlagChange(flag.name, newValue)}
+                                  onChange=${(newValue) =>
+                                    handleFlagChange(flag.name, newValue)}
                                   title=${flag.description || flag.label}
                                 />
                               `}
                         </div>
                         <div class="flex-1 min-w-0">
-                          <label class="block text-sm text-slate-300 cursor-pointer"
-                            onClick=${() => !isSaving && handleFlagChange(flag.name, currentValue === true ? false : true)}
+                          <label
+                            class="block text-sm text-slate-300 cursor-pointer"
+                            onClick=${() =>
+                              !isSaving &&
+                              handleFlagChange(
+                                flag.name,
+                                currentValue === true ? false : true,
+                              )}
                           >
                             ${flag.label}
                           </label>
-                          ${flag.description && html`
+                          ${flag.description &&
+                          html`
                             <p class="text-xs text-slate-500 mt-0.5">
                               ${flag.description}
                             </p>
@@ -948,9 +1005,7 @@ export function ConversationPropertiesPanel({
 
   function renderUserDataSection() {
     if (isLoadingUserData) {
-      return html`
-        <div class="text-sm text-slate-500">Loading...</div>
-      `;
+      return html` <div class="text-sm text-slate-500">Loading...</div> `;
     }
 
     if (!hasSchema) {
@@ -986,7 +1041,8 @@ export function ConversationPropertiesPanel({
                         type=${field.type === "url" ? "url" : "text"}
                         class="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
                         value=${editedAttributeValue}
-                        onInput=${(e) => setEditedAttributeValue(e.target.value)}
+                        onInput=${(e) =>
+                          setEditedAttributeValue(e.target.value)}
                         onKeyDown=${handleAttributeKeyDown}
                         onBlur=${() => {
                           setTimeout(() => {
@@ -1054,4 +1110,3 @@ export function ConversationPropertiesPanel({
     `;
   }
 }
-

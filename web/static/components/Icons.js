@@ -655,7 +655,13 @@ export function PeriodicFilledIcon({ className = "w-4 h-4" }) {
       <!-- Filled circle background using currentColor (will be blue/colored) -->
       <circle cx="12" cy="12" r="11" fill="currentColor" />
       <!-- Refresh/sync arrows in white for contrast against colored circle -->
-      <g fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <g
+        fill="none"
+        stroke="white"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
         <!-- Top-right arrow pointing down-left (refresh from top) -->
         <path d="M16.5 8.5A5 5 0 0 0 8 8" />
         <polyline points="17 5 17 9 13 9" />
