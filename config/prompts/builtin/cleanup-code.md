@@ -89,7 +89,20 @@ Present a prioritized table of proposed cleanup items:
 
 ### 3. Wait for Approval
 
-Ask the user to:
+**Using Mitto UI tools (if available):**
+
+If the `mitto_ui_options_buttons` tool is available, use it to present the approval options:
+
+```
+Question: "How would you like to proceed with the cleanup plan?"
+Options: ["Approve all", "Approve selected", "Investigate", "Cancel"]
+```
+
+If the user selects "Approve selected" or "Investigate", follow up with a text conversation to get the specific item numbers.
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask the user in the conversation to choose one of these options:
 
 - **Approve all** - proceed with all cleanup items
 - **Approve selected** - specify which items to proceed with (by priority number)

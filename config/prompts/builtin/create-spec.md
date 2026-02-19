@@ -87,8 +87,22 @@ Once all requirements are gathered, create a comprehensive spec file.
 ### File Location
 
 1. Check if a `specs/` or `spec/` folder exists in the project
-2. If multiple candidates exist, ask which one to use
-3. If none exists, ask permission to create a `specs/` folder
+
+2. **If multiple candidates exist:**
+   - **Using Mitto UI tools (if available):** Use `mitto_ui_options_combo` to let the user select:
+     ```
+     Question: "Multiple spec folders found. Which one should I use?"
+     Options: ["specs/", "spec/", "docs/specs/", ...]
+     ```
+   - **Fallback:** List the options in conversation and ask which one to use
+
+3. **If no spec folder exists:**
+   - **Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to ask for permission:
+     ```
+     Question: "No specs folder found. Should I create a 'specs/' directory?"
+     ```
+   - **Fallback:** Ask permission in conversation to create a `specs/` folder
+
 4. Create the spec file with a descriptive but short name (e.g., `user-auth.md`, `payment-flow.md`)
 5. Write the specification using the template above
 

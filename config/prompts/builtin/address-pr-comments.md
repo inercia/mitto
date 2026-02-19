@@ -108,8 +108,18 @@ Summarize the analysis in a table, formatted as Markdown:
 |---------|------|----------|----------|--------|
 | ...     | ...  | ...      | ...      | ...    |
 
-Show it to the user. Ask for confirmation before proceeding
-(the user could have some comments about this analysis).
+Show it to the user.
+
+**Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to confirm the analysis:
+```
+Question: "Does this analysis look correct? Ready to proceed with the proposed actions?"
+Yes label: "Proceed"
+No label: "Let me review"
+```
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask for confirmation in conversation before proceeding (the user could have some comments about this analysis).
 
 ### 6. Implement Changes
 
@@ -170,8 +180,20 @@ The PR's `head.repo.full_name` tells you which repository your branch lives in -
 
 ### 9. Push Changes and Request Re-review
 
-After all changes are implemented and responses are ready and
-the user has approved, do:
+After all changes are implemented and responses are ready, confirm with the user before pushing.
+
+**Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to get push approval:
+```
+Question: "All changes implemented. Ready to push and request re-review?"
+Yes label: "Push changes"
+No label: "Wait"
+```
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask in conversation: "All changes are ready. Should I push and request re-review?"
+
+Once the user has approved, do:
 
 ```bash
 # Ensure code is formatted (run project's formatters)

@@ -121,9 +121,20 @@ Detected configuration:
   - PR will target: upstream/main
   - Push to: origin/<current-branch>
   - Reason: [PR #123 already targets upstream-org/repo:main | upstream remote present | single remote configured]
-
-Is this correct? (yes/no/specify different target)
 ```
+
+**Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to confirm:
+```
+Question: "PR will target upstream/main and push to origin. Is this correct?"
+Yes label: "Yes, proceed"
+No label: "No, let me specify"
+```
+
+If the user answers "No", follow up in conversation to get the correct configuration.
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask: "Is this correct? (yes/no/specify different target)"
 
 **Do not proceed** until the user confirms the target remote and branch.
 

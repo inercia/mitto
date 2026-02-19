@@ -16,9 +16,9 @@ Update the developer and architecture documentation to reflect the changes we ju
 
 ### Guidelines:
 
-- Write for developers contributing to the codebase
-- Include code examples showing patterns to follow
-- Document design decisions and trade-offs
-- Follow the existing documentation style and structure
-- Cross-reference related documentation
-
+- Write for developers contributing to the codebase.
+- Include code examples showing patterns to follow when relevant.
+- Document design decisions and trade-offs.
+- Follow the existing documentation style and structure.
+- Cross-reference related documentation.
+- Use mermaid driagrams when helpful.

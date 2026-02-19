@@ -34,15 +34,24 @@ Before creating commits, verify we're on an appropriate branch:
 1. Run `git branch --show-current` to identify the current branch
 2. If on a protected branch (`main`, `master`, `develop`):
    - ⚠️ Warn the user: "You are currently on the `<branch>` branch. It's recommended to create commits on a feature branch."
-   - Ask if they want to:
-     - **Create a feature branch** - suggest a name based on the changes (e.g., `feat/add-feature-x` or `fix/issue-description`)
-     - **Continue on current branch** - proceed with commits on the protected branch
+   - **Using Mitto UI tools (if available):** Use `mitto_ui_options_buttons` with:
+     ```
+     Question: "You're on a protected branch. What would you like to do?"
+     Options: ["Create feature branch", "Continue on current branch"]
+     ```
+   - **Fallback:** Ask in conversation if they want to create a feature branch or continue
+   - If creating a branch, suggest a name based on the changes (e.g., `feat/add-feature-x` or `fix/issue-description`)
+
 3. If already on a feature branch,
    - fetch latest changes in the target branch (usually "main") and rebase the
       current branch on top of them.
-   - Ask if they want to:
-     - **Create a new feature branch** - suggest a name based on the changes (e.g., `feat/add-feature-x` or `fix/issue-description`)
-     - **Continue on the current feature branch** - proceed with commits on this branch
+   - **Using Mitto UI tools (if available):** Use `mitto_ui_options_buttons` with:
+     ```
+     Question: "Already on feature branch. What would you like to do?"
+     Options: ["Continue on current branch", "Create new feature branch"]
+     ```
+   - **Fallback:** Ask in conversation which option they prefer
+   - If creating a new branch, suggest a name based on the changes
 
 ### 2. Analyze Changes
 
@@ -71,7 +80,20 @@ Order commits logically (e.g., implementation before documentation).
 
 ### 4. Wait for Approval
 
-Ask the user to:
+**Using Mitto UI tools (if available):**
+
+If the `mitto_ui_options_buttons` tool is available, use it to present the approval options:
+
+```
+Question: "How would you like to proceed with the proposed commits?"
+Options: ["Approve all", "Modify", "Cancel"]
+```
+
+If the user selects "Modify", follow up with a text conversation to get the specific changes (reorder, merge, split, edit messages).
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask the user in the conversation to choose one of these options:
 
 - **Approve all** - proceed with commits
 - **Modify** - specify changes (reorder, merge, split, edit messages)

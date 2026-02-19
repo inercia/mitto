@@ -19,3 +19,16 @@ Create a detailed plan for the current task.
 
 Present the plan and wait for approval before executing.
 
+**Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to get approval:
+```
+Question: "Plan is ready. Would you like me to proceed with execution?"
+Yes label: "Approve and execute"
+No label: "Modify plan"
+```
+
+If the user selects "Modify plan", discuss the changes in conversation before proceeding.
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask in conversation: "Does this plan look good? Should I proceed, or would you like to modify anything?"
+
