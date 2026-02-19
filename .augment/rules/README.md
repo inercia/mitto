@@ -48,22 +48,23 @@ alwaysApply: true
 ### File Numbering
 
 - **00-09**: Core concepts (overview, Go conventions, core packages, macOS app)
-- **10-19**: Backend (web server, sequences, actions, macOS keyboard/gestures)
-- **20-29**: Frontend (components, state, hooks)
-- **30-39**: Testing (unit, integration, UI, anti-patterns)
+- **10-19**: Backend (web server, sequences, actions, auth, settings, macOS keyboard)
+- **20-29**: Frontend (components, state, hooks, sync)
+- **30-38**: Testing (30-33) and anti-patterns (34-38)
 - **40-49**: Debugging (MCP tools, log files, MCP server development)
 - **98-99**: Local/private (not committed)
 
 ### Quick Index
 
-| Range | Topic           | Example Files                                                                          |
-| ----- | --------------- | -------------------------------------------------------------------------------------- |
-| 00-09 | Core            | `00-overview.md`, `01-go-conventions.md`, `09-macos-app.md`                            |
-| 10-19 | Backend + macOS | `10-web-backend-core.md`, `13-macos-keyboard-gestures.md`, `15-web-backend-session-lifecycle.md` |
-| 20-29 | Frontend        | `20-web-frontend-core.md`, `21-web-frontend-state.md`, `27-web-frontend-sync.md`       |
-| 30-39 | Testing         | `30-testing-unit.md`, `34-anti-patterns.md`                                            |
-| 40-49 | Debugging       | `40-mcp-debugging.md`, `41-debugging-logs.md`, `42-mcpserver-development.md`           |
-| 98-99 | Private         | `98-release.md`, `99-local.md` *(not committed)*                                       |
+| Range | Topic             | Example Files                                                                          |
+| ----- | ----------------- | -------------------------------------------------------------------------------------- |
+| 00-09 | Core              | `00-overview.md`, `01-go-conventions.md`, `09-macos-app.md`                            |
+| 10-19 | Backend + macOS   | `10-web-backend-core.md`, `16-web-backend-settings.md`, `15-web-backend-session-lifecycle.md` |
+| 20-29 | Frontend          | `20-web-frontend-core.md`, `21-web-frontend-state.md`, `27-web-frontend-sync.md`       |
+| 30-33 | Testing           | `30-testing-unit.md`, `32-testing-playwright.md`, `33-testing-js.md`                   |
+| 34-38 | Anti-Patterns     | `34-anti-patterns.md` (index), `35-38` (topic-specific)                                |
+| 40-49 | Debugging         | `40-mcp-debugging.md`, `41-debugging-logs.md`, `42-mcpserver-development.md`           |
+| 98-99 | Private           | `98-release.md`, `99-local.md` *(not committed)*                                       |
 
 ## When to Update Rules
 
