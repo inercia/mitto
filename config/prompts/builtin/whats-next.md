@@ -26,5 +26,16 @@ Present a prioritized list:
 - Value (high-impact items first)
 - Blockers (anything preventing progress)
 
-Ask if I want to proceed with the top priority item.
+**Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to offer proceeding:
+```
+Question: "Would you like me to proceed with the top priority task?"
+Yes label: "Yes, proceed"
+No label: "No, let me choose"
+```
+
+If the user selects "No", follow up in conversation to determine which task to tackle.
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask if I should proceed with the top priority item.
 

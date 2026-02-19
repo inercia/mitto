@@ -103,9 +103,20 @@ Available remotes:
 
 Detected target: upstream/main
 Reason: [PR #123 targets upstream-org/repo:main | upstream remote typically represents the main repository | tracking branch configured]
-
-Is this correct? (yes/no/specify different target)
 ```
+
+**Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to confirm:
+```
+Question: "Detected rebase target: upstream/main. Is this correct?"
+Yes label: "Yes, proceed"
+No label: "No, let me specify"
+```
+
+If the user answers "No", follow up in conversation to get the correct target.
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask: "Is this correct? (yes/no/specify different target)"
 
 **Do not proceed** until the user confirms the target remote and branch.
 
@@ -168,7 +179,9 @@ When conflicts occur during rebase, iterate through each one:
 - There are multiple reasonable ways to resolve the conflict
 - The conflict involves complex refactoring
 
-Present conflicts to the user as:
+Present conflicts to the user:
+
+First, show the conflict details:
 
 ```
 📍 Conflict in: <filename>
@@ -178,13 +191,24 @@ Present conflicts to the user as:
 
 **Ours (from <current-branch>):**
 <our changes>
+```
 
-Options:
+**Using Mitto UI tools (if available):** Use `mitto_ui_options_buttons` to present resolution options:
+
+```
+Question: "How would you like to resolve this conflict in <filename>?"
+Options: ["Accept theirs", "Accept ours", "Combine both", "Custom"]
+```
+
+If the user selects "Custom", follow up in conversation to get the desired resolution.
+
+**Fallback (if Mitto UI tools are not available):**
+
+Present options in conversation:
 1. Accept incoming (theirs)
 2. Accept ours
 3. Combine both changes
 4. Custom resolution (I'll describe what I want)
-```
 
 **After resolving each file:**
 

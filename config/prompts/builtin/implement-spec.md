@@ -77,6 +77,19 @@ the implementation plan and mark progress.
 
 Present the plan and wait for approval before executing.
 
+**Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to get approval:
+```
+Question: "Implementation plan is ready. Would you like me to proceed?"
+Yes label: "Approve and start"
+No label: "Modify plan"
+```
+
+If the user selects "Modify plan", discuss the changes in conversation before proceeding.
+
+**Fallback (if Mitto UI tools are not available):**
+
+Ask in conversation: "Does this plan look good? Should I proceed with implementation, or would you like to modify anything first?"
+
 Once approved, work through the steps systematically:
 
 1. Implement the step
