@@ -107,10 +107,10 @@ func BuildConversationHistory(events []Event, maxTurns int) string {
 		userMsg := truncateText(t.userMessage, 500)
 		agentMsg := truncateText(t.agentMessage, 1000)
 
-		sb.WriteString(fmt.Sprintf("--- Turn %d ---\n", i+1))
-		sb.WriteString(fmt.Sprintf("USER: %s\n\n", userMsg))
+		fmt.Fprintf(&sb, "--- Turn %d ---\n", i+1)
+		fmt.Fprintf(&sb, "USER: %s\n\n", userMsg)
 		if agentMsg != "" {
-			sb.WriteString(fmt.Sprintf("ASSISTANT: %s\n\n", agentMsg))
+			fmt.Fprintf(&sb, "ASSISTANT: %s\n\n", agentMsg)
 		}
 	}
 

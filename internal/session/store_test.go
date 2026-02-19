@@ -458,3 +458,131 @@ func TestStore_RecordEvent_MultipleEvents(t *testing.T) {
 		t.Errorf("EventCount = %d, want 5", gotMeta.EventCount)
 	}
 }
+
+func TestStore_AdvancedSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-advanced-settings"
+
+	// Create session without advanced settings
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Verify initial state has nil/empty advanced settings
+	gotMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.AdvancedSettings != nil {
+		t.Errorf("AdvancedSettings should be nil initially, got %v", gotMeta.AdvancedSettings)
+	}
+
+	// Update metadata with advanced settings
+	err = store.UpdateMetadata(sessionID, func(m *Metadata) {
+		m.AdvancedSettings = map[string]bool{
+			"flag_one": true,
+			"flag_two": false,
+		}
+	})
+	if err != nil {
+		t.Fatalf("UpdateMetadata failed: %v", err)
+	}
+
+	// Verify settings are persisted
+	gotMeta, err = store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.AdvancedSettings == nil {
+		t.Fatal("AdvancedSettings should not be nil after update")
+	}
+	if len(gotMeta.AdvancedSettings) != 2 {
+		t.Errorf("AdvancedSettings should have 2 entries, got %d", len(gotMeta.AdvancedSettings))
+	}
+	if !gotMeta.AdvancedSettings["flag_one"] {
+		t.Error("flag_one should be true")
+	}
+	if gotMeta.AdvancedSettings["flag_two"] {
+		t.Error("flag_two should be false")
+	}
+
+	// Test partial update (add new setting, keep existing)
+	err = store.UpdateMetadata(sessionID, func(m *Metadata) {
+		if m.AdvancedSettings == nil {
+			m.AdvancedSettings = make(map[string]bool)
+		}
+		m.AdvancedSettings["flag_three"] = true
+	})
+	if err != nil {
+		t.Fatalf("UpdateMetadata failed: %v", err)
+	}
+
+	gotMeta, err = store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if len(gotMeta.AdvancedSettings) != 3 {
+		t.Errorf("AdvancedSettings should have 3 entries after partial update, got %d", len(gotMeta.AdvancedSettings))
+	}
+	if !gotMeta.AdvancedSettings["flag_one"] {
+		t.Error("flag_one should still be true after partial update")
+	}
+	if !gotMeta.AdvancedSettings["flag_three"] {
+		t.Error("flag_three should be true")
+	}
+}
+
+func TestStore_AdvancedSettings_BackwardCompatibility(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-backward-compat"
+
+	// Create session with advanced settings
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			"existing_flag": true,
+		},
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Simulate re-opening the store (like after restart)
+	store.Close()
+	store, err = NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore (reopen) failed: %v", err)
+	}
+	defer store.Close()
+
+	// Verify settings are preserved after store reopen
+	gotMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.AdvancedSettings == nil {
+		t.Fatal("AdvancedSettings should be preserved after store reopen")
+	}
+	if !gotMeta.AdvancedSettings["existing_flag"] {
+		t.Error("existing_flag should still be true after store reopen")
+	}
+}

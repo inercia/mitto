@@ -425,3 +425,17 @@ func (r *Recorder) MaxSeq() int64 {
 	}
 	return meta.MaxSeq
 }
+
+// RecordUIPromptAnswer records a user's response to a UI prompt from an MCP tool.
+// This creates an audit trail of user decisions made through the UI prompt system.
+func (r *Recorder) RecordUIPromptAnswer(requestID, optionID, label string) error {
+	return r.recordEvent(Event{
+		Type:      EventTypeUIPromptAnswer,
+		Timestamp: time.Now(),
+		Data: map[string]interface{}{
+			"request_id": requestID,
+			"option_id":  optionID,
+			"label":      label,
+		},
+	})
+}
