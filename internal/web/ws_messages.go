@@ -83,6 +83,11 @@ const (
 	// Data: { "client_time": int64 (Unix ms), "last_seen_seq": int64 (optional, highest seq client has seen) }
 	// The server responds with keepalive_ack containing server_max_seq so clients can detect if they're behind.
 	WSMsgTypeKeepalive = "keepalive"
+
+	// WSMsgTypeUIPromptAnswer responds to a UI prompt from an MCP tool.
+	// Sent when the user clicks a button in response to a ui_prompt message.
+	// Data: { "request_id": string, "option_id": string, "label": string }
+	WSMsgTypeUIPromptAnswer = "ui_prompt_answer"
 )
 
 // =============================================================================
@@ -129,6 +134,11 @@ const (
 	// Sent on /api/events when a session starts or stops streaming.
 	// Data: { "session_id": string, "is_streaming": bool }
 	WSMsgTypeSessionStreaming = "session_streaming"
+
+	// WSMsgTypeSessionSettingsUpdated notifies that a session's advanced settings changed.
+	// Sent on /api/events to all connected clients.
+	// Data: { "session_id": string, "settings": { "flag_name": bool, ... } }
+	WSMsgTypeSessionSettingsUpdated = "session_settings_updated"
 
 	// WSMsgTypePeriodicUpdated notifies that a session's periodic prompt state changed.
 	// Sent on /api/events to all connected clients when periodic is enabled/disabled.
@@ -269,6 +279,20 @@ const (
 	// Data: { "session_id": string, "buttons": []{ "label": string, "response": string } }
 	WSMsgTypeActionButtons = "action_buttons"
 
+	// WSMsgTypeUIPrompt displays an interactive prompt from an MCP tool.
+	// The frontend should display the prompt with the specified options and send
+	// a ui_prompt_answer message when the user responds.
+	// Data: { "session_id": string, "request_id": string, "prompt_type": string,
+	//         "question": string, "options": []{ "id": string, "label": string },
+	//         "timeout_seconds": int }
+	WSMsgTypeUIPrompt = "ui_prompt"
+
+	// WSMsgTypeUIPromptDismiss dismisses an active UI prompt.
+	// Sent when a prompt times out, is cancelled, or is replaced by a new prompt.
+	// Data: { "session_id": string, "request_id": string, "reason": string }
+	// reason can be: "timeout", "cancelled", "replaced"
+	WSMsgTypeUIPromptDismiss = "ui_prompt_dismiss"
+
 	// WSMsgTypeSessionReset notifies that a session was forcefully reset.
 	// Sent after a force_reset message is processed.
 	// Data: { "session_id": string }
@@ -305,6 +329,17 @@ const (
 	// For backward compatibility with legacy modes, use config_id "mode" for mode changes.
 	// Data: { "config_id": string, "value": string }
 	WSMsgTypeSetConfigOption = "set_config_option"
+
+	// WSMsgTypeHookFailed notifies that a lifecycle hook failed to execute.
+	// Sent when an up/down hook exits with a non-zero exit code.
+	// Data: { "name": string, "exit_code": int, "error": string }
+	WSMsgTypeHookFailed = "hook_failed"
+
+	// WSMsgTypePromptsChanged notifies that prompt files have changed on disk.
+	// Sent when .md files in any watched prompts directory are created, modified, or deleted.
+	// Clients should refresh their prompts list when receiving this message.
+	// Data: { "changed_dirs": []string, "timestamp": string (ISO 8601) }
+	WSMsgTypePromptsChanged = "prompts_changed"
 )
 
 // =============================================================================
