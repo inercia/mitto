@@ -55,6 +55,16 @@ func SetupTestServer(t *testing.T) *TestServer {
 		t.Fatalf("Failed to create workspace dir: %v", err)
 	}
 
+	// Create minimal Mitto config for tests
+	mittoConfig := &config.Config{
+		ACPServers: []config.ACPServer{
+			{
+				Name:    "mock-acp",
+				Command: mockACPCmd,
+			},
+		},
+	}
+
 	// Create web server config
 	webConfig := web.Config{
 		Workspaces: []config.WorkspaceSettings{
@@ -70,6 +80,7 @@ func SetupTestServer(t *testing.T) *TestServer {
 		AutoApprove:       true, // Auto-approve for tests
 		Debug:             true,
 		FromCLI:           true, // Don't persist workspace changes
+		MittoConfig:       mittoConfig,
 	}
 
 	// Create web server
