@@ -231,3 +231,47 @@ func configToSafeOutput(cfg *config.Config) *ConfigInfo {
 
 	return info
 }
+
+// =============================================================================
+// Session-Scoped Tool Types
+// =============================================================================
+
+// CurrentSessionOutput is the output for get_current_session tool.
+type CurrentSessionOutput struct {
+	SessionID    string `json:"session_id"`
+	Title        string `json:"title,omitempty"`
+	Description  string `json:"description,omitempty"`
+	WorkingDir   string `json:"working_dir,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	UpdatedAt    string `json:"updated_at,omitempty"`
+	MessageCount int    `json:"message_count"`
+	Status       string `json:"status,omitempty"`
+}
+
+// SendPromptOutput is the output for send_prompt_to_conversation tool.
+type SendPromptOutput struct {
+	Success       bool   `json:"success"`
+	MessageID     string `json:"message_id,omitempty"`
+	QueuePosition int    `json:"queue_position,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
+// AskYesNoOutput is the output for the mitto_ui_ask_yes_no tool.
+type AskYesNoOutput struct {
+	Response string `json:"response"` // "yes" | "no" | "timeout"
+	Label    string `json:"label,omitempty"`
+}
+
+// OptionsButtonsOutput is the output for the mitto_ui_options_buttons tool.
+type OptionsButtonsOutput struct {
+	Selected string `json:"selected,omitempty"`
+	Index    int    `json:"index"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+}
+
+// OptionsComboOutput is the output for the mitto_ui_options_combo tool.
+type OptionsComboOutput struct {
+	Selected string `json:"selected,omitempty"`
+	Index    int    `json:"index"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+}
