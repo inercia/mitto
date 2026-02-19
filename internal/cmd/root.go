@@ -46,8 +46,16 @@ like auggie, claude-code, and others that implement ACP.`,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config loading for commands that don't need it
-		// (help, completion, and prompts management commands)
+		// (help, completion, prompts management commands, and mcp proxy mode)
 		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && cmd.Parent().Name() == "prompts" {
+			return nil
+		}
+
+		// Skip config loading for mcp command in proxy mode (--proxy-to)
+		// The proxy is a simple STDIO-to-HTTP forwarder that doesn't need any config.
+		// Loading config triggers Keychain access on macOS, which is problematic
+		// when running as a subprocess spawned by an AI agent.
+		if cmd.Name() == "mcp" && cmd.Flags().Changed("proxy-to") {
 			return nil
 		}
 
