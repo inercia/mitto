@@ -1,15 +1,55 @@
-# MCP Debug Server
+# MCP Server
 
-Mitto includes a built-in MCP (Model Context Protocol) server for debugging. This server exposes tools that allow AI agents to inspect Mitto's internal state, making it easier to diagnose issues.
+Mitto provides a **single global MCP (Model Context Protocol) server** that serves both:
 
-## Overview
+1. **Global tools** - Always available tools for debugging (list conversations, get config, runtime info)
+2. **Session-scoped tools** - Tools that require a `session_id` parameter and operate on specific conversations
 
-The MCP debug server:
+## Architecture Overview
 
-- **Binds to `127.0.0.1:5757`** (localhost only for security) in HTTP mode
-- **Starts automatically** with the web server (HTTP mode)
+```mermaid
+graph TB
+    subgraph "AI Agents"
+        AUGMENT[Augment Agent]
+        CLAUDE[Claude Desktop]
+        ACP1[ACP Agent Session A]
+        ACP2[ACP Agent Session B]
+    end
+
+    subgraph "Mitto Server"
+        GLOBAL[Global MCP Server<br/>http://127.0.0.1:5757/mcp]
+
+        subgraph "Session Registry"
+            REG[Sessions Map]
+            S1[Session A → UIPrompter]
+            S2[Session B → UIPrompter]
+        end
+    end
+
+    AUGMENT --> GLOBAL
+    CLAUDE --> GLOBAL
+    ACP1 --> GLOBAL
+    ACP2 --> GLOBAL
+    GLOBAL --> REG
+    REG --> S1
+    REG --> S2
+```
+
+**Key Points:**
+
+- All agents connect to the **same MCP server** at `http://127.0.0.1:5757/mcp`
+- Session-scoped tools require a `session_id` parameter to identify the target session
+- Sessions register with the MCP server to enable UI prompt routing
+- No per-session MCP server spawning (simplified architecture)
+
+## Global MCP Server
+
+The global MCP server serves all agents:
+
+- **Binds to `127.0.0.1:5757`** (localhost only for security)
+- **Starts automatically** with the web server
 - **Supports two transport modes**: HTTP (Streamable HTTP) and STDIO (subprocess)
-- **Exposes debugging tools** for conversation inspection and runtime info
+- **Exposes both global and session-scoped tools**
 
 ## Transport Modes
 
@@ -36,9 +76,13 @@ STDIO mode is useful for:
 
 ## Available Tools
 
-### `list_conversations`
+### Global Tools (No session_id required)
 
-Lists all conversations with detailed metadata:
+These tools are always available and don't require a session context:
+
+#### `mitto_list_conversations`
+
+Lists all conversations with detailed metadata. **Always available** (no permission check).
 
 | Field            | Description                               |
 | ---------------- | ----------------------------------------- |
@@ -59,7 +103,7 @@ Lists all conversations with detailed metadata:
 | `lock_status`    | Lock status (idle, processing)            |
 | `last_seq`       | Last sequence number                      |
 
-### `get_config`
+#### `mitto_get_config`
 
 Returns the current effective Mitto configuration (sanitized to exclude sensitive data):
 
@@ -71,7 +115,7 @@ Returns the current effective Mitto configuration (sanitized to exclude sensitiv
 | `prompts_count` | Number of global prompts              |
 | `session`       | Session storage configuration         |
 
-### `get_runtime_info`
+#### `mitto_get_runtime_info`
 
 Returns runtime information about the Mitto instance:
 
@@ -91,6 +135,88 @@ Returns runtime information about the Mitto instance:
 | `logs_dir`      | Logs directory                            |
 | `log_files`     | Paths to log files                        |
 | `config_files`  | Paths to configuration files              |
+
+### Session-Scoped Tools (Require session_id parameter)
+
+These tools operate on a specific conversation and require a `session_id` parameter:
+
+#### `mitto_get_current_session`
+
+Get information about a specific session. Requires `session_id`.
+
+| Parameter    | Type   | Required | Description          |
+| ------------ | ------ | -------- | -------------------- |
+| `session_id` | string | Yes      | The session to query |
+
+Returns:
+
+| Field           | Description           |
+| --------------- | --------------------- |
+| `session_id`    | Session identifier    |
+| `title`         | Session title         |
+| `description`   | Session description   |
+| `working_dir`   | Working directory     |
+| `created_at`    | Creation timestamp    |
+| `updated_at`    | Last update timestamp |
+| `message_count` | Number of messages    |
+| `status`        | Session status        |
+
+#### `mitto_send_prompt_to_conversation`
+
+Send a prompt to another conversation's queue. Requires `can_send_prompt` flag on the source session.
+
+| Parameter         | Type   | Required | Description                      |
+| ----------------- | ------ | -------- | -------------------------------- |
+| `session_id`      | string | Yes      | Source session ID (your session) |
+| `conversation_id` | string | Yes      | Target conversation ID           |
+| `prompt`          | string | Yes      | The prompt text to send          |
+
+#### `mitto_ui_ask_yes_no`
+
+Present a yes/no question to the user. Requires `can_prompt_user` flag.
+
+| Parameter         | Type   | Required | Description                  |
+| ----------------- | ------ | -------- | ---------------------------- |
+| `session_id`      | string | Yes      | Session to display prompt in |
+| `question`        | string | Yes      | The question to ask          |
+| `yes_label`       | string | No       | Custom "Yes" button label    |
+| `no_label`        | string | No       | Custom "No" button label     |
+| `timeout_seconds` | int    | No       | Timeout (default: 300)       |
+
+#### `mitto_ui_options_buttons`
+
+Present multiple options as buttons. Requires `can_prompt_user` flag. Max 4 options.
+
+| Parameter         | Type     | Required | Description                   |
+| ----------------- | -------- | -------- | ----------------------------- |
+| `session_id`      | string   | Yes      | Session to display prompt in  |
+| `options`         | string[] | Yes      | List of option labels (max 4) |
+| `question`        | string   | No       | Question text                 |
+| `timeout_seconds` | int      | No       | Timeout (default: 300)        |
+
+#### `mitto_ui_options_combo`
+
+Present a dropdown/combo box. Requires `can_prompt_user` flag. Max 10 options.
+
+| Parameter         | Type     | Required | Description                    |
+| ----------------- | -------- | -------- | ------------------------------ |
+| `session_id`      | string   | Yes      | Session to display prompt in   |
+| `options`         | string[] | Yes      | List of option labels (max 10) |
+| `question`        | string   | No       | Question text                  |
+| `timeout_seconds` | int      | No       | Timeout (default: 300)         |
+
+### Permission Flags
+
+Session-scoped tools check permissions at runtime:
+
+| Flag                   | Tools That Require It                                                       |
+| ---------------------- | --------------------------------------------------------------------------- |
+| `can_do_introspection` | (None currently - for future tools)                                         |
+| `can_send_prompt`      | `mitto_send_prompt_to_conversation`                                         |
+| `can_prompt_user`      | `mitto_ui_ask_yes_no`, `mitto_ui_options_buttons`, `mitto_ui_options_combo` |
+
+**Note:** `mitto_list_conversations` is **always available** (no permission check).
+`mitto_get_current_session` requires the session to be registered (running) but no flag check.
 
 ## Configuring AI Agents
 
@@ -203,7 +329,7 @@ Once configured, you can ask the AI agent to debug Mitto issues:
 
 ### 1. Get Runtime Information
 
-Start by calling `get_runtime_info` to locate important files:
+Start by calling `mitto_get_runtime_info` to locate important files:
 
 ```
 Log files:
@@ -216,7 +342,7 @@ Sessions: ~/Library/Application Support/Mitto/sessions/
 
 ### 2. List Conversations
 
-Call `list_conversations` to find the session you're debugging:
+Call `mitto_list_conversations` to find the session you're debugging:
 
 ```
 Session: 20260211-143052-a1b2c3d4
@@ -250,7 +376,7 @@ The `events.jsonl` file contains all events with sequence numbers:
 
 ### 5. Check Logs
 
-Use the log file paths from `get_runtime_info`:
+Use the log file paths from `mitto_get_runtime_info`:
 
 - **mitto.log**: Backend errors, sequence numbers, event persistence
 - **access.log**: Authentication, security events
@@ -268,7 +394,195 @@ The MCP server binds only to `127.0.0.1` (localhost) and cannot be accessed from
 
 The MCP server is implemented in `internal/mcpserver/`:
 
-- `server.go`: Server implementation using the official MCP Go SDK
-- `types.go`: Response types and helper functions
+| File           | Purpose                                                     |
+| -------------- | ----------------------------------------------------------- |
+| `server.go`    | Global MCP server with both global and session-scoped tools |
+| `types.go`     | Response types and helper functions                         |
+| `ui_prompt.go` | UI prompt types and interfaces                              |
 
-The server uses the [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) with SSE transport.
+The server uses the [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) with Streamable HTTP transport.
+
+---
+
+## Session Registration
+
+Sessions register with the global MCP server to enable session-scoped tools. This allows:
+
+- UI prompts to be routed to the correct session
+- Permission checks based on each session's flags
+- Session context for tools like `mitto_get_current_session`
+
+### How It Works
+
+1. **Session Start**: When a session is created or resumed:
+   - `BackgroundSession` calls `globalMcpServer.RegisterSession(sessionID, uiPrompter, logger)`
+   - The session's `UIPrompter` is stored for routing UI prompts
+   - **No MCP servers are passed to ACP** - the agent should have MCP pre-configured globally
+
+2. **Tool Execution**: When an agent calls a session-scoped tool:
+   - The `session_id` parameter identifies the target session
+   - The handler validates the session is registered
+   - Permission flags are read from the session metadata
+   - UI prompts are routed to the session's `UIPrompter`
+
+3. **Session Stop**: When a session is archived or stopped:
+   - `BackgroundSession` calls `globalMcpServer.UnregisterSession(sessionID)`
+   - Tools for that session will return "session not found" errors
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant API as Mitto API
+    participant BS as BackgroundSession
+    participant MCP as Global MCP Server
+    participant Store as Session Store
+    participant ACP as ACP Agent
+
+    Note over BS: Session starts
+    BS->>MCP: RegisterSession(sessionID, uiPrompter)
+    MCP->>MCP: Store in sessions map
+    BS->>ACP: NewSession(McpServers: [])
+    Note over ACP: Agent uses pre-configured MCP URL
+
+    ACP->>MCP: Call mitto_ui_ask_yes_no(session_id=X)
+    MCP->>MCP: Look up session X
+    MCP->>Store: Read flags for session X
+    Store-->>MCP: {can_prompt_user: true}
+    MCP->>BS: UIPrompt(question)
+    BS->>FE: Show prompt dialog
+    FE-->>BS: User clicks "Yes"
+    BS-->>MCP: Response: yes
+    MCP-->>ACP: {response: "yes"}
+
+    Note over FE: User archives session
+    BS->>MCP: UnregisterSession(sessionID)
+    BS->>MCP: Stop()
+```
+
+### Security Considerations
+
+| Concern                    | Mitigation                                                         |
+| -------------------------- | ------------------------------------------------------------------ |
+| **Information disclosure** | Permission flags default to `false`; requires explicit opt-in      |
+| **Session spoofing**       | Session must be registered; unregistered sessions return errors    |
+| **Cross-session access**   | Intentional via `session_id` param; user enables flags per session |
+| **Network exposure**       | MCP server binds to `127.0.0.1` only                               |
+
+### Code Structure
+
+```go
+// internal/mcpserver/server.go
+
+// RegisterSession registers a session with the MCP server.
+// This enables session-scoped tools to route UI prompts to the correct session.
+func (s *Server) RegisterSession(sessionID string, uiPrompter UIPrompter, logger *slog.Logger) error
+
+// UnregisterSession removes a session from the MCP server.
+func (s *Server) UnregisterSession(sessionID string)
+
+// getSession returns the registered session for routing.
+func (s *Server) getSession(sessionID string) *registeredSession
+
+// checkSessionFlag checks if a flag is enabled for the given session.
+func (s *Server) checkSessionFlag(sessionID string, flagName string) bool
+```
+
+### Adding New Session-Scoped Tools
+
+1. **Define the flag** (if needed) in `internal/session/flags.go`:
+
+```go
+const FlagNewFeature = "new_feature"
+
+var AvailableFlags = []FlagDefinition{
+    // ...existing flags...
+    {
+        Name:        FlagNewFeature,
+        Label:       "New Feature",
+        Description: "Description of what this enables",
+        Default:     false,
+    },
+}
+```
+
+2. **Add input type and handler** in `internal/mcpserver/server.go`:
+
+```go
+// Input type with session_id parameter
+type MyNewToolInput struct {
+    SessionID string `json:"session_id"`
+    // ... other parameters
+}
+
+func (s *Server) handleMyNewTool(
+    ctx context.Context,
+    req *mcp.CallToolRequest,
+    input MyNewToolInput,
+) (*mcp.CallToolResult, MyToolOutput, error) {
+    // 1. Validate session_id
+    if input.SessionID == "" {
+        return nil, MyToolOutput{}, fmt.Errorf("session_id is required")
+    }
+
+    // 2. Check if session is registered
+    reg := s.getSession(input.SessionID)
+    if reg == nil {
+        return nil, MyToolOutput{}, fmt.Errorf("session not found or not running: %s", input.SessionID)
+    }
+
+    // 3. Check permissions (if flag required)
+    if !s.checkSessionFlag(input.SessionID, session.FlagNewFeature) {
+        return nil, MyToolOutput{}, permissionError("my_new_tool", session.FlagNewFeature, "New Feature")
+    }
+
+    // 4. Implement the tool
+    return nil, output, nil
+}
+```
+
+---
+
+## Advanced Settings (Feature Flags)
+
+Sessions can have per-conversation feature flags stored in their metadata:
+
+```json
+{
+  "session_id": "20260217-143052-a1b2c3d4",
+  "advanced_settings": {
+    "can_do_introspection": true
+  }
+}
+```
+
+### API Endpoints
+
+| Method  | Endpoint                      | Description                            |
+| ------- | ----------------------------- | -------------------------------------- |
+| `GET`   | `/api/advanced-flags`         | List all available flags with defaults |
+| `GET`   | `/api/sessions/{id}/settings` | Get current settings for a session     |
+| `PATCH` | `/api/sessions/{id}/settings` | Partial update of settings             |
+
+### Available Flags
+
+| Flag                   | Default | Description                                 |
+| ---------------------- | ------- | ------------------------------------------- |
+| `can_do_introspection` | `false` | Allow ACP agent to access Mitto's MCP tools |
+
+### Checking Flags in Code
+
+```go
+import "github.com/inercia/mitto/internal/session"
+
+// Get flag value with default fallback
+enabled := session.GetFlagValue(meta.AdvancedSettings, session.FlagCanDoIntrospection)
+
+// Get just the default
+defaultVal := session.GetFlagDefault(session.FlagCanDoIntrospection)
+```
+
+### Adding New Flags
+
+1. Add constant and definition in `internal/session/flags.go`
+2. Implement behavior that checks the flag
+3. Frontend will automatically show the flag in settings (when UI is implemented)

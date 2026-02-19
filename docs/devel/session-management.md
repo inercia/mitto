@@ -85,6 +85,36 @@ type Metadata struct {
 
 This is used by `SessionWSClient.getServerMaxSeq()` to determine the server's authoritative sequence state for client synchronization.
 
+### Advanced Settings (Feature Flags)
+
+Sessions can have per-conversation feature flags stored in metadata:
+
+```go
+type Metadata struct {
+    // ...
+    AdvancedSettings map[string]bool `json:"advanced_settings,omitempty"`
+    // ...
+}
+```
+
+**Key characteristics:**
+
+- **Backward compatible**: Missing field deserializes to `nil` (treated as empty)
+- **Compile-time registry**: Available flags defined in `internal/session/flags.go`
+- **Safe defaults**: All flags default to `false` via `GetFlagDefault()`
+- **Partial updates**: PATCH API merges new settings with existing
+
+**Example usage:**
+
+```go
+import "github.com/inercia/mitto/internal/session"
+
+// Check if introspection is enabled for this session
+enabled := session.GetFlagValue(meta.AdvancedSettings, session.FlagCanDoIntrospection)
+```
+
+See [MCP Documentation](mcp.md) for how flags control MCP server behavior.
+
 ## Event Types
 
 | Event Type         | Description                          |

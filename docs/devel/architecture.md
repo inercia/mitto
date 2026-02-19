@@ -131,8 +131,21 @@ Provides session persistence for recording, storing, and replaying ACP interacti
 - **Recorder**: Records events during an active session
 - **Player**: Loads and navigates through recorded sessions
 - **Queue**: Thread-safe FIFO message queue with atomic file persistence
+- **Flags**: Compile-time registry of available advanced settings (feature flags)
 
 See [Session Management](session-management.md) for detailed documentation.
+
+### `internal/mcpserver` - MCP Protocol Servers
+
+Implements MCP (Model Context Protocol) servers for tool exposure.
+
+**Key Components:**
+
+- **Server**: Global debug server for external tools (port 5757)
+- **SessionServer**: Per-session MCP server with session-scoped tools
+- **Session Tools**: Tools that operate within session context (`mitto_get_current_session`, etc.)
+
+See [MCP Documentation](mcp.md) for detailed documentation.
 
 ### `internal/web` - Web Interface Server
 
@@ -226,6 +239,45 @@ Configuration uses a two-tier system with platform-native directories:
 - **Dual format support**: `--config` flag accepts both YAML and JSON files
 - **JSON for persistence**: User settings stored as JSON for easy programmatic editing
 - **Ordered list**: First ACP server is default (explicit, predictable)
+
+### 6. Per-Session Advanced Settings (Feature Flags)
+
+Sessions can have individual feature flags stored in their metadata:
+
+- **Compile-time flag registry**: `internal/session/flags.go` defines available flags
+- **Per-session storage**: Flags stored in `metadata.json` as `advanced_settings` map
+- **Safe defaults**: All flags default to `false` (opt-in model)
+- **API exposure**: `/api/advanced-flags` returns available flags for UI
+
+**Current flags:**
+
+| Flag                   | Purpose                                                   |
+| ---------------------- | --------------------------------------------------------- |
+| `can_do_introspection` | Expose MCP tools to the ACP agent within the conversation |
+
+**Rationale:**
+
+- Different conversations can have different capabilities
+- Security-sensitive features require explicit opt-in
+- Frontend can dynamically render settings UI from flag registry
+- Easy to add new flags without schema changes
+
+### 7. Per-Session MCP Servers
+
+Each conversation can have its own MCP server:
+
+- **Isolation**: Sessions have separate MCP servers on random ports
+- **Context-aware tools**: Tools know which session they serve (`is_current` marker)
+- **Flag-gated**: MCP server only created when relevant flags are enabled
+- **Lifecycle-bound**: Server starts with session, stops on archive/delete
+
+This enables:
+
+- Different tool sets per conversation
+- Session-scoped operations (e.g., "current conversation" tools)
+- Secure opt-in for AI introspection capabilities
+
+See [MCP Documentation](mcp.md) for implementation details.
 
 ## Data Flow
 

@@ -24,24 +24,28 @@ This directory contains technical documentation for developers working on Mitto.
 
 ### Debugging & Tools
 
-- **[MCP Debug Server](mcp.md)** - Built-in MCP server for debugging, conversation inspection, log analysis, and agent configuration
+- **[MCP Servers](mcp.md)** - Global debug server, per-session MCP servers for ACP agents, advanced settings (feature flags)
 
 ## Quick Links
 
-| Topic              | Document                                          | Key Sections           |
-| ------------------ | ------------------------------------------------- | ---------------------- |
-| Package structure  | [Architecture](architecture.md)                   | Component Breakdown    |
-| Configuration      | [Architecture](architecture.md)                   | `internal/config`      |
-| ACP client         | [Architecture](architecture.md)                   | `internal/acp`         |
-| Event types        | [Session Management](session-management.md)       | Event Types            |
-| Queue API          | [Message Queue](message-queue.md)                 | REST API               |
-| Queue titles       | [Message Queue](message-queue.md)                 | Title Generation       |
-| WebSocket protocol | [WebSocket Documentation](websockets/)            | Message Format         |
-| Resync mechanism   | [WebSocket Documentation](websockets/)            | Resync Mechanism       |
-| Workspace API      | [Workspaces](workspaces.md)                       | Workspace REST API     |
-| Mobile support     | [Web Interface](web-interface.md)                 | Mobile Wake Resync     |
-| Action buttons     | [Follow-up Suggestions](follow-up-suggestions.md) | Persistence, Lifecycle |
-| MCP debugging      | [MCP Debug Server](mcp.md)                        | Tools, Agent Config    |
+| Topic              | Document                                          | Key Sections            |
+| ------------------ | ------------------------------------------------- | ----------------------- |
+| Package structure  | [Architecture](architecture.md)                   | Component Breakdown     |
+| Configuration      | [Architecture](architecture.md)                   | `internal/config`       |
+| ACP client         | [Architecture](architecture.md)                   | `internal/acp`          |
+| Feature flags      | [Architecture](architecture.md)                   | Advanced Settings       |
+| Event types        | [Session Management](session-management.md)       | Event Types             |
+| Session settings   | [Session Management](session-management.md)       | Advanced Settings       |
+| Queue API          | [Message Queue](message-queue.md)                 | REST API                |
+| Queue titles       | [Message Queue](message-queue.md)                 | Title Generation        |
+| WebSocket protocol | [WebSocket Documentation](websockets/)            | Message Format          |
+| Resync mechanism   | [WebSocket Documentation](websockets/)            | Resync Mechanism        |
+| Workspace API      | [Workspaces](workspaces.md)                       | Workspace REST API      |
+| Mobile support     | [Web Interface](web-interface.md)                 | Mobile Wake Resync      |
+| Action buttons     | [Follow-up Suggestions](follow-up-suggestions.md) | Persistence, Lifecycle  |
+| MCP debugging      | [MCP Servers](mcp.md)                             | Global Debug Server     |
+| Session MCP        | [MCP Servers](mcp.md)                             | Per-Session MCP Servers |
+| Settings API       | [MCP Servers](mcp.md)                             | Advanced Settings API   |
 
 ## Additional Documentation
 
