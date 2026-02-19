@@ -1177,6 +1177,97 @@ export function useWebSocket() {
         });
         break;
 
+      case "ui_prompt": {
+        // UI prompt from an MCP tool - display yes/no or select prompt
+        console.log("[UIPrompt] Received ui_prompt message:", {
+          sessionId,
+          requestId: msg.data.request_id,
+          promptType: msg.data.prompt_type,
+          question: msg.data.question,
+          options: msg.data.options,
+          timeoutSeconds: msg.data.timeout_seconds,
+        });
+
+        // Check if we should show a notification
+        // Show notification when:
+        // 1. This is not the active session, OR
+        // 2. The document is hidden (user is looking at another app/tab)
+        const isBackgroundUIPrompt =
+          sessionId !== activeSessionIdRef.current ||
+          document.visibilityState === "hidden";
+
+        if (isBackgroundUIPrompt) {
+          const currentSession = sessionsRef.current[sessionId];
+          const sessionName = currentSession?.info?.name || "Conversation";
+          const question = msg.data.question || "Agent needs input";
+
+          // Check if native notifications are enabled (macOS app only)
+          const useNativeNotification =
+            window.mittoNativeNotificationsEnabled &&
+            typeof window.mittoShowNativeNotification === "function";
+
+          if (useNativeNotification) {
+            // Show native macOS notification
+            console.log(
+              "[UIPrompt] Showing native notification for background prompt",
+            );
+            window.mittoShowNativeNotification(sessionName, question, sessionId);
+          }
+        }
+
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) {
+            console.warn("[UIPrompt] Session not found:", sessionId);
+            return prev;
+          }
+
+          // Store the active UI prompt
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              activeUIPrompt: {
+                requestId: msg.data.request_id,
+                promptType: msg.data.prompt_type,
+                question: msg.data.question,
+                options: msg.data.options || [],
+                timeoutSeconds: msg.data.timeout_seconds,
+                receivedAt: Date.now(),
+              },
+            },
+          };
+        });
+        break;
+      }
+
+      case "ui_prompt_dismiss":
+        // Dismiss an active UI prompt (timeout, cancelled, or replaced)
+        console.log("[UIPrompt] Received ui_prompt_dismiss message:", {
+          sessionId,
+          requestId: msg.data.request_id,
+          reason: msg.data.reason,
+        });
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+
+          // Only dismiss if the request ID matches
+          if (session.activeUIPrompt?.requestId !== msg.data.request_id) {
+            console.log("[UIPrompt] Dismiss ignored - different request_id");
+            return prev;
+          }
+
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              activeUIPrompt: null,
+            },
+          };
+        });
+        break;
+
       case "prompt_complete": {
         // Check if this is a background session completing (not the active one)
         const currentSession = sessionsRef.current[sessionId];
@@ -2781,6 +2872,38 @@ export function useWebSocket() {
           );
         }
         break;
+
+      case "hook_failed":
+        // Server notifies that a lifecycle hook failed to execute
+        console.warn("Hook failed:", msg.data);
+        if (msg.data) {
+          // Dispatch event for toast notification
+          window.dispatchEvent(
+            new CustomEvent("mitto:hook_failed", { detail: msg.data }),
+          );
+        }
+        break;
+
+      case "session_settings_updated":
+        // Server notifies that session settings (advanced flags) have changed
+        // This is broadcast to all clients when settings are updated via API
+        console.log("Session settings updated:", msg.data?.session_id);
+        if (msg.data) {
+          // Dispatch event for components that need to update (e.g., ConversationPropertiesPanel)
+          window.dispatchEvent(
+            new CustomEvent("mitto:session_settings_updated", { detail: msg.data }),
+          );
+        }
+        break;
+
+      case "prompts_changed":
+        // Server notifies that prompt files have changed on disk
+        // Dispatch event so components (e.g., SlashCommandPicker) can refresh their prompts list
+        console.log("Prompts changed:", msg.data?.changed_dirs);
+        window.dispatchEvent(
+          new CustomEvent("mitto:prompts_changed", { detail: msg.data }),
+        );
+        break;
     }
   }, []);
 
@@ -3916,6 +4039,53 @@ export function useWebSocket() {
     setPeriodicStarted(null);
   }, []);
 
+  // Send UI prompt answer (yes/no or select response)
+  const sendUIPromptAnswer = useCallback(
+    (sessionId, requestId, optionId, label) => {
+      console.log("[UIPrompt] Sending answer:", {
+        sessionId,
+        requestId,
+        optionId,
+        label,
+      });
+
+      const sent = sendToSession(sessionId, {
+        type: "ui_prompt_answer",
+        data: {
+          request_id: requestId,
+          option_id: optionId,
+          label: label,
+        },
+      });
+
+      if (sent) {
+        // Clear the active UI prompt immediately on the frontend
+        // The backend will also send a dismiss message, but this provides instant feedback
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          if (session.activeUIPrompt?.requestId !== requestId) return prev;
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              activeUIPrompt: null,
+            },
+          };
+        });
+      }
+
+      return sent;
+    },
+    [sendToSession],
+  );
+
+  // Get active UI prompt for the current session
+  const activeUIPrompt = useMemo(() => {
+    const session = sessions[activeSessionId];
+    return session?.activeUIPrompt || null;
+  }, [sessions, activeSessionId]);
+
   return {
     connected: eventsConnected,
     messages,
@@ -3961,5 +4131,7 @@ export function useWebSocket() {
     availableCommands,
     configOptions,
     setConfigOption,
+    activeUIPrompt,
+    sendUIPromptAnswer,
   };
 }

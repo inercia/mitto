@@ -1819,6 +1819,8 @@ function App() {
     availableCommands,
     configOptions,
     setConfigOption,
+    activeUIPrompt,
+    sendUIPromptAnswer,
   } = useWebSocket();
 
   const [showSidebar, setShowSidebar] = useState(false);
@@ -1895,6 +1897,7 @@ function App() {
   const [periodicToastData, setPeriodicToastData] = useState(null); // { sessionId, sessionName }
   const [runnerFallbackWarning, setRunnerFallbackWarning] = useState(null); // { requestedType, fallbackType, reason }
   const [acpStartFailedError, setAcpStartFailedError] = useState(null); // { session_id, error }
+  const [hookFailedError, setHookFailedError] = useState(null); // { name, exit_code, error }
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   // Per-session draft text: { sessionId: draftText } - null key for "no session" state
@@ -2151,6 +2154,24 @@ function App() {
         "mitto:acp_start_failed",
         handleAcpStartFailed,
       );
+    };
+  }, []);
+
+  // Listen for hook failed events
+  useEffect(() => {
+    const handleHookFailed = (event) => {
+      const data = event.detail;
+      if (data) {
+        setHookFailedError(data);
+        // Auto-hide after 10 seconds
+        setTimeout(() => {
+          setHookFailedError(null);
+        }, 10000);
+      }
+    };
+    window.addEventListener("mitto:hook_failed", handleHookFailed);
+    return () => {
+      window.removeEventListener("mitto:hook_failed", handleHookFailed);
     };
   }, []);
 
@@ -2708,6 +2729,43 @@ function App() {
     return () =>
       document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
+
+  // Refresh prompts when file watcher detects changes (mitto:prompts_changed event)
+  // This event is dispatched by handleGlobalEvent when receiving prompts_changed from WebSocket
+  useEffect(() => {
+    const handlePromptsChanged = (event) => {
+      console.log("[prompts] File watcher detected changes:", event.detail);
+
+      // Refresh workspace prompts (force refresh to skip conditional request)
+      if (sessionInfo?.working_dir) {
+        fetchWorkspacePrompts(sessionInfo.working_dir, true);
+      }
+
+      // Refresh global prompts
+      const acpServer = sessionInfo?.acp_server;
+      const url = acpServer
+        ? apiUrl(`/api/config?acp_server=${encodeURIComponent(acpServer)}`)
+        : apiUrl("/api/config");
+
+      authFetch(url)
+        .then((res) => res.json())
+        .then((config) => {
+          if (config?.prompts) {
+            setGlobalPrompts(config.prompts);
+          }
+          if (config?.acp_servers) {
+            setAcpServersWithPrompts(config.acp_servers);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to refresh prompts after file change:", err);
+        });
+    };
+
+    window.addEventListener("mitto:prompts_changed", handlePromptsChanged);
+    return () =>
+      window.removeEventListener("mitto:prompts_changed", handlePromptsChanged);
+  }, [sessionInfo?.working_dir, sessionInfo?.acp_server, fetchWorkspacePrompts]);
 
   // Refetch global prompts when ACP server changes
   // This ensures prompts with "acps" restrictions are filtered correctly per workspace
@@ -4075,6 +4133,38 @@ function App() {
         </div>
       `}
 
+      <!-- Hook failed toast -->
+      ${hookFailedError &&
+      html`
+        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
+          <div
+            class="flex flex-col gap-1 px-4 py-3 bg-orange-600 text-white rounded-lg shadow-lg max-w-md"
+          >
+            <div class="flex items-center gap-2">
+              <span class="text-lg">⚠️</span>
+              <span class="text-sm font-medium">Hook Failed</span>
+              <button
+                onClick=${() => setHookFailedError(null)}
+                class="ml-auto text-white/80 hover:text-white"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+            <div class="text-xs opacity-90 ml-7">
+              <div>
+                Hook: <strong>${hookFailedError.name || "up"}</strong>
+                ${hookFailedError.exit_code !== undefined &&
+                ` (exit code ${hookFailedError.exit_code})`}
+              </div>
+              <div class="mt-1 text-white/70 break-words">
+                ${hookFailedError.error}
+              </div>
+            </div>
+          </div>
+        </div>
+      `}
+
       <!-- Sidebar (hidden on mobile by default) -->
       <div
         class="hidden md:block w-80 bg-mitto-sidebar border-r border-slate-700 flex-shrink-0"
@@ -4420,6 +4510,10 @@ function App() {
             actionButtons=${actionButtons}
             availableCommands=${availableCommands}
             periodicEnabled=${sessionInfo?.periodic_enabled || false}
+            activeUIPrompt=${activeUIPrompt}
+            onUIPromptAnswer=${(requestId, optionId, label) =>
+              sendUIPromptAnswer(activeSessionId, requestId, optionId, label)}
+            workingDir=${sessionInfo?.working_dir || ""}
           />
         </div>
       </div>

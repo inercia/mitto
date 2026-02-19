@@ -8,6 +8,7 @@ import {
   pickImages,
   hasNativeFilePicker,
   pickFiles,
+  isNativeApp,
 } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
@@ -143,6 +144,9 @@ function sortPromptsByColor(prompts) {
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
  * @param {boolean} props.periodicEnabled - Whether periodic prompts are enabled (disables queue buttons)
+ * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
+ * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
+ * @param {string} props.workingDir - Workspace directory path (for smart file path insertion on native app drag & drop)
  */
 export function ChatInput({
   onSend,
@@ -166,6 +170,9 @@ export function ChatInput({
   actionButtons = [],
   availableCommands = [],
   periodicEnabled = false,
+  activeUIPrompt = null,
+  onUIPromptAnswer,
+  workingDir = "",
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -229,6 +236,9 @@ export function ChatInput({
   const [showSlashPicker, setShowSlashPicker] = useState(false);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
 
+  // UI prompt combo box selection state
+  const [comboSelectedId, setComboSelectedId] = useState("");
+
   // Periodic prompt lock state
   // When locked, the prompt is saved to the periodic config and textarea is read-only
   const [isPeriodicLocked, setIsPeriodicLocked] = useState(false);
@@ -262,6 +272,7 @@ export function ChatInput({
     setImproveError(null);
     setShowSlashPicker(false);
     setSlashSelectedIndex(0);
+    setComboSelectedId(""); // Reset combo box selection
     // Reset periodic lock state when session changes
     setIsPeriodicLocked(false);
     setIsPeriodicSaving(false);
@@ -269,6 +280,11 @@ export function ChatInput({
     setPeriodicFrequency({ value: 1, unit: "hours" });
     setPeriodicNextScheduledAt(null);
   }, [sessionId]);
+
+  // Reset combo box selection when UI prompt changes
+  useEffect(() => {
+    setComboSelectedId("");
+  }, [activeUIPrompt?.requestId]);
 
   // Fetch periodic config when periodic is enabled for this session
   useEffect(() => {
@@ -1157,11 +1173,110 @@ export function ChatInput({
     }
   };
 
+  /**
+   * Extract file paths from drag event data.
+   * On macOS native app, files dragged from Finder include file:// URLs.
+   * @param {DataTransfer} dataTransfer - The drag event's dataTransfer object
+   * @returns {string[]} Array of absolute file paths, or empty array if none found
+   */
+  const extractFilePathsFromDrag = (dataTransfer) => {
+    // Try to get file URLs from text/uri-list (macOS Finder drag provides this)
+    const uriList = dataTransfer.getData("text/uri-list");
+    if (uriList) {
+      const paths = uriList
+        .split(/[\r\n]+/)
+        .filter((line) => line && !line.startsWith("#")) // Filter empty lines and comments
+        .map((uri) => {
+          // Convert file:// URL to path
+          if (uri.startsWith("file://")) {
+            try {
+              const url = new URL(uri);
+              // decodeURIComponent handles spaces and special characters
+              return decodeURIComponent(url.pathname);
+            } catch {
+              return null;
+            }
+          }
+          return null;
+        })
+        .filter(Boolean);
+      if (paths.length > 0) {
+        return paths;
+      }
+    }
+    return [];
+  };
+
+  /**
+   * Check if a file path is inside the workspace directory.
+   * @param {string} filePath - Absolute file path
+   * @param {string} workspacePath - Workspace directory path
+   * @returns {string|null} Relative path if inside workspace, null otherwise
+   */
+  const getRelativePathIfInWorkspace = (filePath, workspacePath) => {
+    if (!filePath || !workspacePath) return null;
+    // Normalize paths (remove trailing slashes)
+    const normalizedFile = filePath.replace(/\/+$/, "");
+    const normalizedWorkspace = workspacePath.replace(/\/+$/, "");
+    // Check if file is inside workspace
+    if (normalizedFile.startsWith(normalizedWorkspace + "/")) {
+      // Return relative path (without leading slash)
+      return normalizedFile.slice(normalizedWorkspace.length + 1);
+    }
+    return null;
+  };
+
+  /**
+   * Insert text at the current cursor position in the textarea.
+   * @param {string} textToInsert - Text to insert
+   */
+  const insertTextAtCursor = (textToInsert) => {
+    const textarea = internalRef.current;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const currentText = text;
+
+    // Build new text with insertion
+    const newText = currentText.slice(0, start) + textToInsert + currentText.slice(end);
+    setText(newText);
+
+    // Set cursor position after inserted text (after React re-render)
+    requestAnimationFrame(() => {
+      textarea.focus();
+      const newCursorPos = start + textToInsert.length;
+      textarea.setSelectionRange(newCursorPos, newCursorPos);
+    });
+  };
+
   // Handle file drop - supports both images and other files
+  // On native macOS app, files dropped from within the workspace are inserted as relative paths
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragOver(false);
     if (isFullyDisabled || isReadOnly || !sessionId) return;
+
+    // Smart path insertion for native macOS app
+    // When dropping files from the current workspace, insert relative path instead of uploading
+    if (isNativeApp() && workingDir) {
+      const filePaths = extractFilePathsFromDrag(e.dataTransfer);
+      if (filePaths.length > 0) {
+        // Check if all dropped files are within the workspace
+        const relativePaths = filePaths
+          .map((fp) => getRelativePathIfInWorkspace(fp, workingDir))
+          .filter(Boolean);
+
+        // If we found relative paths for ALL files, insert them as text
+        if (relativePaths.length === filePaths.length && relativePaths.length > 0) {
+          // Insert relative paths, separated by spaces if multiple
+          const pathsText = relativePaths.join(" ");
+          insertTextAtCursor(pathsText);
+          return; // Don't upload, we've handled the drop
+        }
+        // If some files are outside workspace, fall through to upload behavior
+      }
+    }
 
     const files = Array.from(e.dataTransfer.files);
     const imageFiles = files.filter((f) => f.type.startsWith("image/"));
@@ -1247,6 +1362,23 @@ export function ChatInput({
   const hasPendingFiles = pendingFiles.length > 0;
   const hasPendingAttachments = hasPendingImages || hasPendingFiles;
   const hasActionButtons = actionButtons && actionButtons.length > 0;
+  // UI prompts from MCP tools should be shown WHILE streaming (the tool is waiting for user input)
+  const hasActiveUIPrompt = !!activeUIPrompt;
+
+  // Handle UI prompt answer click
+  const handleUIPromptAnswer = useCallback(
+    (optionId, label) => {
+      if (activeUIPrompt && onUIPromptAnswer) {
+        console.log("[UIPrompt] User clicked:", {
+          requestId: activeUIPrompt.requestId,
+          optionId,
+          label,
+        });
+        onUIPromptAnswer(activeUIPrompt.requestId, optionId, label);
+      }
+    },
+    [activeUIPrompt, onUIPromptAnswer],
+  );
 
   // Debug logging for action buttons
   if (actionButtons && actionButtons.length > 0) {
@@ -1319,6 +1451,90 @@ export function ChatInput({
           isStreaming=${isStreaming}
         />
       </div>
+
+      <!-- UI Prompt from MCP tool (yes/no, options_buttons, or select) -->
+      ${hasActiveUIPrompt &&
+      html`
+        <div class="max-w-4xl mx-auto mb-3">
+          <div
+            class="ui-prompt-panel p-4 rounded-lg border border-blue-500/50 shadow-lg"
+          >
+            <p class="ui-prompt-question text-sm mb-3">
+              ${activeUIPrompt.question}
+            </p>
+            <div class="flex flex-wrap gap-2">
+              ${activeUIPrompt.promptType === "yes_no" &&
+              activeUIPrompt.options?.map((opt, idx) => {
+                const isYes = opt.id === "yes";
+                return html`
+                  <button
+                    key=${opt.id}
+                    type="button"
+                    onClick=${() => handleUIPromptAnswer(opt.id, opt.label)}
+                    class="px-4 py-2 ${isYes
+                      ? "bg-blue-600 hover:bg-blue-700 border-blue-500"
+                      : "bg-slate-600 hover:bg-slate-700 border-slate-500"} text-white rounded-lg text-sm font-medium transition-colors border"
+                  >
+                    ${opt.label}
+                  </button>
+                `;
+              })}
+              ${activeUIPrompt.promptType === "options_buttons" &&
+              activeUIPrompt.options?.map((opt, idx) => {
+                // Alternate colors for visual distinction
+                const colors = [
+                  "bg-blue-600 hover:bg-blue-700 border-blue-500",
+                  "bg-purple-600 hover:bg-purple-700 border-purple-500",
+                  "bg-emerald-600 hover:bg-emerald-700 border-emerald-500",
+                  "bg-amber-600 hover:bg-amber-700 border-amber-500",
+                  "bg-rose-600 hover:bg-rose-700 border-rose-500",
+                ];
+                const colorClass = colors[idx % colors.length];
+                return html`
+                  <button
+                    key=${opt.id}
+                    type="button"
+                    onClick=${() => handleUIPromptAnswer(opt.id, opt.label)}
+                    class="px-4 py-2 ${colorClass} text-white rounded-lg text-sm font-medium transition-colors border"
+                  >
+                    ${opt.label}
+                  </button>
+                `;
+              })}
+              ${activeUIPrompt.promptType === "select" &&
+              html`
+                <select
+                  class="bg-slate-700 text-white rounded-lg px-3 py-2 border border-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value=${comboSelectedId}
+                  onChange=${(e) => setComboSelectedId(e.target.value)}
+                >
+                  <option value="">Select an option...</option>
+                  ${activeUIPrompt.options?.map(
+                    (opt) => html`
+                      <option key=${opt.id} value=${opt.id}>${opt.label}</option>
+                    `,
+                  )}
+                </select>
+                <button
+                  type="button"
+                  disabled=${!comboSelectedId}
+                  onClick=${() => {
+                    const opt = activeUIPrompt.options?.find(
+                      (o) => o.id === comboSelectedId,
+                    );
+                    if (opt) handleUIPromptAnswer(opt.id, opt.label);
+                  }}
+                  class="px-4 py-2 ${comboSelectedId
+                    ? "bg-blue-600 hover:bg-blue-700 border-blue-500"
+                    : "bg-slate-600 border-slate-500 opacity-50 cursor-not-allowed"} text-white rounded-lg text-sm font-medium transition-colors border"
+                >
+                  OK
+                </button>
+              `}
+            </div>
+          </div>
+        </div>
+      `}
 
       ${hasActionButtons &&
       !isStreaming &&
