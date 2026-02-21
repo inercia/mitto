@@ -384,5 +384,12 @@ function updateMermaidTheme(theme) {
 window.renderMermaidDiagrams = renderMermaidInContainer;
 window.updateMermaidTheme = updateMermaidTheme;
 
+// Register service worker for PWA installability
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch((err) => {
+    console.warn("Service worker registration failed:", err);
+  });
+}
+
 // Load the app after preact is ready
 import("./app.js");

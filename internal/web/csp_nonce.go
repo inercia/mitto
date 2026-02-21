@@ -162,6 +162,7 @@ func (w *cspNonceResponseWriter) setCSPHeader(includeNonce bool) {
 		"img-src " + imgSrc + "; " +
 		"font-src 'self' https://fonts.gstatic.com; " +
 		"connect-src 'self' ws: wss:; " +
+		"worker-src 'self'; " +
 		"frame-ancestors 'none'; " +
 		"base-uri 'self'; " +
 		"form-action 'self'"
