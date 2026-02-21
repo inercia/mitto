@@ -1,0 +1,16 @@
+{
+  "name": "Mitto",
+  "short_name": "Mitto",
+  "description": "ACP Web Interface",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "./favicon.png",
+      "sizes": "any",
+      "type": "image/png"
+    }
+  ]
+}
