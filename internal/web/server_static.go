@@ -78,6 +78,13 @@ func (s *Server) staticFileHandler(staticFS fs.FS) http.Handler {
 			)
 		}
 
+		// Set correct Content-Type for web app manifest.
+		// Go's http.FileServer serves .json as application/json, but
+		// Chromium requires application/manifest+json for PWA installability.
+		if fsPath == "manifest.json" {
+			w.Header().Set("Content-Type", "application/manifest+json")
+		}
+
 		// Set cache headers for static assets
 		// During active development, we disable caching for all our own assets
 		// to ensure users always get the latest version. Only external CDN
