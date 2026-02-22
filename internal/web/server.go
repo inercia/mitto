@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,6 +184,13 @@ func NewServer(config Config) (*Server, error) {
 	store, err := session.DefaultStore()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session store: %w", err)
+	}
+
+	// Run data migrations before any other operations
+	migrationCtx := buildMigrationContext(config.MittoConfig)
+	if err := store.RunMigrations(migrationCtx); err != nil {
+		logger.Warn("Failed to run migrations", "error", err)
+		// Continue anyway - migrations are best-effort
 	}
 
 	// Cleanup old images on startup
@@ -902,6 +910,10 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
 func (s *Server) BroadcastACPStartFailed(sessionID, errorMsg string) {
+	if s.eventsManager == nil {
+		return
+	}
+
 	s.eventsManager.Broadcast(WSMsgTypeACPStartFailed, map[string]string{
 		"session_id": sessionID,
 		"error":      errorMsg,
@@ -1008,4 +1020,46 @@ func (s *Server) getPromptsWatchDirs() []string {
 	}
 
 	return dirs
+}
+
+// buildMigrationContext creates a MigrationContext from the current configuration.
+// This provides information needed by migrations to normalize data.
+//
+// The function builds a mapping for server name normalization that handles:
+// 1. Exact matches (server name already correct)
+// 2. Case changes (e.g., "auggie" -> "Auggie")
+// 3. Server renames where the old name is a case-insensitive prefix of the new name
+//    (e.g., "auggie" -> "Auggie (Opus 4.5)")
+func buildMigrationContext(cfg *configPkg.Config) *session.MigrationContext {
+	if cfg == nil || len(cfg.ACPServers) == 0 {
+		return nil
+	}
+
+	// Build a map of known server names for normalization.
+	serverNames := make(map[string]string)
+	for _, srv := range cfg.ACPServers {
+		// Map the canonical name to itself
+		serverNames[srv.Name] = srv.Name
+
+		// Also map lowercase version for case-insensitive matching
+		lower := strings.ToLower(srv.Name)
+		if lower != srv.Name {
+			serverNames[lower] = srv.Name
+		}
+
+		// Extract base name (part before any parentheses) for prefix matching
+		// This handles renames like "auggie" -> "Auggie (Opus 4.5)"
+		baseName := srv.Name
+		if idx := strings.Index(srv.Name, " ("); idx > 0 {
+			baseName = strings.TrimSpace(srv.Name[:idx])
+		}
+		if baseName != srv.Name {
+			serverNames[baseName] = srv.Name
+			serverNames[strings.ToLower(baseName)] = srv.Name
+		}
+	}
+
+	return &session.MigrationContext{
+		ACPServerNames: serverNames,
+	}
 }

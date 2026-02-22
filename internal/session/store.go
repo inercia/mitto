@@ -46,6 +46,19 @@ func NewStore(baseDir string) (*Store, error) {
 	return &Store{baseDir: baseDir}, nil
 }
 
+// RunMigrations runs any pending data migrations on the session store.
+// The context parameter is optional and provides external information to migrations
+// (e.g., ACP server name mappings for the normalize migration).
+// This should be called after NewStore and before the store is used.
+func (s *Store) RunMigrations(ctx *MigrationContext) error {
+	return RunMigrations(s.baseDir, ctx)
+}
+
+// BaseDir returns the base directory of the store.
+func (s *Store) BaseDir() string {
+	return s.baseDir
+}
+
 // sessionDir returns the directory path for a session.
 func (s *Store) sessionDir(sessionID string) string {
 	return filepath.Join(s.baseDir, sessionID)
