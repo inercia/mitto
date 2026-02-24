@@ -243,6 +243,34 @@ func TestIsCodeBlockStart(t *testing.T) {
 	}
 }
 
+// TestCodeFenceLength tests fence length detection for nested code blocks.
+func TestCodeFenceLength(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int
+	}{
+		{"```", 3},
+		{"```go", 3},
+		{"```python", 3},
+		{"````", 4},
+		{"````markdown", 4},
+		{"`````", 5},
+		{"``", 0}, // Not a valid fence (need at least 3)
+		{"`", 0},  // Not a valid fence
+		{"text", 0},
+		{"  ```", 0}, // Indented - not a fence at start
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := CodeFenceLength(tt.input)
+			if result != tt.expected {
+				t.Errorf("CodeFenceLength(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestIsListItem tests list item detection.
 func TestIsListItem(t *testing.T) {
 	tests := []struct {
@@ -539,6 +567,95 @@ This text should NOT be monospace.`
 	// 5. Verify the code content is present
 	if !strings.Contains(result, "def") || !strings.Contains(result, "hello") {
 		t.Errorf("Expected code content to be present, got:\n%s", result)
+	}
+}
+
+// TestNestedCodeFences tests that code blocks containing nested fences render correctly.
+// This is important for markdown files that contain code examples (e.g., documentation).
+// Per CommonMark spec, a fence opened with N backticks closes only with >= N backticks.
+func TestNestedCodeFences(t *testing.T) {
+	converter := DefaultConverter()
+
+	testCases := []struct {
+		name        string
+		markdown    string
+		wantContent []string // Content that must be present (inside the outer code block)
+		wantAbsent  []string // Content that must NOT be present as raw text
+	}{
+		{
+			name:     "markdown with nested json fence",
+			markdown: "````markdown\n# Title\n\n```json\n{\"key\": \"value\"}\n```\n````",
+			wantContent: []string{
+				"# Title",
+				"```json",       // The nested fence should appear as content
+				"&#34;key&#34;", // JSON content (HTML numeric entity for quotes)
+				"```",           // The nested closing fence should appear as content
+			},
+			wantAbsent: []string{
+				"````", // The outer fence delimiters should NOT appear
+			},
+		},
+		{
+			name:     "5 backticks with nested 3 and 4",
+			markdown: "`````markdown\n\n```python\nprint('hello')\n```\n\n````bash\necho hi\n````\n`````",
+			wantContent: []string{
+				"```python",
+				"print",
+				"````bash",
+				"echo hi",
+			},
+			wantAbsent: []string{
+				"`````", // Outer fence should NOT appear
+			},
+		},
+		{
+			name:     "documentation with code example",
+			markdown: "````markdown\n## API Endpoint\n\n```json\n{\"service\": \"my-service\"}\n```\n\n## Response\n\n```json\n{\"status\": \"ok\"}\n```\n````",
+			wantContent: []string{
+				"## API Endpoint",
+				"```json",
+				"service",
+				"## Response",
+				"status",
+			},
+			wantAbsent: []string{
+				"````",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := converter.Convert(tc.markdown)
+			if err != nil {
+				t.Fatalf("Convert failed: %v", err)
+			}
+
+			t.Logf("Input:\n%s", tc.markdown)
+			t.Logf("Output:\n%s", result)
+
+			// Verify expected content is present
+			for _, want := range tc.wantContent {
+				if !strings.Contains(result, want) {
+					t.Errorf("Expected content %q in output, got:\n%s", want, result)
+				}
+			}
+
+			// Verify absent content is NOT present
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(result, absent) {
+					t.Errorf("Output should NOT contain %q, got:\n%s", absent, result)
+				}
+			}
+
+			// Should have proper pre/code structure
+			if !strings.Contains(result, "<pre><code") {
+				t.Errorf("Expected <pre><code> structure, got:\n%s", result)
+			}
+			if !strings.Contains(result, "</code></pre>") {
+				t.Errorf("Expected </code></pre> closing, got:\n%s", result)
+			}
+		})
 	}
 }
 
