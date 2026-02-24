@@ -289,3 +289,47 @@ func trimQuotes(s string) string {
 	}
 	return s
 }
+
+// GenerateConversationSummary generates a summary of a conversation.
+// The conversationContent should be pre-formatted as a series of conversation turns.
+func GenerateConversationSummary(ctx context.Context, conversationContent string) (string, error) {
+	manager := GetManager()
+	if manager == nil {
+		return "", fmt.Errorf("auxiliary manager not initialized")
+	}
+
+	// Truncate very long conversations to avoid overwhelming the prompt
+	// Keep about 50KB of content (roughly 50000 characters)
+	truncatedContent := conversationContent
+	const maxContentLen = 50000
+	if len(truncatedContent) > maxContentLen {
+		truncatedContent = truncatedContent[:maxContentLen-100] + "\n\n[... conversation truncated for brevity ...]"
+	}
+
+	prompt := fmt.Sprintf(GenerateConversationSummaryPromptTemplate, truncatedContent)
+
+	if manager.logger != nil {
+		manager.logger.Debug("auxiliary summary: sending request",
+			"content_length", len(truncatedContent),
+			"truncated", len(conversationContent) > maxContentLen,
+		)
+	}
+
+	response, err := manager.Prompt(ctx, prompt)
+	if err != nil {
+		if manager.logger != nil {
+			manager.logger.Debug("auxiliary summary: request failed",
+				"error", err.Error(),
+			)
+		}
+		return "", fmt.Errorf("failed to generate conversation summary: %w", err)
+	}
+
+	if manager.logger != nil {
+		manager.logger.Debug("auxiliary summary: received response",
+			"response_length", len(response),
+		)
+	}
+
+	return strings.TrimSpace(response), nil
+}
