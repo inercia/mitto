@@ -11,13 +11,10 @@
 // - Instant load (localhost)
 // - Works offline
 
-import {
-  VERSIONS,
-  CDN_URLS,
-  LOCAL_URLS as VENDOR_LOCAL_URLS,
-} from "./vendor/config.js";
+import { CDN_URLS } from "./vendor/config.js";
 
-// Local URLs need path adjustment (config.js paths are relative to vendor/)
+// Local URLs with paths relative to this loader (in web/static/)
+// Note: vendor/config.js paths are relative to vendor/, so we define our own here
 const LOCAL_URLS = {
   preact: "./vendor/preact.js",
   preactHooks: "./vendor/preact-hooks.js",

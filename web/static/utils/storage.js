@@ -642,15 +642,35 @@ export function setFilterTabGrouping(tabId, mode) {
   }
 }
 
+// Valid filter tabs for validation
+const VALID_FILTER_TABS = new Set([
+  FILTER_TAB.CONVERSATIONS,
+  FILTER_TAB.PERIODIC,
+  FILTER_TAB.ARCHIVED,
+]);
+
+// Valid grouping modes for validation
+const VALID_GROUPING_MODES = new Set(["none", "server", "workspace"]);
+
 /**
- * Get all filter tab groupings from localStorage
+ * Get all filter tab groupings from localStorage.
+ * Filters to only known tabs and valid grouping modes to prevent
+ * invalid data from being sent to the server API.
  * @returns {Object} Map of tabId to grouping mode
  */
 export function getAllFilterTabGroupings() {
   try {
     const value = localStorage.getItem(FILTER_TAB_GROUPING_KEY);
     if (value) {
-      return JSON.parse(value);
+      const parsed = JSON.parse(value);
+      // Filter to only valid tabs and modes
+      const validated = {};
+      for (const [tabId, mode] of Object.entries(parsed)) {
+        if (VALID_FILTER_TABS.has(tabId) && VALID_GROUPING_MODES.has(mode)) {
+          validated[tabId] = mode;
+        }
+      }
+      return validated;
     }
     return {};
   } catch (e) {
