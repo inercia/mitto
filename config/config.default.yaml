@@ -99,6 +99,12 @@ web:
 #     delete_session: true  # Confirm before deleting a conversation (default: true)
 #     quit_with_running_sessions: true  # Confirm before quitting with running conversations (default: true, macOS only)
 #
+#   # Web interface settings (applies to both browser and macOS app)
+#   web:
+#     input_font_family: "system"  # Font for compose area: system, monospace, sans-serif, serif, menlo, etc.
+#     conversation_cycling_mode: "all"  # Navigation scope: "all" or "visible_groups" (only expanded groups)
+#     single_expanded_group: false  # Accordion mode: at most one conversation group expanded at a time
+#
 #   # macOS desktop app settings (only applies to Mitto.app)
 #   mac:
 #     # Global hotkeys
