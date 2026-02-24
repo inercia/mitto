@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/inercia/mitto/internal/logging"
@@ -50,7 +51,7 @@ func migrateNormalizeACPServerNames(baseDir string, ctx *MigrationContext) (int,
 		}
 
 		// Skip non-session directories (like migrations.json if it were a dir)
-		sessionDir := baseDir + "/" + entry.Name()
+		sessionDir := filepath.Join(baseDir, entry.Name())
 		meta, err := readSessionMetadata(sessionDir)
 		if err != nil {
 			// Skip directories without valid metadata

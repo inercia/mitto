@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -69,6 +70,11 @@ func (w *gzipResponseWriter) WriteHeader(statusCode int) {
 
 	// Don't compress error responses or redirects
 	if statusCode < 200 || statusCode >= 300 {
+		w.shouldGzip = false
+	}
+
+	// Skip if response already has Content-Encoding (already compressed)
+	if w.Header().Get("Content-Encoding") != "" {
 		w.shouldGzip = false
 	}
 
@@ -207,6 +213,46 @@ var gzipWriterPool = sync.Pool{
 	},
 }
 
+// acceptsGzip checks if the Accept-Encoding header indicates gzip is accepted.
+// It properly handles q-values (e.g., "gzip;q=0" means gzip is NOT accepted).
+func acceptsGzip(acceptEncoding string) bool {
+	if acceptEncoding == "" {
+		return false
+	}
+
+	// Parse comma-separated encodings
+	for _, part := range strings.Split(acceptEncoding, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Split encoding from parameters (e.g., "gzip;q=0.8")
+		encoding := part
+		qValue := 1.0 // Default q-value is 1.0
+
+		if idx := strings.Index(part, ";"); idx != -1 {
+			encoding = strings.TrimSpace(part[:idx])
+			params := strings.TrimSpace(part[idx+1:])
+
+			// Parse q-value if present
+			if strings.HasPrefix(strings.ToLower(params), "q=") {
+				qStr := params[2:]
+				if q, err := strconv.ParseFloat(qStr, 64); err == nil {
+					qValue = q
+				}
+			}
+		}
+
+		// Check if this is gzip with q > 0
+		if strings.EqualFold(encoding, "gzip") && qValue > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
 // gzipMiddleware returns middleware that compresses responses for external connections.
 // It only compresses responses that:
 // - Are for external connections (not localhost)
@@ -226,7 +272,7 @@ func gzipMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Skip if client doesn't accept gzip
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -254,7 +300,7 @@ func (w *gzipResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if hijacker, ok := w.ResponseWriter.(http.Hijacker); ok {
 		return hijacker.Hijack()
 	}
-	return nil, nil, io.ErrUnexpectedEOF
+	return nil, nil, http.ErrNotSupported
 }
 
 // Unwrap returns the underlying ResponseWriter.
