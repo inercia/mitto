@@ -295,39 +295,15 @@ func writeJSONRPCError(w io.Writer, id interface{}, code int, message string) {
 }
 
 // buildMigrationContextFromConfig creates a MigrationContext from the Mitto configuration.
-// It builds a mapping for server name normalization that handles:
-// 1. Exact matches (server name already correct)
-// 2. Case changes (e.g., "auggie" -> "Auggie")
-// 3. Server renames where the old name is a case-insensitive prefix of the new name
-//    (e.g., "auggie" -> "Auggie (Opus 4.5)")
 func buildMigrationContextFromConfig(cfg *config.Config) *session.MigrationContext {
 	if cfg == nil || len(cfg.ACPServers) == 0 {
 		return nil
 	}
 
-	// Build a map of known server names for normalization.
-	serverNames := make(map[string]string)
-	for _, srv := range cfg.ACPServers {
-		serverNames[srv.Name] = srv.Name
-		// Also map lowercase version for case-insensitive matching
-		lower := strings.ToLower(srv.Name)
-		if lower != srv.Name {
-			serverNames[lower] = srv.Name
-		}
-
-		// Extract base name (part before any parentheses) for prefix matching
-		// This handles renames like "auggie" -> "Auggie (Opus 4.5)"
-		baseName := srv.Name
-		if idx := strings.Index(srv.Name, " ("); idx > 0 {
-			baseName = strings.TrimSpace(srv.Name[:idx])
-		}
-		if baseName != srv.Name {
-			serverNames[baseName] = srv.Name
-			serverNames[strings.ToLower(baseName)] = srv.Name
-		}
+	// Extract server names and use the shared helper
+	names := make([]string, len(cfg.ACPServers))
+	for i, srv := range cfg.ACPServers {
+		names[i] = srv.Name
 	}
-
-	return &session.MigrationContext{
-		ACPServerNames: serverNames,
-	}
+	return session.NewMigrationContext(names)
 }

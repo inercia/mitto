@@ -117,6 +117,18 @@ static inline void openURLInBrowser(const char* urlStr) {
     }
 }
 
+// revealPathInFinder reveals a file or folder in Finder.
+// This opens Finder with the specified path selected.
+static inline void revealPathInFinder(const char* pathStr) {
+    @autoreleasepool {
+        NSString *pathString = [NSString stringWithUTF8String:pathStr];
+        NSURL *url = [NSURL fileURLWithPath:pathString];
+        if (url != nil) {
+            [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[url]];
+        }
+    }
+}
+
 // openFolderPicker opens a native folder picker dialog and returns the selected path.
 // Returns NULL if the user cancels or an error occurs.
 // The caller is responsible for freeing the returned string.
@@ -617,6 +629,15 @@ func openFileURL(url string) {
 	C.openURLInBrowser(cURL) // NSWorkspace.openURL handles file:// URLs
 }
 
+// revealInFinder reveals a file or folder in Finder (macOS file browser).
+// This opens Finder with the specified path selected.
+// This is exposed to JavaScript via webview.Bind.
+func revealInFinder(path string) {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	C.revealPathInFinder(cPath)
+}
+
 // pickFolder opens a native folder picker dialog and returns the selected path.
 // Returns an empty string if the user cancels.
 // This is exposed to JavaScript via webview.Bind.
@@ -1080,6 +1101,7 @@ func run() error {
 	// This allows the frontend to call native functions
 	w.Bind("mittoOpenExternalURL", openExternalURL)
 	w.Bind("mittoOpenFileURL", openFileURL)
+	w.Bind("mittoRevealInFinder", revealInFinder)
 	w.Bind("mittoPickFolder", pickFolder)
 	w.Bind("mittoPickImages", pickImages)
 	w.Bind("mittoPickFiles", pickFiles)

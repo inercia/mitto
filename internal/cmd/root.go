@@ -267,21 +267,3 @@ func parseWorkspaces() ([]Workspace, error) {
 
 	return workspaces, nil
 }
-
-// getWorkingDir returns the first working directory from parsed workspaces.
-// This is for backward compatibility with code that expects a single directory.
-// Deprecated: Use parseWorkspaces() for multi-directory support.
-func getWorkingDir() (string, error) {
-	workspaces, err := parseWorkspaces()
-	if err != nil {
-		return "", err
-	}
-	if len(workspaces) == 0 {
-		wd, err := os.Getwd()
-		if err != nil {
-			return ".", nil
-		}
-		return wd, nil
-	}
-	return workspaces[0].Dir, nil
-}
