@@ -20,30 +20,33 @@ and request user decisions through interactive UI elements.
 
 These tools are **always available** and don't require special permissions:
 
-| Tool | Description |
-|------|-------------|
-| `mitto_list_conversations` | List all conversations with metadata (title, status, message count, etc.) |
-| `mitto_get_config` | Get the current Mitto configuration (sanitized) |
-| `mitto_get_runtime_info` | Get runtime info (OS, log paths, data directories, process info) |
-| `mitto_get_current_session` | Get details about a specific conversation |
+| Tool                             | Description                                                               |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| `mitto_conversation_list`        | List all conversations with metadata (title, status, message count, etc.) |
+| `mitto_get_config`               | Get the current Mitto configuration (sanitized)                           |
+| `mitto_get_runtime_info`         | Get runtime info (OS, log paths, data directories, process info)          |
+| `mitto_conversation_get_current` | Get details about the current conversation                                |
+| `mitto_conversation_get`         | Get details about a specific conversation by ID                           |
+| `mitto_conversation_get_summary` | Generate an AI summary of a conversation                                  |
 
 ### UI Prompt Tools
 
 These tools require the **"Can prompt user"** flag to be enabled:
 
-| Tool | Description |
-|------|-------------|
-| `mitto_ui_ask_yes_no` | Display a yes/no dialog with customizable button labels |
-| `mitto_ui_options_buttons` | Display up to 4 buttons for user selection |
-| `mitto_ui_options_combo` | Display a dropdown with up to 10 options |
+| Tool                       | Description                                             |
+| -------------------------- | ------------------------------------------------------- |
+| `mitto_ui_ask_yes_no`      | Display a yes/no dialog with customizable button labels |
+| `mitto_ui_options_buttons` | Display up to 4 buttons for user selection              |
+| `mitto_ui_options_combo`   | Display a dropdown with up to 10 options                |
 
 ### Cross-Conversation Tools
 
-This tool requires the **"Can Send Prompt"** flag:
+These tools require the **"Can Send Prompt"** or **"Can start conversation"** flags:
 
-| Tool | Description |
-|------|-------------|
-| `mitto_send_prompt_to_conversation` | Send a prompt to another conversation's queue |
+| Tool                             | Description                                     |
+| -------------------------------- | ----------------------------------------------- |
+| `mitto_conversation_send_prompt` | Send a prompt to another conversation's queue   |
+| `mitto_conversation_start`       | Create a new conversation in the same workspace |
 
 ## Enabling Permissions
 

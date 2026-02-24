@@ -928,7 +928,7 @@ acp:
       cwd: /home/user/my-project # Only works with exec runner
 ```
 
-See [ACP Server Configuration](web/acp.md) for more details on the `cwd` option.
+See [ACP Server Configuration](acp.md) for more details on the `cwd` option.
 
 ### MCP Server Compatibility
 
@@ -1069,5 +1069,5 @@ Expansion happens before passing paths to the runner, ensuring consistent behavi
 
 - [go-restricted-runner Documentation](https://github.com/inercia/go-restricted-runner)
 - [Mitto Configuration Overview](./overview.md)
-- [ACP Server Configuration](./web/acp.md)
+- [ACP Server Configuration](./acp.md)
 - [Workspace Configuration](./web/workspace.md)
