@@ -149,13 +149,6 @@ func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef)
 	return r.RecordUserPromptComplete(message, images, nil, "")
 }
 
-// RecordUserPromptFull records a user prompt event with optional image references and prompt ID.
-// The promptID is a client-generated ID used for delivery confirmation on reconnect.
-// Deprecated: Use RecordUserPromptComplete for new code that needs file support.
-func (r *Recorder) RecordUserPromptFull(message string, images []ImageRef, promptID string) error {
-	return r.RecordUserPromptComplete(message, images, nil, promptID)
-}
-
 // RecordUserPromptComplete records a user prompt event with optional image/file references and prompt ID.
 // The promptID is a client-generated ID used for delivery confirmation on reconnect.
 func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string) error {
