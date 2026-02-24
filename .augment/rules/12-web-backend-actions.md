@@ -3,6 +3,13 @@ description: Follow-up suggestions (action buttons), async analysis, caching pat
 globs:
   - "internal/web/background_session.go"
   - "internal/session/action_buttons.go"
+keywords:
+  - action buttons
+  - follow-up suggestions
+  - ActionButtonsStore
+  - auxiliary analysis
+  - suggestion persistence
+  - response options
 ---
 
 # Follow-up Suggestions (Action Buttons)

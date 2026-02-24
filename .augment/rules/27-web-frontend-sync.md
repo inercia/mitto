@@ -177,6 +177,8 @@ case "events_loaded": {
 Stale state can also be detected via keepalive messages:
 
 ```javascript
+// KEEPALIVE_SYNC_TOLERANCE (default: 2) prevents excessive sync requests
+// during normal streaming when markdown buffer holds content briefly
 case "keepalive_ack": {
   const serverMaxSeq = msg.data?.server_max_seq || 0;
   const clientMaxSeq = Math.max(getMaxSeq(sessionMessages), session?.lastLoadedSeq || 0);
@@ -187,8 +189,9 @@ case "keepalive_ack": {
       type: "load_events",
       data: { limit: INITIAL_EVENTS_LIMIT }
     }));
-  } else if (serverMaxSeq > clientMaxSeq) {
-    // Client is behind - request missing events
+  } else if (serverMaxSeq > clientMaxSeq + KEEPALIVE_SYNC_TOLERANCE) {
+    // Client is significantly behind - request missing events
+    // (tolerance avoids sync noise when just 1-2 behind during streaming)
     ws.send(JSON.stringify({
       type: "load_events",
       data: { after_seq: clientMaxSeq }
@@ -200,10 +203,10 @@ case "keepalive_ack": {
 
 ## Key Points Summary
 
-| Scenario                 | Detection Point                    | Client Action                             |
-| ------------------------ | ---------------------------------- | ----------------------------------------- |
-| `clientSeq > serverSeq`  | `events_loaded` or `keepalive_ack` | Client is stale → full reload             |
-| `clientSeq < serverSeq`  | `events_loaded` or `keepalive_ack` | Client is behind → request missing events |
-| `clientSeq == serverSeq` | `keepalive_ack`                    | In sync → no action needed                |
+| Scenario                              | Detection Point                    | Client Action                              |
+| ------------------------------------- | ---------------------------------- | ------------------------------------------ |
+| `clientSeq > serverSeq`               | `events_loaded` or `keepalive_ack` | Client is stale → full reload              |
+| `clientSeq < serverSeq - tolerance`   | `events_loaded` or `keepalive_ack` | Client is behind → request missing events  |
+| `clientSeq ≈ serverSeq` (within tol.) | `keepalive_ack`                    | In sync (or minor delay) → no action needed |
 
 **Never** try to "fix" the server based on client state. The server's sequence numbers are authoritative.

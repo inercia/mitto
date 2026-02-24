@@ -8,7 +8,7 @@ keywords:
   - event replay
   - troubleshoot
   - mitto_get_runtime_info
-  - mitto_list_conversations
+  - mitto_conversation_list
   - mitto_get_config
 ---
 
@@ -21,7 +21,7 @@ Mitto includes a built-in MCP (Model Context Protocol) server that exposes debug
 
 ## Available MCP Tools
 
-### 1. `mitto_list_conversations`
+### 1. `mitto_conversation_list`
 
 Lists all conversations with metadata:
 
