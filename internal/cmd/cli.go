@@ -105,10 +105,19 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Get working directory
-	workDir, err := getWorkingDir()
+	// Get working directory from parsed workspaces or current directory
+	workspaces, err := parseWorkspaces()
 	if err != nil {
 		return err
+	}
+	var workDir string
+	if len(workspaces) == 0 {
+		workDir, err = os.Getwd()
+		if err != nil {
+			workDir = "."
+		}
+	} else {
+		workDir = workspaces[0].Dir
 	}
 
 	// Create session
