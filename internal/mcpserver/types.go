@@ -11,7 +11,7 @@ import (
 )
 
 // ConversationInfo contains information about a conversation/session.
-// Used by mitto_list_conversations (returns time.Time for dates).
+// Used by mitto_conversation_list (returns time.Time for dates).
 type ConversationInfo struct {
 	SessionID         string    `json:"session_id"`
 	Title             string    `json:"title,omitempty"`
@@ -36,7 +36,7 @@ type ConversationInfo struct {
 }
 
 // ConversationDetails is the unified output structure for conversation-related tools.
-// Used by mitto_get_conversation, mitto_get_current_session, and mitto_conversation_start.
+// Used by mitto_conversation_get, mitto_conversation_get_current, and mitto_conversation_start.
 // All dates are formatted as ISO 8601 strings for consistent JSON output.
 type ConversationDetails struct {
 	// Basic metadata

@@ -1528,6 +1528,12 @@ export function formatTimeAgo(date) {
   if (!date) return "";
 
   const target = date instanceof Date ? date : new Date(date);
+
+  // Guard against invalid dates (e.g., non-ISO strings that produce NaN)
+  if (Number.isNaN(target.getTime())) {
+    return "";
+  }
+
   const now = new Date();
   const diffMs = now.getTime() - target.getTime();
 
