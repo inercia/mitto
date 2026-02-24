@@ -39,6 +39,12 @@ var AvailableFlags = []FlagDefinition{
 		Description: "Allow MCP tools to display interactive prompts (yes/no questions, etc.) in the UI and wait for user response",
 		Default:     true,
 	},
+	{
+		Name:        FlagCanStartConversation,
+		Label:       "Can start conversation",
+		Description: "Allow this conversation to create new conversations via MCP tool. Child conversations cannot start further conversations.",
+		Default:     false,
+	},
 }
 
 // Flag name constants for type-safe access to flag values.
@@ -55,6 +61,11 @@ const (
 	// FlagCanPromptUser controls whether MCP tools can display interactive
 	// prompts (yes/no questions, etc.) in the UI and wait for user response.
 	FlagCanPromptUser = "can_prompt_user"
+
+	// FlagCanStartConversation controls whether the conversation can create
+	// new conversations via the mitto_conversation_start MCP tool.
+	// Child conversations (those with a ParentSessionID) cannot start further conversations.
+	FlagCanStartConversation = "can_start_conversation"
 )
 
 // GetFlagDefault returns the default value for a flag by name.

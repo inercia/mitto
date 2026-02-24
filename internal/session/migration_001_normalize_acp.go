@@ -93,4 +93,3 @@ func migrateNormalizeACPServerNames(baseDir string, ctx *MigrationContext) (int,
 
 	return modified, nil
 }
-

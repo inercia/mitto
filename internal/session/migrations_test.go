@@ -154,4 +154,3 @@ func TestGetPendingMigrations(t *testing.T) {
 		t.Errorf("expected 002_test to be pending, got %s", pending[0].Name)
 	}
 }
-

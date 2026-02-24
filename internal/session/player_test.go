@@ -85,6 +85,59 @@ func TestBuildConversationHistory(t *testing.T) {
 	}
 }
 
+func TestBuildConversationHistory_HTMLStripping(t *testing.T) {
+	// Regression test: agent messages are stored as HTML in events.
+	// BuildConversationHistory must strip HTML so the agent doesn't
+	// learn to output HTML, which goldmark would then strip.
+	events := []Event{
+		{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "How is the dog?"}},
+		{Type: EventTypeAgentMessage, Data: AgentMessageData{
+			Text: "<p>The dog is doing great! 🐾</p>\n",
+		}},
+		{Type: EventTypeAgentMessage, Data: AgentMessageData{
+			Text: "<p>She's eating well and sleeping peacefully.</p>\n",
+		}},
+	}
+
+	history := BuildConversationHistory(events, 10)
+
+	// Should contain the plain text, not HTML tags
+	if contains(history, "<p>") {
+		t.Error("History should not contain <p> tags")
+	}
+	if contains(history, "</p>") {
+		t.Error("History should not contain </p> tags")
+	}
+	if !contains(history, "The dog is doing great!") {
+		t.Error("History should contain agent message text")
+	}
+	if !contains(history, "eating well") {
+		t.Error("History should contain second agent message text")
+	}
+	// HTML entities should be decoded
+	if contains(history, "&#") {
+		t.Error("History should not contain HTML entities")
+	}
+}
+
+func TestGetLastAgentMessage_HTMLStripping(t *testing.T) {
+	events := []Event{
+		{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "Hello"}},
+		{Type: EventTypeAgentMessage, Data: AgentMessageData{
+			Text: "<p>Hi! I'm doing <strong>well</strong>.</p>\n",
+		}},
+	}
+
+	result := GetLastAgentMessage(events)
+
+	if contains(result, "<p>") || contains(result, "<strong>") {
+		t.Errorf("GetLastAgentMessage should strip HTML, got: %q", result)
+	}
+	if !contains(result, "I'm doing well") {
+		t.Errorf("GetLastAgentMessage should preserve text, got: %q", result)
+	}
+}
+
 func TestGetLastAgentMessage(t *testing.T) {
 	tests := []struct {
 		name     string

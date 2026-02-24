@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/inercia/mitto/internal/fileutil"
@@ -20,6 +21,46 @@ type MigrationContext struct {
 	// Used by migrations that need to normalize server names.
 	// Example: {"auggie": "Auggie (Opus 4.5)", "old-name": "new-name"}
 	ACPServerNames map[string]string
+}
+
+// NewMigrationContext creates a MigrationContext from a list of canonical server names.
+// It builds a mapping for server name normalization that handles:
+//  1. Exact matches (server name already correct)
+//  2. Case changes (e.g., "auggie" -> "Auggie")
+//  3. Server renames where the old name is a case-insensitive prefix of the new name
+//     (e.g., "auggie" -> "Auggie (Opus 4.5)")
+func NewMigrationContext(serverNames []string) *MigrationContext {
+	if len(serverNames) == 0 {
+		return nil
+	}
+
+	// Build a map of known server names for normalization.
+	nameMap := make(map[string]string)
+	for _, name := range serverNames {
+		// Map the canonical name to itself
+		nameMap[name] = name
+
+		// Also map lowercase version for case-insensitive matching
+		lower := strings.ToLower(name)
+		if lower != name {
+			nameMap[lower] = name
+		}
+
+		// Extract base name (part before any parentheses) for prefix matching
+		// This handles renames like "auggie" -> "Auggie (Opus 4.5)"
+		baseName := name
+		if idx := strings.Index(name, " ("); idx > 0 {
+			baseName = strings.TrimSpace(name[:idx])
+		}
+		if baseName != name {
+			nameMap[baseName] = name
+			nameMap[strings.ToLower(baseName)] = name
+		}
+	}
+
+	return &MigrationContext{
+		ACPServerNames: nameMap,
+	}
 }
 
 // Migration represents a single data migration.
@@ -168,4 +209,3 @@ func writeSessionMetadata(sessionDir string, meta *Metadata) error {
 	}
 	return os.WriteFile(metaPath, data, 0644)
 }
-

@@ -212,6 +212,7 @@ type Metadata struct {
 	RunnerRestricted  bool            `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
 	CurrentModeID     string          `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
 	AdvancedSettings  map[string]bool `json:"advanced_settings,omitempty"` // Per-session feature flags (flag name → enabled)
+	ParentSessionID   string          `json:"parent_session_id,omitempty"` // Session ID that created this session via MCP (prevents infinite recursion)
 }
 
 // LockStatus represents the current activity status of a locked session.

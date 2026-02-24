@@ -21,11 +21,11 @@ func TestMigrateNormalizeACPServerNames(t *testing.T) {
 		acpServer  string
 		wantServer string // expected after migration
 	}{
-		{"session-1", "auggie", "Auggie (Opus 4.5)"},                 // lowercase -> new name
-		{"session-2", "Auggie", "Auggie (Opus 4.5)"},                 // different case -> new name
-		{"session-3", "Auggie (Opus 4.5)", "Auggie (Opus 4.5)"},      // already correct
-		{"session-4", "claude-code", "claude-code"},                  // different server, unchanged
-		{"session-5", "unknown-server", "unknown-server"},            // unknown, unchanged
+		{"session-1", "auggie", "Auggie (Opus 4.5)"},            // lowercase -> new name
+		{"session-2", "Auggie", "Auggie (Opus 4.5)"},            // different case -> new name
+		{"session-3", "Auggie (Opus 4.5)", "Auggie (Opus 4.5)"}, // already correct
+		{"session-4", "claude-code", "claude-code"},             // different server, unchanged
+		{"session-5", "unknown-server", "unknown-server"},       // unknown, unchanged
 	}
 
 	for _, s := range sessions {
@@ -151,4 +151,3 @@ func TestMigrateNormalizeACPServerNames_CaseInsensitive(t *testing.T) {
 		t.Errorf("expected ACPServer='Auggie (New Name)', got %q", meta.ACPServer)
 	}
 }
-
