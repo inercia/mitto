@@ -91,6 +91,12 @@ func RegisterMigration(m Migration) {
 // RunMigrations runs all pending migrations on the session store.
 // It tracks which migrations have been applied to avoid re-running them.
 // The context parameter is optional and provides external information to migrations.
+//
+// NOTE: Migrations do not support rollback. If a migration fails, it may leave
+// sessions in a partially modified state. Migrations should be designed to be
+// idempotent where possible - re-running them should produce the same result.
+// TODO: Consider adding rollback capability or backup-before-migrate for
+// data-modifying migrations in the future.
 func RunMigrations(baseDir string, ctx *MigrationContext) error {
 	log := logging.Session()
 
