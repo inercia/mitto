@@ -7,6 +7,11 @@ keywords:
   - diagram
   - flowchart
   - goldmark
+  - markdown to HTML
+  - file link detection
+  - linkify
+  - HTML sanitization
+  - code block
 ---
 
 # Conversion Package

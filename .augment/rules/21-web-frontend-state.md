@@ -1,5 +1,5 @@
 ---
-description: Frontend state management, refs vs state, useCallback patterns, stale closure prevention, useEffect vs useLayoutEffect
+description: Frontend state management, refs vs state, useCallback patterns, stale closure prevention, useEffect vs useLayoutEffect, useMemo for derived state
 globs:
   - "web/static/app.js"
 keywords:
@@ -8,9 +8,11 @@ keywords:
   - useLayoutEffect
   - useCallback
   - useRef
+  - useMemo
   - stale closure
   - ref vs state
   - scroll
+  - derived state
 ---
 
 # Frontend State Management
@@ -106,6 +108,44 @@ useEffect(() => {
   }
 }, [messages.length, isStreaming]);
 ```
+
+## useMemo for Derived State
+
+**Use `useMemo` for values derived from props that need synchronous calculation:**
+
+```javascript
+// BAD: useState + useEffect for derived position
+function ContextMenu({ x, y }) {
+  const [adjustedPos, setAdjustedPos] = useState({ x, y });
+
+  useEffect(() => {
+    // This runs AFTER render - first paint uses stale values!
+    setAdjustedPos(calculateAdjustedPosition(x, y));
+  }, [x, y]);
+
+  return html`<div style="left: ${adjustedPos.x}px">`;
+}
+
+// GOOD: useMemo for synchronous derived values
+function ContextMenu({ x, y }) {
+  const menuRef = useRef(null);
+
+  const position = useMemo(() => {
+    // Calculated synchronously during render
+    if (!menuRef.current) return { x, y };
+    return calculateAdjustedPosition(x, y, menuRef.current);
+  }, [x, y, menuRef.current]);
+
+  return html`<div ref=${menuRef} style="left: ${position.x}px">`;
+}
+```
+
+**Key insight**: `useState` captures the initial value and doesn't auto-update when props change. For derived values, use:
+- `useMemo` for synchronous calculations
+- `useLayoutEffect` + `setState` if you need DOM measurements before paint
+- `useEffect` + `setState` only for async operations where delay is acceptable
+
+See `28-anti-patterns-ui.md` for detailed context menu positioning patterns.
 
 ## Settings Dialog Patterns
 
