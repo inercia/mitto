@@ -1134,8 +1134,14 @@ func TestHandleCreateSession_InvalidWorkspace(t *testing.T) {
 	}
 	defer store.Close()
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-	// No workspaces configured
+	// Use NewSessionManagerWithOptions with empty workspaces list to ensure
+	// no default workspace is configured. This simulates the case where
+	// a user hasn't configured any workspaces yet.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  []config.WorkspaceSettings{},
+		AutoApprove: false,
+		Logger:      nil,
+	})
 
 	server := &Server{
 		sessionManager: sm,

@@ -21,6 +21,7 @@ type ConfigSaveRequest struct {
 	ACPServers []struct {
 		Name    string                     `json:"name"`
 		Command string                     `json:"command"`
+		Type    string                     `json:"type,omitempty"` // Optional type for prompt matching
 		Prompts []configPkg.WebPrompt      `json:"prompts,omitempty"`
 		Source  configPkg.ConfigItemSource `json:"source,omitempty"` // Source of the server (rcfile, settings)
 	} `json:"acp_servers"`
@@ -57,10 +58,20 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 // handleGetConfig handles GET {prefix}/api/config.
 // Supports optional query parameter:
 //   - acp_server: If specified, global file prompts are filtered to only include prompts
-//     that are allowed for this ACP server (based on the "acps" front-matter field).
+//     that are allowed for this ACP server type (based on the "acps" front-matter field).
+//     The server's type is looked up from config; if no type is set, the name is used.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	// Get optional acp_server parameter for filtering global file prompts
-	acpServer := r.URL.Query().Get("acp_server")
+	// Get optional acp_server parameter for filtering global file prompts.
+	// We need to resolve the server type for filtering (type falls back to name).
+	acpServerName := r.URL.Query().Get("acp_server")
+	var acpServerType string
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		// Fallback: use name as type if server not found in config
+		acpServerType = acpServerName
+	}
 
 	// Build complete config response including workspaces and ACP servers
 	response := map[string]interface{}{
@@ -84,12 +95,12 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 		// Merge prompts from global files and settings
 		// Global file prompts (MITTO_DIR/prompts/*.md) have lower priority than settings prompts
-		// If acpServer is specified, filter global file prompts by ACP server
+		// If acpServerType is specified, filter global file prompts by ACP server type
 		var globalFilePrompts []configPkg.WebPrompt
 		if s.config.PromptsCache != nil {
 			var err error
-			if acpServer != "" {
-				globalFilePrompts, err = s.config.PromptsCache.GetWebPromptsForACP(acpServer)
+			if acpServerType != "" {
+				globalFilePrompts, err = s.config.PromptsCache.GetWebPromptsForACP(acpServerType)
 			} else {
 				globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
 			}
@@ -113,15 +124,22 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 				"source":  string(srv.Source), // Include source for frontend read-only indication
 			}
 
-			// Get file-based prompts that explicitly target this ACP server
-			// Only prompts with acps: field containing this server name are included
+			// Include type if specified (for prompt matching)
+			if srv.Type != "" {
+				acpServers[i]["type"] = srv.Type
+			}
+
+			// Get file-based prompts that explicitly target this ACP server type
+			// Only prompts with acps: field containing this server's type are included.
+			// If type is not set, the server name is used as the type.
 			var filePrompts []configPkg.WebPrompt
 			if s.config.PromptsCache != nil {
 				var err error
-				filePrompts, err = s.config.PromptsCache.GetWebPromptsSpecificToACP(srv.Name)
+				acpType := srv.GetType() // Use type (falls back to name)
+				filePrompts, err = s.config.PromptsCache.GetWebPromptsSpecificToACP(acpType)
 				if err != nil && s.logger != nil {
 					s.logger.Warn("Failed to load ACP-specific file prompts",
-						"acp_server", srv.Name, "error", err)
+						"acp_server", srv.Name, "acp_type", acpType, "error", err)
 				}
 			}
 
@@ -332,6 +350,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		newServer := configPkg.ACPServerSettings{
 			Name:    srv.Name,
 			Command: srv.Command,
+			Type:    srv.Type,                 // Optional type for prompt matching
 			Source:  configPkg.SourceSettings, // Mark as settings-sourced
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field

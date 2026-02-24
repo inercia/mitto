@@ -18,6 +18,10 @@ type UIPreferences struct {
 	// ExpandedGroups maps group keys to their expanded state (true = expanded)
 	// Group keys are server names (for server grouping) or folder paths (for folder grouping)
 	ExpandedGroups map[string]bool `json:"expanded_groups,omitempty"`
+
+	// FilterTabGrouping maps filter tab IDs to their grouping mode
+	// Each filter tab (conversations, periodic, archived) can have its own grouping mode
+	FilterTabGrouping map[string]string `json:"filter_tab_grouping,omitempty"`
 }
 
 // handleUIPreferences handles GET and PUT /api/ui-preferences.
@@ -64,8 +68,9 @@ func (s *Server) handleSaveUIPreferences(w http.ResponseWriter, r *http.Request)
 	if prefs.GroupingMode != "" &&
 		prefs.GroupingMode != "none" &&
 		prefs.GroupingMode != "server" &&
-		prefs.GroupingMode != "folder" {
-		http.Error(w, "Invalid grouping_mode: must be 'none', 'server', or 'folder'", http.StatusBadRequest)
+		prefs.GroupingMode != "folder" &&
+		prefs.GroupingMode != "workspace" {
+		http.Error(w, "Invalid grouping_mode: must be 'none', 'server', 'folder', or 'workspace'", http.StatusBadRequest)
 		return
 	}
 
