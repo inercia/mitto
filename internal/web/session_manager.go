@@ -30,7 +30,9 @@ type SessionManager struct {
 	sessions map[string]*BackgroundSession // keyed by persisted session ID
 	logger   *slog.Logger
 
-	// Workspaces configuration - maps directory to workspace config
+	// Workspaces configuration - maps workspace UUID to workspace config.
+	// Using UUID as key allows multiple workspaces to share the same working directory
+	// (e.g., same project folder with different ACP servers like Claude vs Gemini).
 	workspaces map[string]*config.WorkspaceSettings
 
 	// Default workspace (used when no specific workspace is requested)
@@ -140,7 +142,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	for i := range opts.Workspaces {
 		ws := &opts.Workspaces[i]
 		ws.EnsureUUID() // Ensure workspace has a UUID
-		sm.workspaces[ws.WorkingDir] = ws
+		sm.workspaces[ws.UUID] = ws
 		if sm.defaultWorkspace == nil {
 			sm.defaultWorkspace = ws
 		}
@@ -182,7 +184,7 @@ func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
 	for i := range workspaces {
 		ws := &workspaces[i]
 		ws.EnsureUUID() // Ensure workspace has a UUID
-		sm.workspaces[ws.WorkingDir] = ws
+		sm.workspaces[ws.UUID] = ws
 		if sm.defaultWorkspace == nil {
 			sm.defaultWorkspace = ws
 		}
@@ -224,13 +226,34 @@ func (sm *SessionManager) GetWorkspaces() []config.WorkspaceSettings {
 	return result
 }
 
-// GetWorkspace returns the workspace for a given directory.
+// GetWorkspace returns the first workspace matching the given directory.
+// If multiple workspaces share the same directory (with different ACP servers),
+// this returns the first one found. Use GetWorkspaceByDirAndACP for a specific match.
 func (sm *SessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	if ws, ok := sm.workspaces[workingDir]; ok {
-		return ws
+	for _, ws := range sm.workspaces {
+		if ws.WorkingDir == workingDir {
+			return ws
+		}
+	}
+	return nil
+}
+
+// GetWorkspaceByDirAndACP returns the workspace matching both directory and ACP server.
+// This is used when multiple workspaces share the same folder but use different ACP servers.
+// If acpServer is empty, returns the first workspace matching the directory.
+func (sm *SessionManager) GetWorkspaceByDirAndACP(workingDir, acpServer string) *config.WorkspaceSettings {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	for _, ws := range sm.workspaces {
+		if ws.WorkingDir == workingDir {
+			if acpServer == "" || ws.ACPServer == acpServer {
+				return ws
+			}
+		}
 	}
 	return nil
 }
@@ -241,10 +264,8 @@ func (sm *SessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSetti
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	for _, ws := range sm.workspaces {
-		if ws.UUID == uuid {
-			return ws
-		}
+	if ws, ok := sm.workspaces[uuid]; ok {
+		return ws
 	}
 	// Also check default workspace
 	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
@@ -394,8 +415,8 @@ func (sm *SessionManager) AddWorkspace(ws config.WorkspaceSettings) {
 	// Ensure the workspace has a UUID
 	ws.EnsureUUID()
 
-	// Add the workspace
-	sm.workspaces[ws.WorkingDir] = &ws
+	// Add the workspace (keyed by UUID to allow multiple workspaces with same directory)
+	sm.workspaces[ws.UUID] = &ws
 
 	// Set as default if there's no default or if the current default has no WorkingDir
 	// (which indicates it was created from CLI flags without a specific directory)
@@ -405,6 +426,7 @@ func (sm *SessionManager) AddWorkspace(ws config.WorkspaceSettings) {
 
 	if sm.logger != nil {
 		sm.logger.Info("Added workspace",
+			"uuid", ws.UUID,
 			"working_dir", ws.WorkingDir,
 			"acp_server", ws.ACPServer,
 			"total_workspaces", len(sm.workspaces))
@@ -434,10 +456,10 @@ func (sm *SessionManager) getWorkspacesLocked() []config.WorkspaceSettings {
 	return result
 }
 
-// RemoveWorkspace removes a workspace from the manager.
+// RemoveWorkspace removes a workspace by UUID from the manager.
 // If workspaces were not loaded from CLI flags and a save callback is set,
 // the workspaces will be persisted to disk.
-func (sm *SessionManager) RemoveWorkspace(workingDir string) {
+func (sm *SessionManager) RemoveWorkspace(uuid string) {
 	sm.mu.Lock()
 
 	if sm.workspaces == nil {
@@ -445,10 +467,18 @@ func (sm *SessionManager) RemoveWorkspace(workingDir string) {
 		return
 	}
 
-	delete(sm.workspaces, workingDir)
+	// Get the workspace info before deletion (for logging and default update)
+	ws, exists := sm.workspaces[uuid]
+	if !exists {
+		sm.mu.Unlock()
+		return
+	}
+	workingDir := ws.WorkingDir
+
+	delete(sm.workspaces, uuid)
 
 	// If we removed the default workspace, pick a new one
-	if sm.defaultWorkspace != nil && sm.defaultWorkspace.WorkingDir == workingDir {
+	if sm.defaultWorkspace != nil && sm.defaultWorkspace.UUID == uuid {
 		sm.defaultWorkspace = nil
 		for _, ws := range sm.workspaces {
 			sm.defaultWorkspace = ws
@@ -458,6 +488,7 @@ func (sm *SessionManager) RemoveWorkspace(workingDir string) {
 
 	if sm.logger != nil {
 		sm.logger.Info("Removed workspace",
+			"uuid", uuid,
 			"working_dir", workingDir,
 			"total_workspaces", len(sm.workspaces))
 	}
@@ -603,16 +634,26 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		if workingDir == "" {
 			workingDir = workspace.WorkingDir
 		}
-	} else if ws, ok := sm.workspaces[workingDir]; ok {
-		acpCommand = ws.ACPCommand
-		acpCwd = ws.ACPCwd
-		acpServer = ws.ACPServer
-		workspaceUUID = ws.UUID
-	} else if sm.defaultWorkspace != nil {
-		acpCommand = sm.defaultWorkspace.ACPCommand
-		acpCwd = sm.defaultWorkspace.ACPCwd
-		acpServer = sm.defaultWorkspace.ACPServer
-		workspaceUUID = sm.defaultWorkspace.UUID
+	} else {
+		// Try to find a workspace by working directory (first match)
+		var foundWs *config.WorkspaceSettings
+		for _, ws := range sm.workspaces {
+			if ws.WorkingDir == workingDir {
+				foundWs = ws
+				break
+			}
+		}
+		if foundWs != nil {
+			acpCommand = foundWs.ACPCommand
+			acpCwd = foundWs.ACPCwd
+			acpServer = foundWs.ACPServer
+			workspaceUUID = foundWs.UUID
+		} else if sm.defaultWorkspace != nil {
+			acpCommand = sm.defaultWorkspace.ACPCommand
+			acpCwd = sm.defaultWorkspace.ACPCwd
+			acpServer = sm.defaultWorkspace.ACPServer
+			workspaceUUID = sm.defaultWorkspace.UUID
+		}
 	}
 	sm.mu.Unlock()
 
@@ -843,11 +884,19 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 
 	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
-	if ws, ok := sm.workspaces[workingDir]; ok {
-		acpCommand = ws.ACPCommand
-		acpCwd = ws.ACPCwd
-		acpServer = ws.ACPServer
-		workspaceUUID = ws.UUID
+	// Try to find a workspace by working directory (first match)
+	var foundWs *config.WorkspaceSettings
+	for _, ws := range sm.workspaces {
+		if ws.WorkingDir == workingDir {
+			foundWs = ws
+			break
+		}
+	}
+	if foundWs != nil {
+		acpCommand = foundWs.ACPCommand
+		acpCwd = foundWs.ACPCwd
+		acpServer = foundWs.ACPServer
+		workspaceUUID = foundWs.UUID
 	} else if sm.defaultWorkspace != nil {
 		acpCommand = sm.defaultWorkspace.ACPCommand
 		acpCwd = sm.defaultWorkspace.ACPCwd
@@ -862,15 +911,34 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 			// Get ACP session ID for potential resumption
 			acpSessionID = meta.ACPSessionID
 
-			// Use ACP server from metadata if not available from workspace config
-			if acpServer == "" && meta.ACPServer != "" {
+			// IMPORTANT: Use ACP server from session metadata, not workspace config.
+			// The session was created with a specific ACP server, and resuming it
+			// should use the same server regardless of current workspace defaults.
+			// Only fall back to workspace config if metadata doesn't have the server.
+			if meta.ACPServer != "" {
 				acpServer = meta.ACPServer
+
+				// IMPORTANT: Look up the correct command for the session's ACP server.
+				// The workspace loop above may have found a different workspace (same dir,
+				// different ACP server), so we must update the command to match.
+				if sm.mittoConfig != nil {
+					if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+						acpCommand = server.Command
+						acpCwd = server.Cwd
+						if sm.logger != nil {
+							sm.logger.Debug("Using ACP command from session metadata server",
+								"session_id", sessionID,
+								"acp_server", acpServer,
+								"acp_command", acpCommand)
+						}
+					}
+				}
 			}
 		}
 	}
 
-	// If we have an ACP server name but no command, look it up from global config
-	// This ensures we always use the current global config for the ACP command
+	// If we still have an ACP server name but no command, look it up from global config
+	// This handles cases where workspace config didn't provide a command
 	if acpCommand == "" && acpServer != "" && sm.mittoConfig != nil {
 		if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
 			acpCommand = server.Command

@@ -329,8 +329,8 @@ func TestSessionManager_AddWorkspace(t *testing.T) {
 
 func TestSessionManager_RemoveWorkspace(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
+		{UUID: "uuid-1", ACPServer: "server1", ACPCommand: "echo server1", WorkingDir: "/path1"},
+		{UUID: "uuid-2", ACPServer: "server2", ACPCommand: "echo server2", WorkingDir: "/path2"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -338,15 +338,20 @@ func TestSessionManager_RemoveWorkspace(t *testing.T) {
 		AutoApprove: true,
 	})
 
-	// Remove first workspace
-	sm.RemoveWorkspace("/path1")
+	// Remove first workspace by UUID
+	sm.RemoveWorkspace("uuid-1")
 
 	// Check it was removed
 	if len(sm.workspaces) != 1 {
 		t.Errorf("workspaces count = %d, want 1", len(sm.workspaces))
 	}
 
-	// Check it's no longer retrievable
+	// Check it's no longer retrievable by UUID
+	if ws := sm.GetWorkspaceByUUID("uuid-1"); ws != nil {
+		t.Error("GetWorkspaceByUUID should return nil for removed workspace")
+	}
+
+	// Check it's no longer retrievable by working directory
 	if ws := sm.GetWorkspace("/path1"); ws != nil {
 		t.Error("GetWorkspace should return nil for removed workspace")
 	}
@@ -366,8 +371,8 @@ func TestSessionManager_RemoveWorkspace(t *testing.T) {
 func TestSessionManager_RemoveWorkspace_NonExistent(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 
-	// Should not panic when removing non-existent workspace
-	sm.RemoveWorkspace("/non/existent/path")
+	// Should not panic when removing non-existent workspace by UUID
+	sm.RemoveWorkspace("non-existent-uuid")
 
 	if len(sm.workspaces) != 0 {
 		t.Errorf("workspaces count = %d, want 0", len(sm.workspaces))
@@ -667,25 +672,37 @@ func TestSessionManager_SetGlobalConversations(t *testing.T) {
 func TestSessionManager_RemoveWorkspace_NilWorkspaces(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 
-	// Remove from nil workspaces (should not panic)
-	sm.RemoveWorkspace("/nonexistent")
+	// Remove from nil workspaces (should not panic) - using UUID now
+	sm.RemoveWorkspace("nonexistent-uuid")
 }
 
-func TestSessionManager_AddWorkspace_Duplicate(t *testing.T) {
+func TestSessionManager_AddWorkspace_SameDirectoryDifferentACP(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
-		{WorkingDir: "/workspace1", ACPServer: "server1"},
+		{UUID: "uuid-1", WorkingDir: "/workspace1", ACPServer: "server1"},
 	})
 
-	// Add duplicate workspace (should update)
+	// Add workspace with same directory but different ACP server
+	// This is now allowed (e.g., same project folder with Claude vs Gemini)
 	sm.AddWorkspace(config.WorkspaceSettings{
+		UUID:       "uuid-2",
 		WorkingDir: "/workspace1",
 		ACPServer:  "server2",
 	})
 
 	workspaces := sm.GetWorkspaces()
-	if len(workspaces) != 1 {
-		t.Errorf("GetWorkspaces() = %d, want 1", len(workspaces))
+	if len(workspaces) != 2 {
+		t.Errorf("GetWorkspaces() = %d, want 2 (same dir, different ACP servers allowed)", len(workspaces))
+	}
+
+	// GetWorkspaceByDirAndACP should find the correct one
+	ws1 := sm.GetWorkspaceByDirAndACP("/workspace1", "server1")
+	if ws1 == nil {
+		t.Error("GetWorkspaceByDirAndACP should find workspace with server1")
+	}
+	ws2 := sm.GetWorkspaceByDirAndACP("/workspace1", "server2")
+	if ws2 == nil {
+		t.Error("GetWorkspaceByDirAndACP should find workspace with server2")
 	}
 }
 

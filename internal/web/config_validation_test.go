@@ -73,6 +73,7 @@ func TestValidateConfigRequest_NoWorkspaces(t *testing.T) {
 		ACPServers: []struct {
 			Name    string                  `json:"name"`
 			Command string                  `json:"command"`
+			Type    string                  `json:"type,omitempty"`
 			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
 			Source  config.ConfigItemSource `json:"source,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
@@ -95,6 +96,7 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 		ACPServers: []struct {
 			Name    string                  `json:"name"`
 			Command string                  `json:"command"`
+			Type    string                  `json:"type,omitempty"`
 			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
 			Source  config.ConfigItemSource `json:"source,omitempty"`
 		}{},
@@ -117,6 +119,7 @@ func TestValidateConfigRequest_EmptyServerName(t *testing.T) {
 		ACPServers: []struct {
 			Name    string                  `json:"name"`
 			Command string                  `json:"command"`
+			Type    string                  `json:"type,omitempty"`
 			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
 			Source  config.ConfigItemSource `json:"source,omitempty"`
 		}{{Name: "", Command: "cmd"}},
@@ -136,6 +139,7 @@ func TestValidateConfigRequest_EmptyServerCommand(t *testing.T) {
 		ACPServers: []struct {
 			Name    string                  `json:"name"`
 			Command string                  `json:"command"`
+			Type    string                  `json:"type,omitempty"`
 			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
 			Source  config.ConfigItemSource `json:"source,omitempty"`
 		}{{Name: "test", Command: ""}},
@@ -155,6 +159,7 @@ func TestValidateConfigRequest_DuplicateServerName(t *testing.T) {
 		ACPServers: []struct {
 			Name    string                  `json:"name"`
 			Command string                  `json:"command"`
+			Type    string                  `json:"type,omitempty"`
 			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
 			Source  config.ConfigItemSource `json:"source,omitempty"`
 		}{
@@ -177,6 +182,7 @@ func TestValidateConfigRequest_Valid(t *testing.T) {
 		ACPServers: []struct {
 			Name    string                  `json:"name"`
 			Command string                  `json:"command"`
+			Type    string                  `json:"type,omitempty"`
 			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
 			Source  config.ConfigItemSource `json:"source,omitempty"`
 		}{{Name: "test", Command: "cmd"}},

@@ -95,8 +95,8 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use secure upgrader
-	secureUpgrader := s.getSecureUpgrader()
+	// Use secure upgrader with compression for external connections
+	secureUpgrader := s.getSecureUpgraderForRequest(r)
 	conn, err := secureUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		if s.connectionTracker != nil {
@@ -232,8 +232,13 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			data["status"] = meta.Status
 			data["runner_type"] = meta.RunnerType
 			data["runner_restricted"] = meta.RunnerRestricted
+			// Override acp_server with session-specific value from metadata
+			// This fixes grouping for multiple workspaces with the same folder but different ACP servers
+			if meta.ACPServer != "" {
+				data["acp_server"] = meta.ACPServer
+			}
 			if c.logger != nil {
-				c.logger.Debug("Sending connected message", "working_dir", meta.WorkingDir)
+				c.logger.Debug("Sending connected message", "working_dir", meta.WorkingDir, "acp_server", data["acp_server"])
 			}
 		} else if c.logger != nil {
 			c.logger.Warn("Failed to get metadata for connected message", "error", err)
@@ -911,16 +916,14 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 	// Send keepalive acknowledgment with timestamps, sequence info, and session state
 	// The is_prompting flag allows the UI to sync its streaming state with the server
 	// Additional fields allow the UI to stay in sync without separate API calls
-	// Note: max_seq is included for consistency with other messages (also sent as server_max_seq for backward compat)
 	c.sendMessage(WSMsgTypeKeepaliveAck, map[string]interface{}{
-		"client_time":    clientTime,
-		"server_time":    serverTime,
-		"max_seq":        serverMaxSeq,
-		"server_max_seq": serverMaxSeq, // Deprecated: use max_seq instead
-		"is_prompting":   isPrompting,
-		"is_running":     isRunning,
-		"queue_length":   queueLength,
-		"status":         status,
+		"client_time":  clientTime,
+		"server_time":  serverTime,
+		"max_seq":      serverMaxSeq,
+		"is_prompting": isPrompting,
+		"is_running":   isRunning,
+		"queue_length": queueLength,
+		"status":       status,
 	})
 }
 
