@@ -123,6 +123,9 @@ type ACPServerSettings struct {
 	Command string `json:"command"`
 	// Cwd is the working directory for the ACP server process
 	Cwd string `json:"cwd,omitempty"`
+	// Type is an optional type identifier for prompt matching.
+	// Servers with the same type share prompts. If empty, Name is used as the type.
+	Type string `json:"type,omitempty"`
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt `json:"prompts,omitempty"`
 	// RestrictedRunners contains per-runner-type configuration for this agent

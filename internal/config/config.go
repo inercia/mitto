@@ -21,6 +21,9 @@ type ACPServer struct {
 	// If empty, the process inherits the current working directory.
 	// This eliminates the need for shell tricks like 'sh -c "cd /some/dir && command"'.
 	Cwd string
+	// Type is an optional type identifier for prompt matching.
+	// Servers with the same type share prompts. If empty, Name is used as the type.
+	Type string
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt
 	// RestrictedRunners contains per-runner-type configuration for this agent.
@@ -28,6 +31,15 @@ type ACPServer struct {
 	// Source indicates where this server configuration originated from.
 	// Used for config layering: servers from RC file are read-only in the UI.
 	Source ConfigItemSource
+}
+
+// GetType returns the type identifier for prompt matching.
+// If Type is not set, returns the Name as the type.
+func (s *ACPServer) GetType() string {
+	if s.Type != "" {
+		return s.Type
+	}
+	return s.Name
 }
 
 // PromptSource indicates where a prompt originated from.
@@ -251,6 +263,13 @@ type WebUIConfig struct {
 	// Options: "all" (default) - all non-archived conversations
 	//          "visible_groups" - only conversations in expanded groups
 	ConversationCyclingMode string `json:"conversation_cycling_mode,omitempty"`
+
+	// SingleExpandedGroup enables accordion-style behavior for conversation groups.
+	// When enabled, at most one conversation group can be expanded at a time.
+	// Expanding a group will automatically collapse any other expanded group.
+	// This only applies when conversation grouping is enabled.
+	// Default: false
+	SingleExpandedGroup bool `json:"single_expanded_group,omitempty"`
 }
 
 // UIConfig represents UI configuration for the desktop app.
@@ -897,6 +916,7 @@ type Config struct {
 type rawACPServerConfig struct {
 	Command string `yaml:"command"`
 	Cwd     string `yaml:"cwd"`
+	Type    string `yaml:"type"` // Optional type for prompt matching; defaults to name
 	Prompts []struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
@@ -959,6 +979,7 @@ type rawConfig struct {
 		Web *struct {
 			InputFontFamily         string `yaml:"input_font_family"`
 			ConversationCyclingMode string `yaml:"conversation_cycling_mode"`
+			SingleExpandedGroup     bool   `yaml:"single_expanded_group"`
 		} `yaml:"web"`
 		Mac *struct {
 			Hotkeys *struct {
@@ -1066,6 +1087,7 @@ func Parse(data []byte) (*Config, error) {
 				Name:              name,
 				Command:           server.Command,
 				Cwd:               server.Cwd,
+				Type:              server.Type, // Optional type for prompt matching
 				RestrictedRunners: server.RestrictedRunners,
 			}
 			// Copy server-specific prompts
@@ -1151,6 +1173,7 @@ func Parse(data []byte) (*Config, error) {
 			cfg.UI.Web = &WebUIConfig{
 				InputFontFamily:         raw.UI.Web.InputFontFamily,
 				ConversationCyclingMode: raw.UI.Web.ConversationCyclingMode,
+				SingleExpandedGroup:     raw.UI.Web.SingleExpandedGroup,
 			}
 		}
 
@@ -1281,6 +1304,17 @@ func (c *Config) GetServer(name string) (*ACPServer, error) {
 		}
 	}
 	return nil, fmt.Errorf("ACP server %q not found in configuration", name)
+}
+
+// GetServerType returns the type identifier for an ACP server by name.
+// If the server has a Type set, returns that; otherwise returns the server name.
+// Returns empty string if the server is not found.
+func (c *Config) GetServerType(name string) string {
+	srv, err := c.GetServer(name)
+	if err != nil {
+		return ""
+	}
+	return srv.GetType()
 }
 
 // ServerNames returns a list of all configured server names.
