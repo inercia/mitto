@@ -16,6 +16,8 @@ import {
 } from "./Icons.js";
 import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
+import { formatTimeAgo } from "../lib.js";
+import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 
 /**
  * TriStateCheckbox - A checkbox with three states: unset, enabled, disabled
@@ -766,6 +768,16 @@ export function ConversationPropertiesPanel({
           `}
         </div>
 
+        <!-- Message Count and Time Info -->
+        <div class="flex items-center gap-3 text-sm text-slate-400">
+          ${sessionInfo?.messageCount !== undefined &&
+          html`<span>${sessionInfo.messageCount} messages</span>`}
+          ${sessionInfo?.created_at &&
+          html`<span title=${new Date(sessionInfo.created_at).toLocaleString()}>
+            ${formatTimeAgo(sessionInfo.created_at)}
+          </span>`}
+        </div>
+
         <!-- Session Config Options Section -->
         <!-- Renders all config options dynamically based on type -->
         <!-- Supports: select (dropdown), toggle (future), unknown types gracefully ignored -->
@@ -888,9 +900,22 @@ export function ConversationPropertiesPanel({
           </label>
           <div class="flex items-center gap-2 text-sm text-slate-300">
             <${FolderIcon} className="w-4 h-4 flex-shrink-0 text-slate-500" />
-            <span class="truncate" title=${sessionInfo?.working_dir || ""}>
-              ${sessionInfo?.working_dir || "Unknown"}
-            </span>
+            ${canRevealInFinder() && sessionInfo?.working_dir
+              ? html`
+                  <button
+                    type="button"
+                    class="truncate text-left hover:text-blue-400 hover:underline transition-colors cursor-pointer"
+                    title="Open in Finder: ${sessionInfo.working_dir}"
+                    onClick=${() => revealInFinder(sessionInfo.working_dir)}
+                  >
+                    ${sessionInfo.working_dir}
+                  </button>
+                `
+              : html`
+                  <span class="truncate" title=${sessionInfo?.working_dir || ""}>
+                    ${sessionInfo?.working_dir || "Unknown"}
+                  </span>
+                `}
           </div>
         </div>
 

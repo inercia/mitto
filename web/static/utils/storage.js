@@ -22,11 +22,27 @@ let uiPreferencesLoadedCallbacks = [];
 /**
  * Register a callback to be called when UI preferences are loaded from server.
  * This is useful for components that need to re-read their state after server sync.
+ *
+ * If preferences have already been loaded, the callback is invoked immediately
+ * to handle the case where a component subscribes after the initial load completes.
+ *
  * @param {Function} callback - Function to call when preferences are loaded
  * @returns {Function} Unsubscribe function
  */
 export function onUIPreferencesLoaded(callback) {
   uiPreferencesLoadedCallbacks.push(callback);
+
+  // If preferences are already loaded, call the callback immediately
+  // This handles the race condition where initUIPreferences() completes
+  // before a component has a chance to subscribe
+  if (uiPreferencesCache !== null) {
+    try {
+      callback(uiPreferencesCache);
+    } catch (e) {
+      console.warn("[Mitto] Error in UI preferences callback:", e);
+    }
+  }
+
   return () => {
     uiPreferencesLoadedCallbacks = uiPreferencesLoadedCallbacks.filter(
       (cb) => cb !== callback,
@@ -62,12 +78,20 @@ export async function initUIPreferences() {
             JSON.stringify(prefs.expanded_groups),
           );
         }
+        if (prefs.filter_tab_grouping) {
+          localStorage.setItem(
+            FILTER_TAB_GROUPING_KEY,
+            JSON.stringify(prefs.filter_tab_grouping),
+          );
+        }
 
         console.debug(
           "[Mitto] UI preferences loaded from server:",
           prefs.grouping_mode,
           "groups:",
           Object.keys(prefs.expanded_groups || {}).length,
+          "tab groupings:",
+          Object.keys(prefs.filter_tab_grouping || {}).length,
         );
 
         // Notify listeners that preferences have been loaded
@@ -126,6 +150,7 @@ function getCurrentUIPreferences() {
   return {
     grouping_mode: getGroupingMode(),
     expanded_groups: getExpandedGroups(),
+    filter_tab_grouping: getAllFilterTabGroupings(),
   };
 }
 
@@ -318,18 +343,48 @@ export function getAgentPlanHeightConstraints() {
 // Conversation Grouping Persistence (localStorage)
 // =============================================================================
 
-// Grouping modes: 'none' | 'server' | 'folder'
+// Grouping modes: 'none' | 'server' | 'workspace'
+// Note: 'workspace' groups by directory + ACP server combination
+// (allows multiple workspaces to share the same folder with different agents)
 const GROUPING_MODE_KEY = "mitto_conversation_grouping_mode";
 const EXPANDED_GROUPS_KEY = "mitto_conversation_expanded_groups";
+// Per-tab grouping (each filter tab can have its own grouping mode)
+const FILTER_TAB_GROUPING_KEY = "mitto_filter_tab_grouping";
+
+// Accordion mode: when enabled, only one group can be expanded at a time
+// This is configured via settings (ui.web.single_expanded_group)
+let singleExpandedGroupMode = false;
+
+/**
+ * Set whether accordion mode is enabled (single expanded group).
+ * This should be called when config is loaded.
+ * @param {boolean} enabled - Whether accordion mode is enabled
+ */
+export function setSingleExpandedGroupMode(enabled) {
+  singleExpandedGroupMode = enabled;
+}
+
+/**
+ * Get whether accordion mode is enabled (single expanded group).
+ * @returns {boolean} Whether accordion mode is enabled
+ */
+export function getSingleExpandedGroupMode() {
+  return singleExpandedGroupMode;
+}
 
 /**
  * Get the current conversation grouping mode from localStorage
- * @returns {'none' | 'server' | 'folder'} The current grouping mode
+ * @returns {'none' | 'server' | 'workspace'} The current grouping mode
  */
 export function getGroupingMode() {
   try {
     const value = localStorage.getItem(GROUPING_MODE_KEY);
-    return value === "server" || value === "folder" ? value : "none";
+    // Support legacy 'folder' mode by migrating to 'workspace'
+    if (value === "folder") {
+      localStorage.setItem(GROUPING_MODE_KEY, "workspace");
+      return "workspace";
+    }
+    return value === "server" || value === "workspace" ? value : "none";
   } catch (e) {
     console.warn("Failed to read grouping mode from localStorage:", e);
     return "none";
@@ -338,11 +393,11 @@ export function getGroupingMode() {
 
 /**
  * Save the conversation grouping mode to localStorage and server
- * @param {'none' | 'server' | 'folder'} mode - The grouping mode to save
+ * @param {'none' | 'server' | 'workspace'} mode - The grouping mode to save
  */
 export function setGroupingMode(mode) {
   try {
-    if (mode === "server" || mode === "folder") {
+    if (mode === "server" || mode === "workspace") {
       localStorage.setItem(GROUPING_MODE_KEY, mode);
     } else {
       localStorage.removeItem(GROUPING_MODE_KEY);
@@ -363,7 +418,7 @@ export function setGroupingMode(mode) {
 
 /**
  * Cycle to the next grouping mode
- * @returns {'none' | 'server' | 'folder'} The new grouping mode
+ * @returns {'none' | 'server' | 'workspace'} The new grouping mode
  */
 export function cycleGroupingMode() {
   const current = getGroupingMode();
@@ -373,9 +428,9 @@ export function cycleGroupingMode() {
       next = "server";
       break;
     case "server":
-      next = "folder";
+      next = "workspace";
       break;
-    case "folder":
+    case "workspace":
       next = "none";
       break;
     default:
@@ -404,7 +459,7 @@ export function getExpandedGroups() {
 
 /**
  * Save the expanded/collapsed state of a group to localStorage and server
- * @param {string} groupKey - The unique key for the group (server name or folder path)
+ * @param {string} groupKey - The unique key for the group (server name or workspace key)
  * @param {boolean} expanded - Whether the group is expanded
  */
 export function setGroupExpanded(groupKey, expanded) {
@@ -444,4 +499,187 @@ export function isGroupExpanded(groupKey) {
     return false;
   }
   return true;
+}
+
+// =============================================================================
+// Conversation Filter Tab Persistence (localStorage)
+// =============================================================================
+
+// Filter tabs: 'conversations' | 'periodic' | 'archived'
+const FILTER_TAB_KEY = "mitto_conversation_filter_tab";
+
+/**
+ * Filter tab values
+ */
+export const FILTER_TAB = {
+  CONVERSATIONS: "conversations",
+  PERIODIC: "periodic",
+  ARCHIVED: "archived",
+};
+
+/**
+ * Get the current conversation filter tab from localStorage
+ * @returns {'conversations' | 'periodic' | 'archived'} The current filter tab
+ */
+export function getFilterTab() {
+  try {
+    const value = localStorage.getItem(FILTER_TAB_KEY);
+    if (
+      value === FILTER_TAB.CONVERSATIONS ||
+      value === FILTER_TAB.PERIODIC ||
+      value === FILTER_TAB.ARCHIVED
+    ) {
+      return value;
+    }
+    return FILTER_TAB.CONVERSATIONS; // Default
+  } catch (e) {
+    console.warn("Failed to read filter tab from localStorage:", e);
+    return FILTER_TAB.CONVERSATIONS;
+  }
+}
+
+/**
+ * Save the conversation filter tab to localStorage
+ * @param {'conversations' | 'periodic' | 'archived'} tab - The filter tab to save
+ */
+export function setFilterTab(tab) {
+  try {
+    if (
+      tab === FILTER_TAB.CONVERSATIONS ||
+      tab === FILTER_TAB.PERIODIC ||
+      tab === FILTER_TAB.ARCHIVED
+    ) {
+      localStorage.setItem(FILTER_TAB_KEY, tab);
+    } else {
+      localStorage.removeItem(FILTER_TAB_KEY);
+    }
+    // Dispatch event for components that need to react to filter tab changes
+    // (e.g., App component for navigableSessions filtering)
+    window.dispatchEvent(
+      new CustomEvent("mitto-filter-tab-changed", {
+        detail: { tab },
+      }),
+    );
+  } catch (e) {
+    console.warn("Failed to save filter tab to localStorage:", e);
+  }
+}
+
+// =============================================================================
+// Per-Tab Grouping Persistence (localStorage)
+// =============================================================================
+
+/**
+ * Default grouping modes for each filter tab:
+ * - Conversations: group by workspace
+ * - Periodic: no grouping (flat list)
+ * - Archived: group by workspace
+ */
+const DEFAULT_TAB_GROUPING = {
+  [FILTER_TAB.CONVERSATIONS]: "workspace",
+  [FILTER_TAB.PERIODIC]: "none",
+  [FILTER_TAB.ARCHIVED]: "workspace",
+};
+
+/**
+ * Get the grouping mode for a specific filter tab from localStorage
+ * @param {string} tabId - The filter tab ID (conversations, periodic, archived)
+ * @returns {'none' | 'server' | 'workspace'} The grouping mode for that tab
+ */
+export function getFilterTabGrouping(tabId) {
+  try {
+    const value = localStorage.getItem(FILTER_TAB_GROUPING_KEY);
+    if (value) {
+      const tabGroupings = JSON.parse(value);
+      const mode = tabGroupings[tabId];
+      if (mode === "none" || mode === "server" || mode === "workspace") {
+        return mode;
+      }
+    }
+    // Return default for this tab
+    return DEFAULT_TAB_GROUPING[tabId] || "none";
+  } catch (e) {
+    console.warn("Failed to read filter tab grouping from localStorage:", e);
+    return DEFAULT_TAB_GROUPING[tabId] || "none";
+  }
+}
+
+/**
+ * Save the grouping mode for a specific filter tab to localStorage and server
+ * @param {string} tabId - The filter tab ID (conversations, periodic, archived)
+ * @param {'none' | 'server' | 'workspace'} mode - The grouping mode to save
+ */
+export function setFilterTabGrouping(tabId, mode) {
+  try {
+    // Get current tab groupings
+    let tabGroupings = {};
+    const value = localStorage.getItem(FILTER_TAB_GROUPING_KEY);
+    if (value) {
+      tabGroupings = JSON.parse(value);
+    }
+
+    // Update the grouping for this tab
+    if (mode === "none" || mode === "server" || mode === "workspace") {
+      tabGroupings[tabId] = mode;
+    } else {
+      // Use default for invalid modes
+      tabGroupings[tabId] = DEFAULT_TAB_GROUPING[tabId] || "none";
+    }
+
+    localStorage.setItem(FILTER_TAB_GROUPING_KEY, JSON.stringify(tabGroupings));
+
+    // Also save to server for persistence across app launches
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+
+    // Dispatch event for components that need to react to grouping mode changes
+    window.dispatchEvent(
+      new CustomEvent("mitto-grouping-mode-changed", {
+        detail: { mode, tabId },
+      }),
+    );
+  } catch (e) {
+    console.warn("Failed to save filter tab grouping to localStorage:", e);
+  }
+}
+
+/**
+ * Get all filter tab groupings from localStorage
+ * @returns {Object} Map of tabId to grouping mode
+ */
+export function getAllFilterTabGroupings() {
+  try {
+    const value = localStorage.getItem(FILTER_TAB_GROUPING_KEY);
+    if (value) {
+      return JSON.parse(value);
+    }
+    return {};
+  } catch (e) {
+    console.warn("Failed to read filter tab groupings from localStorage:", e);
+    return {};
+  }
+}
+
+/**
+ * Cycle to the next grouping mode for a specific filter tab
+ * @param {string} tabId - The filter tab ID
+ * @returns {'none' | 'server' | 'workspace'} The new grouping mode
+ */
+export function cycleFilterTabGrouping(tabId) {
+  const current = getFilterTabGrouping(tabId);
+  let next;
+  switch (current) {
+    case "none":
+      next = "server";
+      break;
+    case "server":
+      next = "workspace";
+      break;
+    case "workspace":
+      next = "none";
+      break;
+    default:
+      next = "none";
+  }
+  setFilterTabGrouping(tabId, next);
+  return next;
 }

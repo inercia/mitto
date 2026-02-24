@@ -78,6 +78,38 @@ export function SettingsIcon({ className = "w-5 h-5" }) {
 }
 
 /**
+ * Duplicate/Copy icon for duplicating items
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function DuplicateIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <rect
+        x="9"
+        y="9"
+        width="13"
+        height="13"
+        rx="2"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Plus icon for adding items
  * @param {string} className - CSS classes (default: 'w-5 h-5')
  */
@@ -776,6 +808,73 @@ export function UnlockIcon({ className = "w-5 h-5" }) {
         d="M8 11V7a4 4 0 017.5-2"
       />
       <circle cx="12" cy="16" r="1" fill="currentColor" />
+    </svg>
+  `;
+}
+
+/**
+ * Globe icon (for web/external access settings)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function GlobeIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="12" r="10" stroke-width="2" />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Chat bubble icon (for conversations tab)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function ChatBubbleIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Sliders/adjustments icon (for UI settings)
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function SlidersIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"
+      />
     </svg>
   `;
 }
