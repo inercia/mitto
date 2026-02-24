@@ -302,8 +302,13 @@ func GenerateConversationSummary(ctx context.Context, conversationContent string
 	// Keep about 50KB of content (roughly 50000 characters)
 	truncatedContent := conversationContent
 	const maxContentLen = 50000
-	if len(truncatedContent) > maxContentLen {
-		truncatedContent = truncatedContent[:maxContentLen-100] + "\n\n[... conversation truncated for brevity ...]"
+	truncated := len(conversationContent) > maxContentLen
+	if truncated {
+		removedBytes := len(conversationContent) - maxContentLen + 100
+		truncatedContent = truncatedContent[:maxContentLen-100] + fmt.Sprintf(
+			"\n\n[... %d bytes truncated (~%.0f%% of conversation) ...]",
+			removedBytes,
+			float64(removedBytes)*100/float64(len(conversationContent)))
 	}
 
 	prompt := fmt.Sprintf(GenerateConversationSummaryPromptTemplate, truncatedContent)

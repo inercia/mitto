@@ -1326,6 +1326,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	newSessionID := uuid.New().String()
 
 	// Create the new session metadata
+	// NOTE: Recursion is prevented by setting can_start_conversation=false for child sessions.
+	// The parent check above (ParentSessionID != "") also blocks child sessions from creating new ones.
+	// TODO: Consider adding a max recursion depth counter in metadata as a defensive measure,
+	// though the current prevention logic should be sufficient.
 	newMeta := session.Metadata{
 		SessionID:       newSessionID,
 		Name:            input.Title,
