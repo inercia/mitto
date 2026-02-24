@@ -80,7 +80,7 @@ STDIO mode is useful for:
 
 These tools are always available and don't require a session context:
 
-#### `mitto_list_conversations`
+#### `mitto_conversation_list`
 
 Lists all conversations with detailed metadata. **Always available** (no permission check).
 
@@ -140,9 +140,9 @@ Returns runtime information about the Mitto instance:
 
 These tools operate on a specific conversation and require a `session_id` parameter:
 
-#### `mitto_get_current_session`
+#### `mitto_conversation_get_current`
 
-Get information about a specific session. Requires `session_id`.
+Get information about the current conversation. Requires `session_id`.
 
 | Parameter    | Type   | Required | Description          |
 | ------------ | ------ | -------- | -------------------- |
@@ -161,7 +161,7 @@ Returns:
 | `message_count` | Number of messages    |
 | `status`        | Session status        |
 
-#### `mitto_send_prompt_to_conversation`
+#### `mitto_conversation_send_prompt`
 
 Send a prompt to another conversation's queue. Requires `can_send_prompt` flag on the source session.
 
@@ -205,18 +205,80 @@ Present a dropdown/combo box. Requires `can_prompt_user` flag. Max 10 options.
 | `question`        | string   | No       | Question text                  |
 | `timeout_seconds` | int      | No       | Timeout (default: 300)         |
 
+#### `mitto_conversation_start`
+
+Create a new conversation in the same workspace as the calling session. Requires `can_start_conversation` flag.
+
+The new conversation inherits the workspace configuration (ACP server, working directory) from the calling session. This is useful for agents that want to spawn sub-conversations for parallel work or delegate tasks.
+
+| Parameter        | Type   | Required | Description                                  |
+| ---------------- | ------ | -------- | -------------------------------------------- |
+| `session_id`     | string | Yes      | Source session ID (your session)             |
+| `title`          | string | No       | Title for the new conversation               |
+| `initial_prompt` | string | No       | Initial message to queue for the new session |
+
+Returns:
+
+| Field            | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `success`        | Whether the conversation was created          |
+| `session_id`     | The new conversation's session ID             |
+| `working_dir`    | Working directory (inherited from caller)     |
+| `queue_position` | Queue position if initial prompt was provided |
+| `error`          | Error message if creation failed              |
+
+**Safety restriction:** The newly created conversation has its `can_start_conversation` flag explicitly set to `false`, regardless of the parent's permissions. This prevents infinite recursive chains where conversations spawn unlimited child conversations.
+
+**Example use cases:**
+
+- Spawn a sub-agent to work on a specific task in parallel
+- Delegate a sub-task to a new conversation
+- Create a conversation for follow-up work
+
+#### `mitto_conversation_userdata_set`
+
+Set a user data attribute in the calling conversation. The key must be defined in the workspace's user data schema (`.mittorc` under `conversations.user_data`).
+
+| Parameter    | Type   | Required | Description                                  |
+| ------------ | ------ | -------- | -------------------------------------------- |
+| `session_id` | string | Yes      | Source session ID (your session)             |
+| `key`        | string | Yes      | Attribute name (must be in schema)           |
+| `value`      | string | Yes      | Value to set (validated against schema type) |
+
+Returns:
+
+| Field     | Description                                |
+| --------- | ------------------------------------------ |
+| `success` | Whether the attribute was set              |
+| `key`     | The key that was set                       |
+| `value`   | The value that was set                     |
+| `error`   | Error message if validation/setting failed |
+
+**Schema validation:**
+
+- If no schema is defined for the workspace, the tool fails
+- If the key is not in the schema, the tool fails
+- If the value doesn't match the field type (e.g., invalid URL for `url` type), the tool fails
+
+**Example use cases:**
+
+- Update ticket/issue references from within the conversation
+- Set metadata like priority or status
+- Store references to external resources (URLs)
+
 ### Permission Flags
 
 Session-scoped tools check permissions at runtime:
 
-| Flag                   | Tools That Require It                                                       |
-| ---------------------- | --------------------------------------------------------------------------- |
-| `can_do_introspection` | (None currently - for future tools)                                         |
-| `can_send_prompt`      | `mitto_send_prompt_to_conversation`                                         |
-| `can_prompt_user`      | `mitto_ui_ask_yes_no`, `mitto_ui_options_buttons`, `mitto_ui_options_combo` |
+| Flag                     | Tools That Require It                                                       |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `can_do_introspection`   | (None currently - for future tools)                                         |
+| `can_send_prompt`        | `mitto_conversation_send_prompt`                                            |
+| `can_prompt_user`        | `mitto_ui_ask_yes_no`, `mitto_ui_options_buttons`, `mitto_ui_options_combo` |
+| `can_start_conversation` | `mitto_conversation_start`                                                  |
 
-**Note:** `mitto_list_conversations` is **always available** (no permission check).
-`mitto_get_current_session` requires the session to be registered (running) but no flag check.
+**Note:** `mitto_conversation_list` is **always available** (no permission check).
+`mitto_conversation_get_current` and `mitto_conversation_userdata_set` require the session to be registered (running) but no flag check.
 
 ## Configuring AI Agents
 
@@ -342,7 +404,7 @@ Sessions: ~/Library/Application Support/Mitto/sessions/
 
 ### 2. List Conversations
 
-Call `mitto_list_conversations` to find the session you're debugging:
+Call `mitto_conversation_list` to find the session you're debugging:
 
 ```
 Session: 20260211-143052-a1b2c3d4
@@ -410,7 +472,7 @@ Sessions register with the global MCP server to enable session-scoped tools. Thi
 
 - UI prompts to be routed to the correct session
 - Permission checks based on each session's flags
-- Session context for tools like `mitto_get_current_session`
+- Session context for tools like `mitto_conversation_get_current`
 
 ### How It Works
 
@@ -565,9 +627,12 @@ Sessions can have per-conversation feature flags stored in their metadata:
 
 ### Available Flags
 
-| Flag                   | Default | Description                                 |
-| ---------------------- | ------- | ------------------------------------------- |
-| `can_do_introspection` | `false` | Allow ACP agent to access Mitto's MCP tools |
+| Flag                     | Default | Description                                            |
+| ------------------------ | ------- | ------------------------------------------------------ |
+| `can_do_introspection`   | `false` | Allow ACP agent to access Mitto's MCP tools            |
+| `can_send_prompt`        | `false` | Allow sending prompts to other conversations           |
+| `can_prompt_user`        | `true`  | Allow displaying interactive UI prompts                |
+| `can_start_conversation` | `false` | Allow creating new conversations in the same workspace |
 
 ### Checking Flags in Code
 

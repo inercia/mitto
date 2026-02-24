@@ -227,7 +227,7 @@ sequenceDiagram
     Note over Frontend: Every 5s (native) or 10s (browser)...
     Frontend->>WS: keepalive {client_time, last_seen_seq}
     WS->>Server: keepalive
-    Server-->>WS: keepalive_ack {server_max_seq, is_prompting, ...}
+    Server-->>WS: keepalive_ack {max_seq, is_prompting, ...}
     WS-->>Frontend: keepalive_ack received
     Frontend->>Frontend: Sync state, check for gaps
 
