@@ -1,0 +1,29 @@
+{
+  "scenario": "slow-response",
+  "description": "A slow streaming response for testing archive-while-streaming",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)slow response"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 500,
+          "chunks": [
+            "Starting a slow response... ",
+            "This message takes time to stream. ",
+            "Each chunk has a 500ms delay. ",
+            "This is useful for testing archive behavior. ",
+            "While I'm still responding, try archiving the session. ",
+            "The archive should wait for me to finish. ",
+            "Almost done now... ",
+            "And this is the final chunk!"
+          ]
+        }
+      ]
+    }
+  ]
+}
+
