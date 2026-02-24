@@ -27,7 +27,6 @@ All WebSocket messages use a JSON envelope format:
 | `cancel`            | `{}`                                | Cancel current agent operation                   |
 | `permission_answer` | `{request_id, approved}`            | Respond to permission request                    |
 | `load_events`       | `{limit?, before_seq?, after_seq?}` | Load events (initial, pagination, or sync)       |
-| `sync_session`      | `{after_seq}`                       | (DEPRECATED) Request events after seq            |
 | `keepalive`         | `{client_time}`                     | Application-level keepalive for zombie detection |
 | `rename_session`    | `{name}`                            | Rename the current session                       |
 
@@ -45,7 +44,6 @@ All WebSocket messages use a JSON envelope format:
 | `permission`      | `{request_id, title, description, options}`                                                    | Permission request                                                           |
 | `prompt_complete` | `{event_count, max_seq}`                                                                       | Agent finished responding                                                    |
 | `events_loaded`   | `{events, has_more, first_seq, last_seq, max_seq, total_count, prepend, is_prompting}`         | Response to load_events request                                              |
-| `session_sync`    | `{events, event_count, is_running, is_prompting}`                                              | (DEPRECATED) Response to sync_session                                        |
 | `keepalive_ack`   | `{client_time, server_time, max_seq, is_prompting, is_running, queue_length, status}`          | Response to keepalive (for zombie detection and state sync)                  |
 | `error`           | `{message, code?}`                                                                             | Error notification                                                           |
 
