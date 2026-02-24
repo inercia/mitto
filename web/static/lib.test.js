@@ -67,6 +67,7 @@ import {
   clearPendingPromptsFromEvents,
   hasMarkdownContent,
   renderUserMarkdown,
+  formatTimeAgo,
 } from "./lib.js";
 
 // =============================================================================
@@ -994,8 +995,9 @@ describe("isStaleClientState", () => {
       const clientMaxSeq = 150;
       const serverMaxSeq = 200;
       expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(false);
-      // When false and serverMaxSeq > clientMaxSeq, keepalive handler sends:
+      // When false and serverMaxSeq > clientMaxSeq + KEEPALIVE_SYNC_TOLERANCE, keepalive handler sends:
       // { type: "load_events", data: { after_seq: 150 } }
+      // (with tolerance=2, sync only triggers if >2 behind to avoid noise during streaming)
     });
 
     test("keepalive detects in-sync - no action needed", () => {
@@ -4752,5 +4754,97 @@ describe("UI State Consistency", () => {
 
       expect(shouldShowEmptyState).toBe(false);
     });
+  });
+});
+
+// =============================================================================
+// formatTimeAgo Tests
+// =============================================================================
+
+describe("formatTimeAgo", () => {
+  test("returns empty string for null/undefined input", () => {
+    expect(formatTimeAgo(null)).toBe("");
+    expect(formatTimeAgo(undefined)).toBe("");
+    expect(formatTimeAgo("")).toBe("");
+  });
+
+  test("returns 'now' for future dates", () => {
+    const futureDate = new Date(Date.now() + 60000); // 1 minute in the future
+    expect(formatTimeAgo(futureDate)).toBe("now");
+  });
+
+  test("returns 'just now' for recent times (< 60 seconds)", () => {
+    const recentDate = new Date(Date.now() - 30000); // 30 seconds ago
+    expect(formatTimeAgo(recentDate)).toBe("just now");
+  });
+
+  test("returns minutes ago for times < 1 hour", () => {
+    const threeMinutesAgo = new Date(Date.now() - 3 * 60 * 1000);
+    expect(formatTimeAgo(threeMinutesAgo)).toBe("3m ago");
+
+    const oneMinuteAgo = new Date(Date.now() - 60 * 1000);
+    expect(formatTimeAgo(oneMinuteAgo)).toBe("1m ago");
+
+    const fortyFiveMinutesAgo = new Date(Date.now() - 45 * 60 * 1000);
+    expect(formatTimeAgo(fortyFiveMinutesAgo)).toBe("45m ago");
+  });
+
+  test("returns hours ago for times < 1 day", () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    expect(formatTimeAgo(twoHoursAgo)).toBe("2h ago");
+
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    expect(formatTimeAgo(oneHourAgo)).toBe("1h ago");
+
+    const twentyThreeHoursAgo = new Date(Date.now() - 23 * 60 * 60 * 1000);
+    expect(formatTimeAgo(twentyThreeHoursAgo)).toBe("23h ago");
+  });
+
+  test("returns days ago for times < 1 week", () => {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(oneDayAgo)).toBe("1d ago");
+
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(threeDaysAgo)).toBe("3d ago");
+
+    const sixDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(sixDaysAgo)).toBe("6d ago");
+  });
+
+  test("returns weeks ago for times < 1 month", () => {
+    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(oneWeekAgo)).toBe("1w ago");
+
+    const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(twoWeeksAgo)).toBe("2w ago");
+
+    const threeWeeksAgo = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(threeWeeksAgo)).toBe("3w ago");
+  });
+
+  test("returns months ago for times < 1 year", () => {
+    const oneMonthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(oneMonthAgo)).toBe("1mo ago");
+
+    const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(sixMonthsAgo)).toBe("6mo ago");
+  });
+
+  test("returns years ago for times >= 1 year", () => {
+    const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(oneYearAgo)).toBe("1y ago");
+
+    const twoYearsAgo = new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000);
+    expect(formatTimeAgo(twoYearsAgo)).toBe("2y ago");
+  });
+
+  test("accepts ISO date strings", () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    expect(formatTimeAgo(threeHoursAgo.toISOString())).toBe("3h ago");
+  });
+
+  test("accepts timestamp numbers", () => {
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    expect(formatTimeAgo(fiveMinutesAgo)).toBe("5m ago");
   });
 });

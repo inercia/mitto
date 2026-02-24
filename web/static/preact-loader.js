@@ -1,41 +1,182 @@
 // Preact loader for Mitto
-// Loads Preact and HTM from local vendor files and initializes the app
+// Loads Preact and HTM from CDN (external access) or local vendor files (native app)
+//
+// For external connections (Tailscale, etc.), libraries are loaded from jsdelivr CDN:
+// - Faster initial load (CDN edge caching, browser cross-site caching)
+// - Pre-compressed (gzip/brotli)
+// - Reduces bandwidth through Tailscale tunnel
+//
+// For local/native connections, libraries are loaded from bundled vendor files:
+// - Zero network dependency
+// - Instant load (localhost)
+// - Works offline
 
-import { h, render } from "./vendor/preact.js";
 import {
-  useState,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useCallback,
-  useMemo,
-} from "./vendor/preact-hooks.js";
-import htm from "./vendor/htm.js";
-import { marked } from "./vendor/marked.js";
-import DOMPurify from "./vendor/dompurify.js";
+  VERSIONS,
+  CDN_URLS,
+  LOCAL_URLS as VENDOR_LOCAL_URLS,
+} from "./vendor/config.js";
 
-// Configure marked for safe rendering
-marked.setOptions({
-  gfm: true, // GitHub Flavored Markdown
-  breaks: true, // Convert \n to <br>
-  headerIds: false, // Don't add IDs to headers (security)
-  mangle: false, // Don't mangle email addresses
-});
-
-const html = htm.bind(h);
-window.preact = {
-  h,
-  render,
-  useState,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useCallback,
-  useMemo,
-  html,
+// Local URLs need path adjustment (config.js paths are relative to vendor/)
+const LOCAL_URLS = {
+  preact: "./vendor/preact.js",
+  preactHooks: "./vendor/preact-hooks.js",
+  htm: "./vendor/htm.js",
+  marked: "./vendor/marked.js",
+  dompurify: "./vendor/dompurify.js",
 };
-window.marked = marked;
-window.DOMPurify = DOMPurify;
+
+// =============================================================================
+// Dynamic Module Loading
+// =============================================================================
+
+/**
+ * Load a module from a URL.
+ * @param {string} url - URL for the module
+ * @returns {Promise<any>} The loaded module
+ */
+async function loadModuleFromUrl(url) {
+  return await import(url);
+}
+
+/**
+ * Try to load all vendor libraries from CDN.
+ * Returns null if any library fails (all-or-nothing approach to avoid mismatches).
+ * @returns {Promise<object|null>} Object with all modules, or null if any failed
+ */
+async function tryLoadFromCDN() {
+  try {
+    // Note: preact-hooks from CDN has bare module specifiers that browsers can't resolve.
+    // We need to use local hooks that are browser-compatible.
+    // So we'll load Preact + hooks from local, but other libs from CDN.
+    //
+    // Actually, for consistency and to avoid version mismatches, we'll load
+    // preact and preact-hooks from local (they're tightly coupled), but
+    // independent libraries (htm, marked, dompurify) can come from CDN.
+
+    const [preactModule, hooksModule, htmModule, markedModule, dompurifyModule] = await Promise.all([
+      // Preact and hooks MUST be from the same source (local) to avoid __H mismatch
+      loadModuleFromUrl(LOCAL_URLS.preact),
+      loadModuleFromUrl(LOCAL_URLS.preactHooks),
+      // Independent libraries can come from CDN
+      loadModuleFromUrl(CDN_URLS.htm),
+      loadModuleFromUrl(CDN_URLS.marked),
+      loadModuleFromUrl(CDN_URLS.dompurify),
+    ]);
+
+    return { preactModule, hooksModule, htmModule, markedModule, dompurifyModule, source: "mixed (preact local, others CDN)" };
+  } catch (err) {
+    console.warn("CDN loading failed, will use all local:", err.message);
+    return null;
+  }
+}
+
+/**
+ * Load all vendor libraries from local files.
+ * @returns {Promise<object>} Object with all modules
+ */
+async function loadAllFromLocal() {
+  const [preactModule, hooksModule, htmModule, markedModule, dompurifyModule] = await Promise.all([
+    loadModuleFromUrl(LOCAL_URLS.preact),
+    loadModuleFromUrl(LOCAL_URLS.preactHooks),
+    loadModuleFromUrl(LOCAL_URLS.htm),
+    loadModuleFromUrl(LOCAL_URLS.marked),
+    loadModuleFromUrl(LOCAL_URLS.dompurify),
+  ]);
+
+  return { preactModule, hooksModule, htmModule, markedModule, dompurifyModule, source: "local" };
+}
+
+/**
+ * Detect if we're running in the native macOS app.
+ * The native app binds functions like mittoOpenExternalURL to the window object.
+ * @returns {boolean} True if running in native macOS app
+ */
+function isNativeApp() {
+  return typeof window.mittoOpenExternalURL === "function" ||
+         typeof window.mittoPickFolder === "function";
+}
+
+/**
+ * Initialize all vendor libraries.
+ *
+ * Loading strategy:
+ * - Native macOS app: ALWAYS use local files (fastest, works offline)
+ * - Local browser (127.0.0.1): Use local files (no network benefit from CDN)
+ * - External access (Tailscale): Use CDN for independent libs (htm, marked, dompurify),
+ *   but keep preact+hooks local to avoid version mismatch issues
+ *
+ * Note: Preact and preact-hooks are tightly coupled - the hooks library accesses
+ * Preact's internal __H property. CDN ESM modules have bare specifiers that browsers
+ * can't resolve, so we keep preact+hooks local for compatibility.
+ */
+async function initializeVendorLibraries() {
+  // Native app ALWAYS uses local files for maximum performance and offline support
+  const isNative = isNativeApp();
+
+  // Use CDN only for external browser connections (not native app, not localhost)
+  // window.mittoIsExternal is set by the server based on which listener received the request
+  const shouldTryCDN = !isNative && window.mittoIsExternal === true;
+
+  let result;
+
+  if (isNative) {
+    console.log("Loading vendor libraries from local files (native macOS app)");
+    result = await loadAllFromLocal();
+  } else if (shouldTryCDN) {
+    console.log("Loading vendor libraries (preact local + others from CDN) for external connection");
+    result = await tryLoadFromCDN();
+    if (!result) {
+      console.log("CDN loading failed, falling back to all local");
+      result = await loadAllFromLocal();
+    }
+  } else {
+    console.log("Loading vendor libraries from local files (local browser connection)");
+    result = await loadAllFromLocal();
+  }
+
+  const { preactModule, hooksModule, htmModule, markedModule, dompurifyModule, source } = result;
+
+  // Extract exports
+  const { h, render, Fragment } = preactModule;
+  const { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } = hooksModule;
+  const htm = htmModule.default;
+  const { marked } = markedModule;
+  const DOMPurify = dompurifyModule.default;
+
+  // Configure marked for safe rendering
+  marked.setOptions({
+    gfm: true, // GitHub Flavored Markdown
+    breaks: true, // Convert \n to <br>
+    headerIds: false, // Don't add IDs to headers (security)
+    mangle: false, // Don't mangle email addresses
+  });
+
+  // Bind HTM to Preact's h function
+  const html = htm.bind(h);
+
+  // Expose on window for use by components
+  window.preact = {
+    h,
+    render,
+    Fragment,
+    useState,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useCallback,
+    useMemo,
+    html,
+  };
+  window.marked = marked;
+  window.DOMPurify = DOMPurify;
+
+  // Log success with source info
+  console.log(`Vendor libraries loaded (${source})`);
+}
+
+// Initialize vendor libraries before continuing
+await initializeVendorLibraries();
 
 // =============================================================================
 // Mermaid.js Integration
@@ -95,7 +236,7 @@ async function loadMermaid() {
 
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js";
+    script.src = CDN_URLS.mermaid;
     script.async = true;
     script.onload = () => {
       // Detect current theme from document classes

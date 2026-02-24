@@ -1241,3 +1241,36 @@ a:hover {
 .v2-theme.dark .ui-prompt-question {
   color: #e5e7eb !important;
 }
+
+/* =============================================================================
+   Properties Panel - Light Theme Overrides
+   ============================================================================= */
+
+/* Mode select dropdown - light theme */
+.v2-theme:not(.dark) .properties-panel select {
+  background: var(--bg-elevated) !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+
+.v2-theme:not(.dark) .properties-panel select:focus {
+  border-color: var(--accent) !important;
+}
+
+.v2-theme:not(.dark) .properties-panel select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+/* Advanced settings labels - light theme */
+.v2-theme:not(.dark) .properties-panel .text-slate-300 {
+  color: var(--text) !important;
+}
+
+.v2-theme:not(.dark) .properties-panel .text-slate-400 {
+  color: var(--muted-strong) !important;
+}
+
+.v2-theme:not(.dark) .properties-panel .text-slate-500 {
+  color: var(--muted) !important;
+}

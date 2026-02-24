@@ -318,6 +318,48 @@
   animation: pulse-streaming 1.2s ease-in-out infinite;
 }
 
+/* Filter tab streaming pulse - uses ::before pseudo-element to only animate background */
+.filter-tab-streaming {
+  position: relative;
+}
+.filter-tab-streaming::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  animation: filter-tab-pulse-dark 1.8s ease-in-out infinite;
+}
+.filter-tab-streaming > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Dark theme pulse animation (default) */
+@keyframes filter-tab-pulse-dark {
+  0%,
+  100% {
+    background-color: rgba(30, 41, 59, 0.3); /* slate-800 subtle */
+  }
+  50% {
+    background-color: rgba(51, 65, 85, 0.9); /* slate-700 strong */
+  }
+}
+
+/* Light theme pulse animation */
+@keyframes filter-tab-pulse-light {
+  0%,
+  100% {
+    background-color: rgba(248, 250, 252, 0.3); /* slate-50 subtle */
+  }
+  50% {
+    background-color: rgba(203, 213, 225, 0.9); /* slate-300 strong */
+  }
+}
+.light .filter-tab-streaming::before {
+  animation: filter-tab-pulse-light 1.8s ease-in-out infinite;
+}
+
 /* Streaming cursor */
 .streaming-cursor::after {
   content: "▋";
@@ -943,7 +985,8 @@ a.mailto-link:hover {
   cursor: pointer;
   transition: all 0.2s ease;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  z-index: 50;
+  /* z-index 30: above messages content (z-10) but below mobile sidebar overlay (z-40) */
+  z-index: 30;
   pointer-events: auto;
 }
 

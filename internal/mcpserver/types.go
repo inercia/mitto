@@ -11,6 +11,7 @@ import (
 )
 
 // ConversationInfo contains information about a conversation/session.
+// Used by mitto_list_conversations (returns time.Time for dates).
 type ConversationInfo struct {
 	SessionID         string    `json:"session_id"`
 	Title             string    `json:"title,omitempty"`
@@ -32,6 +33,36 @@ type ConversationInfo struct {
 	LockStatus     string `json:"lock_status,omitempty"`
 	LockClientType string `json:"lock_client_type,omitempty"`
 	LastSeq        int64  `json:"last_seq,omitempty"`
+}
+
+// ConversationDetails is the unified output structure for conversation-related tools.
+// Used by mitto_get_conversation, mitto_get_current_session, and mitto_conversation_start.
+// All dates are formatted as ISO 8601 strings for consistent JSON output.
+type ConversationDetails struct {
+	// Basic metadata
+	SessionID         string `json:"session_id"`
+	Title             string `json:"title,omitempty"`
+	Description       string `json:"description,omitempty"`
+	ACPServer         string `json:"acp_server,omitempty"`
+	WorkingDir        string `json:"working_dir,omitempty"`
+	CreatedAt         string `json:"created_at,omitempty"`           // ISO 8601 format
+	UpdatedAt         string `json:"updated_at,omitempty"`           // ISO 8601 format
+	LastUserMessageAt string `json:"last_user_message_at,omitempty"` // ISO 8601 format
+	MessageCount      int    `json:"message_count"`
+	Status            string `json:"status,omitempty"`
+	Archived          bool   `json:"archived"`
+	SessionFolder     string `json:"session_folder,omitempty"`
+
+	// Runtime status (reflects current state if session is running)
+	IsRunning      bool   `json:"is_running"`   // Whether the session is currently active
+	IsPrompting    bool   `json:"is_prompting"` // Whether the agent is currently replying
+	IsLocked       bool   `json:"is_locked"`    // Whether the session is locked by a client
+	LockStatus     string `json:"lock_status,omitempty"`
+	LockClientType string `json:"lock_client_type,omitempty"`
+	LastSeq        int64  `json:"last_seq,omitempty"` // Last sequence number assigned
+
+	// Parent/child relationship
+	ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
 }
 
 // ConfigInfo contains the Mitto configuration info.
@@ -237,16 +268,8 @@ func configToSafeOutput(cfg *config.Config) *ConfigInfo {
 // =============================================================================
 
 // CurrentSessionOutput is the output for get_current_session tool.
-type CurrentSessionOutput struct {
-	SessionID    string `json:"session_id"`
-	Title        string `json:"title,omitempty"`
-	Description  string `json:"description,omitempty"`
-	WorkingDir   string `json:"working_dir,omitempty"`
-	CreatedAt    string `json:"created_at,omitempty"`
-	UpdatedAt    string `json:"updated_at,omitempty"`
-	MessageCount int    `json:"message_count"`
-	Status       string `json:"status,omitempty"`
-}
+// It returns the same ConversationDetails as other conversation tools.
+type CurrentSessionOutput = ConversationDetails
 
 // SendPromptOutput is the output for send_prompt_to_conversation tool.
 type SendPromptOutput struct {

@@ -11,12 +11,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -60,11 +62,12 @@ type Server struct {
 	stdioSession *mcp.ServerSession
 	stdioDone    chan struct{}
 
-	mu       sync.RWMutex
-	store    *session.Store
-	config   *config.Config
-	running  bool
-	shutdown bool
+	mu             sync.RWMutex
+	store          *session.Store
+	config         *config.Config
+	sessionManager SessionManager
+	running        bool
+	shutdown       bool
 
 	// Session registry for session-scoped tools.
 	// Maps session_id -> registeredSession for routing UI prompts and checking permissions.
@@ -163,6 +166,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		mode:            cfg.Mode,
 		store:           deps.Store,
 		config:          deps.Config,
+		sessionManager:  deps.SessionManager,
 		sessions:        make(map[string]*registeredSession),
 		pendingRequests: make(map[string]*pendingRequest),
 	}
@@ -532,11 +536,66 @@ func permissionError(toolName, flagName, flagLabel string) error {
 	return fmt.Errorf("tool '%s' requires the '%s' (%s) flag to be enabled in Advanced Settings", toolName, flagLabel, flagName)
 }
 
+// buildConversationDetails creates a ConversationDetails from session metadata and runtime info.
+// This is the unified way to build conversation info for all conversation-related tools.
+func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder string) ConversationDetails {
+	details := ConversationDetails{
+		SessionID:       meta.SessionID,
+		Title:           meta.Name,
+		Description:     meta.Description,
+		ACPServer:       meta.ACPServer,
+		WorkingDir:      meta.WorkingDir,
+		MessageCount:    meta.EventCount,
+		Status:          string(meta.Status),
+		Archived:        meta.Archived,
+		SessionFolder:   sessionFolder,
+		ParentSessionID: meta.ParentSessionID,
+	}
+
+	// Format dates as ISO 8601 strings
+	if !meta.CreatedAt.IsZero() {
+		details.CreatedAt = meta.CreatedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	if !meta.UpdatedAt.IsZero() {
+		details.UpdatedAt = meta.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	if !meta.LastUserMessageAt.IsZero() {
+		details.LastUserMessageAt = meta.LastUserMessageAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+
+	// Add runtime status if available
+	s.mu.RLock()
+	store := s.store
+	sm := s.sessionManager
+	s.mu.RUnlock()
+
+	// Check lock status
+	if store != nil {
+		if lockInfo, err := store.GetLockInfo(meta.SessionID); err == nil && lockInfo != nil {
+			details.IsLocked = true
+			details.LockStatus = string(lockInfo.Status)
+			details.LockClientType = lockInfo.ClientType
+			details.IsPrompting = lockInfo.Status == session.LockStatusProcessing
+		}
+	}
+
+	// Get running session info if available (overrides lock-based IsPrompting)
+	if sm != nil {
+		if bs := sm.GetSession(meta.SessionID); bs != nil {
+			details.IsRunning = true
+			details.IsPrompting = bs.IsPrompting()
+			details.LastSeq = bs.GetMaxAssignedSeq()
+		}
+	}
+
+	return details
+}
+
 // registerGlobalTools registers global MCP tools (always available, no session context needed).
 func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 	// mitto_list_conversations tool - always available (no permission check)
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name:        "mitto_list_conversations",
+		Name:        "mitto_conversation_list",
 		Description: "List all conversations with metadata including title, dates, message count, prompting status, last sequence, and session folder. Always available.",
 	}, s.createListConversationsHandler(deps.SessionManager))
 
@@ -565,14 +624,14 @@ const sessionIDNote = "There is no need to know the session ID beforehand: " +
 func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	// mitto_get_current_session - Get info about the current session (auto-detected via session_id)
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_get_current_session",
-		Description: "Get information about the current conversation session including session ID, title, working directory, and message count. " +
+		Name: "mitto_conversation_get_current",
+		Description: "Get information about the current conversation including session ID, title, working directory, and message count. " +
 			sessionIDNote,
 	}, s.handleGetCurrentSession)
 
-	// mitto_send_prompt_to_conversation - Send a prompt to another conversation
+	// mitto_conversation_send_prompt - Send a prompt to another conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_send_prompt_to_conversation",
+		Name: "mitto_conversation_send_prompt",
 		Description: "Send a prompt to another conversation's queue. The prompt will be processed when the target conversation's agent becomes idle. " +
 			"Requires 'Can Send Prompt' flag to be enabled on the source session. " +
 			sessionIDNote,
@@ -604,6 +663,32 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Requires 'Can prompt user' flag to be enabled. " +
 			sessionIDNote,
 	}, s.handleOptionsCombo)
+
+	// mitto_conversation_start - Start a new conversation
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_start",
+		Description: "Create a new conversation in the same workspace as the calling session. " +
+			"The new conversation inherits the ACP server and working directory from the caller. " +
+			"Requires 'Can start conversation' flag to be enabled. " +
+			"Sessions created via this tool cannot create further sessions (prevents infinite recursion). " +
+			sessionIDNote,
+	}, s.handleConversationStart)
+
+	// mitto_conversation_get_summary - Get a summary of a conversation
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_get_summary",
+		Description: "Generate a summary of a conversation using AI analysis. " +
+			"The summary includes main topics discussed, key decisions, actions taken, and pending items. " +
+			sessionIDNote,
+	}, s.handleGetConversationSummary)
+
+	// mitto_conversation_get - Get properties of a specific conversation
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_get",
+		Description: "Get detailed properties of a specific conversation by ID. " +
+			"Returns metadata, status, and runtime info including whether the agent is currently replying. " +
+			sessionIDNote,
+	}, s.handleGetConversation)
 }
 
 // ListConversationsOutput wraps the list of conversations for MCP output schema compliance.
@@ -761,21 +846,8 @@ func (s *Server) handleGetCurrentSession(ctx context.Context, req *mcp.CallToolR
 		return nil, CurrentSessionOutput{}, fmt.Errorf("failed to get session: %w", err)
 	}
 
-	output := CurrentSessionOutput{
-		SessionID:    meta.SessionID,
-		Title:        meta.Name,
-		Description:  meta.Description,
-		WorkingDir:   meta.WorkingDir,
-		MessageCount: meta.EventCount,
-		Status:       string(meta.Status),
-	}
-
-	if !meta.CreatedAt.IsZero() {
-		output.CreatedAt = meta.CreatedAt.Format("2006-01-02T15:04:05Z07:00")
-	}
-	if !meta.UpdatedAt.IsZero() {
-		output.UpdatedAt = meta.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")
-	}
+	// Build unified conversation details
+	output := s.buildConversationDetails(meta, store.SessionDir(meta.SessionID))
 
 	return nil, output, nil
 }
@@ -1187,4 +1259,327 @@ func (s *Server) handleOptionsCombo(ctx context.Context, req *mcp.CallToolReques
 		Selected: resp.Label,
 		Index:    selectedIndex,
 	}, nil
+}
+
+// ConversationStartInput is the input for mitto_conversation_start tool.
+type ConversationStartInput struct {
+	SessionID     string `json:"session_id"`               // Session ID or random identifier for session correlation
+	Title         string `json:"title,omitempty"`          // Optional title for the new conversation
+	InitialPrompt string `json:"initial_prompt,omitempty"` // Optional initial message to queue
+}
+
+// ConversationStartOutput is the output for mitto_conversation_start tool.
+// Embeds ConversationDetails for the newly created conversation.
+type ConversationStartOutput struct {
+	ConversationDetails        // Embedded conversation details
+	QueuePosition       int    `json:"queue_position,omitempty"` // Queue position if initial prompt was provided
+	Error               string `json:"error,omitempty"`
+}
+
+func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolRequest, input ConversationStartInput) (*mcp.CallToolResult, ConversationStartOutput, error) {
+	// Validate session_id
+	if input.SessionID == "" {
+		return nil, ConversationStartOutput{}, fmt.Errorf("session_id is required")
+	}
+
+	// Wait for the pending request to be registered by the ACP layer
+	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	if realSessionID == "" {
+		return nil, ConversationStartOutput{}, fmt.Errorf(
+			"session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
+			input.SessionID)
+	}
+
+	// Check if source session is registered
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, ConversationStartOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
+	}
+
+	s.mu.RLock()
+	store := s.store
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, ConversationStartOutput{}, fmt.Errorf("session store not available")
+	}
+
+	// Get the source session's metadata
+	sourceMeta, err := store.GetMetadata(realSessionID)
+	if err != nil {
+		return nil, ConversationStartOutput{}, fmt.Errorf("failed to get source session metadata: %v", err)
+	}
+
+	// Check if the source session has a parent - if so, it cannot create new sessions
+	if sourceMeta.ParentSessionID != "" {
+		return nil, ConversationStartOutput{}, fmt.Errorf("child sessions cannot create new conversations (prevents infinite recursion)")
+	}
+
+	// Permission check: requires can_start_conversation flag
+	if !s.checkSessionFlag(realSessionID, session.FlagCanStartConversation) {
+		return nil, ConversationStartOutput{}, fmt.Errorf(
+			"tool 'mitto_conversation_start' requires the 'Can start conversation' (%s) flag to be enabled in Advanced Settings",
+			session.FlagCanStartConversation)
+	}
+
+	// Create new session ID
+	newSessionID := uuid.New().String()
+
+	// Create the new session metadata
+	newMeta := session.Metadata{
+		SessionID:       newSessionID,
+		Name:            input.Title,
+		ACPServer:       sourceMeta.ACPServer,
+		WorkingDir:      sourceMeta.WorkingDir,
+		ParentSessionID: realSessionID, // Mark this session as a child
+		// Child sessions explicitly have can_start_conversation disabled to prevent infinite recursion
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: false,
+		},
+	}
+
+	// Create the session
+	if err := store.Create(newMeta); err != nil {
+		return nil, ConversationStartOutput{}, fmt.Errorf("failed to create session: %v", err)
+	}
+
+	s.logger.Info("New conversation created via MCP",
+		"new_session_id", newSessionID,
+		"parent_session_id", realSessionID,
+		"working_dir", sourceMeta.WorkingDir,
+		"title", input.Title)
+
+	// Re-fetch metadata to get timestamps set by Create()
+	createdMeta, err := store.GetMetadata(newSessionID)
+	if err != nil {
+		// Use the newMeta we have if re-fetch fails
+		createdMeta = newMeta
+	}
+
+	// Build unified conversation details
+	output := ConversationStartOutput{
+		ConversationDetails: s.buildConversationDetails(createdMeta, store.SessionDir(newSessionID)),
+	}
+
+	// If initial prompt provided, add it to the queue
+	if input.InitialPrompt != "" {
+		queue := store.Queue(newSessionID)
+		_, err := queue.Add(input.InitialPrompt, nil, nil, realSessionID, 0)
+		if err != nil {
+			s.logger.Warn("Failed to queue initial prompt",
+				"session_id", newSessionID,
+				"error", err)
+		} else {
+			queueLen, _ := queue.Len()
+			output.QueuePosition = queueLen
+		}
+	}
+
+	return nil, output, nil
+}
+
+// GetConversationSummaryInput is the input for mitto_get_conversation_summary tool.
+type GetConversationSummaryInput struct {
+	SessionID      string `json:"session_id"`      // Session ID or random identifier for session correlation
+	ConversationID string `json:"conversation_id"` // Target conversation ID to summarize
+}
+
+// GetConversationSummaryOutput is the output for mitto_get_conversation_summary tool.
+type GetConversationSummaryOutput struct {
+	Success      bool   `json:"success"`
+	Summary      string `json:"summary,omitempty"`
+	MessageCount int    `json:"message_count,omitempty"` // Number of messages analyzed
+	Error        string `json:"error,omitempty"`
+}
+
+func (s *Server) handleGetConversationSummary(ctx context.Context, req *mcp.CallToolRequest, input GetConversationSummaryInput) (*mcp.CallToolResult, GetConversationSummaryOutput, error) {
+	// Validate session_id
+	if input.SessionID == "" {
+		return nil, GetConversationSummaryOutput{Success: false, Error: "session_id is required"}, nil
+	}
+
+	// Validate conversation_id
+	if input.ConversationID == "" {
+		return nil, GetConversationSummaryOutput{Success: false, Error: "conversation_id is required"}, nil
+	}
+
+	// Wait for the pending request to be registered by the ACP layer
+	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	if realSessionID == "" {
+		return nil, GetConversationSummaryOutput{
+			Success: false,
+			Error: fmt.Sprintf("session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
+				input.SessionID),
+		}, nil
+	}
+
+	// Check if source session is registered
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, GetConversationSummaryOutput{Success: false, Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
+	}
+
+	s.mu.RLock()
+	store := s.store
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, GetConversationSummaryOutput{Success: false, Error: "session store not available"}, nil
+	}
+
+	// Check if the target conversation exists
+	_, err := store.GetMetadata(input.ConversationID)
+	if err != nil {
+		return nil, GetConversationSummaryOutput{
+			Success: false,
+			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
+		}, nil
+	}
+
+	// Read events from the conversation
+	events, err := store.ReadEvents(input.ConversationID)
+	if err != nil {
+		return nil, GetConversationSummaryOutput{
+			Success: false,
+			Error:   fmt.Sprintf("failed to read conversation events: %v", err),
+		}, nil
+	}
+
+	// Format conversation content for the summary
+	conversationContent := formatConversationForSummary(events)
+
+	// Count meaningful messages (user prompts + agent messages)
+	messageCount := 0
+	for _, e := range events {
+		if e.Type == session.EventTypeUserPrompt || e.Type == session.EventTypeAgentMessage {
+			messageCount++
+		}
+	}
+
+	if messageCount == 0 {
+		return nil, GetConversationSummaryOutput{
+			Success:      true,
+			Summary:      "This conversation has no messages yet.",
+			MessageCount: 0,
+		}, nil
+	}
+
+	// Generate summary using auxiliary session
+	summary, err := auxiliary.GenerateConversationSummary(ctx, conversationContent)
+	if err != nil {
+		return nil, GetConversationSummaryOutput{
+			Success: false,
+			Error:   fmt.Sprintf("failed to generate summary: %v", err),
+		}, nil
+	}
+
+	s.logger.Info("Generated conversation summary",
+		"source_session", realSessionID,
+		"target_conversation", input.ConversationID,
+		"message_count", messageCount,
+		"summary_length", len(summary))
+
+	return nil, GetConversationSummaryOutput{
+		Success:      true,
+		Summary:      summary,
+		MessageCount: messageCount,
+	}, nil
+}
+
+// formatConversationForSummary formats conversation events into a readable format for summarization.
+func formatConversationForSummary(events []session.Event) string {
+	var sb strings.Builder
+
+	for _, e := range events {
+		switch e.Type {
+		case session.EventTypeUserPrompt:
+			if data, ok := e.Data.(map[string]interface{}); ok {
+				if msg, ok := data["message"].(string); ok {
+					sb.WriteString("USER: ")
+					sb.WriteString(msg)
+					sb.WriteString("\n\n")
+				}
+			}
+		case session.EventTypeAgentMessage:
+			if data, ok := e.Data.(map[string]interface{}); ok {
+				// The field is "html" in JSON but contains the agent's message
+				if html, ok := data["html"].(string); ok {
+					sb.WriteString("ASSISTANT: ")
+					sb.WriteString(html)
+					sb.WriteString("\n\n")
+				}
+			}
+		case session.EventTypeToolCall:
+			if data, ok := e.Data.(map[string]interface{}); ok {
+				if name, ok := data["name"].(string); ok {
+					sb.WriteString("[Tool call: ")
+					sb.WriteString(name)
+					sb.WriteString("]\n\n")
+				}
+			}
+		}
+	}
+
+	return sb.String()
+}
+
+// GetConversationInput is the input for mitto_get_conversation tool.
+type GetConversationInput struct {
+	SessionID      string `json:"session_id"`      // Session ID or random identifier for session correlation
+	ConversationID string `json:"conversation_id"` // Target conversation ID to get properties for
+}
+
+// GetConversationOutput is the output for mitto_get_conversation tool.
+// It returns the same ConversationDetails as other conversation tools.
+type GetConversationOutput = ConversationDetails
+
+func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolRequest, input GetConversationInput) (*mcp.CallToolResult, GetConversationOutput, error) {
+	// Validate session_id
+	if input.SessionID == "" {
+		return nil, GetConversationOutput{}, fmt.Errorf("session_id is required")
+	}
+
+	// Validate conversation_id
+	if input.ConversationID == "" {
+		return nil, GetConversationOutput{}, fmt.Errorf("conversation_id is required")
+	}
+
+	// Wait for the pending request to be registered by the ACP layer
+	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	if realSessionID == "" {
+		return nil, GetConversationOutput{}, fmt.Errorf(
+			"session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
+			input.SessionID)
+	}
+
+	// Check if source session is registered (must be running to use this tool)
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, GetConversationOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
+	}
+
+	s.mu.RLock()
+	store := s.store
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, GetConversationOutput{}, fmt.Errorf("session store not available")
+	}
+
+	// Get metadata for the target conversation
+	meta, err := store.GetMetadata(input.ConversationID)
+	if err != nil {
+		return nil, GetConversationOutput{}, fmt.Errorf("conversation not found: %s", input.ConversationID)
+	}
+
+	// Build unified conversation details
+	output := s.buildConversationDetails(meta, store.SessionDir(meta.SessionID))
+
+	s.logger.Debug("Get conversation properties",
+		"source_session", realSessionID,
+		"target_conversation", input.ConversationID,
+		"is_running", output.IsRunning,
+		"is_prompting", output.IsPrompting)
+
+	return nil, output, nil
 }
