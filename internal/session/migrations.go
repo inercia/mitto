@@ -1,7 +1,6 @@
 package session
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -203,9 +202,6 @@ func readSessionMetadata(sessionDir string) (*Metadata, error) {
 // writeSessionMetadata writes metadata to a session directory.
 func writeSessionMetadata(sessionDir string, meta *Metadata) error {
 	metaPath := filepath.Join(sessionDir, metadataFileName)
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(metaPath, data, 0644)
+	// Use atomic write to prevent corruption if interrupted during write
+	return fileutil.WriteJSONAtomic(metaPath, meta, 0644)
 }

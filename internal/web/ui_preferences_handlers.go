@@ -74,6 +74,20 @@ func (s *Server) handleSaveUIPreferences(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Validate filter_tab_grouping keys and values
+	validFilterTabs := map[string]bool{"conversations": true, "periodic": true, "archived": true}
+	validGroupingModes := map[string]bool{"none": true, "server": true, "folder": true, "workspace": true}
+	for key, value := range prefs.FilterTabGrouping {
+		if !validFilterTabs[key] {
+			http.Error(w, "Invalid filter_tab_grouping key: must be 'conversations', 'periodic', or 'archived'", http.StatusBadRequest)
+			return
+		}
+		if !validGroupingModes[value] {
+			http.Error(w, "Invalid filter_tab_grouping value: must be 'none', 'server', 'folder', or 'workspace'", http.StatusBadRequest)
+			return
+		}
+	}
+
 	if err := saveUIPreferences(&prefs); err != nil {
 		if s.logger != nil {
 			s.logger.Error("Failed to save UI preferences", "error", err)

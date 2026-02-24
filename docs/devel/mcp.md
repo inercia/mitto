@@ -217,15 +217,23 @@ The new conversation inherits the workspace configuration (ACP server, working d
 | `title`          | string | No       | Title for the new conversation               |
 | `initial_prompt` | string | No       | Initial message to queue for the new session |
 
-Returns:
+Returns (embeds `ConversationDetails`):
 
-| Field            | Description                                   |
-| ---------------- | --------------------------------------------- |
-| `success`        | Whether the conversation was created          |
-| `session_id`     | The new conversation's session ID             |
-| `working_dir`    | Working directory (inherited from caller)     |
-| `queue_position` | Queue position if initial prompt was provided |
-| `error`          | Error message if creation failed              |
+| Field                   | Description                                          |
+| ----------------------- | ---------------------------------------------------- |
+| `session_id`            | The new conversation's session ID                    |
+| `title`                 | Conversation title (if set)                          |
+| `acp_server`            | ACP server URL (inherited from caller)               |
+| `working_dir`           | Working directory (inherited from caller)            |
+| `created_at`            | Creation timestamp (ISO 8601)                        |
+| `message_count`         | Number of messages (typically 0 for new)             |
+| `status`                | Current status                                       |
+| `archived`              | Whether archived (false for new)                     |
+| `is_running`            | Whether the session is currently active              |
+| `is_prompting`          | Whether the agent is currently replying              |
+| `parent_session_id`     | Parent session ID (the creating session)             |
+| `queue_position`        | Queue position if initial prompt was provided        |
+| `error`                 | Error message if creation failed                     |
 
 **Safety restriction:** The newly created conversation has its `can_start_conversation` flag explicitly set to `false`, regardless of the parent's permissions. This prevents infinite recursive chains where conversations spawn unlimited child conversations.
 

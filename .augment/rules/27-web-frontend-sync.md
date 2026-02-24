@@ -180,7 +180,7 @@ Stale state can also be detected via keepalive messages:
 // KEEPALIVE_SYNC_TOLERANCE (default: 2) prevents excessive sync requests
 // during normal streaming when markdown buffer holds content briefly
 case "keepalive_ack": {
-  const serverMaxSeq = msg.data?.server_max_seq || 0;
+  const serverMaxSeq = msg.data?.max_seq || 0;
   const clientMaxSeq = Math.max(getMaxSeq(sessionMessages), session?.lastLoadedSeq || 0);
 
   if (isStaleClientState(clientMaxSeq, serverMaxSeq)) {

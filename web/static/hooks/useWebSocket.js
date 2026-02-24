@@ -3205,36 +3205,8 @@ export function useWebSocket() {
         }));
 
         // In accordion mode, expand the group containing this new session
-        // (and collapse all other groups)
-        if (getSingleExpandedGroupMode()) {
-          // Build the group key for this session
-          // The format depends on the current grouping mode for the Conversations tab
-          const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-          let groupKey;
-          if (groupingMode === "server") {
-            groupKey = data.acp_server || "Unknown";
-          } else if (groupingMode === "workspace") {
-            // Workspace mode uses composite key: working_dir|acp_server
-            const workingDir = data.working_dir || "";
-            const acpServer = data.acp_server || "";
-            groupKey = `${workingDir}|${acpServer}`;
-          }
-
-          // Only expand if we have a valid group key and groups are being used
-          if (groupKey && groupingMode && groupingMode !== "none") {
-            // Collapse all other groups first
-            const expandedGroups = getExpandedGroups();
-            for (const key of Object.keys(expandedGroups)) {
-              if (key !== groupKey && isGroupExpanded(key)) {
-                setGroupExpanded(key, false);
-              }
-            }
-            // Expand the new session's group
-            if (!isGroupExpanded(groupKey)) {
-              setGroupExpanded(groupKey, true);
-            }
-          }
-        }
+        // (and collapse all other groups) - reuse expandGroupForSession helper
+        expandGroupForSession(sessionId, data.working_dir, data.acp_server);
 
         // Connect to the session WebSocket
         connectToSession(sessionId);
