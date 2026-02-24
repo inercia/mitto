@@ -198,7 +198,8 @@ func EscapeHTML(s string) string {
 }
 
 // codeBlockPattern matches opening/closing code fences.
-var codeBlockPattern = regexp.MustCompile("^```")
+// Captures the backticks to determine fence length.
+var codeBlockPattern = regexp.MustCompile("^(`{3,})")
 
 // listItemPattern matches list item lines (ordered or unordered).
 var listItemPattern = regexp.MustCompile(`^\s*(\d+\.\s+|[-*+]\s+)`)
@@ -209,6 +210,18 @@ var tableRowPattern = regexp.MustCompile(`^\s*\|`)
 // IsCodeBlockStart returns true if the line starts a code block.
 func IsCodeBlockStart(line string) bool {
 	return codeBlockPattern.MatchString(line)
+}
+
+// CodeFenceLength returns the number of backticks in a code fence line.
+// Returns 0 if the line is not a code fence.
+// A code block opened with N backticks can only be closed by a fence
+// with at least N backticks (CommonMark specification).
+func CodeFenceLength(line string) int {
+	matches := codeBlockPattern.FindStringSubmatch(line)
+	if matches == nil {
+		return 0
+	}
+	return len(matches[1])
 }
 
 // IsListItem returns true if the line is a list item.
