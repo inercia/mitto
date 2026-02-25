@@ -146,7 +146,9 @@ func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&acpServerName, "acp", "", "ACP server name to use (defaults to first in config)")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Configuration file path (YAML or JSON format, overrides settings.json)")
-	rootCmd.PersistentFlags().BoolVar(&autoApprove, "auto-approve", false, "Automatically approve permission requests")
+	// Default to true until we implement a proper permission UI in the frontend.
+	// TODO: Change default to false once permission dialog is implemented.
+	rootCmd.PersistentFlags().BoolVar(&autoApprove, "auto-approve", true, "Automatically approve permission requests")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging (shorthand for --log-level=debug)")
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "Log level: debug, info, warn, error (default: info)")
 	rootCmd.PersistentFlags().StringArrayVarP(&dirFlags, "dir", "d", nil, "Working directory for ACP sessions. Can be specified multiple times.\nFormat: [server-name:]path (e.g., --dir /path or --dir auggie:/path)")
@@ -169,6 +171,22 @@ func getSelectedServer() (*config.ACPServer, error) {
 		return nil, fmt.Errorf("no ACP servers configured")
 	}
 	return server, nil
+}
+
+// GetEffectiveAutoApprove returns the effective auto-approve setting.
+// Priority: CLI flag (if explicitly set) > config setting > default (true).
+// The cmd parameter is needed to check if the --auto-approve flag was explicitly set.
+func GetEffectiveAutoApprove(cmd *cobra.Command) bool {
+	// If the CLI flag was explicitly set, use it
+	if cmd.Flags().Changed("auto-approve") {
+		return autoApprove
+	}
+	// Otherwise, use the config setting (defaults to true if not set)
+	if cfg != nil && cfg.Permissions != nil {
+		return cfg.Permissions.IsAutoApprove()
+	}
+	// Default: true (until permission UI is implemented)
+	return true
 }
 
 // Workspace represents a working directory associated with an ACP server.
