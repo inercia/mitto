@@ -768,6 +768,45 @@ func TestConverter_MalformedTable(t *testing.T) {
 	}
 }
 
+// TestWrapTablesInScrollContainer tests that tables are wrapped in scrollable divs.
+func TestWrapTablesInScrollContainer(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "single table wrapped",
+			input:    `<p>Before</p><table><tr><td>cell</td></tr></table><p>After</p>`,
+			expected: `<p>Before</p><div class="table-wrapper"><table><tr><td>cell</td></tr></table></div><p>After</p>`,
+		},
+		{
+			name:     "multiple tables wrapped",
+			input:    `<table><tr><td>1</td></tr></table><p>Middle</p><table><tr><td>2</td></tr></table>`,
+			expected: `<div class="table-wrapper"><table><tr><td>1</td></tr></table></div><p>Middle</p><div class="table-wrapper"><table><tr><td>2</td></tr></table></div>`,
+		},
+		{
+			name:     "no table unchanged",
+			input:    `<p>No tables here</p>`,
+			expected: `<p>No tables here</p>`,
+		},
+		{
+			name:     "table with attributes",
+			input:    `<table class="foo"><tr><td>cell</td></tr></table>`,
+			expected: `<div class="table-wrapper"><table class="foo"><tr><td>cell</td></tr></table></div>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := WrapTablesInScrollContainer(tt.input)
+			if result != tt.expected {
+				t.Errorf("WrapTablesInScrollContainer() =\n%s\nwant:\n%s", result, tt.expected)
+			}
+		})
+	}
+}
+
 // TestDataURLImages tests that images with data: URLs are rendered correctly.
 // See: https://github.com/inercia/mitto/issues/20
 func TestDataURLImages(t *testing.T) {
