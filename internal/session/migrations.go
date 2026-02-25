@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -177,22 +176,6 @@ func GetPendingMigrations(baseDir string) ([]Migration, error) {
 		}
 	}
 	return pending, nil
-}
-
-// GetAppliedMigrations returns the list of migrations that have been applied.
-func GetAppliedMigrations(baseDir string) ([]string, error) {
-	statePath := filepath.Join(baseDir, migrationsFileName)
-	state, err := loadMigrationState(statePath)
-	if err != nil {
-		return nil, err
-	}
-
-	var applied []string
-	for name := range state.Applied {
-		applied = append(applied, name)
-	}
-	sort.Strings(applied)
-	return applied, nil
 }
 
 // readSessionMetadata reads metadata from a session directory.
