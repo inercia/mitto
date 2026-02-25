@@ -408,10 +408,22 @@ a:hover {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
+/* Tables - wrapped in scrollable container for wide tables */
+.markdown-content .table-wrapper {
+  overflow-x: auto;
+  margin: 0.75em 0;
+  -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
+}
+
+.markdown-content .table-wrapper table {
+  margin: 0; /* Remove margin since wrapper handles it */
+}
+
 .markdown-content table {
   margin: 0.75em 0;
   border-collapse: collapse;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   font-size: 13px;
 }
 
