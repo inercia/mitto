@@ -2,6 +2,26 @@
 
 Mitto can run AI agents through restricted runners to limit their access to system resources. This provides an additional security layer when working with untrusted agents or in sensitive environments.
 
+## ⚠️ Experimental Feature
+
+> **This feature is experimental.** The API and configuration format may change in future releases. Use with caution and expect potential breaking changes.
+
+Restricted runners create a **very limited environment** where many typical agent actions may be impossible. Common limitations include:
+
+- **File access**: Agents cannot read or write files outside explicitly allowed paths
+- **Network**: Connections may be blocked entirely or limited to specific hosts
+- **Process execution**: Spawning child processes (including MCP servers) may fail
+- **System calls**: Many system operations are blocked at the kernel/sandbox level
+
+**Some MCP servers may not work at all** in restricted environments. They may feel too constrained and simply fail to operate because they require:
+
+- Access to paths not in the allow list (e.g., temp directories, config files, caches)
+- Network access to external APIs or services
+- Ability to spawn subprocesses or execute binaries
+- Access to system resources that sandboxes block by default
+
+If you experience issues with MCP servers or agent capabilities, consider using the default `exec` runner (no restrictions) or carefully expanding the allowed paths and permissions.
+
 ## Overview
 
 By default, Mitto runs agents with **no restrictions** (direct execution). Agents have full access to:
