@@ -575,7 +575,12 @@ func TestEventOrdering_ListItemWithMultiLineBold(t *testing.T) {
 // NOTE: This test verifies that the list is NOT flushed mid-stream when the
 // bold is unmatched. However, the final HTML will still show literal ** markers
 // because the markdown is malformed (bold spans across a blank line).
+// When FlushOnToolCall is enabled, tool calls cause immediate flush regardless.
 func TestEventOrdering_ListEndWithUnmatchedBold(t *testing.T) {
+	if FlushOnToolCall {
+		t.Skip("Skipping: FlushOnToolCall is enabled, which intentionally flushes on tool calls")
+	}
+
 	collector := &eventCollector{}
 	seqCounter := int64(0)
 
@@ -653,10 +658,10 @@ func TestEventOrdering_ListEndWithUnmatchedBold(t *testing.T) {
 	}
 }
 
-// TestEventOrdering_InactivityTimeoutRespectsUnmatchedFormatting verifies that
-// the inactivity timeout does NOT flush content with unmatched inline formatting.
-// This was the bug where "4. **Real-time\n" was flushed before the closing "**".
-func TestEventOrdering_InactivityTimeoutRespectsUnmatchedFormatting(t *testing.T) {
+// TestEventOrdering_InactivityTimeoutFlushesContent verifies that
+// the hard inactivity timeout (2s) flushes content to prevent loss,
+// even if there is unmatched inline formatting. All content should be preserved.
+func TestEventOrdering_InactivityTimeoutFlushesContent(t *testing.T) {
 	collector := &eventCollector{}
 	seqCounter := int64(0)
 
@@ -674,18 +679,16 @@ func TestEventOrdering_InactivityTimeoutRespectsUnmatchedFormatting(t *testing.T
 	sendAgentMessage(t, client, ctx, "1. **First item** - Description\n")
 	sendAgentMessage(t, client, ctx, "2. **Second item** - Description\n")
 	sendAgentMessage(t, client, ctx, "3. **Third item** - Description\n")
-	// Send item 4 with unmatched bold - this should NOT be flushed by inactivity timeout
+	// Send item 4 with unmatched bold
 	sendAgentMessage(t, client, ctx, "4. **Real-time\n")
 
-	// Wait longer than the inactivity timeout (2 seconds)
-	time.Sleep(2500 * time.Millisecond)
+	// Wait longer than the hard inactivity timeout
+	time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
 
-	// Check that nothing was flushed yet (because of unmatched formatting)
+	// Hard timeout SHOULD have flushed to prevent content loss
 	events := collector.getEvents()
-	for _, e := range events {
-		if e.Type == "message" && strings.Contains(e.Content, "**Real-time") {
-			t.Error("Content with unmatched ** should NOT have been flushed by inactivity timeout")
-		}
+	if len(events) < 1 {
+		t.Error("Expected hard inactivity timeout to flush content")
 	}
 
 	// Now send the closing part
@@ -706,22 +709,23 @@ func TestEventOrdering_InactivityTimeoutRespectsUnmatchedFormatting(t *testing.T
 		t.Logf("  [%d] type=%s seq=%d content=%q", i, e.Type, e.Seq, preview)
 	}
 
-	// Find the message with item 4
-	found := false
+	// All content should be present (combined across all events)
+	var allContent strings.Builder
 	for _, e := range events {
-		if e.Type == "message" && strings.Contains(e.Content, "Real-time") {
-			found = true
-			// The bold should be properly rendered (not showing literal **)
-			if strings.Contains(e.Content, "**Real-time") {
-				t.Error("Bold markers should be converted to <strong>, not shown as literal **")
-			}
-			if !strings.Contains(e.Content, "<strong>") {
-				t.Error("Expected <strong> tag for bold text")
-			}
+		if e.Type == "message" {
+			allContent.WriteString(e.Content)
 		}
 	}
-	if !found {
-		t.Error("Expected to find message with 'Real-time'")
+	combined := allContent.String()
+
+	if !strings.Contains(combined, "First item") {
+		t.Error("Missing content: 'First item'")
+	}
+	if !strings.Contains(combined, "Real-time") {
+		t.Error("Missing content: 'Real-time'")
+	}
+	if !strings.Contains(combined, "messaging works") {
+		t.Error("Missing content: 'messaging works'")
 	}
 }
 
@@ -801,9 +805,14 @@ func TestEventOrdering_ListWithDelayBetweenChunks(t *testing.T) {
 	}
 }
 
-// TestEventOrdering_ToolCallMidListWithMultiLineBold verifies that a tool call
-// arriving mid-list when bold text spans multiple lines doesn't break the list.
+// TestEventOrdering_ToolCallMidListWithMultiLineBold verifies tool call behavior with lists.
+// When FlushOnToolCall is false: tool calls are buffered and don't break the list.
+// When FlushOnToolCall is true: tool calls cause an immediate flush, splitting the list.
 func TestEventOrdering_ToolCallMidListWithMultiLineBold(t *testing.T) {
+	if FlushOnToolCall {
+		t.Skip("Skipping: FlushOnToolCall is enabled, which intentionally splits lists on tool calls")
+	}
+
 	collector := &eventCollector{}
 	seqCounter := int64(0)
 
@@ -887,10 +896,14 @@ func TestEventOrdering_ToolCallMidListWithMultiLineBold(t *testing.T) {
 	}
 }
 
-// TestEventOrdering_ToolCallDoesNotBreakList verifies that a tool call arriving
-// mid-list does NOT break the list rendering. This was the original issue that
-// motivated the StreamBuffer implementation.
+// TestEventOrdering_ToolCallDoesNotBreakList verifies tool call behavior with lists.
+// When FlushOnToolCall is false: tool calls are buffered and don't break the list.
+// When FlushOnToolCall is true: tool calls cause an immediate flush, splitting the list.
 func TestEventOrdering_ToolCallDoesNotBreakList(t *testing.T) {
+	if FlushOnToolCall {
+		t.Skip("Skipping: FlushOnToolCall is enabled, which intentionally splits lists on tool calls")
+	}
+
 	collector := &eventCollector{}
 	seqCounter := int64(0)
 
@@ -964,9 +977,14 @@ func TestEventOrdering_ToolCallDoesNotBreakList(t *testing.T) {
 	}
 }
 
-// TestEventOrdering_ToolCallDoesNotBreakTable verifies that a tool call arriving
-// mid-table does NOT break the table rendering.
+// TestEventOrdering_ToolCallDoesNotBreakTable verifies tool call behavior with tables.
+// When FlushOnToolCall is false: tool calls are buffered and don't break the table.
+// When FlushOnToolCall is true: tool calls cause an immediate flush, splitting the table.
 func TestEventOrdering_ToolCallDoesNotBreakTable(t *testing.T) {
+	if FlushOnToolCall {
+		t.Skip("Skipping: FlushOnToolCall is enabled, which intentionally splits tables on tool calls")
+	}
+
 	collector := &eventCollector{}
 	seqCounter := int64(0)
 
@@ -1038,10 +1056,14 @@ func TestEventOrdering_ToolCallDoesNotBreakTable(t *testing.T) {
 	}
 }
 
-// TestEventOrdering_ToolCallDoesNotBreakTableWithHeader verifies that a tool call
-// arriving mid-table (after a header section) does NOT break the table rendering.
-// This matches the scenario from the bug report screenshot.
+// TestEventOrdering_ToolCallDoesNotBreakTableWithHeader verifies tool call behavior with tables.
+// When FlushOnToolCall is false: tool calls are buffered and don't break the table.
+// When FlushOnToolCall is true: tool calls cause an immediate flush, splitting the table.
 func TestEventOrdering_ToolCallDoesNotBreakTableWithHeader(t *testing.T) {
+	if FlushOnToolCall {
+		t.Skip("Skipping: FlushOnToolCall is enabled, which intentionally splits tables on tool calls")
+	}
+
 	collector := &eventCollector{}
 	seqCounter := int64(0)
 

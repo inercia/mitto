@@ -702,12 +702,25 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		runnerFallbackInfo = r.FallbackInfo
 	}
 
+	// Determine auto-approve: global flag OR per-server setting
+	autoApprove := sm.autoApprove
+	if !autoApprove && sm.mittoConfig != nil && acpServer != "" {
+		if serverConfig, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+			autoApprove = serverConfig.AutoApprove
+			if autoApprove && sm.logger != nil {
+				sm.logger.Debug("Using per-server auto_approve setting",
+					"acp_server", acpServer,
+					"auto_approve", autoApprove)
+			}
+		}
+	}
+
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:          acpCommand,
 		ACPCwd:              acpCwd,
 		ACPServer:           acpServer,
 		WorkingDir:          workingDir,
-		AutoApprove:         sm.autoApprove,
+		AutoApprove:         autoApprove,
 		Logger:              sm.logger,
 		Store:               store,
 		SessionName:         name,
@@ -993,6 +1006,20 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		return nil, err
 	}
 
+	// Determine auto-approve: global flag OR per-server setting
+	autoApprove := sm.autoApprove
+	if !autoApprove && sm.mittoConfig != nil && acpServer != "" {
+		if serverConfig, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+			autoApprove = serverConfig.AutoApprove
+			if autoApprove && sm.logger != nil {
+				sm.logger.Debug("Using per-server auto_approve setting for resumed session",
+					"acp_server", acpServer,
+					"auto_approve", autoApprove,
+					"session_id", sessionID)
+			}
+		}
+	}
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
@@ -1002,7 +1029,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		ACPServer:           acpServer,
 		ACPSessionID:        acpSessionID,
 		WorkingDir:          workingDir,
-		AutoApprove:         sm.autoApprove,
+		AutoApprove:         autoApprove,
 		Logger:              sm.logger,
 		Store:               store,
 		SessionName:         sessionName,
