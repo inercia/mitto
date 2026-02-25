@@ -45,6 +45,12 @@ var AvailableFlags = []FlagDefinition{
 		Description: "Allow this conversation to create new conversations via MCP tool. Child conversations cannot start further conversations.",
 		Default:     false,
 	},
+	{
+		Name:        FlagAutoApprovePermissions,
+		Label:       "Auto-approve permissions",
+		Description: "Automatically approve all permission requests from the agent (file writes, command execution, etc.) without prompting",
+		Default:     false,
+	},
 }
 
 // Flag name constants for type-safe access to flag values.
@@ -66,6 +72,12 @@ const (
 	// new conversations via the mitto_conversation_start MCP tool.
 	// Child conversations (those with a ParentSessionID) cannot start further conversations.
 	FlagCanStartConversation = "can_start_conversation"
+
+	// FlagAutoApprovePermissions controls whether permission requests from the agent
+	// are automatically approved without showing the permission dialog.
+	// This is a per-conversation override that takes precedence over the global
+	// auto_approve setting on the ACP server.
+	FlagAutoApprovePermissions = "auto_approve_permissions"
 )
 
 // GetFlagDefault returns the default value for a flag by name.
