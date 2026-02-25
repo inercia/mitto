@@ -219,21 +219,21 @@ The new conversation inherits the workspace configuration (ACP server, working d
 
 Returns (embeds `ConversationDetails`):
 
-| Field                   | Description                                          |
-| ----------------------- | ---------------------------------------------------- |
-| `session_id`            | The new conversation's session ID                    |
-| `title`                 | Conversation title (if set)                          |
-| `acp_server`            | ACP server URL (inherited from caller)               |
-| `working_dir`           | Working directory (inherited from caller)            |
-| `created_at`            | Creation timestamp (ISO 8601)                        |
-| `message_count`         | Number of messages (typically 0 for new)             |
-| `status`                | Current status                                       |
-| `archived`              | Whether archived (false for new)                     |
-| `is_running`            | Whether the session is currently active              |
-| `is_prompting`          | Whether the agent is currently replying              |
-| `parent_session_id`     | Parent session ID (the creating session)             |
-| `queue_position`        | Queue position if initial prompt was provided        |
-| `error`                 | Error message if creation failed                     |
+| Field               | Description                                   |
+| ------------------- | --------------------------------------------- |
+| `session_id`        | The new conversation's session ID             |
+| `title`             | Conversation title (if set)                   |
+| `acp_server`        | ACP server URL (inherited from caller)        |
+| `working_dir`       | Working directory (inherited from caller)     |
+| `created_at`        | Creation timestamp (ISO 8601)                 |
+| `message_count`     | Number of messages (typically 0 for new)      |
+| `status`            | Current status                                |
+| `archived`          | Whether archived (false for new)              |
+| `is_running`        | Whether the session is currently active       |
+| `is_prompting`      | Whether the agent is currently replying       |
+| `parent_session_id` | Parent session ID (the creating session)      |
+| `queue_position`    | Queue position if initial prompt was provided |
+| `error`             | Error message if creation failed              |
 
 **Safety restriction:** The newly created conversation has its `can_start_conversation` flag explicitly set to `false`, regardless of the parent's permissions. This prevents infinite recursive chains where conversations spawn unlimited child conversations.
 
@@ -635,12 +635,13 @@ Sessions can have per-conversation feature flags stored in their metadata:
 
 ### Available Flags
 
-| Flag                     | Default | Description                                            |
-| ------------------------ | ------- | ------------------------------------------------------ |
-| `can_do_introspection`   | `false` | Allow ACP agent to access Mitto's MCP tools            |
-| `can_send_prompt`        | `false` | Allow sending prompts to other conversations           |
-| `can_prompt_user`        | `true`  | Allow displaying interactive UI prompts                |
-| `can_start_conversation` | `false` | Allow creating new conversations in the same workspace |
+| Flag                       | Default | Description                                                                    |
+| -------------------------- | ------- | ------------------------------------------------------------------------------ |
+| `can_do_introspection`     | `false` | Allow ACP agent to access Mitto's MCP tools                                    |
+| `can_send_prompt`          | `false` | Allow sending prompts to other conversations                                   |
+| `can_prompt_user`          | `true`  | Allow displaying interactive UI prompts                                        |
+| `can_start_conversation`   | `false` | Allow creating new conversations in the same workspace                         |
+| `auto_approve_permissions` | `false` | Auto-approve all permission requests (file writes, commands) without prompting |
 
 ### Checking Flags in Code
 
