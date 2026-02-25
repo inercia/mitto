@@ -94,7 +94,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 
 	// Create ACP connection (no restricted runner for CLI - always use direct execution)
 	// server.Cwd sets the working directory for the ACP process itself
-	conn, err := acp.NewConnection(ctx, server.Command, server.Cwd, autoApprove, output, logger, nil)
+	conn, err := acp.NewConnection(ctx, server.Command, server.Cwd, GetEffectiveAutoApprove(cmd), output, logger, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
