@@ -1,9 +1,6 @@
 package web
 
 import (
-	"context"
-
-	"github.com/coder/acp-go-sdk"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -22,17 +19,28 @@ type PlanEntry struct {
 // Type aliases for UI prompt types from mcpserver package.
 // This avoids duplication while keeping the types accessible in the web package.
 type (
-	UIPromptType     = mcpserver.UIPromptType
-	UIPromptOption   = mcpserver.UIPromptOption
-	UIPromptRequest  = mcpserver.UIPromptRequest
-	UIPromptResponse = mcpserver.UIPromptResponse
+	UIPromptType        = mcpserver.UIPromptType
+	UIPromptOption      = mcpserver.UIPromptOption
+	UIPromptOptionStyle = mcpserver.UIPromptOptionStyle
+	UIPromptRequest     = mcpserver.UIPromptRequest
+	UIPromptResponse    = mcpserver.UIPromptResponse
 )
 
 // Re-export UI prompt type constants for convenience.
 const (
-	UIPromptTypeYesNo   = mcpserver.UIPromptTypeYesNo
-	UIPromptTypeSelect  = mcpserver.UIPromptTypeSelect
-	UIPromptTypeOptions = mcpserver.UIPromptTypeOptions
+	UIPromptTypeYesNo         = mcpserver.UIPromptTypeYesNo
+	UIPromptTypeSelect        = mcpserver.UIPromptTypeSelect
+	UIPromptTypeOptions       = mcpserver.UIPromptTypeOptions
+	UIPromptTypeActionButtons = mcpserver.UIPromptTypeActionButtons
+	UIPromptTypePermission    = mcpserver.UIPromptTypePermission
+)
+
+// Re-export UI prompt option style constants for convenience.
+const (
+	UIPromptOptionStylePrimary   = mcpserver.UIPromptOptionStylePrimary
+	UIPromptOptionStyleSecondary = mcpserver.UIPromptOptionStyleSecondary
+	UIPromptOptionStyleDanger    = mcpserver.UIPromptOptionStyleDanger
+	UIPromptOptionStyleSuccess   = mcpserver.UIPromptOptionStyleSuccess
 )
 
 // SessionObserver defines the interface for receiving session events.
@@ -73,10 +81,6 @@ type SessionObserver interface {
 	// OnFileRead is called when a file is read.
 	// seq is the sequence number for this file read event.
 	OnFileRead(seq int64, path string, size int)
-
-	// OnPermission is called when a permission request needs user input.
-	// Only the first observer to respond will have their answer used.
-	OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
 
 	// OnPromptComplete is called when a prompt response is complete.
 	// eventCount is the current total event count for the session (for sync tracking).
