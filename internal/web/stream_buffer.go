@@ -152,8 +152,32 @@ func (sb *StreamBuffer) AddThought(text string) {
 // If we're in a markdown block (list/table/code), the tool call is buffered until the block completes.
 // Otherwise, any pending markdown is flushed and the tool call is emitted immediately.
 // Note: No seq is passed - seq is assigned at emit time.
+//
+// EXPERIMENTAL: If FlushOnToolCall is enabled, the markdown buffer is force-flushed
+// when a tool call arrives, even if we're in a block. This ensures content is visible
+// before tool output appears, at the cost of potentially splitting blocks.
 func (sb *StreamBuffer) AddToolCall(id, title string, status *string) {
-	// Check if we're in a block
+	// EXPERIMENTAL: Force flush on tool call if enabled
+	if FlushOnToolCall {
+		// Force flush any pending markdown before processing the tool call
+		sb.mdBuffer.Flush()
+
+		// Emit any pending events that were buffered
+		sb.emitPendingEvents()
+
+		// Emit the tool call immediately
+		if sb.callbacks.OnToolCall != nil {
+			seq := sb.getNextSeq()
+			s := ""
+			if status != nil {
+				s = *status
+			}
+			sb.callbacks.OnToolCall(seq, id, title, s)
+		}
+		return
+	}
+
+	// Standard behavior: check if we're in a block
 	inBlock := sb.mdBuffer.InBlock()
 
 	if inBlock {
@@ -251,19 +275,7 @@ func (sb *StreamBuffer) Flush() {
 	sb.mdBuffer.Flush()
 
 	// After markdown flush, emit any remaining pending events
-	sb.mu.Lock()
-	if len(sb.pendingEvents) == 0 {
-		sb.mu.Unlock()
-		return
-	}
-	// Copy events to emit outside lock
-	eventsToEmit := make([]StreamEvent, len(sb.pendingEvents))
-	copy(eventsToEmit, sb.pendingEvents)
-	sb.pendingEvents = sb.pendingEvents[:0]
-	sb.mu.Unlock()
-
-	// Emit events outside lock
-	sb.emitEvents(eventsToEmit)
+	sb.emitPendingEvents()
 }
 
 // Close stops the buffer and releases resources.
@@ -289,6 +301,24 @@ func (sb *StreamBuffer) onMarkdownFlush(html string) {
 	// if we're still in a block (would cause deadlock). Pending events will
 	// be emitted when Flush() is called or when the next non-markdown event
 	// arrives and we're not in a block.
+}
+
+// emitPendingEvents emits any pending events that were buffered.
+// Must be called WITHOUT lock held.
+func (sb *StreamBuffer) emitPendingEvents() {
+	sb.mu.Lock()
+	if len(sb.pendingEvents) == 0 {
+		sb.mu.Unlock()
+		return
+	}
+	// Copy events to emit outside lock
+	eventsToEmit := make([]StreamEvent, len(sb.pendingEvents))
+	copy(eventsToEmit, sb.pendingEvents)
+	sb.pendingEvents = sb.pendingEvents[:0]
+	sb.mu.Unlock()
+
+	// Emit events outside lock
+	sb.emitEvents(eventsToEmit)
 }
 
 // emitEvents emits a list of events via callbacks.
