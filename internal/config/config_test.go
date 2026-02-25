@@ -1867,3 +1867,116 @@ func TestMergePrompts_SkipsEmptyNames(t *testing.T) {
 		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "Valid")
 	}
 }
+
+func TestParse_PermissionsConfig(t *testing.T) {
+	yamlData := `
+acp:
+  - test:
+      command: echo test
+permissions:
+  auto_approve: false
+`
+	cfg, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.Permissions == nil {
+		t.Fatal("Permissions should not be nil")
+	}
+	if cfg.Permissions.AutoApprove == nil {
+		t.Fatal("Permissions.AutoApprove should not be nil")
+	}
+	if *cfg.Permissions.AutoApprove != false {
+		t.Error("Permissions.AutoApprove should be false")
+	}
+}
+
+func TestParse_PermissionsConfigTrue(t *testing.T) {
+	yamlData := `
+acp:
+  - test:
+      command: echo test
+permissions:
+  auto_approve: true
+`
+	cfg, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.Permissions == nil {
+		t.Fatal("Permissions should not be nil")
+	}
+	if cfg.Permissions.AutoApprove == nil {
+		t.Fatal("Permissions.AutoApprove should not be nil")
+	}
+	if *cfg.Permissions.AutoApprove != true {
+		t.Error("Permissions.AutoApprove should be true")
+	}
+}
+
+func TestParse_PermissionsConfigDefault(t *testing.T) {
+	// No permissions section - should default to auto_approve=true
+	yamlData := `
+acp:
+  - test:
+      command: echo test
+`
+	cfg, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Permissions section should be nil when not specified
+	if cfg.Permissions != nil {
+		t.Fatal("Permissions should be nil when not specified")
+	}
+
+	// But IsAutoApprove should return true (the default)
+	if !cfg.Permissions.IsAutoApprove() {
+		t.Error("IsAutoApprove() should return true for nil Permissions")
+	}
+}
+
+func TestPermissionsConfig_IsAutoApprove(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *PermissionsConfig
+		expected bool
+	}{
+		{
+			name:     "nil config - defaults to true",
+			config:   nil,
+			expected: true,
+		},
+		{
+			name:     "empty config - defaults to true",
+			config:   &PermissionsConfig{},
+			expected: true,
+		},
+		{
+			name: "explicit true",
+			config: &PermissionsConfig{
+				AutoApprove: func() *bool { b := true; return &b }(),
+			},
+			expected: true,
+		},
+		{
+			name: "explicit false",
+			config: &PermissionsConfig{
+				AutoApprove: func() *bool { b := false; return &b }(),
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.IsAutoApprove()
+			if result != tt.expected {
+				t.Errorf("IsAutoApprove() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}

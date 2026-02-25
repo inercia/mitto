@@ -31,6 +31,9 @@ type ACPServer struct {
 	// Source indicates where this server configuration originated from.
 	// Used for config layering: servers from RC file are read-only in the UI.
 	Source ConfigItemSource
+	// AutoApprove enables automatic approval of permission requests for this ACP server.
+	// This is a per-server override; the global AutoApprove flag takes precedence if set.
+	AutoApprove bool
 }
 
 // GetType returns the type identifier for prompt matching.
@@ -850,6 +853,27 @@ type WorkspaceRunnerConfig struct {
 	MergeStrategy string `json:"merge_strategy,omitempty" yaml:"merge_strategy,omitempty"`
 }
 
+// PermissionsConfig configures how permission requests from agents are handled.
+// Permission requests occur when an agent wants to perform sensitive operations
+// like running commands, accessing files outside the workspace, etc.
+type PermissionsConfig struct {
+	// AutoApprove enables automatic approval of permission requests.
+	// When true, all permission requests are automatically approved without
+	// showing a dialog to the user.
+	// Default: true (until the permission UI is fully implemented)
+	// TODO: Change default to false once permission dialog is implemented.
+	AutoApprove *bool `json:"auto_approve,omitempty" yaml:"auto_approve,omitempty"`
+}
+
+// IsAutoApprove returns whether permission requests should be auto-approved.
+// Safe to call on nil receiver - returns true (the current default) if not configured.
+func (p *PermissionsConfig) IsAutoApprove() bool {
+	if p == nil || p.AutoApprove == nil {
+		return true // Default: auto-approve until UI is ready
+	}
+	return *p.AutoApprove
+}
+
 // MCPConfig contains configuration for the MCP (Model Context Protocol) server.
 // The MCP server provides debugging tools and UI prompt functionality to AI agents.
 type MCPConfig struct {
@@ -905,6 +929,8 @@ type Config struct {
 	Session *SessionConfig
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig
+	// Permissions contains global permission handling configuration
+	Permissions *PermissionsConfig
 	// RestrictedRunners contains per-runner-type global configuration.
 	// Key is the runner type (e.g., "exec", "sandbox-exec", "firejail", "docker").
 	RestrictedRunners map[string]*WorkspaceRunnerConfig
@@ -1026,6 +1052,10 @@ type rawConfig struct {
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
+	// Permissions is the global permission handling configuration
+	Permissions *struct {
+		AutoApprove *bool `yaml:"auto_approve"`
+	} `yaml:"permissions"`
 	// MCP is the MCP server configuration
 	MCP *struct {
 		Enabled *bool  `yaml:"enabled"`
@@ -1275,6 +1305,13 @@ func Parse(data []byte) (*Config, error) {
 
 	// Copy restricted runners (top-level per-runner-type config)
 	cfg.RestrictedRunners = raw.RestrictedRunners
+
+	// Parse permissions config
+	if raw.Permissions != nil {
+		cfg.Permissions = &PermissionsConfig{
+			AutoApprove: raw.Permissions.AutoApprove,
+		}
+	}
 
 	// Parse MCP config
 	if raw.MCP != nil {

@@ -20,7 +20,7 @@ acp:
       # cwd: /path/to/working/directory  # Optional: set process working directory
 
   - claude-code:
-      command: npx -y @zed-industries/claude-code-acp@latest
+      command: npx -y @zed-industries/claude-agent-acp@latest
 
   - cursor:
       command: npx -y @blowmage/cursor-agent-acp
@@ -189,6 +189,16 @@ conversations:
     enabled: true  # Enable follow-up suggestions by default
   # external_images:
   #   enabled: false  # Allow external HTTPS images (default: false)
+
+# Permission handling configuration
+# Controls how permission requests from agents are handled.
+# Permission requests occur when an agent wants to perform sensitive operations
+# like running commands, accessing files outside the workspace, etc.
+permissions:
+  # Auto-approve all permission requests without showing a dialog.
+  # Default: true (until the permission UI is fully implemented)
+  # TODO: Change default to false once permission dialog is implemented.
+  auto_approve: true
 
 # Restricted Runner Configuration (Advanced)
 # By default, agents run with no restrictions (exec runner).
