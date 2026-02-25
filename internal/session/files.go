@@ -117,12 +117,6 @@ func (s *Store) filesDir(sessionID string) string {
 	return filepath.Join(s.sessionDir(sessionID), filesDirName)
 }
 
-// IsSupportedFileType checks if a MIME type is supported for file attachments.
-func IsSupportedFileType(mimeType string) bool {
-	_, ok := supportedFileTypes[mimeType]
-	return ok
-}
-
 // GetFileCategory returns the category for a supported MIME type.
 func GetFileCategory(mimeType string) FileCategory {
 	if info, ok := supportedFileTypes[mimeType]; ok {
