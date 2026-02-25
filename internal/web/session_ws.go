@@ -13,8 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -47,10 +45,6 @@ type SessionWSClient struct {
 
 	// Session store for persistence operations
 	store *session.Store
-
-	// Permission handling
-	permissionChan chan acp.RequestPermissionResponse
-	permissionMu   sync.Mutex
 
 	// Seq tracking for deduplication - prevents sending the same event twice
 	// This is the core of the WebSocket-only architecture: the server guarantees
@@ -130,15 +124,14 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	})
 
 	client := &SessionWSClient{
-		server:         s,
-		wsConn:         wsConn,
-		sessionID:      sessionID,
-		clientID:       clientID,
-		logger:         clientLogger,
-		ctx:            ctx,
-		cancel:         cancel,
-		store:          store,
-		permissionChan: make(chan acp.RequestPermissionResponse, 1),
+		server:    s,
+		wsConn:    wsConn,
+		sessionID: sessionID,
+		clientID:  clientID,
+		logger:    clientLogger,
+		ctx:       ctx,
+		cancel:    cancel,
+		store:     store,
 	}
 
 	// Try to get existing background session first
@@ -489,20 +482,28 @@ func (c *SessionWSClient) handleForceReset() {
 	}
 }
 
+// handlePermissionAnswer handles legacy permission_answer messages from older frontends.
+// Permissions now use the unified UIPrompt system, so this forwards to handleUIPromptAnswer.
 func (c *SessionWSClient) handlePermissionAnswer(optionID string, cancel bool) {
-	var resp acp.RequestPermissionResponse
+	// For backwards compatibility, forward to the UIPrompt answer handler.
+	// The request_id for permission prompts is the tool_call_id.
 	if cancel {
-		resp.Outcome.Cancelled = &acp.RequestPermissionOutcomeCancelled{}
-	} else {
-		resp.Outcome.Selected = &acp.RequestPermissionOutcomeSelected{
-			OptionId: acp.PermissionOptionId(optionID),
+		// No easy way to get the request_id for cancelled permissions in legacy flow.
+		// Log and ignore - new frontends should use ui_prompt_answer.
+		if c.logger != nil {
+			c.logger.Debug("legacy_permission_answer_cancelled",
+				"note", "legacy permission_answer cancel not fully supported, use ui_prompt_answer")
 		}
+		return
 	}
 
-	// Send to our own permission channel (non-blocking)
-	select {
-	case c.permissionChan <- resp:
-	default:
+	// For legacy clients, we don't have the request_id readily available.
+	// The new UIPrompt system uses tool_call_id as request_id, but legacy clients
+	// don't send it. Log a warning and do nothing - this is a deprecation path.
+	if c.logger != nil {
+		c.logger.Warn("legacy_permission_answer_received",
+			"option_id", optionID,
+			"note", "please upgrade to ui_prompt_answer message type")
 	}
 }
 
@@ -1445,46 +1446,6 @@ func (c *SessionWSClient) OnFileRead(seq int64, path string, size int) {
 		"size":       size,
 		"session_id": c.sessionID,
 	})
-}
-
-// OnPermission is called when a permission request needs user input.
-func (c *SessionWSClient) OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	title := ""
-	if params.ToolCall.Title != nil {
-		title = *params.ToolCall.Title
-	}
-
-	options := make([]map[string]string, len(params.Options))
-	for i, opt := range params.Options {
-		options[i] = map[string]string{
-			"id":   string(opt.OptionId),
-			"name": opt.Name,
-			"kind": string(opt.Kind),
-		}
-	}
-
-	c.sendMessage(WSMsgTypePermission, map[string]interface{}{
-		"title":      title,
-		"options":    options,
-		"session_id": c.sessionID,
-	})
-
-	// Clear any stale response
-	c.permissionMu.Lock()
-	select {
-	case <-c.permissionChan:
-	default:
-	}
-	c.permissionMu.Unlock()
-
-	select {
-	case <-ctx.Done():
-		return acp.RequestPermissionResponse{}, ctx.Err()
-	case <-c.ctx.Done():
-		return acp.RequestPermissionResponse{}, c.ctx.Err()
-	case resp := <-c.permissionChan:
-		return resp, nil
-	}
 }
 
 // OnPromptComplete is called when a prompt response is complete.
