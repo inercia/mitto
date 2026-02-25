@@ -36,8 +36,38 @@ export function useSwipeNavigation(
     const element = ref.current;
     if (!element) return;
 
+    /**
+     * Check if an element or its ancestors have horizontal scroll capability.
+     * This is used to prevent swipe navigation when the user is scrolling a table.
+     */
+    const isInsideHorizontallyScrollable = (target) => {
+      let el = target;
+      while (el && el !== element) {
+        // Check if element has horizontal overflow and actual scrollable content
+        const style = window.getComputedStyle(el);
+        const overflowX = style.overflowX;
+        const hasHorizontalScroll =
+          (overflowX === "auto" || overflowX === "scroll") &&
+          el.scrollWidth > el.clientWidth;
+
+        if (hasHorizontalScroll) {
+          return true;
+        }
+        el = el.parentElement;
+      }
+      return false;
+    };
+
     const handleTouchStart = (e) => {
       const touch = e.touches[0];
+
+      // Skip swipe navigation if touch starts inside a horizontally scrollable element
+      // This allows tables with overflow-x: auto to be scrolled without triggering navigation
+      if (isInsideHorizontallyScrollable(e.target)) {
+        touchStartRef.current = null;
+        return;
+      }
+
       // Track if touch begins near the edge (for mobile)
       const isNearLeftEdge = touch.clientX < edgeWidth;
       const isNearRightEdge = touch.clientX > window.innerWidth - edgeWidth;

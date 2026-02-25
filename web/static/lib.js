@@ -11,11 +11,6 @@ export const MAX_MESSAGES = 1000;
 // This provides a faster initial load while allowing users to load more history.
 export const INITIAL_EVENTS_LIMIT = 50;
 
-// Number of events to load in the fast initial phase (two-phase loading).
-// This small batch loads quickly to show the user the latest messages immediately,
-// then the remaining history is loaded in the background.
-export const FAST_INITIAL_LOAD_LIMIT = 10;
-
 // Message roles
 export const ROLE_USER = "user";
 export const ROLE_AGENT = "agent";

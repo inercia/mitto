@@ -1263,7 +1263,7 @@ export function useWebSocket() {
             return prev;
           }
 
-          // Store the active UI prompt
+          // Store the active UI prompt (unified: MCP questions, permissions)
           return {
             ...prev,
             [sessionId]: {
@@ -1275,6 +1275,10 @@ export function useWebSocket() {
                 options: msg.data.options || [],
                 timeoutSeconds: msg.data.timeout_seconds,
                 receivedAt: Date.now(),
+                // New fields for unified prompts
+                title: msg.data.title || null,
+                toolCallId: msg.data.tool_call_id || null,
+                blocking: msg.data.blocking !== false, // Default true for backwards compat
               },
             },
           };
@@ -2527,13 +2531,10 @@ export function useWebSocket() {
     }
   }, []);
 
-  // Helper to expand the target session's group in accordion mode
-  // This collapses all other groups and expands the group containing the session
+  // Helper to expand the target session's group when navigating
+  // Always expands the group containing the session so it's visible in the sidebar
+  // In accordion mode, also collapses all other groups
   const expandGroupForSession = useCallback((sessionId, workingDir, acpServer) => {
-    if (!getSingleExpandedGroupMode()) {
-      return;
-    }
-
     // Build the group key for this session based on current grouping mode
     const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
     let groupKey;
@@ -2546,14 +2547,16 @@ export function useWebSocket() {
 
     // Only expand if we have a valid group key and groups are being used
     if (groupKey && groupingMode && groupingMode !== "none") {
-      // Collapse all other groups first
-      const expandedGroups = getExpandedGroups();
-      for (const key of Object.keys(expandedGroups)) {
-        if (key !== groupKey && isGroupExpanded(key)) {
-          setGroupExpanded(key, false);
+      // In accordion mode, collapse all other groups first
+      if (getSingleExpandedGroupMode()) {
+        const expandedGroups = getExpandedGroups();
+        for (const key of Object.keys(expandedGroups)) {
+          if (key !== groupKey && isGroupExpanded(key)) {
+            setGroupExpanded(key, false);
+          }
         }
       }
-      // Expand the session's group
+      // Always expand the session's group so it's visible
       if (!isGroupExpanded(groupKey)) {
         setGroupExpanded(groupKey, true);
       }
