@@ -79,7 +79,7 @@ import {
 import {
   useWebSocket,
   useSwipeNavigation,
-  useSwipeToDelete,
+  useSwipeToAction,
   useInfiniteScroll,
 } from "./hooks/index.js";
 
@@ -977,6 +977,7 @@ function SessionItem({
   badgeHideAbbreviation = false,
   badgeHideAcpServer = false,
   isLightTheme = false,
+  filterTab = FILTER_TAB.CONVERSATIONS,
 }) {
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
@@ -1148,7 +1149,22 @@ function SessionItem({
     return parts.join("\n");
   };
 
-  // Swipe-to-delete hook
+  // Determine swipe action based on filter tab:
+  // - Archived tab: swipe to delete
+  // - Regular/Periodic tabs: swipe to archive
+  const isSwipeToDelete = filterTab === FILTER_TAB.ARCHIVED;
+
+  // Swipe action handler - archive or delete based on current tab
+  const handleSwipeAction = useCallback(() => {
+    if (isSwipeToDelete) {
+      onDelete(session);
+    } else {
+      // Archive the session (pass true to archive)
+      onArchive(session, true);
+    }
+  }, [isSwipeToDelete, session, onDelete, onArchive]);
+
+  // Swipe-to-action hook (archive or delete based on tab)
   const {
     swipeOffset,
     isSwiping,
@@ -1156,9 +1172,9 @@ function SessionItem({
     isRevealed,
     containerProps,
     reset,
-    triggerDelete,
-  } = useSwipeToDelete({
-    onDelete: () => onDelete(session),
+    triggerAction,
+  } = useSwipeToAction({
+    onAction: handleSwipeAction,
     threshold: 0.5,
     revealWidth: 80,
     disabled: false,
@@ -1265,21 +1281,24 @@ function SessionItem({
         class="session-item-container relative overflow-hidden border-b border-slate-700"
         ...${containerProps}
       >
-        <!-- Delete background (revealed when swiping left) -->
+        <!-- Swipe action background (revealed when swiping left) -->
+        <!-- Shows Archive (amber) for regular/periodic tabs, Delete (red) for archived tab -->
         <div
-          class="absolute inset-0 bg-red-600 flex items-center justify-end pr-6 transition-opacity"
+          class="absolute inset-0 ${isSwipeToDelete ? "bg-red-600" : "bg-amber-600"} flex items-center justify-end pr-6 transition-opacity"
           style="opacity: ${isRevealed || absOffset > 20 ? 1 : 0}"
         >
           <button
             onClick=${(e) => {
               e.preventDefault();
               e.stopPropagation();
-              triggerDelete();
+              triggerAction();
             }}
-            class="p-3 rounded-full bg-red-700 hover:bg-red-800 transition-colors"
-            title="Delete"
+            class="p-3 rounded-full ${isSwipeToDelete ? "bg-red-700 hover:bg-red-800" : "bg-amber-700 hover:bg-amber-800"} transition-colors"
+            title=${isSwipeToDelete ? "Delete" : "Archive"}
           >
-            <${TrashIcon} className="w-5 h-5 text-white" />
+            ${isSwipeToDelete
+              ? html`<${TrashIcon} className="w-5 h-5 text-white" />`
+              : html`<${ArchiveIcon} className="w-5 h-5 text-white" />`}
           </button>
         </div>
         <!-- Swipeable content -->
@@ -1743,6 +1762,7 @@ function SessionList({
         badgeHideAbbreviation=${badgeHideAbbreviation}
         badgeHideAcpServer=${badgeHideAcpServer}
         isLightTheme=${isLight}
+        filterTab=${filterTab}
       />
     `;
   };
@@ -2628,9 +2648,63 @@ function App() {
     getFilterTabGrouping(getFilterTab()),
   );
 
+  // Helper to get group key for a session (same logic as sidebar grouping)
+  const getSessionGroupKey = useCallback(
+    (session) => {
+      if (groupingModeForNav === "server") {
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        return session.acp_server || storedSession?.acp_server || "Unknown";
+      } else if (groupingModeForNav === "workspace") {
+        // workspace mode - group by working_dir|acp_server
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        const workingDir =
+          session.working_dir ||
+          storedSession?.working_dir ||
+          getGlobalWorkingDir(session.session_id) ||
+          "";
+        const acpServer = session.acp_server || storedSession?.acp_server || "";
+        return `${workingDir}|${acpServer}`;
+      }
+      return null; // no grouping
+    },
+    [groupingModeForNav, storedSessions],
+  );
+
+  // Helper to get group label for sorting (same as sidebar)
+  const getSessionGroupLabel = useCallback(
+    (session) => {
+      if (groupingModeForNav === "server") {
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        return session.acp_server || storedSession?.acp_server || "Unknown";
+      } else if (groupingModeForNav === "workspace") {
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        const workingDir =
+          session.working_dir ||
+          storedSession?.working_dir ||
+          getGlobalWorkingDir(session.session_id) ||
+          "";
+        // Label is the basename (same as sidebar)
+        return workingDir ? getBasename(workingDir) : "Unknown";
+      }
+      return "";
+    },
+    [groupingModeForNav, storedSessions],
+  );
+
   // Sessions available for navigation based on active filter tab
   // Navigation via keyboard shortcuts and swipe gestures should only cycle within the active tab
   // In "visible_groups" cycling mode, also skip sessions in collapsed groups
+  // Sessions are ordered to match the visual order in the sidebar:
+  // - When grouped: groups sorted alphabetically, sessions within groups by created_at (newest first)
+  // - When not grouped: sessions sorted by created_at (newest first)
   const navigableSessions = useMemo(() => {
     // First filter sessions based on the active filter tab
     let tabFilteredSessions;
@@ -2651,40 +2725,41 @@ function App() {
         break;
     }
 
-    // If cycling mode is "all", return all tab-filtered sessions
-    if (conversationCyclingMode !== CYCLING_MODE.VISIBLE_GROUPS) {
+    // If no grouping mode, sessions are already sorted by created_at from allSessions
+    if (groupingModeForNav === "none") {
       return tabFilteredSessions;
     }
 
-    // In "visible_groups" mode, only include sessions that are in expanded groups
-    // If no grouping (mode === "none"), all sessions are visible (no groups to collapse)
-    if (groupingModeForNav === "none") {
-      return tabFilteredSessions;
+    // When grouping is enabled, we need to sort sessions to match the sidebar visual order:
+    // 1. Groups sorted alphabetically by label
+    // 2. Sessions within each group sorted by created_at (newest first)
+    //
+    // We do this by sorting all sessions with a composite sort key:
+    // primary: group label (alphabetical)
+    // secondary: created_at (newest first)
+    const sortedSessions = [...tabFilteredSessions].sort((a, b) => {
+      const labelA = getSessionGroupLabel(a);
+      const labelB = getSessionGroupLabel(b);
+
+      // Primary sort: group label (alphabetical)
+      const labelCompare = labelA.localeCompare(labelB);
+      if (labelCompare !== 0) return labelCompare;
+
+      // Secondary sort: created_at (newest first)
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+
+    // In "visible_groups" cycling mode, only include sessions that are in expanded groups
+    if (conversationCyclingMode !== CYCLING_MODE.VISIBLE_GROUPS) {
+      return sortedSessions;
     }
 
     // Filter sessions based on their group's expanded state
     // Use expandedGroupsForNav (React state) instead of calling isGroupExpanded()
     // which reads from localStorage. This is critical for mobile/WKWebView where
     // localStorage can become stale or inconsistent.
-    return tabFilteredSessions.filter((session) => {
-      let groupKey;
-      if (groupingModeForNav === "server") {
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        groupKey = session.acp_server || storedSession?.acp_server || "Unknown";
-      } else {
-        // folder mode
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        const workingDir =
-          session.working_dir ||
-          storedSession?.working_dir ||
-          getGlobalWorkingDir(session.session_id) ||
-          "";
-        groupKey = workingDir || "Unknown";
-      }
+    return sortedSessions.filter((session) => {
+      const groupKey = getSessionGroupKey(session);
       // Check if group is expanded using React state (not localStorage)
       // Default: archived section is collapsed, all others are expanded
       if (groupKey in expandedGroupsForNav) {
@@ -2701,7 +2776,9 @@ function App() {
     conversationCyclingMode,
     groupingModeForNav,
     filterTabForNav,
-    expandedGroupsForNav, // Re-compute when groups are toggled (uses React state, not localStorage)
+    expandedGroupsForNav,
+    getSessionGroupKey,
+    getSessionGroupLabel,
   ]);
 
   // Navigate to previous/next session with animation direction (wraps around for swipe gestures)

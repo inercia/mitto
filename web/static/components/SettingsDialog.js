@@ -67,6 +67,12 @@ function WorkspaceEditForm({
   const [acpServer, setAcpServer] = useState(workspace.acp_server);
   const [runner, setRunner] = useState(workspace.restricted_runner || "exec");
 
+  // Sort ACP servers alphabetically by name for display
+  const sortedServers = useMemo(
+    () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
+    [acpServers],
+  );
+
   const handleSave = () => {
     // Ensure code is uppercase and max 3 characters
     const sanitizedCode = (code || "").toUpperCase().slice(0, 3);
@@ -104,7 +110,7 @@ function WorkspaceEditForm({
           onChange=${(e) => setAcpServer(e.target.value)}
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
-          ${sortedAcpServers.map(
+          ${sortedServers.map(
             (srv) => html`
               <option key=${srv.name} value=${srv.name}>${srv.name}</option>
             `,
@@ -863,14 +869,16 @@ export function SettingsDialog({
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
-      // Load conversation cycling mode setting (web UI) - default to "all"
-      setConversationCyclingMode(
-        config.ui?.web?.conversation_cycling_mode || CYCLING_MODE.ALL,
-      );
-
       // Load single expanded group (accordion mode) setting (web UI) - default to false
-      setSingleExpandedGroup(
-        config.ui?.web?.single_expanded_group === true,
+      const accordionEnabled = config.ui?.web?.single_expanded_group === true;
+      setSingleExpandedGroup(accordionEnabled);
+
+      // Load conversation cycling mode setting (web UI) - default to "all"
+      // When accordion mode is enabled, force cycling to "all"
+      setConversationCyclingMode(
+        accordionEnabled
+          ? CYCLING_MODE.ALL
+          : config.ui?.web?.conversation_cycling_mode || CYCLING_MODE.ALL,
       );
 
       // Load restricted runners configuration
@@ -1248,17 +1256,34 @@ export function SettingsDialog({
     setWorkspaces(workspaces.filter((ws) => getWorkspaceKey(ws) !== workspaceKey));
   };
 
-  // Duplicate a workspace with a different ACP server
+  // Find an alternative ACP server for a workspace (one that's NOT already used for the same folder)
   // Returns the alternative server name, or null if none available
-  const getAlternativeServer = (currentServerName) => {
-    // Find any server that is NOT the current one
-    const altServer = acpServers.find((s) => s.name !== currentServerName);
-    return altServer ? altServer.name : null;
+  const getUnusedServerForFolder = (workingDir, currentServerName) => {
+    // Find all servers that are already used for this folder
+    const usedServers = new Set(
+      workspaces
+        .filter((ws) => ws.working_dir === workingDir)
+        .map((ws) => ws.acp_server)
+    );
+
+    // Find a server that is NOT already used for this folder
+    // Prefer servers other than the current one first
+    const altServer = acpServers.find(
+      (s) => s.name !== currentServerName && !usedServers.has(s.name)
+    );
+    if (altServer) {
+      return altServer.name;
+    }
+
+    // Fallback: any unused server (including current if it's somehow not in usedServers)
+    const anyUnusedServer = acpServers.find((s) => !usedServers.has(s.name));
+    return anyUnusedServer ? anyUnusedServer.name : null;
   };
 
-  // Check if a workspace can be duplicated (i.e., there's an alternative ACP server)
+  // Check if a workspace can be duplicated
+  // Returns true if there's at least one ACP server that's not already used for this folder
   const canDuplicateWorkspace = (ws) => {
-    return getAlternativeServer(ws.acp_server) !== null;
+    return getUnusedServerForFolder(ws.working_dir, ws.acp_server) !== null;
   };
 
   const duplicateWorkspace = (workspaceKey) => {
@@ -1268,10 +1293,15 @@ export function SettingsDialog({
       return;
     }
 
-    // Find an alternative ACP server
-    const altServerName = getAlternativeServer(workspace.acp_server);
+    // Find an alternative ACP server that's not already used for this folder
+    const altServerName = getUnusedServerForFolder(
+      workspace.working_dir,
+      workspace.acp_server
+    );
     if (!altServerName) {
-      setError("Cannot duplicate: no other ACP server available");
+      setError(
+        "Cannot duplicate: all ACP servers are already used for this folder"
+      );
       return;
     }
 
@@ -1283,7 +1313,9 @@ export function SettingsDialog({
     }
 
     // Create the duplicate with the same folder but different ACP server
+    // Generate a unique UUID for the new workspace
     const duplicate = {
+      uuid: crypto.randomUUID(),
       working_dir: workspace.working_dir,
       acp_server: altServerName,
       acp_command: altServer.command,
@@ -1295,7 +1327,9 @@ export function SettingsDialog({
     };
 
     // Add the duplicate after the original workspace
-    const index = workspaces.findIndex((ws) => getWorkspaceKey(ws) === workspaceKey);
+    const index = workspaces.findIndex(
+      (ws) => getWorkspaceKey(ws) === workspaceKey
+    );
     const newWorkspaces = [...workspaces];
     newWorkspaces.splice(index + 1, 0, duplicate);
     setWorkspaces(newWorkspaces);
@@ -3492,43 +3526,20 @@ export function SettingsDialog({
                             </select>
                           </div>
                         </div>
-                        <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Conversation cycling
-                              </div>
-                              <div class="text-xs text-gray-500">
-                                Which conversations to include when using
-                                keyboard/swipe navigation
-                              </div>
-                            </div>
-                            <select
-                              value=${conversationCyclingMode}
-                              onChange=${(e) =>
-                                setConversationCyclingMode(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
-                            >
-                              ${CYCLING_MODE_OPTIONS.map(
-                                (opt) => html`
-                                  <option key=${opt.value} value=${opt.value}>
-                                    ${opt.label}
-                                  </option>
-                                `,
-                              )}
-                            </select>
-                          </div>
-                        </div>
                         <label
                           class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
                         >
                           <input
                             type="checkbox"
                             checked=${singleExpandedGroup}
-                            onChange=${(e) =>
-                              setSingleExpandedGroup(e.target.checked)}
+                            onChange=${(e) => {
+                              const checked = e.target.checked;
+                              setSingleExpandedGroup(checked);
+                              // When accordion mode is enabled, force cycling to "all"
+                              if (checked) {
+                                setConversationCyclingMode(CYCLING_MODE.ALL);
+                              }
+                            }}
                             class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
                           />
                           <div>
@@ -3541,6 +3552,37 @@ export function SettingsDialog({
                             </div>
                           </div>
                         </label>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${singleExpandedGroup ? "opacity-50" : ""}"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Conversation cycling
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                ${singleExpandedGroup
+                                  ? "Requires accordion mode to be disabled"
+                                  : "Which conversations to include when using keyboard/swipe navigation"}
+                              </div>
+                            </div>
+                            <select
+                              value=${singleExpandedGroup ? CYCLING_MODE.ALL : conversationCyclingMode}
+                              onChange=${(e) =>
+                                setConversationCyclingMode(e.target.value)}
+                              disabled=${singleExpandedGroup}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500 ${singleExpandedGroup ? "cursor-not-allowed" : ""}"
+                            >
+                              ${CYCLING_MODE_OPTIONS.map(
+                                (opt) => html`
+                                  <option key=${opt.value} value=${opt.value}>
+                                    ${opt.label}
+                                  </option>
+                                `,
+                              )}
+                            </select>
+                          </div>
+                        </div>
                       </div>
 
                       <!-- Confirmation Settings (all platforms) -->

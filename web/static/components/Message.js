@@ -265,7 +265,7 @@ export function Message({ message, isLast, isStreaming }) {
     const showCursor = isLast && isStreaming && !message.complete;
     const agentMessageRef = useRef(null);
 
-    // Trigger mermaid diagram rendering after the HTML is inserted.
+    // Wrap tables in scrollable containers and trigger mermaid rendering
     //
     // We render on every HTML update (not just when complete) because:
     // 1. The backend's MarkdownBuffer ensures mermaid blocks are only flushed
@@ -277,11 +277,26 @@ export function Message({ message, isLast, isStreaming }) {
     // The cache prevents re-rendering: when innerHTML is replaced during streaming,
     // the same diagram content will hit the cache and reuse the existing SVG.
     useEffect(() => {
-      if (
-        agentMessageRef.current &&
-        typeof window.renderMermaidDiagrams === "function"
-      ) {
-        window.renderMermaidDiagrams(agentMessageRef.current);
+      if (agentMessageRef.current) {
+        // Wrap tables in scrollable containers for horizontal scrolling on narrow screens
+        const tables = agentMessageRef.current.querySelectorAll(
+          "table:not(.table-wrapper table)",
+        );
+        tables.forEach((table) => {
+          // Skip if already wrapped
+          if (table.parentElement?.classList.contains("table-wrapper")) {
+            return;
+          }
+          const wrapper = document.createElement("div");
+          wrapper.className = "table-wrapper";
+          table.parentNode.insertBefore(wrapper, table);
+          wrapper.appendChild(table);
+        });
+
+        // Render mermaid diagrams
+        if (typeof window.renderMermaidDiagrams === "function") {
+          window.renderMermaidDiagrams(agentMessageRef.current);
+        }
       }
     }, [message.html]);
 

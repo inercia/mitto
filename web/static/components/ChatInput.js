@@ -1461,16 +1461,43 @@ export function ChatInput({
         />
       </div>
 
-      <!-- UI Prompt from MCP tool (yes/no, options_buttons, or select) -->
+      <!-- UI Prompt from MCP tool (yes/no, options_buttons, select, or permission) -->
       ${hasActiveUIPrompt &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
           <div
-            class="ui-prompt-panel p-4 rounded-lg border border-blue-500/50 shadow-lg"
+            class="ui-prompt-panel p-4 rounded-lg border ${activeUIPrompt.promptType ===
+            "permission"
+              ? "border-amber-500/50"
+              : "border-blue-500/50"} shadow-lg"
           >
-            <p class="ui-prompt-question text-sm mb-3">
-              ${activeUIPrompt.question}
-            </p>
+            ${
+              /* Permission prompts show title and question */
+              activeUIPrompt.promptType === "permission" &&
+              activeUIPrompt.title &&
+              html`
+                <div class="mb-2">
+                  <span
+                    class="text-xs font-medium text-amber-400 uppercase tracking-wide"
+                    >Permission Required</span
+                  >
+                </div>
+                <p
+                  class="text-sm font-mono bg-slate-800/50 p-2 rounded mb-3 break-all"
+                >
+                  ${activeUIPrompt.title}
+                </p>
+              `
+            }
+            ${
+              /* Other prompts just show question */
+              activeUIPrompt.promptType !== "permission" &&
+              html`
+                <p class="ui-prompt-question text-sm mb-3">
+                  ${activeUIPrompt.question}
+                </p>
+              `
+            }
             <div class="flex flex-wrap gap-2">
               ${activeUIPrompt.promptType === "yes_no" &&
               activeUIPrompt.options?.map((opt, idx) => {
@@ -1499,6 +1526,35 @@ export function ChatInput({
                   "bg-rose-600 hover:bg-rose-700 border-rose-500",
                 ];
                 const colorClass = colors[idx % colors.length];
+                return html`
+                  <button
+                    key=${opt.id}
+                    type="button"
+                    onClick=${() => handleUIPromptAnswer(opt.id, opt.label)}
+                    class="px-4 py-2 ${colorClass} text-white rounded-lg text-sm font-medium transition-colors border"
+                  >
+                    ${opt.label}
+                  </button>
+                `;
+              })}
+              ${activeUIPrompt.promptType === "permission" &&
+              activeUIPrompt.options?.map((opt) => {
+                // Style buttons based on permission kind
+                const kind = opt.kind || "";
+                let colorClass;
+                if (
+                  kind === "allow_once" ||
+                  kind === "allow_always" ||
+                  opt.style === "success"
+                ) {
+                  colorClass =
+                    "bg-emerald-600 hover:bg-emerald-700 border-emerald-500";
+                } else if (kind === "reject_once" || opt.style === "danger") {
+                  colorClass = "bg-rose-600 hover:bg-rose-700 border-rose-500";
+                } else {
+                  colorClass =
+                    "bg-slate-600 hover:bg-slate-700 border-slate-500";
+                }
                 return html`
                   <button
                     key=${opt.id}
