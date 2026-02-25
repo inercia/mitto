@@ -595,8 +595,10 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 	// mitto_list_conversations tool - always available (no permission check)
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name:        "mitto_conversation_list",
-		Description: "List all conversations with metadata including title, dates, message count, prompting status, last sequence, and session folder. Always available.",
+		Name: "mitto_conversation_list",
+		Description: "List all existing Mitto conversations with metadata including title, dates, message count, prompting status, last sequence, and session folder. " +
+			"Use this to find conversation IDs for other tools like 'mitto_conversation_get' or 'mitto_conversation_send_prompt'. " +
+			"To CREATE a new conversation, use 'mitto_conversation_start' instead. Always available.",
 	}, s.createListConversationsHandler(deps.SessionManager))
 
 	// mitto_get_config tool - always available
@@ -613,10 +615,10 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 }
 
 // sessionIDNote is the standard note about session_id for tools that auto-detect the session.
-const sessionIDNote = "There is no need to know the session ID beforehand: " +
-	"if not known, you MUST generate and provide a unique, random value for this session. " +
-	"You can use a UUID, or a similar non-repeating identifier (e.g., 'ses-test-fix-bug-1'). " +
-	"Once generated, reuse the same session_id for all calls within this conversation."
+// It explains that agents should generate a random identifier if they don't know their session ID.
+const sessionIDNote = "The session_id parameter identifies YOUR current session. " +
+	"If you don't know your session ID, generate a random unique identifier (UUID or string like 'agent-task-1') " +
+	"and use that same value for all subsequent tool calls in this conversation."
 
 // registerSessionScopedTools registers session-scoped MCP tools.
 // These tools operate on specific conversations using automatic session detection via session_id correlation.
@@ -625,15 +627,18 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	// mitto_get_current_session - Get info about the current session (auto-detected via session_id)
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_get_current",
-		Description: "Get information about the current conversation including session ID, title, working directory, and message count. " +
+		Description: "Get information about YOUR current conversation/session, including your real session ID, title, working directory, and message count. " +
+			"Useful for discovering your own session details. " +
 			sessionIDNote,
 	}, s.handleGetCurrentSession)
 
 	// mitto_conversation_send_prompt - Send a prompt to another conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_send_prompt",
-		Description: "Send a prompt to another conversation's queue. The prompt will be processed when the target conversation's agent becomes idle. " +
-			"Requires 'Can Send Prompt' flag to be enabled on the source session. " +
+		Description: "Send a message/prompt to an EXISTING conversation (identified by conversation_id). " +
+			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
+			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_start'. " +
+			"Requires 'Can Send Prompt' flag to be enabled. " +
 			sessionIDNote,
 	}, s.handleSendPromptToConversation)
 
@@ -667,8 +672,14 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	// mitto_conversation_start - Start a new conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_start",
-		Description: "Create a new conversation in the same workspace as the calling session. " +
-			"The new conversation inherits the ACP server and working directory from the caller. " +
+		Description: "USE THIS TOOL TO CREATE A NEW CONVERSATION - no browser or UI interaction needed! " +
+			"This tool programmatically creates and starts a NEW agent conversation that runs in parallel with your current session. " +
+			"When a user asks you to 'create a new conversation', 'start a new session', or 'investigate something in a new conversation', " +
+			"call this tool directly instead of trying to click buttons or navigate a UI. " +
+			"This spawns a separate AI agent that can work independently on the task you specify. " +
+			"Use this to delegate work, run background tasks, or parallelize complex work across multiple agents. " +
+			"The new conversation inherits your workspace and ACP server configuration. " +
+			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
 			"Requires 'Can start conversation' flag to be enabled. " +
 			"Sessions created via this tool cannot create further sessions (prevents infinite recursion). " +
 			sessionIDNote,
@@ -677,16 +688,18 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	// mitto_conversation_get_summary - Get a summary of a conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_get_summary",
-		Description: "Generate a summary of a conversation using AI analysis. " +
+		Description: "Generate a summary of a specific conversation (by conversation_id) using AI analysis. " +
 			"The summary includes main topics discussed, key decisions, actions taken, and pending items. " +
+			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
 			sessionIDNote,
 	}, s.handleGetConversationSummary)
 
 	// mitto_conversation_get - Get properties of a specific conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_get",
-		Description: "Get detailed properties of a specific conversation by ID. " +
+		Description: "Get detailed properties of a specific conversation by conversation_id. " +
 			"Returns metadata, status, and runtime info including whether the agent is currently replying. " +
+			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
 			sessionIDNote,
 	}, s.handleGetConversation)
 }
