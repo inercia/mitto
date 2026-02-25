@@ -347,8 +347,9 @@ func TestMarkdownBuffer_CodeBlockNoTimeoutFlush(t *testing.T) {
 	}
 }
 
-// TestMarkdownBuffer_CodeBlockInactivityTimeout tests that the inactivity timeout
-// (2 seconds) does NOT flush content while inside a code block.
+// TestMarkdownBuffer_CodeBlockInactivityTimeout tests that the hard inactivity timeout
+// DOES flush content even while inside a code block.
+// This ensures content is displayed if the agent stops mid-block.
 func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
@@ -364,16 +365,29 @@ func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	buffer.Write("func main() {\n")
 	buffer.Write("    fmt.Println(\"Hello\")\n")
 
-	// Wait longer than the inactivity timeout (2 seconds)
-	time.Sleep(2500 * time.Millisecond)
+	// Wait longer than the hard inactivity timeout
+	time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
 
 	mu.Lock()
-	countBeforeClose := len(results)
+	countAfterTimeout := len(results)
 	mu.Unlock()
 
-	// Should NOT have flushed yet because we're still inside the code block
-	if countBeforeClose > 0 {
-		t.Errorf("expected no flush while inside code block (even after inactivity timeout), got %d flushes", countBeforeClose)
+	// SHOULD have flushed because hard timeout forces flush even in code blocks
+	if countAfterTimeout < 1 {
+		t.Errorf("expected flush after hard inactivity timeout, got %d flushes", countAfterTimeout)
+	}
+
+	mu.Lock()
+	var firstHTML strings.Builder
+	for _, r := range results {
+		firstHTML.WriteString(r)
+	}
+	html1 := firstHTML.String()
+	mu.Unlock()
+
+	// First flush should contain the incomplete code block content
+	if !strings.Contains(html1, "main") {
+		t.Errorf("expected code block content to be flushed after timeout, got %q", html1)
 	}
 
 	// Now close the code block
@@ -382,18 +396,9 @@ func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	// Give time for the flush
 	time.Sleep(50 * time.Millisecond)
 
-	mu.Lock()
-	countAfterClose := len(results)
-	mu.Unlock()
-
-	// Should have flushed now that code block is closed
-	if countAfterClose < 1 {
-		t.Errorf("expected flush after code block close, got %d flushes", countAfterClose)
-	}
-
 	buffer.Close()
 
-	// Verify the HTML contains the complete code block
+	// Verify all content was flushed
 	mu.Lock()
 	var fullHTML strings.Builder
 	for _, r := range results {
@@ -402,17 +407,12 @@ func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	html := fullHTML.String()
 	mu.Unlock()
 
-	// The content should be in a single <pre> block, not split across multiple
+	// All content should be present
 	if !strings.Contains(html, "main") {
-		t.Errorf("expected code block content to be preserved, got %q", html)
+		t.Errorf("expected code block content to be present, got %q", html)
 	}
 	if !strings.Contains(html, "<pre") {
 		t.Errorf("expected code block to be properly rendered, got %q", html)
-	}
-	// Count the number of <pre> tags - should be exactly 1 (not split)
-	preCount := strings.Count(html, "<pre")
-	if preCount != 1 {
-		t.Errorf("expected exactly 1 <pre> tag (complete code block), got %d", preCount)
 	}
 }
 

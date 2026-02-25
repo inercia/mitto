@@ -647,10 +647,10 @@ func TestMarkdownBuffer_LargeContent(t *testing.T) {
 // is NOT flushed by inactivity timeout to avoid splitting them mid-stream.
 // The content will be flushed when Close() is called.
 func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
-	t.Run("list_NOT_flushed_after_inactivity", func(t *testing.T) {
-		// Lists should NOT be flushed by the inactivity timeout
-		// to avoid splitting lists during streaming.
-		// The content will be flushed when Close() is called.
+	t.Run("list_flushed_after_hard_inactivity", func(t *testing.T) {
+		// Lists SHOULD be flushed by the hard inactivity timeout (2s).
+		// This ensures content is displayed even if the agent stops mid-list.
+		// The soft timeout (200ms) still respects list boundaries.
 		var outputs []string
 		var mu sync.Mutex
 
@@ -666,39 +666,27 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		buffer.Write("2. Second item\n")
 		// Agent stops responding here (no blank line to end list)
 
-		// Wait for inactivity timeout (2 seconds + buffer)
-		time.Sleep(2500 * time.Millisecond)
-
-		mu.Lock()
-		countBeforeClose := len(outputs)
-		mu.Unlock()
-
-		// List content should NOT have been flushed because we're in a list
-		// (Only the "Summary:" paragraph might have been flushed before the list started)
-		if countBeforeClose > 1 {
-			t.Errorf("expected at most 1 flush (intro paragraph) while in list, got %d flushes", countBeforeClose)
-		}
-
-		// Close should flush the content
-		buffer.Close()
+		// Wait for hard inactivity timeout
+		time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
 
 		mu.Lock()
 		combined := strings.Join(outputs, "")
 		mu.Unlock()
 
-		// Content should now be flushed
+		// List content SHOULD have been flushed by hard timeout
 		if !strings.Contains(combined, "First item") {
-			t.Error("expected 'First item' to be flushed after Close()")
+			t.Error("expected 'First item' to be flushed after hard inactivity timeout")
 		}
 		if !strings.Contains(combined, "Second item") {
-			t.Error("expected 'Second item' to be flushed after Close()")
+			t.Error("expected 'Second item' to be flushed after hard inactivity timeout")
 		}
+
+		buffer.Close()
 	})
 
-	t.Run("code_block_NOT_flushed_after_inactivity", func(t *testing.T) {
-		// Code blocks should NOT be flushed by the inactivity timeout
-		// to avoid splitting code blocks during streaming.
-		// The content will be flushed when Close() is called.
+	t.Run("code_block_flushed_after_hard_inactivity", func(t *testing.T) {
+		// Code blocks SHOULD be flushed by the hard inactivity timeout.
+		// This ensures content is displayed even if the agent stops mid-block.
 		var outputs []string
 		var mu sync.Mutex
 
@@ -714,35 +702,24 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		buffer.Write("    print('world')\n")
 		// Agent stops responding here (no closing ```)
 
-		// Wait for inactivity timeout
-		time.Sleep(2500 * time.Millisecond)
-
-		mu.Lock()
-		countBeforeClose := len(outputs)
-		mu.Unlock()
-
-		// Content should NOT have been flushed because we're in a code block
-		if countBeforeClose > 0 {
-			t.Errorf("expected no flush while in code block, got %d flushes", countBeforeClose)
-		}
-
-		// Close should flush the content
-		buffer.Close()
+		// Wait for hard inactivity timeout
+		time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
 
 		mu.Lock()
 		combined := strings.Join(outputs, "")
 		mu.Unlock()
 
-		// Content should now be flushed
+		// Content SHOULD have been flushed by hard timeout
 		if !strings.Contains(combined, "hello") {
-			t.Error("expected 'hello' to be flushed after Close()")
+			t.Error("expected 'hello' to be flushed after hard inactivity timeout")
 		}
+
+		buffer.Close()
 	})
 
-	t.Run("table_NOT_flushed_after_inactivity", func(t *testing.T) {
-		// Tables should NOT be flushed by the inactivity timeout
-		// to avoid splitting tables during streaming.
-		// The content will be flushed when Close() is called.
+	t.Run("table_flushed_after_hard_inactivity", func(t *testing.T) {
+		// Tables SHOULD be flushed by the hard inactivity timeout.
+		// This ensures content is displayed even if the agent stops mid-table.
 		var outputs []string
 		var mu sync.Mutex
 
@@ -758,29 +735,19 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		buffer.Write("| 1 | 2 |\n")
 		// Agent stops responding here (no blank line to end table)
 
-		// Wait for inactivity timeout
-		time.Sleep(2500 * time.Millisecond)
-
-		mu.Lock()
-		countBeforeClose := len(outputs)
-		mu.Unlock()
-
-		// Content should NOT have been flushed because we're in a table
-		if countBeforeClose > 0 {
-			t.Errorf("expected no flush while in table, got %d flushes", countBeforeClose)
-		}
-
-		// Close should flush the content
-		buffer.Close()
+		// Wait for hard inactivity timeout
+		time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
 
 		mu.Lock()
 		combined := strings.Join(outputs, "")
 		mu.Unlock()
 
-		// Content should now be flushed
+		// Content SHOULD have been flushed by hard timeout
 		if !strings.Contains(combined, "<table>") {
-			t.Error("expected table to be flushed after Close()")
+			t.Error("expected table to be flushed after hard inactivity timeout")
 		}
+
+		buffer.Close()
 	})
 
 	t.Run("normal_content_uses_soft_timeout", func(t *testing.T) {
