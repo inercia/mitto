@@ -918,13 +918,14 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 	// The is_prompting flag allows the UI to sync its streaming state with the server
 	// Additional fields allow the UI to stay in sync without separate API calls
 	c.sendMessage(WSMsgTypeKeepaliveAck, map[string]interface{}{
-		"client_time":  clientTime,
-		"server_time":  serverTime,
-		"max_seq":      serverMaxSeq,
-		"is_prompting": isPrompting,
-		"is_running":   isRunning,
-		"queue_length": queueLength,
-		"status":       status,
+		"client_time":    clientTime,
+		"server_time":    serverTime,
+		"max_seq":        serverMaxSeq,
+		"server_max_seq": serverMaxSeq, // Deprecated: use max_seq. Kept for backward compatibility.
+		"is_prompting":   isPrompting,
+		"is_running":     isRunning,
+		"queue_length":   queueLength,
+		"status":         status,
 	})
 }
 
