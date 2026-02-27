@@ -91,9 +91,13 @@ function getKeepaliveInterval() {
 }
 
 /**
- * Check if the user is authenticated.
- * If not authenticated, redirects to login page.
- * @returns {Promise<boolean>} True if authenticated, never returns false (redirects instead)
+ * Quick authentication check before WebSocket reconnection.
+ * If auth is invalid (401), redirects to login page and never returns.
+ * For network errors or server errors, returns true to allow reconnection to proceed
+ * (the WebSocket reconnect will handle retries with exponential backoff).
+ *
+ * @returns {Promise<boolean>} True if auth is valid OR if status is unknown (network/server error).
+ *                             False is only returned after redirecting to login (effectively unreachable).
  */
 async function checkAuthOrRedirect() {
   try {
@@ -102,10 +106,23 @@ async function checkAuthOrRedirect() {
       credentials: "same-origin",
     });
     checkAuth(response); // This will redirect if 401
-    return response.ok;
+
+    // If we got here, auth is valid (200) or there's a server error (5xx)
+    // Either way, let reconnection proceed - the WebSocket will retry with backoff
+    if (!response.ok) {
+      console.warn(
+        `Auth check returned status ${response.status}, allowing reconnection to proceed`,
+      );
+    }
+    return true;
   } catch (err) {
-    console.error("Auth check failed:", err);
-    return false;
+    // Network error - let reconnection proceed
+    // The WebSocket reconnection will naturally retry with exponential backoff
+    console.warn(
+      "Auth check network error, allowing reconnection to proceed:",
+      err.message,
+    );
+    return true;
   }
 }
 
