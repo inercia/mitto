@@ -24,6 +24,9 @@ type ACPServer struct {
 	// Type is an optional type identifier for prompt matching.
 	// Servers with the same type share prompts. If empty, Name is used as the type.
 	Type string
+	// Env is a map of environment variables to set when starting the ACP server.
+	// These are merged with the current environment (server-specific vars take precedence).
+	Env map[string]string
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt
 	// RestrictedRunners contains per-runner-type configuration for this agent.
@@ -940,9 +943,10 @@ type Config struct {
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
 type rawACPServerConfig struct {
-	Command string `yaml:"command"`
-	Cwd     string `yaml:"cwd"`
-	Type    string `yaml:"type"` // Optional type for prompt matching; defaults to name
+	Command string            `yaml:"command"`
+	Cwd     string            `yaml:"cwd"`
+	Type    string            `yaml:"type"` // Optional type for prompt matching; defaults to name
+	Env     map[string]string `yaml:"env"`  // Environment variables to set when starting the server
 	Prompts []struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
@@ -1118,6 +1122,7 @@ func Parse(data []byte) (*Config, error) {
 				Command:           server.Command,
 				Cwd:               server.Cwd,
 				Type:              server.Type, // Optional type for prompt matching
+				Env:               server.Env,  // Environment variables
 				RestrictedRunners: server.RestrictedRunners,
 			}
 			// Copy server-specific prompts
