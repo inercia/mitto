@@ -625,6 +625,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 
 	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
+	var foundWs *config.WorkspaceSettings // Track which workspace is used for later auto-approve check
 
 	if workspace != nil {
 		acpCommand = workspace.ACPCommand
@@ -636,7 +637,6 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		}
 	} else {
 		// Try to find a workspace by working directory (first match)
-		var foundWs *config.WorkspaceSettings
 		for _, ws := range sm.workspaces {
 			if ws.WorkingDir == workingDir {
 				foundWs = ws
@@ -702,7 +702,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		runnerFallbackInfo = r.FallbackInfo
 	}
 
-	// Determine auto-approve: global flag OR per-server setting
+	// Determine auto-approve: global flag, per-server setting, or per-workspace setting
 	autoApprove := sm.autoApprove
 	if !autoApprove && sm.mittoConfig != nil && acpServer != "" {
 		if serverConfig, err := sm.mittoConfig.GetServer(acpServer); err == nil {
@@ -710,6 +710,26 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 			if autoApprove && sm.logger != nil {
 				sm.logger.Debug("Using per-server auto_approve setting",
 					"acp_server", acpServer,
+					"auto_approve", autoApprove)
+			}
+		}
+	}
+	// Per-workspace auto_approve overrides global and per-server settings
+	if !autoApprove {
+		if workspace != nil && workspace.AutoApprove != nil && *workspace.AutoApprove {
+			autoApprove = true
+			if sm.logger != nil {
+				sm.logger.Debug("Using per-workspace auto_approve setting",
+					"workspace_uuid", workspace.UUID,
+					"working_dir", workingDir,
+					"auto_approve", autoApprove)
+			}
+		} else if workspace == nil && foundWs != nil && foundWs.AutoApprove != nil && *foundWs.AutoApprove {
+			autoApprove = true
+			if sm.logger != nil {
+				sm.logger.Debug("Using per-workspace auto_approve setting",
+					"workspace_uuid", foundWs.UUID,
+					"working_dir", workingDir,
 					"auto_approve", autoApprove)
 			}
 		}
@@ -1006,7 +1026,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		return nil, err
 	}
 
-	// Determine auto-approve: global flag OR per-server setting
+	// Determine auto-approve: global flag, per-server setting, or per-workspace setting
 	autoApprove := sm.autoApprove
 	if !autoApprove && sm.mittoConfig != nil && acpServer != "" {
 		if serverConfig, err := sm.mittoConfig.GetServer(acpServer); err == nil {
@@ -1017,6 +1037,17 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 					"auto_approve", autoApprove,
 					"session_id", sessionID)
 			}
+		}
+	}
+	// Per-workspace auto_approve overrides global and per-server settings
+	if !autoApprove && foundWs != nil && foundWs.AutoApprove != nil && *foundWs.AutoApprove {
+		autoApprove = true
+		if sm.logger != nil {
+			sm.logger.Debug("Using per-workspace auto_approve setting for resumed session",
+				"workspace_uuid", foundWs.UUID,
+				"working_dir", workingDir,
+				"auto_approve", autoApprove,
+				"session_id", sessionID)
 		}
 	}
 

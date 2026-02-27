@@ -1250,3 +1250,200 @@ func TestSessionManager_CloseSession_ClearsPlanState(t *testing.T) {
 		t.Errorf("CloseSession should clear plan state, got %v", result)
 	}
 }
+
+// Tests for per-workspace auto-approve feature
+
+func TestSessionManager_WorkspaceAutoApprove_Enabled(t *testing.T) {
+	// Test that when workspace has AutoApprove=true, sessions created in that workspace
+	// should have autoApprove enabled even if global autoApprove is false
+	autoApproveTrue := true
+	workspaces := []config.WorkspaceSettings{
+		{
+			UUID:        "ws-auto-approve",
+			ACPServer:   "test-server",
+			ACPCommand:  "echo test",
+			WorkingDir:  "/path/auto-approve",
+			AutoApprove: &autoApproveTrue, // Per-workspace auto-approve enabled
+		},
+		{
+			UUID:       "ws-no-auto-approve",
+			ACPServer:  "test-server",
+			ACPCommand: "echo test",
+			WorkingDir: "/path/no-auto-approve",
+			// AutoApprove is nil (not set)
+		},
+	}
+
+	// Create session manager with global autoApprove=false
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: false, // Global auto-approve disabled
+	})
+
+	// Verify the workspace with auto-approve has the flag set
+	ws := sm.GetWorkspaceByUUID("ws-auto-approve")
+	if ws == nil {
+		t.Fatal("GetWorkspaceByUUID should find ws-auto-approve")
+	}
+	if ws.AutoApprove == nil || !*ws.AutoApprove {
+		t.Error("Workspace ws-auto-approve should have AutoApprove=true")
+	}
+
+	// Verify the workspace without auto-approve has the flag unset
+	ws2 := sm.GetWorkspaceByUUID("ws-no-auto-approve")
+	if ws2 == nil {
+		t.Fatal("GetWorkspaceByUUID should find ws-no-auto-approve")
+	}
+	if ws2.AutoApprove != nil {
+		t.Errorf("Workspace ws-no-auto-approve should have AutoApprove=nil, got %v", *ws2.AutoApprove)
+	}
+}
+
+func TestSessionManager_WorkspaceAutoApprove_Disabled(t *testing.T) {
+	// Test that when workspace has AutoApprove=false explicitly,
+	// the setting is respected
+	autoApproveFalse := false
+	workspaces := []config.WorkspaceSettings{
+		{
+			UUID:        "ws-explicit-false",
+			ACPServer:   "test-server",
+			ACPCommand:  "echo test",
+			WorkingDir:  "/path/explicit-false",
+			AutoApprove: &autoApproveFalse, // Explicitly disabled
+		},
+	}
+
+	// Create session manager with global autoApprove=true
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: true, // Global auto-approve enabled
+	})
+
+	// Verify the workspace has the flag explicitly set to false
+	ws := sm.GetWorkspaceByUUID("ws-explicit-false")
+	if ws == nil {
+		t.Fatal("GetWorkspaceByUUID should find ws-explicit-false")
+	}
+	if ws.AutoApprove == nil {
+		t.Error("Workspace ws-explicit-false should have AutoApprove set (not nil)")
+	} else if *ws.AutoApprove != false {
+		t.Error("Workspace ws-explicit-false should have AutoApprove=false")
+	}
+}
+
+func TestSessionManager_WorkspaceAutoApprove_SetWorkspaces(t *testing.T) {
+	// Test that SetWorkspaces preserves the AutoApprove field
+	autoApproveTrue := true
+	sm := NewSessionManager("echo test", "test-server", false, nil)
+
+	// Set workspaces with auto-approve enabled
+	workspaces := []config.WorkspaceSettings{
+		{
+			UUID:        "ws-with-auto",
+			ACPServer:   "test-server",
+			ACPCommand:  "echo test",
+			WorkingDir:  "/path/with-auto",
+			AutoApprove: &autoApproveTrue,
+		},
+	}
+	sm.SetWorkspaces(workspaces)
+
+	// Verify the workspace retained the auto-approve setting
+	ws := sm.GetWorkspaceByUUID("ws-with-auto")
+	if ws == nil {
+		t.Fatal("GetWorkspaceByUUID should find ws-with-auto")
+	}
+	if ws.AutoApprove == nil || !*ws.AutoApprove {
+		t.Error("SetWorkspaces should preserve AutoApprove=true")
+	}
+}
+
+func TestSessionManager_WorkspaceAutoApprove_AddWorkspace(t *testing.T) {
+	// Test that AddWorkspace preserves the AutoApprove field
+	autoApproveTrue := true
+	sm := NewSessionManager("echo test", "test-server", false, nil)
+
+	// Add a workspace with auto-approve enabled
+	ws := config.WorkspaceSettings{
+		UUID:        "ws-added",
+		ACPServer:   "test-server",
+		ACPCommand:  "echo test",
+		WorkingDir:  "/path/added",
+		AutoApprove: &autoApproveTrue,
+	}
+	sm.AddWorkspace(ws)
+
+	// Verify the workspace was added with auto-approve setting
+	addedWs := sm.GetWorkspaceByUUID("ws-added")
+	if addedWs == nil {
+		t.Fatal("GetWorkspaceByUUID should find ws-added")
+	}
+	if addedWs.AutoApprove == nil || !*addedWs.AutoApprove {
+		t.Error("AddWorkspace should preserve AutoApprove=true")
+	}
+}
+
+func TestSessionManager_WorkspaceAutoApprove_GetWorkspaces(t *testing.T) {
+	// Test that GetWorkspaces returns workspaces with AutoApprove field intact
+	autoApproveTrue := true
+	autoApproveFalse := false
+	workspaces := []config.WorkspaceSettings{
+		{
+			UUID:        "ws-1",
+			ACPServer:   "server1",
+			ACPCommand:  "echo server1",
+			WorkingDir:  "/path1",
+			AutoApprove: &autoApproveTrue,
+		},
+		{
+			UUID:        "ws-2",
+			ACPServer:   "server2",
+			ACPCommand:  "echo server2",
+			WorkingDir:  "/path2",
+			AutoApprove: &autoApproveFalse,
+		},
+		{
+			UUID:       "ws-3",
+			ACPServer:  "server3",
+			ACPCommand: "echo server3",
+			WorkingDir: "/path3",
+			// AutoApprove is nil
+		},
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: false,
+	})
+
+	got := sm.GetWorkspaces()
+	if len(got) != 3 {
+		t.Fatalf("GetWorkspaces count = %d, want 3", len(got))
+	}
+
+	// Find each workspace and verify AutoApprove
+	var foundWs1, foundWs2, foundWs3 bool
+	for _, ws := range got {
+		switch ws.UUID {
+		case "ws-1":
+			foundWs1 = true
+			if ws.AutoApprove == nil || !*ws.AutoApprove {
+				t.Error("ws-1 should have AutoApprove=true")
+			}
+		case "ws-2":
+			foundWs2 = true
+			if ws.AutoApprove == nil || *ws.AutoApprove {
+				t.Error("ws-2 should have AutoApprove=false")
+			}
+		case "ws-3":
+			foundWs3 = true
+			if ws.AutoApprove != nil {
+				t.Error("ws-3 should have AutoApprove=nil")
+			}
+		}
+	}
+
+	if !foundWs1 || !foundWs2 || !foundWs3 {
+		t.Error("GetWorkspaces should return all workspaces")
+	}
+}
