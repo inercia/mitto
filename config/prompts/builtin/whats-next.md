@@ -38,4 +38,3 @@ If the user selects "No", follow up in conversation to determine which task to t
 **Fallback (if Mitto UI tools are not available):**
 
 Ask if I should proceed with the top priority item.
-

@@ -22,8 +22,10 @@ Do not remove existing valid content - only add or update information.
 
 # Reorganize rules files
 
-Once you have a good understanding of the existin rules files, reorganize
-the .augment/rules/ files to optimize automatic context inclusion.
+Once you have a good understanding of the existin rules files,  consider if it
+would make sense to reorganize the .augment/rules/ files in order to optimize
+automatic context inclusion.
+
 Specifically:
 
 * Analyze each existing rules file and identify sections that could
@@ -39,3 +41,5 @@ Specifically:
 The goal is to have focused rules files that are automatically loaded
 only when their specific topic is being worked on, reducing context noise
 and improving relevance.
+
+Do not touch things if you are not sure.
