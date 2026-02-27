@@ -224,6 +224,28 @@ export function Message({ message, isLast, isStreaming }) {
       [message.text, useMarkdown],
     );
 
+    // Ref for table wrapping in user markdown content
+    const userMessageRef = useRef(null);
+
+    // Wrap tables in scrollable containers for horizontal scrolling on narrow screens
+    useEffect(() => {
+      if (userMessageRef.current && useMarkdown) {
+        const tables = userMessageRef.current.querySelectorAll(
+          "table:not(.table-wrapper table)",
+        );
+        tables.forEach((table) => {
+          // Skip if already wrapped
+          if (table.parentElement?.classList.contains("table-wrapper")) {
+            return;
+          }
+          const wrapper = document.createElement("div");
+          wrapper.className = "table-wrapper";
+          table.parentNode.insertBefore(wrapper, table);
+          wrapper.appendChild(table);
+        });
+      }
+    }, [renderedHtml, useMarkdown]);
+
     return html`
       <div class="message-enter flex justify-end mb-3">
         <div
@@ -248,6 +270,7 @@ export function Message({ message, isLast, isStreaming }) {
           `}
           ${useMarkdown
             ? html`<div
+                ref=${userMessageRef}
                 class="markdown-content markdown-content-user text-sm"
                 dangerouslySetInnerHTML=${{ __html: renderedHtml }}
               />`

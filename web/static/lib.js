@@ -84,7 +84,8 @@ export function hasMarkdownContent(text) {
   }
 
   // Tables: | header | header |
-  if (/\|[^|]+\|/.test(text) && /^[\s]*\|/.test(text)) {
+  // Uses 'm' flag for multiline matching - tables may start after intro text
+  if (/\|[^|]+\|/.test(text) && /^[\s]*\|/m.test(text)) {
     return true;
   }
 
