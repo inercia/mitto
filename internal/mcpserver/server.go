@@ -113,10 +113,17 @@ type Dependencies struct {
 	SessionManager SessionManager
 }
 
-// SessionManager interface for checking session status.
+// SessionManager interface for checking session status and managing sessions.
 type SessionManager interface {
 	GetSession(sessionID string) BackgroundSession
 	ListRunningSessions() []string
+	// CloseSessionGracefully waits for any active response to complete before closing.
+	// Returns true if closed, false if timeout expired while waiting.
+	CloseSessionGracefully(sessionID, reason string, timeout time.Duration) bool
+	// CloseSession immediately closes a session.
+	CloseSession(sessionID, reason string)
+	// ResumeSession resumes an archived session by starting a new ACP connection.
+	ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error)
 }
 
 // BackgroundSession interface for session info.
@@ -435,6 +442,41 @@ func (s *Server) getSession(sessionID string) *registeredSession {
 	return s.sessions[sessionID]
 }
 
+// resolveSelfID resolves the provided session_id to a real session ID.
+// It uses a two-phase lookup:
+//  1. Direct lookup: If session_id matches a registered session, return it immediately.
+//     This handles the case where the caller provides the actual session ID directly
+//     (e.g., from mitto_conversation_get_current or external MCP clients like Auggie).
+//  2. Correlation lookup: If not found directly, wait for the ACP layer to register
+//     a correlation mapping (session_id -> real_session_id). This handles the case
+//     where the caller provides a random identifier and the ACP layer intercepts
+//     the tool call to register the mapping.
+//
+// Returns the resolved session ID, or empty string if resolution fails.
+func (s *Server) resolveSelfID(inputSessionID string) string {
+	if inputSessionID == "" {
+		return ""
+	}
+
+	// Phase 1: Direct lookup - check if inputSessionID is already a registered session
+	if reg := s.getSession(inputSessionID); reg != nil {
+		s.logger.Debug("Session resolved via direct lookup",
+			"input_session_id", inputSessionID,
+			"resolved_session_id", inputSessionID)
+		return inputSessionID
+	}
+
+	// Phase 2: Correlation lookup - wait for ACP layer to register the mapping
+	// This is the original mechanism for agents that route through Mitto's ACP connection
+	realSessionID := s.WaitForPendingRequest(inputSessionID)
+	if realSessionID != "" {
+		s.logger.Debug("Session resolved via correlation lookup",
+			"input_session_id", inputSessionID,
+			"resolved_session_id", realSessionID)
+	}
+	return realSessionID
+}
+
 // checkSessionFlag checks if a flag is enabled for the given session.
 // Returns false if the session is not found or the flag is not enabled.
 func (s *Server) checkSessionFlag(sessionID string, flagName string) bool {
@@ -614,9 +656,9 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 	}, s.createGetRuntimeInfoHandler())
 }
 
-// sessionIDNote is the standard note about session_id for tools that auto-detect the session.
+// selfIDNote is the standard note about self_id for tools that auto-detect the calling session.
 // It explains that agents should generate a random identifier if they don't know their session ID.
-const sessionIDNote = "The session_id parameter identifies YOUR current session. " +
+const selfIDNote = "The self_id parameter identifies YOUR current session (not the target conversation). " +
 	"If you don't know your session ID, generate a random unique identifier (UUID or string like 'agent-task-1') " +
 	"and use that same value for all subsequent tool calls in this conversation."
 
@@ -629,7 +671,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Name: "mitto_conversation_get_current",
 		Description: "Get information about YOUR current conversation/session, including your real session ID, title, working directory, and message count. " +
 			"Useful for discovering your own session details. " +
-			sessionIDNote,
+			selfIDNote,
 	}, s.handleGetCurrentSession)
 
 	// mitto_conversation_send_prompt - Send a prompt to another conversation
@@ -639,7 +681,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
 			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_start'. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
-			sessionIDNote,
+			selfIDNote,
 	}, s.handleSendPromptToConversation)
 
 	// mitto_ui_ask_yes_no - Present a yes/no question
@@ -648,7 +690,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Present a yes/no question to the user and wait for their response. " +
 			"The tool blocks until the user clicks a button or the timeout expires. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
-			sessionIDNote,
+			selfIDNote,
 	}, s.handleAskYesNo)
 
 	// mitto_ui_options_buttons - Present multiple option buttons
@@ -657,7 +699,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Present multiple options as buttons to the user and wait for their selection. " +
 			"The tool blocks until the user clicks a button or the timeout expires. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
-			sessionIDNote,
+			selfIDNote,
 	}, s.handleOptionsButtons)
 
 	// mitto_ui_options_combo - Present a combo box
@@ -666,7 +708,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Present a dropdown/combo box with options to the user. " +
 			"The user selects an option and clicks OK to confirm. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
-			sessionIDNote,
+			selfIDNote,
 	}, s.handleOptionsCombo)
 
 	// mitto_conversation_start - Start a new conversation
@@ -680,9 +722,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Use this to delegate work, run background tasks, or parallelize complex work across multiple agents. " +
 			"The new conversation inherits your workspace and ACP server configuration. " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
-			"Requires 'Can start conversation' flag to be enabled. " +
-			"Sessions created via this tool cannot create further sessions (prevents infinite recursion). " +
-			sessionIDNote,
+			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
+			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
+			selfIDNote,
 	}, s.handleConversationStart)
 
 	// mitto_conversation_get_summary - Get a summary of a conversation
@@ -691,7 +733,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Generate a summary of a specific conversation (by conversation_id) using AI analysis. " +
 			"The summary includes main topics discussed, key decisions, actions taken, and pending items. " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
-			sessionIDNote,
+			selfIDNote,
 	}, s.handleGetConversationSummary)
 
 	// mitto_conversation_get - Get properties of a specific conversation
@@ -700,8 +742,32 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Get detailed properties of a specific conversation by conversation_id. " +
 			"Returns metadata, status, and runtime info including whether the agent is currently replying. " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
-			sessionIDNote,
+			selfIDNote,
 	}, s.handleGetConversation)
+
+	// mitto_conversation_set_periodic - Configure periodic prompts for a conversation
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_set_periodic",
+		Description: "Configure a conversation to run periodically with a scheduled prompt. " +
+			"This makes the conversation automatically receive the specified prompt at regular intervals. " +
+			"Useful for setting up recurring tasks like daily reports, periodic checks, or scheduled automation. " +
+			"Frequency can be specified in minutes, hours, or days. For days, you can optionally specify a time (HH:MM in UTC). " +
+			"Examples: every 30 minutes, every 2 hours, every day at 09:00 UTC. " +
+			"Set enabled=false to pause periodic execution without deleting the configuration. " +
+			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
+			selfIDNote,
+	}, s.handleSetPeriodic)
+
+	// mitto_conversation_archive - Archive or unarchive a conversation
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_archive",
+		Description: "Archive or unarchive a conversation. " +
+			"Archiving a conversation gracefully stops any active agent response, closes the ACP connection, " +
+			"and marks the conversation as archived. Archived conversations are read-only but can be unarchived later. " +
+			"Set archived=false to unarchive a conversation and resume the ACP connection. " +
+			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
+			selfIDNote,
+	}, s.handleArchiveConversation)
 }
 
 // ListConversationsOutput wraps the list of conversations for MCP output schema compliance.
@@ -808,10 +874,10 @@ func (s *Server) createGetRuntimeInfoHandler() mcp.ToolHandlerFor[struct{}, Runt
 
 // GetCurrentSessionInput is the input for mitto_get_current_session tool.
 type GetCurrentSessionInput struct {
-	// SessionID is the session identifier or a unique random value for this session.
-	// If the actual session ID is unknown, generate a random identifier (e.g., UUID, 'ses-test-fix-bug-1').
-	// Reuse the same session_id for all calls within the same conversation.
-	SessionID string `json:"session_id"`
+	// SelfID identifies YOUR current session (the caller), not a target conversation.
+	// If the actual session ID is unknown, generate a random identifier (e.g., UUID, 'agent-task-1').
+	// Reuse the same self_id for all calls within the same conversation.
+	SelfID string `json:"self_id"`
 }
 
 // handleGetCurrentSession handles the mitto_get_current_session tool.
@@ -820,23 +886,25 @@ type GetCurrentSessionInput struct {
 // and this handler waits for that mapping to become available.
 func (s *Server) handleGetCurrentSession(ctx context.Context, req *mcp.CallToolRequest, input GetCurrentSessionInput) (*mcp.CallToolResult, CurrentSessionOutput, error) {
 	s.logger.Debug("get_current_session called",
-		"session_id", input.SessionID,
+		"session_id", input.SelfID,
 	)
 
-	// Validate session_id
-	if input.SessionID == "" {
+	// Validate self_id
+	if input.SelfID == "" {
 		return nil, CurrentSessionOutput{}, fmt.Errorf(
-			"session_id is required: please provide the session ID or a unique random identifier for this session",
+			"self_id is required: please provide the session ID or a unique random identifier for this session",
 		)
 	}
 
-	// Wait for the pending request to be registered by the ACP layer
-	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	// Resolve the self_id to a real session ID using two-phase lookup:
+	// 1. Direct lookup if session_id is already a registered session
+	// 2. Correlation lookup via pending request registration (for ACP-routed calls)
+	realSessionID := s.resolveSelfID(input.SelfID)
 	if realSessionID == "" {
 		return nil, CurrentSessionOutput{}, fmt.Errorf(
-			"session not found: the session_id '%s' was not registered by a Mitto session within the timeout. "+
-				"Make sure this tool is being called from within a Mitto session",
-			input.SessionID,
+			"session not found: the self_id '%s' could not be resolved. "+
+				"Provide the actual session ID from mitto_conversation_list, or ensure this tool is called from within a Mitto session",
+			input.SelfID,
 		)
 	}
 
@@ -867,24 +935,24 @@ func (s *Server) handleGetCurrentSession(ctx context.Context, req *mcp.CallToolR
 
 // SendPromptToConversationInput is the input for send_prompt_to_conversation tool.
 type SendPromptToConversationInput struct {
-	SessionID      string `json:"session_id"`      // Session ID or random identifier for session correlation
-	ConversationID string `json:"conversation_id"` // Target session ID
+	SelfID         string `json:"self_id"`         // YOUR session ID (the caller), not the target
+	ConversationID string `json:"conversation_id"` // Target conversation ID to send prompt to
 	Prompt         string `json:"prompt"`
 }
 
 func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.CallToolRequest, input SendPromptToConversationInput) (*mcp.CallToolResult, SendPromptOutput, error) {
-	// Validate session_id
-	if input.SessionID == "" {
-		return nil, SendPromptOutput{Success: false, Error: "session_id is required"}, nil
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, SendPromptOutput{Success: false, Error: "self_id is required"}, nil
 	}
 
-	// Wait for the pending request to be registered by the ACP layer
-	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
 	if realSessionID == "" {
 		return nil, SendPromptOutput{
 			Success: false,
-			Error: fmt.Sprintf("session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
-				input.SessionID),
+			Error: fmt.Sprintf("session not found: the self_id '%s' could not be resolved",
+				input.SelfID),
 		}, nil
 	}
 
@@ -957,7 +1025,7 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 
 // AskYesNoInput is the input for the mitto_ui_ask_yes_no tool.
 type AskYesNoInput struct {
-	SessionID      string `json:"session_id"` // Session ID or random identifier for session correlation
+	SelfID         string `json:"self_id"` // YOUR session ID (the caller)
 	Question       string `json:"question"`
 	YesLabel       string `json:"yes_label,omitempty"`
 	NoLabel        string `json:"no_label,omitempty"`
@@ -965,17 +1033,17 @@ type AskYesNoInput struct {
 }
 
 func (s *Server) handleAskYesNo(ctx context.Context, req *mcp.CallToolRequest, input AskYesNoInput) (*mcp.CallToolResult, AskYesNoOutput, error) {
-	// Validate session_id
-	if input.SessionID == "" {
-		return nil, AskYesNoOutput{}, fmt.Errorf("session_id is required")
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, AskYesNoOutput{}, fmt.Errorf("self_id is required")
 	}
 
-	// Wait for the pending request to be registered by the ACP layer
-	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
 	if realSessionID == "" {
 		return nil, AskYesNoOutput{}, fmt.Errorf(
-			"session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
-			input.SessionID,
+			"session not found: the self_id '%s' could not be resolved",
+			input.SelfID,
 		)
 	}
 
@@ -1026,7 +1094,7 @@ func (s *Server) handleAskYesNo(ctx context.Context, req *mcp.CallToolRequest, i
 
 	s.logger.Debug("Sending UI yes/no prompt",
 		"session_id", realSessionID,
-		"input_session_id", input.SessionID,
+		"input_session_id", input.SelfID,
 		"ui_request_id", uiRequestID,
 		"question", input.Question,
 		"timeout", timeout)
@@ -1054,24 +1122,24 @@ func (s *Server) handleAskYesNo(ctx context.Context, req *mcp.CallToolRequest, i
 
 // OptionsButtonsInput is the input for the mitto_ui_options_buttons tool.
 type OptionsButtonsInput struct {
-	SessionID      string   `json:"session_id"` // Session ID or random identifier for session correlation
+	SelfID         string   `json:"self_id"` // YOUR session ID (the caller)
 	Options        []string `json:"options"`
 	Question       string   `json:"question,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
 }
 
 func (s *Server) handleOptionsButtons(ctx context.Context, req *mcp.CallToolRequest, input OptionsButtonsInput) (*mcp.CallToolResult, OptionsButtonsOutput, error) {
-	// Validate session_id
-	if input.SessionID == "" {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("session_id is required")
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("self_id is required")
 	}
 
-	// Wait for the pending request to be registered by the ACP layer
-	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
 	if realSessionID == "" {
 		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf(
-			"session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
-			input.SessionID,
+			"session not found: the self_id '%s' could not be resolved",
+			input.SelfID,
 		)
 	}
 
@@ -1132,7 +1200,7 @@ func (s *Server) handleOptionsButtons(ctx context.Context, req *mcp.CallToolRequ
 
 	s.logger.Debug("Sending UI options buttons prompt",
 		"session_id", realSessionID,
-		"input_session_id", input.SessionID,
+		"input_session_id", input.SelfID,
 		"ui_request_id", uiRequestID,
 		"option_count", len(input.Options),
 		"timeout", timeout)
@@ -1165,24 +1233,24 @@ func (s *Server) handleOptionsButtons(ctx context.Context, req *mcp.CallToolRequ
 
 // OptionsComboInput is the input for the mitto_ui_options_combo tool.
 type OptionsComboInput struct {
-	SessionID      string   `json:"session_id"` // Session ID or random identifier for session correlation
+	SelfID         string   `json:"self_id"` // YOUR session ID (the caller)
 	Options        []string `json:"options"`
 	Question       string   `json:"question,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
 }
 
 func (s *Server) handleOptionsCombo(ctx context.Context, req *mcp.CallToolRequest, input OptionsComboInput) (*mcp.CallToolResult, OptionsComboOutput, error) {
-	// Validate session_id
-	if input.SessionID == "" {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("session_id is required")
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("self_id is required")
 	}
 
-	// Wait for the pending request to be registered by the ACP layer
-	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
 	if realSessionID == "" {
 		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf(
-			"session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
-			input.SessionID,
+			"session not found: the self_id '%s' could not be resolved",
+			input.SelfID,
 		)
 	}
 
@@ -1243,7 +1311,7 @@ func (s *Server) handleOptionsCombo(ctx context.Context, req *mcp.CallToolReques
 
 	s.logger.Debug("Sending UI options combo prompt",
 		"session_id", realSessionID,
-		"input_session_id", input.SessionID,
+		"input_session_id", input.SelfID,
 		"ui_request_id", uiRequestID,
 		"option_count", len(input.Options),
 		"timeout", timeout)
@@ -1276,7 +1344,7 @@ func (s *Server) handleOptionsCombo(ctx context.Context, req *mcp.CallToolReques
 
 // ConversationStartInput is the input for mitto_conversation_start tool.
 type ConversationStartInput struct {
-	SessionID     string `json:"session_id"`               // Session ID or random identifier for session correlation
+	SelfID        string `json:"self_id"`                  // YOUR session ID (the caller)
 	Title         string `json:"title,omitempty"`          // Optional title for the new conversation
 	InitialPrompt string `json:"initial_prompt,omitempty"` // Optional initial message to queue
 }
@@ -1290,17 +1358,17 @@ type ConversationStartOutput struct {
 }
 
 func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolRequest, input ConversationStartInput) (*mcp.CallToolResult, ConversationStartOutput, error) {
-	// Validate session_id
-	if input.SessionID == "" {
-		return nil, ConversationStartOutput{}, fmt.Errorf("session_id is required")
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, ConversationStartOutput{}, fmt.Errorf("self_id is required")
 	}
 
-	// Wait for the pending request to be registered by the ACP layer
-	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
 	if realSessionID == "" {
 		return nil, ConversationStartOutput{}, fmt.Errorf(
-			"session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
-			input.SessionID)
+			"session not found: the self_id '%s' could not be resolved",
+			input.SelfID)
 	}
 
 	// Check if source session is registered
@@ -1323,16 +1391,21 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		return nil, ConversationStartOutput{}, fmt.Errorf("failed to get source session metadata: %v", err)
 	}
 
-	// Check if the source session has a parent - if so, it cannot create new sessions
-	if sourceMeta.ParentSessionID != "" {
-		return nil, ConversationStartOutput{}, fmt.Errorf("child sessions cannot create new conversations (prevents infinite recursion)")
-	}
-
 	// Permission check: requires can_start_conversation flag
+	// Note: This is checked first since it's the most common reason for failure
+	// (flag defaults to false for security reasons)
 	if !s.checkSessionFlag(realSessionID, session.FlagCanStartConversation) {
 		return nil, ConversationStartOutput{}, fmt.Errorf(
-			"tool 'mitto_conversation_start' requires the 'Can start conversation' (%s) flag to be enabled in Advanced Settings",
+			"the '%s' flag is not enabled for this session. Enable it in this session's Advanced Settings (gear icon) to allow creating new conversations",
 			session.FlagCanStartConversation)
+	}
+
+	// Check if the source session has a parent - if so, it cannot create new sessions
+	// This prevents infinite recursion where child sessions keep spawning more children
+	if sourceMeta.ParentSessionID != "" {
+		return nil, ConversationStartOutput{}, fmt.Errorf(
+			"this session was created by another session (parent: %s) and cannot create new conversations to prevent infinite recursion",
+			sourceMeta.ParentSessionID)
 	}
 
 	// Create new session ID
@@ -1397,7 +1470,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 
 // GetConversationSummaryInput is the input for mitto_get_conversation_summary tool.
 type GetConversationSummaryInput struct {
-	SessionID      string `json:"session_id"`      // Session ID or random identifier for session correlation
+	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
 	ConversationID string `json:"conversation_id"` // Target conversation ID to summarize
 }
 
@@ -1410,9 +1483,9 @@ type GetConversationSummaryOutput struct {
 }
 
 func (s *Server) handleGetConversationSummary(ctx context.Context, req *mcp.CallToolRequest, input GetConversationSummaryInput) (*mcp.CallToolResult, GetConversationSummaryOutput, error) {
-	// Validate session_id
-	if input.SessionID == "" {
-		return nil, GetConversationSummaryOutput{Success: false, Error: "session_id is required"}, nil
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, GetConversationSummaryOutput{Success: false, Error: "self_id is required"}, nil
 	}
 
 	// Validate conversation_id
@@ -1420,13 +1493,13 @@ func (s *Server) handleGetConversationSummary(ctx context.Context, req *mcp.Call
 		return nil, GetConversationSummaryOutput{Success: false, Error: "conversation_id is required"}, nil
 	}
 
-	// Wait for the pending request to be registered by the ACP layer
-	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
 	if realSessionID == "" {
 		return nil, GetConversationSummaryOutput{
 			Success: false,
-			Error: fmt.Sprintf("session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
-				input.SessionID),
+			Error: fmt.Sprintf("session not found: the self_id '%s' could not be resolved",
+				input.SelfID),
 		}, nil
 	}
 
@@ -1542,7 +1615,7 @@ func formatConversationForSummary(events []session.Event) string {
 
 // GetConversationInput is the input for mitto_get_conversation tool.
 type GetConversationInput struct {
-	SessionID      string `json:"session_id"`      // Session ID or random identifier for session correlation
+	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
 	ConversationID string `json:"conversation_id"` // Target conversation ID to get properties for
 }
 
@@ -1551,9 +1624,9 @@ type GetConversationInput struct {
 type GetConversationOutput = ConversationDetails
 
 func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolRequest, input GetConversationInput) (*mcp.CallToolResult, GetConversationOutput, error) {
-	// Validate session_id
-	if input.SessionID == "" {
-		return nil, GetConversationOutput{}, fmt.Errorf("session_id is required")
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, GetConversationOutput{}, fmt.Errorf("self_id is required")
 	}
 
 	// Validate conversation_id
@@ -1561,12 +1634,12 @@ func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolReq
 		return nil, GetConversationOutput{}, fmt.Errorf("conversation_id is required")
 	}
 
-	// Wait for the pending request to be registered by the ACP layer
-	realSessionID := s.WaitForPendingRequest(input.SessionID)
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
 	if realSessionID == "" {
 		return nil, GetConversationOutput{}, fmt.Errorf(
-			"session not found: the session_id '%s' was not registered by a Mitto session within the timeout",
-			input.SessionID)
+			"session not found: the self_id '%s' could not be resolved",
+			input.SelfID)
 	}
 
 	// Check if source session is registered (must be running to use this tool)
@@ -1597,6 +1670,311 @@ func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolReq
 		"target_conversation", input.ConversationID,
 		"is_running", output.IsRunning,
 		"is_prompting", output.IsPrompting)
+
+	return nil, output, nil
+}
+
+// SetPeriodicInput is the input for mitto_conversation_set_periodic tool.
+type SetPeriodicInput struct {
+	SelfID         string `json:"self_id"`                // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"`        // Target conversation to configure
+	Prompt         string `json:"prompt"`                 // The prompt to send periodically
+	FrequencyValue int    `json:"frequency_value"`        // Number of units between sends (e.g., 30 for "every 30 minutes")
+	FrequencyUnit  string `json:"frequency_unit"`         // Time unit: "minutes", "hours", or "days"
+	FrequencyAt    string `json:"frequency_at,omitempty"` // Time of day in HH:MM format (UTC), only for "days" unit
+	Enabled        *bool  `json:"enabled,omitempty"`      // Whether periodic is active (defaults to true)
+}
+
+// SetPeriodicOutput is the output for mitto_conversation_set_periodic tool.
+type SetPeriodicOutput struct {
+	Success         bool   `json:"success"`
+	ConversationID  string `json:"conversation_id,omitempty"`
+	Prompt          string `json:"prompt,omitempty"`
+	FrequencyValue  int    `json:"frequency_value,omitempty"`
+	FrequencyUnit   string `json:"frequency_unit,omitempty"`
+	FrequencyAt     string `json:"frequency_at,omitempty"`
+	Enabled         bool   `json:"enabled,omitempty"`
+	NextScheduledAt string `json:"next_scheduled_at,omitempty"` // RFC3339 format
+	Error           string `json:"error,omitempty"`
+}
+
+func (s *Server) handleSetPeriodic(ctx context.Context, req *mcp.CallToolRequest, input SetPeriodicInput) (*mcp.CallToolResult, SetPeriodicOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, SetPeriodicOutput{Success: false, Error: "self_id is required"}, nil
+	}
+
+	// Validate conversation_id
+	if input.ConversationID == "" {
+		return nil, SetPeriodicOutput{Success: false, Error: "conversation_id is required"}, nil
+	}
+
+	// Validate prompt
+	if input.Prompt == "" {
+		return nil, SetPeriodicOutput{Success: false, Error: "prompt is required"}, nil
+	}
+
+	// Validate frequency_value
+	if input.FrequencyValue < 1 {
+		return nil, SetPeriodicOutput{Success: false, Error: "frequency_value must be >= 1"}, nil
+	}
+
+	// Validate frequency_unit
+	var freqUnit session.FrequencyUnit
+	switch input.FrequencyUnit {
+	case "minutes":
+		freqUnit = session.FrequencyMinutes
+	case "hours":
+		freqUnit = session.FrequencyHours
+	case "days":
+		freqUnit = session.FrequencyDays
+	default:
+		return nil, SetPeriodicOutput{Success: false, Error: "frequency_unit must be 'minutes', 'hours', or 'days'"}, nil
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
+	if realSessionID == "" {
+		return nil, SetPeriodicOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
+		}, nil
+	}
+
+	// Check if source session is registered (must be running to use this tool)
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, SetPeriodicOutput{Success: false, Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
+	}
+
+	s.mu.RLock()
+	store := s.store
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, SetPeriodicOutput{Success: false, Error: "session store not available"}, nil
+	}
+
+	// Verify target conversation exists
+	if _, err := store.GetMetadata(input.ConversationID); err != nil {
+		return nil, SetPeriodicOutput{
+			Success: false,
+			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
+		}, nil
+	}
+
+	// Build frequency configuration
+	freq := session.Frequency{
+		Value: input.FrequencyValue,
+		Unit:  freqUnit,
+		At:    input.FrequencyAt,
+	}
+
+	// Validate frequency
+	if err := freq.Validate(); err != nil {
+		return nil, SetPeriodicOutput{Success: false, Error: err.Error()}, nil
+	}
+
+	// Determine enabled state (default to true)
+	enabled := true
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
+
+	// Create periodic prompt configuration
+	periodic := &session.PeriodicPrompt{
+		Prompt:    input.Prompt,
+		Frequency: freq,
+		Enabled:   enabled,
+	}
+
+	// Get the periodic store for the target conversation
+	periodicStore := store.Periodic(input.ConversationID)
+
+	// Set the periodic configuration
+	if err := periodicStore.Set(periodic); err != nil {
+		return nil, SetPeriodicOutput{Success: false, Error: fmt.Sprintf("failed to set periodic: %v", err)}, nil
+	}
+
+	// Get the updated configuration to return
+	updated, err := periodicStore.Get()
+	if err != nil {
+		return nil, SetPeriodicOutput{Success: false, Error: fmt.Sprintf("failed to read updated periodic: %v", err)}, nil
+	}
+
+	s.logger.Info("Periodic prompt configured via MCP",
+		"source_session", realSessionID,
+		"target_conversation", input.ConversationID,
+		"frequency_value", input.FrequencyValue,
+		"frequency_unit", input.FrequencyUnit,
+		"enabled", enabled)
+
+	output := SetPeriodicOutput{
+		Success:        true,
+		ConversationID: input.ConversationID,
+		Prompt:         updated.Prompt,
+		FrequencyValue: updated.Frequency.Value,
+		FrequencyUnit:  string(updated.Frequency.Unit),
+		FrequencyAt:    updated.Frequency.At,
+		Enabled:        updated.Enabled,
+	}
+
+	if updated.NextScheduledAt != nil {
+		output.NextScheduledAt = updated.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+
+	return nil, output, nil
+}
+
+// ArchiveConversationInput is the input for mitto_conversation_archive tool.
+type ArchiveConversationInput struct {
+	SelfID         string `json:"self_id"`            // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"`    // Target conversation to archive/unarchive
+	Archived       *bool  `json:"archived,omitempty"` // true to archive, false to unarchive (defaults to true)
+}
+
+// ArchiveConversationOutput is the output for mitto_conversation_archive tool.
+type ArchiveConversationOutput struct {
+	Success        bool   `json:"success"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	Archived       bool   `json:"archived,omitempty"`
+	ArchivedAt     string `json:"archived_at,omitempty"` // RFC3339 format, only when archiving
+	Error          string `json:"error,omitempty"`
+}
+
+// archiveWaitTimeout is the maximum time to wait for a response to complete when archiving.
+const archiveWaitTimeout = 5 * time.Minute
+
+func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToolRequest, input ArchiveConversationInput) (*mcp.CallToolResult, ArchiveConversationOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, ArchiveConversationOutput{Success: false, Error: "self_id is required"}, nil
+	}
+
+	// Validate conversation_id
+	if input.ConversationID == "" {
+		return nil, ArchiveConversationOutput{Success: false, Error: "conversation_id is required"}, nil
+	}
+
+	// Default to archiving if not specified
+	archived := true
+	if input.Archived != nil {
+		archived = *input.Archived
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfID(input.SelfID)
+	if realSessionID == "" {
+		return nil, ArchiveConversationOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
+		}, nil
+	}
+
+	// Check if source session is registered (must be running to use this tool)
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, ArchiveConversationOutput{Success: false, Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
+	}
+
+	s.mu.RLock()
+	store := s.store
+	sessionManager := s.sessionManager
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, ArchiveConversationOutput{Success: false, Error: "session store not available"}, nil
+	}
+
+	// Verify target conversation exists
+	meta, err := store.GetMetadata(input.ConversationID)
+	if err != nil {
+		return nil, ArchiveConversationOutput{
+			Success: false,
+			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
+		}, nil
+	}
+
+	// Check if already in the desired state
+	if meta.Archived == archived {
+		state := "archived"
+		if !archived {
+			state = "unarchived"
+		}
+		return nil, ArchiveConversationOutput{
+			Success:        true,
+			ConversationID: input.ConversationID,
+			Archived:       archived,
+			Error:          fmt.Sprintf("conversation is already %s", state),
+		}, nil
+	}
+
+	// Handle archive lifecycle
+	if archived {
+		if sessionManager != nil {
+			// Wait for any active response to complete before archiving
+			reason := "archived_via_mcp"
+			if !sessionManager.CloseSessionGracefully(input.ConversationID, reason, archiveWaitTimeout) {
+				// Timeout waiting for response - still proceed with archive but log warning
+				s.logger.Warn("Timeout waiting for response before archiving via MCP, proceeding anyway",
+					"session_id", input.ConversationID)
+				// Force close the session
+				reason = "archived_timeout_via_mcp"
+				sessionManager.CloseSession(input.ConversationID, reason)
+			}
+		}
+	}
+
+	// Update metadata
+	var archivedAt time.Time
+	err = store.UpdateMetadata(input.ConversationID, func(m *session.Metadata) {
+		m.Archived = archived
+		if archived {
+			archivedAt = time.Now()
+			m.ArchivedAt = archivedAt
+		} else {
+			m.ArchivedAt = time.Time{}
+		}
+	})
+	if err != nil {
+		return nil, ArchiveConversationOutput{
+			Success: false,
+			Error:   fmt.Sprintf("failed to update metadata: %v", err),
+		}, nil
+	}
+
+	// Handle unarchive lifecycle: restart ACP session
+	if !archived && sessionManager != nil {
+		_, err := sessionManager.ResumeSession(input.ConversationID, meta.Name, meta.WorkingDir)
+		if err != nil {
+			s.logger.Warn("Failed to resume ACP session after unarchive via MCP",
+				"session_id", input.ConversationID,
+				"error", err)
+			// Don't fail the request - the session is unarchived, ACP will start when user sends a message
+		} else {
+			s.logger.Info("Resumed ACP session after unarchive via MCP",
+				"session_id", input.ConversationID)
+		}
+	}
+
+	action := "archived"
+	if !archived {
+		action = "unarchived"
+	}
+	s.logger.Info("Conversation "+action+" via MCP",
+		"source_session", realSessionID,
+		"target_conversation", input.ConversationID,
+		"archived", archived)
+
+	output := ArchiveConversationOutput{
+		Success:        true,
+		ConversationID: input.ConversationID,
+		Archived:       archived,
+	}
+
+	if archived && !archivedAt.IsZero() {
+		output.ArchivedAt = archivedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
 
 	return nil, output, nil
 }
