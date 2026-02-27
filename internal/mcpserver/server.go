@@ -657,10 +657,10 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 }
 
 // selfIDNote is the standard note about self_id for tools that auto-detect the calling session.
-// It explains that agents should generate a random identifier if they don't know their session ID.
+// It explains that agents should call mitto_conversation_get_current first to discover their session ID.
 const selfIDNote = "The self_id parameter identifies YOUR current session (not the target conversation). " +
-	"If you don't know your session ID, generate a random unique identifier (UUID or string like 'agent-task-1') " +
-	"and use that same value for all subsequent tool calls in this conversation."
+	"Call 'mitto_conversation_get_current' first to discover your real session_id, then use that value for all subsequent tool calls. " +
+	"Your session_id is required to verify permissions for this tool."
 
 // registerSessionScopedTools registers session-scoped MCP tools.
 // These tools operate on specific conversations using automatic session detection via session_id correlation.
@@ -670,7 +670,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_get_current",
 		Description: "Get information about YOUR current conversation/session, including your real session ID, title, working directory, and message count. " +
-			"Useful for discovering your own session details. " +
+			"CALL THIS FIRST to discover your session_id before using other Mitto tools that require permissions. " +
+			"You can pass any value for self_id (e.g., 'init') - this tool auto-detects your session and returns the real session_id. " +
 			selfIDNote,
 	}, s.handleGetCurrentSession)
 
