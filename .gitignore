@@ -168,3 +168,4 @@ test-results/
 
 # Playwright CLI testing artifacts
 .playwright-cli/
+.claude/
