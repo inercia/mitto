@@ -22,7 +22,7 @@ Do not remove existing valid content - only add or update information.
 
 # Reorganize rules files
 
-Once you have a good understanding of the existin rules files,  consider if it
+Once you have a good understanding of the existing rules files, consider if it
 would make sense to reorganize the .augment/rules/ files in order to optimize
 automatic context inclusion.
 

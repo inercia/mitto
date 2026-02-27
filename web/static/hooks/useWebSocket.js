@@ -96,8 +96,8 @@ function getKeepaliveInterval() {
  * For network errors or server errors, returns true to allow reconnection to proceed
  * (the WebSocket reconnect will handle retries with exponential backoff).
  *
- * @returns {Promise<boolean>} True if auth is valid OR if status is unknown (network/server error).
- *                             False is only returned after redirecting to login (effectively unreachable).
+ * @returns {Promise<boolean>} Always returns true. On 401, redirects and never returns.
+ *                             Network/server errors also return true to allow reconnection.
  */
 async function checkAuthOrRedirect() {
   try {

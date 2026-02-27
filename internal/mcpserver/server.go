@@ -656,8 +656,9 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 	}, s.createGetRuntimeInfoHandler())
 }
 
-// selfIDNote is the standard note about self_id for tools that auto-detect the calling session.
-// It explains that agents should call mitto_conversation_get_current first to discover their session ID.
+// selfIDNote is the standard note about self_id for tools that require session identification.
+// For ACP-routed agents (like Auggie), the self_id is automatically correlated via the ACP layer,
+// so any stable value works. For external MCP clients, the real session_id must be discovered first.
 const selfIDNote = "The self_id parameter identifies YOUR current session (not the target conversation). " +
 	"Call 'mitto_conversation_get_current' first to discover your real session_id, then use that value for all subsequent tool calls. " +
 	"Your session_id is required to verify permissions for this tool."
@@ -672,6 +673,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Get information about YOUR current conversation/session, including your real session ID, title, working directory, and message count. " +
 			"CALL THIS FIRST to discover your session_id before using other Mitto tools that require permissions. " +
 			"You can pass any value for self_id (e.g., 'init') - this tool auto-detects your session and returns the real session_id. " +
+			// Note: selfIDNote is appended here for consistency, but for get_current specifically,
+			// any self_id value works since the tool auto-detects the session via ACP correlation.
 			selfIDNote,
 	}, s.handleGetCurrentSession)
 
