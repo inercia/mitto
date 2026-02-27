@@ -973,6 +973,25 @@ func (a *sessionManagerAdapter) ListRunningSessions() []string {
 	return a.sm.ListRunningSessions()
 }
 
+// CloseSessionGracefully waits for any active response to complete before closing.
+func (a *sessionManagerAdapter) CloseSessionGracefully(sessionID, reason string, timeout time.Duration) bool {
+	return a.sm.CloseSessionGracefully(sessionID, reason, timeout)
+}
+
+// CloseSession immediately closes a session.
+func (a *sessionManagerAdapter) CloseSession(sessionID, reason string) {
+	a.sm.CloseSession(sessionID, reason)
+}
+
+// ResumeSession resumes an archived session by starting a new ACP connection.
+func (a *sessionManagerAdapter) ResumeSession(sessionID, sessionName, workingDir string) (mcpserver.BackgroundSession, error) {
+	bs, err := a.sm.ResumeSession(sessionID, sessionName, workingDir)
+	if err != nil {
+		return nil, err
+	}
+	return bs, nil
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================
