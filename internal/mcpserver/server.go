@@ -1409,8 +1409,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			sourceMeta.ParentSessionID)
 	}
 
-	// Create new session ID
-	newSessionID := uuid.New().String()
+	// Create new session ID using the standard timestamp format
+	// This ensures compatibility with IsValidSessionID validation in the web layer
+	newSessionID := session.GenerateSessionID()
 
 	// Create the new session metadata
 	// NOTE: Recursion is prevented by setting can_start_conversation=false for child sessions.

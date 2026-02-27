@@ -219,7 +219,6 @@ func TestEventOrdering_ThoughtFlushesBufferedMarkdown(t *testing.T) {
 			collector.addEvent(seq, "thought", text)
 		},
 	})
-	defer client.Close()
 
 	ctx := context.Background()
 
@@ -229,7 +228,9 @@ func TestEventOrdering_ThoughtFlushesBufferedMarkdown(t *testing.T) {
 	// Thought should flush the buffered markdown first
 	sendAgentThought(t, client, ctx, "I need to think about this")
 
-	time.Sleep(100 * time.Millisecond)
+	// Close the client to force flush all buffers
+	// (thoughts are now buffered for coalescing with 150ms timeout)
+	client.Close()
 
 	events := collector.getEvents()
 
@@ -1327,7 +1328,6 @@ func TestEventOrdering_OnlyNonMarkdownEvents(t *testing.T) {
 			collector.addEvent(seq, "plan", "")
 		},
 	})
-	defer client.Close()
 
 	ctx := context.Background()
 
@@ -1338,7 +1338,9 @@ func TestEventOrdering_OnlyNonMarkdownEvents(t *testing.T) {
 	sendPlan(t, client, ctx)
 	sendAgentThought(t, client, ctx, "More thinking...")
 
-	time.Sleep(100 * time.Millisecond)
+	// Close to force flush all buffers
+	// (thoughts are now buffered for coalescing with 150ms timeout)
+	client.Close()
 
 	events := collector.getEvents()
 
