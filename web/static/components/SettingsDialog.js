@@ -37,6 +37,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   DuplicateIcon,
+  ShieldIcon,
 } from "./Icons.js";
 
 // Import constants
@@ -66,6 +67,9 @@ function WorkspaceEditForm({
   );
   const [acpServer, setAcpServer] = useState(workspace.acp_server);
   const [runner, setRunner] = useState(workspace.restricted_runner || "exec");
+  const [autoApprove, setAutoApprove] = useState(
+    workspace.auto_approve === true,
+  );
 
   // Sort ACP servers alphabetically by name for display
   const sortedServers = useMemo(
@@ -82,6 +86,7 @@ function WorkspaceEditForm({
       color: color || undefined,
       acp_server: acpServer,
       restricted_runner: runner,
+      auto_approve: autoApprove || undefined, // undefined to omit if false
     });
   };
 
@@ -139,6 +144,25 @@ function WorkspaceEditForm({
         </p>
       </div>
 
+      <!-- Auto-approve Permissions -->
+      <label
+        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+      >
+        <input
+          type="checkbox"
+          checked=${autoApprove}
+          onChange=${(e) => setAutoApprove(e.target.checked)}
+          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+        />
+        <div class="flex-1">
+          <div class="font-medium text-sm">Auto-approve Permissions</div>
+          <div class="text-xs text-gray-500">
+            Automatically approve all permission requests from the agent for
+            sessions in this workspace
+          </div>
+        </div>
+      </label>
+
       <!-- Badge Customization -->
       <div>
         <label class="block text-sm text-gray-400 mb-1"
@@ -193,11 +217,38 @@ function ServerEditForm({ server, onSave, onCancel }) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
   const [type, setType] = useState(server.type || "");
+  const [autoApprove, setAutoApprove] = useState(server.auto_approve === true);
+  // Environment variables as array of {key, value} for easier editing
+  const [envVars, setEnvVars] = useState(() => {
+    const env = server.env || {};
+    return Object.entries(env).map(([key, value]) => ({ key, value }));
+  });
   // All prompts are now file-based (read-only)
   const filePrompts = server.prompts || [];
 
   const handleSave = () => {
-    onSave(name, command, type);
+    // Convert envVars array back to object, filtering out empty keys
+    const envObj = {};
+    envVars.forEach(({ key, value }) => {
+      if (key && key.trim()) {
+        envObj[key.trim()] = value || "";
+      }
+    });
+    onSave(name, command, type, autoApprove, envObj);
+  };
+
+  const addEnvVar = () => {
+    setEnvVars([...envVars, { key: "", value: "" }]);
+  };
+
+  const removeEnvVar = (index) => {
+    setEnvVars(envVars.filter((_, i) => i !== index));
+  };
+
+  const updateEnvVar = (index, field, value) => {
+    const updated = [...envVars];
+    updated[index] = { ...updated[index], [field]: value };
+    setEnvVars(updated);
   };
 
   return html`
@@ -236,6 +287,87 @@ function ServerEditForm({ server, onSave, onCancel }) {
         />
         <p class="text-xs text-gray-500 mt-1">
           Servers with the same type share prompts. If empty, name is used.
+        </p>
+      </div>
+
+      <!-- Auto-approve Permissions -->
+      <label
+        class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+      >
+        <input
+          type="checkbox"
+          checked=${autoApprove}
+          onChange=${(e) => setAutoApprove(e.target.checked)}
+          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+        />
+        <div class="flex-1">
+          <div class="font-medium text-sm">Auto-approve Permissions</div>
+          <div class="text-xs text-gray-500">
+            Automatically approve all permission requests from the agent for
+            sessions using this server
+          </div>
+        </div>
+      </label>
+
+      <!-- Environment Variables -->
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <label class="block text-sm text-gray-400"
+            >Environment Variables
+            <span class="text-xs text-gray-500">(optional)</span>
+          </label>
+          <button
+            type="button"
+            onClick=${addEnvVar}
+            class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
+          >
+            + Add Variable
+          </button>
+        </div>
+        ${envVars.length === 0
+          ? html`
+              <p class="text-xs text-gray-500 italic">
+                No environment variables configured. Click "Add Variable" to add
+                one.
+              </p>
+            `
+          : html`
+              <div class="space-y-2">
+                ${envVars.map(
+                  (env, idx) => html`
+                    <div key=${idx} class="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value=${env.key}
+                        placeholder="NAME"
+                        onInput=${(e) => updateEnvVar(idx, "key", e.target.value)}
+                        class="flex-1 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                      />
+                      <span class="text-gray-500">=</span>
+                      <input
+                        type="text"
+                        value=${env.value}
+                        placeholder="value"
+                        onInput=${(e) =>
+                          updateEnvVar(idx, "value", e.target.value)}
+                        class="flex-[2] px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      <button
+                        type="button"
+                        onClick=${() => removeEnvVar(idx)}
+                        class="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+                        title="Remove variable"
+                      >
+                        <${TrashIcon} className="w-4 h-4" />
+                      </button>
+                    </div>
+                  `,
+                )}
+              </div>
+            `}
+        <p class="text-xs text-gray-500 mt-2">
+          These environment variables will be set when starting the ACP server
+          process.
         </p>
       </div>
 
@@ -536,6 +668,9 @@ export function SettingsDialog({
 
   // Single expanded group (accordion mode) setting (web UI) - default: false
   const [singleExpandedGroup, setSingleExpandedGroup] = useState(false);
+
+  // Global auto-approve permissions setting - default: true (matches current behavior)
+  const [globalAutoApprove, setGlobalAutoApprove] = useState(true);
 
   // Follow system theme setting (client-side, stored in localStorage)
   const [followSystemTheme, setFollowSystemTheme] = useState(() => {
@@ -884,6 +1019,10 @@ export function SettingsDialog({
       // Load restricted runners configuration
       setRestrictedRunners(config.restricted_runners || {});
 
+      // Load global auto-approve permissions setting - default to true (matches current behavior)
+      // When permissions config is null/undefined, or auto_approve is null, default is true
+      setGlobalAutoApprove(config.permissions?.auto_approve !== false);
+
       // Load available flags and configured default flags
       try {
         const flagsRes = await fetch(apiUrl("/api/advanced-flags"), {
@@ -1039,6 +1178,8 @@ export function SettingsDialog({
           name: srv.name,
           command: srv.command,
           source: srv.source || "settings", // Default to settings if not specified
+          auto_approve: srv.auto_approve || false, // Include auto-approve setting
+          env: srv.env || undefined, // Include env vars if present
         };
         // Only include type if specified (otherwise name is used as type)
         if (srv.type) {
@@ -1058,6 +1199,11 @@ export function SettingsDialog({
         }
       }
 
+      // Build permissions config
+      const permissionsConfig = {
+        auto_approve: globalAutoApprove,
+      };
+
       const config = {
         workspaces: workspaces,
         acp_servers: acpServersToSave,
@@ -1066,6 +1212,7 @@ export function SettingsDialog({
         ui: uiConfig,
         conversations: conversationsConfig,
         session: sessionConfig,
+        permissions: permissionsConfig,
         restricted_runners:
           Object.keys(restrictedRunnersToSave).length > 0
             ? restrictedRunnersToSave
@@ -1403,6 +1550,7 @@ export function SettingsDialog({
               acp_server: updates.acp_server,
               acp_command: selectedServer.command,
               restricted_runner: updates.restricted_runner,
+              auto_approve: updates.auto_approve,
             }
           : ws,
       ),
@@ -1443,7 +1591,7 @@ export function SettingsDialog({
     setError("");
   };
 
-  const updateServer = (oldName, newName, newCommand, newType) => {
+  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env) => {
     if (!newName.trim() || !newCommand.trim()) {
       setError("Server name and command cannot be empty");
       return;
@@ -1467,6 +1615,8 @@ export function SettingsDialog({
           command: newCommand.trim(),
           prompts: s.prompts, // Preserve existing prompts (read-only from files)
           source: s.source, // Preserve source (rcfile or settings)
+          auto_approve: autoApprove || undefined, // undefined to omit if false
+          env: env && Object.keys(env).length > 0 ? env : undefined, // undefined to omit if empty
         };
         // Only include type if specified (otherwise name is used as type)
         if (newType && newType.trim()) {
@@ -1585,6 +1735,7 @@ export function SettingsDialog({
     { id: "workspaces", label: "Workspaces", icon: FolderIcon },
     { id: "prompts", label: "Prompts", icon: LightningIcon },
     { id: "runners", label: "Runners", icon: LockIcon },
+    { id: "permissions", label: "Permissions", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
   ];
@@ -2152,12 +2303,14 @@ export function SettingsDialog({
                                       ? html`
                                           <${ServerEditForm}
                                             server=${srv}
-                                            onSave=${(name, cmd, type) =>
+                                            onSave=${(name, cmd, type, autoApprove, env) =>
                                               updateServer(
                                                 srv.name,
                                                 name,
                                                 cmd,
                                                 type,
+                                                autoApprove,
+                                                env,
                                               )}
                                             onCancel=${() =>
                                               setEditingServer(null)}
@@ -3307,6 +3460,74 @@ export function SettingsDialog({
                               </div>
                             `,
                           )}
+                      </div>
+                    </div>
+                  `}
+
+                  <!-- Permissions Tab -->
+                  ${activeTab === "permissions" &&
+                  html`
+                    <div class="space-y-4">
+                      <p class="text-gray-400 text-sm">
+                        Configure how permission requests from AI agents are
+                        handled.
+                      </p>
+
+                      <!-- Global Permissions Section -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Global Settings
+                        </h4>
+
+                        <label
+                          class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${globalAutoApprove}
+                            onChange=${(e) =>
+                              setGlobalAutoApprove(e.target.checked)}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                          />
+                          <div class="flex-1">
+                            <div class="font-medium text-sm">
+                              Auto-approve All Permissions
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Automatically approve all permission requests from
+                              AI agents without showing a dialog. This is the
+                              default behavior.
+                            </div>
+                          </div>
+                        </label>
+
+                        <div
+                          class="p-3 bg-slate-800/50 rounded-lg border border-slate-700"
+                        >
+                          <p class="text-gray-300 text-sm leading-relaxed">
+                            <span class="text-blue-400 font-medium"
+                              >Permission hierarchy:</span
+                            >${" "}
+                            Per-workspace settings override this global setting.
+                            You can configure auto-approve per workspace in the
+                            Workspaces tab.
+                          </p>
+                        </div>
+
+                        ${!globalAutoApprove &&
+                        html`
+                          <div
+                            class="p-3 bg-amber-500/10 rounded-lg border border-amber-500/30"
+                          >
+                            <p class="text-amber-400 text-sm leading-relaxed">
+                              ⚠️ <strong>Note:</strong> When auto-approve is
+                              disabled, you will need to manually approve or deny
+                              each permission request from the agent. This may
+                              interrupt your workflow but provides more control
+                              over agent actions.
+                            </p>
+                          </div>
+                        `}
                       </div>
                     </div>
                   `}
