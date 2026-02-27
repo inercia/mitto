@@ -81,7 +81,6 @@ func TestWebClient_SessionUpdate_AgentThought(t *testing.T) {
 			thought = text
 		},
 	})
-	defer client.Close()
 
 	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
 		Update: acp.SessionUpdate{
@@ -94,6 +93,10 @@ func TestWebClient_SessionUpdate_AgentThought(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionUpdate failed: %v", err)
 	}
+
+	// Flush the thought buffer to emit the thought
+	// (thoughts are now buffered for coalescing)
+	client.Close()
 
 	if thought != "thinking..." {
 		t.Errorf("thought = %q, want %q", thought, "thinking...")
