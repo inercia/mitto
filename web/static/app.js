@@ -966,6 +966,7 @@ function SessionItem({
   onRename,
   onDelete,
   onArchive,
+  onPeriodic,
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
@@ -1043,8 +1044,10 @@ function SessionItem({
           );
           if (!createResponse.ok) {
             console.error("Failed to create periodic config");
+          } else {
+            // Server broadcasts the update - also notify parent to switch tabs
+            if (onPeriodic) onPeriodic(session, true);
           }
-          // Server broadcasts the update
           return;
         }
         if (!getResponse.ok) {
@@ -1059,13 +1062,15 @@ function SessionItem({
         );
         if (!response.ok) {
           console.error("Failed to delete periodic config");
+        } else {
+          // Server broadcasts the update - also notify parent to switch tabs
+          if (onPeriodic) onPeriodic(session, false);
         }
-        // Server broadcasts the update, no need to update local state
       } catch (err) {
         console.error("Failed to toggle periodic:", err);
       }
     },
-    [session.session_id],
+    [session.session_id, onPeriodic],
   );
 
   // Get working_dir from session, or fall back to global map
@@ -1451,6 +1456,7 @@ function SessionList({
   onRename,
   onDelete,
   onArchive,
+  onPeriodic,
   onClose,
   workspaces,
   theme,
@@ -1499,6 +1505,24 @@ function SessionList({
       );
     });
     return unsubscribe;
+  }, []);
+
+  // Listen for programmatic filter tab changes (e.g., when unarchiving a session)
+  useEffect(() => {
+    const handleFilterTabChanged = (e) => {
+      const newTab = e.detail.tab;
+      setFilterTabState(newTab);
+      // Also update grouping mode for the new tab
+      const tabGroupingMode = getFilterTabGrouping(newTab);
+      setGroupingModeState(tabGroupingMode);
+    };
+    window.addEventListener("mitto-filter-tab-changed", handleFilterTabChanged);
+    return () => {
+      window.removeEventListener(
+        "mitto-filter-tab-changed",
+        handleFilterTabChanged,
+      );
+    };
   }, []);
 
   // Handle filter tab change - also update grouping mode to match the new tab's setting
@@ -1751,6 +1775,7 @@ function SessionList({
         onRename=${onRename}
         onDelete=${onDelete}
         onArchive=${onArchive}
+        onPeriodic=${onPeriodic}
         workspaceColor=${workspace?.color || null}
         workspaceCode=${workspace?.code || null}
         workspaceName=${workspace?.name || null}
@@ -4428,6 +4453,23 @@ function App() {
 
   const handleArchiveSession = async (session, archived) => {
     await archiveSession(session.session_id, archived);
+
+    // When unarchiving, switch to conversations tab and select the session
+    if (!archived) {
+      setFilterTab(FILTER_TAB.CONVERSATIONS);
+      switchSession(session.session_id);
+    }
+  };
+
+  const handlePeriodicSession = (session, isPeriodic) => {
+    // When enabling periodic, switch to periodic tab and select the session
+    // When disabling periodic, switch to conversations tab and select the session
+    if (isPeriodic) {
+      setFilterTab(FILTER_TAB.PERIODIC);
+    } else {
+      setFilterTab(FILTER_TAB.CONVERSATIONS);
+    }
+    switchSession(session.session_id);
   };
 
   return html`
@@ -4703,6 +4745,7 @@ function App() {
           onRename=${handleOpenSessionProperties}
           onDelete=${handleDeleteSession}
           onArchive=${handleArchiveSession}
+          onPeriodic=${handlePeriodicSession}
           workspaces=${workspaces}
           theme=${theme}
           onToggleTheme=${toggleTheme}
@@ -4732,6 +4775,7 @@ function App() {
               onRename=${handleOpenSessionProperties}
               onDelete=${handleDeleteSession}
               onArchive=${handleArchiveSession}
+              onPeriodic=${handlePeriodicSession}
               onClose=${() => setShowSidebar(false)}
               workspaces=${workspaces}
               theme=${theme}
