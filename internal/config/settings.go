@@ -128,6 +128,9 @@ type ACPServerSettings struct {
 	// Type is an optional type identifier for prompt matching.
 	// Servers with the same type share prompts. If empty, Name is used as the type.
 	Type string `json:"type,omitempty"`
+	// Env is a map of environment variables to set when starting the ACP server.
+	// These are merged with the current environment (server-specific vars take precedence).
+	Env map[string]string `json:"env,omitempty"`
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt `json:"prompts,omitempty"`
 	// RestrictedRunners contains per-runner-type configuration for this agent
