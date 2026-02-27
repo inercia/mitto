@@ -132,10 +132,15 @@ func (sb *StreamBuffer) WriteMarkdown(chunk string) {
 
 // AddThought adds a thought chunk to the thought buffer.
 // Thought chunks are coalesced by ThoughtBuffer and emitted as unified blocks
-// after a timeout (150ms) or when a non-thought event arrives.
+// after a timeout (500ms) or when a non-thought event arrives.
 // If we're in a markdown block, the thought is added to pending events instead.
 // Note: No seq is passed - seq is assigned at emit time.
 func (sb *StreamBuffer) AddThought(text string) {
+	// Skip empty chunks early - no point in buffering them
+	if text == "" {
+		return
+	}
+
 	// Check if we're in a markdown block
 	inBlock := sb.mdBuffer.InBlock()
 
@@ -365,7 +370,8 @@ func (sb *StreamBuffer) emitEvents(events []StreamEvent) {
 				sb.callbacks.OnAgentMessage(seq, event.HTML)
 			}
 		case StreamEventAgentThought:
-			if sb.callbacks.OnAgentThought != nil {
+			// Skip empty thoughts (defensive check - AddThought filters these too)
+			if sb.callbacks.OnAgentThought != nil && event.Text != "" {
 				seq := sb.getNextSeq()
 				sb.callbacks.OnAgentThought(seq, event.Text)
 			}

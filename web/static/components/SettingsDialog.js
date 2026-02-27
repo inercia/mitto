@@ -3508,9 +3508,9 @@ export function SettingsDialog({
                             <span class="text-blue-400 font-medium"
                               >Permission hierarchy:</span
                             >${" "}
-                            Per-workspace settings override this global setting.
-                            You can configure auto-approve per workspace in the
-                            Workspaces tab.
+                            Per-workspace settings can enable auto-approve even
+                            when this global setting is off. Configure
+                            workspace-specific settings in the Workspaces tab.
                           </p>
                         </div>
 

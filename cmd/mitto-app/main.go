@@ -986,9 +986,15 @@ func run() error {
 	// Writes to ~/Library/Logs/Mitto/access.log with size-based rotation
 	accessLogConfig := resolveAccessLogConfigApp(cfg)
 
+	// Get effective auto-approve from config (defaults to true if not configured)
+	autoApprove := true
+	if cfg.Permissions != nil {
+		autoApprove = cfg.Permissions.IsAutoApprove()
+	}
+
 	webConfig := web.Config{
 		Workspaces:       workspaces,
-		AutoApprove:      false,
+		AutoApprove:      autoApprove,
 		Debug:            false,
 		MittoConfig:      cfg,
 		FromCLI:          false, // macOS app always uses file-based persistence

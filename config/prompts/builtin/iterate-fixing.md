@@ -50,7 +50,7 @@ Continue with the following steps:
 2. Analyze ALL remaining issues that prevent the problem from being fully fixed
 3. Prioritize the problems and investigate the problem.
 4. Implement the fix
-5. Verify the featues(s) have been fully implemented
+5. Verify the feature(s) have been fully implemented
 6. Report progress in the state file, and also update the "Issues remaining" there.
 
 Once you think the problem is completely fixed, review the state file
