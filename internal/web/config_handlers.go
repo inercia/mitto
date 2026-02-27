@@ -19,11 +19,13 @@ import (
 type ConfigSaveRequest struct {
 	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
 	ACPServers []struct {
-		Name    string                     `json:"name"`
-		Command string                     `json:"command"`
-		Type    string                     `json:"type,omitempty"` // Optional type for prompt matching
-		Prompts []configPkg.WebPrompt      `json:"prompts,omitempty"`
-		Source  configPkg.ConfigItemSource `json:"source,omitempty"` // Source of the server (rcfile, settings)
+		Name        string                     `json:"name"`
+		Command     string                     `json:"command"`
+		Type        string                     `json:"type,omitempty"` // Optional type for prompt matching
+		Env         map[string]string          `json:"env,omitempty"`  // Environment variables
+		Prompts     []configPkg.WebPrompt      `json:"prompts,omitempty"`
+		Source      configPkg.ConfigItemSource `json:"source,omitempty"`       // Source of the server (rcfile, settings)
+		AutoApprove bool                       `json:"auto_approve,omitempty"` // Auto-approve permission requests
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
@@ -41,6 +43,7 @@ type ConfigSaveRequest struct {
 	UI            *configPkg.UIConfig            `json:"ui,omitempty"`
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
 	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
+	Permissions   *configPkg.PermissionsConfig   `json:"permissions,omitempty"`
 }
 
 // handleConfig handles GET and POST /api/config.
@@ -92,6 +95,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response["ui"] = s.config.MittoConfig.UI
 		response["session"] = s.config.MittoConfig.Session
 		response["conversations"] = s.config.MittoConfig.Conversations
+		response["permissions"] = s.config.MittoConfig.Permissions
 
 		// Merge prompts from global files and settings
 		// Global file prompts (MITTO_DIR/prompts/*.md) have lower priority than settings prompts
@@ -119,9 +123,11 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		acpServers := make([]map[string]interface{}, len(s.config.MittoConfig.ACPServers))
 		for i, srv := range s.config.MittoConfig.ACPServers {
 			acpServers[i] = map[string]interface{}{
-				"name":    srv.Name,
-				"command": srv.Command,
-				"source":  string(srv.Source), // Include source for frontend read-only indication
+				"name":         srv.Name,
+				"command":      srv.Command,
+				"source":       string(srv.Source), // Include source for frontend read-only indication
+				"auto_approve": srv.AutoApprove,    // Include auto-approve setting for permissions
+				"env":          srv.Env,            // Include environment variables
 			}
 
 			// Include type if specified (for prompt matching)
@@ -348,10 +354,12 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		}
 
 		newServer := configPkg.ACPServerSettings{
-			Name:    srv.Name,
-			Command: srv.Command,
-			Type:    srv.Type,                 // Optional type for prompt matching
-			Source:  configPkg.SourceSettings, // Mark as settings-sourced
+			Name:        srv.Name,
+			Command:     srv.Command,
+			Type:        srv.Type,                 // Optional type for prompt matching
+			Env:         srv.Env,                  // Environment variables
+			Source:      configPkg.SourceSettings, // Mark as settings-sourced
+			AutoApprove: srv.AutoApprove,          // Auto-approve permission requests
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field
 		}
@@ -442,6 +450,14 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		conversationsConfig = s.config.MittoConfig.Conversations
 	}
 
+	// Use Permissions from request if provided, otherwise preserve existing
+	var permissionsConfig *configPkg.PermissionsConfig
+	if req.Permissions != nil {
+		permissionsConfig = req.Permissions
+	} else if s.config.MittoConfig != nil {
+		permissionsConfig = s.config.MittoConfig.Permissions
+	}
+
 	return &configPkg.Settings{
 		ACPServers:    newACPServers,
 		Prompts:       req.Prompts,
@@ -449,6 +465,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		UI:            newUIConfig,
 		Session:       sessionConfig,
 		Conversations: conversationsConfig,
+		Permissions:   permissionsConfig,
 	}, nil
 }
 
@@ -510,6 +527,7 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 			Name:             ws.Name,
 			Color:            ws.Color,
 			Code:             ws.Code,
+			AutoApprove:      ws.AutoApprove,
 		}
 	}
 	s.sessionManager.SetWorkspaces(newWorkspaces)
