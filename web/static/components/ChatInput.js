@@ -295,6 +295,7 @@ export function ChatInput({
       setPeriodicPrompt("");
       setPeriodicFrequency({ value: 1, unit: "hours" });
       setPeriodicNextScheduledAt(null);
+      // Don't clear the draft when disabling periodic - preserve user's text
       return;
     }
 
@@ -321,18 +322,18 @@ export function ChatInput({
           if (config.prompt && !isPendingPlaceholder) {
             setPeriodicPrompt(config.prompt);
             // Lock state is based on enabled field from backend
-            setIsPeriodicLocked(config.enabled === true);
-            // Set the draft to the periodic prompt
-            if (onDraftChange) {
+            const isLocked = config.enabled === true;
+            setIsPeriodicLocked(isLocked);
+            // Only set the draft to the periodic prompt if it's LOCKED
+            // If unlocked, preserve the user's current draft
+            if (isLocked && onDraftChange) {
               onDraftChange(sessionId, config.prompt);
             }
           } else {
             setPeriodicPrompt("");
             setIsPeriodicLocked(false);
-            // Clear the draft for pending placeholder
-            if (onDraftChange) {
-              onDraftChange(sessionId, "");
-            }
+            // Don't clear the draft for pending placeholder
+            // The user may have been typing - preserve their text
           }
         }
       } catch (err) {
