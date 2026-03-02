@@ -70,6 +70,10 @@ type WebPrompt struct {
 	BackgroundColor string `json:"backgroundColor,omitempty"`
 	// Description is an optional description shown as tooltip in the UI
 	Description string `json:"description,omitempty"`
+	// Group is an optional group name for organizing prompts in the UI.
+	// Prompts with the same group will be displayed together under a group header.
+	// If empty, the prompt will appear in an "Other" section.
+	Group string `json:"group,omitempty"`
 	// Source indicates where this prompt originated from (file, settings, workspace).
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
@@ -492,6 +496,11 @@ type ConversationsConfig struct {
 	// ExternalImages contains configuration for loading external images.
 	// May be nil to use default behavior (disabled for security).
 	ExternalImages *ExternalImagesConfig `json:"external_images,omitempty" yaml:"external_images,omitempty"`
+	// DefaultFlags contains default values for advanced settings flags that will be
+	// applied to new conversations. Only flags explicitly set to true are stored.
+	// If a flag is not present in this map, the compile-time default from
+	// internal/session/flags.go is used instead.
+	DefaultFlags map[string]bool `json:"default_flags,omitempty" yaml:"default_flags,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -1053,6 +1062,7 @@ type rawConfig struct {
 		ExternalImages *struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"external_images"`
+		DefaultFlags map[string]bool `yaml:"default_flags"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1301,9 +1311,15 @@ func Parse(data []byte) (*Config, error) {
 			}
 		}
 
+		// Copy default flags
+		if raw.Conversations.DefaultFlags != nil {
+			cfg.Conversations.DefaultFlags = raw.Conversations.DefaultFlags
+		}
+
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
-			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil {
+			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
+			cfg.Conversations.DefaultFlags == nil {
 			cfg.Conversations = nil
 		}
 	}
