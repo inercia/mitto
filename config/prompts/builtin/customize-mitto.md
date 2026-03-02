@@ -1,6 +1,7 @@
 ---
 name: "Customize Mitto here"
 description: "Set up .mitto directory with customized prompts for this project"
+group: "Agents & Mitto"
 backgroundColor: "#B3E5FC"
 ---
 

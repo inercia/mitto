@@ -1,6 +1,7 @@
 ---
 name: "Generate rules"
 description: "Analyze workspace and generate comprehensive Augment rules files"
+group: "Agents & Mitto"
 acps: auggie
 backgroundColor: "#1b0bc693"
 ---

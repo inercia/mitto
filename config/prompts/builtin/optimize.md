@@ -1,12 +1,34 @@
 ---
 name: "Optimize"
 description: "Identify and propose performance improvements"
+group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 
 Analyze the code for performance issues and propose a prioritized list of optimizations.
 
 **Do not make changes immediately. Propose a plan first and wait for approval.**
+
+## Prerequisites: Check for Mitto MCP Server (Optional)
+
+**Note**: This prompt can work without Mitto's MCP server, but provides a better user experience with it.
+
+**Optional tools:**
+- `mitto_ui_options_buttons`
+
+**Check availability:**
+1. Look for these tools in your available tools list
+2. If ANY of these tools are missing, inform the user how to install Mitto's MCP server. Mitto's MCP server is at http://127.0.0.1:5757/mcp, so think about the instructions for adding it. Then tell the user:
+
+```
+💡 This prompt works better with Mitto's MCP server for interactive prompts. To enable interactive UI features, you need to add Mitto's MCP server in this assistant. Please follow the instructions below to add it:
+```
+
+and then show the instructions for adding it.
+
+**After displaying this message, proceed with the sections below using text-based conversation instead.**
+
+---
 
 ### 1. Analyze Performance
 

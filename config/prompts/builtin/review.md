@@ -1,6 +1,7 @@
 ---
 name: "Review"
 description: "Review changes for quality and correctness"
+group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 

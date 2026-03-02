@@ -1,6 +1,7 @@
 ---
 name: "Continue"
 description: "Continue with the current task from where we left off"
+group: "Work flow"
 backgroundColor: "#BBDEFB"
 ---
 

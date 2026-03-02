@@ -1,6 +1,7 @@
 ---
 name: "Simplify"
 description: "Simplify implementation while preserving functionality"
+group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 

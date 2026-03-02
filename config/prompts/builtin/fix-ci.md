@@ -1,6 +1,7 @@
 ---
 name: "Fix CI"
 description: "Diagnose and fix CI pipeline failures"
+group: "CI"
 backgroundColor: "#B2DFDB"
 ---
 
