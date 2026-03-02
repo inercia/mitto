@@ -22,6 +22,11 @@ type UIPreferences struct {
 	// FilterTabGrouping maps filter tab IDs to their grouping mode
 	// Each filter tab (conversations, periodic, archived) can have its own grouping mode
 	FilterTabGrouping map[string]string `json:"filter_tab_grouping,omitempty"`
+
+	// PromptSortMode is the sorting mode for prompts in the dropdown: "alphabetical" or "color"
+	// Default is "alphabetical" (sort by name within groups)
+	// "color" sorts by color hue, then by name
+	PromptSortMode string `json:"prompt_sort_mode,omitempty"`
 }
 
 // handleUIPreferences handles GET and PUT /api/ui-preferences.
@@ -71,6 +76,14 @@ func (s *Server) handleSaveUIPreferences(w http.ResponseWriter, r *http.Request)
 		prefs.GroupingMode != "folder" &&
 		prefs.GroupingMode != "workspace" {
 		http.Error(w, "Invalid grouping_mode: must be 'none', 'server', 'folder', or 'workspace'", http.StatusBadRequest)
+		return
+	}
+
+	// Validate prompt sort mode
+	if prefs.PromptSortMode != "" &&
+		prefs.PromptSortMode != "alphabetical" &&
+		prefs.PromptSortMode != "color" {
+		http.Error(w, "Invalid prompt_sort_mode: must be 'alphabetical' or 'color'", http.StatusBadRequest)
 		return
 	}
 

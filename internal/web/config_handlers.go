@@ -711,14 +711,27 @@ func (s *Server) handleSupportedRunners(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleAdvancedFlags handles GET /api/advanced-flags.
-// Returns the list of available advanced setting flags that can be configured per-session.
+// Returns the list of available advanced setting flags that can be configured per-session,
+// along with the configured default values from the config file.
 func (s *Server) handleAdvancedFlags(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
 	}
 
-	writeJSONOK(w, session.AvailableFlags)
+	// Get configured default flags from config
+	configuredDefaults := make(map[string]bool)
+	if s.config.MittoConfig != nil && s.config.MittoConfig.Conversations != nil {
+		configuredDefaults = s.config.MittoConfig.Conversations.DefaultFlags
+	}
+
+	// Build response with both available flags and configured defaults
+	response := map[string]interface{}{
+		"flags":               session.AvailableFlags,
+		"configured_defaults": configuredDefaults,
+	}
+
+	writeJSONOK(w, response)
 }
 
 // checkRunnerSupport checks if a runner type is supported on the current platform.
