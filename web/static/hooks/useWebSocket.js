@@ -56,6 +56,8 @@ import {
   isSeqDuplicate as isSeqDuplicateUtil,
   markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
+  createReconnectDebounceTracker,
+  shouldDebounceReconnect,
 } from "../utils/websocket.js";
 
 // Time threshold (in ms) for considering the session potentially stale
@@ -325,6 +327,9 @@ export function useWebSocket() {
 
   // Track when the page was last hidden (for staleness detection on mobile)
   const lastHiddenTimeRef = useRef(null);
+
+  // Track last force-reconnect time per session to debounce duplicate reconnects
+  const reconnectDebounceRef = useRef(createReconnectDebounceTracker());
 
   // Keepalive tracking for detecting zombie connections
   // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
@@ -1048,19 +1053,21 @@ export function useWebSocket() {
             return prev; // Skip duplicate
           }
 
-          // Check if we should append to existing thought:
-          // - Same seq means it's a continuation of the same logical thought
-          // - Or if last message is incomplete thought (backward compat)
-          const sameSeq = msgSeq && last?.seq === msgSeq;
+          // Coalesce consecutive incomplete thoughts into a single bubble.
+          // ThoughtBuffer flushes assign different seq numbers, but they're
+          // part of the same logical thinking block. Coalesce as long as
+          // the last message is an incomplete thought.
           if (
             last &&
             last.role === ROLE_THOUGHT &&
-            !last.complete &&
-            (sameSeq || !msgSeq)
+            !last.complete
           ) {
+            // Mark the new seq as seen even when coalescing
+            markSeqSeen(sessionId, msgSeq);
             messages[messages.length - 1] = {
               ...last,
               text: (last.text || "") + msg.data.text,
+              seq: msgSeq, // Update to latest seq
             };
           } else {
             // New thought - mark seq as seen
@@ -2540,6 +2547,16 @@ export function useWebSocket() {
           updateGlobalWorkingDir(s.session_id, s.working_dir);
         }
       });
+      // DEBUG: Log parent_session_id values
+      console.log('[DEBUG] fetchStoredSessions: Updating storedSessions with', data?.length || 0, 'sessions');
+      const withParents = (data || []).filter(s => s.parent_session_id);
+      if (withParents.length > 0) {
+        console.log('[DEBUG] Sessions with parent_session_id:', withParents.map(s => ({
+          id: s.session_id.substring(0, 8),
+          parent: s.parent_session_id?.substring(0, 8),
+          name: s.name
+        })));
+      }
       setStoredSessions(data || []);
       return data || [];
     } catch (err) {
@@ -2585,6 +2602,9 @@ export function useWebSocket() {
   // so the conversation opens already positioned at the latest message.
   const switchSession = useCallback(
     async (sessionId) => {
+      // DEBUG: Log when switching sessions
+      console.log('[DEBUG] switchSession called for:', sessionId.substring(0, 8));
+
       // Use sessionsRef to get current sessions state and avoid stale closures
       const currentSessions = sessionsRef.current;
       // Check if session already has messages loaded (not just an empty placeholder from WebSocket)
@@ -2599,6 +2619,18 @@ export function useWebSocket() {
       const storedSession = storedSessionsRef.current?.find(
         (s) => s.session_id === sessionId
       );
+
+      // DEBUG: Log parent_session_id from storedSession
+      if (storedSession) {
+        console.log('[DEBUG] switchSession: Found in storedSessions:', {
+          id: storedSession.session_id?.substring(0, 8),
+          parent: storedSession.parent_session_id?.substring(0, 8),
+          name: storedSession.name
+        });
+      } else {
+        console.log('[DEBUG] switchSession: NOT found in storedSessions!');
+      }
+
       const workingDir =
         existingSession?.info?.working_dir ||
         storedSession?.working_dir ||
@@ -2737,15 +2769,38 @@ export function useWebSocket() {
 
       case "session_created":
         // A new session was created (possibly by another client)
+        console.log('[DEBUG] session_created event:', {
+          id: msg.data.session_id?.substring(0, 8),
+          parent: msg.data.parent_session_id?.substring(0, 8),
+          name: msg.data.name
+        });
+
+        // If this is a child session, auto-expand the parent session group and folder
+        if (msg.data.parent_session_id) {
+          const parentKey = `parent:${msg.data.parent_session_id}`;
+          console.log('[DEBUG] Auto-expanding parent session group:', parentKey);
+          setGroupExpanded(parentKey, true);
+
+          // Also expand the folder containing the parent session
+          // Folder key is just the working_dir (no prefix)
+          if (msg.data.working_dir) {
+            const folderKey = msg.data.working_dir;
+            console.log('[DEBUG] Auto-expanding folder:', folderKey);
+            setGroupExpanded(folderKey, true);
+          }
+        }
+
         setStoredSessions((prev) => {
           const exists = prev.find((s) => s.session_id === msg.data.session_id);
           if (exists) return prev;
+
           return [
             {
               session_id: msg.data.session_id,
               name: msg.data.name || "New conversation",
               acp_server: msg.data.acp_server,
               working_dir: msg.data.working_dir,
+              parent_session_id: msg.data.parent_session_id || null, // Preserve parent-child relationship
               status: "active",
               created_at: new Date().toISOString(),
             },
@@ -4004,6 +4059,18 @@ export function useWebSocket() {
   const forceReconnectActiveSession = useCallback(() => {
     const currentSessionId = activeSessionIdRef.current;
     if (!currentSessionId) return;
+
+    // Debounce: skip if a reconnect was already triggered for this session within 500ms
+    const { debounced, elapsed } = shouldDebounceReconnect(
+      reconnectDebounceRef.current,
+      currentSessionId,
+    );
+    if (debounced) {
+      console.debug(
+        `Skipping duplicate force-reconnect for session ${currentSessionId} (${elapsed}ms since last)`,
+      );
+      return;
+    }
 
     console.log(`Force reconnecting session ${currentSessionId}`);
 

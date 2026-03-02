@@ -263,6 +263,64 @@ describe("convertEventsToMessages", () => {
     expect(result[0].text).toBe("Thinking...");
   });
 
+  test("coalesces consecutive agent_thought events into single message", () => {
+    const events = [
+      {
+        type: "agent_thought",
+        seq: 1,
+        data: { text: "First thought " },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+      {
+        type: "agent_thought",
+        seq: 2,
+        data: { text: "second thought " },
+        timestamp: "2024-01-01T10:00:01Z",
+      },
+      {
+        type: "agent_thought",
+        seq: 3,
+        data: { text: "third thought" },
+        timestamp: "2024-01-01T10:00:02Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe(ROLE_THOUGHT);
+    expect(result[0].text).toBe("First thought second thought third thought");
+    expect(result[0].seq).toBe(3); // Updated to latest seq
+  });
+
+  test("does not coalesce thoughts separated by other event types", () => {
+    const events = [
+      {
+        type: "agent_thought",
+        seq: 1,
+        data: { text: "Thought before tool" },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+      {
+        type: "tool_call",
+        seq: 2,
+        data: { id: "tool-1", title: "Read File", status: "running" },
+        timestamp: "2024-01-01T10:00:01Z",
+      },
+      {
+        type: "agent_thought",
+        seq: 3,
+        data: { text: "Thought after tool" },
+        timestamp: "2024-01-01T10:00:02Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(3);
+    expect(result[0].role).toBe(ROLE_THOUGHT);
+    expect(result[0].text).toBe("Thought before tool");
+    expect(result[1].role).toBe(ROLE_TOOL);
+    expect(result[2].role).toBe(ROLE_THOUGHT);
+    expect(result[2].text).toBe("Thought after tool");
+  });
+
   test("converts tool_call event", () => {
     const events = [
       {

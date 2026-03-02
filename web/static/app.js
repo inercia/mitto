@@ -40,6 +40,13 @@ import {
   cleanupExpiredPrompts,
 } from "./lib.js";
 
+// Import session tree utilities
+import {
+  buildSessionTree,
+  hasChildren,
+  getChildCount,
+} from "./utils/sessionTree.js";
+
 // Import utilities
 import {
   openExternalURL,
@@ -122,6 +129,7 @@ import {
   PeriodicIcon,
   PeriodicFilledIcon,
   ChatBubbleIcon,
+  LayersIcon,
 } from "./components/Icons.js";
 
 // Import constants
@@ -616,30 +624,114 @@ function KeyboardShortcutsDialog({ isOpen, onClose }) {
 // When workspace count exceeds this, filter input is shown and only first N items get number keys
 const WORKSPACE_FILTER_THRESHOLD = 5;
 
+// Helper to get parent directory from a path
+function getParentDir(path) {
+  if (!path) return "";
+  const normalized = path.replace(/\\/g, "/").replace(/\/$/, "");
+  const lastSlash = normalized.lastIndexOf("/");
+  return lastSlash > 0 ? normalized.substring(0, lastSlash) : "/";
+}
+
+// Helper to get/set folder expansion state from localStorage
+function getFolderExpansionState(folderId) {
+  try {
+    const state = localStorage.getItem(`workspace-folder-${folderId}`);
+    return state === null ? true : state === "true"; // Default to expanded
+  } catch (e) {
+    return true;
+  }
+}
+
+function setFolderExpansionState(folderId, expanded) {
+  try {
+    localStorage.setItem(`workspace-folder-${folderId}`, String(expanded));
+  } catch (e) {
+    // Ignore localStorage errors
+  }
+}
+
 function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
   const [filterText, setFilterText] = useState("");
+  const [expandedFolders, setExpandedFolders] = useState({});
   const filterInputRef = useRef(null);
 
   // Show filter only when there are more than WORKSPACE_FILTER_THRESHOLD workspaces
   const showFilter = workspaces.length > WORKSPACE_FILTER_THRESHOLD;
 
-  // Sort workspaces alphabetically by working_dir for deterministic ordering
-  const sortedWorkspaces = useMemo(() => {
-    return [...workspaces].sort((a, b) =>
-      a.working_dir.localeCompare(b.working_dir),
-    );
+  // Group workspaces by working_dir (matching conversations list behavior)
+  // Each workspace (working_dir + acp_server) is its own group
+  // This matches the "workspace" grouping mode in the conversations list
+  const groupedWorkspaces = useMemo(() => {
+    const groups = new Map();
+
+    workspaces.forEach((ws) => {
+      // Use working_dir as the group key (not parent folder)
+      // This matches the conversations list grouping logic
+      const workingDir = ws.working_dir || "Unknown";
+
+      if (!groups.has(workingDir)) {
+        groups.set(workingDir, []);
+      }
+      groups.get(workingDir).push(ws);
+    });
+
+    // Sort workspaces within each group by ACP server name
+    groups.forEach((wsArray) => {
+      wsArray.sort((a, b) => {
+        return (a.acp_server || "").localeCompare(b.acp_server || "");
+      });
+    });
+
+    // Convert to array and sort by workspace folder name (basename)
+    return Array.from(groups.entries())
+      .sort(([dirA], [dirB]) => {
+        const nameA = dirA ? getBasename(dirA) : "Unknown";
+        const nameB = dirB ? getBasename(dirB) : "Unknown";
+        return nameA.localeCompare(nameB);
+      })
+      .map(([workingDir, wsArray]) => ({
+        workingDir,
+        label: workingDir ? getBasename(workingDir) : "Unknown",
+        workspaces: wsArray,
+      }));
   }, [workspaces]);
 
-  // Filter workspaces based on filter text (case-insensitive substring match on name or friendly name)
-  const filteredWorkspaces = useMemo(() => {
-    if (!filterText.trim()) return sortedWorkspaces;
+  // Initialize expanded state from localStorage when dialog opens
+  useEffect(() => {
+    if (isOpen) {
+      const initialExpanded = {};
+      groupedWorkspaces.forEach(({ workingDir }) => {
+        initialExpanded[workingDir] = getFolderExpansionState(workingDir);
+      });
+      setExpandedFolders(initialExpanded);
+    }
+  }, [isOpen, groupedWorkspaces]);
+
+  // Filter workspaces based on filter text (match against name, path, and ACP server)
+  const filteredGroups = useMemo(() => {
+    if (!filterText.trim()) return groupedWorkspaces;
+
     const lowerFilter = filterText.toLowerCase();
-    return sortedWorkspaces.filter((ws) => {
-      // Match against friendly name if set, otherwise basename
-      const displayName = ws.name || getBasename(ws.working_dir);
-      return displayName.toLowerCase().includes(lowerFilter);
-    });
-  }, [sortedWorkspaces, filterText]);
+
+    return groupedWorkspaces
+      .map(({ workingDir, label, workspaces: wsArray }) => {
+        const filtered = wsArray.filter((ws) => {
+          const displayName = ws.name || getBasename(ws.working_dir);
+          const matchName = displayName.toLowerCase().includes(lowerFilter);
+          const matchPath = ws.working_dir.toLowerCase().includes(lowerFilter);
+          const matchServer = (ws.acp_server || "").toLowerCase().includes(lowerFilter);
+          return matchName || matchPath || matchServer;
+        });
+
+        return { workingDir, label, workspaces: filtered };
+      })
+      .filter(({ workspaces: wsArray }) => wsArray.length > 0);
+  }, [groupedWorkspaces, filterText]);
+
+  // Flatten filtered groups for keyboard shortcuts
+  const flatFilteredWorkspaces = useMemo(() => {
+    return filteredGroups.flatMap(({ workspaces: wsArray }) => wsArray);
+  }, [filteredGroups]);
 
   // Reset filter when dialog opens
   useEffect(() => {
@@ -684,16 +776,25 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
 
       if (key >= "1" && key <= maxShortcut && filterIsEmpty) {
         const index = parseInt(key, 10) - 1;
-        if (index < filteredWorkspaces.length) {
+        if (index < flatFilteredWorkspaces.length) {
           e.preventDefault();
-          onSelect(filteredWorkspaces[index]);
+          onSelect(flatFilteredWorkspaces[index]);
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, filteredWorkspaces, filterText, onSelect, onCancel]);
+  }, [isOpen, flatFilteredWorkspaces, filterText, onSelect, onCancel]);
+
+  // Toggle folder expansion
+  const toggleFolder = useCallback((workingDir) => {
+    setExpandedFolders((prev) => {
+      const newExpanded = !prev[workingDir];
+      setFolderExpansionState(workingDir, newExpanded);
+      return { ...prev, [workingDir]: newExpanded };
+    });
+  }, []);
 
   if (!isOpen) return null;
 
@@ -701,6 +802,9 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
   const helpText = showFilter
     ? `Type to filter, or press 1-${WORKSPACE_FILTER_THRESHOLD} to select.`
     : "Click on a workspace or press its number to select it.";
+
+  // Track global index for keyboard shortcuts
+  let globalIndex = 0;
 
   return html`
     <div
@@ -730,11 +834,11 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
                   num <=
                     Math.min(
                       WORKSPACE_FILTER_THRESHOLD,
-                      filteredWorkspaces.length,
+                      flatFilteredWorkspaces.length,
                     )
                 ) {
                   e.preventDefault();
-                  const workspace = filteredWorkspaces[num - 1];
+                  const workspace = flatFilteredWorkspaces[num - 1];
                   if (workspace) {
                     onSelect(workspace);
                   }
@@ -748,51 +852,82 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
         `}
 
         <div class="space-y-2">
-          ${filteredWorkspaces.length === 0
+          ${filteredGroups.length === 0
             ? html`
                 <div class="text-center py-4 text-gray-500">
                   No workspaces match your filter.
                 </div>
               `
-            : filteredWorkspaces.map(
-                (ws, index) => html`
-                  <button
-                    key=${ws.working_dir}
-                    onClick=${() => onSelect(ws)}
-                    class="w-full p-4 text-left rounded-lg bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center gap-4"
-                  >
-                    ${index < WORKSPACE_FILTER_THRESHOLD
-                      ? html`
-                          <div
-                            class="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-600 text-gray-300 font-mono text-sm flex-shrink-0"
-                          >
-                            ${index + 1}
-                          </div>
-                        `
-                      : html` <div class="w-8 h-8 flex-shrink-0"></div> `}
-                    <${WorkspaceBadge}
-                      path=${ws.working_dir}
-                      customColor=${ws.color}
-                      customCode=${ws.code}
-                      size="lg"
-                    />
-                    <div class="flex-1 min-w-0">
-                      <div class="font-medium">
-                        ${ws.name || getBasename(ws.working_dir)}
-                      </div>
-                      <div
-                        class="text-xs text-gray-500 truncate"
-                        title=${ws.working_dir}
+            : filteredGroups.map(({ workingDir, label, workspaces: wsArray }) => {
+                // Auto-expand folders when filtering is active
+                const isExpanded = filterText.trim() ? true : (expandedFolders[workingDir] !== false);
+                const showGroupHeader = filteredGroups.length > 1;
+
+                return html`
+                  <div key=${workingDir} class="space-y-1">
+                    ${showGroupHeader &&
+                    html`
+                      <button
+                        onClick=${() => toggleFolder(workingDir)}
+                        class="w-full px-2 py-1 text-left text-xs text-gray-400 hover:text-gray-300 hover:bg-slate-700/30 rounded transition-colors flex items-center gap-2"
                       >
-                        ${ws.working_dir}
-                      </div>
-                      <div class="text-xs text-blue-400 mt-1">
-                        ${ws.acp_server}
-                      </div>
-                    </div>
-                  </button>
-                `,
-              )}
+                        <span class="font-mono">${isExpanded ? "▼" : "▶"}</span>
+                        <span class="truncate" title=${workingDir}>
+                          ${label}
+                        </span>
+                        <span class="text-gray-500">(${wsArray.length})</span>
+                      </button>
+                    `}
+                    ${isExpanded &&
+                    wsArray.map((ws) => {
+                      const currentIndex = globalIndex++;
+                      return html`
+                        <button
+                          key=${ws.working_dir + "|" + ws.acp_server}
+                          onClick=${() => onSelect(ws)}
+                          class="w-full p-3 text-left rounded-lg bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center gap-3 ${showGroupHeader
+                            ? "ml-4"
+                            : ""}"
+                        >
+                          <div
+                            class="w-8 h-8 flex-shrink-0 ${currentIndex <
+                            WORKSPACE_FILTER_THRESHOLD
+                              ? "flex items-center justify-center rounded-lg bg-slate-600 text-gray-300 font-mono text-sm"
+                              : ""}"
+                          >
+                            ${currentIndex < WORKSPACE_FILTER_THRESHOLD
+                              ? currentIndex + 1
+                              : ""}
+                          </div>
+                          <${WorkspaceBadge}
+                            path=${ws.working_dir}
+                            customColor=${ws.color}
+                            customCode=${ws.code}
+                            size="lg"
+                          />
+                          <div class="flex-1 min-w-0">
+                            ${(!showGroupHeader || (ws.name && ws.name !== label)) && html`
+                              <div class="text-sm font-medium">
+                                ${ws.name || getBasename(ws.working_dir)}
+                              </div>
+                            `}
+                            ${ws.acp_server && html`
+                              <div class="${showGroupHeader && (!ws.name || ws.name === label) ? "text-sm font-medium" : "text-xs text-blue-400"}">
+                                ${ws.acp_server}
+                              </div>
+                            `}
+                            ${!showGroupHeader && html`
+                              <div class="text-xs text-gray-500 truncate">
+                                ${ws.working_dir}
+                              </div>
+                            `}
+                          </div>
+                        </button>
+                      `;
+                    })}
+                  </div>
+                `;
+              })}
         </div>
         <div class="flex justify-end mt-4">
           <button
@@ -979,6 +1114,17 @@ function SessionItem({
   badgeHideAcpServer = false,
   isLightTheme = false,
   filterTab = FILTER_TAB.CONVERSATIONS,
+  groupingMode = "none", // Current grouping mode (to hide spawned indicator in hierarchical mode)
+  // New props for parent-child hierarchy display
+  isSpawned = false, // If true, shows "spawned" indicator (child session)
+  extraLeftPadding = "", // Additional CSS class for left padding (e.g., "pl-6")
+  childCount = 0, // Number of child sessions (for collapsed parents)
+  hasChildStreaming = false, // If true and collapsed, shows streaming indicator for child
+  isNew = false, // If true, applies blink animation for new conversations
+  // Props for expand/collapse functionality (when session has children)
+  hasChildren = false, // If true, shows expand/collapse chevron
+  isExpanded = false, // If true, chevron points down (expanded state)
+  onToggleExpand = null, // Callback when expand/collapse is clicked
 }) {
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
@@ -1314,7 +1460,7 @@ function SessionItem({
           onMouseLeave=${() => setShowActions(false)}
           class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar overflow-hidden ${isActive
             ? "bg-blue-900/30 border-l-2 border-l-blue-500"
-            : ""} ${isSwiping ? "" : "transition-transform duration-200"}"
+            : ""} ${isSwiping ? "" : "transition-transform duration-200"} ${extraLeftPadding} ${isNew ? "session-item-new" : ""}"
           style="transform: translateX(${swipeOffset}px);"
           title=${buildTooltip()}
           data-session-id=${session.session_id}
@@ -1332,11 +1478,45 @@ function SessionItem({
         <div class="flex items-start gap-2">
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2">
-              ${isStreaming
+              ${hasChildren
+                ? html`
+                    <button
+                      class="expand-toggle-button flex-shrink-0 p-0.5 text-gray-500 hover:text-white transition-colors"
+                      onClick=${(e) => {
+                        e.stopPropagation();
+                        if (onToggleExpand) onToggleExpand();
+                      }}
+                      title=${isExpanded
+                        ? "Collapse children"
+                        : "Expand children"}
+                    >
+                      <span
+                        class="expand-toggle-icon ${isExpanded
+                          ? ""
+                          : "expand-toggle-icon--collapsed"}"
+                      >
+                        <${ChevronDownIcon} className="w-3 h-3" />
+                      </span>
+                    </button>
+                  `
+                : null}
+              ${
+                // Spawned indicator removed - visual hierarchy from indentation makes parent-child relationships clear
+                false
                 ? html`
                     <span
-                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
-                      title="Receiving response..."
+                      class="spawned-indicator flex-shrink-0"
+                      title="Spawned from another conversation"
+                    >↳</span>
+                  `
+                : null}
+              ${isStreaming || hasChildStreaming
+                ? html`
+                    <span
+                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
+                        ? "child-streaming-indicator"
+                        : "streaming-indicator"}"
+                      title=${hasChildStreaming ? "Child conversation responding..." : "Receiving response..."}
                     ></span>
                   `
                 : isActiveSession
@@ -1347,6 +1527,12 @@ function SessionItem({
                     `
                   : null}
               <span class="text-sm font-medium truncate">${displayName}</span>
+              ${childCount > 0 && html`
+                <span
+                  class="child-count-badge flex-shrink-0"
+                  title="${childCount} spawned conversation${childCount > 1 ? 's' : ''}"
+                >+${childCount}</span>
+              `}
             </div>
           </div>
           ${workingDir &&
@@ -1488,6 +1674,35 @@ function SessionList({
   // Track expanded groups - use a counter to force re-render when localStorage changes
   const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
 
+  // Track new sessions for blink animation
+  const [newSessionIds, setNewSessionIds] = useState(new Set());
+  const previousSessionIdsRef = useRef(new Set());
+
+  // Detect new sessions and trigger blink animation
+  useEffect(() => {
+    const currentSessionIds = new Set(allSessions.map((s) => s.session_id));
+    const previousSessionIds = previousSessionIdsRef.current;
+
+    // Find sessions that are new (in current but not in previous)
+    const newIds = new Set();
+    currentSessionIds.forEach((id) => {
+      if (!previousSessionIds.has(id)) {
+        newIds.add(id);
+      }
+    });
+
+    if (newIds.size > 0) {
+      setNewSessionIds(newIds);
+      // Remove the new session IDs after animation completes (1.5s * 2 blinks = 3s)
+      setTimeout(() => {
+        setNewSessionIds(new Set());
+      }, 3000);
+    }
+
+    // Update the ref for next comparison
+    previousSessionIdsRef.current = currentSessionIds;
+  }, [allSessions]);
+
   // Subscribe to UI preferences loaded from server (for macOS app where localStorage doesn't persist)
   useEffect(() => {
     const unsubscribe = onUIPreferencesLoaded((prefs) => {
@@ -1568,8 +1783,10 @@ function SessionList({
     switch (groupingMode) {
       case "server":
         return html`<${ServerIcon} className="w-5 h-5" />`;
-      case "workspace":
+      case "folder":
         return html`<${FolderIcon} className="w-5 h-5" />`;
+      case "workspace":
+        return html`<${LayersIcon} className="w-5 h-5" />`;
       default:
         return html`<${ListIcon} className="w-5 h-5" />`;
     }
@@ -1579,7 +1796,9 @@ function SessionList({
   const getGroupingTooltip = () => {
     switch (groupingMode) {
       case "server":
-        return "Grouped by ACP server (click to group by workspace)";
+        return "Grouped by ACP server (click to group by folder)";
+      case "folder":
+        return "Grouped by folder (click to group by workspace)";
       case "workspace":
         return "Grouped by workspace (click to disable grouping)";
       default:
@@ -1652,14 +1871,129 @@ function SessionList({
   }, [regularSessions, periodicSessions, archivedSessions]);
 
   // Group sessions based on current mode (uses filtered sessions)
+  // Returns:
+  // - null for "none" mode (flat list)
+  // - Array of { key, label, sessions, workingDir, acpServer } for "server" and "workspace" modes
+  // - Array of { key, label, workingDir, subgroups: [{ key, label, acpServer, sessions }] } for "folder" mode (hierarchical)
   const groupedSessions = useMemo(() => {
     if (groupingMode === "none") {
       return null; // No grouping, render flat list
     }
 
+    // Helper to get session working dir and acp server
+    const getSessionInfo = (session) => {
+      const storedSession = storedSessions.find(
+        (s) => s.session_id === session.session_id,
+      );
+      return {
+        workingDir:
+          session.working_dir ||
+          storedSession?.working_dir ||
+          getGlobalWorkingDir(session.session_id) ||
+          "",
+        acpServer: session.acp_server || storedSession?.acp_server || "",
+      };
+    };
+
+    if (groupingMode === "folder") {
+      // Hierarchical mode: folder -> sessions (with parent-child relationships)
+      // Structure: Folder → Parent sessions (with nested child sessions)
+      const folderGroups = new Map();
+
+      // DEBUG: Log storedSessions state before building hierarchy
+      const storedWithParents = storedSessions.filter(s => s.parent_session_id);
+      if (storedWithParents.length > 0) {
+        console.log('[DEBUG] Hierarchical grouping: storedSessions with parent_session_id:', storedWithParents.map(s => ({
+          id: s.session_id?.substring(0, 8),
+          parent: s.parent_session_id?.substring(0, 8),
+          name: s.name
+        })));
+      }
+
+      // Helper to get parent_session_id from session
+      const getParentSessionId = (session) => {
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        return session.parent_session_id || storedSession?.parent_session_id || "";
+      };
+
+      // First pass: group all sessions by folder
+      filteredSessions.forEach((session) => {
+        const { workingDir } = getSessionInfo(session);
+        const folderKey = workingDir || "Unknown";
+
+        if (!folderGroups.has(folderKey)) {
+          folderGroups.set(folderKey, {
+            label: workingDir ? getBasename(workingDir) : "Unknown",
+            workingDir,
+            allSessions: [], // All sessions in this folder (before parent-child grouping)
+          });
+        }
+
+        folderGroups.get(folderKey).allSessions.push(session);
+      });
+
+      // Second pass: build parent-child hierarchy within each folder
+      const result = Array.from(folderGroups.entries())
+        .map(([key, folder]) => {
+          const { allSessions } = folder;
+
+          // Build parent-child tree using utility function
+          const { rootSessions, childrenMap, orphans } = buildSessionTree(allSessions);
+
+          // Attach children array to each parent session
+          const parents = rootSessions.map((parent) => ({
+            ...parent,
+            children: childrenMap.get(parent.session_id) || [],
+          }));
+
+          // Sort children within each parent by created_at (most recent first)
+          // Use created_at instead of updated_at to prevent re-ordering when agent responds
+          parents.forEach((parent) => {
+            parent.children.sort((a, b) => {
+              const aDate = new Date(a.created_at || 0);
+              const bDate = new Date(b.created_at || 0);
+              return bDate - aDate;
+            });
+          });
+
+          // Sort parents by created_at (most recent first)
+          // Use created_at instead of updated_at to prevent re-ordering when agent responds
+          parents.sort((a, b) => {
+            const aDate = new Date(a.created_at || 0);
+            const bDate = new Date(b.created_at || 0);
+            return bDate - aDate;
+          });
+
+          // Sort orphans by created_at (most recent first)
+          // Use created_at instead of updated_at to prevent re-ordering when agent responds
+          orphans.sort((a, b) => {
+            const aDate = new Date(a.created_at || 0);
+            const bDate = new Date(b.created_at || 0);
+            return bDate - aDate;
+          });
+
+          // Combine: parents first, then orphans (orphans are children whose parents aren't visible)
+          const sessions = [...parents, ...orphans];
+
+          return {
+            key,
+            label: folder.label,
+            workingDir: folder.workingDir,
+            isHierarchical: true, // Flag to identify hierarchical groups
+            isParentChild: true, // Flag to identify parent-child mode (vs old ACP subgroups)
+            sessions, // Sessions with optional .children array
+          };
+        })
+        .sort((a, b) => a.label.localeCompare(b.label));
+
+      return result;
+    }
+
+    // Flat grouping modes: server and workspace
     const groups = new Map();
 
-    // Group filtered sessions
     filteredSessions.forEach((session) => {
       let groupKey;
       let groupLabel;
@@ -1667,25 +2001,13 @@ function SessionList({
       let groupAcpServer = "";
 
       if (groupingMode === "server") {
-        // Inline getSessionServer logic to avoid stale closure
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        groupKey = session.acp_server || storedSession?.acp_server || "Unknown";
+        const { acpServer } = getSessionInfo(session);
+        groupKey = acpServer || "Unknown";
         groupLabel = groupKey;
       } else {
         // workspace mode - group by workspace (working_dir + acp_server combination)
         // This ensures workspaces with the same folder but different ACP servers are separate groups
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        const workingDir =
-          session.working_dir ||
-          storedSession?.working_dir ||
-          getGlobalWorkingDir(session.session_id) ||
-          "";
-        const acpServer =
-          session.acp_server || storedSession?.acp_server || "";
+        const { workingDir, acpServer } = getSessionInfo(session);
         // Use composite key: working_dir|acp_server (to separate same-folder workspaces)
         groupKey = `${workingDir}|${acpServer}`;
         // Label is just the basename - acpServer is shown as a badge
@@ -1745,7 +2067,22 @@ function SessionList({
   // hideBadge: if true, hides the entire badge
   // badgeHideAbbreviation: if true, badge hides 3-letter workspace code (used in workspace grouping mode)
   // badgeHideAcpServer: if true, badge hides ACP server name (used in ACP server grouping mode)
-  const renderSessionItem = (session, { hideBadge = false, badgeHideAbbreviation = false, badgeHideAcpServer = false } = {}) => {
+  // isSpawned: if true, shows a visual indicator that this session was spawned from another
+  // extraLeftPadding: additional CSS class for left padding (e.g., "pl-6" for parent-child indentation)
+  // childCount: number of child sessions (shows count indicator for collapsed parents)
+  // hasChildStreaming: if true, shows streaming indicator for collapsed parent with streaming child
+  const renderSessionItem = (
+    session,
+    {
+      hideBadge = false,
+      badgeHideAbbreviation = false,
+      badgeHideAcpServer = false,
+      isSpawned = false,
+      extraLeftPadding = "",
+      childCount = 0,
+      hasChildStreaming = false,
+    } = {},
+  ) => {
     const workingDir = getSessionWorkingDir(session);
     const finalSession = workingDir
       ? { ...session, working_dir: workingDir }
@@ -1765,6 +2102,8 @@ function SessionList({
       session.session_id === activeSessionId && queueLength > 0;
     // Check if the session is currently streaming (agent is responding)
     const isSessionStreaming = session.isStreaming || false;
+    // Check if this is a new session (for blink animation)
+    const isNew = newSessionIds.has(session.session_id);
 
     return html`
       <${SessionItem}
@@ -1788,6 +2127,12 @@ function SessionList({
         badgeHideAcpServer=${badgeHideAcpServer}
         isLightTheme=${isLight}
         filterTab=${filterTab}
+        groupingMode=${groupingMode}
+        isSpawned=${isSpawned}
+        extraLeftPadding=${extraLeftPadding}
+        childCount=${childCount}
+        hasChildStreaming=${hasChildStreaming}
+        isNew=${isNew}
       />
     `;
   };
@@ -1799,10 +2144,10 @@ function SessionList({
       e.stopPropagation();
 
       // Find the workspace that matches this group key
-      // For workspace mode, groupKey is "working_dir|acp_server" (composite key)
+      // For workspace and folder modes, groupKey is "working_dir|acp_server" (composite key)
       // For server mode, groupKey is the acp_server
       let workspace = null;
-      if (groupingMode === "workspace") {
+      if (groupingMode === "workspace" || groupingMode === "folder") {
         // Parse composite key: working_dir|acp_server
         const [workingDir, acpServer] = groupKey.split("|");
         workspace = workspaces.find(
@@ -1824,10 +2169,16 @@ function SessionList({
   );
 
   // Render grouped sessions with collapsible headers
+  // Handles both flat grouping (server, workspace) and hierarchical grouping (folder)
   const renderGroupedSessions = () => {
     if (!groupedSessions) return null;
 
-    // Get all group keys for accordion mode
+    // For hierarchical mode (folder), render two-level tree
+    if (groupingMode === "folder") {
+      return renderHierarchicalGroups();
+    }
+
+    // Get all group keys for accordion mode (flat grouping)
     const allGroupKeys = groupedSessions.map((g) => g.key);
 
     return html`
@@ -1859,7 +2210,7 @@ function SessionList({
               </span>
               ${groupingMode === "server"
                 ? html`<${ServerIcon} className="w-4 h-4" />`
-                : html`<${FolderIcon} className="w-4 h-4" />`}
+                : html`<${LayersIcon} className="w-4 h-4" />`}
               <span class="text-left truncate">${group.label}</span>
               ${groupingMode === "workspace" &&
               group.workingDir &&
@@ -1905,6 +2256,135 @@ function SessionList({
                 badgeHideAcpServer: groupingMode === "server",
               }),
             )}
+          </div>
+        `;
+      })}
+    `;
+  };
+
+  // Render hierarchical groups for "folder" mode (parent-child tree: folder -> sessions with children)
+  const renderHierarchicalGroups = () => {
+    if (!groupedSessions) return null;
+
+    // Collect all group keys for accordion mode (folder keys + parent session keys)
+    const allGroupKeys = [];
+    groupedSessions.forEach((folder) => {
+      allGroupKeys.push(folder.key);
+      // Add parent session keys (sessions with children)
+      folder.sessions.forEach((session) => {
+        if (session.children && session.children.length > 0) {
+          allGroupKeys.push(`parent:${session.session_id}`);
+        }
+      });
+    });
+
+    // Helper to count total sessions including children
+    const countTotalSessions = (sessions) => {
+      return sessions.reduce((sum, s) => {
+        return sum + 1 + (s.children ? s.children.length : 0);
+      }, 0);
+    };
+
+    // Helper to check if any session (or its children) is streaming
+    const hasStreaming = (sessions) => {
+      return sessions.some(
+        (s) =>
+          s.isStreaming ||
+          (s.children && s.children.some((c) => c.isStreaming)),
+      );
+    };
+
+    return html`
+      ${groupedSessions.map((folder) => {
+        const folderExpanded = isGroupExpanded(folder.key);
+        const totalSessions = countTotalSessions(folder.sessions);
+        const hasFolderStreaming = hasStreaming(folder.sessions);
+
+        return html`
+          <div key=${folder.key} class="folder-group">
+            <!-- Level 1: Folder header -->
+            <div
+              class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer"
+              onClick=${() => handleToggleGroup(folder.key, allGroupKeys)}
+            >
+              <span
+                class="transition-transform ${folderExpanded ? "" : "-rotate-90"}"
+              >
+                <${ChevronDownIcon} className="w-4 h-4" />
+              </span>
+              <${FolderIcon} className="w-4 h-4" />
+              <span class="text-left truncate" title=${folder.workingDir}>
+                ${folder.label}
+              </span>
+              <span class="flex-1"></span>
+              ${!folderExpanded &&
+              hasFolderStreaming &&
+              html`
+                <span
+                  class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
+                  title="Agent responding in this folder"
+                ></span>
+              `}
+              <span class="text-xs text-gray-500">${totalSessions}</span>
+            </div>
+
+            <!-- Level 2: Sessions within folder (only when folder is expanded) -->
+            ${folderExpanded &&
+            folder.sessions.map((session) => {
+              const hasChildren =
+                session.children && session.children.length > 0;
+              const parentKey = `parent:${session.session_id}`;
+              const childrenExpanded = hasChildren
+                ? isGroupExpanded(parentKey)
+                : false;
+              const hasChildStreaming =
+                hasChildren && session.children.some((c) => c.isStreaming);
+
+              return html`
+                <div
+                  key=${session.session_id}
+                  class="parent-session-group ${hasChildren ? "has-children" : ""}"
+                >
+                  <!-- Parent/regular session - render with expand/collapse integrated into SessionItem -->
+                  ${renderSessionItem(session, {
+                    hideBadge: false, // Show badge to display ACP server
+                    badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
+                    badgeHideAcpServer: false, // Show ACP server badge
+                    isSpawned: !hasChildren && !!session._parentId, // Mark as spawned if it's an orphan (no children)
+                    childCount: hasChildren ? session.children.length : 0,
+                    hasChildStreaming: hasChildren && !childrenExpanded && hasChildStreaming,
+                    // Pass expand/collapse props for parent sessions with children
+                    hasChildren: hasChildren,
+                    isExpanded: childrenExpanded,
+                    onToggleExpand: hasChildren
+                      ? () => handleToggleGroup(parentKey, allGroupKeys)
+                      : null,
+                  })}
+
+                  <!-- Level 3: Child sessions (animated container) -->
+                  ${hasChildren &&
+                  html`
+                    <div
+                      class="session-children ${childrenExpanded
+                        ? "session-children--expanded"
+                        : ""}"
+                    >
+                      ${session.children.map((child) =>
+                        html`<div class="session-item--child">
+                          ${renderSessionItem(child, {
+                            hideBadge: false, // Show badge to display ACP server
+                            badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
+                            badgeHideAcpServer: false, // Show ACP server badge
+                            isSpawned: true, // Mark as spawned/child
+                            extraLeftPadding: "pl-8", // Indent child sessions
+                          })}
+                        </div>`,
+                      )}
+                    </div>
+                  `}
+                </div>
+              `;
+            })}
           </div>
         `;
       })}
@@ -2681,8 +3161,9 @@ function App() {
           (s) => s.session_id === session.session_id,
         );
         return session.acp_server || storedSession?.acp_server || "Unknown";
-      } else if (groupingModeForNav === "workspace") {
-        // workspace mode - group by working_dir|acp_server
+      } else if (groupingModeForNav === "workspace" || groupingModeForNav === "folder") {
+        // workspace and folder modes - group by working_dir|acp_server
+        // In folder mode, this returns the subgroup key (sessions are in subgroups, not folders directly)
         const storedSession = storedSessions.find(
           (s) => s.session_id === session.session_id,
         );
@@ -2707,7 +3188,7 @@ function App() {
           (s) => s.session_id === session.session_id,
         );
         return session.acp_server || storedSession?.acp_server || "Unknown";
-      } else if (groupingModeForNav === "workspace") {
+      } else if (groupingModeForNav === "workspace" || groupingModeForNav === "folder") {
         const storedSession = storedSessions.find(
           (s) => s.session_id === session.session_id,
         );
@@ -2991,6 +3472,11 @@ function App() {
   // Input font family setting (web UI, default: "system")
   const [inputFontFamily, setInputFontFamily] = useState("system");
 
+  // Send key mode setting (web UI, default: "enter")
+  // "enter" = Enter to send, Shift+Enter for new line
+  // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
+  const [sendKeyMode, setSendKeyMode] = useState("enter");
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
@@ -3064,6 +3550,10 @@ function App() {
         // Load input font family setting (web UI)
         if (config?.ui?.web?.input_font_family) {
           setInputFontFamily(config.ui.web.input_font_family);
+        }
+        // Load send key mode setting (web UI, default: "enter")
+        if (config?.ui?.web?.send_key_mode) {
+          setSendKeyMode(config.ui.web.send_key_mode);
         }
         // Load conversation cycling mode setting (web UI, default: "all")
         if (config?.ui?.web?.conversation_cycling_mode) {
@@ -4526,6 +5016,8 @@ function App() {
               setInputFontFamily(
                 config?.ui?.web?.input_font_family || "system",
               );
+              // Reload send key mode setting
+              setSendKeyMode(config?.ui?.web?.send_key_mode || "enter");
               // Reload conversation cycling mode setting
               setConversationCyclingMode(
                 config?.ui?.web?.conversation_cycling_mode || CYCLING_MODE.ALL,
@@ -5083,6 +5575,7 @@ function App() {
             onUIPromptAnswer=${(requestId, optionId, label) =>
               sendUIPromptAnswer(activeSessionId, requestId, optionId, label)}
             workingDir=${sessionInfo?.working_dir || ""}
+            sendKeyMode=${sendKeyMode}
           />
         </div>
       </div>

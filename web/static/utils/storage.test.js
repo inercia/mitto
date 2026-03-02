@@ -48,8 +48,8 @@ beforeEach(() => {
 // =============================================================================
 
 describe("getGroupingMode", () => {
-  test("returns 'none' when localStorage is empty", () => {
-    expect(getGroupingMode()).toBe("none");
+  test("returns 'folder' when localStorage is empty (default)", () => {
+    expect(getGroupingMode()).toBe("folder");
   });
 
   test("returns 'server' when localStorage has 'server'", () => {
@@ -62,16 +62,14 @@ describe("getGroupingMode", () => {
     expect(getGroupingMode()).toBe("workspace");
   });
 
-  test("migrates 'folder' to 'workspace' for legacy support", () => {
+  test("returns 'folder' when localStorage has 'folder'", () => {
     localStorageMock.setItem("mitto_conversation_grouping_mode", "folder");
-    expect(getGroupingMode()).toBe("workspace");
-    // Verify the value was migrated in localStorage
-    expect(mockStore["mitto_conversation_grouping_mode"]).toBe("workspace");
+    expect(getGroupingMode()).toBe("folder");
   });
 
-  test("returns 'none' for invalid values", () => {
+  test("returns 'folder' for invalid values (default)", () => {
     localStorageMock.setItem("mitto_conversation_grouping_mode", "invalid");
-    expect(getGroupingMode()).toBe("none");
+    expect(getGroupingMode()).toBe("folder");
   });
 });
 
@@ -103,15 +101,16 @@ describe("setGroupingMode", () => {
 // =============================================================================
 
 describe("cycleGroupingMode", () => {
-  test("cycles from 'none' to 'server'", () => {
-    const result = cycleGroupingMode();
-    expect(result).toBe("server");
-  });
-
-  test("cycles from 'server' to 'workspace'", () => {
-    mockStore["mitto_conversation_grouping_mode"] = "server";
+  test("cycles from default 'folder' to 'workspace'", () => {
+    // Default is now 'folder', so cycling should go to 'workspace'
     const result = cycleGroupingMode();
     expect(result).toBe("workspace");
+  });
+
+  test("cycles from 'server' to 'folder'", () => {
+    mockStore["mitto_conversation_grouping_mode"] = "server";
+    const result = cycleGroupingMode();
+    expect(result).toBe("folder");
   });
 
   test("cycles from 'workspace' to 'none'", () => {
@@ -210,16 +209,16 @@ describe("setGroupExpanded", () => {
 // =============================================================================
 
 describe("getFilterTabGrouping", () => {
-  test("returns default 'workspace' for conversations tab when localStorage is empty", () => {
-    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("workspace");
+  test("returns default 'folder' for conversations tab when localStorage is empty", () => {
+    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("folder");
   });
 
   test("returns default 'none' for periodic tab when localStorage is empty", () => {
     expect(getFilterTabGrouping(FILTER_TAB.PERIODIC)).toBe("none");
   });
 
-  test("returns default 'workspace' for archived tab when localStorage is empty", () => {
-    expect(getFilterTabGrouping(FILTER_TAB.ARCHIVED)).toBe("workspace");
+  test("returns default 'folder' for archived tab when localStorage is empty", () => {
+    expect(getFilterTabGrouping(FILTER_TAB.ARCHIVED)).toBe("folder");
   });
 
   test("returns saved grouping mode for a specific tab", () => {
@@ -239,14 +238,14 @@ describe("getFilterTabGrouping", () => {
 
   test("returns default for invalid JSON", () => {
     mockStore["mitto_filter_tab_grouping"] = "invalid json";
-    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("workspace");
+    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("folder");
   });
 
   test("returns default for invalid mode value", () => {
     mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
       [FILTER_TAB.CONVERSATIONS]: "invalid_mode",
     });
-    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("workspace");
+    expect(getFilterTabGrouping(FILTER_TAB.CONVERSATIONS)).toBe("folder");
   });
 });
 
@@ -295,8 +294,8 @@ describe("setFilterTabGrouping", () => {
   test("uses default for invalid mode", () => {
     setFilterTabGrouping(FILTER_TAB.CONVERSATIONS, "invalid_mode");
     const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    // Should use default for conversations tab which is 'workspace'
-    expect(stored[FILTER_TAB.CONVERSATIONS]).toBe("workspace");
+    // Should use default for conversations tab which is 'folder'
+    expect(stored[FILTER_TAB.CONVERSATIONS]).toBe("folder");
   });
 });
 
@@ -330,10 +329,10 @@ describe("getAllFilterTabGroupings", () => {
 // =============================================================================
 
 describe("cycleFilterTabGrouping", () => {
-  test("cycles from default 'workspace' to 'none' for conversations tab", () => {
-    // Conversations tab defaults to 'workspace'
+  test("cycles from default 'folder' to 'workspace' for conversations tab", () => {
+    // Conversations tab defaults to 'folder'
     const result = cycleFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-    expect(result).toBe("none");
+    expect(result).toBe("workspace");
   });
 
   test("cycles from 'none' to 'server'", () => {
@@ -344,12 +343,12 @@ describe("cycleFilterTabGrouping", () => {
     expect(result).toBe("server");
   });
 
-  test("cycles from 'server' to 'workspace'", () => {
+  test("cycles from 'server' to 'folder'", () => {
     mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
       [FILTER_TAB.CONVERSATIONS]: "server",
     });
     const result = cycleFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-    expect(result).toBe("workspace");
+    expect(result).toBe("folder");
   });
 
   test("cycles from 'workspace' to 'none'", () => {
@@ -379,7 +378,7 @@ describe("cycleFilterTabGrouping", () => {
   test("saves cycled value to localStorage", () => {
     cycleFilterTabGrouping(FILTER_TAB.ARCHIVED);
     const stored = JSON.parse(mockStore["mitto_filter_tab_grouping"]);
-    // Archived defaults to 'workspace', cycling goes to 'none'
-    expect(stored[FILTER_TAB.ARCHIVED]).toBe("none");
+    // Archived defaults to 'folder', cycling goes to 'workspace'
+    expect(stored[FILTER_TAB.ARCHIVED]).toBe("workspace");
   });
 });

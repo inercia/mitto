@@ -18,6 +18,24 @@ import {
 import { openFileURL, isNativeApp } from "../utils/index.js";
 
 /**
+ * Check if a thought message appears to be reporting an upstream model/API error.
+ * Uses conservative patterns to avoid false positives on normal thinking text
+ * like "I think the error is in line 42".
+ */
+function isModelErrorThought(text) {
+  if (!text) return false;
+  const patterns = [
+    /\bmodel\s+error\b/i,
+    /\bapi\s+error\b/i,
+    /\brate[\s-]?limit/i,
+    /\boverloaded\b/i,
+    /\bservice[\s_]unavailable\b/i,
+    /\bfailed\s+due\s+to\b.*\b(?:model|api|upstream)\b/i,
+  ];
+  return patterns.some((p) => p.test(text));
+}
+
+/**
  * Message component - renders a single message in the chat
  * @param {Object} props
  * @param {Object} props.message - The message object
@@ -169,17 +187,35 @@ export function Message({ message, isLast, isStreaming }) {
     const showCursor = isLast && isStreaming && !message.complete;
     // Linkify URLs in thought text
     const linkedText = useMemo(() => linkifyUrls(message.text), [message.text]);
+    const isModelError = useMemo(
+      () => isModelErrorThought(message.text),
+      [message.text],
+    );
+
+    const bubbleClass = isModelError
+      ? "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-amber-900/20 text-gray-400 border border-amber-700/50 border-l-4 border-l-amber-500"
+      : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-slate-800/50 text-gray-400 border border-slate-700";
+
     return html`
       <div class="message-enter flex justify-start mb-3">
-        <div
-          class="max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-slate-800/50 text-gray-400 rounded-bl-sm border border-slate-700"
-        >
+        <div class="${bubbleClass}">
           <div class="flex items-start gap-2">
-            <span class="text-purple-400 mt-0.5">💭</span>
             <span
-              class="italic ${showCursor ? "streaming-cursor" : ""}"
-              dangerouslySetInnerHTML=${{ __html: linkedText }}
-            />
+              class="${isModelError
+                ? "text-amber-400"
+                : "text-purple-400"} mt-0.5"
+              >${isModelError ? "⚠️" : "💭"}</span
+            >
+            <div class="min-w-0">
+              <span
+                class="italic ${showCursor ? "streaming-cursor" : ""}"
+                dangerouslySetInnerHTML=${{ __html: linkedText }}
+              />
+              ${isModelError &&
+              html`<div class="text-xs text-amber-400/70 mt-1">
+                Upstream model error — not a Mitto issue
+              </div>`}
+            </div>
           </div>
         </div>
       </div>

@@ -354,11 +354,19 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // Progress bar: next run time and frequency (from API list or WebSocket periodic_updated)
         next_scheduled_at: s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
         periodic_frequency: s.periodic_frequency ?? stored.periodic_frequency ?? null,
+        // CRITICAL: Preserve parent_session_id for hierarchical conversation tree
+        parent_session_id: s.parent_session_id || stored.parent_session_id || null,
       };
     }
 
     // No stored session (e.g. newly created): always flatten so grouping uses correct workspace
-    return { ...s, working_dir: workingDir || s.working_dir, acp_server: acpServer || s.acp_server };
+    // Also preserve parent_session_id if it exists
+    return {
+      ...s,
+      working_dir: workingDir || s.working_dir,
+      acp_server: acpServer || s.acp_server,
+      parent_session_id: s.parent_session_id || null,
+    };
   });
 
   const activeIds = new Set(mergedActive.map((s) => s.session_id));
@@ -420,15 +428,25 @@ export function convertEventsToMessages(events, options = {}) {
           seq,
         });
         break;
-      case "agent_thought":
-        messages.push({
-          role: ROLE_THOUGHT,
-          text: event.data?.text || "",
-          complete: true,
-          timestamp: new Date(event.timestamp).getTime(),
-          seq,
-        });
+      case "agent_thought": {
+        // Coalesce consecutive thought events into a single message.
+        // ThoughtBuffer flushes produce separate events with different seqs,
+        // but they belong to the same logical thinking block.
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg && lastMsg.role === ROLE_THOUGHT) {
+          lastMsg.text = (lastMsg.text || "") + (event.data?.text || "");
+          lastMsg.seq = seq; // Update to latest seq
+        } else {
+          messages.push({
+            role: ROLE_THOUGHT,
+            text: event.data?.text || "",
+            complete: true,
+            timestamp: new Date(event.timestamp).getTime(),
+            seq,
+          });
+        }
         break;
+      }
       case "tool_call":
         messages.push({
           role: ROLE_TOOL,

@@ -1365,13 +1365,13 @@ mitto-action {
   position: relative;
 }
 
-/* Container for the action toolbar - positioned above the input area at the right edge of conversation */
+/* Container for the action toolbar - positioned above the input area, horizontal, growing from right */
 .action-toolbar {
   display: flex;
-  flex-direction: column;
+  flex-direction: row-reverse; /* Right-to-left: first button on right, others expand left */
   gap: 8px;
   position: absolute;
-  right: 24px;
+  right: 8px; /* Close to the right border of the application */
   bottom: calc(100% + 16px); /* Position above the form with some gap */
   opacity: 0;
   pointer-events: none;
@@ -1559,18 +1559,18 @@ mitto-action {
 /* Mobile: keep toolbar above input, smaller buttons */
 @media (max-width: 768px) {
   .action-toolbar {
-    right: 12px;
+    right: 8px;
     bottom: calc(100% + 12px);
   }
 
   .action-toolbar-btn {
     width: 36px;
     height: 36px;
-    transform: translateY(10px) scale(0.8);
+    transform: translateX(10px) scale(0.8);
   }
 
   .action-toolbar.visible .action-toolbar-btn {
-    transform: translateY(0) scale(1);
+    transform: translateX(0) scale(1);
   }
 
   .action-toolbar-btn:hover {
