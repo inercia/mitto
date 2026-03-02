@@ -74,16 +74,21 @@ test.describe("Workspace Dialog", () => {
     // Wait for filtering to take effect (increased timeout for reliability)
     await page.waitForTimeout(300);
 
-    // Should see project-alpha and project-beta (look in button text or aria labels)
-    // The workspace dialog shows workspace names in buttons with their abbreviations
-    await expect(page.locator("button:has-text('project-alpha')").first()).toBeVisible({ timeout: 5000 });
-    // Note: project-beta may be abbreviated as PBE in the UI, but the path should be visible
-    await expect(page.locator("button:has-text('project-beta'), button:has-text('PBE')").first()).toBeVisible({ timeout: 5000 });
+    // Should see exactly 3 workspaces (empty-project, project-alpha, project-beta)
+    // All contain "project" in their path
+    const workspaceButtons = dialog.locator("button").filter({
+      has: page.locator("div[title*='project']")
+    });
+    await expect(workspaceButtons).toHaveCount(3);
 
-    // Should NOT see other workspaces (they don't contain "project" in basename)
-    // Note: cmd, internal, web, docs should be hidden (filtered out)
-    // We check that buttons with these exact workspace names are not visible
-    await expect(page.locator("button:has-text('cmd')").filter({ hasNotText: 'Commands' })).toBeHidden();
+    // Verify the workspaces are the correct ones by checking for their paths in title attributes
+    await expect(dialog.locator("div[title*='project-alpha']").first()).toBeVisible();
+    await expect(dialog.locator("div[title*='project-beta']").first()).toBeVisible();
+    await expect(dialog.locator("div[title*='empty-project']").first()).toBeVisible();
+
+    // Should NOT see other workspaces (cmd, internal, web, docs)
+    await expect(dialog.locator("div[title*='/cmd']").first()).not.toBeVisible();
+    await expect(dialog.locator("div[title*='/internal']").first()).not.toBeVisible();
   });
 
   test("should show 'no match' message when filter has no results", async ({ page, selectors }) => {
