@@ -62,6 +62,8 @@ type Settings struct {
 	Session *SessionConfig `json:"session,omitempty"`
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
+	// Permissions contains global permission handling configuration
+	Permissions *PermissionsConfig `json:"permissions,omitempty"`
 	// RestrictedRunners contains per-runner-type global configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
 }
@@ -123,6 +125,12 @@ type ACPServerSettings struct {
 	Command string `json:"command"`
 	// Cwd is the working directory for the ACP server process
 	Cwd string `json:"cwd,omitempty"`
+	// Type is an optional type identifier for prompt matching.
+	// Servers with the same type share prompts. If empty, Name is used as the type.
+	Type string `json:"type,omitempty"`
+	// Env is a map of environment variables to set when starting the ACP server.
+	// These are merged with the current environment (server-specific vars take precedence).
+	Env map[string]string `json:"env,omitempty"`
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt `json:"prompts,omitempty"`
 	// RestrictedRunners contains per-runner-type configuration for this agent
@@ -130,6 +138,8 @@ type ACPServerSettings struct {
 	// Source indicates where this server configuration originated from.
 	// Used for config layering: servers from RC file are read-only in the UI.
 	Source ConfigItemSource `json:"source,omitempty"`
+	// AutoApprove enables automatic approval of permission requests for this ACP server.
+	AutoApprove bool `json:"auto_approve,omitempty"`
 }
 
 // ToConfig converts Settings to the internal Config struct.
@@ -142,6 +152,7 @@ func (s *Settings) ToConfig() *Config {
 		UI:                s.UI,
 		Session:           s.Session,
 		Conversations:     s.Conversations,
+		Permissions:       s.Permissions,
 		RestrictedRunners: s.RestrictedRunners,
 	}
 	for i, srv := range s.ACPServers {
@@ -160,6 +171,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		UI:                cfg.UI,
 		Session:           cfg.Session,
 		Conversations:     cfg.Conversations,
+		Permissions:       cfg.Permissions,
 		RestrictedRunners: cfg.RestrictedRunners,
 	}
 	for i, srv := range cfg.ACPServers {

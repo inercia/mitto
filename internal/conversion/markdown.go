@@ -174,6 +174,9 @@ func (c *Converter) Convert(markdown string) (string, error) {
 		result = c.fileLinker.LinkFilePaths(result)
 	}
 
+	// Wrap tables in scrollable containers for mobile/narrow screens
+	result = WrapTablesInScrollContainer(result)
+
 	return result, nil
 }
 
@@ -198,7 +201,8 @@ func EscapeHTML(s string) string {
 }
 
 // codeBlockPattern matches opening/closing code fences.
-var codeBlockPattern = regexp.MustCompile("^```")
+// Captures the backticks to determine fence length.
+var codeBlockPattern = regexp.MustCompile("^(`{3,})")
 
 // listItemPattern matches list item lines (ordered or unordered).
 var listItemPattern = regexp.MustCompile(`^\s*(\d+\.\s+|[-*+]\s+)`)
@@ -209,6 +213,18 @@ var tableRowPattern = regexp.MustCompile(`^\s*\|`)
 // IsCodeBlockStart returns true if the line starts a code block.
 func IsCodeBlockStart(line string) bool {
 	return codeBlockPattern.MatchString(line)
+}
+
+// CodeFenceLength returns the number of backticks in a code fence line.
+// Returns 0 if the line is not a code fence.
+// A code block opened with N backticks can only be closed by a fence
+// with at least N backticks (CommonMark specification).
+func CodeFenceLength(line string) int {
+	matches := codeBlockPattern.FindStringSubmatch(line)
+	if matches == nil {
+		return 0
+	}
+	return len(matches[1])
 }
 
 // IsListItem returns true if the line is a list item.
@@ -299,6 +315,52 @@ func fixTableSeparator(line string, targetCols int) string {
 
 	// Rebuild the separator line
 	return "|" + strings.Join(cells, "|") + "|"
+}
+
+// tableTagPattern matches <table...> opening tags.
+var tableTagPattern = regexp.MustCompile(`<table\b`)
+
+// tableClosePattern matches </table> closing tags.
+var tableClosePattern = regexp.MustCompile(`</table>`)
+
+// WrapTablesInScrollContainer wraps each <table>...</table> in a scrollable div.
+// This enables horizontal scrolling for wide tables on mobile/narrow screens.
+func WrapTablesInScrollContainer(html string) string {
+	// Find all table opening tags
+	openMatches := tableTagPattern.FindAllStringIndex(html, -1)
+	if len(openMatches) == 0 {
+		return html
+	}
+
+	// Find all table closing tags
+	closeMatches := tableClosePattern.FindAllStringIndex(html, -1)
+	if len(closeMatches) != len(openMatches) {
+		// Mismatched tags, don't modify
+		return html
+	}
+
+	// Build result by wrapping each table
+	var result strings.Builder
+	lastEnd := 0
+	for i, openMatch := range openMatches {
+		closeMatch := closeMatches[i]
+		tableEnd := closeMatch[1]
+
+		// Copy content before this table
+		result.WriteString(html[lastEnd:openMatch[0]])
+
+		// Wrap the table
+		result.WriteString(`<div class="table-wrapper">`)
+		result.WriteString(html[openMatch[0]:tableEnd])
+		result.WriteString(`</div>`)
+
+		lastEnd = tableEnd
+	}
+
+	// Copy remaining content after last table
+	result.WriteString(html[lastEnd:])
+
+	return result.String()
 }
 
 // HasUnmatchedInlineFormatting checks if the content has unmatched inline formatting markers.

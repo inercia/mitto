@@ -1,0 +1,29 @@
+{
+  "scenario": "wide-table-test",
+  "description": "A wide table for testing horizontal scrolling on narrow screens",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)TEST:wide-table"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 50,
+          "chunks": [
+            "Here is a **wide table** for testing horizontal scrolling:\n\n",
+            "| Test Name | Description | Expected Result | Actual Result | Status | Notes | Author | Date Created | Last Modified | Priority |\n",
+            "|-----------|-------------|-----------------|---------------|--------|-------|--------|--------------|---------------|----------|\n",
+            "| `01-basic.sh` | Complete migration test | All commits migrated | All commits migrated successfully | ✅ Pass | No issues found | John | 2024-01-15 | 2024-02-20 | High |\n",
+            "| `07-continue.sh` | Step-by-step phases | Each `--continue` adds one phase | Phase progression verified | ✅ Pass | Tested with 5 phases | Jane | 2024-01-16 | 2024-02-21 | Medium |\n",
+            "| `09-restart.sh` | Duplicate commits handling | Same phase commits appear twice | Commits duplicated correctly | ✅ Pass | Edge case handled | Bob | 2024-01-17 | 2024-02-22 | Low |\n",
+            "| `10-discard.sh` | Clean state verification | Dirty changes not in history | Main branch clean | ⚠️ Warn | Minor issues | Alice | 2024-01-18 | 2024-02-23 | Medium |\n",
+            "| `13-full-migration-commits.sh` | Two commit types test | Both `has been` AND `updated state` appear | Both patterns found | ✅ Pass | Complex scenario | Charlie | 2024-01-19 | 2024-02-24 | High |\n\n",
+            "You should be able to scroll this table horizontally on narrow screens."
+          ]
+        }
+      ]
+    }
+  ]
+}

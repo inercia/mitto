@@ -143,7 +143,7 @@ Implements MCP (Model Context Protocol) server for tool exposure.
 
 - **Server**: Single global MCP server for external tools (debug port 5757)
 - **Session Routing**: Session registration and `session_id`-based routing within the global server
-- **Session-Scoped Tools**: Tools that operate within a specific session context (`mitto_get_current_session`, etc.)
+- **Session-Scoped Tools**: Tools that operate within a specific session context (`mitto_conversation_get_current`, etc.)
 
 See [MCP Documentation](mcp.md) for detailed documentation.
 

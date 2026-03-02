@@ -126,6 +126,9 @@ test.describe("Workspace Dialog", () => {
     const dialog = page.locator("text=Select Workspace").locator("..");
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
+    // Wait for dialog to be fully ready (filter input may capture focus)
+    await page.waitForTimeout(200);
+
     // Press Escape to close
     await page.keyboard.press("Escape");
 

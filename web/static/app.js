@@ -2,6 +2,7 @@
 const {
   h,
   render,
+  Fragment,
   useState,
   useEffect,
   useLayoutEffect,
@@ -61,16 +62,24 @@ import {
   cycleGroupingMode,
   isGroupExpanded,
   setGroupExpanded,
+  getExpandedGroups,
+  getSingleExpandedGroupMode,
+  setSingleExpandedGroupMode,
   getAPIPrefix,
   initUIPreferences,
   onUIPreferencesLoaded,
+  FILTER_TAB,
+  getFilterTab,
+  setFilterTab,
+  getFilterTabGrouping,
+  cycleFilterTabGrouping,
 } from "./utils/index.js";
 
 // Import hooks
 import {
   useWebSocket,
   useSwipeNavigation,
-  useSwipeToDelete,
+  useSwipeToAction,
   useInfiniteScroll,
 } from "./hooks/index.js";
 
@@ -112,10 +121,17 @@ import {
   ListIcon,
   PeriodicIcon,
   PeriodicFilledIcon,
+  ChatBubbleIcon,
 } from "./components/Icons.js";
 
 // Import constants
-import { KEYBOARD_SHORTCUTS, CYCLING_MODE } from "./constants.js";
+import {
+  KEYBOARD_SHORTCUTS,
+  CYCLING_MODE,
+  PERIODIC_PROGRESS_STYLE,
+  PERIODIC_PROGRESS_COLORS,
+  PERIODIC_PROGRESS_URGENT_THRESHOLD,
+} from "./constants.js";
 
 // =============================================================================
 // File Link Helpers
@@ -273,6 +289,11 @@ if (isNativeApp()) {
     if (tagName === "input" || tagName === "textarea") {
       return;
     }
+    // Allow custom context menu handlers (session items have data-has-context-menu attribute)
+    const hasCustomMenu = e.target.closest("[data-has-context-menu]");
+    if (hasCustomMenu) {
+      return;
+    }
     // Prevent the default WebView context menu
     e.preventDefault();
   });
@@ -357,6 +378,8 @@ function WorkspaceBadge({
  * @param {string} className - Additional CSS classes
  * @param {boolean} clickable - Whether the badge is clickable (default: false)
  * @param {function} onBadgeClick - Optional callback when badge is clicked
+ * @param {boolean} hideAbbreviation - When true, hide the 3-letter abbreviation (e.g. in group header when grouping by workspace)
+ * @param {boolean} hideAcpServer - When true, show only workspace name, not ACP server (e.g. on items when grouping by ACP server)
  */
 function WorkspacePill({
   path,
@@ -367,6 +390,8 @@ function WorkspacePill({
   className = "",
   clickable = false,
   onBadgeClick,
+  hideAbbreviation = false,
+  hideAcpServer = false,
 }) {
   if (!path) return null;
 
@@ -375,8 +400,8 @@ function WorkspacePill({
     color,
     displayName: wsDisplayName,
   } = getWorkspaceVisualInfo(path, customColor, customCode, customName);
-  // Display ACP server name if available, otherwise fall back to workspace display name
-  const displayName = acpServer || wsDisplayName;
+  // Display ACP server name if available, otherwise fall back to workspace display name (unless hideAcpServer)
+  const displayName = hideAcpServer ? wsDisplayName : (acpServer || wsDisplayName);
 
   const handleClick = (e) => {
     if (!clickable) return;
@@ -400,7 +425,7 @@ function WorkspacePill({
       title=${clickable ? `Click to open: ${path}` : path}
       onClick=${handleClick}
     >
-      <span class="font-bold">${abbreviation}</span>
+      ${!hideAbbreviation && html`<span class="font-bold">${abbreviation}</span>`}
       <span class="truncate max-w-[80px]">${displayName}</span>
     </div>
   `;
@@ -792,7 +817,7 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
 function ContextMenu({ x, y, items, onClose }) {
   const menuRef = useRef(null);
 
-  // Close menu when clicking outside
+  // Close menu when clicking outside - delay to avoid catching the click that opened the menu
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
@@ -804,38 +829,46 @@ function ContextMenu({ x, y, items, onClose }) {
         onClose();
       }
     };
-    document.addEventListener("mousedown", handleClickOutside);
+    // Delay to avoid catching the opening right-click
+    const timeoutId = setTimeout(() => {
+      document.addEventListener("mousedown", handleClickOutside);
+    }, 10);
     document.addEventListener("keydown", handleEscape);
     return () => {
+      clearTimeout(timeoutId);
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEscape);
     };
   }, [onClose]);
 
-  // Adjust position to keep menu within viewport
-  const [adjustedPos, setAdjustedPos] = useState({ x, y });
-  useEffect(() => {
-    if (menuRef.current) {
-      const rect = menuRef.current.getBoundingClientRect();
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-      let newX = x;
-      let newY = y;
-      if (x + rect.width > viewportWidth) {
-        newX = viewportWidth - rect.width - 8;
-      }
-      if (y + rect.height > viewportHeight) {
-        newY = viewportHeight - rect.height - 8;
-      }
-      setAdjustedPos({ x: newX, y: newY });
+  // Calculate adjusted position synchronously using useMemo
+  // This avoids the useState + useEffect anti-pattern that causes the menu
+  // to not appear on first render (see 28-anti-patterns-ui.md)
+  const position = useMemo(() => {
+    // On first render, menuRef.current is null - use raw position
+    if (!menuRef.current) {
+      return { x, y };
     }
-  }, [x, y]);
+    // Menu exists - calculate adjusted position to stay within viewport
+    const rect = menuRef.current.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    let newX = x;
+    let newY = y;
+    if (x + rect.width > viewportWidth) {
+      newX = viewportWidth - rect.width - 8;
+    }
+    if (y + rect.height > viewportHeight) {
+      newY = viewportHeight - rect.height - 8;
+    }
+    return { x: newX, y: newY };
+  }, [x, y, menuRef.current]);
 
   return html`
     <div
       ref=${menuRef}
       class="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[140px]"
-      style="left: ${adjustedPos.x}px; top: ${adjustedPos.y}px;"
+      style="left: ${position.x}px; top: ${position.y}px;"
     >
       ${items.map(
         (item) => html`
@@ -868,6 +901,64 @@ function ContextMenu({ x, y, items, onClose }) {
 // Session Item Component
 // =============================================================================
 
+/**
+ * Calculate periodic progress background style.
+ * Returns a CSS background style showing elapsed time as a progress indicator.
+ *
+ * @param {Object} params - Parameters
+ * @param {string|null} params.nextScheduledAt - ISO timestamp of next scheduled run
+ * @param {Object|null} params.frequency - Frequency config { value, unit, at? }
+ * @param {boolean} params.isLight - Whether light theme is active
+ * @returns {string|null} CSS background style or null if not applicable
+ */
+function getPeriodicProgressStyle({ nextScheduledAt, frequency, isLight }) {
+  // Skip if progress indicator is disabled
+  if (PERIODIC_PROGRESS_STYLE === "none" || !nextScheduledAt || !frequency) {
+    return null;
+  }
+
+  const colors = PERIODIC_PROGRESS_COLORS[PERIODIC_PROGRESS_STYLE];
+  if (!colors) return null;
+
+  const themeColors = isLight ? colors.light : colors.dark;
+  const now = Date.now();
+  const nextTime = new Date(nextScheduledAt).getTime();
+
+  // Calculate the interval duration in milliseconds
+  let intervalMs;
+  switch (frequency.unit) {
+    case "minutes":
+      intervalMs = frequency.value * 60 * 1000;
+      break;
+    case "hours":
+      intervalMs = frequency.value * 60 * 60 * 1000;
+      break;
+    case "days":
+      intervalMs = frequency.value * 24 * 60 * 60 * 1000;
+      break;
+    default:
+      return null;
+  }
+
+  // Calculate elapsed time since last run (interval start)
+  const intervalStart = nextTime - intervalMs;
+  const elapsed = now - intervalStart;
+  const progress = Math.max(0, Math.min(1, elapsed / intervalMs));
+
+  // Determine if we're in "urgent" state (close to next run)
+  const remaining = 1 - progress;
+  const isUrgent = remaining < PERIODIC_PROGRESS_URGENT_THRESHOLD;
+
+  // Get the appropriate color
+  const elapsedColor = isUrgent ? themeColors.urgentElapsed : themeColors.elapsed;
+  const remainingColor = themeColors.remaining;
+
+  // Create the gradient - progress goes left to right
+  const progressPercent = (progress * 100).toFixed(1);
+
+  return `linear-gradient(to right, ${elapsedColor} 0%, ${elapsedColor} ${progressPercent}%, ${remainingColor} ${progressPercent}%, ${remainingColor} 100%)`;
+}
+
 function SessionItem({
   session,
   isActive,
@@ -875,6 +966,7 @@ function SessionItem({
   onRename,
   onDelete,
   onArchive,
+  onPeriodic,
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
@@ -882,6 +974,11 @@ function SessionItem({
   onBadgeClick,
   hasQueuedMessages = false,
   isSessionStreaming = false,
+  hideBadge = false,
+  badgeHideAbbreviation = false,
+  badgeHideAcpServer = false,
+  isLightTheme = false,
+  filterTab = FILTER_TAB.CONVERSATIONS,
 }) {
   const [showActions, setShowActions] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
@@ -891,6 +988,22 @@ function SessionItem({
 
   // Check if periodic is enabled for this session
   const isPeriodicEnabled = session.periodic_enabled || false;
+
+  // Calculate periodic progress background style
+  const periodicProgressBg = useMemo(() => {
+    if (!isPeriodicEnabled || isArchived) return null;
+    return getPeriodicProgressStyle({
+      nextScheduledAt: session.next_scheduled_at,
+      frequency: session.periodic_frequency,
+      isLight: isLightTheme,
+    });
+  }, [
+    isPeriodicEnabled,
+    isArchived,
+    session.next_scheduled_at,
+    session.periodic_frequency,
+    isLightTheme,
+  ]);
 
   // Archive button should be disabled if:
   // 1. There are queued messages (can't archive with pending messages)
@@ -931,8 +1044,10 @@ function SessionItem({
           );
           if (!createResponse.ok) {
             console.error("Failed to create periodic config");
+          } else {
+            // Server broadcasts the update - also notify parent to switch tabs
+            if (onPeriodic) onPeriodic(session, true);
           }
-          // Server broadcasts the update
           return;
         }
         if (!getResponse.ok) {
@@ -947,13 +1062,15 @@ function SessionItem({
         );
         if (!response.ok) {
           console.error("Failed to delete periodic config");
+        } else {
+          // Server broadcasts the update - also notify parent to switch tabs
+          if (onPeriodic) onPeriodic(session, false);
         }
-        // Server broadcasts the update, no need to update local state
       } catch (err) {
         console.error("Failed to toggle periodic:", err);
       }
     },
-    [session.session_id],
+    [session.session_id, onPeriodic],
   );
 
   // Get working_dir from session, or fall back to global map
@@ -1012,10 +1129,47 @@ function SessionItem({
       parts.push(`Archived: ${archivedDate.toLocaleString()}`);
     }
 
+    // Next scheduled run (for periodic sessions)
+    if (isPeriodicEnabled && session.next_scheduled_at) {
+      const nextDate = new Date(session.next_scheduled_at);
+      const now = Date.now();
+      const diff = nextDate.getTime() - now;
+      if (diff > 0) {
+        // Format relative time
+        const hours = Math.floor(diff / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        let relativeTime;
+        if (hours > 24) {
+          const days = Math.floor(hours / 24);
+          relativeTime = `${days}d ${hours % 24}h`;
+        } else if (hours > 0) {
+          relativeTime = `${hours}h ${minutes}m`;
+        } else {
+          relativeTime = `${minutes}m`;
+        }
+        parts.push(`Next run: ${nextDate.toLocaleString()} (in ${relativeTime})`);
+      }
+    }
+
     return parts.join("\n");
   };
 
-  // Swipe-to-delete hook
+  // Determine swipe action based on filter tab:
+  // - Archived tab: swipe to delete
+  // - Regular/Periodic tabs: swipe to archive
+  const isSwipeToDelete = filterTab === FILTER_TAB.ARCHIVED;
+
+  // Swipe action handler - archive or delete based on current tab
+  const handleSwipeAction = useCallback(() => {
+    if (isSwipeToDelete) {
+      onDelete(session);
+    } else {
+      // Archive the session (pass true to archive)
+      onArchive(session, true);
+    }
+  }, [isSwipeToDelete, session, onDelete, onArchive]);
+
+  // Swipe-to-action hook (archive or delete based on tab)
   const {
     swipeOffset,
     isSwiping,
@@ -1023,9 +1177,9 @@ function SessionItem({
     isRevealed,
     containerProps,
     reset,
-    triggerDelete,
-  } = useSwipeToDelete({
-    onDelete: () => onDelete(session),
+    triggerAction,
+  } = useSwipeToAction({
+    onAction: handleSwipeAction,
     threshold: 0.5,
     revealWidth: 80,
     disabled: false,
@@ -1115,50 +1269,65 @@ function SessionItem({
   const absOffset = Math.abs(swipeOffset);
   const deleteProgress = Math.min(absOffset / 160, 1); // Max at 160px
 
+  // Context menu must be rendered outside the overflow-hidden containers
+  // to prevent clipping. Use a Fragment to render it as a sibling.
   return html`
-    <div
-      class="session-item-container relative overflow-hidden border-b border-slate-700"
-      ...${containerProps}
-    >
-      <!-- Delete background (revealed when swiping left) -->
+    <${Fragment}>
+      ${contextMenu &&
+      html`
+        <${ContextMenu}
+          x=${contextMenu.x}
+          y=${contextMenu.y}
+          items=${contextMenuItems}
+          onClose=${closeContextMenu}
+        />
+      `}
       <div
-        class="absolute inset-0 bg-red-600 flex items-center justify-end pr-6 transition-opacity"
-        style="opacity: ${isRevealed || absOffset > 20 ? 1 : 0}"
+        class="session-item-container relative overflow-hidden border-b border-slate-700"
+        ...${containerProps}
       >
-        <button
-          onClick=${(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            triggerDelete();
-          }}
-          class="p-3 rounded-full bg-red-700 hover:bg-red-800 transition-colors"
-          title="Delete"
+        <!-- Swipe action background (revealed when swiping left) -->
+        <!-- Shows Archive (amber) for regular/periodic tabs, Delete (red) for archived tab -->
+        <div
+          class="absolute inset-0 ${isSwipeToDelete ? "bg-red-600" : "bg-amber-600"} flex items-center justify-end pr-6 transition-opacity"
+          style="opacity: ${isRevealed || absOffset > 20 ? 1 : 0}"
         >
-          <${TrashIcon} className="w-5 h-5 text-white" />
-        </button>
-      </div>
-      <!-- Swipeable content -->
-      <div
-        onClick=${handleClick}
-        onContextMenu=${handleContextMenu}
-        onMouseEnter=${() => setShowActions(true)}
-        onMouseLeave=${() => setShowActions(false)}
-        class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar ${isActive
-          ? "bg-blue-900/30 border-l-2 border-l-blue-500"
-          : ""} ${isSwiping ? "" : "transition-transform duration-200"}"
-        style="transform: translateX(${swipeOffset}px)"
-        title=${buildTooltip()}
-        data-session-id=${session.session_id}
-      >
-        ${contextMenu &&
-        html`
-          <${ContextMenu}
-            x=${contextMenu.x}
-            y=${contextMenu.y}
-            items=${contextMenuItems}
-            onClose=${closeContextMenu}
-          />
-        `}
+          <button
+            onClick=${(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              triggerAction();
+            }}
+            class="p-3 rounded-full ${isSwipeToDelete ? "bg-red-700 hover:bg-red-800" : "bg-amber-700 hover:bg-amber-800"} transition-colors"
+            title=${isSwipeToDelete ? "Delete" : "Archive"}
+          >
+            ${isSwipeToDelete
+              ? html`<${TrashIcon} className="w-5 h-5 text-white" />`
+              : html`<${ArchiveIcon} className="w-5 h-5 text-white" />`}
+          </button>
+        </div>
+        <!-- Swipeable content -->
+        <div
+          onClick=${handleClick}
+          onContextMenu=${handleContextMenu}
+          onMouseEnter=${() => setShowActions(true)}
+          onMouseLeave=${() => setShowActions(false)}
+          class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar overflow-hidden ${isActive
+            ? "bg-blue-900/30 border-l-2 border-l-blue-500"
+            : ""} ${isSwiping ? "" : "transition-transform duration-200"}"
+          style="transform: translateX(${swipeOffset}px);"
+          title=${buildTooltip()}
+          data-session-id=${session.session_id}
+          data-has-context-menu="true"
+        >
+          ${periodicProgressBg
+            ? html`<div
+                class="absolute inset-0 z-0 pointer-events-none"
+                style="background: ${periodicProgressBg};"
+                aria-hidden="true"
+              ></div>`
+            : ""}
+          <div class="relative z-10">
         <!-- Top row: status indicator, title, and workspace pill -->
         <div class="flex items-start gap-2">
           <div class="flex-1 min-w-0">
@@ -1179,15 +1348,9 @@ function SessionItem({
                   : null}
               <span class="text-sm font-medium truncate">${displayName}</span>
             </div>
-            <div class="text-xs text-gray-500 mt-1">
-              ${new Date(session.created_at).toLocaleDateString()}
-              ${new Date(session.created_at).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </div>
           </div>
           ${workingDir &&
+          !hideBadge &&
           html`
             <${WorkspacePill}
               path=${workingDir}
@@ -1197,25 +1360,14 @@ function SessionItem({
               acpServer=${acpServer}
               clickable=${badgeClickEnabled}
               onBadgeClick=${onBadgeClick}
+              hideAbbreviation=${badgeHideAbbreviation}
+              hideAcpServer=${badgeHideAcpServer}
             />
           `}
         </div>
-        <!-- Bottom row: message count, saved/stored badge, and action buttons -->
-        <div class="flex items-center justify-between mt-2">
+        <!-- Bottom row: saved/stored badge and action buttons -->
+        <div class="flex items-center justify-between mt-1">
           <div class="flex items-center gap-2">
-            ${session.messageCount !== undefined
-              ? html`
-                  <span class="text-xs text-gray-500"
-                    >${session.messageCount} msgs</span
-                  >
-                `
-              : session.event_count !== undefined
-                ? html`
-                    <span class="text-xs text-gray-500"
-                      >${session.event_count} events</span
-                    >
-                  `
-                : null}
             ${session.isActive
               ? html`
                   <span class="text-gray-500" title="Session is auto-saved">
@@ -1284,8 +1436,10 @@ function SessionItem({
             </button>
           </div>
         </div>
+        </div>
       </div>
     </div>
+    <//>
   `;
 }
 
@@ -1302,6 +1456,7 @@ function SessionList({
   onRename,
   onDelete,
   onArchive,
+  onPeriodic,
   onClose,
   workspaces,
   theme,
@@ -1323,9 +1478,12 @@ function SessionList({
   const isLight = theme === "light";
   const isLargeFont = fontSize === "large";
 
-  // Grouping state - initialized from localStorage
+  // Filter tab state - initialized from localStorage
+  const [filterTab, setFilterTabState] = useState(() => getFilterTab());
+
+  // Grouping state - initialized from the current filter tab's grouping setting
   const [groupingMode, setGroupingModeState] = useState(() =>
-    getGroupingMode(),
+    getFilterTabGrouping(getFilterTab()),
   );
   // Track expanded groups - use a counter to force re-render when localStorage changes
   const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
@@ -1333,38 +1491,84 @@ function SessionList({
   // Subscribe to UI preferences loaded from server (for macOS app where localStorage doesn't persist)
   useEffect(() => {
     const unsubscribe = onUIPreferencesLoaded((prefs) => {
-      // Re-read grouping mode from localStorage (which was just synced from server)
-      const newMode = getGroupingMode();
+      // Re-read grouping mode for the current tab from localStorage (which was just synced from server)
+      const currentTab = getFilterTab();
+      const newMode = getFilterTabGrouping(currentTab);
       setGroupingModeState(newMode);
       // Force re-render for expanded groups
       setExpandedGroupsVersion((v) => v + 1);
       console.debug(
-        "[Mitto] SessionList: UI preferences synced from server, mode:",
+        "[Mitto] SessionList: UI preferences synced from server, tab:",
+        currentTab,
+        "mode:",
         newMode,
       );
     });
     return unsubscribe;
   }, []);
 
-  // Handle grouping mode toggle
-  const handleToggleGrouping = useCallback(() => {
-    const newMode = cycleGroupingMode();
-    setGroupingModeState(newMode);
+  // Listen for programmatic filter tab changes (e.g., when unarchiving a session)
+  useEffect(() => {
+    const handleFilterTabChanged = (e) => {
+      const newTab = e.detail.tab;
+      setFilterTabState(newTab);
+      // Also update grouping mode for the new tab
+      const tabGroupingMode = getFilterTabGrouping(newTab);
+      setGroupingModeState(tabGroupingMode);
+    };
+    window.addEventListener("mitto-filter-tab-changed", handleFilterTabChanged);
+    return () => {
+      window.removeEventListener(
+        "mitto-filter-tab-changed",
+        handleFilterTabChanged,
+      );
+    };
   }, []);
 
-  // Handle group expand/collapse toggle
-  const handleToggleGroup = useCallback((groupKey) => {
-    const currentlyExpanded = isGroupExpanded(groupKey);
-    setGroupExpanded(groupKey, !currentlyExpanded);
-    setExpandedGroupsVersion((v) => v + 1); // Force re-render
+  // Handle filter tab change - also update grouping mode to match the new tab's setting
+  const handleFilterTabChange = useCallback((tab) => {
+    setFilterTab(tab);
+    setFilterTabState(tab);
+    // Apply the grouping mode for the new tab
+    const tabGroupingMode = getFilterTabGrouping(tab);
+    setGroupingModeState(tabGroupingMode);
   }, []);
+
+  // Handle grouping mode toggle - cycles the grouping for the current filter tab
+  const handleToggleGrouping = useCallback(() => {
+    const newMode = cycleFilterTabGrouping(filterTab);
+    setGroupingModeState(newMode);
+  }, [filterTab]);
+
+  // Handle group expand/collapse toggle
+  const handleToggleGroup = useCallback(
+    (groupKey, allGroupKeys = []) => {
+      const currentlyExpanded = isGroupExpanded(groupKey);
+      const willExpand = !currentlyExpanded;
+
+      // In accordion mode, collapse all other groups when expanding
+      if (willExpand && getSingleExpandedGroupMode()) {
+        // Use provided allGroupKeys to collapse all other groups
+        // (needed because getExpandedGroups only tracks explicitly set groups)
+        for (const key of allGroupKeys) {
+          if (key !== groupKey && isGroupExpanded(key)) {
+            setGroupExpanded(key, false);
+          }
+        }
+      }
+
+      setGroupExpanded(groupKey, willExpand);
+      setExpandedGroupsVersion((v) => v + 1); // Force re-render
+    },
+    [],
+  );
 
   // Get grouping icon based on current mode
   const getGroupingIcon = () => {
     switch (groupingMode) {
       case "server":
         return html`<${ServerIcon} className="w-5 h-5" />`;
-      case "folder":
+      case "workspace":
         return html`<${FolderIcon} className="w-5 h-5" />`;
       default:
         return html`<${ListIcon} className="w-5 h-5" />`;
@@ -1375,9 +1579,9 @@ function SessionList({
   const getGroupingTooltip = () => {
     switch (groupingMode) {
       case "server":
-        return "Grouped by ACP server (click to group by folder)";
-      case "folder":
-        return "Grouped by workspace folder (click to disable grouping)";
+        return "Grouped by ACP server (click to group by workspace)";
+      case "workspace":
+        return "Grouped by workspace (click to disable grouping)";
       default:
         return "No grouping (click to group by server)";
     }
@@ -1404,32 +1608,63 @@ function SessionList({
     return session.acp_server || storedSession?.acp_server || "Unknown";
   };
 
-  // Separate archived and non-archived sessions
-  const { nonArchivedSessions, archivedSessions } = useMemo(() => {
-    const nonArchived = [];
+  // Separate sessions by category for tab counts
+  const { regularSessions, periodicSessions, archivedSessions } = useMemo(() => {
+    const regular = [];
+    const periodic = [];
     const archived = [];
     allSessions.forEach((session) => {
       if (session.archived) {
         archived.push(session);
+      } else if (session.periodic_enabled) {
+        periodic.push(session);
       } else {
-        nonArchived.push(session);
+        regular.push(session);
       }
     });
-    return { nonArchivedSessions: nonArchived, archivedSessions: archived };
+    return {
+      regularSessions: regular,
+      periodicSessions: periodic,
+      archivedSessions: archived,
+    };
   }, [allSessions]);
 
-  // Group sessions based on current mode (only non-archived sessions)
+  // Get sessions to display based on active filter tab
+  const filteredSessions = useMemo(() => {
+    switch (filterTab) {
+      case FILTER_TAB.PERIODIC:
+        return periodicSessions;
+      case FILTER_TAB.ARCHIVED:
+        return archivedSessions;
+      case FILTER_TAB.CONVERSATIONS:
+      default:
+        return regularSessions;
+    }
+  }, [filterTab, regularSessions, periodicSessions, archivedSessions]);
+
+  // Check which filter tabs have streaming sessions (for pulsing animation)
+  const streamingTabs = useMemo(() => {
+    return {
+      conversations: regularSessions.some((s) => s.isStreaming),
+      periodic: periodicSessions.some((s) => s.isStreaming),
+      archived: archivedSessions.some((s) => s.isStreaming),
+    };
+  }, [regularSessions, periodicSessions, archivedSessions]);
+
+  // Group sessions based on current mode (uses filtered sessions)
   const groupedSessions = useMemo(() => {
     if (groupingMode === "none") {
-      return null; // No grouping, render flat list with sections
+      return null; // No grouping, render flat list
     }
 
     const groups = new Map();
 
-    // Only group non-archived sessions
-    nonArchivedSessions.forEach((session) => {
+    // Group filtered sessions
+    filteredSessions.forEach((session) => {
       let groupKey;
       let groupLabel;
+      let groupWorkingDir = "";
+      let groupAcpServer = "";
 
       if (groupingMode === "server") {
         // Inline getSessionServer logic to avoid stale closure
@@ -1439,7 +1674,8 @@ function SessionList({
         groupKey = session.acp_server || storedSession?.acp_server || "Unknown";
         groupLabel = groupKey;
       } else {
-        // folder mode - inline getSessionWorkingDir logic
+        // workspace mode - group by workspace (working_dir + acp_server combination)
+        // This ensures workspaces with the same folder but different ACP servers are separate groups
         const storedSession = storedSessions.find(
           (s) => s.session_id === session.session_id,
         );
@@ -1448,13 +1684,24 @@ function SessionList({
           storedSession?.working_dir ||
           getGlobalWorkingDir(session.session_id) ||
           "";
-        groupKey = workingDir || "Unknown";
-        // Use basename for display
-        groupLabel = workingDir ? getBasename(workingDir) : "Unknown";
+        const acpServer =
+          session.acp_server || storedSession?.acp_server || "";
+        // Use composite key: working_dir|acp_server (to separate same-folder workspaces)
+        groupKey = `${workingDir}|${acpServer}`;
+        // Label is just the basename - acpServer is shown as a badge
+        const basename = workingDir ? getBasename(workingDir) : "Unknown";
+        groupLabel = basename;
+        groupWorkingDir = workingDir;
+        groupAcpServer = acpServer;
       }
 
       if (!groups.has(groupKey)) {
-        groups.set(groupKey, { label: groupLabel, sessions: [] });
+        groups.set(groupKey, {
+          label: groupLabel,
+          sessions: [],
+          workingDir: groupWorkingDir,
+          acpServer: groupAcpServer,
+        });
       }
       groups.get(groupKey).sessions.push(session);
     });
@@ -1463,15 +1710,56 @@ function SessionList({
     return Array.from(groups.entries())
       .map(([key, value]) => ({ key, ...value }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [nonArchivedSessions, groupingMode, storedSessions]);
+  }, [filteredSessions, groupingMode, storedSessions]);
+
+  // Enforce accordion mode when groups change (e.g., tab switch, grouping mode change)
+  // If multiple groups are expanded and accordion mode is enabled, collapse all but the first.
+  useEffect(() => {
+    if (!groupedSessions || !getSingleExpandedGroupMode()) {
+      return;
+    }
+
+    // Find all currently expanded groups in the current view
+    const expandedKeys = groupedSessions
+      .filter((g) => isGroupExpanded(g.key))
+      .map((g) => g.key);
+
+    // If more than one group is expanded, collapse all but the first
+    if (expandedKeys.length > 1) {
+      const [keepExpanded, ...toCollapse] = expandedKeys;
+      console.debug(
+        "[Mitto] Accordion mode: collapsing groups on tab/mode change. Keeping:",
+        keepExpanded,
+        "Collapsing:",
+        toCollapse,
+      );
+      for (const key of toCollapse) {
+        setGroupExpanded(key, false);
+      }
+      // Force re-render to reflect the collapsed state
+      setExpandedGroupsVersion((v) => v + 1);
+    }
+  }, [groupedSessions, filterTab, groupingMode]);
 
   // Render a single session item
-  const renderSessionItem = (session) => {
+  // hideBadge: if true, hides the entire badge
+  // badgeHideAbbreviation: if true, badge hides 3-letter workspace code (used in workspace grouping mode)
+  // badgeHideAcpServer: if true, badge hides ACP server name (used in ACP server grouping mode)
+  const renderSessionItem = (session, { hideBadge = false, badgeHideAbbreviation = false, badgeHideAcpServer = false } = {}) => {
     const workingDir = getSessionWorkingDir(session);
     const finalSession = workingDir
       ? { ...session, working_dir: workingDir }
       : session;
-    const workspace = workspaces.find((ws) => ws.working_dir === workingDir);
+    // Get the session's ACP server (stored when session was created)
+    const sessionAcpServer =
+      session.acp_server || session.info?.acp_server || "";
+    // Find the workspace matching both working_dir AND acp_server
+    // This is important when multiple workspaces share the same folder but use different ACP servers
+    const workspace = workspaces.find(
+      (ws) =>
+        ws.working_dir === workingDir &&
+        (!sessionAcpServer || ws.acp_server === sessionAcpServer),
+    );
     // Only the active session can have queued messages
     const hasQueuedMessages =
       session.session_id === activeSessionId && queueLength > 0;
@@ -1487,6 +1775,7 @@ function SessionList({
         onRename=${onRename}
         onDelete=${onDelete}
         onArchive=${onArchive}
+        onPeriodic=${onPeriodic}
         workspaceColor=${workspace?.color || null}
         workspaceCode=${workspace?.code || null}
         workspaceName=${workspace?.name || null}
@@ -1494,6 +1783,11 @@ function SessionList({
         onBadgeClick=${onBadgeClick}
         hasQueuedMessages=${hasQueuedMessages}
         isSessionStreaming=${isSessionStreaming}
+        hideBadge=${hideBadge}
+        badgeHideAbbreviation=${badgeHideAbbreviation}
+        badgeHideAcpServer=${badgeHideAcpServer}
+        isLightTheme=${isLight}
+        filterTab=${filterTab}
       />
     `;
   };
@@ -1505,11 +1799,15 @@ function SessionList({
       e.stopPropagation();
 
       // Find the workspace that matches this group key
-      // For folder mode, groupKey is the working_dir
+      // For workspace mode, groupKey is "working_dir|acp_server" (composite key)
       // For server mode, groupKey is the acp_server
       let workspace = null;
-      if (groupingMode === "folder") {
-        workspace = workspaces.find((ws) => ws.working_dir === groupKey);
+      if (groupingMode === "workspace") {
+        // Parse composite key: working_dir|acp_server
+        const [workingDir, acpServer] = groupKey.split("|");
+        workspace = workspaces.find(
+          (ws) => ws.working_dir === workingDir && ws.acp_server === acpServer,
+        );
       } else if (groupingMode === "server") {
         // For server mode, find first workspace with matching acp_server
         workspace = workspaces.find((ws) => ws.acp_server === groupKey);
@@ -1525,38 +1823,12 @@ function SessionList({
     [groupingMode, workspaces, onNewSession],
   );
 
-  // Special key for the archived section (used for localStorage persistence)
-  const ARCHIVED_GROUP_KEY = "__archived__";
-
-  // Render the archived section (used by both grouped and non-grouped modes)
-  const renderArchivedSection = () => {
-    if (archivedSessions.length === 0) return null;
-
-    // Archived section is collapsed by default (check localStorage, default to false)
-    const expanded = isGroupExpanded(ARCHIVED_GROUP_KEY);
-
-    return html`
-      <div key=${ARCHIVED_GROUP_KEY} class="group-section">
-        <div
-          class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-300 hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer"
-          onClick=${() => handleToggleGroup(ARCHIVED_GROUP_KEY)}
-        >
-          <span class="transition-transform ${expanded ? "" : "-rotate-90"}">
-            <${ChevronDownIcon} className="w-4 h-4" />
-          </span>
-          <${ArchiveIcon} className="w-4 h-4" />
-          <span class="flex-1 text-left">Archived</span>
-          <span class="text-xs text-gray-500">${archivedSessions.length}</span>
-        </div>
-        ${expanded &&
-        archivedSessions.map((session) => renderSessionItem(session))}
-      </div>
-    `;
-  };
-
   // Render grouped sessions with collapsible headers
   const renderGroupedSessions = () => {
     if (!groupedSessions) return null;
+
+    // Get all group keys for accordion mode
+    const allGroupKeys = groupedSessions.map((g) => g.key);
 
     return html`
       ${groupedSessions.map((group) => {
@@ -1564,12 +1836,21 @@ function SessionList({
         const sessionCount = group.sessions.length;
         // Check if any session in this group is actively streaming
         const hasStreamingSession = group.sessions.some((s) => s.isStreaming);
+        // Get workspace info for badge display (workspace mode only)
+        const workspace =
+          groupingMode === "workspace" && group.workingDir
+            ? workspaces.find(
+                (ws) =>
+                  ws.working_dir === group.workingDir &&
+                  (!group.acpServer || ws.acp_server === group.acpServer),
+              )
+            : null;
 
         return html`
           <div key=${group.key} class="group-section">
             <div
               class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer group/header"
-              onClick=${() => handleToggleGroup(group.key)}
+              onClick=${() => handleToggleGroup(group.key, allGroupKeys)}
             >
               <span
                 class="transition-transform ${expanded ? "" : "-rotate-90"}"
@@ -1579,7 +1860,21 @@ function SessionList({
               ${groupingMode === "server"
                 ? html`<${ServerIcon} className="w-4 h-4" />`
                 : html`<${FolderIcon} className="w-4 h-4" />`}
-              <span class="flex-1 text-left truncate">${group.label}</span>
+              <span class="text-left truncate">${group.label}</span>
+              ${groupingMode === "workspace" &&
+              group.workingDir &&
+              html`
+                <${WorkspacePill}
+                  path=${group.workingDir}
+                  customColor=${workspace?.color}
+                  customCode=${workspace?.code}
+                  customName=${workspace?.name}
+                  acpServer=${group.acpServer}
+                  className="flex-shrink-0"
+                  hideAbbreviation=${true}
+                />
+              `}
+              <span class="flex-1"></span>
               ${!expanded &&
               hasStreamingSession &&
               html`
@@ -1588,7 +1883,8 @@ function SessionList({
                   title="Agent responding in this group"
                 ></span>
               `}
-              ${groupingMode === "folder" &&
+              ${groupingMode === "workspace" &&
+              filterTab === FILTER_TAB.CONVERSATIONS &&
               html`
                 <button
                   onClick=${(e) => handleNewSessionInGroup(group.key, e)}
@@ -1601,45 +1897,35 @@ function SessionList({
               <span class="text-xs text-gray-500">${sessionCount}</span>
             </div>
             ${expanded &&
-            group.sessions.map((session) => renderSessionItem(session))}
+            group.sessions.map((session) =>
+              renderSessionItem(session, {
+                // In workspace grouping, hide entire badge (both abbreviation and ACP server are in group header)
+                hideBadge: groupingMode === "workspace",
+                // In server grouping, hide the ACP server name (redundant with group header)
+                badgeHideAcpServer: groupingMode === "server",
+              }),
+            )}
           </div>
         `;
       })}
-      ${renderArchivedSection()}
     `;
   };
 
-  // Render sessions in "none" grouping mode with "All" and "Archived" sections
+  // Render sessions in "none" grouping mode - flat list
   const renderUngroupedSessions = () => {
-    // If there are no archived sessions, just render the flat list without section headers
-    if (archivedSessions.length === 0) {
-      return nonArchivedSessions.map((session) => renderSessionItem(session));
+    return filteredSessions.map((session) => renderSessionItem(session));
+  };
+
+  // Get empty state message based on active filter tab
+  const getEmptyMessage = () => {
+    switch (filterTab) {
+      case FILTER_TAB.PERIODIC:
+        return "No periodic conversations";
+      case FILTER_TAB.ARCHIVED:
+        return "No archived conversations";
+      default:
+        return "No conversations yet";
     }
-
-    // Otherwise, show "All" section for non-archived and "Archived" section
-    const allExpanded = isGroupExpanded("__all__");
-
-    return html`
-      <!-- All (non-archived) section -->
-      <div key="__all__" class="group-section">
-        <div
-          class="w-full px-4 py-2 flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-slate-700/50 transition-colors sticky top-0 bg-slate-800 z-10 cursor-pointer"
-          onClick=${() => handleToggleGroup("__all__")}
-        >
-          <span class="transition-transform ${allExpanded ? "" : "-rotate-90"}">
-            <${ChevronDownIcon} className="w-4 h-4" />
-          </span>
-          <${ListIcon} className="w-4 h-4" />
-          <span class="flex-1 text-left">All</span>
-          <span class="text-xs text-gray-500"
-            >${nonArchivedSessions.length}</span
-          >
-        </div>
-        ${allExpanded &&
-        nonArchivedSessions.map((session) => renderSessionItem(session))}
-      </div>
-      ${renderArchivedSection()}
-    `;
   };
 
   return html`
@@ -1675,11 +1961,66 @@ function SessionList({
           `}
         </div>
       </div>
+      <!-- Filter Tab Bar -->
+      <div
+        class="filter-tab-bar flex border-b border-slate-700"
+        role="tablist"
+        aria-label="Conversation filters"
+      >
+        <button
+          role="tab"
+          aria-selected=${filterTab === FILTER_TAB.CONVERSATIONS}
+          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
+          FILTER_TAB.CONVERSATIONS
+            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
+            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.conversations
+            ? "filter-tab-streaming"
+            : ""}"
+          onClick=${() => handleFilterTabChange(FILTER_TAB.CONVERSATIONS)}
+          title="Conversations"
+        >
+          <${ChatBubbleIcon} className="w-5 h-5" />
+          ${regularSessions.length > 0 &&
+          html`<span class="ml-1.5 text-xs">${regularSessions.length}</span>`}
+        </button>
+        <button
+          role="tab"
+          aria-selected=${filterTab === FILTER_TAB.PERIODIC}
+          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
+          FILTER_TAB.PERIODIC
+            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
+            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.periodic
+            ? "filter-tab-streaming"
+            : ""}"
+          onClick=${() => handleFilterTabChange(FILTER_TAB.PERIODIC)}
+          title="Periodic"
+        >
+          <${PeriodicIcon} className="w-5 h-5" />
+          ${periodicSessions.length > 0 &&
+          html`<span class="ml-1.5 text-xs">${periodicSessions.length}</span>`}
+        </button>
+        <button
+          role="tab"
+          aria-selected=${filterTab === FILTER_TAB.ARCHIVED}
+          class="filter-tab flex-1 py-2 flex items-center justify-center transition-colors ${filterTab ===
+          FILTER_TAB.ARCHIVED
+            ? "filter-tab--active text-blue-400 border-b-2 border-blue-400"
+            : "text-gray-400 hover:text-gray-200 hover:bg-slate-700/50"} ${streamingTabs.archived
+            ? "filter-tab-streaming"
+            : ""}"
+          onClick=${() => handleFilterTabChange(FILTER_TAB.ARCHIVED)}
+          title="Archived"
+        >
+          <${ArchiveIcon} className="w-5 h-5" />
+          ${archivedSessions.length > 0 &&
+          html`<span class="ml-1.5 text-xs">${archivedSessions.length}</span>`}
+        </button>
+      </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">
-        ${allSessions.length === 0 &&
+        ${filteredSessions.length === 0 &&
         html`
           <div class="p-4 text-gray-500 text-sm text-center">
-            No conversations yet
+            ${getEmptyMessage()}
           </div>
         `}
         ${groupingMode === "none"
@@ -1925,25 +2266,33 @@ function App() {
 
   // Compute merged prompts: workspace prompts (highest priority) + global prompts + server-specific prompts
   // Workspace prompts override global/server prompts with the same name
-  // Prompts are filtered by the current ACP server using the "acps" field
+  // Prompts are filtered by the current ACP server TYPE using the "acps" field
   const predefinedPrompts = useMemo(() => {
-    const currentAcpServer = sessionInfo?.acp_server?.toLowerCase() || "";
+    const currentAcpServerName = sessionInfo?.acp_server || "";
+    // Look up the server's type from acpServersWithPrompts.
+    // Servers with the same type share prompts (e.g., auggie-fast and auggie-smart
+    // can both have type "auggie" to share prompts with acps: auggie).
+    const currentServerConfig = acpServersWithPrompts.find(
+      (s) => s.name === currentAcpServerName,
+    );
+    // Use type if specified, otherwise fall back to name (consistent with backend behavior)
+    const currentAcpServerType = (currentServerConfig?.type || currentAcpServerName).toLowerCase();
 
-    // Helper to check if a prompt is allowed for the current ACP server
+    // Helper to check if a prompt is allowed for the current ACP server type
     // If acps is empty, the prompt is allowed for all servers
-    // Otherwise, check if the current server is in the comma-separated list
+    // Otherwise, check if the current server type is in the comma-separated list
     const isAllowedForACP = (prompt) => {
       if (!prompt.acps || prompt.acps.trim() === "") {
         return true; // No restriction, allowed for all
       }
-      if (!currentAcpServer) {
+      if (!currentAcpServerType) {
         return true; // No ACP server selected, show all prompts
       }
       // Parse comma-separated list and check for match (case-insensitive)
       const allowedServers = prompt.acps
         .split(",")
         .map((s) => s.trim().toLowerCase());
-      return allowedServers.includes(currentAcpServer);
+      return allowedServers.includes(currentAcpServerType);
     };
 
     // Build a map of prompt names to prompts, with workspace prompts having highest priority
@@ -2306,48 +2655,34 @@ function App() {
     CYCLING_MODE.ALL,
   );
 
-  // Track expanded groups version for re-computing navigableSessions in "visible_groups" mode
-  // This increments whenever groups are expanded/collapsed or grouping mode changes
-  const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
-
-  // Track grouping mode for navigation (needed for "visible_groups" cycling mode)
-  const [groupingModeForNav, setGroupingModeForNav] = useState(() =>
-    getGroupingMode(),
+  // Track expanded groups state for re-computing navigableSessions in "visible_groups" mode
+  // We store the actual groups map in state rather than just a version counter, because
+  // on mobile/WKWebView, localStorage can become stale and isGroupExpanded() might return
+  // incorrect values. By storing the map in React state, we ensure the navigation filtering
+  // always uses the correct, current expanded/collapsed state.
+  const [expandedGroupsForNav, setExpandedGroupsForNav] = useState(() =>
+    getExpandedGroups(),
   );
 
-  // Sessions available for navigation (excludes archived sessions)
-  // Navigation via keyboard shortcuts and swipe gestures should skip archived conversations
-  // In "visible_groups" cycling mode, also skip sessions in collapsed groups
-  const navigableSessions = useMemo(() => {
-    // First filter out archived sessions (always)
-    const nonArchived = allSessions.filter((s) => !s.archived);
+  // Track filter tab for navigation (needed for filtering navigable sessions)
+  const [filterTabForNav, setFilterTabForNav] = useState(() => getFilterTab());
 
-    // If cycling mode is "all", return all non-archived sessions
-    if (conversationCyclingMode !== CYCLING_MODE.VISIBLE_GROUPS) {
-      return nonArchived;
-    }
+  // Track grouping mode for navigation (needed for "visible_groups" cycling mode)
+  // Uses per-tab grouping based on the current filter tab
+  const [groupingModeForNav, setGroupingModeForNav] = useState(() =>
+    getFilterTabGrouping(getFilterTab()),
+  );
 
-    // In "visible_groups" mode, only include sessions that are in expanded groups
-    // If no grouping (mode === "none"), all sessions are visible (no groups to collapse)
-    if (groupingModeForNav === "none") {
-      // Check if "__all__" section is expanded (used when there are archived sessions)
-      // Default to true for "__all__" section
-      if (isGroupExpanded("__all__")) {
-        return nonArchived;
-      }
-      return []; // __all__ section is collapsed, no sessions navigable
-    }
-
-    // Filter sessions based on their group's expanded state
-    return nonArchived.filter((session) => {
-      let groupKey;
+  // Helper to get group key for a session (same logic as sidebar grouping)
+  const getSessionGroupKey = useCallback(
+    (session) => {
       if (groupingModeForNav === "server") {
         const storedSession = storedSessions.find(
           (s) => s.session_id === session.session_id,
         );
-        groupKey = session.acp_server || storedSession?.acp_server || "Unknown";
-      } else {
-        // folder mode
+        return session.acp_server || storedSession?.acp_server || "Unknown";
+      } else if (groupingModeForNav === "workspace") {
+        // workspace mode - group by working_dir|acp_server
         const storedSession = storedSessions.find(
           (s) => s.session_id === session.session_id,
         );
@@ -2356,16 +2691,119 @@ function App() {
           storedSession?.working_dir ||
           getGlobalWorkingDir(session.session_id) ||
           "";
-        groupKey = workingDir || "Unknown";
+        const acpServer = session.acp_server || storedSession?.acp_server || "";
+        return `${workingDir}|${acpServer}`;
       }
-      return isGroupExpanded(groupKey);
+      return null; // no grouping
+    },
+    [groupingModeForNav, storedSessions],
+  );
+
+  // Helper to get group label for sorting (same as sidebar)
+  const getSessionGroupLabel = useCallback(
+    (session) => {
+      if (groupingModeForNav === "server") {
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        return session.acp_server || storedSession?.acp_server || "Unknown";
+      } else if (groupingModeForNav === "workspace") {
+        const storedSession = storedSessions.find(
+          (s) => s.session_id === session.session_id,
+        );
+        const workingDir =
+          session.working_dir ||
+          storedSession?.working_dir ||
+          getGlobalWorkingDir(session.session_id) ||
+          "";
+        // Label is the basename (same as sidebar)
+        return workingDir ? getBasename(workingDir) : "Unknown";
+      }
+      return "";
+    },
+    [groupingModeForNav, storedSessions],
+  );
+
+  // Sessions available for navigation based on active filter tab
+  // Navigation via keyboard shortcuts and swipe gestures should only cycle within the active tab
+  // In "visible_groups" cycling mode, also skip sessions in collapsed groups
+  // Sessions are ordered to match the visual order in the sidebar:
+  // - When grouped: groups sorted alphabetically, sessions within groups by created_at (newest first)
+  // - When not grouped: sessions sorted by created_at (newest first)
+  const navigableSessions = useMemo(() => {
+    // First filter sessions based on the active filter tab
+    let tabFilteredSessions;
+    switch (filterTabForNav) {
+      case FILTER_TAB.PERIODIC:
+        tabFilteredSessions = allSessions.filter(
+          (s) => !s.archived && s.periodic_enabled,
+        );
+        break;
+      case FILTER_TAB.ARCHIVED:
+        tabFilteredSessions = allSessions.filter((s) => s.archived);
+        break;
+      case FILTER_TAB.CONVERSATIONS:
+      default:
+        tabFilteredSessions = allSessions.filter(
+          (s) => !s.archived && !s.periodic_enabled,
+        );
+        break;
+    }
+
+    // If no grouping mode, sessions are already sorted by created_at from allSessions
+    if (groupingModeForNav === "none") {
+      return tabFilteredSessions;
+    }
+
+    // When grouping is enabled, we need to sort sessions to match the sidebar visual order:
+    // 1. Groups sorted alphabetically by label
+    // 2. Sessions within each group sorted by created_at (newest first)
+    //
+    // We do this by sorting all sessions with a composite sort key:
+    // primary: group label (alphabetical)
+    // secondary: created_at (newest first)
+    const sortedSessions = [...tabFilteredSessions].sort((a, b) => {
+      const labelA = getSessionGroupLabel(a);
+      const labelB = getSessionGroupLabel(b);
+
+      // Primary sort: group label (alphabetical)
+      const labelCompare = labelA.localeCompare(labelB);
+      if (labelCompare !== 0) return labelCompare;
+
+      // Secondary sort: created_at (newest first)
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+
+    // In "visible_groups" cycling mode, only include sessions that are in expanded groups
+    if (conversationCyclingMode !== CYCLING_MODE.VISIBLE_GROUPS) {
+      return sortedSessions;
+    }
+
+    // Filter sessions based on their group's expanded state
+    // Use expandedGroupsForNav (React state) instead of calling isGroupExpanded()
+    // which reads from localStorage. This is critical for mobile/WKWebView where
+    // localStorage can become stale or inconsistent.
+    return sortedSessions.filter((session) => {
+      const groupKey = getSessionGroupKey(session);
+      // Check if group is expanded using React state (not localStorage)
+      // Default: archived section is collapsed, all others are expanded
+      if (groupKey in expandedGroupsForNav) {
+        return expandedGroupsForNav[groupKey];
+      }
+      if (groupKey === "__archived__") {
+        return false;
+      }
+      return true;
     });
   }, [
     allSessions,
     storedSessions,
     conversationCyclingMode,
     groupingModeForNav,
-    expandedGroupsVersion, // Re-compute when groups are toggled
+    filterTabForNav,
+    expandedGroupsForNav,
+    getSessionGroupKey,
+    getSessionGroupLabel,
   ]);
 
   // Navigate to previous/next session with animation direction (wraps around for swipe gestures)
@@ -2631,6 +3069,10 @@ function App() {
         if (config?.ui?.web?.conversation_cycling_mode) {
           setConversationCyclingMode(config.ui.web.conversation_cycling_mode);
         }
+        // Load accordion mode setting for groups (web UI, default: false)
+        setSingleExpandedGroupMode(
+          config?.ui?.web?.single_expanded_group === true,
+        );
         // Check if ACP servers or workspaces are configured - if not, force open settings
         // Skip this if config is read-only (user manages config via file) or if external connection
         const noAcpServers =
@@ -2649,14 +3091,32 @@ function App() {
       .catch((err) => console.error("Failed to fetch config:", err));
   }, []);
 
-  // Listen for grouping mode and expanded groups changes for "visible_groups" cycling mode
+  // Listen for grouping mode, expanded groups, and filter tab changes for navigation
   useEffect(() => {
-    const handleExpandedGroupsChanged = () => {
-      setExpandedGroupsVersion((v) => v + 1);
+    const handleExpandedGroupsChanged = (e) => {
+      // Update React state with the new expanded groups state
+      // This uses the event detail (groupKey, expanded) to update state directly,
+      // avoiding a read from localStorage which can be stale on mobile/WKWebView
+      setExpandedGroupsForNav((prev) => {
+        const { groupKey, expanded } = e.detail || {};
+        if (groupKey !== undefined) {
+          return { ...prev, [groupKey]: expanded };
+        }
+        // If no detail provided, fall back to reading from localStorage
+        // (this handles the case where the event is dispatched without detail)
+        return getExpandedGroups();
+      });
     };
     const handleGroupingModeChanged = (e) => {
       setGroupingModeForNav(e.detail.mode);
-      setExpandedGroupsVersion((v) => v + 1);
+      // Re-read expanded groups when grouping mode changes
+      setExpandedGroupsForNav(getExpandedGroups());
+    };
+    const handleFilterTabChanged = (e) => {
+      setFilterTabForNav(e.detail.tab);
+      // Also update grouping mode for the new tab
+      const tabGroupingMode = getFilterTabGrouping(e.detail.tab);
+      setGroupingModeForNav(tabGroupingMode);
     };
     window.addEventListener(
       "mitto-expanded-groups-changed",
@@ -2666,6 +3126,7 @@ function App() {
       "mitto-grouping-mode-changed",
       handleGroupingModeChanged,
     );
+    window.addEventListener("mitto-filter-tab-changed", handleFilterTabChanged);
     return () => {
       window.removeEventListener(
         "mitto-expanded-groups-changed",
@@ -2674,6 +3135,10 @@ function App() {
       window.removeEventListener(
         "mitto-grouping-mode-changed",
         handleGroupingModeChanged,
+      );
+      window.removeEventListener(
+        "mitto-filter-tab-changed",
+        handleFilterTabChanged,
       );
     };
   }, []);
@@ -3988,6 +4453,23 @@ function App() {
 
   const handleArchiveSession = async (session, archived) => {
     await archiveSession(session.session_id, archived);
+
+    // When unarchiving, switch to conversations tab and select the session
+    if (!archived) {
+      setFilterTab(FILTER_TAB.CONVERSATIONS);
+      switchSession(session.session_id);
+    }
+  };
+
+  const handlePeriodicSession = (session, isPeriodic) => {
+    // When enabling periodic, switch to periodic tab and select the session
+    // When disabling periodic, switch to conversations tab and select the session
+    if (isPeriodic) {
+      setFilterTab(FILTER_TAB.PERIODIC);
+    } else {
+      setFilterTab(FILTER_TAB.CONVERSATIONS);
+    }
+    switchSession(session.session_id);
   };
 
   return html`
@@ -4047,6 +4529,10 @@ function App() {
               // Reload conversation cycling mode setting
               setConversationCyclingMode(
                 config?.ui?.web?.conversation_cycling_mode || CYCLING_MODE.ALL,
+              );
+              // Reload accordion mode setting for groups
+              setSingleExpandedGroupMode(
+                config?.ui?.web?.single_expanded_group === true,
               );
             }
           } catch (err) {
@@ -4259,6 +4745,7 @@ function App() {
           onRename=${handleOpenSessionProperties}
           onDelete=${handleDeleteSession}
           onArchive=${handleArchiveSession}
+          onPeriodic=${handlePeriodicSession}
           workspaces=${workspaces}
           theme=${theme}
           onToggleTheme=${toggleTheme}
@@ -4288,6 +4775,7 @@ function App() {
               onRename=${handleOpenSessionProperties}
               onDelete=${handleDeleteSession}
               onArchive=${handleArchiveSession}
+              onPeriodic=${handlePeriodicSession}
               onClose=${() => setShowSidebar(false)}
               workspaces=${workspaces}
               theme=${theme}

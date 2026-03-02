@@ -94,7 +94,8 @@ func runCLI(cmd *cobra.Command, args []string) error {
 
 	// Create ACP connection (no restricted runner for CLI - always use direct execution)
 	// server.Cwd sets the working directory for the ACP process itself
-	conn, err := acp.NewConnection(ctx, server.Command, server.Cwd, autoApprove, output, logger, nil)
+	// server.Env sets additional environment variables for the ACP process
+	conn, err := acp.NewConnection(ctx, server.Command, server.Cwd, server.Env, GetEffectiveAutoApprove(cmd), output, logger, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
@@ -105,10 +106,19 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Get working directory
-	workDir, err := getWorkingDir()
+	// Get working directory from parsed workspaces or current directory
+	workspaces, err := parseWorkspaces()
 	if err != nil {
 		return err
+	}
+	var workDir string
+	if len(workspaces) == 0 {
+		workDir, err = os.Getwd()
+		if err != nil {
+			workDir = "."
+		}
+	} else {
+		workDir = workspaces[0].Dir
 	}
 
 	// Create session

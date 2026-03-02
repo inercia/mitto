@@ -275,12 +275,14 @@ case "keepalive_ack": {
         keepalive.pendingKeepalive = false;
     }
 
-    // Check if we're behind the server
-    const serverMaxSeq = msg.data?.server_max_seq || 0;
-    if (serverMaxSeq > 0) {
+    // Check if we're significantly behind the server (using tolerance)
+    // KEEPALIVE_SYNC_TOLERANCE (default: 2) prevents excessive sync requests
+    // during normal streaming when markdown buffer holds content briefly
+    const maxSeq = msg.data?.max_seq || 0;
+    if (maxSeq > 0) {
         const clientMaxSeq = getMaxSeq(sessionsRef.current[sessionId]?.messages || []);
-        if (serverMaxSeq > clientMaxSeq) {
-            // Request missing events
+        if (maxSeq > clientMaxSeq + KEEPALIVE_SYNC_TOLERANCE) {
+            // Request missing events (only when significantly behind)
             ws.send(JSON.stringify({
                 type: "load_events",
                 data: { after_seq: clientMaxSeq }

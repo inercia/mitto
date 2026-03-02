@@ -393,6 +393,30 @@ export function isNativeApp() {
 }
 
 // =============================================================================
+// Finder Helper
+// =============================================================================
+
+/**
+ * Check if the reveal in Finder function is available (running in macOS app)
+ * @returns {boolean}
+ */
+export function canRevealInFinder() {
+  return typeof window.mittoRevealInFinder === "function";
+}
+
+/**
+ * Reveals a file or folder in Finder (macOS file browser).
+ * Opens Finder with the specified path selected.
+ * Only works in the native macOS app.
+ * @param {string} path - The file or folder path to reveal
+ */
+export function revealInFinder(path) {
+  if (typeof window.mittoRevealInFinder === "function") {
+    window.mittoRevealInFinder(path);
+  }
+}
+
+// =============================================================================
 // URL Fix Helper for Backwards Compatibility
 // =============================================================================
 

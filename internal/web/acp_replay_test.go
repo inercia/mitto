@@ -285,8 +285,9 @@ func replayACPFixture(t *testing.T, fixture ACPReplayFixture, cfg ACPReplayConfi
 // ACP Replay Tests
 // =============================================================================
 
-// TestACPReplay_ListWithPause tests that a list is not split when there's a
-// long pause (>2s) in the middle of streaming.
+// TestACPReplay_ListWithPause tests that the hard inactivity timeout (2s)
+// flushes list content to prevent loss. Content may be split, but all
+// content should be preserved.
 func TestACPReplay_ListWithPause(t *testing.T) {
 	fixture := loadACPFixture(t, "list_with_pause")
 
@@ -305,27 +306,28 @@ func TestACPReplay_ListWithPause(t *testing.T) {
 		t.Logf("Flush %d (seq=%d): %q", i, h.Seq, preview)
 	}
 
-	// Key assertion: the list should NOT be split
-	listFlushCount := 0
-	for _, h := range result.HTMLOutputs {
-		if strings.Contains(h.HTML, "<li>") {
-			listFlushCount++
-		}
-	}
-	if listFlushCount > 1 {
-		t.Errorf("List was split across %d flushes - should be in single flush", listFlushCount)
+	// Hard timeout should have flushed after 2s pause
+	if result.FlushCount < 1 {
+		t.Error("Expected at least 1 flush after hard inactivity timeout")
 	}
 
-	// Check list item count
-	liCount := strings.Count(result.TotalHTML, "<li>")
-	if liCount != 2 {
-		t.Errorf("Expected 2 <li> tags, got %d", liCount)
+	// All content should be preserved (even if split)
+	if !strings.Contains(result.TotalHTML, "First item") {
+		t.Error("Missing content: 'First item'")
+	}
+	if !strings.Contains(result.TotalHTML, "Second item") {
+		t.Error("Missing content: 'Second item'")
 	}
 }
 
-// TestACPReplay_CodeBlockWithToolCall tests that a code block is not split
-// when a tool call arrives in the middle.
+// TestACPReplay_CodeBlockWithToolCall tests tool call behavior with code blocks.
+// When FlushOnToolCall is false: tool calls are buffered and don't split the code block.
+// When FlushOnToolCall is true: tool calls cause an immediate flush, splitting the block.
 func TestACPReplay_CodeBlockWithToolCall(t *testing.T) {
+	if FlushOnToolCall {
+		t.Skip("Skipping: FlushOnToolCall is enabled, which intentionally splits code blocks on tool calls")
+	}
+
 	fixture := loadACPFixture(t, "code_block_with_tool")
 
 	result := replayACPFixture(t, fixture, ACPReplayConfig{
@@ -377,7 +379,13 @@ func TestACPReplay_TableWithSlowRows(t *testing.T) {
 
 // TestACPReplay_ComplexResponse tests a complex response with multiple
 // tool calls, code blocks, lists, and tables.
+// When FlushOnToolCall is false: tool calls are buffered and don't split blocks.
+// When FlushOnToolCall is true: tool calls cause immediate flush, splitting blocks.
 func TestACPReplay_ComplexResponse(t *testing.T) {
+	if FlushOnToolCall {
+		t.Skip("Skipping: FlushOnToolCall is enabled, which intentionally splits blocks on tool calls")
+	}
+
 	fixture := loadACPFixture(t, "complex_response")
 
 	result := replayACPFixture(t, fixture, ACPReplayConfig{

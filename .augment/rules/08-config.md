@@ -3,6 +3,16 @@ description: Configuration loading with LoadSettings, Config vs Settings types, 
 globs:
   - "internal/config/**/*"
   - "config/**/*"
+keywords:
+  - LoadSettings
+  - LoadSettingsWithFallback
+  - Config type
+  - Settings type
+  - mittorc
+  - settings.json
+  - queue configuration
+  - workspace persistence
+  - config merging
 ---
 
 # Configuration System

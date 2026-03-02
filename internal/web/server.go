@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -183,6 +182,13 @@ func NewServer(config Config) (*Server, error) {
 	store, err := session.DefaultStore()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session store: %w", err)
+	}
+
+	// Run data migrations before any other operations
+	migrationCtx := buildMigrationContext(config.MittoConfig)
+	if err := store.RunMigrations(migrationCtx); err != nil {
+		logger.Warn("Failed to run migrations", "error", err)
+		// Continue anyway - migrations are best-effort
 	}
 
 	// Cleanup old images on startup
@@ -546,18 +552,24 @@ func NewServer(config Config) (*Server, error) {
 		allowExternalImages: allowExternalImages,
 	})(handler)
 
-	// 6. Hide server info (outermost to catch all responses)
+	// 6. Gzip compression for external connections only
+	// Compresses text/html, text/css, application/javascript, application/json, etc.
+	// Skips compression for localhost (no network benefit, just CPU overhead)
+	// Skips WebSocket upgrades (they use permessage-deflate compression)
+	handler = gzipMiddleware(handler)
+
+	// 7. Hide server info (outermost to catch all responses)
 	handler = hideServerInfoMiddleware(handler)
 
 	// Wrap with logging middleware
 	handler = s.loggingMiddleware(handler)
 
-	// 7. Access logging for security-relevant events (outermost to capture final status)
+	// 8. Access logging for security-relevant events (outermost to capture final status)
 	if s.accessLogger != nil {
 		handler = s.accessLogger.Middleware(handler)
 	}
 
-	// 8. Defense recording middleware for request analysis
+	// 9. Defense recording middleware for request analysis
 	if s.defense != nil {
 		handler = s.defenseRecordingMiddleware(handler)
 	}
@@ -683,9 +695,7 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Check if server is shutting down
 	if s.IsShutdown() {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"status":  "unhealthy",
 			"reason":  "server_shutting_down",
 			"message": "Server is shutting down",
@@ -717,9 +727,7 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	writeJSONOK(w, response)
 }
 
 // loggingMiddleware logs HTTP requests.
@@ -902,6 +910,10 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
 func (s *Server) BroadcastACPStartFailed(sessionID, errorMsg string) {
+	if s.eventsManager == nil {
+		return
+	}
+
 	s.eventsManager.Broadcast(WSMsgTypeACPStartFailed, map[string]string{
 		"session_id": sessionID,
 		"error":      errorMsg,
@@ -961,6 +973,25 @@ func (a *sessionManagerAdapter) ListRunningSessions() []string {
 	return a.sm.ListRunningSessions()
 }
 
+// CloseSessionGracefully waits for any active response to complete before closing.
+func (a *sessionManagerAdapter) CloseSessionGracefully(sessionID, reason string, timeout time.Duration) bool {
+	return a.sm.CloseSessionGracefully(sessionID, reason, timeout)
+}
+
+// CloseSession immediately closes a session.
+func (a *sessionManagerAdapter) CloseSession(sessionID, reason string) {
+	a.sm.CloseSession(sessionID, reason)
+}
+
+// ResumeSession resumes an archived session by starting a new ACP connection.
+func (a *sessionManagerAdapter) ResumeSession(sessionID, sessionName, workingDir string) (mcpserver.BackgroundSession, error) {
+	bs, err := a.sm.ResumeSession(sessionID, sessionName, workingDir)
+	if err != nil {
+		return nil, err
+	}
+	return bs, nil
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================
@@ -1008,4 +1039,19 @@ func (s *Server) getPromptsWatchDirs() []string {
 	}
 
 	return dirs
+}
+
+// buildMigrationContext creates a MigrationContext from the current configuration.
+// This provides information needed by migrations to normalize data.
+func buildMigrationContext(cfg *configPkg.Config) *session.MigrationContext {
+	if cfg == nil || len(cfg.ACPServers) == 0 {
+		return nil
+	}
+
+	// Extract server names and use the shared helper
+	names := make([]string, len(cfg.ACPServers))
+	for i, srv := range cfg.ACPServers {
+		names[i] = srv.Name
+	}
+	return session.NewMigrationContext(names)
 }

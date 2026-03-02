@@ -16,7 +16,7 @@ topic.
 
 | Topic                  | Document                             | Description                                  |
 | ---------------------- | ------------------------------------ | -------------------------------------------- |
-| 🤖 **ACP Servers**     | [web/acp.md](web/acp.md)             | Claude Code, Auggie, GitHub Copilot setup    |
+| 🤖 **ACP Servers**     | [acp.md](acp.md)                     | Claude Code, Auggie, GitHub Copilot setup    |
 | 📁 **Workspace**       | [web/workspace.md](web/workspace.md) | Project-specific `.mittorc` files            |
 | 🌐 **External Access** | [ext-access.md](ext-access.md)       | Tailscale, ngrok, Cloudflare tunneling setup |
 
@@ -36,9 +36,9 @@ topic.
 | Topic               | Document                          | Key Sections                   |
 | ------------------- | --------------------------------- | ------------------------------ |
 | File locations      | [Overview](overview.md)           | Configuration Files            |
-| Claude Code setup   | [ACP Servers](web/acp.md)         | Claude Code                    |
-| Auggie setup        | [ACP Servers](web/acp.md)         | Auggie                         |
-| GitHub Copilot      | [ACP Servers](web/acp.md)         | GitHub Copilot                 |
+| Claude Code setup   | [ACP Servers](acp.md)             | Claude Code                    |
+| Auggie setup        | [ACP Servers](acp.md)             | Auggie                         |
+| GitHub Copilot      | [ACP Servers](acp.md)             | GitHub Copilot                 |
 | Authentication      | [Web Interface](web/README.md)    | Authentication                 |
 | Lifecycle hooks     | [Web Interface](web/README.md)    | Lifecycle Hooks                |
 | External access     | [External Access](ext-access.md)  | Tailscale, ngrok, Cloudflare   |

@@ -1,8 +1,14 @@
 ---
-description: Frontend UI components (ChatInput, QueueDropdown, Message, Icons), component patterns, and button group styling
+description: Frontend UI components (ChatInput, QueueDropdown, Message, Icons, ContextMenu, SessionItem), component patterns, and button group styling
 globs:
   - "web/static/components/*.js"
   - "web/static/components/**/*"
+  - "web/static/app.js"
+keywords:
+  - context menu
+  - session item
+  - chat input
+  - queue dropdown
 ---
 
 # Frontend UI Components
@@ -24,6 +30,8 @@ const { useState, useEffect, useRef, useCallback, html } = window.preact;
 | `Message`        | `Message.js`        | Renders user/agent/tool/error messages                               |
 | `SettingsDialog` | `SettingsDialog.js` | Configuration, workspaces, auth settings                             |
 | `Icons`          | `Icons.js`          | SVG icon components (TrashIcon, ChevronUpIcon, etc.)                 |
+| `ContextMenu`    | `app.js`            | Generic context menu (right-click menus) with viewport-aware positioning |
+| `SessionItem`    | `app.js`            | Session list item with swipe actions, context menu, status indicators |
 
 ## ChatInput Component
 
@@ -215,6 +223,80 @@ Helper functions for prompt tag styling:
 | `getContrastColor(hex)`       | Calculate black/white text for background |
 | `hexToHSL(hex)`               | Convert hex to HSL for sorting            |
 | `sortPromptsByColor(prompts)` | Sort prompts by hue for visual grouping   |
+
+## ContextMenu Component
+
+Renders a context menu (right-click menu) with viewport-aware positioning.
+
+**Location**: Defined in `app.js` (not a separate component file)
+
+### Props
+
+| Prop      | Type              | Description                         |
+| --------- | ----------------- | ----------------------------------- |
+| `x`       | `number`          | Mouse click X coordinate            |
+| `y`       | `number`          | Mouse click Y coordinate            |
+| `items`   | `Array<MenuItem>` | Menu items to display               |
+| `onClose` | `() => void`      | Called when menu should close       |
+
+### MenuItem Object
+
+```javascript
+{
+  label: "Archive",          // Display text
+  icon: html`<${ArchiveIcon} />`,  // Optional icon component
+  onClick: () => { ... },    // Action handler
+  disabled: false,           // Gray out and prevent click
+  danger: false              // Red styling for destructive actions
+}
+```
+
+### Positioning Pattern
+
+See `28-anti-patterns-ui.md` for the critical pattern about synchronous vs async positioning. The menu adjusts position to stay within viewport bounds.
+
+## SessionItem Component
+
+Renders a session in the sidebar list with swipe actions, context menu, and status indicators.
+
+**Location**: Defined in `app.js`
+
+### Features
+
+- **Swipe actions**: Left swipe reveals delete button (mobile)
+- **Context menu**: Right-click for Archive, Properties, Periodic, Delete
+- **Status indicators**: Active (green), Streaming (blue pulse), Archived (muted)
+- **Workspace badge**: Shows workspace color/code when grouped
+
+### Context Menu Integration
+
+```javascript
+function SessionItem({ session, ... }) {
+  const [contextMenu, setContextMenu] = useState(null);
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();  // Don't bubble to parent
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  return html`
+    <${Fragment}>
+      ${contextMenu && html`
+        <${ContextMenu}
+          x=${contextMenu.x}
+          y=${contextMenu.y}
+          items=${contextMenuItems}
+          onClose=${() => setContextMenu(null)}
+        />
+      `}
+      <div onContextMenu=${handleContextMenu}>
+        ...
+      </div>
+    <//>
+  `;
+}
+```
 
 ## Component Import Pattern
 

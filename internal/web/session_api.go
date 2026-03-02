@@ -47,13 +47,21 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// The frontend displays "New Conversation" as a placeholder for empty names
 
 	// Determine workspace to use
+	// Use sessionManager.GetWorkspaces() as the source of truth - it maintains the live
+	// workspace data that can be dynamically updated via the settings UI.
+	// s.config.GetWorkspaces() may be stale if workspaces were added/removed at runtime.
 	var workspace *config.WorkspaceSettings
-	workspaces := s.config.GetWorkspaces()
+	workspaces := s.sessionManager.GetWorkspaces()
 
 	if req.WorkingDir != "" {
 		// User specified a working directory - find matching workspace
+		// If acp_server is also specified, match both (for duplicate workspaces with same dir)
 		for i := range workspaces {
 			if workspaces[i].WorkingDir == req.WorkingDir {
+				// If ACP server is specified, only match if it also matches
+				if req.ACPServer != "" && workspaces[i].ACPServer != req.ACPServer {
+					continue
+				}
 				workspace = &workspaces[i]
 				break
 			}
@@ -61,7 +69,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// If not found in workspaces but working dir provided, create ad-hoc workspace
 		if workspace == nil {
 			// Use default workspace's ACP config with the requested directory
-			defaultWs := s.config.GetDefaultWorkspace()
+			defaultWs := s.sessionManager.GetDefaultWorkspace()
 			if defaultWs != nil {
 				workspace = &config.WorkspaceSettings{
 					ACPServer:  defaultWs.ACPServer,
@@ -76,7 +84,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		req.WorkingDir = workspace.WorkingDir
 	} else {
 		// Multiple workspaces - use default
-		workspace = s.config.GetDefaultWorkspace()
+		workspace = s.sessionManager.GetDefaultWorkspace()
 		if workspace != nil {
 			req.WorkingDir = workspace.WorkingDir
 		}
@@ -141,6 +149,10 @@ type SessionListResponse struct {
 	// This determines UI mode (shows frequency panel and lock/unlock buttons).
 	// Note: This indicates config existence, not whether periodic runs are active.
 	PeriodicEnabled bool `json:"periodic_enabled"`
+	// NextScheduledAt is the next scheduled time for periodic sessions (nil if not periodic or not scheduled).
+	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
+	// PeriodicFrequency is the frequency configuration for periodic sessions (nil if not periodic).
+	PeriodicFrequency *session.Frequency `json:"periodic_frequency,omitempty"`
 }
 
 // handleListSessions handles GET /api/sessions
@@ -166,7 +178,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
-	// Build response with periodic_enabled status
+	// Build response with periodic_enabled status and scheduling info
 	response := make([]SessionListResponse, len(sessions))
 	for i, meta := range sessions {
 		response[i] = SessionListResponse{
@@ -179,6 +191,11 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
 			// Periodic config exists - session is in periodic mode
 			response[i].PeriodicEnabled = true
+			// Include scheduling info for progress indicator
+			if periodic.NextScheduledAt != nil && !periodic.NextScheduledAt.IsZero() {
+				response[i].NextScheduledAt = periodic.NextScheduledAt
+			}
+			response[i].PeriodicFrequency = &periodic.Frequency
 		}
 	}
 
@@ -717,21 +734,30 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeJSONCreated(w, newWorkspace)
 }
 
-// handleRemoveWorkspace removes a workspace
+// handleRemoveWorkspace removes a workspace by UUID.
+// Supports both 'uuid' and legacy 'dir' query parameters for backwards compatibility.
 func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
+	uuid := r.URL.Query().Get("uuid")
 	workingDir := r.URL.Query().Get("dir")
-	if workingDir == "" {
-		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
+
+	// Find the workspace - prefer UUID, fall back to workingDir
+	var ws *config.WorkspaceSettings
+	if uuid != "" {
+		ws = s.sessionManager.GetWorkspaceByUUID(uuid)
+	} else if workingDir != "" {
+		// Legacy support: find first workspace matching directory
+		ws = s.sessionManager.GetWorkspace(workingDir)
+	} else {
+		http.Error(w, "uuid or dir query parameter is required", http.StatusBadRequest)
 		return
 	}
 
-	// Check if workspace exists
-	if ws := s.sessionManager.GetWorkspace(workingDir); ws == nil {
-		http.Error(w, fmt.Sprintf("Workspace not found for directory: %s", workingDir), http.StatusNotFound)
+	if ws == nil {
+		http.Error(w, "Workspace not found", http.StatusNotFound)
 		return
 	}
 
-	// Check if there are conversations using this workspace
+	// Check if there are conversations using this specific workspace
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := s.Store()
 	if store == nil {
@@ -748,10 +774,10 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Count conversations using this workspace
+	// Count conversations using this specific workspace (same dir AND server)
 	var conversationCount int
 	for _, sess := range sessions {
-		if sess.WorkingDir == workingDir {
+		if sess.WorkingDir == ws.WorkingDir && sess.ACPServer == ws.ACPServer {
 			conversationCount++
 		}
 	}
@@ -766,8 +792,8 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove the workspace
-	s.sessionManager.RemoveWorkspace(workingDir)
+	// Remove the workspace by UUID
+	s.sessionManager.RemoveWorkspace(ws.UUID)
 
 	// Also update the server config
 	s.config.Workspaces = s.sessionManager.GetWorkspaces()
@@ -791,12 +817,24 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Get the ACP server for this workspace (used for filtering prompts)
-	var acpServer string
+	// Get the ACP server type for this workspace (used for filtering prompts).
+	// We use the server type (not name) because prompts target types,
+	// and servers with the same type share prompts (e.g., auggie-fast and auggie-smart
+	// can both have type "auggie" to share prompts with acps: auggie).
+	var acpServerType string
+	var acpServerName string
 	if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
-		acpServer = ws.ACPServer
+		acpServerName = ws.ACPServer
 	} else if defaultWs := s.sessionManager.GetDefaultWorkspace(); defaultWs != nil {
-		acpServer = defaultWs.ACPServer
+		acpServerName = defaultWs.ACPServer
+	}
+	// Look up the server type from config (falls back to name if type is not set)
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		// Fallback: use name as type if server not found in config
+		acpServerType = acpServerName
 	}
 
 	// Get the file's last modification time for conditional requests
@@ -833,7 +871,7 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 	workspacePromptsDirs = append(workspacePromptsDirs, promptsDirs...)
 
 	// Load prompts from all workspace directories
-	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs, acpServer)
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs, acpServerType)
 
 	// Get inline prompts from .mittorc (highest priority)
 	inlinePrompts := s.sessionManager.GetWorkspacePrompts(workingDir)
@@ -844,7 +882,8 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 	if s.logger != nil {
 		s.logger.Debug("Returning workspace prompts",
 			"working_dir", workingDir,
-			"acp_server", acpServer,
+			"acp_server", acpServerName,
+			"acp_server_type", acpServerType,
 			"prompt_count", len(prompts),
 			"dir_prompt_count", len(dirPrompts),
 			"inline_prompt_count", len(inlinePrompts),
@@ -860,9 +899,10 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 
 // loadPromptsFromDirs loads prompts from a list of directories.
 // Relative paths are resolved against workspaceRoot.
-// If acpServer is specified, prompts are filtered to only include those allowed for that ACP server.
+// If acpServerType is specified, prompts are filtered to only include those allowed
+// for that ACP server type. The type is matched against the prompt's acps: field.
 // Non-existent directories are silently ignored.
-func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string, acpServer string) []config.WebPrompt {
+func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string, acpServerType string) []config.WebPrompt {
 	var allPrompts []config.WebPrompt
 
 	for _, dir := range dirs {
@@ -883,8 +923,8 @@ func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string, acpSer
 			continue
 		}
 
-		// Filter prompts by ACP server if specified
-		prompts = config.FilterPromptsByACP(prompts, acpServer)
+		// Filter prompts by ACP server type if specified
+		prompts = config.FilterPromptsByACP(prompts, acpServerType)
 
 		// Convert to WebPrompts and merge (later dirs override earlier)
 		webPrompts := config.PromptsToWebPrompts(prompts)

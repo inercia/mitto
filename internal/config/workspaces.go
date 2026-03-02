@@ -61,6 +61,10 @@ type WorkspaceSettings struct {
 	// Code is the optional three-letter code for the workspace badge
 	// If not set, a code is automatically generated from the workspace path
 	Code string `json:"code,omitempty"`
+	// AutoApprove enables automatic approval of permission requests for sessions in this workspace.
+	// When true, all permission requests (file writes, command execution, etc.) are auto-approved.
+	// When false or nil, the global auto_approve setting or per-conversation settings apply.
+	AutoApprove *bool `json:"auto_approve,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.
@@ -90,6 +94,13 @@ func (w *WorkspaceSettings) GetRestrictedRunner() string {
 		return RunnerTypeExec
 	}
 	return w.RestrictedRunner
+}
+
+// IsAutoApprove returns whether permission requests should be auto-approved for this workspace.
+// Returns nil if not configured (fall back to global/server settings), true if explicitly enabled,
+// or false if explicitly disabled.
+func (w *WorkspaceSettings) IsAutoApprove() *bool {
+	return w.AutoApprove
 }
 
 // ValidateRestrictedRunner validates the restricted_runner field.

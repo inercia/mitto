@@ -71,10 +71,13 @@ func TestValidateConfigRequest_NoWorkspaces(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{},
 		ACPServers: []struct {
-			Name    string                  `json:"name"`
-			Command string                  `json:"command"`
-			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
-			Source  config.ConfigItemSource `json:"source,omitempty"`
+			Name        string                  `json:"name"`
+			Command     string                  `json:"command"`
+			Type        string                  `json:"type,omitempty"`
+			Env         map[string]string       `json:"env,omitempty"`
+			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
+			Source      config.ConfigItemSource `json:"source,omitempty"`
+			AutoApprove bool                    `json:"auto_approve,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
 	}
 
@@ -93,10 +96,13 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string                  `json:"name"`
-			Command string                  `json:"command"`
-			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
-			Source  config.ConfigItemSource `json:"source,omitempty"`
+			Name        string                  `json:"name"`
+			Command     string                  `json:"command"`
+			Type        string                  `json:"type,omitempty"`
+			Env         map[string]string       `json:"env,omitempty"`
+			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
+			Source      config.ConfigItemSource `json:"source,omitempty"`
+			AutoApprove bool                    `json:"auto_approve,omitempty"`
 		}{},
 	}
 
@@ -115,10 +121,13 @@ func TestValidateConfigRequest_EmptyServerName(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string                  `json:"name"`
-			Command string                  `json:"command"`
-			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
-			Source  config.ConfigItemSource `json:"source,omitempty"`
+			Name        string                  `json:"name"`
+			Command     string                  `json:"command"`
+			Type        string                  `json:"type,omitempty"`
+			Env         map[string]string       `json:"env,omitempty"`
+			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
+			Source      config.ConfigItemSource `json:"source,omitempty"`
+			AutoApprove bool                    `json:"auto_approve,omitempty"`
 		}{{Name: "", Command: "cmd"}},
 	}
 
@@ -134,10 +143,13 @@ func TestValidateConfigRequest_EmptyServerCommand(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string                  `json:"name"`
-			Command string                  `json:"command"`
-			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
-			Source  config.ConfigItemSource `json:"source,omitempty"`
+			Name        string                  `json:"name"`
+			Command     string                  `json:"command"`
+			Type        string                  `json:"type,omitempty"`
+			Env         map[string]string       `json:"env,omitempty"`
+			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
+			Source      config.ConfigItemSource `json:"source,omitempty"`
+			AutoApprove bool                    `json:"auto_approve,omitempty"`
 		}{{Name: "test", Command: ""}},
 	}
 
@@ -153,10 +165,13 @@ func TestValidateConfigRequest_DuplicateServerName(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string                  `json:"name"`
-			Command string                  `json:"command"`
-			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
-			Source  config.ConfigItemSource `json:"source,omitempty"`
+			Name        string                  `json:"name"`
+			Command     string                  `json:"command"`
+			Type        string                  `json:"type,omitempty"`
+			Env         map[string]string       `json:"env,omitempty"`
+			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
+			Source      config.ConfigItemSource `json:"source,omitempty"`
+			AutoApprove bool                    `json:"auto_approve,omitempty"`
 		}{
 			{Name: "test", Command: "cmd1"},
 			{Name: "test", Command: "cmd2"},
@@ -175,10 +190,13 @@ func TestValidateConfigRequest_Valid(t *testing.T) {
 	req := &ConfigSaveRequest{
 		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
 		ACPServers: []struct {
-			Name    string                  `json:"name"`
-			Command string                  `json:"command"`
-			Prompts []config.WebPrompt      `json:"prompts,omitempty"`
-			Source  config.ConfigItemSource `json:"source,omitempty"`
+			Name        string                  `json:"name"`
+			Command     string                  `json:"command"`
+			Type        string                  `json:"type,omitempty"`
+			Env         map[string]string       `json:"env,omitempty"`
+			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
+			Source      config.ConfigItemSource `json:"source,omitempty"`
+			AutoApprove bool                    `json:"auto_approve,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
 	}
 

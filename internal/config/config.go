@@ -21,6 +21,12 @@ type ACPServer struct {
 	// If empty, the process inherits the current working directory.
 	// This eliminates the need for shell tricks like 'sh -c "cd /some/dir && command"'.
 	Cwd string
+	// Type is an optional type identifier for prompt matching.
+	// Servers with the same type share prompts. If empty, Name is used as the type.
+	Type string
+	// Env is a map of environment variables to set when starting the ACP server.
+	// These are merged with the current environment (server-specific vars take precedence).
+	Env map[string]string
 	// Prompts is an optional list of predefined prompts specific to this ACP server
 	Prompts []WebPrompt
 	// RestrictedRunners contains per-runner-type configuration for this agent.
@@ -28,6 +34,18 @@ type ACPServer struct {
 	// Source indicates where this server configuration originated from.
 	// Used for config layering: servers from RC file are read-only in the UI.
 	Source ConfigItemSource
+	// AutoApprove enables automatic approval of permission requests for this ACP server.
+	// This is a per-server override; the global AutoApprove flag takes precedence if set.
+	AutoApprove bool
+}
+
+// GetType returns the type identifier for prompt matching.
+// If Type is not set, returns the Name as the type.
+func (s *ACPServer) GetType() string {
+	if s.Type != "" {
+		return s.Type
+	}
+	return s.Name
 }
 
 // PromptSource indicates where a prompt originated from.
@@ -251,6 +269,13 @@ type WebUIConfig struct {
 	// Options: "all" (default) - all non-archived conversations
 	//          "visible_groups" - only conversations in expanded groups
 	ConversationCyclingMode string `json:"conversation_cycling_mode,omitempty"`
+
+	// SingleExpandedGroup enables accordion-style behavior for conversation groups.
+	// When enabled, at most one conversation group can be expanded at a time.
+	// Expanding a group will automatically collapse any other expanded group.
+	// This only applies when conversation grouping is enabled.
+	// Default: false
+	SingleExpandedGroup bool `json:"single_expanded_group,omitempty"`
 }
 
 // UIConfig represents UI configuration for the desktop app.
@@ -831,6 +856,27 @@ type WorkspaceRunnerConfig struct {
 	MergeStrategy string `json:"merge_strategy,omitempty" yaml:"merge_strategy,omitempty"`
 }
 
+// PermissionsConfig configures how permission requests from agents are handled.
+// Permission requests occur when an agent wants to perform sensitive operations
+// like running commands, accessing files outside the workspace, etc.
+type PermissionsConfig struct {
+	// AutoApprove enables automatic approval of permission requests.
+	// When true, all permission requests are automatically approved without
+	// showing a dialog to the user.
+	// Default: true (until the permission UI is fully implemented)
+	// TODO: Change default to false once permission dialog is implemented.
+	AutoApprove *bool `json:"auto_approve,omitempty" yaml:"auto_approve,omitempty"`
+}
+
+// IsAutoApprove returns whether permission requests should be auto-approved.
+// Safe to call on nil receiver - returns true (the current default) if not configured.
+func (p *PermissionsConfig) IsAutoApprove() bool {
+	if p == nil || p.AutoApprove == nil {
+		return true // Default: auto-approve until UI is ready
+	}
+	return *p.AutoApprove
+}
+
 // MCPConfig contains configuration for the MCP (Model Context Protocol) server.
 // The MCP server provides debugging tools and UI prompt functionality to AI agents.
 type MCPConfig struct {
@@ -886,6 +932,8 @@ type Config struct {
 	Session *SessionConfig
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig
+	// Permissions contains global permission handling configuration
+	Permissions *PermissionsConfig
 	// RestrictedRunners contains per-runner-type global configuration.
 	// Key is the runner type (e.g., "exec", "sandbox-exec", "firejail", "docker").
 	RestrictedRunners map[string]*WorkspaceRunnerConfig
@@ -895,8 +943,10 @@ type Config struct {
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
 type rawACPServerConfig struct {
-	Command string `yaml:"command"`
-	Cwd     string `yaml:"cwd"`
+	Command string            `yaml:"command"`
+	Cwd     string            `yaml:"cwd"`
+	Type    string            `yaml:"type"` // Optional type for prompt matching; defaults to name
+	Env     map[string]string `yaml:"env"`  // Environment variables to set when starting the server
 	Prompts []struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
@@ -959,6 +1009,7 @@ type rawConfig struct {
 		Web *struct {
 			InputFontFamily         string `yaml:"input_font_family"`
 			ConversationCyclingMode string `yaml:"conversation_cycling_mode"`
+			SingleExpandedGroup     bool   `yaml:"single_expanded_group"`
 		} `yaml:"web"`
 		Mac *struct {
 			Hotkeys *struct {
@@ -1005,6 +1056,10 @@ type rawConfig struct {
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
+	// Permissions is the global permission handling configuration
+	Permissions *struct {
+		AutoApprove *bool `yaml:"auto_approve"`
+	} `yaml:"permissions"`
 	// MCP is the MCP server configuration
 	MCP *struct {
 		Enabled *bool  `yaml:"enabled"`
@@ -1066,6 +1121,8 @@ func Parse(data []byte) (*Config, error) {
 				Name:              name,
 				Command:           server.Command,
 				Cwd:               server.Cwd,
+				Type:              server.Type, // Optional type for prompt matching
+				Env:               server.Env,  // Environment variables
 				RestrictedRunners: server.RestrictedRunners,
 			}
 			// Copy server-specific prompts
@@ -1151,6 +1208,7 @@ func Parse(data []byte) (*Config, error) {
 			cfg.UI.Web = &WebUIConfig{
 				InputFontFamily:         raw.UI.Web.InputFontFamily,
 				ConversationCyclingMode: raw.UI.Web.ConversationCyclingMode,
+				SingleExpandedGroup:     raw.UI.Web.SingleExpandedGroup,
 			}
 		}
 
@@ -1253,6 +1311,13 @@ func Parse(data []byte) (*Config, error) {
 	// Copy restricted runners (top-level per-runner-type config)
 	cfg.RestrictedRunners = raw.RestrictedRunners
 
+	// Parse permissions config
+	if raw.Permissions != nil {
+		cfg.Permissions = &PermissionsConfig{
+			AutoApprove: raw.Permissions.AutoApprove,
+		}
+	}
+
 	// Parse MCP config
 	if raw.MCP != nil {
 		cfg.MCP = &MCPConfig{
@@ -1281,6 +1346,17 @@ func (c *Config) GetServer(name string) (*ACPServer, error) {
 		}
 	}
 	return nil, fmt.Errorf("ACP server %q not found in configuration", name)
+}
+
+// GetServerType returns the type identifier for an ACP server by name.
+// If the server has a Type set, returns that; otherwise returns the server name.
+// Returns empty string if the server is not found.
+func (c *Config) GetServerType(name string) string {
+	srv, err := c.GetServer(name)
+	if err != nil {
+		return ""
+	}
+	return srv.GetType()
 }
 
 // ServerNames returns a list of all configured server names.

@@ -3328,3 +3328,143 @@ func TestUIPrompt(t *testing.T) {
 		}
 	})
 }
+
+// TestCancel_DismissesActiveUIPrompt tests that Cancel() properly dismisses any active UI prompt.
+// This ensures that when the user presses the Stop button, any pending MCP tool UI prompts
+// (like yes/no questions or option selections) are dismissed and the UI is cleaned up.
+func TestCancel_DismissesActiveUIPrompt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		persistedID: "test-session-cancel-ui",
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Track what the observer receives
+	var dismissReceived bool
+	var dismissRequestID string
+	var dismissReason string
+	var mu sync.Mutex
+	promptReceived := make(chan struct{}, 1)
+	dismissDone := make(chan struct{}, 1)
+
+	observer := &trackingObserver{
+		onUIPrompt: func(req UIPromptRequest) {
+			promptReceived <- struct{}{}
+		},
+		onUIPromptDismiss: func(requestID string, reason string) {
+			mu.Lock()
+			dismissReceived = true
+			dismissRequestID = requestID
+			dismissReason = reason
+			mu.Unlock()
+			select {
+			case dismissDone <- struct{}{}:
+			default:
+			}
+		},
+	}
+	bs.AddObserver(observer)
+
+	// Start a goroutine that will start a UI prompt and wait for the answer
+	promptDone := make(chan UIPromptResponse)
+	go func() {
+		req := UIPromptRequest{
+			RequestID:      "cancel-test-request",
+			Type:           UIPromptTypeYesNo,
+			Question:       "This will be cancelled?",
+			Options:        []UIPromptOption{{ID: "yes", Label: "Yes"}, {ID: "no", Label: "No"}},
+			TimeoutSeconds: 30, // Long timeout - we'll cancel before it expires
+		}
+		resp, _ := bs.UIPrompt(ctx, req)
+		promptDone <- resp
+	}()
+
+	// Wait for prompt to be sent to observer
+	select {
+	case <-promptReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Prompt was not received by observer")
+	}
+
+	// Verify there's an active prompt
+	activePrompt := bs.GetActiveUIPrompt()
+	if activePrompt == nil {
+		t.Fatal("There should be an active UI prompt before Cancel()")
+	}
+	if activePrompt.RequestID != "cancel-test-request" {
+		t.Errorf("Active prompt request ID = %q, want %q", activePrompt.RequestID, "cancel-test-request")
+	}
+
+	// Now call Cancel() - this should dismiss the active UI prompt
+	bs.Cancel()
+
+	// Wait for dismiss notification (sent via goroutine)
+	select {
+	case <-dismissDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dismiss notification was not received")
+	}
+
+	// Verify the prompt was dismissed with "cancelled" reason
+	mu.Lock()
+	if !dismissReceived {
+		t.Error("Observer should have received OnUIPromptDismiss call")
+	}
+	if dismissRequestID != "cancel-test-request" {
+		t.Errorf("Dismiss request ID = %q, want %q", dismissRequestID, "cancel-test-request")
+	}
+	if dismissReason != "cancelled" {
+		t.Errorf("Dismiss reason = %q, want %q", dismissReason, "cancelled")
+	}
+	mu.Unlock()
+
+	// Verify the prompt response indicates timeout/cancellation
+	select {
+	case resp := <-promptDone:
+		if !resp.TimedOut {
+			t.Error("Response should be marked as timed out after cancellation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("UI prompt goroutine did not complete after Cancel()")
+	}
+
+	// Verify there's no longer an active prompt
+	if bs.GetActiveUIPrompt() != nil {
+		t.Error("There should be no active UI prompt after Cancel()")
+	}
+}
+
+// TestCancel_NoActiveUIPrompt tests that Cancel() works correctly when there's no active UI prompt.
+func TestCancel_NoActiveUIPrompt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		persistedID: "test-session-cancel-no-ui",
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Verify no active prompt
+	if bs.GetActiveUIPrompt() != nil {
+		t.Fatal("There should be no active UI prompt initially")
+	}
+
+	// Call Cancel() - should not panic or cause issues
+	err := bs.Cancel()
+	if err != nil {
+		t.Errorf("Cancel() returned unexpected error: %v", err)
+	}
+
+	// Verify still no active prompt
+	if bs.GetActiveUIPrompt() != nil {
+		t.Error("There should still be no active UI prompt after Cancel()")
+	}
+}

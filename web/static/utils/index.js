@@ -28,8 +28,17 @@ export {
   cycleGroupingMode,
   isGroupExpanded,
   setGroupExpanded,
+  getExpandedGroups,
+  getSingleExpandedGroupMode,
+  setSingleExpandedGroupMode,
   initUIPreferences,
   onUIPreferencesLoaded,
+  FILTER_TAB,
+  getFilterTab,
+  setFilterTab,
+  getFilterTabGrouping,
+  setFilterTabGrouping,
+  cycleFilterTabGrouping,
 } from "./storage.js";
 
 export { playAgentCompletedSound } from "./audio.js";

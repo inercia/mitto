@@ -212,13 +212,3 @@ var ACPServerSettingsMerger = &GenericMerger[ACPServerSettings]{
 	},
 	Strategy: MergeStrategyUnion,
 }
-
-// MergeACPServerSettings combines ACPServerSettings from RC file and settings.
-func MergeACPServerSettings(rcfileServers, settingsServers []ACPServerSettings) MergeResult[ACPServerSettings] {
-	return ACPServerSettingsMerger.Merge(rcfileServers, settingsServers)
-}
-
-// GetSettingsOnlyServerSettings returns only ACPServerSettings from settings.json.
-func GetSettingsOnlyServerSettings(servers []ACPServerSettings) []ACPServerSettings {
-	return FilterBySource(servers, ACPServerSettingsMerger.GetSource, SourceSettings)
-}

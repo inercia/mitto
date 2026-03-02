@@ -45,9 +45,6 @@ acp:
       command: npx -y @zed-industries/claude-code-acp@latest
   - copilot:
       command: copilot --acp
-  - my-agent:
-      command: my-agent --acp
-      cwd: /home/user/my-project # Optional: working directory for the process
 ```
 
 Each server has:
@@ -58,7 +55,12 @@ Each server has:
 
 The first server in the list is the default.
 
-See [ACP Servers Configuration](web/acp.md) for detailed setup instructions for each supported agent (Claude, Auggie, Copilot).
+See [ACP Servers](acp.md) for detailed documentation including:
+
+- Setup instructions for Claude Code, Auggie, and GitHub Copilot
+- Working directory configuration
+- Multiple configurations of the same agent (different profiles)
+- Per-server prompts
 
 ### Web Interface
 
@@ -162,7 +164,7 @@ ui:
 
 ## Related Documentation
 
-- [ACP Servers](web/acp.md) - Setup instructions for Claude, Auggie, Copilot
+- [ACP Servers](acp.md) - Agent setup, multiple configurations, per-server prompts
 - [Workspace Configuration](web/workspace.md) - Project-specific `.mittorc` files
 - [Conversation Processing](conversations.md) - Message processing rules
 - [Web Interface Configuration](web/README.md) - Web server, authentication, hooks, security

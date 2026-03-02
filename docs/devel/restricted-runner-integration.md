@@ -1301,7 +1301,7 @@ restricted_runner:
 
 - [Restricted Execution User Guide](../config/restricted.md) - **Main user-facing documentation**
 - [Mitto Configuration Overview](../config/overview.md)
-- [ACP Server Configuration](../config/web/acp.md)
+- [ACP Server Configuration](../config/acp.md)
 - [Workspace Configuration](../config/web/workspace.md)
 
 ### Developer Documentation

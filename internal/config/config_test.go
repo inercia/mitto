@@ -84,6 +84,57 @@ acp:
 	}
 }
 
+func TestParse_ACPServerType(t *testing.T) {
+	yaml := `
+acp:
+  - auggie-fast:
+      command: "auggie --acp --model fast"
+      type: auggie
+  - auggie-smart:
+      command: "auggie --acp --model smart"
+      type: auggie
+  - claude-code:
+      command: "claude-code --acp"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.ACPServers) != 3 {
+		t.Fatalf("ACPServers count = %d, want 3", len(cfg.ACPServers))
+	}
+
+	// First server should have type "auggie"
+	if cfg.ACPServers[0].Type != "auggie" {
+		t.Errorf("first server type = %q, want %q", cfg.ACPServers[0].Type, "auggie")
+	}
+	if cfg.ACPServers[0].GetType() != "auggie" {
+		t.Errorf("first server GetType() = %q, want %q", cfg.ACPServers[0].GetType(), "auggie")
+	}
+
+	// Second server should also have type "auggie"
+	if cfg.ACPServers[1].Type != "auggie" {
+		t.Errorf("second server type = %q, want %q", cfg.ACPServers[1].Type, "auggie")
+	}
+
+	// Third server should have empty type (GetType falls back to name)
+	if cfg.ACPServers[2].Type != "" {
+		t.Errorf("third server type = %q, want empty string", cfg.ACPServers[2].Type)
+	}
+	if cfg.ACPServers[2].GetType() != "claude-code" {
+		t.Errorf("third server GetType() = %q, want %q", cfg.ACPServers[2].GetType(), "claude-code")
+	}
+
+	// Test GetServerType on config
+	if cfg.GetServerType("auggie-fast") != "auggie" {
+		t.Errorf("GetServerType(auggie-fast) = %q, want %q", cfg.GetServerType("auggie-fast"), "auggie")
+	}
+	if cfg.GetServerType("claude-code") != "claude-code" {
+		t.Errorf("GetServerType(claude-code) = %q, want %q", cfg.GetServerType("claude-code"), "claude-code")
+	}
+}
+
 func TestParse_EmptyACPServers(t *testing.T) {
 	yaml := `
 acp: []
@@ -636,6 +687,85 @@ func TestServerNames_Empty(t *testing.T) {
 
 	if len(names) != 0 {
 		t.Errorf("ServerNames = %v, want empty slice", names)
+	}
+}
+
+func TestACPServer_GetType(t *testing.T) {
+	tests := []struct {
+		name     string
+		server   ACPServer
+		wantType string
+	}{
+		{
+			name:     "type set explicitly",
+			server:   ACPServer{Name: "auggie-fast", Type: "auggie"},
+			wantType: "auggie",
+		},
+		{
+			name:     "type not set - falls back to name",
+			server:   ACPServer{Name: "claude-code"},
+			wantType: "claude-code",
+		},
+		{
+			name:     "empty type - falls back to name",
+			server:   ACPServer{Name: "my-server", Type: ""},
+			wantType: "my-server",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.server.GetType()
+			if got != tt.wantType {
+				t.Errorf("GetType() = %q, want %q", got, tt.wantType)
+			}
+		})
+	}
+}
+
+func TestConfig_GetServerType(t *testing.T) {
+	cfg := &Config{
+		ACPServers: []ACPServer{
+			{Name: "auggie-fast", Type: "auggie"},
+			{Name: "auggie-smart", Type: "auggie"},
+			{Name: "claude-code"}, // No type - should return name
+		},
+	}
+
+	tests := []struct {
+		name       string
+		serverName string
+		wantType   string
+	}{
+		{
+			name:       "server with explicit type",
+			serverName: "auggie-fast",
+			wantType:   "auggie",
+		},
+		{
+			name:       "another server with same type",
+			serverName: "auggie-smart",
+			wantType:   "auggie",
+		},
+		{
+			name:       "server without type - falls back to name",
+			serverName: "claude-code",
+			wantType:   "claude-code",
+		},
+		{
+			name:       "non-existent server - returns empty",
+			serverName: "unknown",
+			wantType:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cfg.GetServerType(tt.serverName)
+			if got != tt.wantType {
+				t.Errorf("GetServerType(%q) = %q, want %q", tt.serverName, got, tt.wantType)
+			}
+		})
 	}
 }
 
@@ -1735,5 +1865,118 @@ func TestMergePrompts_SkipsEmptyNames(t *testing.T) {
 	}
 	if result[0].Name != "Valid" {
 		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "Valid")
+	}
+}
+
+func TestParse_PermissionsConfig(t *testing.T) {
+	yamlData := `
+acp:
+  - test:
+      command: echo test
+permissions:
+  auto_approve: false
+`
+	cfg, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.Permissions == nil {
+		t.Fatal("Permissions should not be nil")
+	}
+	if cfg.Permissions.AutoApprove == nil {
+		t.Fatal("Permissions.AutoApprove should not be nil")
+	}
+	if *cfg.Permissions.AutoApprove != false {
+		t.Error("Permissions.AutoApprove should be false")
+	}
+}
+
+func TestParse_PermissionsConfigTrue(t *testing.T) {
+	yamlData := `
+acp:
+  - test:
+      command: echo test
+permissions:
+  auto_approve: true
+`
+	cfg, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.Permissions == nil {
+		t.Fatal("Permissions should not be nil")
+	}
+	if cfg.Permissions.AutoApprove == nil {
+		t.Fatal("Permissions.AutoApprove should not be nil")
+	}
+	if *cfg.Permissions.AutoApprove != true {
+		t.Error("Permissions.AutoApprove should be true")
+	}
+}
+
+func TestParse_PermissionsConfigDefault(t *testing.T) {
+	// No permissions section - should default to auto_approve=true
+	yamlData := `
+acp:
+  - test:
+      command: echo test
+`
+	cfg, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Permissions section should be nil when not specified
+	if cfg.Permissions != nil {
+		t.Fatal("Permissions should be nil when not specified")
+	}
+
+	// But IsAutoApprove should return true (the default)
+	if !cfg.Permissions.IsAutoApprove() {
+		t.Error("IsAutoApprove() should return true for nil Permissions")
+	}
+}
+
+func TestPermissionsConfig_IsAutoApprove(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *PermissionsConfig
+		expected bool
+	}{
+		{
+			name:     "nil config - defaults to true",
+			config:   nil,
+			expected: true,
+		},
+		{
+			name:     "empty config - defaults to true",
+			config:   &PermissionsConfig{},
+			expected: true,
+		},
+		{
+			name: "explicit true",
+			config: &PermissionsConfig{
+				AutoApprove: func() *bool { b := true; return &b }(),
+			},
+			expected: true,
+		},
+		{
+			name: "explicit false",
+			config: &PermissionsConfig{
+				AutoApprove: func() *bool { b := false; return &b }(),
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.IsAutoApprove()
+			if result != tt.expected {
+				t.Errorf("IsAutoApprove() = %v, want %v", result, tt.expected)
+			}
+		})
 	}
 }

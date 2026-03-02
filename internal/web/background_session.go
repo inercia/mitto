@@ -2066,6 +2066,10 @@ func (bs *BackgroundSession) GetActionButtons() []ActionButton {
 // This sends a cancel notification to the ACP agent and resets the isPrompting flag
 // so the session can accept new prompts even if the agent doesn't respond to the cancel.
 func (bs *BackgroundSession) Cancel() error {
+	// Dismiss any active UI prompt first (MCP tool questions, permissions, etc.)
+	// This ensures the UI is cleaned up when the user presses Stop.
+	bs.DismissActiveUIPrompt()
+
 	// Reset prompting state regardless of whether cancel succeeds
 	// This ensures the session can accept new prompts even if the agent is unresponsive
 	bs.promptMu.Lock()
@@ -2579,6 +2583,7 @@ func (bs *BackgroundSession) onFileRead(seq int64, path string, size int) {
 
 func (bs *BackgroundSession) onPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	if bs.IsClosed() {
+		bs.logger.Debug("permission_request_rejected", "reason", "session_closed")
 		return acp.RequestPermissionResponse{}, &sessionError{"session is closed"}
 	}
 
@@ -2588,50 +2593,134 @@ func (bs *BackgroundSession) onPermission(ctx context.Context, params acp.Reques
 		title = *params.ToolCall.Title
 	}
 
-	// Check if we have any observers
-	hasObservers := bs.HasObservers()
+	bs.logger.Debug("permission_request_received",
+		"title", title,
+		"tool_call_id", params.ToolCall.ToolCallId,
+		"auto_approve", bs.autoApprove,
+		"has_observers", bs.HasObservers(),
+		"options_count", len(params.Options))
 
-	// If no observers, auto-approve if configured
-	if !hasObservers {
-		if bs.autoApprove {
-			resp := mittoAcp.AutoApprovePermission(params.Options)
-			// Record the permission decision
-			if bs.recorder != nil && resp.Outcome.Selected != nil {
-				bs.recorder.RecordPermission(title, string(resp.Outcome.Selected.OptionId), "auto_approved_no_client")
+	// Check if auto-approve is enabled (global flag OR per-session setting)
+	autoApprove := bs.autoApprove
+	if !autoApprove && bs.store != nil && bs.persistedID != "" {
+		// Check per-session auto-approve flag
+		if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil {
+			autoApprove = session.GetFlagValue(meta.AdvancedSettings, session.FlagAutoApprovePermissions)
+			if autoApprove {
+				bs.logger.Debug("permission_using_session_auto_approve",
+					"title", title,
+					"tool_call_id", params.ToolCall.ToolCallId,
+					"session_id", bs.persistedID)
 			}
-			return resp, nil
 		}
-		// No observers and no auto-approve - cancel
+	}
+
+	if autoApprove {
+		resp := mittoAcp.AutoApprovePermission(params.Options)
+		selectedOption := ""
+		if resp.Outcome.Selected != nil {
+			selectedOption = string(resp.Outcome.Selected.OptionId)
+		}
+		bs.logger.Info("permission_auto_approved",
+			"title", title,
+			"tool_call_id", params.ToolCall.ToolCallId,
+			"selected_option", selectedOption)
+		// Record the permission decision
+		if bs.recorder != nil && resp.Outcome.Selected != nil {
+			bs.recorder.RecordPermission(title, string(resp.Outcome.Selected.OptionId), "auto_approved")
+		}
+		return resp, nil
+	}
+
+	// Check if we have any observers to show the permission dialog
+	hasObservers := bs.HasObservers()
+	if !hasObservers {
+		bs.logger.Warn("permission_cancelled",
+			"title", title,
+			"tool_call_id", params.ToolCall.ToolCallId,
+			"reason", "no_observers")
 		return mittoAcp.CancelledPermissionResponse(), nil
 	}
 
-	// Get a snapshot of observers
-	bs.observersMu.RLock()
-	observers := make([]SessionObserver, 0, len(bs.observers))
-	for o := range bs.observers {
-		observers = append(observers, o)
-	}
-	bs.observersMu.RUnlock()
+	// Convert ACP permission options to unified UIPromptOptions
+	options := make([]UIPromptOption, len(params.Options))
+	for i, opt := range params.Options {
+		// Determine button style based on option kind
+		var style UIPromptOptionStyle
+		switch opt.Kind {
+		case acp.PermissionOptionKindAllowOnce, acp.PermissionOptionKindAllowAlways:
+			style = UIPromptOptionStyleSuccess
+		case acp.PermissionOptionKindRejectOnce:
+			style = UIPromptOptionStyleDanger
+		default:
+			style = UIPromptOptionStyleSecondary
+		}
 
-	// Ask first observer for permission (others just observe)
-	if len(observers) > 0 {
-		resp, err := observers[0].OnPermission(ctx, params)
-		if err == nil {
-			// Persist the permission decision
-			if bs.recorder != nil {
-				if resp.Outcome.Selected != nil {
-					bs.recorder.RecordPermission(title, string(resp.Outcome.Selected.OptionId), "user_selected")
-				} else {
-					bs.recorder.RecordPermission(title, "", "cancelled")
-				}
-			}
-			return resp, nil
+		options[i] = UIPromptOption{
+			ID:    string(opt.OptionId),
+			Label: opt.Name,
+			Kind:  string(opt.Kind),
+			Style: style,
 		}
 	}
 
-	// No observer handled it - cancel
+	// Create a UIPromptRequest for the permission dialog
+	toolCallID := string(params.ToolCall.ToolCallId)
+	promptReq := UIPromptRequest{
+		RequestID:      toolCallID,
+		Type:           UIPromptTypePermission,
+		Question:       "Permission requested",
+		Title:          title,
+		Options:        options,
+		TimeoutSeconds: 300, // 5 minute timeout for permissions
+		Blocking:       true,
+		ToolCallID:     toolCallID,
+	}
+
+	bs.logger.Debug("permission_showing_ui_prompt",
+		"title", title,
+		"tool_call_id", params.ToolCall.ToolCallId,
+		"option_count", len(options))
+
+	// Use the unified UIPrompt system to show the permission dialog and wait for response
+	resp, err := bs.UIPrompt(ctx, promptReq)
+	if err != nil {
+		bs.logger.Warn("permission_prompt_error",
+			"title", title,
+			"tool_call_id", params.ToolCall.ToolCallId,
+			"error", err)
+		return mittoAcp.CancelledPermissionResponse(), nil
+	}
+
+	// Handle timeout
+	if resp.TimedOut {
+		bs.logger.Warn("permission_timed_out",
+			"title", title,
+			"tool_call_id", params.ToolCall.ToolCallId)
+		if bs.recorder != nil {
+			bs.recorder.RecordPermission(title, "", "timed_out")
+		}
+		return mittoAcp.CancelledPermissionResponse(), nil
+	}
+
+	// Convert the UIPromptResponse back to ACP permission response
+	bs.logger.Info("permission_user_selected",
+		"title", title,
+		"tool_call_id", params.ToolCall.ToolCallId,
+		"selected_option", resp.OptionID)
+
+	// Record the permission decision
+	if bs.recorder != nil {
+		bs.recorder.RecordPermission(title, resp.OptionID, "user_selected")
+	}
+
+	// Build ACP response
 	return acp.RequestPermissionResponse{
-		Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
+		Outcome: acp.RequestPermissionOutcome{
+			Selected: &acp.RequestPermissionOutcomeSelected{
+				OptionId: acp.PermissionOptionId(resp.OptionID),
+			},
+		},
 	}, nil
 }
 
@@ -3033,6 +3122,26 @@ func (bs *BackgroundSession) DismissPrompt(requestID string) {
 
 	if bs.activePrompt == nil || bs.activePrompt.request.RequestID != requestID {
 		return
+	}
+
+	bs.dismissActivePromptLocked("cancelled")
+}
+
+// DismissActiveUIPrompt dismisses any active UI prompt, regardless of its request ID.
+// This is called when the session is cancelled (e.g., user presses Stop button)
+// to clean up any MCP tool UI prompts that are waiting for user input.
+func (bs *BackgroundSession) DismissActiveUIPrompt() {
+	bs.activePromptMu.Lock()
+	defer bs.activePromptMu.Unlock()
+
+	if bs.activePrompt == nil {
+		return
+	}
+
+	if bs.logger != nil {
+		bs.logger.Debug("Dismissing active UI prompt due to session cancel",
+			"session_id", bs.persistedID,
+			"request_id", bs.activePrompt.request.RequestID)
 	}
 
 	bs.dismissActivePromptLocked("cancelled")

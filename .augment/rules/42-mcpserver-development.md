@@ -30,13 +30,13 @@ All agents connect to the same MCP server at `http://127.0.0.1:5757/mcp`. Sessio
 │                  http://127.0.0.1:5757/mcp                  │
 ├─────────────────────────────────────────────────────────────┤
 │  Global Tools (no session_id):                              │
-│  • mitto_list_conversations (always available)              │
+│  • mitto_conversation_list (always available)               │
 │  • mitto_get_config                                         │
 │  • mitto_get_runtime_info                                   │
 ├─────────────────────────────────────────────────────────────┤
 │  Session-Scoped Tools (require session_id):                 │
-│  • mitto_get_current_session                                │
-│  • mitto_send_prompt_to_conversation                        │
+│  • mitto_conversation_get_current                           │
+│  • mitto_conversation_send_prompt                           │
 │  • mitto_ui_ask_yes_no / _options_buttons / _options_combo  │
 ├─────────────────────────────────────────────────────────────┤
 │  Session Registry: Maps session_id → UIPrompter             │
@@ -130,7 +130,7 @@ func (s *Server) registerTools() {
 
     // Tool with input parameters
     mcp.AddTool(s.mcpServer, mcp.Tool{
-        Name:        "mitto_get_conversation",
+        Name:        "mitto_conversation_get",
         Description: "Get details of a specific conversation",
         InputSchema: mcp.ToolInputSchema{
             Type: "object",

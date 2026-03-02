@@ -11,12 +11,18 @@ func TestIsValidSessionID(t *testing.T) {
 		id    string
 		valid bool
 	}{
-		// Valid session IDs (format: YYYYMMDD-HHMMSS-XXXXXXXX)
-		{"valid session ID", "20260127-113605-87080ed8", true},
-		{"valid session ID uppercase hex", "20260127-113605-87080ED8", true},
-		{"valid session ID mixed case hex", "20260127-113605-87080eD8", true},
-		{"valid session ID midnight", "20260101-000000-00000000", true},
-		{"valid session ID end of day", "20261231-235959-ffffffff", true},
+		// Valid session IDs - timestamp format (YYYYMMDD-HHMMSS-XXXXXXXX)
+		{"valid timestamp session ID", "20260127-113605-87080ed8", true},
+		{"valid timestamp session ID uppercase hex", "20260127-113605-87080ED8", true},
+		{"valid timestamp session ID mixed case hex", "20260127-113605-87080eD8", true},
+		{"valid timestamp session ID midnight", "20260101-000000-00000000", true},
+		{"valid timestamp session ID end of day", "20261231-235959-ffffffff", true},
+
+		// Valid session IDs - UUID format (legacy, for backward compatibility)
+		{"valid UUID v4 format", "550e8400-e29b-41d4-a716-446655440000", true},
+		{"valid UUID lowercase", "b7a07613-3d2b-47c4-9f50-1ffd710f3a49", true},
+		{"valid UUID uppercase", "B7A07613-3D2B-47C4-9F50-1FFD710F3A49", true},
+		{"valid UUID mixed case", "B7a07613-3d2B-47c4-9F50-1ffd710F3A49", true},
 
 		// Invalid session IDs
 		{"empty string", "", false},
@@ -28,9 +34,11 @@ func TestIsValidSessionID(t *testing.T) {
 		{"invalid time format", "20260127-11:36:05-87080ed8", false},
 		{"invalid hex characters", "20260127-113605-8708zzzz", false},
 		{"no dashes", "2026012711360587080ed8", false},
-		{"extra dashes", "20260127-113605-8708-0ed8", false},
+		{"extra dashes timestamp", "20260127-113605-8708-0ed8", false},
 		{"wrong segment lengths", "202601-27113605-87080ed8", false},
-		{"UUID v4 format (not valid)", "550e8400-e29b-41d4-a716-446655440000", false},
+		{"invalid UUID format - too short", "550e8400-e29b-41d4-a716", false},
+		{"invalid UUID format - extra segment", "550e8400-e29b-41d4-a716-446655440000-extra", false},
+		{"invalid UUID format - wrong lengths", "550e8400-e29b-41d4-a7160-46655440000", false},
 	}
 
 	for _, tt := range tests {

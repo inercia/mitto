@@ -11,11 +11,6 @@ export const MAX_MESSAGES = 1000;
 // This provides a faster initial load while allowing users to load more history.
 export const INITIAL_EVENTS_LIMIT = 50;
 
-// Number of events to load in the fast initial phase (two-phase loading).
-// This small batch loads quickly to show the user the latest messages immediately,
-// then the remaining history is loaded in the background.
-export const FAST_INITIAL_LOAD_LIMIT = 10;
-
 // Message roles
 export const ROLE_USER = "user";
 export const ROLE_AGENT = "agent";
@@ -89,7 +84,8 @@ export function hasMarkdownContent(text) {
   }
 
   // Tables: | header | header |
-  if (/\|[^|]+\|/.test(text) && /^[\s]*\|/.test(text)) {
+  // Uses 'm' flag for multiline matching - tables may start after intro text
+  if (/\|[^|]+\|/.test(text) && /^[\s]*\|/m.test(text)) {
     return true;
   }
 
@@ -324,17 +320,27 @@ export function computeAllSessions(activeSessions, storedSessions) {
 
   // Merge properties from storedSessions into activeSessions
   // Properties like archived, name, pinned, isStreaming are shared between active and stored sessions
+  // Flatten acp_server and working_dir from active session's info so grouping uses the correct ACP server
   const mergedActive = activeSessions.map((s) => {
     const stored = storedMap.get(s.session_id);
     const globalWd = globalWorkingDirMap.get(s.session_id);
-    // Get working_dir from: stored session, global map, or existing value
-    const workingDir = stored?.working_dir || globalWd || s.working_dir || "";
+    // Get working_dir from: stored session, global map, or existing value (including info)
+    const workingDir =
+      stored?.working_dir ||
+      globalWd ||
+      s.working_dir ||
+      s.info?.working_dir ||
+      "";
 
-    // Always merge stored properties (archived, name, pinned, isStreaming, periodic_enabled) if stored session exists
+    // Flatten acp_server from info so session.acp_server is set for grouping/tooltips
+    const acpServer = s.acp_server || s.info?.acp_server || stored?.acp_server || "";
+
+    // Always merge stored properties (archived, name, pinned, isStreaming, periodic_enabled, next_scheduled_at, periodic_frequency) if stored session exists
     if (stored) {
       return {
         ...s,
-        working_dir: workingDir || s.working_dir,
+        working_dir: workingDir || s.working_dir || s.info?.working_dir,
+        acp_server: acpServer || stored.acp_server,
         // Merge these properties from stored session (they don't exist in active sessions)
         // For name: active session takes precedence if it has one, otherwise use stored
         archived: stored.archived,
@@ -345,14 +351,14 @@ export function computeAllSessions(activeSessions, storedSessions) {
         isStreaming: s.isStreaming || stored.isStreaming || false,
         // Periodic enabled state (from stored session, updated via WebSocket)
         periodic_enabled: stored.periodic_enabled || false,
+        // Progress bar: next run time and frequency (from API list or WebSocket periodic_updated)
+        next_scheduled_at: s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
+        periodic_frequency: s.periodic_frequency ?? stored.periodic_frequency ?? null,
       };
     }
 
-    // No stored session, just update working_dir if needed
-    if (workingDir && workingDir !== s.working_dir) {
-      return { ...s, working_dir: workingDir };
-    }
-    return s;
+    // No stored session (e.g. newly created): always flatten so grouping uses correct workspace
+    return { ...s, working_dir: workingDir || s.working_dir, acp_server: acpServer || s.acp_server };
   });
 
   const activeIds = new Set(mergedActive.map((s) => s.session_id));
@@ -1503,4 +1509,56 @@ export function linkifyUrls(text) {
   }
 
   return parts.join("");
+}
+
+// =============================================================================
+// Date/Time Formatting
+// =============================================================================
+
+/**
+ * Format a date as a relative time ago (e.g., "3m ago", "2h ago", "1d ago").
+ * @param {Date|string|number} date - The date to format
+ * @returns {string} Human-readable relative time
+ */
+export function formatTimeAgo(date) {
+  if (!date) return "";
+
+  const target = date instanceof Date ? date : new Date(date);
+
+  // Guard against invalid dates (e.g., non-ISO strings that produce NaN)
+  if (Number.isNaN(target.getTime())) {
+    return "";
+  }
+
+  const now = new Date();
+  const diffMs = now.getTime() - target.getTime();
+
+  // If in the future, show "now"
+  if (diffMs <= 0) {
+    return "now";
+  }
+
+  const diffSeconds = Math.floor(diffMs / 1000);
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSeconds < 60) {
+    return "just now";
+  } else if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  } else if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  } else if (diffDays < 7) {
+    return `${diffDays}d ago`;
+  } else if (diffDays < 30) {
+    const weeks = Math.floor(diffDays / 7);
+    return `${weeks}w ago`;
+  } else if (diffDays < 365) {
+    const months = Math.floor(diffDays / 30);
+    return `${months}mo ago`;
+  } else {
+    const years = Math.floor(diffDays / 365);
+    return `${years}y ago`;
+  }
 }

@@ -80,8 +80,8 @@ func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use secure upgrader
-	secureUpgrader := s.getSecureUpgrader()
+	// Use secure upgrader with compression for external connections
+	secureUpgrader := s.getSecureUpgraderForRequest(r)
 	conn, err := secureUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		if s.connectionTracker != nil {

@@ -3,9 +3,25 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	htmlpkg "html"
 	"reflect"
 	"strings"
+
+	"github.com/microcosm-cc/bluemonday"
 )
+
+// htmlStripper strips all HTML tags, returning plain text.
+// Agent message events store HTML (markdown converted to HTML by the web layer).
+// When replaying conversation history as a text prompt, we must strip the HTML
+// to avoid the agent learning to produce HTML output, which would then be
+// double-converted (HTML→markdown parser→HTML) and stripped by goldmark's
+// safe renderer.
+var htmlStripper = bluemonday.StrictPolicy()
+
+// stripHTML removes all HTML tags and decodes HTML entities to plain text.
+func stripHTML(s string) string {
+	return htmlpkg.UnescapeString(htmlStripper.Sanitize(s))
+}
 
 // eventDataTypes maps event types to their corresponding data struct types.
 // This registry is used by DecodeEventData to avoid duplicate switch statements.
@@ -77,9 +93,9 @@ func BuildConversationHistory(events []Event, maxTurns int) string {
 				currentTurn = turn{userMessage: d.Message}
 			}
 		case EventTypeAgentMessage:
-			// Add to current turn
+			// Add to current turn (strip HTML — events store HTML, not markdown)
 			if d, ok := data.(AgentMessageData); ok {
-				currentTurn.agentMessage += d.Text
+				currentTurn.agentMessage += stripHTML(d.Text)
 			}
 		}
 	}
@@ -142,6 +158,7 @@ func GetLastAgentMessage(events []Event) string {
 	}
 
 	// Collect all agent messages after the last user prompt
+	// (strip HTML — events store HTML, not markdown)
 	var agentMessage strings.Builder
 	for i := lastUserPromptIdx + 1; i < len(events); i++ {
 		if events[i].Type == EventTypeAgentMessage {
@@ -150,7 +167,7 @@ func GetLastAgentMessage(events []Event) string {
 				continue
 			}
 			if d, ok := data.(AgentMessageData); ok {
-				agentMessage.WriteString(d.Text)
+				agentMessage.WriteString(stripHTML(d.Text))
 			}
 		}
 	}

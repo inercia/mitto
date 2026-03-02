@@ -22,6 +22,7 @@ This file contains testing anti-patterns and general lessons learned. For specif
 | WebSocket/async | `36-anti-patterns-websocket.md` |
 | Mobile/WKWebView | `37-anti-patterns-mobile.md` |
 | Session lifecycle | `38-anti-patterns-session.md` |
+| UI rendering (menus, positioning) | `28-anti-patterns-ui.md` |
 
 ## Testing Anti-Patterns
 
@@ -250,6 +251,7 @@ gh issue comment 23 --repo inercia/mitto --body 'Comment text'
 ## Related Files
 
 For specific anti-patterns, see:
+- `28-anti-patterns-ui.md` - UI rendering (context menus, positioning, useState vs useMemo)
 - `35-anti-patterns-text.md` - Text/HTML processing
 - `36-anti-patterns-websocket.md` - WebSocket/async
 - `37-anti-patterns-mobile.md` - Mobile/WKWebView

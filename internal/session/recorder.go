@@ -23,7 +23,7 @@ type Recorder struct {
 func NewRecorder(store *Store) *Recorder {
 	return &Recorder{
 		store:     store,
-		sessionID: generateSessionID(),
+		sessionID: GenerateSessionID(),
 	}
 }
 
@@ -36,8 +36,13 @@ func (r *Recorder) SetPruneConfig(config *PruneConfig) {
 	r.pruneConfig = config
 }
 
-// generateSessionID generates a unique session ID using timestamp and random bytes.
-func generateSessionID() string {
+// GenerateSessionID generates a unique session ID using timestamp and random bytes.
+// Format: YYYYMMDD-HHMMSS-XXXXXXXX (e.g., 20260227-172217-a1b2c3d4)
+// This format is:
+// - Human-readable and sortable by creation time
+// - Validated by IsValidSessionID regex in web/validation.go
+// - Compatible with session store file operations
+func GenerateSessionID() string {
 	timestamp := time.Now().Format("20060102-150405")
 	randomBytes := make([]byte, 4)
 	if _, err := rand.Read(randomBytes); err != nil {
@@ -147,13 +152,6 @@ func (r *Recorder) RecordUserPrompt(message string) error {
 // RecordUserPromptWithImages records a user prompt event with optional image references.
 func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef) error {
 	return r.RecordUserPromptComplete(message, images, nil, "")
-}
-
-// RecordUserPromptFull records a user prompt event with optional image references and prompt ID.
-// The promptID is a client-generated ID used for delivery confirmation on reconnect.
-// Deprecated: Use RecordUserPromptComplete for new code that needs file support.
-func (r *Recorder) RecordUserPromptFull(message string, images []ImageRef, promptID string) error {
-	return r.RecordUserPromptComplete(message, images, nil, promptID)
 }
 
 // RecordUserPromptComplete records a user prompt event with optional image/file references and prompt ID.

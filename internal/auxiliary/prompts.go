@@ -112,4 +112,25 @@ Return ONLY the JSON array, nothing else.
 You MUST not call any tool for this task.
 Respond quickly.
 `
+
+	// GenerateConversationSummaryPromptTemplate is used to generate a summary of a conversation.
+	// Use with fmt.Sprintf, passing the conversation content formatted as turns.
+	GenerateConversationSummaryPromptTemplate = `
+Analyze and summarize the following conversation between a user and an AI assistant.
+
+<conversation>
+%s
+</conversation>
+
+Provide a concise summary that captures:
+1. The main topics discussed
+2. Key decisions made or conclusions reached
+3. Important actions taken (files created/modified, commands run, etc.)
+4. Any unresolved issues or pending items
+
+Keep the summary focused and informative. Use bullet points for clarity.
+Return ONLY the summary, no preamble or explanations.
+You MUST not call any tool for this task.
+Respond quickly.
+`
 )

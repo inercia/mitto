@@ -36,7 +36,7 @@ type WebClient struct {
 	onAvailableCommands  func(commands []AvailableCommand)
 	onCurrentModeChanged func(modeID string)
 	// onMittoToolCall is called when any mitto_* tool call is detected.
-	onMittoToolCall func(requestID string)
+	onMittoToolCall func(selfID string)
 
 	// Stream buffer for all streaming events (markdown, thoughts, tool calls, etc.)
 	// This ensures correct ordering even when markdown content is buffered.
@@ -126,10 +126,10 @@ type WebClientConfig struct {
 	OnAvailableCommands  func(commands []AvailableCommand)
 	OnCurrentModeChanged func(modeID string)
 	// OnMittoToolCall is called when any mitto_* tool call is detected.
-	// This allows registering the request_id for correlation with MCP requests.
-	// The callback receives the request_id extracted from the tool call arguments.
-	// All mitto_* tools use request_id for automatic session detection.
-	OnMittoToolCall func(requestID string)
+	// This allows registering the self_id for correlation with MCP requests.
+	// The callback receives the self_id extracted from the tool call arguments.
+	// All mitto_* tools use self_id for automatic session detection.
+	OnMittoToolCall func(selfID string)
 	// FileLinksConfig configures file path detection and linking in agent messages.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
@@ -243,12 +243,12 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		status := string(u.ToolCall.Status)
 		c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
 
-		// Check if this is any mitto_* tool call and extract session_id for correlation.
+		// Check if this is any mitto_* tool call and extract self_id for correlation.
 		// The tool title contains the tool name (e.g., "mitto_get_current_session_mitto-debug").
-		// All mitto_* tools use session_id for automatic session detection.
+		// All mitto_* tools use self_id for automatic session detection.
 		if c.onMittoToolCall != nil && strings.Contains(u.ToolCall.Title, "mitto_") {
-			if sessionID := extractMittoSessionID(u.ToolCall.RawInput); sessionID != "" {
-				c.onMittoToolCall(sessionID)
+			if selfID := extractMittoSelfID(u.ToolCall.RawInput); selfID != "" {
+				c.onMittoToolCall(selfID)
 			}
 		}
 
@@ -402,18 +402,18 @@ func (c *WebClient) Close() {
 	c.streamBuffer.Close()
 }
 
-// extractMittoSessionID extracts the session_id from a mitto_* tool call's RawInput.
-// The RawInput can be a map[string]any, a JSON string, or a struct with a SessionID field.
-// Returns empty string if session_id is not found or extraction fails.
-func extractMittoSessionID(rawInput any) string {
+// extractMittoSelfID extracts the self_id from a mitto_* tool call's RawInput.
+// The RawInput can be a map[string]any, a JSON string, or a struct with a SelfID field.
+// Returns empty string if self_id is not found or extraction fails.
+func extractMittoSelfID(rawInput any) string {
 	if rawInput == nil {
 		return ""
 	}
 
 	// Try direct map access
 	if m, ok := rawInput.(map[string]any); ok {
-		if sessionID, ok := m["session_id"].(string); ok {
-			return sessionID
+		if selfID, ok := m["self_id"].(string); ok {
+			return selfID
 		}
 	}
 
@@ -421,8 +421,8 @@ func extractMittoSessionID(rawInput any) string {
 	if s, ok := rawInput.(string); ok {
 		var m map[string]any
 		if err := json.Unmarshal([]byte(s), &m); err == nil {
-			if sessionID, ok := m["session_id"].(string); ok {
-				return sessionID
+			if selfID, ok := m["self_id"].(string); ok {
+				return selfID
 			}
 		}
 	}
@@ -436,8 +436,8 @@ func extractMittoSessionID(rawInput any) string {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return ""
 	}
-	if sessionID, ok := m["session_id"].(string); ok {
-		return sessionID
+	if selfID, ok := m["self_id"].(string); ok {
+		return selfID
 	}
 
 	return ""

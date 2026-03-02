@@ -117,12 +117,6 @@ func (s *Store) filesDir(sessionID string) string {
 	return filepath.Join(s.sessionDir(sessionID), filesDirName)
 }
 
-// IsSupportedFileType checks if a MIME type is supported for file attachments.
-func IsSupportedFileType(mimeType string) bool {
-	_, ok := supportedFileTypes[mimeType]
-	return ok
-}
-
 // GetFileCategory returns the category for a supported MIME type.
 func GetFileCategory(mimeType string) FileCategory {
 	if info, ok := supportedFileTypes[mimeType]; ok {
@@ -471,6 +465,27 @@ func GetFileMimeTypeFromExt(ext string) string {
 		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 	case ".pptx":
 		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	// Image formats
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".svg":
+		return "image/svg+xml"
+	case ".bmp":
+		return "image/bmp"
+	case ".ico":
+		return "image/x-icon"
+	case ".tiff", ".tif":
+		return "image/tiff"
+	case ".avif":
+		return "image/avif"
+	case ".heic", ".heif":
+		return "image/heic"
 	}
 	return ""
 }

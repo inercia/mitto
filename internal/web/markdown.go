@@ -16,13 +16,22 @@ const (
 	defaultFlushTimeout = 200 * time.Millisecond
 	// inactivityFlushTimeout is the timeout for forcing a flush regardless of block state.
 	// This ensures content is displayed even if the agent stops mid-block.
-	// Set to 2 seconds to give the agent time to complete blocks normally.
-	inactivityFlushTimeout = 2 * time.Second
+	// Set to 10 seconds to give the agent time to complete blocks normally.
+	inactivityFlushTimeout = 10 * time.Second
 	// maxBufferSize is the maximum buffer size before forcing a flush.
 	maxBufferSize = 4096
 	// maxCodeBlockBufferSize is the absolute maximum buffer size, even inside code blocks.
 	// This prevents unbounded memory growth if the closing ``` is missing.
 	maxCodeBlockBufferSize = 65536 // 64KB
+
+	// FlushOnToolCall is an experimental compile-time flag that controls whether
+	// the markdown buffer should be force-flushed when a tool call is received.
+	// When enabled, any pending markdown content is immediately flushed before
+	// processing the tool call, even if we're in the middle of a block.
+	// This ensures content is visible before tool output appears.
+	//
+	// EXPERIMENTAL: Set to false to disable.
+	FlushOnToolCall = true
 )
 
 // MarkdownBuffer accumulates streaming text and converts to HTML intelligently.
@@ -251,19 +260,10 @@ func (mb *MarkdownBuffer) Write(chunk string) {
 		mb.inactivityTimer = time.AfterFunc(inactivityFlushTimeout, func() {
 			mb.mu.Lock()
 			defer mb.mu.Unlock()
-			// Force flush if there's any content, but respect block boundaries
-			// and unmatched formatting to avoid rendering broken markdown
+			// Force flush if there's any content. This is the HARD timeout -
+			// it flushes regardless of being in a code block, list, or table.
+			// This prevents content from being lost if the agent stops mid-block.
 			if mb.buffer.Len() > 0 {
-				// Don't flush if we're in a code block, list, or table - this would split the block
-				if mb.inCodeBlock || mb.inList || mb.inTable {
-					return
-				}
-				content := mb.buffer.String()
-				// Don't flush if we have unmatched inline formatting - this would
-				// render broken markdown like "**Real-time" without the closing "**"
-				if conversion.HasUnmatchedInlineFormatting(content) {
-					return
-				}
 				mb.flushLocked()
 			}
 		})

@@ -1,5 +1,6 @@
-// Mitto Web Interface - Swipe to Delete Hook
-// Handles swipe-to-delete gesture for list items with mouse and touch support
+// Mitto Web Interface - Swipe to Action Hook
+// Handles swipe-to-action gesture for list items with mouse and touch support
+// Can be used for archive, delete, or any other swipe action
 
 const { useState, useEffect, useRef, useCallback } = window.preact;
 
@@ -7,21 +8,21 @@ const { useState, useEffect, useRef, useCallback } = window.preact;
 const DEAD_ZONE = 10;
 
 // Animation duration in milliseconds
-const DELETE_ANIMATION_DURATION = 400;
+const ACTION_ANIMATION_DURATION = 400;
 
 /**
- * Hook for handling swipe-to-delete gestures
+ * Hook for handling swipe-to-action gestures
  *
  * @param {Object} options - Configuration options
- * @param {Function} options.onDelete - Callback when delete is triggered
- * @param {number} options.threshold - Percentage of width to trigger auto-delete (default: 0.5 = 50%)
- * @param {number} options.revealWidth - Width in pixels to reveal delete button (default: 80)
+ * @param {Function} options.onAction - Callback when action is triggered
+ * @param {number} options.threshold - Percentage of width to trigger auto-action (default: 0.5 = 50%)
+ * @param {number} options.revealWidth - Width in pixels to reveal action button (default: 80)
  * @param {boolean} options.disabled - Whether swipe is disabled (default: false)
- * @returns {Object} { swipeOffset, isSwiping, isSwipingRef, isRevealed, isDeleting, containerProps, reset, triggerDelete }
+ * @returns {Object} { swipeOffset, isSwiping, isSwipingRef, isRevealed, isActioning, containerProps, reset, triggerAction }
  */
-export function useSwipeToDelete(options = {}) {
+export function useSwipeToAction(options = {}) {
   const {
-    onDelete = null,
+    onAction = null,
     threshold = 0.5,
     revealWidth = 80,
     disabled = false,
@@ -30,46 +31,46 @@ export function useSwipeToDelete(options = {}) {
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
   const [isRevealed, setIsRevealed] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [isActioning, setIsActioning] = useState(false);
   const containerRef = useRef(null);
   const dragStartRef = useRef(null);
   // Track if swipe has been "confirmed" (passed dead zone with horizontal intent)
   const swipeConfirmedRef = useRef(false);
   // Track isSwiping state in a ref for synchronous access in click handlers
   const isSwipingRef = useRef(false);
-  // Track delete timeout for cleanup
-  const deleteTimeoutRef = useRef(null);
+  // Track action timeout for cleanup
+  const actionTimeoutRef = useRef(null);
 
   // Reset the swipe state
   const reset = useCallback(() => {
     setSwipeOffset(0);
     setIsRevealed(false);
     setIsSwiping(false);
-    setIsDeleting(false);
+    setIsActioning(false);
     isSwipingRef.current = false;
     dragStartRef.current = null;
     swipeConfirmedRef.current = false;
-    if (deleteTimeoutRef.current) {
-      clearTimeout(deleteTimeoutRef.current);
-      deleteTimeoutRef.current = null;
+    if (actionTimeoutRef.current) {
+      clearTimeout(actionTimeoutRef.current);
+      actionTimeoutRef.current = null;
     }
   }, []);
 
-  // Handle delete action with animation delay
-  const triggerDelete = useCallback(() => {
-    if (isDeleting) return; // Prevent double-trigger
+  // Handle action with animation delay
+  const triggerAction = useCallback(() => {
+    if (isActioning) return; // Prevent double-trigger
 
-    // Start delete animation
-    setIsDeleting(true);
+    // Start action animation
+    setIsActioning(true);
 
-    // After animation completes, call onDelete and reset
-    deleteTimeoutRef.current = setTimeout(() => {
-      if (onDelete) {
-        onDelete();
+    // After animation completes, call onAction and reset
+    actionTimeoutRef.current = setTimeout(() => {
+      if (onAction) {
+        onAction();
       }
       reset();
-    }, DELETE_ANIMATION_DURATION);
-  }, [onDelete, reset, isDeleting]);
+    }, ACTION_ANIMATION_DURATION);
+  }, [onAction, reset, isActioning]);
 
   // Calculate swipe offset from movement
   const calculateOffset = useCallback((clientX) => {
@@ -163,9 +164,9 @@ export function useSwipeToDelete(options = {}) {
     const containerWidth = dragStartRef.current.containerWidth;
     const absOffset = Math.abs(swipeOffset);
 
-    // If swiped past threshold, trigger delete
+    // If swiped past threshold, trigger action
     if (absOffset > containerWidth * threshold) {
-      triggerDelete();
+      triggerAction();
     }
     // If swiped past reveal width but not threshold, leave revealed
     else if (absOffset > revealWidth * 0.5) {
@@ -180,7 +181,7 @@ export function useSwipeToDelete(options = {}) {
     else {
       reset();
     }
-  }, [isSwiping, swipeOffset, threshold, revealWidth, triggerDelete, reset]);
+  }, [isSwiping, swipeOffset, threshold, revealWidth, triggerAction, reset]);
 
   // Mouse event handlers
   const handleMouseDown = useCallback(
@@ -332,11 +333,11 @@ export function useSwipeToDelete(options = {}) {
     };
   }, [isRevealed, reset]);
 
-  // Cleanup delete timeout on unmount
+  // Cleanup action timeout on unmount
   useEffect(() => {
     return () => {
-      if (deleteTimeoutRef.current) {
-        clearTimeout(deleteTimeoutRef.current);
+      if (actionTimeoutRef.current) {
+        clearTimeout(actionTimeoutRef.current);
       }
     };
   }, []);
@@ -353,9 +354,21 @@ export function useSwipeToDelete(options = {}) {
     isSwiping,
     isSwipingRef,
     isRevealed,
-    isDeleting,
+    isActioning,
     containerProps,
     reset,
-    triggerDelete,
+    triggerAction,
+  };
+}
+
+// Backward-compatible alias for existing code
+// TODO: Remove this after all usages are migrated to useSwipeToAction
+export function useSwipeToDelete(options = {}) {
+  const { onDelete, ...rest } = options;
+  const result = useSwipeToAction({ onAction: onDelete, ...rest });
+  return {
+    ...result,
+    isDeleting: result.isActioning,
+    triggerDelete: result.triggerAction,
   };
 }

@@ -2,6 +2,14 @@
 description: ACP protocol client with acp-go-sdk, connection lifecycle, permission auto-approve, and testing ACP connections
 globs:
   - "internal/acp/**/*"
+keywords:
+  - ACP connection
+  - ACP protocol
+  - acp-go-sdk
+  - permission handling
+  - AutoApprovePermission
+  - NewConnection
+  - agent communication
 ---
 
 # ACP Protocol Guidelines

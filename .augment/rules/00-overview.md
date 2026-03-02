@@ -17,6 +17,7 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | [architecture.md](../docs/devel/architecture.md)                   | System overview, package breakdown                                                                  |
 | [session-management.md](../docs/devel/session-management.md)       | Recording, playback, state ownership                                                                |
 | [message-queue.md](../docs/devel/message-queue.md)                 | Queue system, title generation, API                                                                 |
+| [mcp.md](../docs/devel/mcp.md)                                     | **MCP server** (global tools, session-scoped tools, UI prompts, flags)                              |
 | [web-interface.md](../docs/devel/web-interface.md)                 | HTTP server, streaming, mobile support                                                              |
 | [websockets/](../docs/devel/websockets/)                           | **WebSocket protocol** (message types, seq numbers, sync, reconnection, delivery verification)      |
 | [workspaces.md](../docs/devel/workspaces.md)                       | Multi-workspace, persistence                                                                        |
@@ -53,6 +54,7 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `25-web-frontend-components.md` | UI components (ChatInput, QueueDropdown, Icons)                                                                                           |
 | `26-web-frontend-hooks.md`      | Custom hooks (useResizeHandle, useSwipeNavigation)                                                                                        |
 | `27-web-frontend-sync.md`       | Sequence sync, stale client detection, deduplication                                                                                      |
+| `28-anti-patterns-ui.md`        | UI rendering anti-patterns (context menus, positioning, useState vs useMemo)                                                             |
 | **Testing & Anti-Patterns (30-38)** |                                                                                                                                       |
 | `30-testing-unit.md`            | Go unit tests (`*_test.go`)                                                                                                               |
 | `31-testing-integration.md`     | Integration tests, mock ACP server                                                                                                        |
@@ -67,6 +69,10 @@ Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables ter
 | `40-mcp-debugging.md`           | Using MCP tools for debugging (events.jsonl, conversation inspection)                                                                     |
 | `41-debugging-logs.md`          | Log file debugging (mitto.log, webview.log, access.log)                                                                                   |
 | `42-mcpserver-development.md`   | MCP server development patterns, adding tools                                                                                             |
+| **Security & Runner (43-45)**   |                                                                                                                                           |
+| `43-defense.md`                 | Scanner defense, blocklist, IP metrics, suspicious path detection (`internal/defense/`, middleware)                                      |
+| `44-runner.md`                  | Restricted runner, sandbox execution, variable substitution (`internal/runner/`)                                                         |
+| `45-secrets.md`                 | Secure credential storage, Keychain, SecretStore (`internal/secrets/`)                                                                    |
 | **Local/Private (98-99)**       | *Not committed to git*                                                                                                                    |
 | `98-release.md`                 | Release workflow, version tagging, Homebrew tap updates, CI/CD                                                                            |
 | `99-local.md`                   | Local development notes, GitHub CLI authentication, `gh` fallback                                                                         |
@@ -82,8 +88,11 @@ internal/auxiliary/   → Hidden ACP session for utility tasks
 internal/client/      → Go client for Mitto REST API + WebSocket (used in tests)
 internal/config/      → Configuration loading (YAML/JSON)
 internal/conversion/  → Markdown-to-HTML conversion, file link detection
+internal/defense/     → Scanner defense, blocklist, IP metrics (used by web middleware)
 internal/mcpserver/   → MCP servers (global debug + per-session)
 internal/msghooks/    → Message hooks (pre/post processing via external commands)
+internal/runner/      → Restricted runner, sandbox execution (go-restricted-runner)
+internal/secrets/     → Secure credential storage (Keychain on macOS)
 internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue/Flags)
 internal/web/         → Web interface server (HTTP, WebSocket, MarkdownBuffer)
 web/static/           → Frontend (Preact/HTM)

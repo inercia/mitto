@@ -182,7 +182,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// Create web server with workspaces
 	srv, err := web.NewServer(web.Config{
 		Workspaces:       webWorkspaces,
-		AutoApprove:      autoApprove,
+		AutoApprove:      GetEffectiveAutoApprove(cmd),
 		Debug:            debug,
 		MittoConfig:      cfg,
 		StaticDir:        staticDir,

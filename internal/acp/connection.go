@@ -33,10 +33,15 @@ type Connection struct {
 // If empty, the process inherits the current working directory.
 // Note: cwd is only supported for direct execution (when r is nil).
 // When using a restricted runner, cwd is ignored (logged as warning if set).
+//
+// The env parameter specifies additional environment variables to set for the
+// ACP server process. These are merged with the current environment, with
+// server-specific variables taking precedence over existing ones.
 func NewConnection(
 	ctx context.Context,
 	command string,
 	cwd string,
+	env map[string]string,
 	autoApprove bool,
 	output func(string),
 	logger *slog.Logger,
@@ -47,6 +52,9 @@ func NewConnection(
 	if err != nil {
 		return nil, err
 	}
+
+	// Build environment: start with current env, then merge server-specific vars
+	processEnv := mergeEnv(os.Environ(), env)
 
 	var stdin runner.WriteCloser
 	var stdout runner.ReadCloser
@@ -74,9 +82,10 @@ func NewConnection(
 		if logger != nil {
 			logger.Info("starting ACP process through restricted runner",
 				"runner_type", r.Type(),
-				"command", command)
+				"command", command,
+				"env_vars", len(env))
 		}
-		stdin, stdout, stderr, wait, err = r.RunWithPipes(runCtx, args[0], args[1:], os.Environ())
+		stdin, stdout, stderr, wait, err = r.RunWithPipes(runCtx, args[0], args[1:], processEnv)
 		if err != nil {
 			cancel() // Clean up the context if we fail to start
 			return nil, fmt.Errorf("failed to start with runner: %w", err)
@@ -99,6 +108,7 @@ func NewConnection(
 		// Direct execution (no restrictions)
 		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Stderr = os.Stderr
+		cmd.Env = processEnv // Set merged environment
 
 		// Set working directory for the ACP process if specified
 		if cwd != "" {
@@ -108,6 +118,12 @@ func NewConnection(
 					"cwd", cwd,
 					"command", command)
 			}
+		}
+
+		if logger != nil && len(env) > 0 {
+			logger.Info("setting ACP process environment variables",
+				"env_vars", len(env),
+				"command", command)
 		}
 
 		stdin, err = cmd.StdinPipe()
@@ -244,4 +260,45 @@ func (c *Connection) Close() error {
 // Done returns a channel that's closed when the connection is done.
 func (c *Connection) Done() <-chan struct{} {
 	return c.conn.Done()
+}
+
+// mergeEnv merges server-specific environment variables with the base environment.
+// Server-specific variables take precedence over existing ones with the same name.
+// baseEnv should be in the format returned by os.Environ() (e.g., "KEY=value").
+// serverEnv is a map of variable names to values.
+func mergeEnv(baseEnv []string, serverEnv map[string]string) []string {
+	if len(serverEnv) == 0 {
+		return baseEnv
+	}
+
+	// Build a map from the base environment for easy lookup
+	envMap := make(map[string]string, len(baseEnv)+len(serverEnv))
+	for _, kv := range baseEnv {
+		if idx := indexByte(kv, '='); idx != -1 {
+			envMap[kv[:idx]] = kv[idx+1:]
+		}
+	}
+
+	// Merge server-specific variables (overwriting any existing ones)
+	for k, v := range serverEnv {
+		envMap[k] = v
+	}
+
+	// Convert back to slice format
+	result := make([]string, 0, len(envMap))
+	for k, v := range envMap {
+		result = append(result, k+"="+v)
+	}
+
+	return result
+}
+
+// indexByte returns the index of the first occurrence of c in s, or -1 if not found.
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
 }

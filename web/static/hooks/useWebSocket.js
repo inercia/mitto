@@ -29,6 +29,12 @@ import {
 import {
   getLastActiveSessionId,
   setLastActiveSessionId,
+  getSingleExpandedGroupMode,
+  setGroupExpanded,
+  isGroupExpanded,
+  getExpandedGroups,
+  getFilterTabGrouping,
+  FILTER_TAB,
 } from "../utils/storage.js";
 
 import { playAgentCompletedSound } from "../utils/audio.js";
@@ -67,6 +73,12 @@ const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Send keepalive every 10 seconds 
 const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
 const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
 
+// Sync tolerance: only request sync if client is more than N sequences behind server.
+// This avoids excessive sync requests during normal streaming where the markdown buffer
+// may hold content briefly before flushing to the UI. A tolerance of 2 prevents
+// sync requests when client is just 1-2 behind due to normal buffering delays.
+const KEEPALIVE_SYNC_TOLERANCE = 2;
+
 /**
  * Get the appropriate keepalive interval based on the runtime environment.
  * Native macOS app uses a shorter interval for faster sync detection.
@@ -79,9 +91,13 @@ function getKeepaliveInterval() {
 }
 
 /**
- * Check if the user is authenticated.
- * If not authenticated, redirects to login page.
- * @returns {Promise<boolean>} True if authenticated, never returns false (redirects instead)
+ * Quick authentication check before WebSocket reconnection.
+ * If auth is invalid (401), redirects to login page and never returns.
+ * For network errors or server errors, returns true to allow reconnection to proceed
+ * (the WebSocket reconnect will handle retries with exponential backoff).
+ *
+ * @returns {Promise<boolean>} Always returns true. On 401, redirects and never returns.
+ *                             Network/server errors also return true to allow reconnection.
  */
 async function checkAuthOrRedirect() {
   try {
@@ -90,10 +106,23 @@ async function checkAuthOrRedirect() {
       credentials: "same-origin",
     });
     checkAuth(response); // This will redirect if 401
-    return response.ok;
+
+    // If we got here, auth is valid (200) or there's a server error (5xx)
+    // Either way, let reconnection proceed - the WebSocket will retry with backoff
+    if (!response.ok) {
+      console.warn(
+        `Auth check returned status ${response.status}, allowing reconnection to proceed`,
+      );
+    }
+    return true;
   } catch (err) {
-    console.error("Auth check failed:", err);
-    return false;
+    // Network error - let reconnection proceed
+    // The WebSocket reconnection will naturally retry with exponential backoff
+    console.warn(
+      "Auth check network error, allowing reconnection to proceed:",
+      err.message,
+    );
+    return true;
   }
 }
 
@@ -652,10 +681,16 @@ export function useWebSocket() {
     return sessions[activeSessionId].messages || [];
   }, [sessions, activeSessionId]);
 
-  // Get current session info
+  // Get current session info (enhanced with message count)
   const sessionInfo = useMemo(() => {
     if (!activeSessionId || !sessions[activeSessionId]) return null;
-    return sessions[activeSessionId].info || null;
+    const session = sessions[activeSessionId];
+    const info = session.info || {};
+    // Include message count from the messages array
+    return {
+      ...info,
+      messageCount: session.messages?.length || 0,
+    };
   }, [sessions, activeSessionId]);
 
   // Get streaming state for active session
@@ -729,6 +764,9 @@ export function useWebSocket() {
     // Check if session is archived (from session info or stored session)
     // Archived sessions should not be marked as "active" since they have no ACP connection
     const isArchived = data.info?.archived || storedSession?.archived || false;
+    // Check if archive is pending (waiting for agent to finish)
+    const isArchivePending =
+      data.info?.archive_pending || storedSession?.archive_pending || false;
     return {
       session_id: id,
       name: data.info?.name || "New conversation",
@@ -743,6 +781,7 @@ export function useWebSocket() {
       isStreaming: !isArchived && (data.isStreaming || false),
       messageCount: data.messages?.length || 0,
       archived: isArchived,
+      archive_pending: isArchivePending,
     };
   });
 
@@ -826,6 +865,8 @@ export function useWebSocket() {
                   msg.data.runner_restricted ?? session.info?.runner_restricted,
                 // Preserve archived flag from existing session info (set by switchSession)
                 archived: session.info?.archived || false,
+                // Preserve archive_pending flag from existing session info
+                archive_pending: session.info?.archive_pending || false,
                 // Periodic enabled state from server
                 periodic_enabled:
                   msg.data.periodic_enabled ??
@@ -1239,7 +1280,7 @@ export function useWebSocket() {
             return prev;
           }
 
-          // Store the active UI prompt
+          // Store the active UI prompt (unified: MCP questions, permissions)
           return {
             ...prev,
             [sessionId]: {
@@ -1251,6 +1292,10 @@ export function useWebSocket() {
                 options: msg.data.options || [],
                 timeoutSeconds: msg.data.timeout_seconds,
                 receivedAt: Date.now(),
+                // New fields for unified prompts
+                title: msg.data.title || null,
+                toolCallId: msg.data.tool_call_id || null,
+                blocking: msg.data.blocking !== false, // Default true for backwards compat
               },
             },
           };
@@ -1545,10 +1590,12 @@ export function useWebSocket() {
                 }),
               );
             }
-          } else if (serverMaxSeq > clientMaxSeq) {
-            // We're behind! Request missing events
+          } else if (serverMaxSeq > clientMaxSeq + KEEPALIVE_SYNC_TOLERANCE) {
+            // We're significantly behind! Request missing events.
+            // Using tolerance to avoid sync noise during normal streaming where
+            // markdown buffer may hold content briefly before flushing to UI.
             console.log(
-              `[keepalive] Session ${sessionId} is behind: client_max_seq=${clientMaxSeq}, server_max_seq=${serverMaxSeq}, requesting sync`,
+              `[keepalive] Session ${sessionId} is behind: client_max_seq=${clientMaxSeq}, server_max_seq=${serverMaxSeq} (tolerance=${KEEPALIVE_SYNC_TOLERANCE}), requesting sync`,
             );
             const ws = sessionWsRefs.current[sessionId];
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -2501,6 +2548,38 @@ export function useWebSocket() {
     }
   }, []);
 
+  // Helper to expand the target session's group when navigating
+  // Always expands the group containing the session so it's visible in the sidebar
+  // In accordion mode, also collapses all other groups
+  const expandGroupForSession = useCallback((sessionId, workingDir, acpServer) => {
+    // Build the group key for this session based on current grouping mode
+    const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
+    let groupKey;
+    if (groupingMode === "server") {
+      groupKey = acpServer || "Unknown";
+    } else if (groupingMode === "workspace") {
+      // Workspace mode uses composite key: working_dir|acp_server
+      groupKey = `${workingDir || ""}|${acpServer || ""}`;
+    }
+
+    // Only expand if we have a valid group key and groups are being used
+    if (groupKey && groupingMode && groupingMode !== "none") {
+      // In accordion mode, collapse all other groups first
+      if (getSingleExpandedGroupMode()) {
+        const expandedGroups = getExpandedGroups();
+        for (const key of Object.keys(expandedGroups)) {
+          if (key !== groupKey && isGroupExpanded(key)) {
+            setGroupExpanded(key, false);
+          }
+        }
+      }
+      // Always expand the session's group so it's visible
+      if (!isGroupExpanded(groupKey)) {
+        setGroupExpanded(groupKey, true);
+      }
+    }
+  }, []);
+
   // Switch to an existing session
   // Uses reverse-order loading for better UX: newest messages load first,
   // so the conversation opens already positioned at the latest message.
@@ -2515,6 +2594,23 @@ export function useWebSocket() {
         existingSession.messages &&
         existingSession.messages.length > 0;
       const hasWorkingDir = existingSession?.info?.working_dir;
+
+      // Get session info from stored sessions (for accordion mode group expansion)
+      const storedSession = storedSessionsRef.current?.find(
+        (s) => s.session_id === sessionId
+      );
+      const workingDir =
+        existingSession?.info?.working_dir ||
+        storedSession?.working_dir ||
+        "";
+      const acpServer =
+        existingSession?.info?.acp_server ||
+        storedSession?.acp_server ||
+        "";
+
+      // In accordion mode, expand the group containing this session
+      // (and collapse all other groups)
+      expandGroupForSession(sessionId, workingDir, acpServer);
 
       if (hasLoadedMessages && hasWorkingDir) {
         // Session already has messages and working_dir, just set it active
@@ -2628,7 +2724,7 @@ export function useWebSocket() {
         console.error("Failed to switch session:", err);
       }
     },
-    [connectToSession],
+    [connectToSession, expandGroupForSession],
   );
 
   // Handle global events (session lifecycle)
@@ -2709,7 +2805,7 @@ export function useWebSocket() {
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
-              ? { ...s, archived: msg.data.archived }
+              ? { ...s, archived: msg.data.archived, archive_pending: false }
               : s,
           ),
         );
@@ -2721,7 +2817,41 @@ export function useWebSocket() {
             ...prev,
             [msg.data.session_id]: {
               ...session,
-              info: { ...session.info, archived: msg.data.archived },
+              info: {
+                ...session.info,
+                archived: msg.data.archived,
+                archive_pending: false,
+              },
+            },
+          };
+        });
+        break;
+
+      case "session_archive_pending":
+        // Update session archive_pending state (archiving initiated, waiting for agent to finish)
+        console.log(
+          `[global] Session archive pending: ${msg.data.session_id} -> ${msg.data.archive_pending}`,
+        );
+        // Update in stored sessions (for sidebar display)
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, archive_pending: msg.data.archive_pending }
+              : s,
+          ),
+        );
+        // Also update in active sessions
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              info: {
+                ...session.info,
+                archive_pending: msg.data.archive_pending,
+              },
             },
           };
         });
@@ -2768,10 +2898,16 @@ export function useWebSocket() {
           `[global] Session periodic state changed: ${msg.data.session_id} -> configured=${msg.data.periodic_configured}, enabled=${msg.data.periodic_enabled}`,
         );
         // Update in stored sessions (for sidebar display - uses periodic_configured for UI)
+        // Also store next_scheduled_at and frequency for progress indicator
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
-              ? { ...s, periodic_enabled: msg.data.periodic_configured }
+              ? {
+                  ...s,
+                  periodic_enabled: msg.data.periodic_configured,
+                  next_scheduled_at: msg.data.next_scheduled_at || null,
+                  periodic_frequency: msg.data.frequency || null,
+                }
               : s,
           ),
         );
@@ -2787,6 +2923,8 @@ export function useWebSocket() {
                 ...session.info,
                 // Use periodic_configured for UI mode (shows frequency panel, lock/unlock buttons)
                 periodic_enabled: msg.data.periodic_configured,
+                next_scheduled_at: msg.data.next_scheduled_at || null,
+                periodic_frequency: msg.data.frequency || null,
               },
             },
           };
@@ -3085,6 +3223,10 @@ export function useWebSocket() {
             isStreaming: false,
           },
         }));
+
+        // In accordion mode, expand the group containing this new session
+        // (and collapse all other groups) - reuse expandGroupForSession helper
+        expandGroupForSession(sessionId, data.working_dir, data.acp_server);
 
         // Connect to the session WebSocket
         connectToSession(sessionId);

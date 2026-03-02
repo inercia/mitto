@@ -129,6 +129,7 @@ function sortPromptsByColor(prompts) {
  * @param {boolean} props.isStreaming - Whether agent is currently streaming
  * @param {boolean} props.isReadOnly - Whether session is read-only
  * @param {boolean} props.isArchived - Whether session is archived (disables input)
+ * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts
  * @param {Object} props.inputRef - Ref for external focus control
  * @param {boolean} props.noSession - Whether there's no active session
@@ -155,6 +156,7 @@ export function ChatInput({
   isStreaming,
   isReadOnly,
   isArchived = false,
+  isArchivePending = false,
   predefinedPrompts = [],
   inputRef,
   noSession = false,
@@ -293,6 +295,7 @@ export function ChatInput({
       setPeriodicPrompt("");
       setPeriodicFrequency({ value: 1, unit: "hours" });
       setPeriodicNextScheduledAt(null);
+      // Don't clear the draft when disabling periodic - preserve user's text
       return;
     }
 
@@ -319,18 +322,18 @@ export function ChatInput({
           if (config.prompt && !isPendingPlaceholder) {
             setPeriodicPrompt(config.prompt);
             // Lock state is based on enabled field from backend
-            setIsPeriodicLocked(config.enabled === true);
-            // Set the draft to the periodic prompt
-            if (onDraftChange) {
+            const isLocked = config.enabled === true;
+            setIsPeriodicLocked(isLocked);
+            // Only set the draft to the periodic prompt if it's LOCKED
+            // If unlocked, preserve the user's current draft
+            if (isLocked && onDraftChange) {
               onDraftChange(sessionId, config.prompt);
             }
           } else {
             setPeriodicPrompt("");
             setIsPeriodicLocked(false);
-            // Clear the draft for pending placeholder
-            if (onDraftChange) {
-              onDraftChange(sessionId, "");
-            }
+            // Don't clear the draft for pending placeholder
+            // The user may have been typing - preserve their text
           }
         }
       } catch (err) {
@@ -426,8 +429,9 @@ export function ChatInput({
     setSlashSelectedIndex(0);
   }, [slashFilter]);
 
-  // Determine if input should be fully disabled (no session, explicitly disabled, or archived)
-  const isFullyDisabled = disabled || noSession || isSending || isArchived;
+  // Determine if input should be fully disabled (no session, explicitly disabled, archived, or archive pending)
+  const isFullyDisabled =
+    disabled || noSession || isSending || isArchived || isArchivePending;
 
   // Expose focus method via inputRef for native menu integration
   useEffect(() => {
@@ -872,6 +876,8 @@ export function ChatInput({
 
   const getPlaceholder = () => {
     if (noSession) return "Create a new conversation to start chatting...";
+    if (isArchivePending)
+      return "Archiving... waiting for agent to finish responding.";
     if (isArchived)
       return "This conversation is archived. Unarchive to send messages.";
     if (isReadOnly)
@@ -1456,16 +1462,43 @@ export function ChatInput({
         />
       </div>
 
-      <!-- UI Prompt from MCP tool (yes/no, options_buttons, or select) -->
+      <!-- UI Prompt from MCP tool (yes/no, options_buttons, select, or permission) -->
       ${hasActiveUIPrompt &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
           <div
-            class="ui-prompt-panel p-4 rounded-lg border border-blue-500/50 shadow-lg"
+            class="ui-prompt-panel p-4 rounded-lg border ${activeUIPrompt.promptType ===
+            "permission"
+              ? "border-amber-500/50"
+              : "border-blue-500/50"} shadow-lg"
           >
-            <p class="ui-prompt-question text-sm mb-3">
-              ${activeUIPrompt.question}
-            </p>
+            ${
+              /* Permission prompts show title and question */
+              activeUIPrompt.promptType === "permission" &&
+              activeUIPrompt.title &&
+              html`
+                <div class="mb-2">
+                  <span
+                    class="text-xs font-medium text-amber-400 uppercase tracking-wide"
+                    >Permission Required</span
+                  >
+                </div>
+                <p
+                  class="text-sm font-mono bg-slate-800/50 p-2 rounded mb-3 break-all"
+                >
+                  ${activeUIPrompt.title}
+                </p>
+              `
+            }
+            ${
+              /* Other prompts just show question */
+              activeUIPrompt.promptType !== "permission" &&
+              html`
+                <p class="ui-prompt-question text-sm mb-3">
+                  ${activeUIPrompt.question}
+                </p>
+              `
+            }
             <div class="flex flex-wrap gap-2">
               ${activeUIPrompt.promptType === "yes_no" &&
               activeUIPrompt.options?.map((opt, idx) => {
@@ -1494,6 +1527,35 @@ export function ChatInput({
                   "bg-rose-600 hover:bg-rose-700 border-rose-500",
                 ];
                 const colorClass = colors[idx % colors.length];
+                return html`
+                  <button
+                    key=${opt.id}
+                    type="button"
+                    onClick=${() => handleUIPromptAnswer(opt.id, opt.label)}
+                    class="px-4 py-2 ${colorClass} text-white rounded-lg text-sm font-medium transition-colors border"
+                  >
+                    ${opt.label}
+                  </button>
+                `;
+              })}
+              ${activeUIPrompt.promptType === "permission" &&
+              activeUIPrompt.options?.map((opt) => {
+                // Style buttons based on permission kind
+                const kind = opt.kind || "";
+                let colorClass;
+                if (
+                  kind === "allow_once" ||
+                  kind === "allow_always" ||
+                  opt.style === "success"
+                ) {
+                  colorClass =
+                    "bg-emerald-600 hover:bg-emerald-700 border-emerald-500";
+                } else if (kind === "reject_once" || opt.style === "danger") {
+                  colorClass = "bg-rose-600 hover:bg-rose-700 border-rose-500";
+                } else {
+                  colorClass =
+                    "bg-slate-600 hover:bg-slate-700 border-slate-500";
+                }
                 return html`
                   <button
                     key=${opt.id}
