@@ -1,23 +1,21 @@
 ---
-description: Frontend state management, refs vs state, useCallback patterns, stale closure prevention, useEffect vs useLayoutEffect, useMemo for derived state
+description: Frontend state management, refs vs state, stale closure prevention, scroll positioning
 globs:
   - "web/static/app.js"
+  - "web/static/hooks/*.js"
+  - "web/static/components/*.js"
 keywords:
   - useState
-  - useEffect
-  - useLayoutEffect
   - useCallback
   - useRef
-  - useMemo
   - stale closure
   - ref vs state
   - scroll
-  - derived state
 ---
 
 # Frontend State Management
 
-## State Management Patterns
+## Stale Closure Prevention with Refs
 
 **Use refs for values accessed in callbacks to avoid stale closures:**
 
@@ -25,7 +23,6 @@ keywords:
 // Problem: activeSessionId in useCallback captures stale value
 const handleMessage = useCallback(
   (msg) => {
-    // activeSessionId here is stale - it was captured when callback was created
     if (!activeSessionId) return; // BUG: always null on first messages!
   },
   [activeSessionId],
@@ -55,20 +52,9 @@ const handleMessage = useCallback((msg) => {
 - If function A uses function B, define B before A
 - Circular dependencies require refs to break the cycle
 
-## useEffect vs useLayoutEffect
+## Scroll Positioning Pattern
 
-**Critical distinction** for DOM positioning and scroll handling:
-
-| Hook              | Timing              | Use When                                          |
-| ----------------- | ------------------- | ------------------------------------------------- |
-| `useEffect`       | After paint (async) | Data fetching, subscriptions, side effects        |
-| `useLayoutEffect` | Before paint (sync) | DOM positioning, scroll restoration, measurements |
-
-### Scroll Positioning Pattern
-
-**Problem**: Using `useEffect` for scroll positioning causes visible "jump" artifacts.
-
-**Solution**: Use `useLayoutEffect` for all scroll positioning on session switches:
+Use `useLayoutEffect` (before paint) for scroll positioning to avoid visible "jump" artifacts:
 
 ```javascript
 // Position at bottom synchronously BEFORE paint when switching sessions
@@ -76,7 +62,6 @@ useLayoutEffect(() => {
   const container = messagesContainerRef.current;
   if (!container) return;
 
-  // Detect session switch
   if (prevActiveSessionIdRef.current !== activeSessionId) {
     prevActiveSessionIdRef.current = activeSessionId;
 
@@ -91,61 +76,17 @@ useLayoutEffect(() => {
 
 ### Separating Concerns: Session Switch vs Streaming
 
-Use separate hooks for different scroll scenarios:
-
 ```javascript
-// useLayoutEffect: Session switch - instant scroll, no animation, before paint
+// useLayoutEffect: Session switch - instant scroll, before paint
 useLayoutEffect(() => {
-  if (sessionJustChanged) {
-    scrollToBottomInstant();
-  }
+  if (sessionJustChanged) scrollToBottomInstant();
 }, [activeSessionId, messages.length]);
 
 // useEffect: Streaming updates - smooth scroll, after paint is fine
 useEffect(() => {
-  if (isStreaming && isUserAtBottom) {
-    scrollToBottom(true); // smooth: true
-  }
+  if (isStreaming && isUserAtBottom) scrollToBottom(true);
 }, [messages.length, isStreaming]);
 ```
-
-## useMemo for Derived State
-
-**Use `useMemo` for values derived from props that need synchronous calculation:**
-
-```javascript
-// BAD: useState + useEffect for derived position
-function ContextMenu({ x, y }) {
-  const [adjustedPos, setAdjustedPos] = useState({ x, y });
-
-  useEffect(() => {
-    // This runs AFTER render - first paint uses stale values!
-    setAdjustedPos(calculateAdjustedPosition(x, y));
-  }, [x, y]);
-
-  return html`<div style="left: ${adjustedPos.x}px">`;
-}
-
-// GOOD: useMemo for synchronous derived values
-function ContextMenu({ x, y }) {
-  const menuRef = useRef(null);
-
-  const position = useMemo(() => {
-    // Calculated synchronously during render
-    if (!menuRef.current) return { x, y };
-    return calculateAdjustedPosition(x, y, menuRef.current);
-  }, [x, y, menuRef.current]);
-
-  return html`<div ref=${menuRef} style="left: ${position.x}px">`;
-}
-```
-
-**Key insight**: `useState` captures the initial value and doesn't auto-update when props change. For derived values, use:
-- `useMemo` for synchronous calculations
-- `useLayoutEffect` + `setState` if you need DOM measurements before paint
-- `useEffect` + `setState` only for async operations where delay is acceptable
-
-See `28-anti-patterns-ui.md` for detailed context menu positioning patterns.
 
 ## Settings Dialog Patterns
 
@@ -155,16 +96,9 @@ When saving settings that affect external state, update local state immediately 
 
 ```javascript
 const handleSave = async () => {
-  await fetch("/api/config", {
-    method: "POST",
-    body: JSON.stringify(settings),
-  });
-
-  // Fetch updated external status to get actual port
+  await fetch("/api/config", { method: "POST", body: JSON.stringify(settings) });
   const statusRes = await fetch("/api/external-status");
   const { enabled, port } = await statusRes.json();
-
-  // Update local state so UI reflects new values
   setCurrentExternalPort(port);
 };
 ```
@@ -174,11 +108,6 @@ const handleSave = async () => {
 Some deployments use file-based config that shouldn't be modified via UI:
 
 ```javascript
-// Check if config is read-only
 const [configReadonly, setConfigReadonly] = useState(false);
-
-// Disable settings access when readonly
-if (configReadonly) {
-  return; // Don't open settings dialog
-}
+if (configReadonly) return; // Don't open settings dialog
 ```

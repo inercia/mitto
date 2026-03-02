@@ -3,6 +3,8 @@ description: Authentication middleware, public paths, session management, and ex
 globs:
   - "internal/web/auth.go"
   - "internal/web/auth_*.go"
+  - "internal/web/csrf.go"
+  - "internal/web/csrf_test.go"
   - "web/static/auth.html"
   - "web/static/auth.js"
 keywords:

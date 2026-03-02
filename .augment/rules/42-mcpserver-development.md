@@ -229,7 +229,7 @@ Call get_runtime_info_mitto-debug to verify the server is running
 Call list_conversations_mitto-debug to see available sessions
 ```
 
-See `40-mcp-debugging.md` for using MCP tools for debugging.
+See `40-debugging.md` for using MCP tools for debugging.
 
 ## Session Registration
 

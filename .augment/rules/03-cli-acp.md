@@ -1,65 +1,81 @@
 ---
-description: ACP protocol client with acp-go-sdk, connection lifecycle, permission auto-approve, and testing ACP connections
+description: CLI UX patterns and ACP protocol client, connection lifecycle, permission handling
 globs:
+  - "internal/cmd/**/*"
+  - "cmd/mitto/**/*"
   - "internal/acp/**/*"
 keywords:
+  - CLI command
+  - Cobra
   - ACP connection
   - ACP protocol
   - acp-go-sdk
   - permission handling
   - AutoApprovePermission
-  - NewConnection
-  - agent communication
 ---
 
-# ACP Protocol Guidelines
+# CLI and ACP Protocol
 
-## SDK Usage
+## CLI Patterns
+
+### Cobra Command Structure
+
+```go
+var cliCmd = &cobra.Command{
+    Use:   "cli",
+    Short: "One-line description",
+    RunE:  runCLI,
+}
+```
+
+### User Feedback
+
+```go
+fmt.Printf("🚀 Starting ACP server: %s\n", server.Name)
+fmt.Printf("✅ Connected (protocol v%v)\n", version)
+```
+
+### Multi-Workspace CLI Usage
+
+```bash
+mitto web --dir /path/to/project1 --dir /path/to/project2
+mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
+```
+
+## ACP Protocol
+
+### SDK Usage
 
 - Import: `github.com/coder/acp-go-sdk`
 - The `Client` struct implements `acp.Client` interface
 - Use `acp.ClientSideConnection` for protocol handling
-- Always pass context for cancellation support
 
-## Connection Lifecycle
+### Connection Lifecycle
 
 ```go
 conn, err := acp.NewConnection(ctx, command, autoApprove, output, logger)
 defer conn.Close()
 
-conn.Initialize(ctx)  // Protocol handshake
+conn.Initialize(ctx)       // Protocol handshake
 conn.NewSession(ctx, cwd)  // Create session
 conn.Prompt(ctx, message)  // Send prompt
 ```
 
-## Permission Handling
-
-- Check `autoApprove` flag first
-- Prefer "allow" options when auto-approving
-- Display numbered options for manual selection
-- Loop until valid input received
-
-## Permission Helper Functions
-
-The `permission.go` file provides helper functions for permission handling:
+### Permission Handling
 
 ```go
 // AutoApprovePermission selects the best "allow" option automatically
 // Priority: AllowOnce > AllowAlways > first option
-// Returns Cancelled if no options available
 resp := AutoApprovePermission(options)
 
 // SelectPermissionOption selects a specific option by index
-// Returns Cancelled if index is out of bounds
 resp := SelectPermissionOption(options, selectedIndex)
 
 // CancelledPermissionResponse returns a cancelled response
 resp := CancelledPermissionResponse()
 ```
 
-## ACP Connection Testing
-
-The `Connection` struct in `connection.go` manages the ACP process lifecycle. Key testable behaviors:
+### ACP Connection Testing
 
 | Method              | Test Scenarios                                                     |
 | ------------------- | ------------------------------------------------------------------ |
