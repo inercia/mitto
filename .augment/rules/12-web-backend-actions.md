@@ -2,7 +2,9 @@
 description: Follow-up suggestions (action buttons), async analysis, caching patterns, and persistence
 globs:
   - "internal/web/background_session.go"
+  - "internal/web/action_buttons.go"
   - "internal/session/action_buttons.go"
+  - "internal/session/action_buttons_test.go"
 keywords:
   - action buttons
   - follow-up suggestions

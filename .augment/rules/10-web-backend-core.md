@@ -2,9 +2,14 @@
 description: Web server core patterns, HTTP handlers, routing, and server lifecycle
 globs:
   - "internal/web/server.go"
+  - "internal/web/server_*.go"
   - "internal/web/routes.go"
   - "internal/web/http_*.go"
   - "internal/web/session_manager.go"
+  - "internal/web/background_session.go"
+  - "internal/web/client.go"
+  - "internal/web/*_handlers.go"
+  - "internal/web/markdown.go"
 keywords:
   - HTTP handler
   - routing

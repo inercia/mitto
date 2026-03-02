@@ -1,17 +1,19 @@
 ---
-description: Markdown-to-HTML conversion, Mermaid diagrams, file link detection, and sanitization
+description: Markdown-to-HTML conversion, file/URL link detection, regex patterns, text processing anti-patterns
 globs:
   - "internal/conversion/**/*"
 keywords:
-  - mermaid
-  - diagram
-  - flowchart
-  - goldmark
-  - markdown to HTML
+  - markdown conversion
   - file link detection
+  - URL detection
   - linkify
-  - HTML sanitization
-  - code block
+  - regex
+  - regexp
+  - pattern
+  - Mermaid diagram
+  - skip region
+  - sanitize HTML
+  - text processing
 ---
 
 # Conversion Package
@@ -28,11 +30,9 @@ The `internal/conversion` package handles Markdown-to-HTML conversion with secur
 ## Converter Usage
 
 ```go
-// Default converter (no file linking)
 converter := conversion.DefaultConverter()
 html := converter.ConvertToSafeHTML(markdown)
 
-// With file links
 converter := conversion.NewConverter(
     conversion.WithFileLinks(FileLinkerConfig{
         WorkingDir: "/path/to/project",
@@ -41,201 +41,100 @@ converter := conversion.NewConverter(
 )
 ```
 
-## File Link Detection
+## Link Detection Pipeline
 
-The converter can detect file paths in agent output and make them clickable:
+Processing order matters - more specific patterns first:
 
 ```go
-config := conversion.FileLinkerConfig{
-    WorkingDir: sessionWorkDir,
-    BasePath:   "/api/files",  // URL prefix for file links
+func ProcessHTML(html string) string {
+    html = markdownToHTML(html)
+    html = linkifyURLs(html)       // URLs first (includes protocol)
+    html = linkifyFilePaths(html)  // File paths second
+    return sanitize(html)          // Sanitize last
 }
 ```
 
 **Detection patterns:**
-
+- URLs: `https://`, `http://`, `ftp://`, `mailto:`
 - Absolute paths: `/home/user/file.go`
 - Relative paths: `./src/main.go`, `../lib/utils.py`
 - Line references: `file.go:42`, `file.go:42:10`
 
-## URL Link Detection
+**Edge cases handled:** Trailing punctuation stripped, balanced parentheses preserved, URLs in code blocks NOT linked, partial URLs NOT linked.
 
-The `FileLinker` also detects and linkifies URLs in inline code blocks (backticks):
+## Regex Patterns
 
-**Supported URL schemes:**
+### HTML Processing with Skip Regions
 
-- `https://` - HTTPS URLs
-- `http://` - HTTP URLs
-- `ftp://` - FTP URLs
-- `mailto:` - Email links (without `target="_blank"`)
+Always find skip regions first, then process matches in reverse:
 
-**Processing order:**
+```go
+func linkifyURLs(html string) string {
+    skipRegions := findSkipRegions(html)  // <pre>, <code>, <a> tags
+    matches := urlPattern.FindAllStringSubmatchIndex(html, -1)
 
-1. URLs in `<code>` tags are processed first
-2. File paths in `<code>` tags are processed second
-3. File paths in regular text are processed last
-
-**Example:**
-
-```markdown
-Check out `https://example.com` for more info
+    result := html
+    for i := len(matches) - 1; i >= 0; i-- {  // Reverse order!
+        if !isInSkipRegion(matches[i], skipRegions) {
+            // Process match - indices are still valid
+        }
+    }
+    return result
+}
 ```
 
-Converts to:
+### Anti-Pattern: Forward Processing
 
-```html
-<a
-  href="https://example.com"
-  target="_blank"
-  rel="noopener noreferrer"
-  class="url-link"
->
-  <code>https://example.com</code>
-</a>
+```go
+// BAD: Forward processing breaks indices after first replacement
+for i := 0; i < len(matches); i++ {
+    result = result[:match[0]] + replacement + result[match[1]:]
+    // All subsequent indices are now wrong!
+}
 ```
 
-**Edge cases handled:**
+### Anti-Pattern: Simple String Replacement for HTML
 
-- Trailing punctuation is stripped: `https://example.com.` → `https://example.com`
-- Balanced parentheses are preserved: `https://example.com/page(1)`
-- URLs in code blocks (triple backticks) are NOT linked
-- Only complete URLs are linked (not partial matches like `example.com`)
-- URLs with surrounding text in backticks are NOT linked
+```go
+// BAD: Can't handle variations, replaces inside existing tags
+return strings.ReplaceAll(html, "https://example.com",
+    `<a href="https://example.com">...</a>`)
+```
+
+### JavaScript: Reset Global Regex State
+
+```javascript
+const URL_PATTERN = /https?:\/\/[^\s]+/gi;
+function findURLs(text) {
+  URL_PATTERN.lastIndex = 0;  // Must reset before use!
+  return URL_PATTERN.exec(text);
+}
+```
 
 ## Helper Functions for MarkdownBuffer
 
 | Function                             | Purpose                               |
-| ------------------------------------ | ------------------------------------- | --- |
+| ------------------------------------ | ------------------------------------- |
 | `IsCodeBlockStart(line)`             | Detect ``` fence lines                |
 | `IsListItem(line)`                   | Detect list items (`- `, `* `, `1. `) |
-| `IsTableRow(line)`                   | Detect table rows (`                  | `)  |
+| `IsTableRow(line)`                   | Detect table rows                     |
 | `HasUnmatchedInlineFormatting(text)` | Check for incomplete `**`, `_`, etc.  |
-
-These helpers are used by `MarkdownBuffer` to avoid flushing mid-structure:
-
-```go
-// In MarkdownBuffer.Write()
-if conversion.IsCodeBlockStart(line) {
-    mb.inCodeBlock = !mb.inCodeBlock
-}
-if conversion.IsListItem(line) {
-    mb.inList = true
-}
-```
-
-## Testing
-
-The package uses golden file testing with test data in `internal/conversion/testdata/`:
-
-```bash
-# Each test case has a .md input and .html expected output
-testdata/
-├── basic_paragraph.md
-├── basic_paragraph.html
-├── code_block.md
-├── code_block.html
-└── ...
-```
-
-Run tests:
-
-```bash
-go test ./internal/conversion/...
-```
 
 ## Mermaid Diagram Support
 
-The converter supports Mermaid diagrams via the `goldmark-mermaid` extension:
+Backend renders ` ```mermaid` blocks as `<pre class="mermaid">`. Frontend dynamically loads Mermaid.js from CDN when needed.
 
-```go
-// Backend renders ```mermaid blocks as <pre class="mermaid">
-&mermaid.Extender{
-    RenderMode: mermaid.RenderModeClient,  // Client-side rendering
-    NoScript:   true,                       // We load Mermaid.js ourselves
-}
-```
-
-**How it works:**
-
-1. **Backend**: Goldmark converts ` ```mermaid` blocks to `<pre class="mermaid">`
-2. **Frontend**: `preact-loader.js` dynamically loads Mermaid.js from CDN when needed
-3. **Rendering**: `window.renderMermaidDiagrams(container)` converts `<pre class="mermaid">` to SVG
-
-**Test data**: `testdata/mermaid_diagram.md` and `testdata/mermaid_diagram.html`
-
-**Frontend integration** (see `20-web-frontend-core.md`):
-
-```javascript
-// In Message.js - trigger rendering after HTML insertion
-useEffect(() => {
-  if (agentMessageRef.current && window.renderMermaidDiagrams) {
-    window.renderMermaidDiagrams(agentMessageRef.current);
-  }
-}, [message.html]);
-```
-
-**Note**: CDN-hosted Mermaid.js (`cdn.jsdelivr.net`) may be blocked by browser tracking protection (Firefox, Safari). If diagrams don't render, check browser console for tracking prevention warnings.
+**Note**: CDN-hosted Mermaid.js may be blocked by browser tracking protection (Firefox, Safari).
 
 ## Security
 
-All HTML output is sanitized using bluemonday's UGCPolicy to prevent XSS:
+All HTML output sanitized using bluemonday's UGCPolicy. Allows common formatting tags, strips script tags and event handlers.
 
-- Allows common formatting tags (p, strong, em, code, pre)
-- Allows safe attributes (class, id, href)
-- Strips script tags and event handlers
-- Allows URL schemes: http, https, mailto, file
+## Testing
 
-## Implementation Patterns
+Golden file testing with `internal/conversion/testdata/`. Coverage target: 90%+.
 
-### Adding New Link Detection
-
-When adding new link detection patterns (like URL detection):
-
-1. **Add regex pattern** at package level:
-
-   ```go
-   var urlPattern = regexp.MustCompile(`\b((?:https?://|ftp://|mailto:)[^\s<>"\[\]{}|\\^` + "`" + `]+)`)
-   ```
-
-2. **Create processing function** that:
-   - Finds all `<pre>` regions to skip (code blocks)
-   - Finds all inline `<code>` tags
-   - Processes matches in reverse order to preserve indices
-   - Validates content before linkifying
-   - Wraps `<code>` tag in anchor tag (preserves formatting)
-
-3. **Add to LinkFilePaths pipeline** in correct order:
-
-   ```go
-   // Process URLs first (more specific)
-   html = fl.processInlineCodeURLs(html)
-   // Then file paths
-   html = fl.processInlineCodeTags(html)
-   ```
-
-4. **Handle edge cases**:
-   - Skip content inside `<pre>` tags (code blocks)
-   - Clean trailing punctuation
-   - Preserve balanced brackets/parentheses
-   - Only linkify complete matches (not partial)
-
-### Testing Patterns
-
-For link detection features, create three test levels:
-
-1. **Unit tests** (`TestFileLinker_*`):
-   - Test HTML input/output directly
-   - Cover all edge cases
-   - Test security checks
-
-2. **Integration tests** (`Test*_Integration`):
-   - Test full markdown-to-HTML pipeline
-   - Verify interaction with goldmark
-   - Test with sanitization enabled
-
-3. **Example tests** (`Example_*`):
-   - Demonstrate real-world usage
-   - Serve as documentation
-   - Verify output format
-
-**Test coverage target:** 90%+ for conversion package
+Three-level testing strategy:
+1. **Unit tests** (`TestFileLinker_*`): HTML input/output, edge cases
+2. **Integration tests** (`Test*_Integration`): Full markdown-to-HTML pipeline
+3. **Example tests** (`Example_*`): Real-world usage as documentation

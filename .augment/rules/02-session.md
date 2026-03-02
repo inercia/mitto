@@ -139,24 +139,7 @@ abStore.Clear()
 
 ## Feature Flags (AdvancedSettings)
 
-Per-session feature flags are stored in metadata. See `16-web-backend-settings.md` for full patterns.
-
-```go
-// Define flag in flags.go
-const FlagNewFeature = "new_feature"
-
-var AvailableFlags = []FlagDefinition{
-    {Name: FlagNewFeature, Label: "New Feature", Description: "...", Default: false},
-}
-
-// Check flag value (handles nil map safely)
-enabled := session.GetFlagValue(meta.AdvancedSettings, session.FlagCanDoIntrospection)
-
-// Get default value
-defaultVal := session.GetFlagDefault(session.FlagNewFeature)
-```
-
-**Key patterns**:
+Per-session feature flags stored in metadata. See `16-web-backend-settings.md` for full patterns.
 
 - All flags default to `false` (opt-in model)
 - Use `GetFlagValue()` to safely check nil maps
