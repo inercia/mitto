@@ -205,7 +205,7 @@ Present a dropdown/combo box. Requires `can_prompt_user` flag. Max 10 options.
 | `question`        | string   | No       | Question text                  |
 | `timeout_seconds` | int      | No       | Timeout (default: 300)         |
 
-#### `mitto_conversation_start`
+#### `mitto_conversation_new`
 
 Create a new conversation in the same workspace as the calling session. Requires `can_start_conversation` flag.
 
@@ -283,7 +283,7 @@ Session-scoped tools check permissions at runtime:
 | `can_do_introspection`   | (None currently - for future tools)                                         |
 | `can_send_prompt`        | `mitto_conversation_send_prompt`                                            |
 | `can_prompt_user`        | `mitto_ui_ask_yes_no`, `mitto_ui_options_buttons`, `mitto_ui_options_combo` |
-| `can_start_conversation` | `mitto_conversation_start`                                                  |
+| `can_start_conversation` | `mitto_conversation_new`                                                    |
 
 **Note:** `mitto_conversation_list` is **always available** (no permission check).
 `mitto_conversation_get_current` and `mitto_conversation_userdata_set` require the session to be registered (running) but no flag check.

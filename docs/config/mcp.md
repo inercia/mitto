@@ -46,7 +46,7 @@ These tools require the **"Can Send Prompt"** or **"Can start conversation"** fl
 | Tool                             | Description                                     |
 | -------------------------------- | ----------------------------------------------- |
 | `mitto_conversation_send_prompt` | Send a prompt to another conversation's queue   |
-| `mitto_conversation_start`       | Create a new conversation in the same workspace |
+| `mitto_conversation_new`         | Create a new conversation in the same workspace |
 
 ## Enabling Permissions
 
