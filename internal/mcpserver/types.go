@@ -36,7 +36,7 @@ type ConversationInfo struct {
 }
 
 // ConversationDetails is the unified output structure for conversation-related tools.
-// Used by mitto_conversation_get, mitto_conversation_get_current, and mitto_conversation_start.
+// Used by mitto_conversation_get, mitto_conversation_get_current, and mitto_conversation_new.
 // All dates are formatted as ISO 8601 strings for consistent JSON output.
 type ConversationDetails struct {
 	// Basic metadata
@@ -63,6 +63,16 @@ type ConversationDetails struct {
 
 	// Parent/child relationship
 	ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
+
+	// Available ACP servers that can be used when creating new conversations from this session
+	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
+}
+
+// AvailableACPServer describes an ACP server available for conversation creation.
+type AvailableACPServer struct {
+	Name    string `json:"name"`              // Server name (used as identifier in mitto_conversation_new)
+	Type    string `json:"type,omitempty"`    // Server type for prompt matching
+	Current bool   `json:"current,omitempty"` // True if this is the current session's ACP server
 }
 
 // ConfigInfo contains the Mitto configuration info.

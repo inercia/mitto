@@ -124,6 +124,11 @@ type SessionManager interface {
 	CloseSession(sessionID, reason string)
 	// ResumeSession resumes an archived session by starting a new ACP connection.
 	ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error)
+	// GetWorkspacesForFolder returns all workspace configurations for the given folder.
+	// Multiple workspaces may share the same folder with different ACP servers.
+	GetWorkspacesForFolder(folder string) []config.WorkspaceSettings
+	// BroadcastSessionCreated broadcasts a session_created event to all connected clients.
+	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string)
 }
 
 // BackgroundSession interface for session info.
@@ -131,6 +136,9 @@ type BackgroundSession interface {
 	IsPrompting() bool
 	GetEventCount() int
 	GetMaxAssignedSeq() int64
+	// TryProcessQueuedMessage attempts to process the next queued message if the session is idle.
+	// Returns true if a message was sent.
+	TryProcessQueuedMessage() bool
 }
 
 // Config holds the configuration for the MCP server.
@@ -630,6 +638,23 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 		}
 	}
 
+	// Populate available ACP servers from config
+	s.mu.RLock()
+	cfg := s.config
+	s.mu.RUnlock()
+
+	if cfg != nil && len(cfg.ACPServers) > 0 {
+		servers := make([]AvailableACPServer, 0, len(cfg.ACPServers))
+		for _, srv := range cfg.ACPServers {
+			servers = append(servers, AvailableACPServer{
+				Name:    srv.Name,
+				Type:    srv.GetType(),
+				Current: srv.Name == meta.ACPServer,
+			})
+		}
+		details.AvailableACPServers = servers
+	}
+
 	return details
 }
 
@@ -640,7 +665,7 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Name: "mitto_conversation_list",
 		Description: "List all existing Mitto conversations with metadata including title, dates, message count, prompting status, last sequence, and session folder. " +
 			"Use this to find conversation IDs for other tools like 'mitto_conversation_get' or 'mitto_conversation_send_prompt'. " +
-			"To CREATE a new conversation, use 'mitto_conversation_start' instead. Always available.",
+			"To CREATE a new conversation, use 'mitto_conversation_new' instead. Always available.",
 	}, s.createListConversationsHandler(deps.SessionManager))
 
 	// mitto_get_config tool - always available
@@ -683,7 +708,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Name: "mitto_conversation_send_prompt",
 		Description: "Send a message/prompt to an EXISTING conversation (identified by conversation_id). " +
 			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
-			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_start'. " +
+			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_new'. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
@@ -715,16 +740,18 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleOptionsCombo)
 
-	// mitto_conversation_start - Start a new conversation
+	// mitto_conversation_new - Start a new conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_conversation_start",
+		Name: "mitto_conversation_new",
 		Description: "USE THIS TOOL TO CREATE A NEW CONVERSATION - no browser or UI interaction needed! " +
 			"This tool programmatically creates and starts a NEW agent conversation that runs in parallel with your current session. " +
 			"When a user asks you to 'create a new conversation', 'start a new session', or 'investigate something in a new conversation', " +
 			"call this tool directly instead of trying to click buttons or navigate a UI. " +
 			"This spawns a separate AI agent that can work independently on the task you specify. " +
 			"Use this to delegate work, run background tasks, or parallelize complex work across multiple agents. " +
-			"The new conversation inherits your workspace and ACP server configuration. " +
+			"The new conversation inherits your workspace configuration. By default it also inherits your ACP server, " +
+			"but you can specify a different one via the optional 'acp_server' parameter " +
+			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
@@ -1019,6 +1046,13 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		"target_session", input.ConversationID,
 		"message_id", msg.ID,
 		"queue_position", queueLen)
+
+	// Try to process the queued message immediately if agent is idle
+	if s.sessionManager != nil {
+		if bs := s.sessionManager.GetSession(input.ConversationID); bs != nil {
+			go bs.TryProcessQueuedMessage()
+		}
+	}
 
 	return nil, SendPromptOutput{
 		Success:       true,
@@ -1346,14 +1380,15 @@ func (s *Server) handleOptionsCombo(ctx context.Context, req *mcp.CallToolReques
 	}, nil
 }
 
-// ConversationStartInput is the input for mitto_conversation_start tool.
+// ConversationStartInput is the input for mitto_conversation_new tool.
 type ConversationStartInput struct {
 	SelfID        string `json:"self_id"`                  // YOUR session ID (the caller)
 	Title         string `json:"title,omitempty"`          // Optional title for the new conversation
 	InitialPrompt string `json:"initial_prompt,omitempty"` // Optional initial message to queue
+	ACPServer     string `json:"acp_server,omitempty"`     // Optional ACP server name (defaults to parent's server)
 }
 
-// ConversationStartOutput is the output for mitto_conversation_start tool.
+// ConversationStartOutput is the output for mitto_conversation_new tool.
 // Embeds ConversationDetails for the newly created conversation.
 type ConversationStartOutput struct {
 	ConversationDetails        // Embedded conversation details
@@ -1412,6 +1447,40 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			sourceMeta.ParentSessionID)
 	}
 
+	// Check for duplicate title if title is provided
+	if input.Title != "" {
+		allSessions, err := store.List()
+		if err != nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf("failed to check for duplicate titles: %v", err)
+		}
+		for _, existingMeta := range allSessions {
+			if existingMeta.Name == input.Title {
+				return nil, ConversationStartOutput{}, fmt.Errorf(
+					"a conversation with the title '%s' already exists (session_id: %s). Please choose a different title",
+					input.Title, existingMeta.SessionID)
+			}
+		}
+	}
+
+	// Determine which ACP server to use
+	acpServerName := sourceMeta.ACPServer // Default: inherit from parent
+	if input.ACPServer != "" {
+		// Validate the requested ACP server exists in config
+		s.mu.RLock()
+		cfg := s.config
+		s.mu.RUnlock()
+
+		if cfg == nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf("server configuration not available")
+		}
+		if _, err := cfg.GetServer(input.ACPServer); err != nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"ACP server '%s' not found. Available servers: %v",
+				input.ACPServer, cfg.ServerNames())
+		}
+		acpServerName = input.ACPServer
+	}
+
 	// Create new session ID using the standard timestamp format
 	// This ensures compatibility with IsValidSessionID validation in the web layer
 	newSessionID := session.GenerateSessionID()
@@ -1424,7 +1493,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	newMeta := session.Metadata{
 		SessionID:       newSessionID,
 		Name:            input.Title,
-		ACPServer:       sourceMeta.ACPServer,
+		ACPServer:       acpServerName,
 		WorkingDir:      sourceMeta.WorkingDir,
 		ParentSessionID: realSessionID, // Mark this session as a child
 		// Child sessions explicitly have can_start_conversation disabled to prevent infinite recursion
@@ -1441,6 +1510,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	s.logger.Info("New conversation created via MCP",
 		"new_session_id", newSessionID,
 		"parent_session_id", realSessionID,
+		"acp_server", acpServerName,
 		"working_dir", sourceMeta.WorkingDir,
 		"title", input.Title)
 
@@ -1451,9 +1521,41 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		createdMeta = newMeta
 	}
 
+	// Start the ACP process for the new session.
+	// store.Create() only writes metadata to disk - we need to start a BackgroundSession
+	// with an actual ACP process so prompts can be executed.
+	var bs BackgroundSession
+	if s.sessionManager != nil {
+		var resumeErr error
+		bs, resumeErr = s.sessionManager.ResumeSession(newSessionID, input.Title, sourceMeta.WorkingDir)
+		if resumeErr != nil {
+			s.logger.Error("Failed to start ACP for new conversation",
+				"session_id", newSessionID,
+				"error", resumeErr)
+			// Session was created but ACP failed to start - clean up isn't needed
+			// since the session can be resumed later, but log the error
+		}
+	}
+
+	// Broadcast session creation to all global events clients
+	// This ensures the sidebar updates immediately when creating via MCP
+	if s.sessionManager != nil {
+		s.sessionManager.BroadcastSessionCreated(
+			newSessionID,
+			input.Title,
+			acpServerName,
+			sourceMeta.WorkingDir,
+			realSessionID, // parent_session_id
+		)
+	}
+
 	// Build unified conversation details
 	output := ConversationStartOutput{
 		ConversationDetails: s.buildConversationDetails(createdMeta, store.SessionDir(newSessionID)),
+	}
+	// Update runtime status to reflect the running ACP session
+	if bs != nil {
+		output.IsRunning = true
 	}
 
 	// If initial prompt provided, add it to the queue
@@ -1467,6 +1569,11 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		} else {
 			queueLen, _ := queue.Len()
 			output.QueuePosition = queueLen
+
+			// Try to process the queued message immediately if agent is idle
+			if bs != nil {
+				go bs.TryProcessQueuedMessage()
+			}
 		}
 	}
 
