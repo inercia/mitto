@@ -490,6 +490,10 @@ func (s *Store) List() ([]Metadata, error) {
 // does not provide a session deletion mechanism - server-side sessions are
 // managed by the ACP server itself (typically cleaned up on server restart
 // or via server-specific expiration policies).
+//
+// If the session being deleted is a parent session (has child sessions),
+// this method will clear the ParentSessionID field in all child sessions
+// to prevent orphaned references.
 func (s *Store) Delete(sessionID string) error {
 	log := logging.Session()
 	s.mu.Lock()
@@ -502,6 +506,13 @@ func (s *Store) Delete(sessionID string) error {
 	sessionDir := s.sessionDir(sessionID)
 	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
 		return ErrSessionNotFound
+	}
+
+	// Before deleting, find and clean up any child sessions that reference this parent
+	// This prevents orphaned parent references
+	if err := s.clearParentReferenceInChildren(sessionID); err != nil {
+		log.Error("failed to clear parent references in child sessions", "error", err, "session_id", sessionID)
+		// Continue with deletion even if cleanup fails - we don't want to block deletion
 	}
 
 	if err := os.RemoveAll(sessionDir); err != nil {
@@ -523,6 +534,72 @@ func (s *Store) Exists(sessionID string) bool {
 
 	_, err := os.Stat(s.metadataPath(sessionID))
 	return err == nil
+}
+
+// clearParentReferenceInChildren finds all sessions that have the given sessionID
+// as their parent and clears the ParentSessionID field.
+// This is called when deleting a parent session to prevent orphaned references.
+// Note: This method assumes the caller holds s.mu.Lock().
+func (s *Store) clearParentReferenceInChildren(parentSessionID string) error {
+	log := logging.Session()
+
+	// Read all session directories
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return fmt.Errorf("failed to read sessions directory: %w", err)
+	}
+
+	var updateErrors []error
+	var updatedCount int
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		sessionID := entry.Name()
+		// Skip the session being deleted
+		if sessionID == parentSessionID {
+			continue
+		}
+
+		// Read metadata
+		meta, err := s.readMetadata(sessionID)
+		if err != nil {
+			// Skip sessions with invalid metadata
+			continue
+		}
+
+		// Check if this session has the parent we're deleting
+		if meta.ParentSessionID == parentSessionID {
+			// Clear the parent reference
+			meta.ParentSessionID = ""
+			meta.UpdatedAt = time.Now()
+
+			// Write updated metadata
+			if err := s.writeMetadata(meta); err != nil {
+				updateErrors = append(updateErrors, fmt.Errorf("failed to update session %s: %w", sessionID, err))
+				continue
+			}
+
+			updatedCount++
+			log.Debug("cleared parent reference in child session",
+				"child_session_id", sessionID,
+				"parent_session_id", parentSessionID)
+		}
+	}
+
+	if updatedCount > 0 {
+		log.Info("cleared parent references in child sessions",
+			"parent_session_id", parentSessionID,
+			"updated_count", updatedCount)
+	}
+
+	if len(updateErrors) > 0 {
+		return fmt.Errorf("encountered %d errors while clearing parent references", len(updateErrors))
+	}
+
+	return nil
 }
 
 // CountSessions returns the number of stored sessions.
