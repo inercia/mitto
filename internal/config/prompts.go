@@ -27,6 +27,11 @@ type PromptFile struct {
 	// Description is an optional description shown as tooltip in the UI.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 
+	// Group is an optional group name for organizing prompts in the UI.
+	// Prompts with the same group will be displayed together under a group header.
+	// If empty, the prompt will appear in an "Other" section.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
+
 	// BackgroundColor is an optional hex color for the prompt button (e.g., "#E8F5E9").
 	BackgroundColor string `yaml:"backgroundColor,omitempty" json:"backgroundColor,omitempty"`
 
@@ -113,6 +118,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Prompt:          p.Content,
 		BackgroundColor: p.BackgroundColor,
 		Description:     p.Description,
+		Group:           p.Group,
 		Source:          PromptSourceFile,
 		ACPs:            p.ACPs,
 	}

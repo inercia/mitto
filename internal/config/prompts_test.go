@@ -133,6 +133,7 @@ func TestToWebPrompt(t *testing.T) {
 		Content:         "Content here",
 		BackgroundColor: "#FF0000",
 		Description:     "Test description",
+		Group:           "Testing",
 		ACPs:            "auggie, claude-code",
 	}
 
@@ -149,6 +150,9 @@ func TestToWebPrompt(t *testing.T) {
 	}
 	if wp.Description != "Test description" {
 		t.Errorf("WebPrompt.Description = %q, want %q", wp.Description, "Test description")
+	}
+	if wp.Group != "Testing" {
+		t.Errorf("WebPrompt.Group = %q, want %q", wp.Group, "Testing")
 	}
 	// File-based prompts should have Source=PromptSourceFile
 	if wp.Source != PromptSourceFile {
@@ -316,6 +320,33 @@ This prompt works with multiple ACPs.
 
 	if prompt.ACPs != "auggie, claude-code, custom-acp" {
 		t.Errorf("ACPs = %q, want %q", prompt.ACPs, "auggie, claude-code, custom-acp")
+	}
+}
+
+func TestParsePromptFile_WithGroup(t *testing.T) {
+	data := []byte(`---
+name: "Test Prompt"
+description: "A test prompt"
+group: "Testing"
+backgroundColor: "#E8F5E9"
+---
+
+This is a test prompt with a group.
+`)
+
+	prompt, err := ParsePromptFile("test.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Name != "Test Prompt" {
+		t.Errorf("Name = %q, want %q", prompt.Name, "Test Prompt")
+	}
+	if prompt.Group != "Testing" {
+		t.Errorf("Group = %q, want %q", prompt.Group, "Testing")
+	}
+	if prompt.Description != "A test prompt" {
+		t.Errorf("Description = %q, want %q", prompt.Description, "A test prompt")
 	}
 }
 
