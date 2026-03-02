@@ -1,6 +1,7 @@
 ---
 name: "Improve rules"
 description: "Update Augment rules based on recent conversations and code changes"
+group: "Agents & Mitto"
 acps: auggie
 backgroundColor: "#1b0bc693"
 ---

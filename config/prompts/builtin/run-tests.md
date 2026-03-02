@@ -1,6 +1,7 @@
 ---
 name: "Run tests"
 description: "Run the test suite and report results"
+group: "Testing"
 backgroundColor: "#FFE0B2"
 ---
 

@@ -1,6 +1,7 @@
 ---
 name: "Improve memory"
 description: "Update Claude Code memory files based on recent conversations"
+group: "Agents & Mitto"
 acps: claude-code
 backgroundColor: "#1b0bc693"
 ---

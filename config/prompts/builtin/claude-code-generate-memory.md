@@ -1,6 +1,7 @@
 ---
 name: "Generate memory"
 description: "Analyze workspace and generate comprehensive Claude Code memory files"
+group: "Agents & Mitto"
 acps: claude-code
 backgroundColor: "#1b0bc693"
 ---

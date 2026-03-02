@@ -1,6 +1,7 @@
 ---
 name: "Explain"
 description: "Explain the code or concept we just discussed"
+group: "Documentation"
 backgroundColor: "#E1BEE7"
 ---
 

@@ -1,6 +1,7 @@
 ---
 name: "Check CI"
 description: "Check CI pipeline status and report results"
+group: "CI"
 backgroundColor: "#BBDEFB"
 ---
 

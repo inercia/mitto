@@ -1,6 +1,7 @@
 ---
 name: "Document Architecture"
 description: "Update developer/architecture documentation for the changes we just made"
+group: "Documentation"
 backgroundColor: "#CE93D8"
 ---
 

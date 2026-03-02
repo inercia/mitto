@@ -1,6 +1,7 @@
 ---
 name: "Add tests"
 description: "Write comprehensive tests for new or modified code"
+group: "Testing"
 backgroundColor: "#FFE0B2"
 ---
 
