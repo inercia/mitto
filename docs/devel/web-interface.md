@@ -57,6 +57,61 @@ The web interface uses REST APIs for session management and configuration:
 | `/api/queue/{session_id}`         | POST   | Add message to queue                       |
 | `/api/queue/{session_id}/{id}`    | DELETE | Remove message from queue                  |
 
+### Session Metadata Fields
+
+The `/api/sessions` endpoint returns an array of session objects with the following key fields:
+
+| Field               | Type      | Description                                                          |
+| ------------------- | --------- | -------------------------------------------------------------------- |
+| `session_id`        | string    | Unique session identifier                                            |
+| `name`              | string    | User-friendly session name (auto-generated or user-set)              |
+| `acp_server`        | string    | ACP server name used for this session                                |
+| `working_dir`       | string    | Workspace directory path                                             |
+| `created_at`        | timestamp | Session creation time                                                |
+| `updated_at`        | timestamp | Last activity time                                                   |
+| `status`            | string    | Session status (active, idle, error)                                 |
+| `archived`          | boolean   | Whether session is archived                                          |
+| `parent_session_id` | string    | Parent session ID (if created via `mitto_conversation_new` MCP tool) |
+| `periodic_enabled`  | boolean   | Whether periodic execution is configured                             |
+
+#### Parent-Child Relationships
+
+Sessions can have parent-child relationships when created via the `mitto_conversation_new` MCP tool:
+
+- **Parent Session**: A session that spawns child sessions (no `parent_session_id`)
+- **Child Session**: A session created by another session (has `parent_session_id` set)
+
+**Use Cases**:
+
+- Delegating subtasks to parallel agents
+- Running background analysis while main conversation continues
+- Preventing infinite recursion (children cannot spawn more children)
+
+**Frontend Implications**:
+
+- Child sessions can be displayed indented under their parent
+- Orphaned children (parent archived/deleted) should be handled gracefully
+- Circular references should be prevented (though backend enforces this)
+
+**Example Response**:
+
+```json
+[
+  {
+    "session_id": "parent-123",
+    "name": "Main Analysis",
+    "parent_session_id": "",
+    ...
+  },
+  {
+    "session_id": "child-456",
+    "name": "Background Research",
+    "parent_session_id": "parent-123",
+    ...
+  }
+]
+```
+
 ### Session Creation Flow
 
 ```mermaid
