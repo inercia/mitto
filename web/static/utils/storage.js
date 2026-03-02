@@ -84,6 +84,9 @@ export async function initUIPreferences() {
             JSON.stringify(prefs.filter_tab_grouping),
           );
         }
+        if (prefs.prompt_sort_mode) {
+          localStorage.setItem(PROMPT_SORT_MODE_KEY, prefs.prompt_sort_mode);
+        }
 
         console.debug(
           "[Mitto] UI preferences loaded from server:",
@@ -151,6 +154,7 @@ function getCurrentUIPreferences() {
     grouping_mode: getGroupingMode(),
     expanded_groups: getExpandedGroups(),
     filter_tab_grouping: getAllFilterTabGroupings(),
+    prompt_sort_mode: getPromptSortMode(),
   };
 }
 
@@ -350,6 +354,8 @@ const GROUPING_MODE_KEY = "mitto_conversation_grouping_mode";
 const EXPANDED_GROUPS_KEY = "mitto_conversation_expanded_groups";
 // Per-tab grouping (each filter tab can have its own grouping mode)
 const FILTER_TAB_GROUPING_KEY = "mitto_filter_tab_grouping";
+// Prompt sorting mode: "alphabetical" (default) or "color"
+const PROMPT_SORT_MODE_KEY = "mitto_prompt_sort_mode";
 
 // Accordion mode: when enabled, only one group can be expanded at a time
 // This is configured via settings (ui.web.single_expanded_group)
@@ -374,30 +380,32 @@ export function getSingleExpandedGroupMode() {
 
 /**
  * Get the current conversation grouping mode from localStorage
- * @returns {'none' | 'server' | 'workspace'} The current grouping mode
+ * @returns {'none' | 'server' | 'folder' | 'workspace'} The current grouping mode
  */
 export function getGroupingMode() {
   try {
     const value = localStorage.getItem(GROUPING_MODE_KEY);
-    // Support legacy 'folder' mode by migrating to 'workspace'
-    if (value === "folder") {
-      localStorage.setItem(GROUPING_MODE_KEY, "workspace");
-      return "workspace";
+    if (
+      value === "server" ||
+      value === "folder" ||
+      value === "workspace"
+    ) {
+      return value;
     }
-    return value === "server" || value === "workspace" ? value : "none";
+    return "folder"; // Default to folder grouping
   } catch (e) {
     console.warn("Failed to read grouping mode from localStorage:", e);
-    return "none";
+    return "folder"; // Default to folder grouping
   }
 }
 
 /**
  * Save the conversation grouping mode to localStorage and server
- * @param {'none' | 'server' | 'workspace'} mode - The grouping mode to save
+ * @param {'none' | 'server' | 'folder' | 'workspace'} mode - The grouping mode to save
  */
 export function setGroupingMode(mode) {
   try {
-    if (mode === "server" || mode === "workspace") {
+    if (mode === "server" || mode === "folder" || mode === "workspace") {
       localStorage.setItem(GROUPING_MODE_KEY, mode);
     } else {
       localStorage.removeItem(GROUPING_MODE_KEY);
@@ -418,7 +426,8 @@ export function setGroupingMode(mode) {
 
 /**
  * Cycle to the next grouping mode
- * @returns {'none' | 'server' | 'workspace'} The new grouping mode
+ * Cycle order: none -> server -> folder -> workspace -> none
+ * @returns {'none' | 'server' | 'folder' | 'workspace'} The new grouping mode
  */
 export function cycleGroupingMode() {
   const current = getGroupingMode();
@@ -428,6 +437,9 @@ export function cycleGroupingMode() {
       next = "server";
       break;
     case "server":
+      next = "folder";
+      break;
+    case "folder":
       next = "workspace";
       break;
     case "workspace":
@@ -571,20 +583,20 @@ export function setFilterTab(tab) {
 
 /**
  * Default grouping modes for each filter tab:
- * - Conversations: group by workspace
+ * - Conversations: group by folder
  * - Periodic: no grouping (flat list)
- * - Archived: group by workspace
+ * - Archived: group by folder
  */
 const DEFAULT_TAB_GROUPING = {
-  [FILTER_TAB.CONVERSATIONS]: "workspace",
+  [FILTER_TAB.CONVERSATIONS]: "folder",
   [FILTER_TAB.PERIODIC]: "none",
-  [FILTER_TAB.ARCHIVED]: "workspace",
+  [FILTER_TAB.ARCHIVED]: "folder",
 };
 
 /**
  * Get the grouping mode for a specific filter tab from localStorage
  * @param {string} tabId - The filter tab ID (conversations, periodic, archived)
- * @returns {'none' | 'server' | 'workspace'} The grouping mode for that tab
+ * @returns {'none' | 'server' | 'folder' | 'workspace'} The grouping mode for that tab
  */
 export function getFilterTabGrouping(tabId) {
   try {
@@ -592,7 +604,12 @@ export function getFilterTabGrouping(tabId) {
     if (value) {
       const tabGroupings = JSON.parse(value);
       const mode = tabGroupings[tabId];
-      if (mode === "none" || mode === "server" || mode === "workspace") {
+      if (
+        mode === "none" ||
+        mode === "server" ||
+        mode === "folder" ||
+        mode === "workspace"
+      ) {
         return mode;
       }
     }
@@ -607,7 +624,7 @@ export function getFilterTabGrouping(tabId) {
 /**
  * Save the grouping mode for a specific filter tab to localStorage and server
  * @param {string} tabId - The filter tab ID (conversations, periodic, archived)
- * @param {'none' | 'server' | 'workspace'} mode - The grouping mode to save
+ * @param {'none' | 'server' | 'folder' | 'workspace'} mode - The grouping mode to save
  */
 export function setFilterTabGrouping(tabId, mode) {
   try {
@@ -619,7 +636,12 @@ export function setFilterTabGrouping(tabId, mode) {
     }
 
     // Update the grouping for this tab
-    if (mode === "none" || mode === "server" || mode === "workspace") {
+    if (
+      mode === "none" ||
+      mode === "server" ||
+      mode === "folder" ||
+      mode === "workspace"
+    ) {
       tabGroupings[tabId] = mode;
     } else {
       // Use default for invalid modes
@@ -650,7 +672,7 @@ const VALID_FILTER_TABS = new Set([
 ]);
 
 // Valid grouping modes for validation
-const VALID_GROUPING_MODES = new Set(["none", "server", "workspace"]);
+const VALID_GROUPING_MODES = new Set(["none", "server", "folder", "workspace"]);
 
 /**
  * Get all filter tab groupings from localStorage.
@@ -681,8 +703,9 @@ export function getAllFilterTabGroupings() {
 
 /**
  * Cycle to the next grouping mode for a specific filter tab
+ * Cycle order: none -> server -> folder -> workspace -> none
  * @param {string} tabId - The filter tab ID
- * @returns {'none' | 'server' | 'workspace'} The new grouping mode
+ * @returns {'none' | 'server' | 'folder' | 'workspace'} The new grouping mode
  */
 export function cycleFilterTabGrouping(tabId) {
   const current = getFilterTabGrouping(tabId);
@@ -692,6 +715,9 @@ export function cycleFilterTabGrouping(tabId) {
       next = "server";
       break;
     case "server":
+      next = "folder";
+      break;
+    case "folder":
       next = "workspace";
       break;
     case "workspace":
@@ -702,4 +728,49 @@ export function cycleFilterTabGrouping(tabId) {
   }
   setFilterTabGrouping(tabId, next);
   return next;
+}
+
+
+// =============================================================================
+// Prompt Sorting Mode
+// =============================================================================
+
+/**
+ * Get the prompt sorting mode from localStorage
+ * @returns {'alphabetical' | 'color'} - The sorting mode (default: 'alphabetical')
+ */
+export function getPromptSortMode() {
+  try {
+    const value = localStorage.getItem(PROMPT_SORT_MODE_KEY);
+    if (value === "color" || value === "alphabetical") {
+      return value;
+    }
+  } catch (e) {
+    console.warn("[Mitto] Failed to get prompt sort mode:", e);
+  }
+  return "alphabetical"; // Default
+}
+
+/**
+ * Save the prompt sorting mode to localStorage and server
+ * @param {'alphabetical' | 'color'} mode - The sorting mode to save
+ */
+export function setPromptSortMode(mode) {
+  try {
+    if (mode === "alphabetical" || mode === "color") {
+      localStorage.setItem(PROMPT_SORT_MODE_KEY, mode);
+    } else {
+      localStorage.removeItem(PROMPT_SORT_MODE_KEY);
+    }
+    // Also save to server for persistence across app launches
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+    // Dispatch event for components that need to react to sort mode changes
+    window.dispatchEvent(
+      new CustomEvent("mitto-prompt-sort-mode-changed", {
+        detail: { mode },
+      }),
+    );
+  } catch (e) {
+    console.warn("[Mitto] Failed to set prompt sort mode:", e);
+  }
 }

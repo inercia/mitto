@@ -349,8 +349,9 @@ export function ConversationPropertiesPanel({
         }
 
         if (flagsRes.ok) {
-          const flags = await flagsRes.json();
-          setAvailableFlags(flags || []);
+          const flagsData = await flagsRes.json();
+          // API returns { flags: [...], configured_defaults: {...} }
+          setAvailableFlags(flagsData.flags || flagsData || []);
         }
 
         if (settingsRes.ok) {

@@ -13,6 +13,8 @@ import {
   isSeqDuplicate,
   markSeqSeen,
   calculateReconnectDelay,
+  createReconnectDebounceTracker,
+  shouldDebounceReconnect,
   WEBSOCKET_CONSTANTS,
 } from "./websocket.js";
 
@@ -436,5 +438,146 @@ describe("Available Commands WebSocket message handling", () => {
     };
     const commands = parseCommandsUpdateMessage(msg);
     expect(commands).toBeNull();
+  });
+});
+
+// =============================================================================
+// Reconnect Debounce Tests
+// =============================================================================
+
+describe("createReconnectDebounceTracker", () => {
+  test("creates tracker with empty timestamps", () => {
+    const tracker = createReconnectDebounceTracker();
+    expect(tracker.timestamps).toEqual({});
+  });
+});
+
+describe("shouldDebounceReconnect", () => {
+  test("first call goes through immediately", () => {
+    const tracker = createReconnectDebounceTracker();
+    const result = shouldDebounceReconnect(tracker, "session1", {
+      now: () => 1000,
+    });
+    expect(result.debounced).toBe(false);
+  });
+
+  test("records timestamp on first call", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
+    expect(tracker.timestamps["session1"]).toBe(1000);
+  });
+
+  test("second call within window is debounced", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
+    const result = shouldDebounceReconnect(tracker, "session1", {
+      now: () => 1200,
+    });
+    expect(result.debounced).toBe(true);
+    expect(result.elapsed).toBe(200);
+  });
+
+  test("call after window expires goes through", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
+    const result = shouldDebounceReconnect(tracker, "session1", {
+      now: () => 1600,
+    });
+    expect(result.debounced).toBe(false);
+  });
+
+  test("call exactly at window boundary is not debounced", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
+    const result = shouldDebounceReconnect(tracker, "session1", {
+      now: () => 1500,
+    });
+    expect(result.debounced).toBe(false);
+  });
+
+  test("different sessions are independent", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
+
+    // session2 should not be debounced even though session1 just reconnected
+    const result = shouldDebounceReconnect(tracker, "session2", {
+      now: () => 1100,
+    });
+    expect(result.debounced).toBe(false);
+  });
+
+  test("session1 debounced while session2 goes through", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
+    shouldDebounceReconnect(tracker, "session2", { now: () => 1000 });
+
+    // Both within window: session1 debounced, session2 debounced
+    const r1 = shouldDebounceReconnect(tracker, "session1", {
+      now: () => 1200,
+    });
+    const r2 = shouldDebounceReconnect(tracker, "session2", {
+      now: () => 1200,
+    });
+    expect(r1.debounced).toBe(true);
+    expect(r2.debounced).toBe(true);
+  });
+
+  test("updates timestamp when call goes through", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
+    // After window
+    shouldDebounceReconnect(tracker, "session1", { now: () => 2000 });
+    expect(tracker.timestamps["session1"]).toBe(2000);
+  });
+
+  test("does not update timestamp when debounced", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
+    // Within window - should be debounced and NOT update timestamp
+    shouldDebounceReconnect(tracker, "session1", { now: () => 1200 });
+    expect(tracker.timestamps["session1"]).toBe(1000);
+  });
+
+  test("custom window size is respected", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "session1", {
+      now: () => 1000,
+      windowMs: 200,
+    });
+
+    // 150ms later with 200ms window -> debounced
+    const r1 = shouldDebounceReconnect(tracker, "session1", {
+      now: () => 1150,
+      windowMs: 200,
+    });
+    expect(r1.debounced).toBe(true);
+
+    // 250ms later with 200ms window -> not debounced
+    const r2 = shouldDebounceReconnect(tracker, "session1", {
+      now: () => 1250,
+      windowMs: 200,
+    });
+    expect(r2.debounced).toBe(false);
+  });
+
+  test("default window matches RECONNECT_DEBOUNCE_MS constant", () => {
+    expect(WEBSOCKET_CONSTANTS.RECONNECT_DEBOUNCE_MS).toBe(500);
+  });
+
+  test("third call after second debounced still debounced within window", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "s1", { now: () => 1000 });
+    shouldDebounceReconnect(tracker, "s1", { now: () => 1100 }); // debounced
+    const result = shouldDebounceReconnect(tracker, "s1", { now: () => 1300 }); // still within 500ms of 1000
+    expect(result.debounced).toBe(true);
+  });
+
+  test("call goes through after debounced calls once window passes", () => {
+    const tracker = createReconnectDebounceTracker();
+    shouldDebounceReconnect(tracker, "s1", { now: () => 1000 }); // through
+    shouldDebounceReconnect(tracker, "s1", { now: () => 1100 }); // debounced
+    shouldDebounceReconnect(tracker, "s1", { now: () => 1300 }); // debounced
+    const result = shouldDebounceReconnect(tracker, "s1", { now: () => 1600 }); // through (500ms after 1000)
+    expect(result.debounced).toBe(false);
   });
 });

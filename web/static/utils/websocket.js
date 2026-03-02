@@ -136,10 +136,56 @@ export function calculateReconnectDelay(attempt, options = {}) {
   return Math.floor(exponentialDelay + jitter);
 }
 
+// =============================================================================
+// Reconnect Debounce
+// =============================================================================
+
+// Default debounce window for force-reconnect (ms)
+const RECONNECT_DEBOUNCE_MS = 500;
+
+/**
+ * Create a per-session reconnect debounce tracker.
+ * Returns an object that can be passed to shouldDebounceReconnect.
+ * @returns {Object} tracker - { timestamps: {} }
+ */
+export function createReconnectDebounceTracker() {
+  return { timestamps: {} };
+}
+
+/**
+ * Check whether a force-reconnect for the given session should be debounced
+ * (skipped). If the same session was reconnected within `windowMs` ago, returns
+ * true (skip). Otherwise records the current time and returns false (proceed).
+ *
+ * This implements a leading-edge debounce: the first call goes through
+ * immediately; subsequent calls within the window are suppressed.
+ *
+ * @param {Object} tracker - Created by createReconnectDebounceTracker()
+ * @param {string} sessionId - The session to check
+ * @param {object} [options] - Optional overrides for testing
+ * @param {number} [options.windowMs] - Debounce window (default: 500)
+ * @param {function} [options.now] - Clock function (default: Date.now)
+ * @returns {{ debounced: boolean, elapsed: number }} debounced=true means skip
+ */
+export function shouldDebounceReconnect(tracker, sessionId, options = {}) {
+  const windowMs = options.windowMs ?? RECONNECT_DEBOUNCE_MS;
+  const now = (options.now ?? Date.now)();
+  const lastTime = tracker.timestamps[sessionId] || 0;
+  const elapsed = now - lastTime;
+
+  if (lastTime > 0 && elapsed < windowMs) {
+    return { debounced: true, elapsed };
+  }
+
+  tracker.timestamps[sessionId] = now;
+  return { debounced: false, elapsed };
+}
+
 // Export constants for testing
 export const WEBSOCKET_CONSTANTS = {
   MAX_RECENT_SEQS,
   RECONNECT_BASE_DELAY_MS,
   RECONNECT_MAX_DELAY_MS,
   RECONNECT_JITTER_FACTOR,
+  RECONNECT_DEBOUNCE_MS,
 };

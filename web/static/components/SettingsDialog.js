@@ -9,6 +9,7 @@ import {
   pickFolder,
   openExternalURL,
 } from "../utils/index.js";
+import { setPromptSortMode as savePromptSortMode } from "../utils/storage.js";
 
 // Import shared library functions
 import {
@@ -432,6 +433,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
   const [backgroundColor, setBackgroundColor] = useState(
     prompt.backgroundColor || "",
   );
+  const [group, setGroup] = useState(prompt.group || "");
 
   return html`
     <div class="space-y-3">
@@ -455,6 +457,21 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
           rows="3"
           disabled=${readOnly}
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none ${readOnly
+            ? "opacity-60 cursor-not-allowed"
+            : ""}"
+        />
+      </div>
+      <div>
+        <label class="block text-sm text-gray-400 mb-1"
+          >Group (optional)</label
+        >
+        <input
+          type="text"
+          value=${group}
+          onInput=${(e) => setGroup(e.target.value)}
+          placeholder="e.g., Tasks, Code Quality"
+          disabled=${readOnly}
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
@@ -520,7 +537,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         ${!readOnly &&
         html`
           <button
-            onClick=${() => onSave(name, text, backgroundColor)}
+            onClick=${() => onSave(name, text, backgroundColor, group)}
             disabled=${!name.trim() || !text.trim()}
             class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50"
           >
@@ -621,6 +638,7 @@ export function SettingsDialog({
   const [newPromptName, setNewPromptName] = useState("");
   const [newPromptText, setNewPromptText] = useState("");
   const [newPromptColor, setNewPromptColor] = useState("");
+  const [newPromptGroup, setNewPromptGroup] = useState("");
   const [editingPrompt, setEditingPrompt] = useState(null);
 
   // Prompt drag-and-drop state
@@ -661,6 +679,11 @@ export function SettingsDialog({
   // Input font family setting (web UI)
   const [inputFontFamily, setInputFontFamily] = useState("system");
 
+  // Send key mode setting (web UI) - default: "enter"
+  // "enter" = Enter to send, Shift+Enter for new line
+  // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
+  const [sendKeyMode, setSendKeyMode] = useState("enter");
+
   // Conversation cycling mode setting (web UI) - default: "all"
   const [conversationCyclingMode, setConversationCyclingMode] = useState(
     CYCLING_MODE.ALL,
@@ -681,6 +704,15 @@ export function SettingsDialog({
     return true;
   });
 
+  // Prompt sort mode setting (client-side, stored in localStorage and server)
+  const [promptSortMode, setPromptSortMode] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      const saved = localStorage.getItem("mitto_prompt_sort_mode");
+      return saved === "color" ? "color" : "alphabetical";
+    }
+    return "alphabetical";
+  });
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
@@ -694,6 +726,12 @@ export function SettingsDialog({
         detail: { enabled },
       }),
     );
+  };
+
+  // Handle prompt sort mode change
+  const handlePromptSortModeChange = (mode) => {
+    setPromptSortMode(mode);
+    savePromptSortMode(mode); // This saves to localStorage and server
   };
 
   // Load configuration when dialog opens
@@ -1004,6 +1042,9 @@ export function SettingsDialog({
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
+      // Load send key mode setting (web UI) - default to "enter"
+      setSendKeyMode(config.ui?.web?.send_key_mode || "enter");
+
       // Load single expanded group (accordion mode) setting (web UI) - default to false
       const accordionEnabled = config.ui?.web?.single_expanded_group === true;
       setSingleExpandedGroup(accordionEnabled);
@@ -1119,6 +1160,7 @@ export function SettingsDialog({
         // Web-specific UI settings
         web: {
           input_font_family: inputFontFamily,
+          send_key_mode: sendKeyMode,
           conversation_cycling_mode: conversationCyclingMode,
           single_expanded_group: singleExpandedGroup,
         },
@@ -1735,7 +1777,7 @@ export function SettingsDialog({
     { id: "workspaces", label: "Workspaces", icon: FolderIcon },
     { id: "prompts", label: "Prompts", icon: LightningIcon },
     { id: "runners", label: "Runners", icon: LockIcon },
-    { id: "permissions", label: "Permissions", icon: ShieldIcon },
+    { id: "permissions", label: "Conversations", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
   ];
@@ -2464,6 +2506,18 @@ export function SettingsDialog({
                           </div>
                           <div>
                             <label class="block text-sm text-gray-400 mb-1"
+                              >Group (optional)</label
+                            >
+                            <input
+                              type="text"
+                              value=${newPromptGroup}
+                              onInput=${(e) => setNewPromptGroup(e.target.value)}
+                              placeholder="e.g., Tasks, Code Quality"
+                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+                          <div>
+                            <label class="block text-sm text-gray-400 mb-1"
                               >Background Color (optional)</label
                             >
                             <div class="flex items-center gap-2">
@@ -2515,6 +2569,7 @@ export function SettingsDialog({
                                 setNewPromptName("");
                                 setNewPromptText("");
                                 setNewPromptColor("");
+                                setNewPromptGroup("");
                               }}
                               class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
                             >
@@ -2533,10 +2588,14 @@ export function SettingsDialog({
                                   if (newPromptColor) {
                                     newPrompt.backgroundColor = newPromptColor;
                                   }
+                                  if (newPromptGroup.trim()) {
+                                    newPrompt.group = newPromptGroup.trim();
+                                  }
                                   setPrompts([...prompts, newPrompt]);
                                   setNewPromptName("");
                                   setNewPromptText("");
                                   setNewPromptColor("");
+                                  setNewPromptGroup("");
                                   setShowAddPrompt(false);
                                 }
                               }}
@@ -2578,7 +2637,7 @@ export function SettingsDialog({
                                           prompt=${prompt}
                                           readOnly=${prompt.source === "file" ||
                                           prompt.source === "workspace"}
-                                          onSave=${(name, text, bgColor) => {
+                                          onSave=${(name, text, bgColor, group) => {
                                             const updated = [...prompts];
                                             updated[originalIndex] = {
                                               ...prompts[originalIndex],
@@ -2588,6 +2647,11 @@ export function SettingsDialog({
                                             if (bgColor) {
                                               updated[originalIndex]
                                                 .backgroundColor = bgColor;
+                                            }
+                                            if (group && group.trim()) {
+                                              updated[originalIndex].group = group.trim();
+                                            } else {
+                                              delete updated[originalIndex].group;
                                             }
                                             setPrompts(updated);
                                             setEditingPrompt(null);
@@ -3529,6 +3593,98 @@ export function SettingsDialog({
                           </div>
                         `}
                       </div>
+
+                      <!-- Archive Settings -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Archive Settings
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Auto-delete archived conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Automatically delete archived conversations
+                                after the specified period
+                              </div>
+                            </div>
+                            <select
+                              value=${archiveRetentionPeriod}
+                              onChange=${(e) =>
+                                setArchiveRetentionPeriod(e.target.value)}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                              <option value="never">Never</option>
+                              <option value="1d">After 1 day</option>
+                              <option value="1w">After 1 week</option>
+                              <option value="1m">After 1 month</option>
+                              <option value="3m">After 3 months</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Default Flags for New Conversations -->
+                      ${availableFlags.length > 0 &&
+                      html`
+                        <div class="space-y-3">
+                          <h4 class="text-sm font-medium text-gray-300">
+                            Default Flags for New Conversations
+                          </h4>
+                          <p class="text-xs text-gray-500">
+                            These flags will be enabled by default when creating
+                            new conversations.
+                          </p>
+                          <div
+                            class="bg-slate-700/20 rounded-lg border border-slate-600/50 overflow-hidden"
+                          >
+                            <table class="w-full text-sm">
+                              <tbody>
+                                ${availableFlags.map(
+                                  (flag) => html`
+                                    <tr
+                                      key=${flag.name}
+                                      class="border-b border-slate-600/30 last:border-b-0 hover:bg-slate-700/30 transition-colors"
+                                    >
+                                      <td class="p-3 w-10">
+                                        <input
+                                          type="checkbox"
+                                          checked=${defaultFlags[flag.name] ||
+                                          false}
+                                          onChange=${(e) => {
+                                            const newFlags = {
+                                              ...defaultFlags,
+                                            };
+                                            if (e.target.checked) {
+                                              newFlags[flag.name] = true;
+                                            } else {
+                                              delete newFlags[flag.name];
+                                            }
+                                            setDefaultFlags(newFlags);
+                                          }}
+                                          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+                                        />
+                                      </td>
+                                      <td class="p-3">
+                                        <div class="font-medium">
+                                          ${flag.label}
+                                        </div>
+                                        <div class="text-xs text-gray-500">
+                                          ${flag.description}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  `,
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      `}
                     </div>
                   `}
 
@@ -3717,6 +3873,29 @@ export function SettingsDialog({
                           <div class="flex items-center justify-between">
                             <div>
                               <div class="font-medium text-sm">
+                                Prompt sorting
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                How to sort prompts in the dropdown menu
+                              </div>
+                            </div>
+                            <select
+                              value=${promptSortMode}
+                              onChange=${(e) =>
+                                handlePromptSortModeChange(e.target.value)}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                              <option value="alphabetical">Alphabetical</option>
+                              <option value="color">By Color</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
                                 Input box font
                               </div>
                               <div class="text-xs text-gray-500">
@@ -3743,6 +3922,38 @@ export function SettingsDialog({
                               <option value="sf-mono">SF Mono</option>
                               <option value="cascadia-code">
                                 Cascadia Code
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Send message shortcut
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Key combination to send messages
+                              </div>
+                            </div>
+                            <select
+                              value=${sendKeyMode}
+                              onChange=${(e) => setSendKeyMode(e.target.value)}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                              <option value="enter">
+                                Enter to send (${navigator.platform?.includes("Mac")
+                                  ? "⌘"
+                                  : "Ctrl"}+Enter to queue)
+                              </option>
+                              <option value="ctrl-enter">
+                                ${navigator.platform?.includes("Mac")
+                                  ? "⌘"
+                                  : "Ctrl"}+Enter to send (${navigator.platform?.includes("Mac")
+                                  ? "⌘⇧"
+                                  : "Ctrl+Shift"}+Enter to queue)
                               </option>
                             </select>
                           </div>
@@ -3857,40 +4068,6 @@ export function SettingsDialog({
                             </div>
                           </label>
                         `}
-                      </div>
-
-                      <!-- Archive Settings -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-gray-300">
-                          Archive Settings
-                        </h4>
-                        <div
-                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Auto-delete archived conversations
-                              </div>
-                              <div class="text-xs text-gray-500">
-                                Automatically delete archived conversations
-                                after the specified period
-                              </div>
-                            </div>
-                            <select
-                              value=${archiveRetentionPeriod}
-                              onChange=${(e) =>
-                                setArchiveRetentionPeriod(e.target.value)}
-                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
-                            >
-                              <option value="never">Never</option>
-                              <option value="1d">After 1 day</option>
-                              <option value="1w">After 1 week</option>
-                              <option value="1m">After 1 month</option>
-                              <option value="3m">After 3 months</option>
-                            </select>
-                          </div>
-                        </div>
                       </div>
 
                       <!-- macOS-specific settings -->
@@ -4088,64 +4265,6 @@ export function SettingsDialog({
                           </div>
                         </label>
                       </div>
-
-                      <!-- Default Flags for New Conversations -->
-                      ${availableFlags.length > 0 &&
-                      html`
-                        <div class="space-y-3 pt-4 border-t border-slate-700/50">
-                          <h4 class="text-sm font-medium text-gray-300">
-                            Default Flags for New Conversations
-                          </h4>
-                          <p class="text-xs text-gray-500">
-                            These flags will be enabled by default when creating
-                            new conversations.
-                          </p>
-                          <div
-                            class="bg-slate-700/20 rounded-lg border border-slate-600/50 overflow-hidden"
-                          >
-                            <table class="w-full text-sm">
-                              <tbody>
-                                ${availableFlags.map(
-                                  (flag) => html`
-                                    <tr
-                                      key=${flag.name}
-                                      class="border-b border-slate-600/30 last:border-b-0 hover:bg-slate-700/30 transition-colors"
-                                    >
-                                      <td class="p-3 w-10">
-                                        <input
-                                          type="checkbox"
-                                          checked=${defaultFlags[flag.name] ||
-                                          false}
-                                          onChange=${(e) => {
-                                            const newFlags = {
-                                              ...defaultFlags,
-                                            };
-                                            if (e.target.checked) {
-                                              newFlags[flag.name] = true;
-                                            } else {
-                                              delete newFlags[flag.name];
-                                            }
-                                            setDefaultFlags(newFlags);
-                                          }}
-                                          class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
-                                        />
-                                      </td>
-                                      <td class="p-3">
-                                        <div class="font-medium">
-                                          ${flag.label}
-                                        </div>
-                                        <div class="text-xs text-gray-500">
-                                          ${flag.description}
-                                        </div>
-                                      </td>
-                                    </tr>
-                                  `,
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      `}
                     </div>
                   `}
                 `}
