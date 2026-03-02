@@ -992,6 +992,16 @@ func (a *sessionManagerAdapter) ResumeSession(sessionID, sessionName, workingDir
 	return bs, nil
 }
 
+// GetWorkspacesForFolder returns all workspace configurations for the given folder.
+func (a *sessionManagerAdapter) GetWorkspacesForFolder(folder string) []configPkg.WorkspaceSettings {
+	return a.sm.GetWorkspacesForFolder(folder)
+}
+
+// BroadcastSessionCreated broadcasts a session_created event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
+	a.sm.BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID)
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================

@@ -619,25 +619,33 @@ func TestHandleAdvancedFlags(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
 	}
 
-	// Parse response
-	var flags []struct {
-		Name        string `json:"name"`
-		Label       string `json:"label"`
-		Description string `json:"description"`
-		Default     bool   `json:"default"`
+	// Parse response - now returns an object with flags and configured_defaults
+	var response struct {
+		Flags []struct {
+			Name        string `json:"name"`
+			Label       string `json:"label"`
+			Description string `json:"description"`
+			Default     bool   `json:"default"`
+		} `json:"flags"`
+		ConfiguredDefaults map[string]bool `json:"configured_defaults"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&flags); err != nil {
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
 	// Should have at least the can_do_introspection flag
-	if len(flags) < 1 {
-		t.Fatalf("Expected at least 1 flag, got %d", len(flags))
+	if len(response.Flags) < 1 {
+		t.Fatalf("Expected at least 1 flag, got %d", len(response.Flags))
+	}
+
+	// Configured defaults should be non-nil (even if empty)
+	if response.ConfiguredDefaults == nil {
+		t.Error("configured_defaults should not be nil")
 	}
 
 	// Find can_do_introspection flag
 	found := false
-	for _, flag := range flags {
+	for _, flag := range response.Flags {
 		if flag.Name == "can_do_introspection" {
 			found = true
 			if flag.Label == "" {

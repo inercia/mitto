@@ -762,6 +762,87 @@ func TestHandleDeleteSession_Success(t *testing.T) {
 	}
 }
 
+// TestHandleDeleteSession_ClearsParentReferences verifies that deleting a parent session
+// via the API clears the ParentSessionID field in all child sessions.
+func TestHandleDeleteSession_ClearsParentReferences(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a parent session
+	parentMeta := session.Metadata{
+		SessionID:  "parent-api-test",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "Parent Session",
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	// Create child sessions
+	child1Meta := session.Metadata{
+		SessionID:       "child-api-1",
+		ACPServer:       "test-server",
+		WorkingDir:      "/tmp",
+		Name:            "Child 1",
+		ParentSessionID: "parent-api-test",
+	}
+	if err := store.Create(child1Meta); err != nil {
+		t.Fatalf("Create child1 failed: %v", err)
+	}
+
+	child2Meta := session.Metadata{
+		SessionID:       "child-api-2",
+		ACPServer:       "test-server",
+		WorkingDir:      "/tmp",
+		Name:            "Child 2",
+		ParentSessionID: "parent-api-test",
+	}
+	if err := store.Create(child2Meta); err != nil {
+		t.Fatalf("Create child2 failed: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	// Delete the parent session via API
+	w := httptest.NewRecorder()
+	server.handleDeleteSession(w, "parent-api-test")
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+
+	// Verify parent is deleted
+	if store.Exists("parent-api-test") {
+		t.Error("Parent session still exists after deletion")
+	}
+
+	// Verify child sessions have their parent references cleared
+	child1After, err := store.GetMetadata("child-api-1")
+	if err != nil {
+		t.Fatalf("GetMetadata child1 failed: %v", err)
+	}
+	if child1After.ParentSessionID != "" {
+		t.Errorf("child1.ParentSessionID = %q, want empty string", child1After.ParentSessionID)
+	}
+
+	child2After, err := store.GetMetadata("child-api-2")
+	if err != nil {
+		t.Fatalf("GetMetadata child2 failed: %v", err)
+	}
+	if child2After.ParentSessionID != "" {
+		t.Errorf("child2.ParentSessionID = %q, want empty string", child2After.ParentSessionID)
+	}
+}
+
 func TestHandleWorkspaces_GET(t *testing.T) {
 	sm := NewSessionManager("test-cmd", "test-server", false, nil)
 

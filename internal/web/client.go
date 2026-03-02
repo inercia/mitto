@@ -339,11 +339,12 @@ func (c *WebClient) autoApprovePermission(params acp.RequestPermissionRequest) (
 
 // WriteTextFile handles file write requests from the agent.
 func (c *WebClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
-	// Assign seq NOW at receive time.
-	seq := c.getNextSeq()
 	if err := mittoAcp.DefaultFileSystem.WriteTextFile(params.Path, params.Content); err != nil {
 		return acp.WriteTextFileResponse{}, err
 	}
+	// Assign seq AFTER success to avoid consuming a seq number on error,
+	// which would create a gap in the sequence (e.g., seq jumps from 992 to 994).
+	seq := c.getNextSeq()
 	if c.onFileWrite != nil {
 		c.onFileWrite(seq, params.Path, len(params.Content))
 	}
@@ -352,12 +353,13 @@ func (c *WebClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileR
 
 // ReadTextFile handles file read requests from the agent.
 func (c *WebClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
-	// Assign seq NOW at receive time.
-	seq := c.getNextSeq()
 	content, err := mittoAcp.DefaultFileSystem.ReadTextFile(params.Path, params.Line, params.Limit)
 	if err != nil {
 		return acp.ReadTextFileResponse{}, err
 	}
+	// Assign seq AFTER success to avoid consuming a seq number on error,
+	// which would create a gap in the sequence (e.g., seq jumps from 992 to 994).
+	seq := c.getNextSeq()
 	if c.onFileRead != nil {
 		c.onFileRead(seq, params.Path, len(content))
 	}

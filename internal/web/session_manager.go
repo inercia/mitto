@@ -274,6 +274,34 @@ func (sm *SessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSetti
 	return nil
 }
 
+// GetWorkspacesForFolder returns all workspace configurations for the given folder.
+// Multiple workspaces may share the same folder with different ACP servers
+// (e.g., same project folder with Claude Code and Auggie).
+// Also includes the default workspace if its folder matches.
+func (sm *SessionManager) GetWorkspacesForFolder(folder string) []config.WorkspaceSettings {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var result []config.WorkspaceSettings
+	seen := make(map[string]bool) // track by UUID to avoid duplicates
+
+	for _, ws := range sm.workspaces {
+		if ws.WorkingDir == folder {
+			result = append(result, *ws)
+			seen[ws.UUID] = true
+		}
+	}
+
+	// Include default workspace if it matches and hasn't been included
+	if sm.defaultWorkspace != nil && sm.defaultWorkspace.WorkingDir == folder {
+		if !seen[sm.defaultWorkspace.UUID] {
+			result = append(result, *sm.defaultWorkspace)
+		}
+	}
+
+	return result
+}
+
 // ResolveWorkspaceIdentifier resolves a workspace UUID to its WorkingDir.
 // Returns the working directory and true if found, empty string and false otherwise.
 func (sm *SessionManager) ResolveWorkspaceIdentifier(uuid string) (string, bool) {
@@ -543,6 +571,41 @@ func (sm *SessionManager) SetEventsManager(eventsManager *GlobalEventsManager) {
 	sm.eventsManager = eventsManager
 }
 
+// BroadcastSessionCreated broadcasts a session_created event to all connected clients.
+// This is called when a new session is created (via HTTP API or MCP tools).
+func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	sessionData := map[string]interface{}{
+		"session_id":  sessionID,
+		"name":        name,
+		"acp_server":  acpServer,
+		"working_dir": workingDir,
+		"status":      "active",
+	}
+
+	// Include parent_session_id if this is a child session
+	if parentSessionID != "" {
+		sessionData["parent_session_id"] = parentSessionID
+	}
+
+	em.Broadcast(WSMsgTypeSessionCreated, sessionData)
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session created",
+			"session_id", sessionID,
+			"name", name,
+			"parent_session_id", parentSessionID,
+			"clients", em.ClientCount())
+	}
+}
+
 // SetGlobalMCPServer sets the global MCP server for session registration.
 // Sessions will register with this server to enable session-scoped MCP tools.
 func (sm *SessionManager) SetGlobalMCPServer(srv *mcpserver.Server) {
@@ -752,6 +815,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		MittoConfig:         sm.mittoConfig, // Pass config for default flags
 		GlobalMCPServer:     sm.mcpServer,
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {

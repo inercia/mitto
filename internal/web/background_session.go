@@ -170,6 +170,9 @@ type BackgroundSessionConfig struct {
 	APIPrefix           string                      // URL prefix for API endpoints (for HTTP file links)
 	WorkspaceUUID       string                      // Workspace UUID for secure file links
 
+	// MittoConfig is the full Mitto configuration (used for default flags)
+	MittoConfig *config.Config
+
 	// OnStreamingStateChanged is called when the session's streaming state changes.
 	// It's called with true when streaming starts (user sends prompt) and false when it ends.
 	OnStreamingStateChanged func(sessionID string, isStreaming bool)
@@ -229,7 +232,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			cancel()
 			return nil, err
 		}
-		// Update session name and runner info
+		// Update session name, runner info, and default flags
 		runnerType := "exec"
 		isRestricted := false
 		if cfg.Runner != nil {
@@ -242,6 +245,33 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			}
 			meta.RunnerType = runnerType
 			meta.RunnerRestricted = isRestricted
+
+			// Initialize AdvancedSettings with configured default flags
+			// Only apply defaults for new sessions (not resumed sessions)
+			if meta.AdvancedSettings == nil {
+				meta.AdvancedSettings = make(map[string]bool)
+			}
+
+			// Apply configured default flags from config
+			if cfg.MittoConfig != nil && cfg.MittoConfig.Conversations != nil {
+				for flagName, flagValue := range cfg.MittoConfig.Conversations.DefaultFlags {
+					// Only set the flag if it's not already set (preserve existing values)
+					if _, exists := meta.AdvancedSettings[flagName]; !exists {
+						meta.AdvancedSettings[flagName] = flagValue
+					}
+				}
+			}
+
+			// Apply compile-time defaults for flags not explicitly configured
+			// This ensures all flags have a value (either from config or compile-time default)
+			for _, flagDef := range session.AvailableFlags {
+				if _, exists := meta.AdvancedSettings[flagDef.Name]; !exists {
+					// Only set if the compile-time default is true (false is the zero value)
+					if flagDef.Default {
+						meta.AdvancedSettings[flagDef.Name] = true
+					}
+				}
+			}
 		})
 
 		// Initialize nextSeq from MaxSeq if available, otherwise from EventCount
