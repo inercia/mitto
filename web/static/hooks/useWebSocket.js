@@ -1824,12 +1824,15 @@ export function useWebSocket() {
             messages = mergeMessagesWithSync(session.messages, newMessages);
           }
 
-          // Track the highest seq we've seen from events_loaded
-          // This includes session_end and other events that don't become messages
-          // For stale client recovery, reset to server's lastSeq
+          // Track the highest seq we've confirmed with the server.
+          // Include maxSeq (server's confirmed highest seq) so that even empty
+          // events_loaded responses (when client is already caught up) properly
+          // update our watermark. Without this, lastLoadedSeq stays stale after
+          // empty sync responses, causing keepalive to repeatedly trigger
+          // unnecessary load_events requests.
           const newLastLoadedSeq = isStaleClient
             ? lastSeq
-            : Math.max(session.lastLoadedSeq || 0, lastSeq);
+            : Math.max(session.lastLoadedSeq || 0, lastSeq, maxSeq);
 
           const updatedSession = {
             ...session,
