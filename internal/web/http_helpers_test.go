@@ -233,3 +233,120 @@ func TestParseJSONBody_TypeMismatch(t *testing.T) {
 		t.Errorf("parseJSONBody() status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
+
+func TestWriteJSONWithETag_ReturnsETagHeader(t *testing.T) {
+	data := map[string]string{"key": "value"}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+
+	writeJSONWithETag(w, r, data)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	etag := w.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("ETag header should be set")
+	}
+	if etag[0] != '"' || etag[len(etag)-1] != '"' {
+		t.Errorf("ETag should be quoted, got %q", etag)
+	}
+
+	if w.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", w.Header().Get("Content-Type"), "application/json")
+	}
+
+	if w.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("Cache-Control = %q, want %q", w.Header().Get("Cache-Control"), "no-cache")
+	}
+
+	// Body should be non-empty
+	if w.Body.Len() == 0 {
+		t.Error("Body should not be empty")
+	}
+}
+
+func TestWriteJSONWithETag_304OnMatchingETag(t *testing.T) {
+	data := map[string]string{"key": "value"}
+
+	// First request to get the ETag
+	r1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	w1 := httptest.NewRecorder()
+	writeJSONWithETag(w1, r1, data)
+
+	etag := w1.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("ETag header should be set on first request")
+	}
+
+	// Second request with If-None-Match
+	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2.Header.Set("If-None-Match", etag)
+	w2 := httptest.NewRecorder()
+	writeJSONWithETag(w2, r2, data)
+
+	if w2.Code != http.StatusNotModified {
+		t.Errorf("status = %d, want %d", w2.Code, http.StatusNotModified)
+	}
+
+	if w2.Body.Len() != 0 {
+		t.Errorf("Body should be empty on 304, got %d bytes", w2.Body.Len())
+	}
+
+	// ETag should still be set on 304 response
+	if w2.Header().Get("ETag") != etag {
+		t.Errorf("ETag should be preserved on 304, got %q want %q", w2.Header().Get("ETag"), etag)
+	}
+}
+
+func TestWriteJSONWithETag_200OnMismatchedETag(t *testing.T) {
+	data := map[string]string{"key": "value"}
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("If-None-Match", `"stale-etag"`)
+	w := httptest.NewRecorder()
+	writeJSONWithETag(w, r, data)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.Len() == 0 {
+		t.Error("Body should not be empty on mismatched ETag")
+	}
+}
+
+func TestWriteJSONWithETag_DifferentDataDifferentETag(t *testing.T) {
+	r1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	w1 := httptest.NewRecorder()
+	writeJSONWithETag(w1, r1, map[string]string{"a": "1"})
+
+	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	w2 := httptest.NewRecorder()
+	writeJSONWithETag(w2, r2, map[string]string{"a": "2"})
+
+	etag1 := w1.Header().Get("ETag")
+	etag2 := w2.Header().Get("ETag")
+
+	if etag1 == etag2 {
+		t.Errorf("Different data should produce different ETags, both got %q", etag1)
+	}
+}
+
+func TestWriteJSONWithETag_SameDataSameETag(t *testing.T) {
+	data := map[string]string{"key": "value"}
+
+	r1 := httptest.NewRequest(http.MethodGet, "/", nil)
+	w1 := httptest.NewRecorder()
+	writeJSONWithETag(w1, r1, data)
+
+	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	w2 := httptest.NewRecorder()
+	writeJSONWithETag(w2, r2, data)
+
+	if w1.Header().Get("ETag") != w2.Header().Get("ETag") {
+		t.Errorf("Same data should produce same ETag, got %q and %q",
+			w1.Header().Get("ETag"), w2.Header().Get("ETag"))
+	}
+}

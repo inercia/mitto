@@ -159,7 +159,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response["has_rcfile_servers"] = s.config.HasRCFileServers
 	}
 
-	writeJSONOK(w, response)
+	writeJSONWithETag(w, r, response)
 }
 
 // handleSaveConfig handles POST /api/config.

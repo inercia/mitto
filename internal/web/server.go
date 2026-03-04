@@ -487,6 +487,12 @@ func NewServer(config Config) (*Server, error) {
 	// WebSocket endpoints - also use the API prefix
 	mux.HandleFunc(apiPrefix+"/api/events", s.handleGlobalEventsWS) // Global events (session lifecycle)
 
+	// Robots.txt: discourage bot crawlers from indexing
+	mux.HandleFunc("/robots.txt", handleRobotsTxt)
+	if apiPrefix != "" {
+		mux.HandleFunc(apiPrefix+"/robots.txt", handleRobotsTxt)
+	}
+
 	// Static files: use filesystem directory if specified, otherwise use embedded assets
 	var staticFS fs.FS
 	if config.StaticDir != "" {
@@ -728,6 +734,17 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONOK(w, response)
+}
+
+// handleRobotsTxt serves a robots.txt that disallows all crawling.
+// This discourages well-behaved bots (e.g., GPTBot, OAI-SearchBot) from probing the server.
+func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, "User-agent: *\nDisallow: /\n")
 }
 
 // loggingMiddleware logs HTTP requests.
