@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 
 	"github.com/coder/acp-go-sdk"
 	mittoAcp "github.com/inercia/mitto/internal/acp"
@@ -58,6 +59,8 @@ func (m *Manager) start(ctx context.Context) error {
 	// Start ACP process
 	m.cmd = exec.CommandContext(m.ctx, args[0], args[1:]...)
 	m.cmd.Stderr = os.Stderr
+	// Create a new process group so we can kill all child processes on cleanup.
+	m.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := m.cmd.StdinPipe()
 	if err != nil {
@@ -127,7 +130,7 @@ func (m *Manager) cleanup() {
 		m.cancel()
 	}
 	if m.cmd != nil && m.cmd.Process != nil {
-		m.cmd.Process.Kill()
+		mittoAcp.KillProcessGroup(m.cmd.Process.Pid)
 	}
 	m.started = false
 	m.conn = nil

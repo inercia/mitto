@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -897,9 +898,11 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 // killACPProcess terminates the ACP process and cleans up resources.
 // It handles both direct execution (acpCmd) and runner-based execution.
 func (bs *BackgroundSession) killACPProcess() {
-	// Kill direct process if using one
+	// Kill the entire process group to ensure all child processes are terminated.
+	// Without this, child processes (e.g., "claude" spawned by "node claude-code-acp")
+	// survive and become orphans.
 	if bs.acpCmd != nil && bs.acpCmd.Process != nil {
-		bs.acpCmd.Process.Kill()
+		mittoAcp.KillProcessGroup(bs.acpCmd.Process.Pid)
 	}
 
 	// Call wait() to clean up resources (from runner.RunWithPipes or cmd.Wait)
@@ -1176,6 +1179,10 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	} else {
 		// Direct execution (no restrictions)
 		cmd = exec.CommandContext(bs.ctx, args[0], args[1:]...)
+		// Create a new process group so we can kill all child processes on Close().
+		// Without this, child processes (e.g., "claude" spawned by "node claude-code-acp")
+		// become orphans when we kill only the direct child.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		// Set working directory for the ACP process if specified
 		if acpCwd != "" {
