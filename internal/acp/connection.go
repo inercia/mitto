@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"syscall"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/inercia/mitto/internal/logging"
@@ -109,6 +110,10 @@ func NewConnection(
 		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Stderr = os.Stderr
 		cmd.Env = processEnv // Set merged environment
+		// Create a new process group so we can kill all child processes on Close().
+		// Without this, child processes (e.g., "claude" spawned by "node claude-code-acp")
+		// become orphans when we kill only the direct child.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		// Set working directory for the ACP process if specified
 		if cwd != "" {
@@ -243,9 +248,11 @@ func (c *Connection) Close() error {
 		c.cancel()
 	}
 
-	// For direct execution, kill the process explicitly
+	// For direct execution, kill the entire process group to ensure all child
+	// processes are terminated. Without this, child processes (e.g., "claude"
+	// spawned by "node claude-code-acp") survive and become orphans.
 	if c.cmd != nil && c.cmd.Process != nil {
-		c.cmd.Process.Kill()
+		KillProcessGroup(c.cmd.Process.Pid)
 	}
 
 	// Call wait() to clean up resources (from runner.RunWithPipes or cmd.Wait)
@@ -255,6 +262,21 @@ func (c *Connection) Close() error {
 	}
 
 	return nil
+}
+
+// KillProcessGroup kills the entire process group for the given PID.
+// Falls back to killing just the process if the group cannot be determined.
+func KillProcessGroup(pid int) {
+	pgid, err := syscall.Getpgid(pid)
+	if err == nil {
+		// Kill the entire process group (negative PID signals the group)
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	} else {
+		// Fallback: kill just the direct process
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
+	}
 }
 
 // Done returns a channel that's closed when the connection is done.
