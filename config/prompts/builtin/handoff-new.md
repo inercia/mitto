@@ -1,6 +1,6 @@
 ---
-name: "Continue in new"
-description: "Continue current work in a new conversation with a different model"
+name: "Handoff to new conversation"
+description: "Continue current work in a new conversation, maybe with a different model"
 group: "Work flow"
 backgroundColor: "#FFF9C4"
 ---

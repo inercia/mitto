@@ -1,6 +1,6 @@
 ---
-name: "Prepare for submission"
-description: "Prepare for submission"
+name: "Submit changes"
+description: "Submit changes"
 group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
