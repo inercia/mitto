@@ -84,6 +84,18 @@ These tools are always available and don't require a session context:
 
 Lists all conversations with detailed metadata. **Always available** (no permission check).
 
+**Optional filter parameters** (all omit-able — when not provided, no filtering is applied):
+
+| Parameter      | Type   | Required | Description                              |
+| -------------- | ------ | -------- | ---------------------------------------- |
+| `working_dir`  | string | No       | Filter by workspace folder (exact match) |
+| `archived`     | bool   | No       | Filter by archived status (true/false)   |
+| `is_running`   | bool   | No       | Filter by running status (true/false)    |
+| `acp_server`   | string | No       | Filter by ACP server name (exact match)  |
+| `exclude_self` | string | No       | Exclude this session ID from results     |
+
+**Response fields** (per conversation):
+
 | Field            | Description                               |
 | ---------------- | ----------------------------------------- |
 | `session_id`     | Unique session identifier                 |
@@ -243,6 +255,33 @@ Returns (embeds `ConversationDetails`):
 - Delegate a sub-task to a new conversation
 - Create a conversation for follow-up work
 
+#### `mitto_conversation_delete`
+
+Delete (archive) a child conversation. The caller **must** be the parent of the target conversation — this is enforced by checking the `ParentSessionID` field in the child's metadata.
+
+The child conversation is gracefully stopped (waits for any active response to complete) and then archived. Archived conversations are read-only and will no longer accept prompts.
+
+| Parameter         | Type   | Required | Description                      |
+| ----------------- | ------ | -------- | -------------------------------- |
+| `self_id`         | string | Yes      | Parent session ID (your session) |
+| `conversation_id` | string | Yes      | Child conversation ID to delete  |
+
+Returns:
+
+| Field             | Description                      |
+| ----------------- | -------------------------------- |
+| `success`         | Whether the deletion succeeded   |
+| `conversation_id` | The deleted conversation's ID    |
+| `error`           | Error message if deletion failed |
+
+**Security:** Only the parent that created the child can delete it. Attempting to delete a conversation that is not your child returns `"permission denied: can only delete your own child conversations"`.
+
+**Example use cases:**
+
+- Clean up child conversations after collecting their results via `mitto_children_tasks_wait`
+- Remove failed children before retrying with new instructions
+- Tidy up the conversation list after a multi-iteration workflow completes
+
 #### `mitto_conversation_userdata_set`
 
 Set a user data attribute in the calling conversation. The key must be defined in the workspace's user data schema (`.mittorc` under `conversations.user_data`).
@@ -274,6 +313,94 @@ Returns:
 - Set metadata like priority or status
 - Store references to external resources (URLs)
 
+#### `mitto_children_tasks_wait`
+
+Send a progress inquiry to multiple child conversations and block until all report back. Requires `can_send_prompt` flag on the parent session.
+
+This tool enables parent-child task coordination: a parent spawns children via `mitto_conversation_new`, then later calls this tool to ask all children for a status report and wait for their responses.
+
+| Parameter         | Type     | Required | Description                                     |
+| ----------------- | -------- | -------- | ----------------------------------------------- |
+| `self_id`         | string   | Yes      | Parent session ID (your session)                |
+| `children_list`   | string[] | Yes      | List of child conversation IDs to query         |
+| `prompt`          | string   | No       | Custom prompt to send (default: progress check) |
+| `timeout_seconds` | int      | No       | Timeout in seconds (default: 600 / 10 min)      |
+
+Returns:
+
+| Field       | Description                                                     |
+| ----------- | --------------------------------------------------------------- |
+| `success`   | Whether the operation succeeded                                 |
+| `reports`   | Map of child_id → report info (see below)                       |
+| `timed_out` | Whether the wait timed out before all running children reported |
+| `warnings`  | Non-fatal issues (e.g., children not running or archived)       |
+| `error`     | Error message if the operation failed                           |
+
+Each report in `reports` contains:
+
+| Field       | Description                                                  |
+| ----------- | ------------------------------------------------------------ |
+| `completed` | Whether the child has reported                               |
+| `report`    | The JSON report from the child (flexible schema)             |
+| `timestamp` | When the report was received (ISO 8601)                      |
+| `status`    | Child status: `"pending"`, `"completed"`, or `"not_running"` |
+
+**Behavior:**
+
+- Each child in `children_list` is validated: must exist and must have `parent_session_id` matching the caller
+- Children that are not currently running (closed or archived) are immediately marked as `not_running` in the reports with a warning — they are **not** included in the blocking wait
+- If **all** children are not running, the tool returns immediately without blocking
+- If a **mix** of running and not-running children exists, the tool blocks only until all running children report back
+- The prompt sent to each child includes an instruction to call `mitto_children_tasks_report` with their results
+- On timeout, partial results are returned (whatever has been received so far)
+
+**Example:**
+
+```
+Parent calls:
+  mitto_children_tasks_wait(self_id=PARENT, children_list=[CHILD_A, CHILD_B])
+
+→ CHILD_A receives: "Please report your progress.\n\nReport your results using mitto_children_tasks_report..."
+→ CHILD_B receives the same
+
+CHILD_A calls: mitto_children_tasks_report(self_id=CHILD_A, report={"status": "done", "files_changed": 3})
+CHILD_B calls: mitto_children_tasks_report(self_id=CHILD_B, report={"status": "in_progress", "progress": 60})
+
+→ Parent unblocks, receives:
+  {
+    "success": true,
+    "reports": {
+      "CHILD_A": {"completed": true, "status": "completed", "report": {"status": "done", "files_changed": 3}},
+      "CHILD_B": {"completed": true, "status": "completed", "report": {"status": "in_progress", "progress": 60}}
+    }
+  }
+```
+
+#### `mitto_children_tasks_report`
+
+Report results back to a waiting parent conversation. Called by child conversations in response to a `mitto_children_tasks_wait` inquiry from their parent. No special flag required.
+
+| Parameter | Type   | Required | Description                            |
+| --------- | ------ | -------- | -------------------------------------- |
+| `self_id` | string | Yes      | Child session ID (your session)        |
+| `report`  | JSON   | Yes      | Flexible JSON report with your results |
+
+Returns:
+
+| Field               | Description                                        |
+| ------------------- | -------------------------------------------------- |
+| `success`           | Whether the report was accepted                    |
+| `parent_session_id` | The parent session ID                              |
+| `error`             | Error or note (e.g., parent not currently waiting) |
+
+**Behavior:**
+
+- The child's `parent_session_id` is read from its metadata (set when the child was created via `mitto_conversation_new`)
+- If the parent is currently waiting (has an active `mitto_children_tasks_wait`), the report is stored and the parent is notified when all children have reported
+- If the parent is **not** currently waiting, the tool returns success with a note — this is not an error
+- If the child reports multiple times, each report overwrites the previous one
+- Sessions without a `parent_session_id` cannot use this tool
+
 ### Permission Flags
 
 Session-scoped tools check permissions at runtime:
@@ -281,7 +408,7 @@ Session-scoped tools check permissions at runtime:
 | Flag                     | Tools That Require It                                                       |
 | ------------------------ | --------------------------------------------------------------------------- |
 | `can_do_introspection`   | (None currently - for future tools)                                         |
-| `can_send_prompt`        | `mitto_conversation_send_prompt`                                            |
+| `can_send_prompt`        | `mitto_conversation_send_prompt`, `mitto_children_tasks_wait`               |
 | `can_prompt_user`        | `mitto_ui_ask_yes_no`, `mitto_ui_options_buttons`, `mitto_ui_options_combo` |
 | `can_start_conversation` | `mitto_conversation_new`                                                    |
 
@@ -472,6 +599,73 @@ The MCP server is implemented in `internal/mcpserver/`:
 
 The server uses the [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) with Streamable HTTP transport.
 
+### Parent-Child Task Coordination
+
+The coordination between parent and child conversations uses an in-memory `childReportCollector` on the `Server` struct. Each parent session gets a collector that lives as long as the parent session is registered.
+
+**Each `_wait` call starts a fresh collection cycle** — all previously stored reports are cleared. This ensures each iteration of the parent's workflow gets clean results from its children, rather than seeing stale reports from a previous round.
+
+#### Scenario 1: Parent waits, children report during wait
+
+```mermaid
+sequenceDiagram
+    participant Parent as Parent Agent
+    participant MCP as MCP Server
+    participant Child1 as Child Agent A
+    participant Child2 as Child Agent B
+
+    Parent->>MCP: mitto_children_tasks_wait(children=[A,B])
+    MCP->>MCP: Get-or-create collector<br/>Clear previous reports
+    MCP->>Child1: Enqueue prompt via Queue
+    MCP->>Child2: Enqueue prompt via Queue
+    MCP->>MCP: Block on waitCh channel
+
+    Child1->>MCP: mitto_children_tasks_report(report={...})
+    MCP->>MCP: Store report for A<br/>(1/2 reported)
+
+    Child2->>MCP: mitto_children_tasks_report(report={...})
+    MCP->>MCP: Store report for B<br/>(2/2 reported)
+    MCP->>MCP: Close waitCh channel
+
+    MCP-->>Parent: {reports: {A: {...}, B: {...}}}
+```
+
+#### Scenario 2: Iterative workflow (reports cleared between waits)
+
+```mermaid
+sequenceDiagram
+    participant Parent as Parent Agent
+    participant MCP as MCP Server
+    participant Child1 as Child Agent A
+    participant Child2 as Child Agent B
+
+    Note over Parent,Child2: Iteration 1
+    Parent->>MCP: mitto_children_tasks_wait(children=[A,B])
+    MCP->>MCP: Clear reports, start fresh cycle
+    MCP->>Child1: Enqueue prompt
+    MCP->>Child2: Enqueue prompt
+    Child1->>MCP: report({status: "completed"})
+    Child2->>MCP: report({status: "partial"})
+    MCP-->>Parent: {reports: {A: completed, B: partial}}
+
+    Note over Parent,Child2: Iteration 2 (follow-up)
+    Parent->>MCP: mitto_children_tasks_wait(children=[B])
+    MCP->>MCP: Clear ALL reports (A's too)
+    MCP->>Child2: Enqueue refined prompt
+    Child2->>MCP: report({status: "completed"})
+    MCP-->>Parent: {reports: {B: completed}}
+```
+
+**Key design decisions:**
+
+- **Fresh cycle per wait**: Each `_wait` call clears all previously stored reports and starts a clean collection cycle. This prevents stale data from previous iterations leaking into the current one.
+- **Collector lifecycle**: The `childReportCollector` itself persists for the parent session's lifetime (cleaned up on `UnregisterSession`), but its contents are reset on each `_wait`.
+- **Go channel signaling**: The collector uses a `waitCh` channel (created per `_wait` call) that is closed when all waited-on children have reported. The channel is cleared (`clearWait`) when the wait returns.
+- **Thread-safe**: `childReportCollector.mu` protects the reports map and wait signaling; `Server.childReportCollectorsMu` protects the collectors map.
+- **Closed children handling**: Children not registered with the MCP server (closed/archived) are detected before blocking. They appear as `status: "not_running"` in reports with warnings. If all children are closed, the tool returns immediately.
+- **Idempotent reports**: A child can report multiple times during a single wait cycle; each report overwrites the previous one.
+- **Reports between waits are discarded**: If a child calls `_report` when no wait is active, the report is accepted (no error) but will be cleared when the next `_wait` starts.
+
 ---
 
 ## Session Registration
@@ -498,6 +692,7 @@ Sessions register with the global MCP server to enable session-scoped tools. Thi
 3. **Session Stop**: When a session is archived or stopped:
    - `BackgroundSession` calls `globalMcpServer.UnregisterSession(sessionID)`
    - Tools for that session will return "session not found" errors
+   - Any `childReportCollector` for this session (as parent) is cleaned up
 
 ```mermaid
 sequenceDiagram
