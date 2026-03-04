@@ -1,14 +1,26 @@
 package mcpserver
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 )
+
+// ListConversationsInput contains optional filter criteria for mitto_conversation_list.
+// All fields are optional — when omitted, no filtering is applied for that field.
+type ListConversationsInput struct {
+	WorkingDir  *string `json:"working_dir,omitempty"`  // Filter by workspace folder (exact match)
+	Archived    *bool   `json:"archived,omitempty"`     // Filter by archived status (true = only archived, false = only active)
+	IsRunning   *bool   `json:"is_running,omitempty"`   // Filter by running status (true = only running, false = only stopped)
+	ACPServer   *string `json:"acp_server,omitempty"`   // Filter by ACP server name (exact match)
+	ExcludeSelf *string `json:"exclude_self,omitempty"` // Exclude this session ID from results (typically your own session)
+}
 
 // ConversationInfo contains information about a conversation/session.
 // Used by mitto_conversation_list (returns time.Time for dates).
@@ -289,6 +301,19 @@ type SendPromptOutput struct {
 	Error         string `json:"error,omitempty"`
 }
 
+// DeleteConversationInput is the input for mitto_conversation_delete tool.
+type DeleteConversationInput struct {
+	SelfID         string `json:"self_id"`         // YOUR session ID (the parent)
+	ConversationID string `json:"conversation_id"` // Child conversation to delete
+}
+
+// DeleteConversationOutput is the output for mitto_conversation_delete tool.
+type DeleteConversationOutput struct {
+	Success        bool   `json:"success"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
 // AskYesNoOutput is the output for the mitto_ui_ask_yes_no tool.
 type AskYesNoOutput struct {
 	Response string `json:"response"` // "yes" | "no" | "timeout"
@@ -307,4 +332,178 @@ type OptionsComboOutput struct {
 	Selected string `json:"selected,omitempty"`
 	Index    int    `json:"index"`
 	TimedOut bool   `json:"timed_out,omitempty"`
+}
+
+// =============================================================================
+// Parent-Child Task Coordination Types
+// =============================================================================
+
+// childReportCollector collects reports from child conversations.
+// It persists in-memory on the Server for the lifetime of the parent session.
+// Each call to startWait clears all previous reports, starting a fresh collection cycle.
+// Between wait cycles, children can still report — but those reports are discarded
+// when the next wait begins.
+type childReportCollector struct {
+	parentSessionID string
+	reports         map[string]*childReport // child_id -> report (nil = pending)
+	mu              sync.Mutex
+
+	// Wait signaling: non-nil only while a parent is actively waiting via mitto_children_tasks_wait.
+	// Closing waitCh unblocks the waiting parent.
+	waitCh     chan struct{}   // closed when all waitingFor children have reported
+	waitingFor map[string]bool // child IDs the parent is blocking on
+}
+
+// addReport stores a child's report. Any child can report at any time.
+// If the parent is currently waiting and this report completes the wait set, signals the parent.
+func (c *childReportCollector) addReport(childID string, report json.RawMessage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	r := c.reports[childID]
+	if r == nil {
+		r = &childReport{}
+		c.reports[childID] = r
+	}
+	r.Report = report
+	r.Completed = true
+	r.Timestamp = time.Now()
+
+	c.checkAndSignalWait()
+}
+
+// checkAndSignalWait checks if all waited-on children have reported and signals if so.
+// Must be called with c.mu held.
+func (c *childReportCollector) checkAndSignalWait() {
+	if c.waitCh == nil {
+		return // No one waiting
+	}
+	for childID := range c.waitingFor {
+		r := c.reports[childID]
+		if r == nil || !r.Completed {
+			return // Still waiting on this child
+		}
+	}
+	// All waited-on children have reported
+	select {
+	case <-c.waitCh:
+		// Already closed
+	default:
+		close(c.waitCh)
+	}
+}
+
+// startWait sets up wait signaling for the given children.
+// Clears all previously stored reports so each wait cycle starts fresh.
+// Returns (waitCh, alreadyDone). If alreadyDone is true, caller should not block.
+func (c *childReportCollector) startWait(childIDs []string) (chan struct{}, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Clear all previous reports — each wait cycle starts with a clean slate.
+	// Children that reported between cycles will need to report again.
+	c.reports = make(map[string]*childReport, len(childIDs))
+
+	// Add all children as pending
+	for _, id := range childIDs {
+		c.reports[id] = nil // pending
+	}
+
+	// Build waitingFor set
+	c.waitingFor = make(map[string]bool, len(childIDs))
+	for _, id := range childIDs {
+		c.waitingFor[id] = true
+	}
+
+	c.waitCh = make(chan struct{})
+
+	// Check if all waited-on children have already reported
+	c.checkAndSignalWait()
+
+	select {
+	case <-c.waitCh:
+		return c.waitCh, true // already done
+	default:
+		return c.waitCh, false
+	}
+}
+
+// clearWait clears the wait signaling. Called when wait returns (completion, timeout, or cancel).
+func (c *childReportCollector) clearWait() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.waitCh = nil
+	c.waitingFor = nil
+}
+
+// getReport returns the report for a child, or nil if not yet reported.
+func (c *childReportCollector) getReport(childID string) *childReport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reports[childID]
+}
+
+// childReport stores the report from a single child conversation.
+type childReport struct {
+	Report    json.RawMessage `json:"report"`
+	Completed bool            `json:"completed"`
+	Timestamp time.Time       `json:"timestamp"`
+}
+
+// ChildrenTasksWaitInput is the input for mitto_children_tasks_wait tool.
+type ChildrenTasksWaitInput struct {
+	SelfID         string   `json:"self_id"`                   // Parent session ID
+	ChildrenList   []string `json:"children_list"`             // Child conversation IDs
+	Prompt         string   `json:"prompt,omitempty"`          // Instruction to send to children
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min)
+}
+
+// ChildrenTasksWaitOutput is the output for mitto_children_tasks_wait tool.
+type ChildrenTasksWaitOutput struct {
+	Success  bool                       `json:"success"`
+	Reports  map[string]ChildReportInfo `json:"reports,omitempty"`
+	TimedOut bool                       `json:"timed_out,omitempty"`
+	Warnings []string                   `json:"warnings,omitempty"` // Non-fatal issues (e.g., children not running)
+	Error    string                     `json:"error,omitempty"`
+}
+
+// ChildReportInfo contains the report from a single child conversation.
+type ChildReportInfo struct {
+	Completed bool            `json:"completed"`
+	Report    json.RawMessage `json:"report,omitempty"`
+	Timestamp string          `json:"timestamp,omitempty"` // ISO 8601
+	Status    string          `json:"status,omitempty"`    // "pending", "completed", "not_running"
+}
+
+// ChildrenTasksReportInput is the input for mitto_children_tasks_report tool.
+type ChildrenTasksReportInput struct {
+	SelfID string          `json:"self_id"` // Child session ID
+	Report json.RawMessage `json:"report"`  // Flexible JSON report
+}
+
+// ChildrenTasksReportOutput is the output for mitto_children_tasks_report tool.
+type ChildrenTasksReportOutput struct {
+	Success         bool   `json:"success"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// =============================================================================
+// Conversation Wait Types
+// =============================================================================
+
+// ConversationWaitInput is the input for mitto_conversation_wait tool.
+type ConversationWaitInput struct {
+	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"`           // Target conversation to wait on
+	What           string `json:"what"`                      // Condition to wait for: "agent_responded"
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min)
+}
+
+// ConversationWaitOutput is the output for mitto_conversation_wait tool.
+type ConversationWaitOutput struct {
+	Success  bool   `json:"success"`
+	What     string `json:"what"`                // The condition that was waited on
+	TimedOut bool   `json:"timed_out,omitempty"` // True if the wait timed out before the condition was met
+	Error    string `json:"error,omitempty"`
 }
