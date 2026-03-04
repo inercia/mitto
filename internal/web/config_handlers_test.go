@@ -665,6 +665,61 @@ func TestHandleAdvancedFlags(t *testing.T) {
 	}
 }
 
+func TestHandleGetConfig_ETag(t *testing.T) {
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				ACPServers: []config.ACPServer{
+					{Name: "test-server", Command: "test-cmd"},
+				},
+			},
+		},
+		sessionManager: NewSessionManager("", "", false, nil),
+	}
+
+	// First request — should get 200 with ETag
+	req1 := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	w1 := httptest.NewRecorder()
+	server.handleGetConfig(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Fatalf("First request: status = %d, want %d", w1.Code, http.StatusOK)
+	}
+
+	etag := w1.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("ETag header should be set")
+	}
+
+	// Second request with matching If-None-Match — should get 304
+	req2 := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	req2.Header.Set("If-None-Match", etag)
+	w2 := httptest.NewRecorder()
+	server.handleGetConfig(w2, req2)
+
+	if w2.Code != http.StatusNotModified {
+		t.Errorf("Second request: status = %d, want %d", w2.Code, http.StatusNotModified)
+	}
+
+	if w2.Body.Len() != 0 {
+		t.Errorf("304 response should have empty body, got %d bytes", w2.Body.Len())
+	}
+
+	// Third request with stale ETag — should get 200
+	req3 := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	req3.Header.Set("If-None-Match", `"stale-etag"`)
+	w3 := httptest.NewRecorder()
+	server.handleGetConfig(w3, req3)
+
+	if w3.Code != http.StatusOK {
+		t.Errorf("Third request: status = %d, want %d", w3.Code, http.StatusOK)
+	}
+
+	if w3.Body.Len() == 0 {
+		t.Error("Full response should have non-empty body")
+	}
+}
+
 func TestHandleAdvancedFlags_MethodNotAllowed(t *testing.T) {
 	server := &Server{}
 

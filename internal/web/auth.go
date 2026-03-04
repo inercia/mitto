@@ -608,6 +608,7 @@ var publicStaticPaths = map[string]bool{
 	"/styles-v2.css":           true,
 	"/favicon.ico":             true,
 	"/favicon.png":             true, // Referenced by auth.html
+	"/robots.txt":              true, // Bots must read without auth
 }
 
 // publicAPIPaths are API paths (without prefix) that don't require authentication.
