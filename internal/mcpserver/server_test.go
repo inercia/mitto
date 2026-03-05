@@ -402,6 +402,8 @@ func (m *mockSessionManager) BroadcastSessionCreated(sessionID, name, acpServer,
 	})
 }
 
+func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived bool) {}
+
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
 	tmpDir := t.TempDir()
@@ -1838,6 +1840,7 @@ func (m *mockSessionManagerForWait) GetWorkspacesForFolder(string) []config.Work
 	return nil
 }
 func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, string, string, string) {}
+func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)                        {}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {

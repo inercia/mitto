@@ -143,6 +143,8 @@ type SessionManager interface {
 	GetWorkspacesForFolder(folder string) []config.WorkspaceSettings
 	// BroadcastSessionCreated broadcasts a session_created event to all connected clients.
 	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string)
+	// BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
+	BroadcastSessionArchived(sessionID string, archived bool)
 }
 
 // BackgroundSession interface for session info.
@@ -2255,6 +2257,11 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		}, nil
 	}
 
+	// Broadcast the archived state change to all connected WebSocket clients
+	if s.sessionManager != nil {
+		s.sessionManager.BroadcastSessionArchived(input.ConversationID, archived)
+	}
+
 	// Handle unarchive lifecycle: restart ACP session
 	if !archived && sessionManager != nil {
 		_, err := sessionManager.ResumeSession(input.ConversationID, meta.Name, meta.WorkingDir)
@@ -2367,6 +2374,11 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 			Success: false,
 			Error:   fmt.Sprintf("failed to archive conversation: %v", err),
 		}, nil
+	}
+
+	// Broadcast the archived state change to all connected WebSocket clients
+	if s.sessionManager != nil {
+		s.sessionManager.BroadcastSessionArchived(input.ConversationID, true)
 	}
 
 	s.logger.Info("Child conversation deleted (archived) by parent via MCP",
