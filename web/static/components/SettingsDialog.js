@@ -575,16 +575,25 @@ export function SettingsDialog({
     () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
     [acpServers],
   );
-  // Sorted workspaces for display (alphabetical by display name)
-  const sortedWorkspaces = useMemo(
-    () =>
-      [...workspaces].sort((a, b) => {
-        const nameA = a.name || getBasename(a.working_dir);
-        const nameB = b.name || getBasename(b.working_dir);
-        return nameA.localeCompare(nameB);
-      }),
-    [workspaces],
-  );
+  // Group workspaces by display name (alphabetical), with ACP servers sorted within each group
+  const groupedWorkspaces = useMemo(() => {
+    const groups = new Map();
+    workspaces.forEach((ws) => {
+      const displayName = ws.name || getBasename(ws.working_dir);
+      if (!groups.has(displayName)) {
+        groups.set(displayName, []);
+      }
+      groups.get(displayName).push(ws);
+    });
+    // Sort workspaces within each group by ACP server name
+    groups.forEach((wsArray) => {
+      wsArray.sort((a, b) => (a.acp_server || "").localeCompare(b.acp_server || ""));
+    });
+    // Convert to array sorted by display name
+    return Array.from(groups.entries())
+      .sort(([nameA], [nameB]) => nameA.localeCompare(nameB))
+      .map(([displayName, wsArray]) => ({ displayName, workspaces: wsArray }));
+  }, [workspaces]);
   const [authEnabled, setAuthEnabled] = useState(false);
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -2077,124 +2086,137 @@ export function SettingsDialog({
                             </div>
                           `
                         : html`
-                            <div class="space-y-2">
-                              ${sortedWorkspaces.map((ws) => {
-                                const wsKey = getWorkspaceKey(ws);
-                                const isEditing = editingWorkspace === wsKey;
+                            <div class="space-y-3">
+                              ${groupedWorkspaces.map(({ displayName: groupName, workspaces: wsGroup }) => {
+                                const isGrouped = wsGroup.length > 1;
                                 return html`
-                                  <div
-                                    key=${wsKey}
-                                    class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isEditing
-                                      ? ""
-                                      : "hover:bg-slate-700/30"} transition-colors group"
-                                  >
-                                    ${isEditing
-                                      ? html`
-                                          <!-- Editing mode: show name/path info and edit form -->
-                                          <div class="flex items-center gap-3">
-                                            <${WorkspaceBadge}
-                                              path=${ws.working_dir}
-                                              customColor=${ws.color}
-                                              customCode=${ws.code}
-                                              customName=${ws.name}
-                                              size="sm"
-                                            />
-                                            <div class="flex-1 min-w-0">
-                                              <div
-                                                class="font-medium text-sm flex items-center gap-2"
-                                              >
-                                                ${ws.name ||
-                                                getBasename(ws.working_dir)}
-                                                <span
-                                                  class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
-                                                >
-                                                  ${ws.acp_server}
-                                                </span>
-                                              </div>
-                                              <div
-                                                class="text-xs text-gray-500 truncate"
-                                                title=${ws.working_dir}
-                                              >
-                                                ${ws.working_dir}
-                                              </div>
-                                            </div>
-                                          </div>
-                                          <${WorkspaceEditForm}
-                                            workspace=${ws}
-                                            acpServers=${acpServers}
-                                            supportedRunners=${supportedRunners}
-                                            getWorkspaceVisualInfo=${getWorkspaceVisualInfo}
-                                            getBasename=${getBasename}
-                                            onSave=${(updates) =>
-                                              updateWorkspace(wsKey, updates)}
-                                            onCancel=${() =>
-                                              setEditingWorkspace(null)}
-                                          />
-                                        `
-                                      : html`
-                                          <!-- Collapsed view: show info and action buttons -->
-                                          <div class="flex items-center gap-3">
-                                            <${WorkspaceBadge}
-                                              path=${ws.working_dir}
-                                              customColor=${ws.color}
-                                              customCode=${ws.code}
-                                              customName=${ws.name}
-                                              size="sm"
-                                            />
-                                            <div class="flex-1 min-w-0">
-                                              <div
-                                                class="font-medium text-sm flex items-center gap-2"
-                                              >
-                                                ${ws.name ||
-                                                getBasename(ws.working_dir)}
-                                                <span
-                                                  class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
-                                                  title="ACP Server"
-                                                >
-                                                  ${ws.acp_server}
-                                                </span>
-                                              </div>
-                                              <div
-                                                class="text-xs text-gray-500 truncate"
-                                                title=${ws.working_dir}
-                                              >
-                                                ${ws.working_dir}
-                                              </div>
-                                            </div>
-                                            <!-- Action buttons (visible on hover) -->
-                                            ${canDuplicateWorkspace(ws) &&
-                                            html`
-                                              <button
-                                                onClick=${() =>
-                                                  duplicateWorkspace(wsKey)}
-                                                class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                title="Duplicate workspace"
-                                              >
-                                                <${DuplicateIcon}
-                                                  className="w-4 h-4"
+                                  <div key=${groupName} class="${isGrouped ? "space-y-1" : ""}">
+                                    ${isGrouped && html`
+                                      <div class="px-2 py-1 text-xs font-medium text-gray-400 flex items-center gap-2">
+                                        <span class="truncate">${groupName}</span>
+                                        <span class="text-gray-500">(${wsGroup.length})</span>
+                                      </div>
+                                    `}
+                                    ${wsGroup.map((ws) => {
+                                      const wsKey = getWorkspaceKey(ws);
+                                      const isEditing = editingWorkspace === wsKey;
+                                      return html`
+                                        <div
+                                          key=${wsKey}
+                                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isEditing
+                                            ? ""
+                                            : "hover:bg-slate-700/30"} transition-colors group ${isGrouped ? "ml-4" : ""}"
+                                        >
+                                          ${isEditing
+                                            ? html`
+                                                <!-- Editing mode: show name/path info and edit form -->
+                                                <div class="flex items-center gap-3">
+                                                  <${WorkspaceBadge}
+                                                    path=${ws.working_dir}
+                                                    customColor=${ws.color}
+                                                    customCode=${ws.code}
+                                                    customName=${ws.name}
+                                                    size="sm"
+                                                  />
+                                                  <div class="flex-1 min-w-0">
+                                                    <div
+                                                      class="font-medium text-sm flex items-center gap-2"
+                                                    >
+                                                      ${ws.name ||
+                                                      getBasename(ws.working_dir)}
+                                                      <span
+                                                        class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
+                                                      >
+                                                        ${ws.acp_server}
+                                                      </span>
+                                                    </div>
+                                                    <div
+                                                      class="text-xs text-gray-500 truncate"
+                                                      title=${ws.working_dir}
+                                                    >
+                                                      ${ws.working_dir}
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                                <${WorkspaceEditForm}
+                                                  workspace=${ws}
+                                                  acpServers=${acpServers}
+                                                  supportedRunners=${supportedRunners}
+                                                  getWorkspaceVisualInfo=${getWorkspaceVisualInfo}
+                                                  getBasename=${getBasename}
+                                                  onSave=${(updates) =>
+                                                    updateWorkspace(wsKey, updates)}
+                                                  onCancel=${() =>
+                                                    setEditingWorkspace(null)}
                                                 />
-                                              </button>
-                                            `}
-                                            <button
-                                              onClick=${() =>
-                                                setEditingWorkspace(wsKey)}
-                                              class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                              title="Edit workspace"
-                                            >
-                                              <${EditIcon} className="w-4 h-4" />
-                                            </button>
-                                            <button
-                                              onClick=${() =>
-                                                removeWorkspace(wsKey)}
-                                              class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                              title="Remove workspace"
-                                            >
-                                              <${TrashIcon}
-                                                className="w-4 h-4"
-                                              />
-                                            </button>
-                                          </div>
-                                        `}
+                                              `
+                                            : html`
+                                                <!-- Collapsed view: show info and action buttons -->
+                                                <div class="flex items-center gap-3">
+                                                  <${WorkspaceBadge}
+                                                    path=${ws.working_dir}
+                                                    customColor=${ws.color}
+                                                    customCode=${ws.code}
+                                                    customName=${ws.name}
+                                                    size="sm"
+                                                  />
+                                                  <div class="flex-1 min-w-0">
+                                                    <div
+                                                      class="font-medium text-sm flex items-center gap-2"
+                                                    >
+                                                      ${!isGrouped && (ws.name ||
+                                                      getBasename(ws.working_dir))}
+                                                      <span
+                                                        class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
+                                                        title="ACP Server"
+                                                      >
+                                                        ${ws.acp_server}
+                                                      </span>
+                                                    </div>
+                                                    <div
+                                                      class="text-xs text-gray-500 truncate"
+                                                      title=${ws.working_dir}
+                                                    >
+                                                      ${ws.working_dir}
+                                                    </div>
+                                                  </div>
+                                                  <!-- Action buttons (visible on hover) -->
+                                                  ${canDuplicateWorkspace(ws) &&
+                                                  html`
+                                                    <button
+                                                      onClick=${() =>
+                                                        duplicateWorkspace(wsKey)}
+                                                      class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                                      title="Duplicate workspace"
+                                                    >
+                                                      <${DuplicateIcon}
+                                                        className="w-4 h-4"
+                                                      />
+                                                    </button>
+                                                  `}
+                                                  <button
+                                                    onClick=${() =>
+                                                      setEditingWorkspace(wsKey)}
+                                                    class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                                    title="Edit workspace"
+                                                  >
+                                                    <${EditIcon} className="w-4 h-4" />
+                                                  </button>
+                                                  <button
+                                                    onClick=${() =>
+                                                      removeWorkspace(wsKey)}
+                                                    class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                                    title="Remove workspace"
+                                                  >
+                                                    <${TrashIcon}
+                                                      className="w-4 h-4"
+                                                    />
+                                                  </button>
+                                                </div>
+                                              `}
+                                        </div>
+                                      `;
+                                    })}
                                   </div>
                                 `;
                               })}
