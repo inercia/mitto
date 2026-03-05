@@ -241,6 +241,10 @@ func NewServer(config Config) (*Server, error) {
 	}
 	sessionMgr.SetStore(store)
 
+	// Create shared ACP process manager for workspace-level process sharing
+	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
+	sessionMgr.SetACPProcessManager(acpProcessMgr)
+
 	// Set global conversations config for message processing
 	if config.MittoConfig != nil {
 		sessionMgr.SetGlobalConversations(config.MittoConfig.Conversations)
@@ -434,6 +438,18 @@ func NewServer(config Config) (*Server, error) {
 	// Initialize periodic runner for scheduled prompt delivery
 	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
 	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
+
+	// Configure auto-archive inactive sessions if enabled
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		autoArchivePeriod := config.MittoConfig.Session.GetAutoArchiveInactiveAfter()
+		if autoArchiveDuration, err := parseAutoArchivePeriod(autoArchivePeriod); err != nil {
+			logger.Warn("Invalid auto-archive period, feature disabled", "period", autoArchivePeriod, "error", err)
+		} else if autoArchiveDuration > 0 {
+			s.periodicRunner.SetAutoArchiveAfter(autoArchiveDuration)
+			logger.Info("Auto-archive inactive sessions enabled", "period", autoArchivePeriod, "duration", autoArchiveDuration)
+		}
+	}
+
 	s.periodicRunner.Start()
 
 	// Initialize prompts watcher for monitoring prompt file changes
@@ -1019,6 +1035,11 @@ func (a *sessionManagerAdapter) BroadcastSessionCreated(sessionID, name, acpServ
 	a.sm.BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID)
 }
 
+// BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastSessionArchived(sessionID string, archived bool) {
+	a.sm.BroadcastSessionArchived(sessionID, archived)
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================
@@ -1066,6 +1087,26 @@ func (s *Server) getPromptsWatchDirs() []string {
 	}
 
 	return dirs
+}
+
+// parseAutoArchivePeriod converts an auto-archive period string to a duration.
+// Returns 0 for empty string (disabled).
+// Supported values: "1d" (1 day), "1w" (1 week), "1m" (1 month), "3m" (3 months).
+func parseAutoArchivePeriod(period string) (time.Duration, error) {
+	switch period {
+	case "":
+		return 0, nil
+	case "1d":
+		return 24 * time.Hour, nil
+	case "1w":
+		return 7 * 24 * time.Hour, nil
+	case "1m":
+		return 30 * 24 * time.Hour, nil
+	case "3m":
+		return 90 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("invalid auto-archive period: %s", period)
+	}
 }
 
 // buildMigrationContext creates a MigrationContext from the current configuration.

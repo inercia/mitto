@@ -84,6 +84,11 @@ type SessionManager struct {
 	// mcpServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	mcpServer *mcpserver.Server
+
+	// acpProcessManager manages shared ACP processes, one per workspace.
+	// When set, new sessions use a shared process instead of starting their own.
+	// When nil, legacy per-session process ownership is used.
+	acpProcessManager *ACPProcessManager
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -571,6 +576,38 @@ func (sm *SessionManager) SetEventsManager(eventsManager *GlobalEventsManager) {
 	sm.eventsManager = eventsManager
 }
 
+// SetACPProcessManager sets the shared ACP process manager.
+// When set, new sessions use a shared ACP process per workspace instead of starting their own.
+func (sm *SessionManager) SetACPProcessManager(pm *ACPProcessManager) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.acpProcessManager = pm
+}
+
+// getSharedProcess returns the shared ACP process for the given workspace,
+// or nil if shared process management is not enabled.
+// The caller must NOT hold sm.mu when calling this method.
+func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, r *runner.Runner) *SharedACPProcess {
+	sm.mu.RLock()
+	pm := sm.acpProcessManager
+	sm.mu.RUnlock()
+
+	if pm == nil || workspace == nil || workspace.UUID == "" {
+		return nil
+	}
+
+	process, err := pm.GetOrCreateProcess(workspace, r)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Warn("Failed to get shared ACP process, falling back to per-session",
+				"workspace_uuid", workspace.UUID,
+				"error", err)
+		}
+		return nil
+	}
+	return process
+}
+
 // BroadcastSessionCreated broadcasts a session_created event to all connected clients.
 // This is called when a new session is created (via HTTP API or MCP tools).
 func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
@@ -602,6 +639,30 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 			"session_id", sessionID,
 			"name", name,
 			"parent_session_id", parentSessionID,
+			"clients", em.ClientCount())
+	}
+}
+
+// BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
+// This is called when a session is archived or unarchived (via HTTP API or MCP tools).
+func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bool) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionArchived, map[string]interface{}{
+		"session_id": sessionID,
+		"archived":   archived,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session archived",
+			"session_id", sessionID,
+			"archived", archived,
 			"clients", em.ClientCount())
 	}
 }
@@ -677,6 +738,8 @@ func (sm *SessionManager) CreateSession(name, workingDir string) (*BackgroundSes
 // CreateSessionWithWorkspace creates a new session using the specified workspace configuration.
 // If workspace is nil, looks up the workspace by workingDir or uses the default.
 func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, workspace *config.WorkspaceSettings) (*BackgroundSession, error) {
+	createStart := time.Now()
+
 	sm.mu.Lock()
 	if len(sm.sessions) >= MaxSessions {
 		sm.mu.Unlock()
@@ -798,6 +861,21 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		}
 	}
 
+	// Resolve shared ACP process for this workspace (if shared mode is enabled)
+	effectiveWs := workspace
+	if effectiveWs == nil {
+		effectiveWs = foundWs
+	}
+	if effectiveWs == nil {
+		effectiveWs = sm.defaultWorkspace
+	}
+	sharedProcessStart := time.Now()
+	sharedProcess := sm.getSharedProcess(effectiveWs, r)
+	sharedProcessDuration := time.Since(sharedProcessStart)
+
+	configDuration := time.Since(createStart)
+
+	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:          acpCommand,
 		ACPCwd:              acpCwd,
@@ -817,6 +895,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		WorkspaceUUID:       workspaceUUID,
 		MittoConfig:         sm.mittoConfig, // Pass config for default flags
 		GlobalMCPServer:     sm.mcpServer,
+		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -858,13 +937,20 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	sm.sessions[bs.GetSessionID()] = bs
 	sm.mu.Unlock()
 
+	newBsDuration := time.Since(newBsStart)
+
 	if sm.logger != nil {
-		sm.logger.Debug("Created background session",
+		sm.logger.Info("CreateSessionWithWorkspace timing",
 			"session_id", bs.GetSessionID(),
 			"acp_id", bs.GetACPID(),
 			"acp_server", acpServer,
 			"working_dir", workingDir,
-			"total_sessions", len(sm.sessions))
+			"total_sessions", len(sm.sessions),
+			"total_ms", time.Since(createStart).Milliseconds(),
+			"config_and_shared_process_ms", configDuration.Milliseconds(),
+			"shared_process_lookup_ms", sharedProcessDuration.Milliseconds(),
+			"new_background_session_ms", newBsDuration.Milliseconds(),
+			"shared_process", sharedProcess != nil)
 	}
 
 	// Notify about runner fallback if it occurred
@@ -1115,6 +1201,13 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		}
 	}
 
+	// Resolve shared ACP process for this workspace (if shared mode is enabled)
+	resumeWs := foundWs
+	if resumeWs == nil {
+		resumeWs = sm.defaultWorkspace
+	}
+	sharedProcess := sm.getSharedProcess(resumeWs, r)
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
@@ -1137,6 +1230,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
 		GlobalMCPServer:     sm.mcpServer,
+		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -1273,10 +1367,16 @@ func (sm *SessionManager) CloseAll(reason string) {
 		sessions = append(sessions, bs)
 	}
 	sm.sessions = make(map[string]*BackgroundSession)
+	pm := sm.acpProcessManager
 	sm.mu.Unlock()
 
 	for _, bs := range sessions {
 		bs.Close(reason)
+	}
+
+	// Close the shared ACP process manager after all sessions are closed
+	if pm != nil {
+		pm.Close()
 	}
 
 	if sm.logger != nil {
