@@ -675,6 +675,9 @@ export function SettingsDialog({
   // Archive retention period setting
   const [archiveRetentionPeriod, setArchiveRetentionPeriod] = useState("never");
 
+  // Auto-archive inactive period setting
+  const [autoArchiveInactiveAfter, setAutoArchiveInactiveAfter] = useState("");
+
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
 
@@ -1038,6 +1041,11 @@ export function SettingsDialog({
         config.session?.archive_retention_period || "never",
       );
 
+      // Load auto-archive inactive period setting (default to "" - disabled)
+      setAutoArchiveInactiveAfter(
+        config.session?.auto_archive_inactive_after || "",
+      );
+
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
         config.conversations?.action_buttons?.enabled !== false,
@@ -1210,9 +1218,10 @@ export function SettingsDialog({
         }),
       };
 
-      // Build session config with archive retention period
+      // Build session config with archive retention period and auto-archive inactive period
       const sessionConfig = {
         archive_retention_period: archiveRetentionPeriod,
+        auto_archive_inactive_after: autoArchiveInactiveAfter,
       };
 
       // Filter prompts to only save settings-based prompts (not file-based ones)
@@ -2090,13 +2099,11 @@ export function SettingsDialog({
                               ${groupedWorkspaces.map(({ displayName: groupName, workspaces: wsGroup }) => {
                                 const isGrouped = wsGroup.length > 1;
                                 return html`
-                                  <div key=${groupName} class="${isGrouped ? "space-y-1" : ""}">
-                                    ${isGrouped && html`
-                                      <div class="px-2 py-1 text-xs font-medium text-gray-400 flex items-center gap-2">
-                                        <span class="truncate">${groupName}</span>
-                                        <span class="text-gray-500">(${wsGroup.length})</span>
-                                      </div>
-                                    `}
+                                  <div key=${groupName} class="space-y-1">
+                                    <div class="px-2 py-1 text-xs font-medium text-gray-400 flex items-center gap-2">
+                                      <span class="truncate">${groupName}</span>
+                                      <span class="text-gray-500">(${wsGroup.length})</span>
+                                    </div>
                                     ${wsGroup.map((ws) => {
                                       const wsKey = getWorkspaceKey(ws);
                                       const isEditing = editingWorkspace === wsKey;
@@ -2105,7 +2112,7 @@ export function SettingsDialog({
                                           key=${wsKey}
                                           class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isEditing
                                             ? ""
-                                            : "hover:bg-slate-700/30"} transition-colors group ${isGrouped ? "ml-4" : ""}"
+                                            : "hover:bg-slate-700/30"} transition-colors group ml-4"
                                         >
                                           ${isEditing
                                             ? html`
@@ -2164,8 +2171,6 @@ export function SettingsDialog({
                                                     <div
                                                       class="font-medium text-sm flex items-center gap-2"
                                                     >
-                                                      ${!isGrouped && (ws.name ||
-                                                      getBasename(ws.working_dir))}
                                                       <span
                                                         class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
                                                         title="ACP Server"
@@ -3621,6 +3626,33 @@ export function SettingsDialog({
                         <h4 class="text-sm font-medium text-gray-300">
                           Archive Settings
                         </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Auto-archive inactive conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Automatically archive conversations after the
+                                specified period of inactivity
+                              </div>
+                            </div>
+                            <select
+                              value=${autoArchiveInactiveAfter}
+                              onChange=${(e) =>
+                                setAutoArchiveInactiveAfter(e.target.value)}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500"
+                            >
+                              <option value="">Disabled</option>
+                              <option value="1d">After 1 day</option>
+                              <option value="1w">After 1 week</option>
+                              <option value="1m">After 1 month</option>
+                              <option value="3m">After 3 months</option>
+                            </select>
+                          </div>
+                        </div>
                         <div
                           class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
                         >
