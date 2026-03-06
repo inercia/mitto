@@ -786,6 +786,16 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	}
 	sm.mu.Unlock()
 
+	// Debug logging for workspace UUID
+	if sm.logger != nil {
+		sm.logger.Debug("CreateSessionWithWorkspace",
+			"working_dir", workingDir,
+			"workspace_uuid", workspaceUUID,
+			"acp_server", acpServer,
+			"found_workspace", foundWs != nil,
+			"using_default", foundWs == nil && sm.defaultWorkspace != nil)
+	}
+
 	// Load workspace-specific conversation config and merge with global
 	var workspaceConv *config.ConversationsConfig
 	if workingDir != "" && sm.workspaceRCCache != nil {

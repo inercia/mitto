@@ -236,7 +236,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		bs.recorder = session.NewRecorder(cfg.Store)
 		bs.persistedID = bs.recorder.SessionID()
 		bs.store = cfg.Store
-		if err := bs.recorder.Start(cfg.ACPServer, cfg.WorkingDir); err != nil {
+		if err := bs.recorder.Start(cfg.ACPServer, cfg.WorkingDir, cfg.WorkspaceUUID); err != nil {
 			cancel()
 			return nil, err
 		}

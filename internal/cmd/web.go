@@ -71,6 +71,8 @@ func runWeb(cmd *cobra.Command, args []string) error {
 				ACPCommand: ws.Server.Command,
 				WorkingDir: ws.Dir,
 			}
+			// Ensure workspace has a UUID for auxiliary sessions
+			webWorkspaces[i].EnsureUUID()
 		}
 	} else {
 		// Try to load from workspaces.json

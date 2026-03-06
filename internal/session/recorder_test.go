@@ -21,7 +21,7 @@ func TestRecorder_StartAndEnd(t *testing.T) {
 	}
 
 	// Start the session
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestRecorder_RecordEvents(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestRecorder_EventCount(t *testing.T) {
 		t.Errorf("EventCount before start = %d, want 0", count)
 	}
 
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -377,7 +377,7 @@ func TestRecorder_EventOrdering(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -466,7 +466,7 @@ func TestRecorder_InterleavedToolCallsAndMessages(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -532,7 +532,7 @@ func TestRecorder_RapidEventRecording(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -596,7 +596,7 @@ func TestRecorder_ConcurrentRecording(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -795,7 +795,7 @@ func TestRecorder_RecordPlan(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -850,7 +850,7 @@ func TestRecorder_RecordPermission(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -898,7 +898,7 @@ func TestRecorder_RecordFileOperations(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -970,7 +970,7 @@ func TestRecorder_Suspend(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -1036,7 +1036,7 @@ func TestRecorder_RecordUserPromptWithImages(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -1090,7 +1090,7 @@ func TestRecorder_EndIsIdempotent(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -1143,7 +1143,7 @@ func TestRecorder_ConcurrentEnd(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -1229,7 +1229,7 @@ func TestRecorder_EndUsesMaxSeqNotEventCount(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	sessionID := recorder.SessionID()
@@ -1313,7 +1313,7 @@ func TestRecorder_SuspendThenResumeThenEnd(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	sessionID := recorder.SessionID()
@@ -1386,7 +1386,7 @@ func TestRecorder_MultipleResumeEndCycles(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	sessionID := recorder.SessionID()
@@ -1463,7 +1463,7 @@ func TestRecorder_EndAfterSuspendWithoutResume(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	sessionID := recorder.SessionID()
@@ -1521,7 +1521,7 @@ func TestRecorder_ConcurrentRecordingAndEnd(t *testing.T) {
 	defer store.Close()
 
 	recorder := NewRecorder(store)
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 

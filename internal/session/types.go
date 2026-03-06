@@ -175,9 +175,10 @@ type ErrorData struct {
 
 // SessionStartData contains data for session start event.
 type SessionStartData struct {
-	SessionID  string `json:"session_id"`
-	ACPServer  string `json:"acp_server"`
-	WorkingDir string `json:"working_dir"`
+	SessionID     string `json:"session_id"`
+	ACPServer     string `json:"acp_server"`
+	WorkingDir    string `json:"working_dir"`
+	WorkspaceUUID string `json:"workspace_uuid,omitempty"` // Workspace UUID for auxiliary sessions
 }
 
 // SessionEndData contains data for session end event.

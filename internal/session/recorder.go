@@ -66,7 +66,7 @@ func (r *Recorder) SessionID() string {
 }
 
 // Start starts a new recording session.
-func (r *Recorder) Start(acpServer, workingDir string) error {
+func (r *Recorder) Start(acpServer, workingDir, workspaceUUID string) error {
 	log := logging.Session()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -92,9 +92,10 @@ func (r *Recorder) Start(acpServer, workingDir string) error {
 		Type:      EventTypeSessionStart,
 		Timestamp: time.Now(),
 		Data: SessionStartData{
-			SessionID:  r.sessionID,
-			ACPServer:  acpServer,
-			WorkingDir: workingDir,
+			SessionID:     r.sessionID,
+			ACPServer:     acpServer,
+			WorkingDir:    workingDir,
+			WorkspaceUUID: workspaceUUID,
 		},
 	}); err != nil {
 		return err
@@ -103,7 +104,8 @@ func (r *Recorder) Start(acpServer, workingDir string) error {
 	log.Debug("session recording started",
 		"session_id", r.sessionID,
 		"acp_server", acpServer,
-		"working_dir", workingDir)
+		"working_dir", workingDir,
+		"workspace_uuid", workspaceUUID)
 	return nil
 }
 

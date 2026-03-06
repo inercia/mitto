@@ -76,6 +76,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 					ACPCommand: defaultWs.ACPCommand,
 					WorkingDir: req.WorkingDir,
 				}
+				// Ensure the ad-hoc workspace has a UUID for auxiliary sessions
+				workspace.EnsureUUID()
 			}
 		}
 	} else if len(workspaces) == 1 {
