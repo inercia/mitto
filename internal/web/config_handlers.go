@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/inercia/mitto/internal/auxiliary"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/secrets"
@@ -289,7 +288,8 @@ func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var req struct {
-		Prompt string `json:"prompt"`
+		Prompt        string `json:"prompt"`
+		WorkspaceUUID string `json:"workspace_uuid"` // Required for workspace-scoped auxiliary
 	}
 	if !parseJSONBody(w, r, &req) {
 		return
@@ -300,8 +300,13 @@ func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.WorkspaceUUID == "" {
+		http.Error(w, "Workspace UUID is required", http.StatusBadRequest)
+		return
+	}
+
 	// Check if auxiliary manager is initialized
-	if auxiliary.GetManager() == nil {
+	if s.auxiliaryManager == nil {
 		s.logger.Error("Auxiliary manager not initialized")
 		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
 		return
@@ -311,10 +316,12 @@ func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	// Call the auxiliary package to improve the prompt
-	improved, err := auxiliary.ImprovePrompt(ctx, req.Prompt)
+	// Call the workspace-scoped auxiliary manager to improve the prompt
+	improved, err := s.auxiliaryManager.ImprovePrompt(ctx, req.WorkspaceUUID, req.Prompt)
 	if err != nil {
-		s.logger.Error("Failed to improve prompt", "error", err)
+		s.logger.Error("Failed to improve prompt",
+			"error", err,
+			"workspace_uuid", req.WorkspaceUUID)
 		http.Error(w, "Failed to improve prompt", http.StatusInternalServerError)
 		return
 	}

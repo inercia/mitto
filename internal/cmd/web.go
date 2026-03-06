@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/inercia/mitto/internal/appdir"
-	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/web"
@@ -134,20 +133,8 @@ func runWeb(cmd *cobra.Command, args []string) error {
 
 	// Initialize auxiliary session manager for utility tasks (auto-title, etc.)
 	// Use the first workspace's command for auxiliary sessions, or first ACP server from config
-	var auxLogger *slog.Logger
-	if debug {
-		auxLogger = slog.Default()
-	}
-	var auxCommand string
-	if len(webWorkspaces) > 0 {
-		auxCommand = webWorkspaces[0].ACPCommand
-	} else if cfg != nil && len(cfg.ACPServers) > 0 {
-		auxCommand = cfg.ACPServers[0].Command
-	}
-	if auxCommand != "" {
-		auxiliary.Initialize(auxCommand, auxLogger)
-		defer auxiliary.Shutdown()
-	}
+	// Note: Auxiliary sessions are now managed by the web server's ACPProcessManager
+	// and WorkspaceAuxiliaryManager. No global initialization needed here.
 
 	// Create workspace save callback (only used when not from CLI)
 	var onWorkspaceSave web.WorkspaceSaveFunc
@@ -274,9 +261,6 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// Add cleanup functions
 	shutdown.AddCleanup(func(reason string) {
 		fmt.Println("\n👋 Shutting down...")
-	})
-	shutdown.AddCleanup(func(reason string) {
-		auxiliary.Shutdown()
 	})
 	shutdown.AddCleanup(func(reason string) {
 		srv.Shutdown()

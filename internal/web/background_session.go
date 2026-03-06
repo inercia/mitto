@@ -136,6 +136,9 @@ type BackgroundSession struct {
 	// Sessions register with this server to enable session-scoped MCP tools.
 	globalMcpServer *mcpserver.Server
 
+	// Auxiliary manager for workspace-scoped auxiliary tasks
+	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
+
 	// Active UI prompt state for MCP tool user prompts
 	// When an MCP tool calls Prompt(), this holds the pending prompt until the user responds
 	activePromptMu sync.Mutex
@@ -191,6 +194,10 @@ type BackgroundSessionConfig struct {
 	// Sessions register with this server to enable session-scoped MCP tools.
 	// If nil, per-session MCP server is used as fallback (legacy behavior).
 	GlobalMCPServer *mcpserver.Server
+
+	// AuxiliaryManager is the workspace-scoped auxiliary manager for title generation,
+	// follow-up analysis, and other auxiliary tasks.
+	AuxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
 }
 
 // NewBackgroundSession creates a new background session.
@@ -372,9 +379,10 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
-		acpCommand:              config.ACPCommand,      // Store for restart
-		acpCwd:                  config.ACPCwd,          // Store for restart
-		globalMcpServer:         config.GlobalMCPServer, // Global MCP server for session registration
+		acpCommand:              config.ACPCommand,         // Store for restart
+		acpCwd:                  config.ACPCwd,             // Store for restart
+		globalMcpServer:         config.GlobalMCPServer,    // Global MCP server for session registration
+		auxiliaryManager:        config.AuxiliaryManager,   // Workspace-scoped auxiliary manager
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -1897,12 +1905,21 @@ func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage s
 
 	bs.logger.Debug("follow-up analysis: starting",
 		"user_prompt_length", len(userPrompt),
-		"agent_message_length", len(agentMessage))
+		"agent_message_length", len(agentMessage),
+		"workspace_uuid", bs.workspaceUUID)
 
-	// Use the auxiliary conversation to analyze the message
-	suggestions, err := auxiliary.AnalyzeFollowUpQuestions(ctx, userPrompt, agentMessage)
+	// Check if we have an auxiliary manager
+	if bs.auxiliaryManager == nil {
+		bs.logger.Debug("follow-up analysis: no auxiliary manager available")
+		return
+	}
+
+	// Use the workspace-scoped auxiliary conversation to analyze the message
+	suggestions, err := bs.auxiliaryManager.AnalyzeFollowUpQuestions(ctx, bs.workspaceUUID, userPrompt, agentMessage)
 	if err != nil {
-		bs.logger.Debug("follow-up analysis failed", "error", err)
+		bs.logger.Debug("follow-up analysis failed",
+			"error", err,
+			"workspace_uuid", bs.workspaceUUID)
 		return
 	}
 

@@ -340,6 +340,20 @@ const (
 	// Clients should refresh their prompts list when receiving this message.
 	// Data: { "changed_dirs": []string, "timestamp": string (ISO 8601) }
 	WSMsgTypePromptsChanged = "prompts_changed"
+
+	// WSMsgTypeMCPToolsUnavailable notifies that Mitto MCP tools are not available in the workspace.
+	// Sent when user focuses/switches to a conversation and MCP availability check fails.
+	// Data: {
+	//   "workspace_uuid": string,
+	//   "suggested_run": string (optional, single command to install),
+	//   "suggested_instructions": string (optional, max 500 chars, multi-step instructions)
+	// }
+	WSMsgTypeMCPToolsUnavailable = "mcp_tools_unavailable"
+
+	// WSMsgTypeRunMCPInstallCommand requests execution of the MCP installation command.
+	// Sent from frontend when user confirms running the suggested installation command.
+	// Data: { "command": string }
+	WSMsgTypeRunMCPInstallCommand = "run_mcp_install_command"
 )
 
 // =============================================================================

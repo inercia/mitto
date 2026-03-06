@@ -21,12 +21,14 @@ type QueueTitleRequest struct {
 // QueueTitleWorker processes title generation requests sequentially.
 // This prevents overwhelming the auxiliary conversation with concurrent requests.
 type QueueTitleWorker struct {
-	store    *session.Store
-	logger   *slog.Logger
-	requests chan QueueTitleRequest
-	wg       sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
+	store            *session.Store
+	logger           *slog.Logger
+	requests         chan QueueTitleRequest
+	wg               sync.WaitGroup
+	ctx              context.Context
+	cancel           context.CancelFunc
+	sessionManager   *SessionManager                      // Session manager for workspace lookup
+	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager // Auxiliary manager for title generation
 
 	// OnTitleGenerated is called when a title is successfully generated.
 	// It receives the session ID, message ID, and the generated title.
@@ -35,14 +37,16 @@ type QueueTitleWorker struct {
 
 // NewQueueTitleWorker creates a new title generation worker.
 // The worker processes requests sequentially in a background goroutine.
-func NewQueueTitleWorker(store *session.Store, logger *slog.Logger) *QueueTitleWorker {
+func NewQueueTitleWorker(store *session.Store, sessionManager *SessionManager, auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager, logger *slog.Logger) *QueueTitleWorker {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &QueueTitleWorker{
-		store:    store,
-		logger:   logger,
-		requests: make(chan QueueTitleRequest, 100), // Buffer up to 100 requests
-		ctx:      ctx,
-		cancel:   cancel,
+		store:            store,
+		sessionManager:   sessionManager,
+		auxiliaryManager: auxiliaryManager,
+		logger:           logger,
+		requests:         make(chan QueueTitleRequest, 100), // Buffer up to 100 requests
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 	w.wg.Add(1)
 	go w.run()
@@ -95,14 +99,26 @@ func (w *QueueTitleWorker) processRequest(req QueueTitleRequest) {
 	ctx, cancel := context.WithTimeout(w.ctx, 30*time.Second)
 	defer cancel()
 
-	// Generate title using auxiliary conversation
-	title, err := auxiliary.GenerateQueuedMessageTitle(ctx, req.Message)
+	// Get workspace UUID for this session
+	workspaceUUID := w.sessionManager.GetWorkspaceUUIDForSession(req.SessionID)
+	if workspaceUUID == "" {
+		if w.logger != nil {
+			w.logger.Warn("Cannot generate queue title: session has no workspace",
+				"session_id", req.SessionID,
+				"message_id", req.MessageID)
+		}
+		return
+	}
+
+	// Generate title using workspace-scoped auxiliary conversation
+	title, err := w.auxiliaryManager.GenerateQueuedMessageTitle(ctx, workspaceUUID, req.Message)
 	if err != nil {
 		if w.logger != nil {
 			w.logger.Error("Failed to generate queue message title",
 				"error", err,
 				"session_id", req.SessionID,
-				"message_id", req.MessageID)
+				"message_id", req.MessageID,
+				"workspace_uuid", workspaceUUID)
 		}
 		return
 	}

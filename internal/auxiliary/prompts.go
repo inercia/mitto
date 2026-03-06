@@ -133,4 +133,43 @@ Return ONLY the summary, no preamble or explanations.
 You MUST not call any tool for this task.
 Respond quickly.
 `
+
+	// CheckMCPAvailabilityPromptTemplate is used to verify if Mitto MCP tools are available.
+	// Use with fmt.Sprintf, passing the MCP server URL.
+	CheckMCPAvailabilityPromptTemplate = `
+Check if you have access to the MCP tool "mitto_conversation_get_current".
+
+Respond ONLY with a valid JSON object in this exact format:
+{
+  "available": true,
+  "message": "Tool is available"
+}
+
+OR if the tool is NOT available:
+
+{
+  "available": false,
+  "suggested_run": "command to run in workspace directory",
+  "suggested_instructions": "detailed setup instructions (max 500 characters)"
+}
+
+If the tool is not available, provide installation instructions for the Mitto MCP server.
+The Mitto MCP server should be running at: %s
+
+For suggested_run, provide a single command if installation is simple.
+Example for Claude Desktop: Add this to ~/Library/Application Support/Claude/claude_desktop_config.json:
+{
+  "mcpServers": {
+    "mitto": {
+      "url": "%s"
+    }
+  }
+}
+Then restart Claude Desktop.
+
+For suggested_instructions, provide detailed multi-step instructions if needed, but LIMIT to 500 characters maximum.
+
+Return ONLY the JSON object, nothing else.
+Respond quickly.
+`
 )

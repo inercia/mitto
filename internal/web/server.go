@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/auxiliary"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/logging"
@@ -165,6 +166,12 @@ type Server struct {
 
 	// Prompts watcher for monitoring prompt file changes
 	promptsWatcher *configPkg.PromptsWatcher
+
+	// ACP process manager for workspace-scoped shared processes
+	acpProcessManager *ACPProcessManager
+
+	// Auxiliary manager for workspace-scoped auxiliary tasks (title generation, etc.)
+	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -347,6 +354,14 @@ func NewServer(config Config) (*Server, error) {
 
 	eventsManager := NewGlobalEventsManager()
 
+	// Initialize ACP process manager for workspace-scoped shared processes
+	// This manages one shared ACP process per workspace, with multiple sessions
+	acpProcessManager := NewACPProcessManager(context.Background(), logger)
+
+	// Initialize auxiliary manager for workspace-scoped auxiliary tasks
+	// This provides high-level operations (title generation, follow-up analysis, etc.)
+	auxiliaryManager := auxiliary.NewWorkspaceAuxiliaryManager(acpProcessManager, logger)
+
 	// Initialize scanner defense
 	// Enabled by default when external access is configured (ExternalPort >= 0)
 	var scannerDefense *defense.ScannerDefense
@@ -385,6 +400,8 @@ func NewServer(config Config) (*Server, error) {
 		proxyChecker:      proxyChecker,
 		accessLogger:      accessLogger,
 		defense:           scannerDefense,
+		acpProcessManager: acpProcessManager,
+		auxiliaryManager:  auxiliaryManager,
 	}
 
 	// Set events manager in session manager for broadcasting
@@ -425,7 +442,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize queue title worker
-	s.queueTitleWorker = NewQueueTitleWorker(store, logger)
+	s.queueTitleWorker = NewQueueTitleWorker(store, sessionMgr, auxiliaryManager, logger)
 	s.queueTitleWorker.OnTitleGenerated = func(sessionID, messageID, title string) {
 		// Broadcast title update to all connected clients
 		s.eventsManager.Broadcast(WSMsgTypeQueueMessageTitled, map[string]string{

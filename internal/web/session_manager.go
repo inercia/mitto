@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/msghooks"
@@ -101,13 +102,14 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		WorkingDir: "", // Will be set at session creation time
 	}
 	return &SessionManager{
-		sessions:         make(map[string]*BackgroundSession),
-		workspaces:       make(map[string]*config.WorkspaceSettings),
-		logger:           logger,
-		defaultWorkspace: defaultWS,
-		autoApprove:      autoApprove,
-		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
-		planState:        make(map[string][]PlanEntry),
+		sessions:             make(map[string]*BackgroundSession),
+		workspaces:           make(map[string]*config.WorkspaceSettings),
+		logger:               logger,
+		defaultWorkspace:     defaultWS,
+		autoApprove:          autoApprove,
+		workspaceRCCache:     config.NewWorkspaceRCCache(30 * time.Second),
+		planState:            make(map[string][]PlanEntry),
+		mcpCheckedWorkspaces: make(map[string]bool),
 	}
 }
 
@@ -133,15 +135,16 @@ type SessionManagerOptions struct {
 // Workspaces without UUIDs will have UUIDs generated automatically.
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
-		sessions:         make(map[string]*BackgroundSession),
-		workspaces:       make(map[string]*config.WorkspaceSettings),
-		logger:           opts.Logger,
-		autoApprove:      opts.AutoApprove,
-		fromCLI:          opts.FromCLI,
-		onWorkspaceSave:  opts.OnWorkspaceSave,
-		workspaceRCCache: config.NewWorkspaceRCCache(30 * time.Second),
-		apiPrefix:        opts.APIPrefix,
-		planState:        make(map[string][]PlanEntry),
+		sessions:             make(map[string]*BackgroundSession),
+		workspaces:           make(map[string]*config.WorkspaceSettings),
+		logger:               opts.Logger,
+		autoApprove:          opts.AutoApprove,
+		fromCLI:              opts.FromCLI,
+		onWorkspaceSave:      opts.OnWorkspaceSave,
+		workspaceRCCache:     config.NewWorkspaceRCCache(30 * time.Second),
+		apiPrefix:            opts.APIPrefix,
+		planState:            make(map[string][]PlanEntry),
+		mcpCheckedWorkspaces: make(map[string]bool),
 	}
 
 	for i := range opts.Workspaces {
@@ -1548,4 +1551,39 @@ func (sm *SessionManager) ProcessPendingQueues() {
 			}
 		}(bs, meta.SessionID)
 	}
+}
+
+
+// GetWorkspaceUUIDForSession returns the workspace UUID for a given session ID.
+// Returns empty string if the session is not found.
+func (sm *SessionManager) GetWorkspaceUUIDForSession(sessionID string) string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	if bs, ok := sm.sessions[sessionID]; ok {
+		return bs.workspaceUUID
+	}
+	return ""
+}
+
+// IsMCPChecked returns whether MCP availability has been checked for a workspace.
+func (sm *SessionManager) IsMCPChecked(workspaceUUID string) bool {
+	sm.mcpCheckedWorkspacesMu.RLock()
+	defer sm.mcpCheckedWorkspacesMu.RUnlock()
+	return sm.mcpCheckedWorkspaces[workspaceUUID]
+}
+
+// MarkMCPChecked marks a workspace as having had MCP availability checked.
+func (sm *SessionManager) MarkMCPChecked(workspaceUUID string) {
+	sm.mcpCheckedWorkspacesMu.Lock()
+	sm.mcpCheckedWorkspaces[workspaceUUID] = true
+	sm.mcpCheckedWorkspacesMu.Unlock()
+}
+
+// ClearMCPChecked clears the MCP checked flag for a workspace.
+// This should be called after running the MCP installation command.
+func (sm *SessionManager) ClearMCPChecked(workspaceUUID string) {
+	sm.mcpCheckedWorkspacesMu.Lock()
+	delete(sm.mcpCheckedWorkspaces, workspaceUUID)
+	sm.mcpCheckedWorkspacesMu.Unlock()
 }

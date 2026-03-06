@@ -62,12 +62,13 @@ type Server struct {
 	stdioSession *mcp.ServerSession
 	stdioDone    chan struct{}
 
-	mu             sync.RWMutex
-	store          *session.Store
-	config         *config.Config
-	sessionManager SessionManager
-	running        bool
-	shutdown       bool
+	mu               sync.RWMutex
+	store            *session.Store
+	config           *config.Config
+	sessionManager   SessionManager
+	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
+	running          bool
+	shutdown         bool
 
 	// Session registry for session-scoped tools.
 	// Maps session_id -> registeredSession for routing UI prompts and checking permissions.
@@ -125,6 +126,8 @@ type Dependencies struct {
 	Config *config.Config
 	// SessionManager is optional - provides info about running sessions
 	SessionManager SessionManager
+	// AuxiliaryManager is optional - provides workspace-scoped auxiliary operations
+	AuxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
 }
 
 // SessionManager interface for checking session status and managing sessions.
@@ -1868,8 +1871,24 @@ func (s *Server) handleGetConversationSummary(ctx context.Context, req *mcp.Call
 		}, nil
 	}
 
-	// Generate summary using auxiliary session
-	summary, err := auxiliary.GenerateConversationSummary(ctx, conversationContent)
+	// Generate summary using workspace-scoped auxiliary session
+	// TODO: Get workspace UUID from session metadata when it's added
+	// For now, we'll return an error if auxiliary manager is not available
+	s.mu.RLock()
+	auxMgr := s.auxiliaryManager
+	s.mu.RUnlock()
+
+	if auxMgr == nil {
+		return nil, GetConversationSummaryOutput{
+			Success: false,
+			Error:   "conversation summary generation not available (auxiliary manager not configured)",
+		}, nil
+	}
+
+	// Use a placeholder workspace UUID for now
+	// TODO: Get actual workspace UUID from session metadata
+	workspaceUUID := "default"
+	summary, err := auxMgr.GenerateConversationSummary(ctx, workspaceUUID, conversationContent)
 	if err != nil {
 		return nil, GetConversationSummaryOutput{
 			Success: false,
