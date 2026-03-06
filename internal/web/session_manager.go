@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/msghooks"
@@ -90,6 +89,10 @@ type SessionManager struct {
 	// When set, new sessions use a shared process instead of starting their own.
 	// When nil, legacy per-session process ownership is used.
 	acpProcessManager *ACPProcessManager
+
+	// mcpCheckedWorkspaces tracks which workspaces have had MCP availability checked.
+	mcpCheckedWorkspaces   map[string]bool
+	mcpCheckedWorkspacesMu sync.RWMutex
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.

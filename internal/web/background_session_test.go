@@ -1831,7 +1831,7 @@ func TestBackgroundSession_Close_ServerShutdownUsesSuspend(t *testing.T) {
 
 	// Create a recorder and start it
 	recorder := session.NewRecorder(store)
-	if err := recorder.Start("test-acp", "/tmp"); err != nil {
+	if err := recorder.Start("test-acp", "/tmp", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	sessionID := recorder.SessionID()
@@ -1897,7 +1897,7 @@ func TestBackgroundSession_Close_OtherReasonsUseEnd(t *testing.T) {
 
 			// Create a recorder and start it
 			recorder := session.NewRecorder(store)
-			if err := recorder.Start("test-acp", "/tmp"); err != nil {
+			if err := recorder.Start("test-acp", "/tmp", ""); err != nil {
 				t.Fatalf("Start failed: %v", err)
 			}
 			sessionID := recorder.SessionID()
@@ -2334,7 +2334,7 @@ func TestRefreshNextSeq_AfterUserPrompt(t *testing.T) {
 
 	// Create a session and record some events with coalescing
 	recorder := session.NewRecorder(store)
-	if err := recorder.Start("test-server", tmpDir); err != nil {
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	sessionID := recorder.SessionID()

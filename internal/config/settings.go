@@ -81,6 +81,9 @@ type SessionConfig struct {
 	// ArchiveRetentionPeriod specifies how long archived conversations are kept before auto-deletion.
 	// Values: "never" (default - keep forever), "1d", "1w", "1m", "3m" (1 day, 1 week, 1 month, 3 months)
 	ArchiveRetentionPeriod string `json:"archive_retention_period,omitempty"`
+	// AutoArchiveInactiveAfter specifies how long a conversation must be inactive before being auto-archived.
+	// Values: "" (default - disabled), "1d", "1w", "1m", "3m" (1 day, 1 week, 1 month, 3 months)
+	AutoArchiveInactiveAfter string `json:"auto_archive_inactive_after,omitempty"`
 }
 
 // ArchiveRetentionNever is the value for keeping archived conversations forever.
@@ -95,6 +98,14 @@ func (c *SessionConfig) GetArchiveRetentionPeriod() string {
 		return ArchiveRetentionNever
 	}
 	return c.ArchiveRetentionPeriod
+}
+
+// GetAutoArchiveInactiveAfter returns the auto-archive inactive period string, or "" if not set.
+func (c *SessionConfig) GetAutoArchiveInactiveAfter() string {
+	if c == nil {
+		return ""
+	}
+	return c.AutoArchiveInactiveAfter
 }
 
 // ScannerDefenseConfig holds configuration for the scanner defense system.

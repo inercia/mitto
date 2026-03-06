@@ -198,6 +198,9 @@ type BackgroundSessionConfig struct {
 	// AuxiliaryManager is the workspace-scoped auxiliary manager for title generation,
 	// follow-up analysis, and other auxiliary tasks.
 	AuxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
+
+	// SharedProcess is the shared ACP process for this workspace (nil = legacy per-session process).
+	SharedProcess *SharedACPProcess
 }
 
 // NewBackgroundSession creates a new background session.

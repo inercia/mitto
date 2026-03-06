@@ -294,7 +294,6 @@ import (
 
 	embeddedconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
-	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/logging"
@@ -939,9 +938,8 @@ func run() error {
 		}
 	}
 
-	// Initialize auxiliary session manager
-	auxiliary.Initialize(server.Command, nil)
-	defer auxiliary.Shutdown()
+	// Note: Auxiliary sessions are now managed by the web server's ACPProcessManager
+	// and WorkspaceAuxiliaryManager. No global initialization needed here.
 
 	// Sync login item state with config
 	// This ensures the LaunchAgent registration matches the config setting
@@ -1232,9 +1230,6 @@ func run() error {
 	shutdown.SetHooks(upHook, downHook, port)
 
 	// Add cleanup functions
-	shutdown.AddCleanup(func(reason string) {
-		auxiliary.Shutdown()
-	})
 	shutdown.AddCleanup(func(reason string) {
 		srv.Shutdown()
 	})

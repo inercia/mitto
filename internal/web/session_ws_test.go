@@ -873,7 +873,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 			// Create session with events
 			if tt.persistedCount > 0 {
 				rec := session.NewRecorderWithID(store, sessionID)
-				if err := rec.Start("test-server", "/tmp"); err != nil {
+				if err := rec.Start("test-server", "/tmp", ""); err != nil {
 					t.Fatalf("Start failed: %v", err)
 				}
 				for i := 0; i < tt.persistedCount; i++ {
@@ -928,7 +928,7 @@ func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
 	// Note: Start() adds session_start event, End() adds session_end event
 	// So total events = 25 + 2 = 27
 	rec := session.NewRecorderWithID(store, sessionID)
-	if err := rec.Start("test-server", "/tmp"); err != nil {
+	if err := rec.Start("test-server", "/tmp", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	for i := 0; i < 25; i++ {

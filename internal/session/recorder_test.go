@@ -222,7 +222,7 @@ func TestRecorder_Resume(t *testing.T) {
 	// Create and start a session
 	recorder1 := NewRecorder(store)
 	sessionID := recorder1.SessionID()
-	if err := recorder1.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder1.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -298,7 +298,7 @@ func TestRecorder_ResumeCompletedSessionUpdatesStatus(t *testing.T) {
 	// Create and start a session
 	recorder1 := NewRecorder(store)
 	sessionID := recorder1.SessionID()
-	if err := recorder1.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder1.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -659,7 +659,7 @@ func TestRecorder_ResumePreservesOrdering(t *testing.T) {
 
 	// Create and record initial events
 	recorder1 := NewRecorder(store)
-	if err := recorder1.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder1.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	sessionID := recorder1.SessionID()
@@ -731,7 +731,7 @@ func TestRecorder_ResumeWithInterleavedEvents(t *testing.T) {
 
 	// Create session with interleaved events
 	recorder1 := NewRecorder(store)
-	if err := recorder1.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder1.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	sessionID := recorder1.SessionID()

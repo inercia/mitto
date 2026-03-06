@@ -40,6 +40,9 @@ type PeriodicRunner struct {
 	// onPeriodicStarted is called when a periodic prompt is delivered
 	onPeriodicStarted PeriodicStartedCallback
 
+	// autoArchiveAfter, when > 0, causes sessions inactive for this long to be archived.
+	autoArchiveAfter time.Duration
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -64,6 +67,15 @@ func (r *PeriodicRunner) SetPollInterval(interval time.Duration) {
 // SetOnPeriodicStarted sets the callback for when a periodic prompt is delivered.
 func (r *PeriodicRunner) SetOnPeriodicStarted(callback PeriodicStartedCallback) {
 	r.onPeriodicStarted = callback
+}
+
+// SetAutoArchiveAfter configures the runner to automatically archive sessions
+// that have been inactive for longer than the given duration.
+// A duration of 0 disables auto-archiving.
+func (r *PeriodicRunner) SetAutoArchiveAfter(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.autoArchiveAfter = d
 }
 
 // Start begins the periodic polling loop in a background goroutine.

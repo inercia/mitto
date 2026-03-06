@@ -478,7 +478,7 @@ func TestRecorder_WithPruneConfig(t *testing.T) {
 	recorder := NewRecorder(store)
 	recorder.SetPruneConfig(&PruneConfig{MaxMessages: 5})
 
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
@@ -518,7 +518,7 @@ func TestRecorder_SetPruneConfig(t *testing.T) {
 	recorder := NewRecorder(store)
 
 	// Initially no prune config
-	if err := recorder.Start("test-server", "/test/dir"); err != nil {
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 

@@ -173,7 +173,18 @@ func TestWorkspaceAuxiliaryManager_AnalyzeFollowUpQuestions(t *testing.T) {
 
 			got, err := mgr.AnalyzeFollowUpQuestions(context.Background(), "test-workspace", "user prompt", "agent message")
 
-
+			if tt.wantErr && err == nil {
+				t.Error("AnalyzeFollowUpQuestions() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("AnalyzeFollowUpQuestions() unexpected error: %v", err)
+			}
+			if len(got) != tt.wantCount {
+				t.Errorf("AnalyzeFollowUpQuestions() count = %d, want %d", len(got), tt.wantCount)
+			}
+		})
+	}
+}
 
 func TestWorkspaceAuxiliaryManager_CheckMCPAvailability(t *testing.T) {
 	tests := []struct {
@@ -318,18 +329,6 @@ func TestWorkspaceAuxiliaryManager_ClearMCPCheckCache(t *testing.T) {
 
 	if callCount != 2 {
 		t.Errorf("Expected 2 calls after cache clear, got %d", callCount)
-	}
-}
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("AnalyzeFollowUpQuestions() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if len(got) != tt.wantCount {
-				t.Errorf("AnalyzeFollowUpQuestions() returned %d suggestions, want %d", len(got), tt.wantCount)
-			}
-		})
 	}
 }
 
