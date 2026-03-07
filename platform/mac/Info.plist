@@ -53,10 +53,13 @@
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2024 Mitto Contributors. MIT License.</string>
     
-    <!-- Network access (required for localhost web server) -->
+    <!-- Network access (required for localhost web server and external access via Tailscale) -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
+        <true/>
+        <!-- Allow external connections needed for Tailscale / remote access via the external port -->
+        <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
     
