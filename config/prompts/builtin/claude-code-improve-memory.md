@@ -6,8 +6,12 @@ acps: claude-code
 backgroundColor: "#1b0bc693"
 ---
 
+<task>
 Review and update the Claude Code memory files based on all insights,
 patterns, and lessons learned from our recent conversations and code changes.
+</task>
+
+<instructions>
 
 ## Memory File Locations
 
@@ -27,7 +31,9 @@ Claude Code uses these memory files (check which exist):
 ## Guidelines
 
 - Focus on actionable guidance that will help future development sessions
-- Do not remove existing valid content - only add or update information
+- Preserve existing valid content — only add or update information
 - Keep rules focused: each file should cover one topic
 - Use bullet points for individual instructions
 - Group related memories under descriptive markdown headings
+
+</instructions>

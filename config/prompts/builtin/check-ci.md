@@ -5,7 +5,11 @@ group: "CI"
 backgroundColor: "#BBDEFB"
 ---
 
+<task>
 Check the CI pipeline status for the current branch and provide a clear report.
+</task>
+
+<instructions>
 
 ### 1. Detect CI System
 
@@ -51,7 +55,7 @@ glab ci status
 
 ### 4. Present Status Report
 
-Generate a clear status report:
+<output_format>
 
 ```console
 📊 CI Status Report for branch: <branch-name>
@@ -65,6 +69,8 @@ Generate a clear status report:
 
 Overall Status: ⚠️ Some workflows failing
 ```
+
+</output_format>
 
 ### 5. If CI is Passing
 
@@ -106,14 +112,6 @@ Then provide a failure analysis:
 │ Error:   <exact error message from logs>                    │
 │ File:    <file path and line number if available>           │
 └─────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│ Failure #2: Linting                                         │
-├─────────────────────────────────────────────────────────────┤
-│ Type:    Lint Error                                         │
-│ Job:     lint                                               │
-│ Error:   <exact error message from logs>                    │
-└─────────────────────────────────────────────────────────────┘
 ```
 
 Categorize failures by type:
@@ -148,12 +146,13 @@ To re-run failed jobs:
 - GitLab: glab ci retry
 ```
 
-## Rules
+</instructions>
 
+<rules>
 - Report status clearly and concisely
 - Categorize failures to help users understand the type of issue
-- Never modify code or CI configuration - this is a read-only check
-- Always suggest the "Fix CI" prompt for automated fixes
+- This is a read-only check — do not modify code or CI configuration
+- Suggest the "Fix CI" prompt for automated fixes when failures are found
 - If failures appear to be flaky or infrastructure-related, note this explicitly
 - Include timing information so users know how recent the results are
-
+</rules>

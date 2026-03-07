@@ -5,7 +5,9 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
+<task>
 Address all review comments on the current pull request with thoughtful responses and appropriate code changes.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -27,6 +29,8 @@ and then show the instructions for adding it.
 **After displaying this message, proceed with the sections below using text-based conversation instead.**
 
 ---
+
+<instructions>
 
 ### 1. Identify the Pull/Merge Request
 
@@ -124,11 +128,15 @@ If any question arises, please ask me for confirmation before proceeding.
    - Related changes together (avoid multiple commits for same area)
    - Independent changes can be done in parallel
 
+<output_format>
+
 Summarize the analysis in a table, formatted as Markdown:
 
 | Comment | Type | Validity | Priority | Action |
 |---------|------|----------|----------|--------|
 | ...     | ...  | ...      | ...      | ...    |
+
+</output_format>
 
 Show it to the user.
 
@@ -189,7 +197,7 @@ git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null
 **In fork workflows:**
 - `origin` typically points to your fork (push here)
 - `upstream` points to the main repository (PR target)
-- Always push to the remote where your PR source branch lives (usually `origin`)
+- Push to the remote where your PR source branch lives (usually `origin`)
 
 **Verify by checking the PR:**
 
@@ -198,7 +206,7 @@ Use the GitHub API (via `github-api` tool) to confirm:
 GET /repos/{owner}/{repo}/pulls?head={username}:{current-branch}&state=open
 ```
 
-The PR's `head.repo.full_name` tells you which repository your branch lives in - push to that remote.
+The PR's `head.repo.full_name` tells you which repository your branch lives in — push to that remote.
 
 ### 9. Push Changes and Request Re-review
 
@@ -232,7 +240,7 @@ git push <push-remote> <branch-name>
 
 ### 10. Summary Report
 
-Prepare a clear summary:
+<output_format>
 
 ```console
 ✅ PR Review Comments Addressed
@@ -251,16 +259,20 @@ Prepare a clear summary:
 All comments have been responded to. The PR is ready for re-review.
 ```
 
-## Rules
+</output_format>
 
-- **Never dismiss feedback without careful consideration**
-- **Always respond to every comment** (even if just to acknowledge)
-- **Be respectful and professional** in all responses
-- **Provide evidence** when disagreeing (code, docs, benchmarks)
-- **Ask for clarification** rather than guessing intent
-- **Group related changes** in single commits when logical
-- **Run tests** before pushing to avoid introducing new issues
-- **Don't mark conversations as resolved** if you're not the author of the comment (unless explicitly asked)
-- **If a comment suggests a larger refactor**, discuss scope before implementing
-- **If feedback conflicts**, ask reviewers to align before proceeding
-- **Never assume which remote to push to** - in fork workflows, push to `origin` (your fork), not `upstream`
+</instructions>
+
+<rules>
+- Consider all feedback carefully before responding, because reviewers may have context you're missing
+- Respond to every comment, even if just to acknowledge it
+- Be respectful and professional in all responses
+- Provide evidence when disagreeing (code, docs, benchmarks), so the discussion stays productive
+- Ask for clarification rather than guessing the reviewer's intent
+- Group related changes in single commits when logical, for cleaner history
+- Run tests before pushing to avoid introducing new issues
+- Only mark conversations as resolved if you are the author of the comment (unless explicitly asked)
+- If a comment suggests a larger refactor, discuss scope before implementing
+- If feedback conflicts between reviewers, ask them to align before proceeding
+- In fork workflows, push to `origin` (your fork), not `upstream` — verify the remote before pushing
+</rules>

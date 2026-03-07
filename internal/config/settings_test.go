@@ -80,8 +80,8 @@ func TestLoadSettings_ReadsExistingSettings(t *testing.T) {
 func TestConfigToSettings_RoundTrip(t *testing.T) {
 	original := &Config{
 		ACPServers: []ACPServer{
-			{Name: "server1", Command: "cmd1", Cwd: "/home/user/projects"},
-			{Name: "server2", Command: "cmd2"}, // no cwd
+			{Name: "server1", Command: "cmd1", Cwd: "/home/user/projects", Tags: []string{"coding", "fast"}},
+			{Name: "server2", Command: "cmd2"}, // no cwd, no tags
 		},
 		Web: WebConfig{
 			Host:  "0.0.0.0",
@@ -111,6 +111,22 @@ func TestConfigToSettings_RoundTrip(t *testing.T) {
 			t.Errorf("ACPServers[%d].Cwd = %q, want %q", i, result.ACPServers[i].Cwd, original.ACPServers[i].Cwd)
 		}
 	}
+
+	// Verify tags survive round-trip
+	if len(result.ACPServers[0].Tags) != 2 {
+		t.Fatalf("ACPServers[0].Tags count = %d, want 2", len(result.ACPServers[0].Tags))
+	}
+	if result.ACPServers[0].Tags[0] != "coding" {
+		t.Errorf("ACPServers[0].Tags[0] = %q, want %q", result.ACPServers[0].Tags[0], "coding")
+	}
+	if result.ACPServers[0].Tags[1] != "fast" {
+		t.Errorf("ACPServers[0].Tags[1] = %q, want %q", result.ACPServers[0].Tags[1], "fast")
+	}
+	// Server2 should have no tags
+	if len(result.ACPServers[1].Tags) != 0 {
+		t.Errorf("ACPServers[1].Tags count = %d, want 0", len(result.ACPServers[1].Tags))
+	}
+
 	if result.Web.Host != original.Web.Host {
 		t.Errorf("Web.Host = %q, want %q", result.Web.Host, original.Web.Host)
 	}

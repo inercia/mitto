@@ -18,6 +18,7 @@ acp:
   - auggie:
       command: auggie --allow-indexing --acp
       # cwd: /path/to/working/directory  # Optional: set process working directory
+      # tags: [coding, ai-assistant]  # Optional categorization tags
 
   - claude-code:
       command: npx -y @zed-industries/claude-agent-acp@latest

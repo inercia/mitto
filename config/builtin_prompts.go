@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -70,31 +71,53 @@ func DeployBuiltinPrompts(targetDir string, force bool) (*DeployBuiltinPromptsRe
 	return result, nil
 }
 
-// EnsureBuiltinPrompts checks if the builtin prompts directory exists and deploys
-// the embedded prompts if it doesn't. This is called on first run.
-// Returns true if prompts were deployed, false if they already existed.
+// EnsureBuiltinPrompts deploys embedded builtin prompts to the target directory.
+// On first run (empty directory), all prompts are deployed.
+// On subsequent runs, any prompts whose content differs from the embedded version
+// are updated (e.g., when a new build adds fields like "group" to frontmatter).
+// Returns true if any prompts were deployed or updated, false if all were up to date.
 func EnsureBuiltinPrompts(targetDir string) (bool, error) {
-	// Check if the builtin prompts directory exists
-	if _, err := os.Stat(targetDir); err == nil {
-		// Directory exists, check if it has any files
-		entries, err := os.ReadDir(targetDir)
-		if err != nil {
-			return false, fmt.Errorf("failed to read builtin prompts directory: %w", err)
-		}
-		if len(entries) > 0 {
-			// Directory has files, skip deployment
-			return false, nil
-		}
+	// Create target directory if it doesn't exist
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return false, fmt.Errorf("failed to create target directory %s: %w", targetDir, err)
 	}
 
-	// Deploy builtin prompts (don't force overwrite)
-	result, err := DeployBuiltinPrompts(targetDir, false)
+	// Read all embedded prompt files
+	entries, err := fs.ReadDir(BuiltinPromptsFS, BuiltinPromptsDir)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to read embedded prompts directory: %w", err)
 	}
 
-	// Return true if any files were deployed
-	return len(result.Deployed) > 0, nil
+	deployed := false
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		filename := entry.Name()
+		srcPath := filepath.Join(BuiltinPromptsDir, filename)
+		dstPath := filepath.Join(targetDir, filename)
+
+		// Read embedded content
+		embeddedContent, err := fs.ReadFile(BuiltinPromptsFS, srcPath)
+		if err != nil {
+			continue
+		}
+
+		// Check if deployed file exists and matches
+		existingContent, err := os.ReadFile(dstPath)
+		if err == nil && bytes.Equal(existingContent, embeddedContent) {
+			continue // Already up to date
+		}
+
+		// Deploy or update the file
+		if err := os.WriteFile(dstPath, embeddedContent, 0644); err != nil {
+			continue
+		}
+		deployed = true
+	}
+
+	return deployed, nil
 }
 
 // ListEmbeddedPrompts returns the list of embedded builtin prompt filenames.

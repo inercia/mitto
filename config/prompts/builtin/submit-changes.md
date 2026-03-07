@@ -5,10 +5,10 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
-# Submit Changes
-
+<task>
 Submit the current work by preparing, committing (if needed),
 and pushing changes to a pull request.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -31,7 +31,7 @@ and then show the instructions for adding it.
 
 ---
 
-## Workflow
+<instructions>
 
 ### 1. Check for Uncommitted Changes
 
@@ -68,9 +68,7 @@ If on `main`, `master`, or another protected branch:
 
 ### 3. Identify Target Remote and Branch
 
-**IMPORTANT:** Never assume which remote to use. Users working with forks typically have:
-- `origin` pointing to their fork (where they push branches)
-- `upstream` pointing to the main repository (where PRs target)
+Users working with forks typically have different remote configurations. Detect the correct setup rather than assuming.
 
 #### Step 3a: List Available Remotes
 
@@ -125,7 +123,7 @@ git remote show upstream 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}'
 
 #### Step 3d: Confirm with User
 
-**Always ask the user to confirm** if any of these conditions apply:
+Confirm with the user if any of these conditions apply:
 - Multiple remotes are configured (e.g., both `origin` and `upstream`)
 - The detected target differs from a simple `origin/main` setup
 - No tracking information exists and no PR was found
@@ -158,7 +156,7 @@ If the user answers "No", follow up in conversation to get the correct configura
 
 Ask: "Is this correct? (yes/no/specify different target)"
 
-**Do not proceed** until the user confirms the target remote and branch.
+Wait for the user to confirm the target remote and branch before proceeding.
 
 ### 4. Check if Rebase is Needed
 
@@ -245,7 +243,11 @@ to memorize these learnings for future sessions:
 
 Ask the user before making changes to rules files.
 
+</instructions>
+
 ## Summary Report
+
+<output_format>
 
 At the end, show a summary like this:
 
@@ -257,13 +259,15 @@ At the end, show a summary like this:
 🔗 PR: <pr-url>
 📝 Rules Updated: [Yes - added X | No updates needed]
 
-## Rules
+</output_format>
 
-- **Never assume which remote to use** - always detect via PR or ask the user when multiple remotes exist
-- **Distinguish between target and push remotes** - in fork workflows, you push to `origin` but PR targets `upstream`
-- **Never force push without `--force-with-lease`** to prevent overwriting others' work
-- **Always confirm branch names** with the user before creating
-- **Ask before resolving ambiguous remotes** - don't assume
-- **Stop and inform** if uncommitted changes exist - don't auto-commit
-- **Preserve user's commit history** - use rebase, not merge, for updating branches
-- **Document learnings** in rules files only with user approval
+<rules>
+- Detect the correct remote via PR or by asking the user — do not assume which remote to push to
+- Distinguish between target and push remotes: in fork workflows, push to `origin` but PR targets `upstream`
+- Use `--force-with-lease` when force pushing, to prevent overwriting others' work
+- Confirm branch names with the user before creating them
+- Ask before resolving ambiguous remotes
+- Stop and inform if uncommitted changes exist — do not auto-commit
+- Preserve the user's commit history by using rebase, not merge, for updating branches
+- Document learnings in rules files only with user approval
+</rules>

@@ -5,7 +5,30 @@ group: "CI"
 backgroundColor: "#B2DFDB"
 ---
 
+<investigate_before_answering>
+Before attempting any fixes, check the CI status and read the failure logs first.
+Understand the actual error messages and the code involved before making changes.
+Do not speculate about what might be wrong — read the logs and the relevant source files.
+</investigate_before_answering>
+
+<task>
 Diagnose and fix CI pipeline failures for the current branch.
+</task>
+
+<scope>
+Only fix the issues causing CI failures. Keep changes minimal and focused on resolving
+the pipeline errors. Do not refactor surrounding code or add improvements beyond what
+is needed to make CI pass.
+</scope>
+
+<solution_quality>
+Implement fixes that address the root cause. If a test is failing, fix the code or
+the test based on which is actually wrong — do not just make the test pass with
+hard-coded values or narrow workarounds. If a failure reveals a flawed test or
+requirement, report it rather than working around it.
+</solution_quality>
+
+<instructions>
 
 ### 1. Detect CI System
 
@@ -83,11 +106,11 @@ For each identified issue:
 2. **Explain the change** and why it resolves the issue
 3. **Verify locally** if possible (run tests, build, lint)
 
-Fix issues in dependency order (fix causes before symptoms).
+Fix issues in dependency order — fix causes before symptoms.
 
 ### 6. Report and Guide User
 
-Show a summary of the fixes implemented:
+<output_format>
 
 ```console
 ✅ Fixes pushed successfully!
@@ -102,16 +125,19 @@ Check back in a few minutes to verify the fixes resolved the issues.
 If CI still fails, run this prompt again to diagnose any remaining issues.
 ```
 
+</output_format>
+
 ### 7. Commit and Push
 
 After all fixes are implemented, suggest the user to commit
 and push the changes.
 
-## Rules
+</instructions>
 
-- Always check CI status before attempting fixes
-- Never modify CI configuration files without explicit user approval
-- If fixes require dependency changes, ask user for approval first
-- If the failure is in a flaky test, report it rather than retrying blindly
-- If the failure is infrastructure-related (CI service issues), inform the user
-- Group related fixes in a single commit when possible
+<rules>
+- Check CI status before attempting fixes, because understanding the actual failures prevents wasted effort
+- Get explicit user approval before modifying CI configuration files or changing dependencies
+- Report flaky tests as flaky rather than retrying blindly, so the user can address the root cause
+- Inform the user when failures are infrastructure-related (CI service issues, not code issues)
+- Group related fixes in a single commit when possible for cleaner history
+</rules>

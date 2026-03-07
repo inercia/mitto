@@ -135,6 +135,55 @@ acp:
 	}
 }
 
+func TestParse_ACPServerTags(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      tags: [coding, fast]
+  - claude:
+      command: "claude-code --acp"
+  - experimental:
+      command: "exp --acp"
+      tags: [testing, experimental, fast-model]
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.ACPServers) != 3 {
+		t.Fatalf("ACPServers count = %d, want 3", len(cfg.ACPServers))
+	}
+
+	// First server should have tags [coding, fast]
+	if len(cfg.ACPServers[0].Tags) != 2 {
+		t.Fatalf("first server tags count = %d, want 2", len(cfg.ACPServers[0].Tags))
+	}
+	if cfg.ACPServers[0].Tags[0] != "coding" {
+		t.Errorf("first server tags[0] = %q, want %q", cfg.ACPServers[0].Tags[0], "coding")
+	}
+	if cfg.ACPServers[0].Tags[1] != "fast" {
+		t.Errorf("first server tags[1] = %q, want %q", cfg.ACPServers[0].Tags[1], "fast")
+	}
+
+	// Second server should have no tags
+	if len(cfg.ACPServers[1].Tags) != 0 {
+		t.Errorf("second server tags count = %d, want 0", len(cfg.ACPServers[1].Tags))
+	}
+
+	// Third server should have tags [testing, experimental, fast-model]
+	if len(cfg.ACPServers[2].Tags) != 3 {
+		t.Fatalf("third server tags count = %d, want 3", len(cfg.ACPServers[2].Tags))
+	}
+	if cfg.ACPServers[2].Tags[0] != "testing" {
+		t.Errorf("third server tags[0] = %q, want %q", cfg.ACPServers[2].Tags[0], "testing")
+	}
+	if cfg.ACPServers[2].Tags[2] != "fast-model" {
+		t.Errorf("third server tags[2] = %q, want %q", cfg.ACPServers[2].Tags[2], "fast-model")
+	}
+}
+
 func TestParse_EmptyACPServers(t *testing.T) {
 	yaml := `
 acp: []

@@ -5,7 +5,17 @@ group: "Documentation"
 backgroundColor: "#CE93D8"
 ---
 
+<investigate_before_answering>
+Before updating any documentation, read the code changes we made and any existing
+architecture documentation. Understand what changed and how it affects the system's
+design before writing or updating docs.
+</investigate_before_answering>
+
+<task>
 Update the developer and architecture documentation to reflect the changes we just made.
+</task>
+
+<instructions>
 
 ### Find and update:
 
@@ -17,9 +27,11 @@ Update the developer and architecture documentation to reflect the changes we ju
 
 ### Guidelines:
 
-- Write for developers contributing to the codebase.
-- Include code examples showing patterns to follow when relevant.
-- Document design decisions and trade-offs.
-- Follow the existing documentation style and structure.
-- Cross-reference related documentation.
-- Use mermaid diagrams when helpful.
+- Write for developers contributing to the codebase
+- Include code examples showing patterns to follow when relevant
+- Document design decisions and trade-offs, because future contributors need to understand the reasoning behind architectural choices
+- Follow the existing documentation style and structure
+- Cross-reference related documentation
+- Use mermaid diagrams when helpful
+
+</instructions>

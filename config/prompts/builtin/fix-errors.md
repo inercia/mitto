@@ -5,7 +5,28 @@ group: "Development"
 backgroundColor: "#FFE0B2"
 ---
 
+<investigate_before_answering>
+Before attempting fixes, read the relevant source files to understand the code
+context around each error. Do not speculate about code you have not opened.
+</investigate_before_answering>
+
+<task>
 Analyze and fix the errors shown.
+</task>
+
+<scope>
+Only fix the errors identified. Keep changes minimal and focused on the root cause.
+Do not refactor surrounding code or add improvements beyond what is needed to resolve
+the errors.
+</scope>
+
+<solution_quality>
+Implement fixes that address the root cause, not just the symptoms. Ensure fixes work
+correctly for all valid inputs, not just the specific case that triggered the error.
+If an error reveals a deeper design issue, report it rather than applying a narrow workaround.
+</solution_quality>
+
+<instructions>
 
 ### For each error:
 
@@ -21,7 +42,9 @@ Analyze and fix the errors shown.
    - Check for related issues
 
 ### If multiple errors:
-- Fix in dependency order (fix causes before symptoms)
+
+- Fix in dependency order — fix causes before symptoms
 - Group related errors that share a root cause
 - After fixing all, run a final verification
 
+</instructions>

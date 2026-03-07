@@ -5,13 +5,15 @@ group: "Work flow"
 backgroundColor: "#FFF9C4"
 ---
 
+<task>
 Decompose the current problem into parallel subtasks, dispatch them to child conversations,
 collect results, and iterate — refining the approach, spawning follow-up work, or
 re-decomposing as needed until the overall problem is solved.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server
 
-**IMPORTANT**: This prompt requires Mitto's MCP server tools to function. Before proceeding,
+This prompt requires Mitto's MCP server tools to function. Before proceeding,
 verify that the required tools are available.
 
 **Required tools:**
@@ -25,7 +27,7 @@ verify that the required tools are available.
 
 **Check availability:**
 1. Look for these tools in your available tools list
-2. If ANY of these tools are missing, **STOP immediately** and inform the user how to install Mitto's MCP server. Mitto's MCP server is at http://127.0.0.1:5757/mcp, so think about the instructions for adding it. Then tell the user:
+2. If any of these tools are missing, **stop** and inform the user how to install Mitto's MCP server. Mitto's MCP server is at http://127.0.0.1:5757/mcp, so think about the instructions for adding it. Then tell the user:
 
 ```
 This prompt requires Mitto's MCP server, which is not currently available. To use this prompt, you need to add Mitto's MCP server in this assistant. Please follow the instructions below to add it:
@@ -33,9 +35,11 @@ This prompt requires Mitto's MCP server, which is not currently available. To us
 
 and then show the instructions for adding it.
 
-**After displaying this message, ABORT the prompt execution. Do not proceed with any of the sections below.**
+**After displaying this message, abort the prompt execution. Do not proceed with any of the sections below.**
 
 ---
+
+<instructions>
 
 ## Overview: The Iterative Workflow
 
@@ -158,24 +162,18 @@ For each task (maximum 4 tasks):
    - A **mandatory reporting directive** at the end:
 
    ```
-   IMPORTANT: When you complete this task, you MUST report your results back to the
-   parent conversation using the `mitto_children_tasks_report` MCP tool:
+   When you complete this task, report your results back to the parent conversation
+   using the `mitto_children_tasks_report` MCP tool:
 
    mitto_children_tasks_report(
      self_id: <your session ID - get it via mitto_conversation_get_current>,
-     report: {
-       "status": "completed" or "failed" or "partial",
-       "summary": "<brief description of what was accomplished>",
-       "files_modified": ["<list of files changed>"],
-       "errors": ["<any errors encountered, empty array if none>"],
-       "discoveries": "<anything unexpected you found that the parent should know>",
-       "open_questions": ["<questions or ambiguities you couldn't resolve>"],
-       "suggestions": "<recommendations for follow-up work if any>"
-     }
+     status: "completed" or "failed" or "partial",
+     summary: "<brief description of what was accomplished>",
+     details: "<detailed information: files modified, errors encountered, discoveries, open questions, suggestions for follow-up>"
    )
 
    Call mitto_conversation_get_current first to get your self_id, then call
-   mitto_children_tasks_report with your results. Do this as your FINAL action.
+   mitto_children_tasks_report with your results. Do this as your final action.
    ```
 
 2. **Create a new conversation** using `mitto_conversation_new`:
@@ -188,7 +186,7 @@ For each task (maximum 4 tasks):
 
 3. **Track the conversation ID** returned by the tool
 
-**Important**: Create conversations sequentially (one at a time), not all at once, to avoid overwhelming the system.
+Create conversations sequentially (one at a time), not all at once, to avoid overwhelming the system.
 
 ## Phase 5: Wait for Results
 
@@ -197,7 +195,6 @@ After all child conversations are created, **wait for them to complete** using `
 ```
 self_id: <session_id from Phase 1>
 children_list: [<child_id_1>, <child_id_2>, ...]
-prompt: "Please report your progress. If you have completed your task, report your results using mitto_children_tasks_report. If you are still working, report your current status."
 timeout_seconds: 600
 ```
 
@@ -218,7 +215,14 @@ You can monitor individual conversations in the Conversations panel.
 
 If `mitto_children_tasks_wait` returns with `timed_out: true`:
 - Check which children *did* report (look for `completed: true` entries in `reports`)
-- For children still pending, call `mitto_children_tasks_wait` again with only those children to give them more time
+- For children still pending, call `mitto_children_tasks_wait` again with only those children **and without a prompt** (omit the `prompt` field or pass an empty string). This avoids re-enqueuing duplicate report-request messages — the tool will just wait for the children to report:
+
+  ```
+  self_id: <session_id from Phase 1>
+  children_list: [<pending_child_ids>]
+  timeout_seconds: 600
+  ```
+
 - If a child times out twice, treat it as a failure and proceed to Phase 6
 
 ## Phase 6: Synthesize and Evaluate
@@ -255,7 +259,7 @@ Ask yourself:
 
 ### Step 4: Present status to the user
 
-Show a clear progress report:
+<output_format>
 
 ```markdown
 ## Iteration <N> Results
@@ -279,6 +283,8 @@ Show a clear progress report:
 ### Overall Assessment
 <Your synthesis: is the problem solved, partially solved, or does it need re-decomposition?>
 ```
+
+</output_format>
 
 ### Step 5: Clean up finished children
 
@@ -424,18 +430,20 @@ Deleted <N> child conversation(s).
 - <Any specific follow-up the user should be aware of>
 ```
 
-## Rules
+</instructions>
 
-- **Never create more than 4 parallel tasks per iteration** - This prevents overwhelming the system
-- **Ensure tasks within an iteration are truly independent** - No shared file modifications within the same batch
-- **Provide complete context in each task** - Each conversation should be self-sufficient
-- **Always include the reporting directive** - Every child must know how to report back
-- **Use clear, specific titles** - Make it easy to identify tasks in the UI
-- **Always ask for confirmation before the first iteration** - Don't start tasks without user approval
-- **For subsequent iterations**, proceed automatically if the next step is clear, but always show the user what you're doing
-- **Don't decompose trivial problems** - If the work is simple, suggest doing it in the current conversation instead
-- **Maximum 3 iterations before escalating** - Don't loop indefinitely; present a summary and ask
-- **Each subtask retried at most twice** - After two failures, break it down further or escalate
-- **Accumulate context across iterations** - New children should know what previous rounds accomplished and discovered
-- **The parent is the orchestrator, not a worker** - Resist the urge to do the work yourself; your job is to decompose, coordinate, synthesize, and decide
-- **Clean up child conversations** - Delete children after reviewing their results; don't leave stale conversations cluttering the list
+<rules>
+- Limit to 4 parallel tasks per iteration, to prevent overwhelming the system
+- Ensure tasks within an iteration are truly independent — no shared file modifications within the same batch
+- Provide complete context in each task, because each conversation should be self-sufficient
+- Include the reporting directive in every child prompt, so results flow back to the coordinator
+- Use clear, specific titles to make it easy to identify tasks in the UI
+- Get user confirmation before the first iteration
+- For subsequent iterations, proceed automatically if the next step is clear, but show the user what you're doing
+- If the work is simple enough, suggest doing it in the current conversation instead of decomposing
+- Maximum 3 iterations before escalating — present a summary and ask the user before continuing
+- Retry each subtask at most twice — after two failures, break it down further or escalate
+- Accumulate context across iterations — new children should know what previous rounds accomplished and discovered
+- Act as orchestrator, not worker — your job is to decompose, coordinate, synthesize, and decide
+- Clean up child conversations after reviewing their results to keep the conversation list tidy
+</rules>

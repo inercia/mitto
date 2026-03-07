@@ -5,11 +5,13 @@ group: "Work flow"
 backgroundColor: "#FFF9C4"
 ---
 
+<task>
 Continue the current work in an existing conversation that shares the same workspace.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server
 
-**IMPORTANT**: This prompt requires Mitto's MCP server tools to function. Before proceeding, verify that the required tools are available.
+This prompt requires Mitto's MCP server tools to function. Before proceeding, verify that the required tools are available.
 
 **Required tools:**
 
@@ -21,9 +23,7 @@ Continue the current work in an existing conversation that shares the same works
 **Check availability:**
 
 1. Look for these tools in your available tools list
-2. If ANY of these tools are missing, **STOP immediately** and inform the user how to install Mitto's MCP server. Mitto's MCP server
-is at http://127.0.0.1:5757/mcp, so think about the instructions
-for adding it. Then tell the user:
+2. If any of these tools are missing, **stop** and inform the user how to install Mitto's MCP server. Mitto's MCP server is at http://127.0.0.1:5757/mcp, so think about the instructions for adding it. Then tell the user:
 
 ```
 This prompt requires Mitto's MCP server, which is not currently available. To use this prompt, you need to add Mitto's MCP server
@@ -32,9 +32,11 @@ in this assistant. Please follow the instructions below to add it:
 
 and then show the instructions for adding it.
 
-**After displaying this message, ABORT the prompt execution. Do not proceed with any of the sections below.**
+**After displaying this message, abort the prompt execution. Do not proceed with any of the sections below.**
 
 ---
+
+<instructions>
 
 ## Use Cases
 
@@ -70,7 +72,7 @@ This returns only active (non-archived) conversations that share the same worksp
 
 **If no conversations are found:**
 - Inform the user: "No other active conversations found in this workspace. You can use 'Handoff to new conversation' to create a new one."
-- **ABORT** — do not proceed.
+- Abort — do not proceed.
 
 ## Phase 3: Summarize Current Work
 
@@ -124,7 +126,7 @@ For each conversation, format the option as:
 **If the user responds**, use their selected conversation.
 
 **If the request times out** (no response within 60 seconds):
-- **ABORT** — do not send to a conversation without explicit user selection
+- Abort — do not send to a conversation without explicit user selection
 - Inform the user: "No selection was made. Please run this prompt again and select a target conversation."
 
 ## Phase 5: Send Handoff Prompt
@@ -194,14 +196,16 @@ You can:
 Use the Conversations panel to navigate to "<conversation title>"
 ```
 
-## Rules
+</instructions>
 
-- **Always filter by workspace** - Only show conversations in the same workspace
-- **Always exclude the current conversation** - Don't offer to hand off to yourself
-- **Never send without user confirmation** - Always ask which conversation to target
-- **Create comprehensive handoff prompts** - The target conversation needs full context
-- **Include all necessary context** - Don't assume the target conversation knows what we discussed
-- **Be specific about next steps** - Clear, actionable instructions
-- **Don't hand off unclear work** - If the task isn't well-defined, clarify it first in this conversation
-- **Include file paths and specifics** - The target conversation needs concrete details to work with
-- **Handle empty results gracefully** - If no sibling conversations exist, suggest alternatives
+<rules>
+- Only show conversations in the same workspace
+- Exclude the current conversation from options
+- Get explicit user selection before sending — do not send without confirmation
+- Create comprehensive handoff prompts — the target conversation needs full context
+- Include all necessary context — do not assume the target conversation knows what we discussed
+- Be specific about next steps — provide clear, actionable instructions
+- Clarify unclear tasks in this conversation first before handing off
+- Include file paths and specifics — the target conversation needs concrete details to work with
+- Handle empty results gracefully — if no sibling conversations exist, suggest alternatives
+</rules>

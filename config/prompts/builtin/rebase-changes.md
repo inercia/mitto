@@ -5,8 +5,10 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
+<task>
 Rebase the current branch onto the target branch,
 resolving conflicts and pushing the result.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -30,6 +32,8 @@ and then show the instructions for adding it.
 
 ---
 
+<instructions>
+
 ### 1. Check Repository Status
 
 Inspect the current state of the git repository:
@@ -48,13 +52,12 @@ git status
 **If there are uncommitted changes:**
 
 - Ask the user whether to stash, commit, or discard them before proceeding
+- Think carefully before stashing, committing, or discarding — no changes should be lost
 - Do not proceed with rebase until working directory is clean
 
 ### 2. Identify Target Remote and Branch
 
-**IMPORTANT:** Never assume which remote to use. Users working with forks typically have:
-- `origin` pointing to their fork
-- `upstream` pointing to the main repository
+Users working with forks typically have different remote configurations. Detect the correct setup rather than assuming.
 
 #### Step 2a: List Available Remotes
 
@@ -109,7 +112,7 @@ git remote show upstream 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}'
 
 #### Step 2d: Confirm with User
 
-**Always ask the user to confirm** if any of these conditions apply:
+Confirm with the user if any of these conditions apply:
 - Multiple remotes are configured (e.g., both `origin` and `upstream`)
 - The detected remote differs from `origin`
 - No tracking information exists and no PR was found
@@ -141,7 +144,7 @@ If the user answers "No", follow up in conversation to get the correct target.
 
 Ask: "Is this correct? (yes/no/specify different target)"
 
-**Do not proceed** until the user confirms the target remote and branch.
+Wait for the user to confirm the target remote and branch before proceeding.
 
 ### 3. Fetch Upstream Changes
 
@@ -190,7 +193,7 @@ When conflicts occur during rebase, iterate through each one:
    - What is our change (from current branch)?
    - Are these changes in the same logical area?
 
-**Automatic resolution** - Resolve automatically when:
+**Automatic resolution** — Resolve automatically when:
 - The conflict is purely whitespace or formatting
 - One side adds code and the other modifies unrelated code
 - The resolution is a clear merge of both changes (e.g., both adding different items to a list)
@@ -265,7 +268,7 @@ To verify the result:
 
 Suggest the user to submit changes by pushing to their remote branch.
 
-**Important:** After a rebase, you'll typically need to force push:
+After a rebase, you'll typically need to force push:
 
 ```bash
 # Push to origin (your fork) - NOT the upstream remote
@@ -276,15 +279,17 @@ git push --force-with-lease origin <current-branch>
 - Push to `origin` (your fork), not `upstream` (the main repo)
 - The PR will automatically update with the rebased commits
 
-## Rules
+</instructions>
 
-- Think carefully before stashing, committing or discarding uncommitted changes: no changes should be lost !!!
-- **Never assume which remote to use** - always detect and confirm with the user
-- Ask the user if not sure what to do
-- Always fetch before rebasing to have the latest upstream changes
-- Never force push without `--force-with-lease` to prevent data loss
-- **When pushing after rebase:** Push to the branch's tracking remote (usually `origin`), not necessarily the rebase target remote
+<rules>
+- Protect uncommitted changes — think carefully before stashing, committing, or discarding, because no work should be lost
+- Detect the correct remote and confirm with the user — do not assume which remote to use
+- Ask the user when uncertain about any decision
+- Fetch before rebasing to have the latest upstream changes
+- Use `--force-with-lease` when force pushing, to prevent data loss from overwriting others' work
+- When pushing after rebase, push to the branch's tracking remote (usually `origin`), not necessarily the rebase target remote
 - If the rebase becomes too complex (many conflicts, repeated issues), offer to abort: `git rebase --abort`
 - Preserve commit messages and authorship during rebase
-- If unsure about a conflict resolution, always ask the user
+- When uncertain about a conflict resolution, ask the user rather than guessing
 - After pushing, remind the user that collaborators may need to reset their local branches
+</rules>

@@ -5,7 +5,22 @@ group: "Development"
 backgroundColor: "#FFECB3"
 ---
 
-Read carefully the spec file we wrote.
+<investigate_before_answering>
+Before planning the implementation, read the spec file thoroughly. Also explore the
+existing codebase to understand current architecture, patterns, and utilities that
+can be reused. Do not speculate about the codebase — read the relevant files first.
+</investigate_before_answering>
+
+<task>
+Read the spec file we wrote, design the architecture, and create a detailed
+implementation plan broken into small, iterative steps.
+</task>
+
+<scope>
+Only plan and implement what the specification requires. Keep solutions simple and
+focused. Do not add features, abstractions, or defensive coding beyond what the spec
+calls for. The right amount of complexity is the minimum needed for the current requirements.
+</scope>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -27,6 +42,8 @@ and then show the instructions for adding it.
 **After displaying this message, proceed with the sections below using text-based conversation instead.**
 
 ---
+
+<instructions>
 
 ## Phase 1: Understand the Specification
 
@@ -60,7 +77,7 @@ Create a detailed blueprint for the implementation:
 - Determine the optimal build order
 - Note external dependencies that need to be installed/configured
 
-**IMPORTANT**: Use the `think` tool (or any sequential/deep thinking tool available)
+Use the `think` tool (or any sequential/deep thinking tool available)
 to reason deeply about the design.
 
 ## Phase 3: Create the Implementation Plan
@@ -78,12 +95,14 @@ Break down the work into small, iterative chunks:
 
 ### Step Format
 
-For each step, specify:
+<output_format>
 
 | # | Description | Files/Components | Dependencies | Verification |
 |---|-------------|------------------|--------------|--------------|
 | 1 | ... | ... | None | ... |
 | 2 | ... | ... | Step 1 | ... |
+
+</output_format>
 
 ### Principles
 
@@ -92,7 +111,7 @@ For each step, specify:
 - Include test writing as part of each step, not as a separate phase
 - Consider rollback strategy for each step
 
-**IMPORTANT**: Use the `todo` tool (or any task list tool available) to track
+Use the `todo` tool (or any task list tool available) to track
 the implementation plan and mark progress.
 
 ## Phase 4: Begin Implementation
@@ -123,3 +142,4 @@ Once approved, work through the steps systematically:
 If issues arise during implementation that affect the plan, stop and discuss
 before continuing.
 
+</instructions>

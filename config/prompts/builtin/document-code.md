@@ -5,7 +5,22 @@ group: "Documentation"
 backgroundColor: "#B39DDB"
 ---
 
+<investigate_before_answering>
+Before adding documentation, read the code we wrote to understand its behavior,
+edge cases, and non-obvious design decisions. Also check the project's existing
+documentation style by reviewing similar files.
+</investigate_before_answering>
+
+<task>
 Add inline documentation and comments to the code we just wrote.
+</task>
+
+<scope>
+Only document code that was actually changed or created. Do not add docstrings,
+comments, or type annotations to code that was not modified.
+</scope>
+
+<instructions>
 
 ### Add:
 
@@ -17,9 +32,10 @@ Add inline documentation and comments to the code we just wrote.
 
 ### Guidelines:
 
-- Explain WHY, not just WHAT (the code shows what)
+- Explain WHY, not just WHAT — the code already shows what it does
 - Keep comments close to the code they describe
 - Update existing comments if code changed
 - Use the documentation style standard for this language/project
-- Don't state the obvious (avoid `// increment i` for `i++`)
+- Skip obvious code — avoid comments like `// increment i` for `i++`
 
+</instructions>

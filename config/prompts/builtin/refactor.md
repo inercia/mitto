@@ -5,9 +5,23 @@ group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 
+<investigate_before_answering>
+Before proposing refactorings, read the code thoroughly to understand its current
+structure, callers, and dependents. When analyzing multiple files, read them in parallel
+to build context faster. Do not speculate about code you have not opened.
+</investigate_before_answering>
+
+<task>
 Analyze the code and propose a prioritized list of refactoring improvements.
 
-**Do not make changes immediately. Propose a plan first and wait for approval.**
+Propose a plan first and wait for approval before making any changes.
+</task>
+
+<scope>
+Preserve external behavior — this is refactoring, not rewriting. Make one type of
+change at a time so each change is easy to review and revert if needed. Do not add
+new features or functionality as part of the refactoring.
+</scope>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -30,6 +44,8 @@ and then show the instructions for adding it.
 
 ---
 
+<instructions>
+
 ### 1. Analyze the Code
 
 Investigate the following areas:
@@ -45,14 +61,13 @@ Investigate the following areas:
 
 ### 2. Propose Refactoring Plan
 
-Present a prioritized table of proposed refactorings:
+<output_format>
 
 | Priority | Category | Location | Issue | Proposed Change | Benefit | Effort |
 |----------|----------|----------|-------|-----------------|---------|--------|
 | 1 | Structure | `path/to/file` | Related functions scattered | Group into module | Better organization | Medium |
 | 2 | DRY | `path/to/files` | Duplicated validation logic | Extract to helper | Less duplication | Small |
 | 3 | Naming | `path/to/file:fn()` | Unclear function name | Rename to `descriptiveName()` | Clarity | Small |
-| ... | ... | ... | ... | ... | ... | ... |
 
 **Priority levels:**
 - **1 (High)**: Significantly improves maintainability or readability
@@ -63,6 +78,8 @@ Present a prioritized table of proposed refactorings:
 - **Small**: Quick change, low risk
 - **Medium**: Moderate change, some risk
 - **Large**: Significant change, higher risk
+
+</output_format>
 
 ### 3. Wait for Approval
 
@@ -86,14 +103,14 @@ Ask the user in the conversation to choose one of these options:
 - **Investigate** - get more details on specific items before deciding
 - **Cancel** - abort without making changes
 
-**Do not proceed until the user explicitly approves.**
+Wait for the user to explicitly approve before proceeding.
 
 ### 4. Execute Approved Refactorings
 
 For each approved item:
 1. Make one type of change at a time
-2. Run tests after each change to catch regressions
-3. Preserve external behavior (this is refactoring, not rewriting)
+2. Run tests after each change to catch regressions early
+3. Preserve external behavior
 4. Report the result
 
 ### 5. Report Summary
@@ -113,10 +130,12 @@ After completing approved changes:
 - Item #3: Skipped per user request
 ```
 
-## Rules
+</instructions>
 
-- **Never refactor without proposing first**: Always present the plan and wait for approval
-- **Preserve external behavior**: This is refactoring, not rewriting
-- **Make one type of change at a time**: Easier to review and revert if needed
-- **Run tests after each change**: Catch regressions early
-- **Document the benefit**: Explain why each change improves the code
+<rules>
+- Propose refactorings before implementing them, and wait for user approval
+- Preserve external behavior — refactoring changes structure, not functionality
+- Make one type of change at a time, because isolated changes are easier to review and revert
+- Run tests after each change to catch regressions early
+- Explain the benefit of each change, so the user understands why it improves the code
+</rules>

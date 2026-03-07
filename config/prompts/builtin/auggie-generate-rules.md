@@ -6,8 +6,17 @@ acps: auggie
 backgroundColor: "#1b0bc693"
 ---
 
+<task>
 Analyze this workspace and generate comprehensive `.augment/rules` files that will help
 future AI interactions understand and work effectively with this codebase.
+</task>
+
+<efficiency>
+When exploring the codebase, read multiple files in parallel to build context faster.
+For example, read configuration files, entry points, and test files simultaneously.
+</efficiency>
+
+<instructions>
 
 ## Step 1: Explore the Project
 
@@ -98,9 +107,9 @@ Create files numbered for logical ordering:
 
 ### Content Guidelines
 
-- **Be specific**: Include file paths, function names, exact patterns
-- **Show examples**: Code snippets demonstrating correct usage
-- **Explain why**: Document rationale for conventions
+- **Be specific**: Include file paths, function names, exact patterns — "Use 2-space indentation" is better than "Format code properly"
+- **Show examples**: Code snippets demonstrating correct usage, because concrete examples are more actionable than abstract rules
+- **Explain why**: Document rationale for conventions, so future contributors understand the reasoning
 - **Make it actionable**: Rules should guide actual coding decisions
 - **Keep focused**: Each file covers one cohesive topic
 - **Use tables**: For quick reference (command lists, pattern summaries)
@@ -113,10 +122,12 @@ Create files numbered for logical ordering:
 3. Ensure files are well-organized and not too long (aim for <200 lines each)
 4. Cross-reference between files where relevant
 
-## Important Notes
+</instructions>
 
+<rules>
 - Focus on patterns that will help AI assistants write better code
 - Prioritize actionable guidance over exhaustive documentation
-- Include "don't do this" examples for common mistakes
+- Include "don't do this" examples for common mistakes, so the assistant learns from anti-patterns
 - Reference existing documentation in the repo rather than duplicating it
 - If the project already has `.augment/rules/`, enhance rather than replace
+</rules>

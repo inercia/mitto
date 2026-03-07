@@ -5,7 +5,17 @@ group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 
+<investigate_before_answering>
+Before simplifying, read the current implementation thoroughly. Understand what
+the code does and why it's structured this way. Check for callers and dependents
+to ensure changes preserve external behavior.
+</investigate_before_answering>
+
+<task>
 Simplify the current implementation while preserving functionality.
+</task>
+
+<instructions>
 
 ### Look for:
 
@@ -17,7 +27,9 @@ Simplify the current implementation while preserving functionality.
 6. **Unnecessary state**: Remove variables that can be computed on demand
 
 ### For each change:
+
 - Explain what you're simplifying and why
 - Show before/after comparison
-- Verify behavior is preserved
+- Verify behavior is preserved by running tests
 
+</instructions>

@@ -6,11 +6,14 @@ acps: auggie
 backgroundColor: "#1b0bc693"
 ---
 
-# General instructions
-
+<task>
 Review and update the Augment rules in `.augment/rules` based on all insights,
 patterns, and lessons learned from our recent conversations and code changes.
-Specifically:
+</task>
+
+<instructions>
+
+# Update Rules Content
 
 1. Add any new architectural patterns or components that have been introduced
 2. Document new conventions, best practices, or anti-patterns discovered during implementation
@@ -19,12 +22,12 @@ Specifically:
 5. Ensure examples reflect the current codebase state
 
 Focus on actionable guidance that will help future development sessions.
-Do not remove existing valid content - only add or update information.
+Preserve existing valid content — only add or update information.
 
-# Reorganize rules files
+# Reorganize Rules Files
 
 Once you have a good understanding of the existing rules files, consider if it
-would make sense to reorganize the .augment/rules/ files in order to optimize
+would make sense to reorganize the `.augment/rules/` files to optimize
 automatic context inclusion.
 
 Specifically:
@@ -43,4 +46,9 @@ The goal is to have focused rules files that are automatically loaded
 only when their specific topic is being worked on, reducing context noise
 and improving relevance.
 
-Do not touch things if you are not sure.
+</instructions>
+
+<rules>
+- Preserve existing valid content — only add or update
+- Be cautious with changes you're uncertain about
+</rules>

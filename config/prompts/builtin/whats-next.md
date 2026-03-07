@@ -5,7 +5,15 @@ group: "Work flow"
 backgroundColor: "#BBDEFB"
 ---
 
+<investigate_before_answering>
+Before suggesting next steps, review the current state of the work by reading relevant
+files, checking git status and recent changes, and understanding what has been accomplished
+so far.
+</investigate_before_answering>
+
+<task>
 Analyze our progress and suggest next steps.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -28,6 +36,8 @@ and then show the instructions for adding it.
 
 ---
 
+<instructions>
+
 ### Review:
 
 1. **Completed**: What we've accomplished so far
@@ -36,17 +46,20 @@ and then show the instructions for adding it.
 
 ### Suggest next steps:
 
-Present a prioritized list:
+<output_format>
 
 | Priority | Task | Reason | Effort |
 |----------|------|--------|--------|
 | 1 | ... | ... | Small/Medium/Large |
 
+</output_format>
+
 ### Consider:
-- Dependencies (what must come before what)
-- Risk (tackle risky items early)
-- Value (high-impact items first)
-- Blockers (anything preventing progress)
+
+- Dependencies — what must come before what
+- Risk — tackle risky items early to surface problems sooner
+- Value — high-impact items first
+- Blockers — anything preventing progress
 
 **Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to offer proceeding:
 ```
@@ -60,3 +73,5 @@ If the user selects "No", follow up in conversation to determine which task to t
 **Fallback (if Mitto UI tools are not available):**
 
 Ask if I should proceed with the top priority item.
+
+</instructions>

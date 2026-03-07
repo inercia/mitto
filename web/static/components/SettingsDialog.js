@@ -219,6 +219,9 @@ function ServerEditForm({ server, onSave, onCancel }) {
   const [command, setCommand] = useState(server.command);
   const [type, setType] = useState(server.type || "");
   const [autoApprove, setAutoApprove] = useState(server.auto_approve === true);
+  const [tags, setTags] = useState(
+    server.tags ? server.tags.join(", ") : "",
+  );
   // Environment variables as array of {key, value} for easier editing
   const [envVars, setEnvVars] = useState(() => {
     const env = server.env || {};
@@ -235,7 +238,12 @@ function ServerEditForm({ server, onSave, onCancel }) {
         envObj[key.trim()] = value || "";
       }
     });
-    onSave(name, command, type, autoApprove, envObj);
+    // Parse tags: split by comma, trim whitespace, filter empty strings
+    const parsedTags = tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    onSave(name, command, type, autoApprove, envObj, parsedTags);
   };
 
   const addEnvVar = () => {
@@ -288,6 +296,24 @@ function ServerEditForm({ server, onSave, onCancel }) {
         />
         <p class="text-xs text-gray-500 mt-1">
           Servers with the same type share prompts. If empty, name is used.
+        </p>
+      </div>
+      <div>
+        <label class="block text-sm text-gray-400 mb-1"
+          >Tags
+          <span class="text-xs text-gray-500"
+            >(optional, for categorization)</span
+          ></label
+        >
+        <input
+          type="text"
+          value=${tags}
+          onInput=${(e) => setTags(e.target.value)}
+          placeholder="e.g., coding, fast-model, production"
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <p class="text-xs text-gray-500 mt-1">
+          Comma-separated tags for categorization
         </p>
       </div>
 
@@ -603,6 +629,9 @@ export function SettingsDialog({
   const [hookUpCommand, setHookUpCommand] = useState("");
   const [hookDownCommand, setHookDownCommand] = useState("");
 
+  // Access log setting (enabled by default)
+  const [accessLogEnabled, setAccessLogEnabled] = useState(true);
+
   // Stored sessions for checking workspace usage
   const [storedSessions, setStoredSessions] = useState([]);
 
@@ -627,6 +656,7 @@ export function SettingsDialog({
   const [newServerName, setNewServerName] = useState("");
   const [newServerCommand, setNewServerCommand] = useState("");
   const [newServerType, setNewServerType] = useState("");
+  const [newServerTags, setNewServerTags] = useState("");
 
   const [editingServer, setEditingServer] = useState(null);
 
@@ -716,6 +746,37 @@ export function SettingsDialog({
     return true;
   });
 
+  // Follow system reduced motion setting (client-side, stored in localStorage)
+  const [followSystemReducedMotion, setFollowSystemReducedMotion] = useState(
+    () => {
+      if (typeof localStorage !== "undefined") {
+        const saved = localStorage.getItem(
+          "mitto-follow-system-reduced-motion",
+        );
+        return saved === null ? true : saved === "true";
+      }
+      return true;
+    },
+  );
+
+  // Reduce animations setting (client-side, stored in localStorage)
+  const [reduceAnimations, setReduceAnimationsState] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      // If following system, check OS preference
+      const followSystem = localStorage.getItem(
+        "mitto-follow-system-reduced-motion",
+      );
+      if (followSystem === null || followSystem === "true") {
+        if (typeof window !== "undefined" && window.matchMedia) {
+          return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        }
+      }
+      const saved = localStorage.getItem("mitto-reduce-animations");
+      if (saved !== null) return saved === "true";
+    }
+    return false;
+  });
+
   // Prompt sort mode setting (client-side, stored in localStorage and server)
   const [promptSortMode, setPromptSortMode] = useState(() => {
     if (typeof localStorage !== "undefined") {
@@ -736,6 +797,45 @@ export function SettingsDialog({
     window.dispatchEvent(
       new CustomEvent("mitto-follow-system-theme-changed", {
         detail: { enabled },
+      }),
+    );
+  };
+
+  // Handle follow system reduced motion toggle
+  const handleFollowSystemReducedMotionChange = (enabled) => {
+    setFollowSystemReducedMotion(enabled);
+    localStorage.setItem(
+      "mitto-follow-system-reduced-motion",
+      String(enabled),
+    );
+    // When enabling, sync with OS preference immediately
+    let newReduceAnimations = reduceAnimations;
+    if (enabled && typeof window !== "undefined" && window.matchMedia) {
+      newReduceAnimations = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      setReduceAnimationsState(newReduceAnimations);
+    }
+    window.dispatchEvent(
+      new CustomEvent("mitto-reduce-animations-changed", {
+        detail: {
+          followSystem: enabled,
+          reduceAnimations: newReduceAnimations,
+        },
+      }),
+    );
+  };
+
+  // Handle explicit reduce animations toggle
+  const handleReduceAnimationsChange = (enabled) => {
+    // When user manually toggles, disable follow system
+    setFollowSystemReducedMotion(false);
+    setReduceAnimationsState(enabled);
+    localStorage.setItem("mitto-follow-system-reduced-motion", "false");
+    localStorage.setItem("mitto-reduce-animations", String(enabled));
+    window.dispatchEvent(
+      new CustomEvent("mitto-reduce-animations-changed", {
+        detail: { followSystem: false, reduceAnimations: enabled },
       }),
     );
   };
@@ -991,6 +1091,9 @@ export function SettingsDialog({
       setHookUpCommand(config.web?.hooks?.up?.command || "");
       setHookDownCommand(config.web?.hooks?.down?.command || "");
 
+      // Load access log setting (enabled by default)
+      setAccessLogEnabled(config.web?.access_log?.enabled !== false);
+
       // Load prompts from top-level (not under web)
       setPrompts(config.prompts || []);
 
@@ -1157,6 +1260,11 @@ export function SettingsDialog({
           : null,
       };
 
+      // Add access log setting
+      webConfig.access_log = {
+        enabled: accessLogEnabled,
+      };
+
       // Add hooks if configured
       if (hookUpCommand.trim() || hookDownCommand.trim()) {
         webConfig.hooks = {};
@@ -1240,6 +1348,7 @@ export function SettingsDialog({
           source: srv.source || "settings", // Default to settings if not specified
           auto_approve: srv.auto_approve || false, // Include auto-approve setting
           env: srv.env || undefined, // Include env vars if present
+          tags: srv.tags && srv.tags.length > 0 ? srv.tags : undefined, // Include tags if present
         };
         // Only include type if specified (otherwise name is used as type)
         if (srv.type) {
@@ -1642,16 +1751,25 @@ export function SettingsDialog({
     if (newServerType.trim()) {
       newServer.type = newServerType.trim();
     }
+    // Parse and include tags if specified
+    const parsedNewTags = newServerTags
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    if (parsedNewTags.length > 0) {
+      newServer.tags = parsedNewTags;
+    }
 
     setAcpServers([...acpServers, newServer]);
     setNewServerName("");
     setNewServerCommand("");
     setNewServerType("");
+    setNewServerTags("");
     setShowAddServer(false);
     setError("");
   };
 
-  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env) => {
+  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags) => {
     if (!newName.trim() || !newCommand.trim()) {
       setError("Server name and command cannot be empty");
       return;
@@ -1677,6 +1795,7 @@ export function SettingsDialog({
           source: s.source, // Preserve source (rcfile or settings)
           auto_approve: autoApprove || undefined, // undefined to omit if false
           env: env && Object.keys(env).length > 0 ? env : undefined, // undefined to omit if empty
+          tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
         };
         // Only include type if specified (otherwise name is used as type)
         if (newType && newType.trim()) {
@@ -1778,6 +1897,16 @@ export function SettingsDialog({
     // Copy type if present
     if (server.type) {
       duplicatedServer.type = server.type;
+    }
+
+    // Copy environment variables if present (shallow copy to avoid shared references)
+    if (server.env && Object.keys(server.env).length > 0) {
+      duplicatedServer.env = { ...server.env };
+    }
+
+    // Copy auto_approve if enabled
+    if (server.auto_approve) {
+      duplicatedServer.auto_approve = server.auto_approve;
     }
 
     setAcpServers([...acpServers, duplicatedServer]);
@@ -2312,6 +2441,25 @@ export function SettingsDialog({
                               empty, name is used.
                             </p>
                           </div>
+                          <div>
+                            <label class="block text-sm text-gray-400 mb-1"
+                              >Tags
+                              <span class="text-xs text-gray-500"
+                                >(optional)</span
+                              ></label
+                            >
+                            <input
+                              type="text"
+                              value=${newServerTags}
+                              onInput=${(e) =>
+                                setNewServerTags(e.target.value)}
+                              placeholder="e.g., coding, fast-model, production"
+                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            <p class="text-xs text-gray-500 mt-1">
+                              Comma-separated tags for categorization
+                            </p>
+                          </div>
                           ${error &&
                           html`
                             <div
@@ -2327,6 +2475,7 @@ export function SettingsDialog({
                                 setNewServerName("");
                                 setNewServerCommand("");
                                 setNewServerType("");
+                                setNewServerTags("");
                                 setError("");
                               }}
                               class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
@@ -2372,7 +2521,7 @@ export function SettingsDialog({
                                       ? html`
                                           <${ServerEditForm}
                                             server=${srv}
-                                            onSave=${(name, cmd, type, autoApprove, env) =>
+                                            onSave=${(name, cmd, type, autoApprove, env, tags) =>
                                               updateServer(
                                                 srv.name,
                                                 name,
@@ -2380,6 +2529,7 @@ export function SettingsDialog({
                                                 type,
                                                 autoApprove,
                                                 env,
+                                                tags,
                                               )}
                                             onCancel=${() =>
                                               setEditingServer(null)}
@@ -2401,6 +2551,19 @@ export function SettingsDialog({
                                                     ${srv.type}
                                                   </span>
                                                 `}
+                                                ${srv.tags &&
+                                                srv.tags.length > 0 &&
+                                                srv.tags.map(
+                                                  (tag) => html`
+                                                    <span
+                                                      key=${tag}
+                                                      class="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                                                      title="Tag"
+                                                    >
+                                                      ${tag}
+                                                    </span>
+                                                  `,
+                                                )}
                                                 ${isRCFile &&
                                                 html`
                                                   <span
@@ -3889,6 +4052,35 @@ export function SettingsDialog({
                           </div>
                         `}
                       </div>
+
+                      <!-- Access Log Section -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Access Log
+                        </h4>
+
+                        <label
+                          class="flex items-center gap-3 p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${accessLogEnabled}
+                            onChange=${(e) =>
+                              setAccessLogEnabled(e.target.checked)}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                          />
+                          <div>
+                            <div class="font-medium text-sm">
+                              Enable Access Log
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Log security-relevant events (login attempts,
+                              unauthorized access, external requests) to a
+                              rotating log file
+                            </div>
+                          </div>
+                        </label>
+                      </div>
                     </div>
                   `}
 
@@ -3918,6 +4110,54 @@ export function SettingsDialog({
                             <div class="text-xs text-gray-500">
                               Automatically switch between light and dark mode
                               based on your system preferences
+                            </div>
+                          </div>
+                        </label>
+                        <label
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${followSystemReducedMotion}
+                            onChange=${(e) =>
+                              handleFollowSystemReducedMotionChange(
+                                e.target.checked,
+                              )}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                          />
+                          <div>
+                            <div class="font-medium text-sm">
+                              Follow system reduced motion
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Automatically reduce animations based on your
+                              system accessibility preferences
+                            </div>
+                          </div>
+                        </label>
+                        <label
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors ${followSystemReducedMotion
+                            ? "opacity-50"
+                            : ""}"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${reduceAnimations}
+                            onChange=${(e) =>
+                              handleReduceAnimationsChange(e.target.checked)}
+                            disabled=${followSystemReducedMotion}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 ${followSystemReducedMotion
+                              ? "cursor-not-allowed"
+                              : ""}"
+                          />
+                          <div>
+                            <div class="font-medium text-sm">
+                              Reduce animations
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              ${followSystemReducedMotion
+                                ? "Controlled by system preference"
+                                : "Replace pulsing and blinking animations with static indicators"}
                             </div>
                           </div>
                         </label>

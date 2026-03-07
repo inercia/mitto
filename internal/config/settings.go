@@ -151,6 +151,8 @@ type ACPServerSettings struct {
 	Source ConfigItemSource `json:"source,omitempty"`
 	// AutoApprove enables automatic approval of permission requests for this ACP server.
 	AutoApprove bool `json:"auto_approve,omitempty"`
+	// Tags is an optional list of categorization tags for this ACP server.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // ToConfig converts Settings to the internal Config struct.

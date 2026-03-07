@@ -5,11 +5,13 @@ group: "Work flow"
 backgroundColor: "#FFF9C4"
 ---
 
-Continue the current work in a new conversation, maybe with a different model.
+<task>
+Continue the current work in a new conversation, optionally with a different model.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server
 
-**IMPORTANT**: This prompt requires Mitto's MCP server tools to function. Before proceeding, verify that the required tools are available.
+This prompt requires Mitto's MCP server tools to function. Before proceeding, verify that the required tools are available.
 
 **Required tools:**
 
@@ -21,9 +23,7 @@ Continue the current work in a new conversation, maybe with a different model.
 **Check availability:**
 
 1. Look for these tools in your available tools list
-2. If ANY of these tools are missing, **STOP immediately** and inform the user how to install Mitto's MCP server. Mitto's MCP server
-is at http://127.0.0.1:5757/mcp, so think about the instructions
-for adding it. Then tell the user:
+2. If any of these tools are missing, **stop** and inform the user how to install Mitto's MCP server. Mitto's MCP server is at http://127.0.0.1:5757/mcp, so think about the instructions for adding it. Then tell the user:
 
 ```
 ❌ This prompt requires Mitto's MCP server, which is not currently available. To use this prompt, you need to add Mitto's MCP server
@@ -32,9 +32,11 @@ in this assistant. Please follow the instructions below to add it:
 
 and then show the instructions for adding it.
 
-**After displaying this message, ABORT the prompt execution. Do not proceed with any of the sections below.**
+**After displaying this message, abort the prompt execution. Do not proceed with any of the sections below.**
 
 ---
+
+<instructions>
 
 ## Use Cases
 
@@ -162,13 +164,15 @@ Use the Conversations panel to navigate to "<conversation title>"
 💡 **Tip**: Keep this conversation open for oversight and review while the implementation happens in the new conversation.
 ```
 
-## Rules
+</instructions>
 
-- **Create comprehensive handoff prompts** - The new conversation should be fully self-contained
-- **Include all necessary context** - Don't assume the new conversation knows what we discussed
-- **Be specific about next steps** - Clear, actionable instructions
-- **Suggest appropriate models** - Faster models for straightforward tasks, same model for complex reasoning
-- **Always ask for confirmation** - Don't create conversations without user approval
-- **Provide clear titles** - Make it easy to identify the conversation in the UI
-- **Don't hand off unclear work** - If the task isn't well-defined, clarify it first in this conversation
-- **Include file paths and specifics** - The new conversation needs concrete details to work with
+<rules>
+- Create comprehensive handoff prompts — the new conversation should be fully self-contained
+- Include all necessary context — do not assume the new conversation knows what we discussed
+- Be specific about next steps — provide clear, actionable instructions
+- Suggest appropriate models — faster models for straightforward tasks, same model for complex reasoning
+- Get user confirmation before creating conversations
+- Provide clear titles — make it easy to identify the conversation in the UI
+- Clarify unclear tasks first — if the task isn't well-defined, clarify it in this conversation before handing off
+- Include file paths and specifics — the new conversation needs concrete details to work with
+</rules>

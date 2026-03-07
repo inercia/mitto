@@ -5,9 +5,23 @@ group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 
+<investigate_before_answering>
+Before proposing optimizations, read the relevant code paths thoroughly. Profile and
+identify actual bottlenecks based on the code structure — do not guess. When analyzing
+multiple files, read them in parallel to build context faster.
+</investigate_before_answering>
+
+<task>
 Analyze the code for performance issues and propose a prioritized list of optimizations.
 
-**Do not make changes immediately. Propose a plan first and wait for approval.**
+Propose a plan first and wait for approval before making any changes.
+</task>
+
+<scope>
+Focus on measurable performance improvements. Do not refactor code for style or
+readability unless it directly contributes to the performance gain. Each optimization
+should have a clear, quantifiable benefit.
+</scope>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -30,9 +44,11 @@ and then show the instructions for adding it.
 
 ---
 
+<instructions>
+
 ### 1. Analyze Performance
 
-**Profile first** - Identify actual bottlenecks, don't guess:
+**Profile first** — Identify actual bottlenecks based on code analysis:
 - Review code for common performance anti-patterns
 - Look for hot paths and frequently executed code
 - Identify I/O operations, loops, and data processing
@@ -49,14 +65,13 @@ and then show the instructions for adding it.
 
 ### 2. Propose Optimization Plan
 
-Present a prioritized table of proposed optimizations:
+<output_format>
 
 | Priority | Category | Location | Issue | Proposed Fix | Impact | Effort | Tradeoffs |
 |----------|----------|----------|-------|--------------|--------|--------|-----------|
 | 1 | Algorithmic | `path/to/file:fn()` | O(n²) loop | Use hash map lookup | High | Medium | More memory |
 | 2 | I/O | `path/to/file:fn()` | Unbuffered writes | Add buffering | Medium | Small | None |
 | 3 | Caching | `path/to/file:fn()` | Repeated computation | Memoize result | Medium | Small | Memory usage |
-| ... | ... | ... | ... | ... | ... | ... | ... |
 
 **Priority levels:**
 - **1 (High)**: Clear bottleneck with significant impact
@@ -67,6 +82,8 @@ Present a prioritized table of proposed optimizations:
 - **High**: Major performance improvement expected
 - **Medium**: Moderate improvement expected
 - **Low**: Minor improvement expected
+
+</output_format>
 
 ### 3. Wait for Approval
 
@@ -90,7 +107,7 @@ Ask the user in the conversation to choose one of these options:
 - **Investigate** - get more details or benchmarks on specific items
 - **Cancel** - abort without making changes
 
-**Do not proceed until the user explicitly approves.**
+Wait for the user to explicitly approve before proceeding.
 
 ### 4. Execute Approved Optimizations
 
@@ -117,11 +134,12 @@ After completing approved changes:
 - Item #3: Skipped per user request
 ```
 
-## Rules
+</instructions>
 
-- **Never optimize without proposing first**: Always present the plan and wait for approval
-- **Avoid premature optimization**: Focus on measurable improvements
-- **Profile before optimizing**: Identify actual bottlenecks, don't guess
-- **Document tradeoffs**: Note memory vs speed, complexity vs performance
-- **Verify correctness**: Run tests after each optimization
-- **Measure improvements**: Quantify the improvement when possible
+<rules>
+- Propose optimizations before implementing them, and wait for user approval
+- Profile before optimizing — focus on actual bottlenecks identified through code analysis, not guesses
+- Document tradeoffs for each optimization (memory vs speed, complexity vs performance), because the user needs to make informed decisions
+- Verify correctness by running tests after each optimization
+- Quantify improvements when possible, to validate the optimization was worthwhile
+</rules>

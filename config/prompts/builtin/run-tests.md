@@ -5,7 +5,11 @@ group: "Testing"
 backgroundColor: "#FFE0B2"
 ---
 
+<task>
 Run the project's test suite and report results.
+</task>
+
+<instructions>
 
 ### 1. Discover and Run Tests
 
@@ -23,11 +27,9 @@ Run the project's test suite and report results.
 ### 2. Analyze Results
 
 If tests pass:
-
 - Report success with a brief summary
 
 If tests fail:
-
 - For simple failures (typos, missing imports, obvious fixes):
   - Fix the issue immediately
   - Re-run the tests to verify the fix
@@ -37,6 +39,7 @@ If tests fail:
 
 ### 3. Summary Table
 
+<output_format>
 Present a results table:
 
 | Test Group | Passed | Failed | Skipped | Status |
@@ -45,12 +48,14 @@ Present a results table:
 | integration| 12     | 1      | 0       | ❌     |
 | e2e        | 8      | 0      | 0       | ✅     |
 | **Total**  | **65** | **1**  | **2**   | ❌     |
+</output_format>
 
 ### 4. If Failures Remain
 
 For each unresolved failure:
-
 - **Test**: Name of the failing test
 - **Error**: The error message
 - **Cause**: Brief analysis of why it failed
 - **Suggested fix**: What needs to change
+
+</instructions>

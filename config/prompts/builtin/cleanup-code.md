@@ -5,9 +5,18 @@ group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 
+<investigate_before_answering>
+Before proposing any cleanup, read the relevant code files and search for references
+thoroughly. When analyzing multiple files, read them in parallel to build context
+faster. Do not speculate about whether code is unused — verify by searching for
+references first.
+</investigate_before_answering>
+
+<task>
 Analyze the codebase for cleanup opportunities and propose a prioritized list of changes.
 
-**Do not make changes immediately. Propose a plan first and wait for approval.**
+Propose a plan first and wait for approval before making any changes.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -29,6 +38,8 @@ and then show the instructions for adding it.
 **After displaying this message, proceed with the sections below using text-based conversation instead.**
 
 ---
+
+<instructions>
 
 ### 1. Analyze the Codebase
 
@@ -88,7 +99,7 @@ Look for unused test helpers, fixtures, and mock implementations.
 
 ### 2. Propose Cleanup Plan
 
-Present a prioritized table of proposed cleanup items:
+<output_format>
 
 | Priority | Category | Location | Description | Risk | Effort |
 |----------|----------|----------|-------------|------|--------|
@@ -108,6 +119,8 @@ Present a prioritized table of proposed cleanup items:
 - **Low**: Clearly unused, safe to remove
 - **Medium**: Appears unused but verify before removing
 - **High**: Public API or widely referenced, needs careful analysis
+
+</output_format>
 
 ### 3. Wait for Approval
 
@@ -131,7 +144,7 @@ Ask the user in the conversation to choose one of these options:
 - **Investigate** - get more details on specific items before deciding
 - **Cancel** - abort without making changes
 
-**Do not proceed until the user explicitly approves.**
+Wait for the user to explicitly approve before proceeding.
 
 ### 4. Execute Approved Changes
 
@@ -160,11 +173,13 @@ After completing approved changes:
 - Item #4: Skipped per user request
 ```
 
-## Rules
+</instructions>
 
-- **Never remove code without proposing first**: Always present the plan and wait for approval
-- **Never remove code without verification**: Always search for references first
-- **Preserve version control history**: Don't worry about "losing" code - it's in history
-- **Run tests after changes**: Catch issues early
-- **Be conservative with public APIs**: They might be used by external code
-- **Update related documentation**: Keep docs in sync with code changes
+<rules>
+- Propose changes before removing code, and wait for user approval
+- Search for references before declaring code unused, because external code may depend on public APIs
+- Rely on version control history for code recovery — don't worry about "losing" deleted code
+- Run tests after changes to catch unexpected breakage, since cleanup changes can have subtle side effects
+- Be conservative with public APIs — they might be used by external consumers not visible in this codebase
+- Update related documentation when removing code, to keep docs in sync
+</rules>

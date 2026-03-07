@@ -6,8 +6,17 @@ acps: claude-code
 backgroundColor: "#1b0bc693"
 ---
 
+<task>
 Analyze this workspace and generate comprehensive Claude Code memory files that will help
 future AI interactions understand and work effectively with this codebase.
+</task>
+
+<efficiency>
+When exploring the codebase, read multiple files in parallel to build context faster.
+For example, read configuration files, entry points, and test files simultaneously.
+</efficiency>
+
+<instructions>
 
 ## Step 1: Explore the Project
 
@@ -123,12 +132,12 @@ Rules without `paths` frontmatter are loaded unconditionally.
 
 ### Content Guidelines
 
-- **Be specific**: "Use 2-space indentation" not "Format code properly"
+- **Be specific**: "Use 2-space indentation" not "Format code properly" — specificity makes rules actionable
 - **Use bullet points**: Format each instruction as a bullet point
 - **Group related items**: Use markdown headings to organize
 - **Include commands**: Document build, test, lint commands
 - **Show examples**: Code snippets demonstrating correct usage
-- **Explain why**: Document rationale for conventions
+- **Explain why**: Document rationale for conventions, so future contributors understand the reasoning
 
 ## Step 3: Create the Files
 
@@ -137,11 +146,13 @@ Rules without `paths` frontmatter are loaded unconditionally.
 3. Generate topic-specific rules in `.claude/rules/` if needed
 4. Ensure files are well-organized and not too long (aim for <200 lines each)
 
-## Important Notes
+</instructions>
 
+<rules>
 - Focus on patterns that will help AI assistants write better code
 - Prioritize actionable guidance over exhaustive documentation
 - Include "don't do this" examples for common mistakes
 - Reference existing documentation in the repo rather than duplicating it
 - If the project already has `CLAUDE.md`, enhance rather than replace
 - Use `CLAUDE.local.md` for personal preferences that shouldn't be committed
+</rules>

@@ -5,8 +5,10 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
-Follow this workflow to create Git commits for the
-changes that we have in this repository:
+<task>
+Create Git commits for the changes in this repository, following a structured workflow
+that ensures code quality and proper commit organization.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -28,6 +30,8 @@ and then show the instructions for adding it.
 **After displaying this message, proceed with the sections below using text-based conversation instead.**
 
 ---
+
+<instructions>
 
 ### 0. Prerequisites
 
@@ -87,9 +91,11 @@ Before creating commits, verify we're on an appropriate branch:
   how they relate to the changes you are seeing, if they should go first,
   or if they should be unstaged in order to be included in the commits
   you are going to propose.
-- If you are not sure about anything, just ask me.
+- If you are not sure about anything, ask me.
 
 ### 3. Propose Commits
+
+<output_format>
 
 Present a table, formatted as Markdown, with each proposed commit:
 
@@ -99,6 +105,8 @@ Use conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`
 Files can be expressed with Unix shell-style wildcards (e.g. `*.md`, `docs/*`).
 
 Order commits logically (e.g., implementation before documentation).
+
+</output_format>
 
 ### 4. Wait for Approval
 
@@ -121,7 +129,7 @@ Ask the user in the conversation to choose one of these options:
 - **Modify** - specify changes (reorder, merge, split, edit messages)
 - **Cancel** - abort without committing
 
-**Do not commit until the user explicitly approves.**
+Wait for the user to explicitly approve before committing.
 
 ### 5. Execute Commits
 
@@ -149,8 +157,10 @@ to memorize these learnings for future sessions:
 
 Ask the user before making changes to rules files.
 
-## Rules
+</instructions>
 
+<rules>
 - Respect `.gitignore`
 - Skip empty commits
 - Handle binary/large files appropriately
+</rules>

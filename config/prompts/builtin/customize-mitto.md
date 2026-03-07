@@ -5,9 +5,18 @@ group: "Agents & Mitto"
 backgroundColor: "#B3E5FC"
 ---
 
+<task>
 Set up the Mitto configuration for this project by creating the `.mitto` directory structure,
 analyzing the project, and creating customized versions of builtin prompts that are tailored
 to this project's specific technologies and workflows.
+</task>
+
+<efficiency>
+When analyzing the project, read multiple configuration files in parallel (e.g., Makefile,
+package.json, go.mod, CI configs) to build context faster.
+</efficiency>
+
+<instructions>
 
 ## Step 1: Create Directory Structure
 
@@ -103,7 +112,11 @@ description: "Run the test suite and report results"
 backgroundColor: "#FFE0B2"
 ---
 
+<task>
 Run the project's test suite using the Makefile targets.
+</task>
+
+<instructions>
 
 ### 1. Run Tests
 
@@ -154,7 +167,7 @@ If tests fail:
 
 ### 3. Summary Table
 
-Present a results table:
+<output_format>
 
 | Test Suite | Command | Passed | Failed | Status |
 |------------|---------|--------|--------|--------|
@@ -164,6 +177,8 @@ Present a results table:
 | UI (Playwright) | `make test-ui` | 15 | 0 | ✅ |
 | **Total** | | **80** | **1** | ❌ |
 
+</output_format>
+
 ### 4. If Failures Remain
 
 For each unresolved failure:
@@ -172,6 +187,8 @@ For each unresolved failure:
 - **Error**: The error message
 - **Cause**: Brief analysis of why it failed
 - **Suggested fix**: What needs to change
+
+</instructions>
 ```
 
 #### 2. `add-tests.md` - Customized Test Writing
@@ -186,7 +203,16 @@ description: "Write comprehensive tests for new or modified code"
 backgroundColor: "#FFE0B2"
 ---
 
+<investigate_before_answering>
+Before writing tests, read the code that was created or modified. Also review
+existing test files to understand this project's testing conventions and patterns.
+</investigate_before_answering>
+
+<task>
 Write comprehensive tests following this project's testing conventions.
+</task>
+
+<instructions>
 
 ### Testing Frameworks
 
@@ -273,6 +299,8 @@ describe('functionName', () => {
   - `make test-ui` for UI tests
 - Verify all tests pass
 - Check that new code is covered
+
+</instructions>
 ```
 
 #### 3. `fix-ci.md` - Customized CI Fixing
@@ -286,7 +314,20 @@ description: "Diagnose and fix CI pipeline failures"
 backgroundColor: "#B2DFDB"
 ---
 
+<investigate_before_answering>
+Before attempting fixes, check the CI status and read the failure logs first.
+Understand the actual error messages and the code involved before making changes.
+</investigate_before_answering>
+
+<task>
 Diagnose and fix GitHub Actions CI failures for the current branch.
+</task>
+
+<scope>
+Only fix the issues causing CI failures. Keep changes minimal and focused.
+</scope>
+
+<instructions>
 
 ### 1. Check GitHub CLI
 
@@ -389,12 +430,13 @@ gh run watch
 
 The tests workflow typically takes 5-10 minutes to complete.
 
-## Rules
+</instructions>
 
-- Always run `make test-ci` locally before pushing
-- Never modify workflow files without explicit user approval
-- If fixes require dependency changes, ask user for approval first
-- Group related fixes in a single commit when possible
+<rules>
+- Run `make test-ci` locally before pushing, to catch issues before CI runs
+- Get explicit user approval before modifying workflow files or changing dependencies
+- Group related fixes in a single commit when possible for cleaner history
+</rules>
 ```
 
 #### 4. `cleanup-code.md` - Customized Code Cleanup
@@ -408,9 +450,18 @@ description: "Remove dead code, unused imports, and outdated documentation"
 backgroundColor: "#E8F5E9"
 ---
 
+<investigate_before_answering>
+Before proposing cleanup, read the relevant code and search for references.
+When analyzing multiple files, read them in parallel to build context faster.
+</investigate_before_answering>
+
+<task>
 Analyze the codebase for cleanup opportunities using project-specific tools.
 
-**Do not make changes immediately. Propose a plan first and wait for approval.**
+Propose a plan first and wait for approval before making any changes.
+</task>
+
+<instructions>
 
 ### 1. Analyze the Codebase
 
@@ -466,13 +517,15 @@ grep -r "^\s*//" internal/ cmd/ web/static/ | grep -v "^\s*// " | head -20
 
 ### 2. Propose Cleanup Plan
 
-Present a prioritized table:
+<output_format>
 
 | Priority | Category | Location | Description | Risk | Effort |
 |----------|----------|----------|-------------|------|--------|
 | 1 | Dead Code | `internal/pkg/file.go` | Remove unused function `oldHelper()` | Low | Small |
 | 2 | Imports | `internal/session/store.go` | Remove 3 unused imports | Low | Small |
 | 3 | Documentation | `docs/devel/api.md` | Update outdated API references | Low | Medium |
+
+</output_format>
 
 ### 3. Wait for Approval
 
@@ -482,7 +535,7 @@ Ask the user to:
 - **Investigate** - get more details on specific items
 - **Cancel** - abort without making changes
 
-**Do not proceed until the user explicitly approves.**
+Wait for the user to explicitly approve before proceeding.
 
 ### 4. Execute Approved Changes
 
@@ -513,13 +566,15 @@ For each approved item:
 - Item #4: Skipped per user request
 ```
 
-## Rules
+</instructions>
 
-- **Never remove code without proposing first**
-- **Always run tests after changes**: `make test-go` or `make test-js`
-- **Run formatting**: `make fmt` for Go code
-- **Be conservative with exported APIs**: They might be used externally
-- **Update related documentation**: Keep docs in sync
+<rules>
+- Propose changes before removing code, and wait for user approval
+- Run tests after changes: `make test-go` or `make test-js`
+- Run formatting: `make fmt` for Go code
+- Be conservative with exported APIs — they might be used externally
+- Update related documentation when removing code, to keep docs in sync
+</rules>
 ```
 
 ### Optional Customizations
@@ -590,3 +645,4 @@ You can now use the customized prompts:
 
 The prompts are now tailored to this project's specific technology stack and workflows!
 
+</instructions>

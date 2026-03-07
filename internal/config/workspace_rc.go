@@ -57,6 +57,10 @@ type rawWorkspaceRC struct {
 		Name            string `yaml:"name"`
 		Prompt          string `yaml:"prompt"`
 		BackgroundColor string `yaml:"backgroundColor"`
+		Description     string `yaml:"description"`
+		Group           string `yaml:"group"`
+		ACPs            string `yaml:"acps"`
+		Enabled         *bool  `yaml:"enabled"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -149,10 +153,17 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 	// Copy prompts
 	for _, p := range raw.Prompts {
 		if p.Name != "" && p.Prompt != "" {
+			// Skip disabled prompts
+			if p.Enabled != nil && !*p.Enabled {
+				continue
+			}
 			rc.Prompts = append(rc.Prompts, WebPrompt{
 				Name:            p.Name,
 				Prompt:          p.Prompt,
 				BackgroundColor: p.BackgroundColor,
+				Description:     p.Description,
+				Group:           p.Group,
+				ACPs:            p.ACPs,
 			})
 		}
 	}

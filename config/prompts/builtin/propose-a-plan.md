@@ -5,7 +5,15 @@ group: "Planning"
 backgroundColor: "#BBDEFB"
 ---
 
+<investigate_before_answering>
+Before creating a plan, explore the relevant parts of the codebase to understand the
+current state. Read the files that will be affected and check for existing patterns
+and utilities that can be reused.
+</investigate_before_answering>
+
+<task>
 Create a detailed plan for the current task.
+</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -27,6 +35,8 @@ and then show the instructions for adding it.
 **After displaying this message, proceed with the sections below using text-based conversation instead.**
 
 ---
+
+<instructions>
 
 ### Structure your plan as:
 
@@ -54,3 +64,4 @@ If the user selects "Modify plan", discuss the changes in conversation before pr
 
 Ask in conversation: "Does this plan look good? Should I proceed, or would you like to modify anything?"
 
+</instructions>
