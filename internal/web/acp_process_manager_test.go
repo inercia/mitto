@@ -54,7 +54,6 @@ func TestACPProcessManager_ProcessCount(t *testing.T) {
 	}
 }
 
-
 // Tests for auxiliary session management
 
 func TestACPProcessManager_CloseWorkspaceAuxiliary(t *testing.T) {

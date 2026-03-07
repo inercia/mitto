@@ -313,4 +313,3 @@ func (m *WorkspaceAuxiliaryManager) Close() error {
 	// This method is here for future extensibility
 	return nil
 }
-

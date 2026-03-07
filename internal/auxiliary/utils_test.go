@@ -201,4 +201,3 @@ func TestValidateSuggestions(t *testing.T) {
 		})
 	}
 }
-

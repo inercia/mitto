@@ -21,4 +21,3 @@ type ProcessProvider interface {
 	// This should be called when a workspace is removed or its ACP process is stopped.
 	CloseWorkspaceAuxiliary(workspaceUUID string) error
 }
-

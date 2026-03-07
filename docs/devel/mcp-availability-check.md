@@ -15,6 +15,7 @@ The MCP availability checking feature verifies that Mitto MCP tools are availabl
 ### Trigger
 
 MCP availability is checked when:
+
 - User focuses or switches to a conversation in a workspace
 - Only if the workspace hasn't been checked yet in the current session
 
@@ -27,7 +28,7 @@ sequenceDiagram
     participant SessionManager
     participant AuxiliaryManager
     participant AuxiliarySession
-    
+
     User->>Frontend: Focus/switch to conversation
     Frontend->>SessionManager: Check if MCP verified for workspace
     alt Not checked yet
@@ -47,6 +48,7 @@ sequenceDiagram
 The auxiliary session receives a prompt asking it to check for the `mitto_conversation_get_current` tool and respond with JSON:
 
 **If available:**
+
 ```json
 {
   "available": true,
@@ -55,6 +57,7 @@ The auxiliary session receives a prompt asking it to check for the `mitto_conver
 ```
 
 **If NOT available:**
+
 ```json
 {
   "available": false,
@@ -94,21 +97,25 @@ Sent when user confirms running the installation command:
 ## UI Behavior
 
 ### If `suggested_run` is provided:
+
 - Show modal: "Mitto MCP tools are not available. Would you like me to run this command to install them?"
 - Display command in code block
 - Buttons: "Yes, run command" | "No, dismiss"
 - On confirm: Send `run_mcp_install_command` WebSocket message
 
 ### If only `suggested_instructions` is provided:
+
 - Show modal with instructions (truncated to 500 chars)
 - Button: "Dismiss"
 
 ### If neither is provided:
+
 - Show warning: "Mitto MCP tools are not available. Some features may not work."
 
 ## Caching Strategy
 
 ### Session-Level Cache (SessionManager)
+
 - `mcpCheckedWorkspaces` map tracks which workspaces have been checked
 - Prevents repeated prompts during the same session
 - Cleared when:
@@ -116,6 +123,7 @@ Sent when user confirms running the installation command:
   - Session is restarted
 
 ### Result Cache (WorkspaceAuxiliaryManager)
+
 - `mcpCheckCache` stores the actual check results
 - Prevents repeated auxiliary prompts
 - Cleared when:
@@ -150,6 +158,7 @@ sm.ClearMCPChecked(workspaceUUID)
 ## Implementation Status
 
 ### ✅ Completed
+
 - Purpose constant and prompt template
 - `MCPAvailabilityResult` struct
 - `CheckMCPAvailability()` method with caching
@@ -158,6 +167,7 @@ sm.ClearMCPChecked(workspaceUUID)
 - SessionManager tracking methods
 
 ### ⏳ Remaining
+
 - WebSocket integration (trigger on conversation focus)
 - Command execution handler
 - Frontend UI implementation
@@ -166,9 +176,9 @@ sm.ClearMCPChecked(workspaceUUID)
 ## Testing
 
 Test the feature by:
+
 1. Opening a conversation in a workspace
 2. Auxiliary session checks for `mitto_conversation_get_current` tool
 3. If not available, UI shows installation instructions
 4. User can run suggested command
 5. After installation, new conversations trigger re-check
-

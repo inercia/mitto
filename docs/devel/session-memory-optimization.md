@@ -56,6 +56,7 @@ For a session with 10,000 events (~10MB file):
 ### Testing
 
 Added `TestStore_ReadEventsLast_LargeFile` to verify:
+
 - Correct number of events returned
 - Events in chronological order (oldest first)
 - Correct sequence numbers (last N events)
@@ -74,4 +75,3 @@ Potential enhancements for even better memory efficiency:
 2. **Event index**: Build an index of event offsets for O(1) random access
 3. **Streaming API**: Add iterator-based API for processing events without loading into memory
 4. **Compression**: Compress old events to reduce disk usage and memory footprint
-

@@ -78,4 +78,3 @@ func (c *auxiliaryClient) OnReadTextFile(ctx context.Context, params acp.ReadTex
 func (c *auxiliaryClient) OnWriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
 	return acp.WriteTextFileResponse{}, nil
 }
-

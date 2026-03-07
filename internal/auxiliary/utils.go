@@ -94,8 +94,6 @@ func validateSuggestions(suggestions []FollowUpSuggestion) []FollowUpSuggestion 
 	return valid
 }
 
-
-
 // parseMCPAvailabilityResult parses the JSON response from the MCP availability check.
 // It handles cases where the response might have extra text around the JSON.
 func parseMCPAvailabilityResult(response string) (*MCPAvailabilityResult, error) {

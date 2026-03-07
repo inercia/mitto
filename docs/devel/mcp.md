@@ -319,12 +319,12 @@ Send a progress inquiry to multiple child conversations and block until all repo
 
 This tool enables parent-child task coordination: a parent spawns children via `mitto_conversation_new`, then later calls this tool to ask all children for a status report and wait for their responses.
 
-| Parameter         | Type     | Required | Description                                     |
-| ----------------- | -------- | -------- | ----------------------------------------------- |
-| `self_id`         | string   | Yes      | Parent session ID (your session)                |
-| `children_list`   | string[] | Yes      | List of child conversation IDs to query         |
-| `prompt`          | string   | No       | Custom prompt to send (default: progress check) |
-| `timeout_seconds` | int      | No       | Timeout in seconds (default: 600 / 10 min)      |
+| Parameter         | Type     | Required | Description                                                                  |
+| ----------------- | -------- | -------- | ---------------------------------------------------------------------------- |
+| `self_id`         | string   | Yes      | Parent session ID (your session)                                             |
+| `children_list`   | string[] | Yes      | List of child conversation IDs to query                                      |
+| `prompt`          | string   | No       | Custom prompt to send. If empty/omitted, no message is sent (wait-only mode) |
+| `timeout_seconds` | int      | No       | Timeout in seconds (default: 600 / 10 min)                                   |
 
 Returns:
 
@@ -352,6 +352,8 @@ Each report in `reports` contains:
 - If **all** children are not running, the tool returns immediately without blocking
 - If a **mix** of running and not-running children exists, the tool blocks only until all running children report back
 - The prompt sent to each child includes an instruction to call `mitto_children_tasks_report` with their results
+- **Empty prompt = wait-only mode**: If `prompt` is empty or omitted, no message is sent to any child — the tool only waits for reports. This is useful for retrying after a timeout without re-enqueuing duplicate messages
+- **Queue deduplication**: Even when a prompt is provided, the tool checks each child's queue before enqueuing. If the child already has a pending (unconsumed) message from this parent, the prompt is skipped for that child to prevent duplicate messages
 - On timeout, partial results are returned (whatever has been received so far)
 
 **Example:**
@@ -363,15 +365,15 @@ Parent calls:
 → CHILD_A receives: "Please report your progress.\n\nReport your results using mitto_children_tasks_report..."
 → CHILD_B receives the same
 
-CHILD_A calls: mitto_children_tasks_report(self_id=CHILD_A, report={"status": "done", "files_changed": 3})
-CHILD_B calls: mitto_children_tasks_report(self_id=CHILD_B, report={"status": "in_progress", "progress": 60})
+CHILD_A calls: mitto_children_tasks_report(self_id=CHILD_A, status="completed", summary="done", details="changed 3 files")
+CHILD_B calls: mitto_children_tasks_report(self_id=CHILD_B, status="in_progress", summary="60% complete")
 
 → Parent unblocks, receives:
   {
     "success": true,
     "reports": {
-      "CHILD_A": {"completed": true, "status": "completed", "report": {"status": "done", "files_changed": 3}},
-      "CHILD_B": {"completed": true, "status": "completed", "report": {"status": "in_progress", "progress": 60}}
+      "CHILD_A": {"completed": true, "status": "completed", "report": {"status": "completed", "summary": "done", "details": "changed 3 files"}},
+      "CHILD_B": {"completed": true, "status": "completed", "report": {"status": "in_progress", "summary": "60% complete", "details": ""}}
     }
   }
 ```
@@ -380,10 +382,12 @@ CHILD_B calls: mitto_children_tasks_report(self_id=CHILD_B, report={"status": "i
 
 Report results back to a waiting parent conversation. Called by child conversations in response to a `mitto_children_tasks_wait` inquiry from their parent. No special flag required.
 
-| Parameter | Type   | Required | Description                            |
-| --------- | ------ | -------- | -------------------------------------- |
-| `self_id` | string | Yes      | Child session ID (your session)        |
-| `report`  | JSON   | Yes      | Flexible JSON report with your results |
+| Parameter | Type   | Required | Description                                       |
+| --------- | ------ | -------- | ------------------------------------------------- |
+| `self_id` | string | Yes      | Child session ID (your session)                   |
+| `status`  | string | Yes      | Status: e.g. "completed", "in_progress", "failed" |
+| `summary` | string | Yes      | Brief summary of findings/progress                |
+| `details` | string | No       | Optional detailed information                     |
 
 Returns:
 
@@ -620,10 +624,10 @@ sequenceDiagram
     MCP->>Child2: Enqueue prompt via Queue
     MCP->>MCP: Block on waitCh channel
 
-    Child1->>MCP: mitto_children_tasks_report(report={...})
+    Child1->>MCP: mitto_children_tasks_report(status, summary, ...)
     MCP->>MCP: Store report for A<br/>(1/2 reported)
 
-    Child2->>MCP: mitto_children_tasks_report(report={...})
+    Child2->>MCP: mitto_children_tasks_report(status, summary, ...)
     MCP->>MCP: Store report for B<br/>(2/2 reported)
     MCP->>MCP: Close waitCh channel
 

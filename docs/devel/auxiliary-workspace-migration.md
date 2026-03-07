@@ -7,6 +7,7 @@ This document outlines the plan to migrate auxiliary conversations from a separa
 ## Current Architecture
 
 **Global Auxiliary Process:**
+
 - `auxiliary.Manager`: Owns a separate ACP process (`exec.Cmd`)
 - Creates ONE session per Manager instance
 - Global singleton via `Initialize()` and `GetManager()`
@@ -14,6 +15,7 @@ This document outlines the plan to migrate auxiliary conversations from a separa
 - Used for: title generation, prompt improvement, follow-up analysis
 
 **Problem:**
+
 - "First workspace wins" - auxiliary uses first workspace's ACP server
 - Incorrect when user has multiple workspaces with different ACP servers
 - Wastes resources (separate process for auxiliary tasks)
@@ -22,6 +24,7 @@ This document outlines the plan to migrate auxiliary conversations from a separa
 ## Target Architecture
 
 **Workspace-Scoped Auxiliary Sessions:**
+
 - Each workspace has its own pool of auxiliary sessions
 - Auxiliary sessions are regular ACP sessions within the workspace's `SharedACPProcess`
 - Support multiple auxiliary sessions per workspace (e.g., title-gen, follow-up, improve-prompt)
@@ -41,7 +44,7 @@ type ProcessProvider interface {
     // The provider manages session creation and reuse internally.
     // purpose identifies the session type (e.g., "title-gen", "follow-up", "improve-prompt")
     PromptAuxiliary(ctx context.Context, workspaceUUID, purpose, message string) (string, error)
-    
+
     // CloseWorkspaceAuxiliary closes all auxiliary sessions for a workspace.
     CloseWorkspaceAuxiliary(workspaceUUID string) error
 }
@@ -73,7 +76,7 @@ func (m *WorkspaceAuxiliaryManager) AnalyzeFollowUpQuestions(ctx context.Context
 ```go
 type ACPProcessManager struct {
     // ... existing fields ...
-    
+
     // Auxiliary session tracking
     auxMu       sync.Mutex
     auxSessions map[auxSessionKey]*auxiliarySessionState
@@ -93,6 +96,7 @@ type auxiliarySessionState struct {
 ```
 
 **Implementation:**
+
 - `PromptAuxiliary`: Get or create auxiliary session, send prompt, collect response
 - `CloseWorkspaceAuxiliary`: Close all auxiliary sessions for a workspace
 - Session creation: Use `SharedACPProcess.NewSession()` with empty MCP servers
@@ -103,6 +107,7 @@ type auxiliarySessionState struct {
 **File:** `internal/auxiliary/global.go`
 
 Keep existing global API working (deprecated):
+
 ```go
 // Deprecated: Use WorkspaceAuxiliaryManager.GenerateTitle instead
 func GenerateTitle(ctx context.Context, message string) (string, error)
@@ -113,6 +118,7 @@ Global functions delegate to first workspace for backward compatibility.
 ## Migration Strategy
 
 ### Phase 1: Add New Infrastructure (Low Risk)
+
 - [ ] Add `ProcessProvider` interface
 - [ ] Add `WorkspaceAuxiliaryManager` type
 - [ ] Add workspace-scoped API methods
@@ -121,6 +127,7 @@ Global functions delegate to first workspace for backward compatibility.
 **Estimated effort:** 1-2 days
 
 ### Phase 2: Implement ProcessProvider (Medium Risk)
+
 - [ ] Extend `ACPProcessManager` with auxiliary session tracking
 - [ ] Implement `PromptAuxiliary` method
 - [ ] Implement `CloseWorkspaceAuxiliary` method
@@ -130,6 +137,7 @@ Global functions delegate to first workspace for backward compatibility.
 **Estimated effort:** 2-3 days
 
 ### Phase 3: Update Call Sites (High Risk)
+
 - [ ] Update `Server` to hold `WorkspaceAuxiliaryManager`
 - [ ] Update `BackgroundSession.analyzeFollowUpQuestions` (has `workspaceUUID`)
 - [ ] Update `GenerateAndSetTitle` (add workspace lookup)
@@ -139,6 +147,7 @@ Global functions delegate to first workspace for backward compatibility.
 **Estimated effort:** 3-4 days
 
 ### Phase 4: Testing (Medium Risk)
+
 - [ ] Unit tests for `WorkspaceAuxiliaryManager`
 - [ ] Unit tests for `ACPProcessManager` auxiliary methods
 - [ ] Integration tests with mock ACP server
@@ -148,6 +157,7 @@ Global functions delegate to first workspace for backward compatibility.
 **Estimated effort:** 1-2 days
 
 ### Phase 5: Documentation (Low Risk)
+
 - [ ] Update `.augment/rules/02-session.md`
 - [ ] Update `docs/devel/architecture.md`
 - [ ] Add migration guide
@@ -181,11 +191,13 @@ Global functions delegate to first workspace for backward compatibility.
 ## Files to Modify
 
 ### New Files
+
 - `internal/auxiliary/provider.go`
 - `internal/auxiliary/workspace_manager.go`
 - `internal/auxiliary/workspace_manager_test.go`
 
 ### Modified Files
+
 - `internal/auxiliary/global.go` - Deprecate, add backward compatibility
 - `internal/web/acp_process_manager.go` - Implement ProcessProvider
 - `internal/web/server.go` - Add auxiliaryManager field
@@ -198,18 +210,19 @@ Global functions delegate to first workspace for backward compatibility.
 - `cmd/mitto-app/main.go` - Update initialization
 
 ### Documentation
+
 - `.augment/rules/02-session.md`
 - `docs/devel/architecture.md`
 - This migration guide
 
 ## Risks and Mitigation
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Breaking changes during migration | High | Keep old API working, gradual migration |
-| Concurrency issues (deadlocks) | Medium | Careful mutex design, extensive testing |
-| Session limit on ACP servers | Low | Document requirement, test with common agents |
-| Performance impact on user sessions | Low | Auxiliary sessions are lightweight, short-lived |
+| Risk                                | Impact | Mitigation                                      |
+| ----------------------------------- | ------ | ----------------------------------------------- |
+| Breaking changes during migration   | High   | Keep old API working, gradual migration         |
+| Concurrency issues (deadlocks)      | Medium | Careful mutex design, extensive testing         |
+| Session limit on ACP servers        | Low    | Document requirement, test with common agents   |
+| Performance impact on user sessions | Low    | Auxiliary sessions are lightweight, short-lived |
 
 ## Benefits
 
@@ -222,7 +235,7 @@ Global functions delegate to first workspace for backward compatibility.
 ## Rollback Plan
 
 If issues arise:
+
 1. Revert call site changes
 2. Re-enable global auxiliary API
 3. Keep new infrastructure for future retry
-
