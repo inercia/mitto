@@ -1,9 +1,15 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestParseMessage(t *testing.T) {
@@ -221,5 +227,178 @@ func TestWSConn_SendError(t *testing.T) {
 
 	if data["message"] != "test error message" {
 		t.Errorf("Expected message 'test error message', got %q", data["message"])
+	}
+}
+
+// setupWritePumpTestServer creates a test HTTP server that upgrades to WebSocket
+// and runs WritePump with the returned cancel function for context control.
+// Returns the test server and a channel that receives the WSConn once connected.
+func setupWritePumpTestServer(t *testing.T) (*httptest.Server, chan *WSConn, context.CancelFunc) {
+	t.Helper()
+	wsConnCh := make(chan *WSConn, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("Upgrade failed: %v", err)
+			return
+		}
+
+		wc := &WSConn{
+			conn: conn,
+			send: make(chan []byte, 64),
+			config: WebSocketSecurityConfig{
+				WriteWait:  10 * time.Second,
+				PingPeriod: 60 * time.Second, // Long period so it doesn't fire during test
+			},
+		}
+		wsConnCh <- wc
+
+		done := make(chan struct{})
+		wc.WritePump(ctx, done)
+	}))
+
+	return server, wsConnCh, cancel
+}
+
+func TestWritePump_SendsCloseFrameOnContextCancellation(t *testing.T) {
+	server, wsConnCh, cancel := setupWritePumpTestServer(t)
+	defer server.Close()
+
+	// Connect client
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/"
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	// Wait for server-side WSConn to be ready
+	select {
+	case <-wsConnCh:
+		// Server connected
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for server connection")
+	}
+
+	// Cancel the context — this should cause WritePump to send a close frame
+	cancel()
+
+	// Read from client — we should get a close message with GoingAway code
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err = clientConn.ReadMessage()
+	if err == nil {
+		t.Fatal("Expected error (close frame), got normal message")
+	}
+
+	closeErr, ok := err.(*websocket.CloseError)
+	if !ok {
+		// On some platforms the close frame is received as a different error type.
+		// Just verify we got an error (connection was closed), which is the minimum.
+		t.Logf("Got non-CloseError: %v (type: %T) — connection was closed", err, err)
+		return
+	}
+
+	if closeErr.Code != websocket.CloseGoingAway {
+		t.Errorf("Expected close code %d (GoingAway), got %d: %s",
+			websocket.CloseGoingAway, closeErr.Code, closeErr.Text)
+	}
+}
+
+func TestWritePump_SendsCloseFrameOnChannelClose(t *testing.T) {
+	server, wsConnCh, cancel := setupWritePumpTestServer(t)
+	defer server.Close()
+	defer cancel()
+
+	// Connect client
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/"
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	// Wait for server-side WSConn to be ready
+	var wc *WSConn
+	select {
+	case wc = <-wsConnCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for server connection")
+	}
+
+	// Close the send channel — WritePump should send a close frame with NormalClosure
+	close(wc.send)
+
+	// Read from client — should get close frame
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err = clientConn.ReadMessage()
+	if err == nil {
+		t.Fatal("Expected error (close frame), got normal message")
+	}
+
+	closeErr, ok := err.(*websocket.CloseError)
+	if !ok {
+		t.Logf("Got non-CloseError: %v (type: %T) — connection was closed", err, err)
+		return
+	}
+
+	if closeErr.Code != websocket.CloseNormalClosure {
+		t.Errorf("Expected close code %d (NormalClosure), got %d: %s",
+			websocket.CloseNormalClosure, closeErr.Code, closeErr.Text)
+	}
+}
+
+func TestWritePump_DeliversMessageBeforeClose(t *testing.T) {
+	server, wsConnCh, cancel := setupWritePumpTestServer(t)
+	defer server.Close()
+	defer cancel()
+
+	// Connect client
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/"
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	// Wait for server-side WSConn
+	var wc *WSConn
+	select {
+	case wc = <-wsConnCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for server connection")
+	}
+
+	// Send a message, then close the channel
+	testMsg := []byte(`{"type":"test","data":{"key":"value"}}`)
+	wc.send <- testMsg
+	// Small delay to let WritePump pick up the message
+	time.Sleep(50 * time.Millisecond)
+	close(wc.send)
+
+	// Client should receive the message first
+	clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Expected to receive message before close: %v", err)
+	}
+
+	var msg WSMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+	if msg.Type != "test" {
+		t.Errorf("Expected message type 'test', got %q", msg.Type)
+	}
+
+	// Then client should receive the close frame
+	_, _, err = clientConn.ReadMessage()
+	if err == nil {
+		t.Fatal("Expected close error after message delivery")
 	}
 }

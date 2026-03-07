@@ -138,6 +138,26 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	bs := s.sessionManager.GetSession(sessionID)
 	wasResumed := false // Track if we resumed the session (vs already running)
 
+	// Circuit breaker fast path: if session is known to not exist (negative cache hit),
+	// send session_gone immediately without hitting the filesystem.
+	if bs == nil && s.negativeSessionCache != nil && s.negativeSessionCache.IsNotFound(sessionID) {
+		if clientLogger != nil {
+			clientLogger.Debug("Session in negative cache, sending session_gone",
+				"session_id", sessionID)
+		}
+		go client.writePump()
+		go client.readPump()
+		client.sendMessage(WSMsgTypeSessionGone, map[string]interface{}{
+			"session_id": sessionID,
+			"reason":     "session not found (cached)",
+		})
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			client.wsConn.Close()
+		}()
+		return
+	}
+
 	// If no running session, try to resume it (unless archived)
 	if bs == nil && store != nil {
 		// Check if session exists in store
@@ -162,17 +182,44 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						clientLogger.Error("Failed to resume session", "error", err)
 					}
 					// Broadcast ACP start failure to all clients
-					s.BroadcastACPStartFailed(sessionID, err.Error())
+					s.BroadcastACPStartFailed(sessionID, err, "")
 					// Continue without a running session - client can still view history
 				} else {
 					wasResumed = true
+					// Invalidate negative cache in case this session was previously cached as not found
+					if s.negativeSessionCache != nil {
+						s.negativeSessionCache.Remove(sessionID)
+					}
 					if clientLogger != nil {
 						clientLogger.Debug("Resumed session for WebSocket client",
 							"acp_id", bs.GetACPID())
 					}
 				}
 			}
+		} else if err == session.ErrSessionNotFound {
+			// Session truly doesn't exist in memory or store — send session_gone and close.
+			// Also cache this result to prevent repeated filesystem lookups for the same
+			// deleted session (circuit breaker for "Session not found" error storms).
+			if s.negativeSessionCache != nil {
+				s.negativeSessionCache.MarkNotFound(sessionID)
+			}
+			if clientLogger != nil {
+				clientLogger.Info("Session not found, sending session_gone",
+					"session_id", sessionID)
+			}
+			go client.writePump()
+			go client.readPump()
+			client.sendMessage(WSMsgTypeSessionGone, map[string]interface{}{
+				"session_id": sessionID,
+				"reason":     "session not found",
+			})
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				client.wsConn.Close()
+			}()
+			return
 		}
+		// else: other store errors — log and continue (let client see what's possible)
 	}
 
 	// Store reference to background session if available.
@@ -288,6 +335,11 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 		if configOptions := bs.ConfigOptions(); len(configOptions) > 0 {
 			data["config_options"] = configOptions
 		}
+	}
+
+	// Include agent capability flags so the frontend can adapt the UI
+	if bs != nil {
+		data["agent_supports_images"] = bs.AgentSupportsImages()
 	}
 
 	c.sendMessage(WSMsgTypeConnected, data)
@@ -676,7 +728,12 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 
 	if err != nil {
 		if err == session.ErrSessionNotFound {
-			c.sendError("Session not found")
+			// Send terminal session_gone instead of generic error.
+			// This tells the client to stop reconnecting for this session.
+			c.sendMessage(WSMsgTypeSessionGone, map[string]interface{}{
+				"session_id": c.sessionID,
+				"reason":     "session not found in store",
+			})
 			return
 		}
 		c.sendError("Failed to read session events: " + err.Error())
@@ -1013,10 +1070,12 @@ func (c *SessionWSClient) sessionNeedsTitle() bool {
 
 func (c *SessionWSClient) generateAndSetTitle(initialMessage string) {
 	GenerateAndSetTitle(TitleGenerationConfig{
-		Store:     c.store,
-		SessionID: c.sessionID,
-		Message:   initialMessage,
-		Logger:    c.server.logger,
+		Store:            c.store,
+		SessionID:        c.sessionID,
+		Message:          initialMessage,
+		Logger:           c.server.logger,
+		WorkspaceUUID:    c.bgSession.GetWorkspaceUUID(),
+		AuxiliaryManager: c.bgSession.GetAuxiliaryManager(),
 		OnTitleGenerated: func(sessionID, title string) {
 			// Notify this client
 			c.sendMessage(WSMsgTypeSessionRenamed, map[string]string{

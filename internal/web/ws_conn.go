@@ -120,16 +120,28 @@ func (w *WSConn) WritePump(ctx context.Context, done chan struct{}) {
 		case message, ok := <-w.send:
 			w.conn.SetWriteDeadline(time.Now().Add(w.config.WriteWait))
 			if !ok {
-				w.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				w.conn.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 				return
 			}
 			w.conn.WriteMessage(websocket.TextMessage, message)
 		case <-ticker.C:
 			w.conn.SetWriteDeadline(time.Now().Add(w.config.WriteWait))
 			if err := w.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				// Best-effort close frame before exit — the write may fail
+				// if the connection is already degraded, which is fine.
+				w.conn.SetWriteDeadline(time.Now().Add(time.Second))
+				w.conn.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseGoingAway, "ping failed"))
 				return
 			}
 		case <-ctx.Done():
+			// Best-effort close frame on context cancellation (e.g., readPump exited).
+			// Without this, the client sees code 1006 (abnormal closure) instead of
+			// a proper close code, which complicates client-side reconnection logic.
+			w.conn.SetWriteDeadline(time.Now().Add(time.Second))
+			w.conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutdown"))
 			return
 		}
 	}
