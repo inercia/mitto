@@ -4,9 +4,9 @@ This document covers sequence number assignment, ordering guarantees, and the fo
 
 ## Related Documentation
 
-- [Protocol Specification](./protocol-spec.md) - Message types and formats
-- [Synchronization](./synchronization.md) - Reconnection and sync
-- [Communication Flows](./communication-flows.md) - Complete interaction flows
+- [Protocol Specification](./protocol-spec.md) — Message types and formats
+- [Synchronization](./synchronization.md) — Reconnection and sync
+- [Communication Flows](./communication-flows.md) — Complete interaction flows
 
 ## Overview
 
@@ -173,15 +173,25 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
 
 ### Frontend Responsibilities
 
-1. **Calculate lastSeenSeq dynamically from messages**: The frontend calculates `lastSeenSeq` dynamically from messages in state using `getMaxSeq()`, avoiding stale localStorage issues (especially in WKWebView):
+1. **Track highest received seq via `lastKnownSeqRef`**: The frontend maintains a dedicated `useRef` (`lastKnownSeqRef`) that tracks the highest received sequence number per session. This ref is updated on every received event (`agent_message`, `tool_call`, `user_prompt`, `events_loaded`, `prompt_complete`, etc.) and is the **primary source** for determining `after_seq` on reconnection.
 
    ```javascript
-   // Calculate lastSeenSeq from messages in state (not localStorage)
-   import { getMaxSeq } from "../lib.js";
+   // Dedicated ref — survives reconnections, always current
+   const lastKnownSeqRef = useRef({}); // { [sessionId]: number }
 
-   const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
-   const lastSeenSeq = getMaxSeq(sessionMessages);
+   // Updated on every received event:
+   const updateLastKnownSeq = useCallback((sessionId, seq) => {
+     if (seq && seq > (lastKnownSeqRef.current[sessionId] || 0)) {
+       lastKnownSeqRef.current[sessionId] = seq;
+     }
+   }, []);
    ```
+
+   **Why not React state?** During reconnection, `sessionsRef.current[sessionId].messages` can be empty (due to React render cycle timing, stale client reset, or fast reconnects where the prior connection's `events_loaded` never arrived). The ref is synchronous, updated per-event, and survives across reconnections.
+
+   **Why not localStorage?** localStorage was previously used but abandoned due to stale value issues in WKWebView (iOS native app). The `useRef` approach avoids both problems.
+
+   **Fallback**: React state (`getMaxSeq(session.messages)` and `session.lastLoadedSeq`) is still consulted as a safety net — the final value is `Math.max(refSeq, stateSeq)`.
 
 2. **Client-side deduplication by seq**: The frontend tracks seen `seq` values and skips duplicates (M1 fix):
 
@@ -205,18 +215,34 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
    if (lastMessageSeq && seq === lastMessageSeq) return false;
    ```
 
-4. **Request sync with lastSeenSeq**: On reconnection, request events after the stored `lastSeenSeq`:
+4. **Request sync with lastSeenSeq on reconnection**: On reconnection, the `ws.onopen` handler reads `lastKnownSeqRef` and sends `load_events` with `after_seq`:
 
    ```javascript
-   ws.send(
-     JSON.stringify({
-       type: "load_events",
-       data: { after_seq: lastSeenSeq },
-     }),
+   // In ws.onopen:
+   const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+   const stateSeq = Math.max(
+     getMaxSeq(session?.messages || []),
+     session?.lastLoadedSeq || 0,
    );
+   const lastSeq = Math.max(refSeq, stateSeq);
+
+   if (lastSeq > 0) {
+     ws.send(
+       JSON.stringify({ type: "load_events", data: { after_seq: lastSeq } }),
+     );
+   } else {
+     ws.send(
+       JSON.stringify({
+         type: "load_events",
+         data: { limit: INITIAL_EVENTS_LIMIT },
+       }),
+     );
+   }
    ```
 
 5. **Merge with deduplication on sync**: Use `mergeMessagesWithSync()` to handle overlapping events after reconnection.
+
+6. **Reset watermark on stale client detection**: When `events_loaded` detects the client has stale state (client's max seq > server's max seq), both the seq tracker and `lastKnownSeqRef` are reset before processing fresh events from the server.
 
 ## Event Type Ordering Guarantees
 
@@ -231,6 +257,12 @@ The system guarantees correct ordering for **all event types**, not just agent m
 | `Plan`              | Conditional          | Buffered if mid-block, else immediate | At receive time                           |
 | `FileRead`          | No                   | Immediate                             | At receive time                           |
 | `FileWrite`         | No                   | Immediate                             | At receive time                           |
+| `SessionEnd`        | No                   | Persisted by recorder.End()           | MaxSeq + 1 (not via SeqProvider)          |
+
+**Note on `session_end` events:** Unlike streaming events, `session_end` is recorded by
+`Recorder.End()` which assigns `seq = MaxSeq + 1` directly (not via the `SeqProvider` /
+`GetNextSeq()` interface). This is because `session_end` is written during `Close()` after
+the ACP connection is terminated and the `SeqProvider` may no longer be available.
 
 **Key ordering guarantees:**
 
@@ -273,7 +305,9 @@ The system protects against flushing content with unmatched inline formatting ma
 
 **Problem**: Previously, `lastSeenSeq` was stored in localStorage and could become stale if the client disconnected during streaming.
 
-**Fix**: The frontend now calculates `lastSeenSeq` dynamically from messages in React state using `getMaxSeq()`.
+**Fix (original)**: The frontend calculated `lastSeenSeq` dynamically from messages in React state using `getMaxSeq()`.
+
+**Fix (current)**: The frontend now tracks the highest received seq via `lastKnownSeqRef` (a `useRef`), updated on every event. React state is still consulted as a fallback: `lastSeq = Math.max(refSeq, stateSeq)`. See [Frontend Responsibilities](#frontend-responsibilities) for details.
 
 ### H2: Observer Registration Race
 
@@ -287,7 +321,12 @@ The system protects against flushing content with unmatched inline formatting ma
 
 **Fix**: The frontend tracks seen `seq` values in a sliding window and skips duplicates.
 
-**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), the seq tracker MUST be reset BEFORE processing events.
+**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), both the seq tracker AND `lastKnownSeqRef` for the session MUST be reset BEFORE processing events:
+
+```javascript
+clearSeenSeqs(sessionId); // Reset M1 seq tracker
+delete lastKnownSeqRef.current[sessionId]; // Reset reconnection watermark
+```
 
 ## Testing the Contract
 

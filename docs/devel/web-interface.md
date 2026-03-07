@@ -87,31 +87,6 @@ Sessions can have parent-child relationships when created via the `mitto_convers
 - Running background analysis while main conversation continues
 - Preventing infinite recursion (children cannot spawn more children)
 
-**Frontend Implications**:
-
-- Child sessions can be displayed indented under their parent
-- Orphaned children (parent archived/deleted) should be handled gracefully
-- Circular references should be prevented (though backend enforces this)
-
-**Example Response**:
-
-```json
-[
-  {
-    "session_id": "parent-123",
-    "name": "Main Analysis",
-    "parent_session_id": "",
-    ...
-  },
-  {
-    "session_id": "child-456",
-    "name": "Background Research",
-    "parent_session_id": "parent-123",
-    ...
-  }
-]
-```
-
 ### Session Creation Flow
 
 ```mermaid
@@ -140,33 +115,6 @@ sequenceDiagram
     WS-->>UI: Ready for conversation
 ```
 
-### Session List Refresh Flow
-
-```mermaid
-sequenceDiagram
-    participant UI as Mitto UI
-    participant REST as REST API
-    participant EventsWS as Events WebSocket
-    participant Backend as Mitto Backend
-
-    Note over UI: Initial load
-    UI->>REST: GET /api/sessions
-    Backend-->>REST: [{session_id, name, working_dir, status, ...}, ...]
-    REST-->>UI: Display session list
-
-    Note over UI: Another client creates session
-    Backend->>EventsWS: session_created {session_id, name, working_dir}
-    EventsWS-->>UI: Add to session list
-
-    Note over UI: Another client deletes session
-    Backend->>EventsWS: session_deleted {session_id}
-    EventsWS-->>UI: Remove from session list
-
-    Note over UI: Session renamed (any client)
-    Backend->>EventsWS: session_renamed {session_id, name}
-    EventsWS-->>UI: Update session name in list
-```
-
 ### Image Upload Flow
 
 ```mermaid
@@ -192,78 +140,34 @@ sequenceDiagram
     UI->>UI: Image ready to send with prompt
 ```
 
-## WebSocket Endpoints
+## WebSocket Communication
+
+> **📖 Complete reference:** See [WebSocket Documentation](websockets/) for the authoritative
+> protocol specification, message types, sequence numbers, synchronization, and communication flows.
 
 The web interface uses two WebSocket endpoints:
 
 | Endpoint                | Handler              | Purpose                                               |
 | ----------------------- | -------------------- | ----------------------------------------------------- |
-| `/api/events`           | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed)  |
-| `/api/sessions/{id}/ws` | `SessionWSClient`    | Per-session communication (prompts, responses, tools) |
+| `/api/events`           | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed)   |
+| `/api/sessions/{id}/ws` | `SessionWSClient`    | Per-session communication (prompts, responses, tools)  |
 
-This separation allows:
-
-- Global events to be broadcast to all connected clients
-- Per-session events to be scoped to interested clients only
-- Sessions to continue running when no clients are connected
-
-### Global Events WebSocket Flow
-
-```mermaid
-sequenceDiagram
-    participant UI as Mitto UI
-    participant EventsWS as /api/events
-    participant Backend as Mitto Backend
-
-    Note over UI: App startup
-    UI->>EventsWS: Connect
-    Backend-->>EventsWS: connected {}
-    EventsWS-->>UI: Global events ready
-
-    Note over Backend: Session lifecycle events
-    Backend->>EventsWS: session_created {session_id, name, working_dir}
-    EventsWS-->>UI: Update sidebar
-
-    Backend->>EventsWS: session_deleted {session_id}
-    EventsWS-->>UI: Remove from sidebar
-
-    Backend->>EventsWS: session_renamed {session_id, name}
-    EventsWS-->>UI: Update name in sidebar
-```
-
-### Session WebSocket Flow
-
-```mermaid
-sequenceDiagram
-    participant UI as Mitto UI
-    participant SessionWS as /api/sessions/{id}/ws
-    participant Backend as Mitto Backend
-    participant ACP as ACP Agent
-
-    Note over UI: Switch to session
-    UI->>SessionWS: Connect
-    Backend-->>SessionWS: connected {session_id, client_id, is_running, is_prompting}
-    SessionWS-->>UI: Session ready
-
-    Note over UI: Load history
-    UI->>SessionWS: load_events {limit: 50}
-    Backend-->>SessionWS: events_loaded {events, has_more, last_seq}
-    SessionWS-->>UI: Display conversation
-
-    Note over UI: Send message
-    UI->>SessionWS: prompt {message, prompt_id}
-    Backend-->>SessionWS: user_prompt {seq, is_mine=true}
-    Backend->>ACP: Send to agent
-    ACP-->>Backend: Response chunks
-    Backend-->>SessionWS: agent_message {seq, html}
-    SessionWS-->>UI: Display response
-    Backend-->>SessionWS: prompt_complete {event_count}
-    SessionWS-->>UI: Response complete
-```
+This separation allows global events to be broadcast to all connected clients while per-session
+events are scoped to interested clients only.
 
 ## Streaming Response Handling
 
-The ACP agent sends responses as text chunks via `SessionUpdate` callbacks. The web interface maintains real-time streaming while converting Markdown to HTML:
+The ACP agent sends responses as text chunks via `SessionUpdate` callbacks. The web interface
+maintains real-time streaming while converting Markdown to HTML:
+
+```mermaid
+flowchart LR
+    ACP["ACP Agent"] -->|"text chunks"| WC["WebClient<br/>Assigns seq"]
+    WC -->|"seq + chunk"| MD["MarkdownBuffer<br/>Smart buffering"]
+    MD -->|"HTML + seq"| BS["BackgroundSession<br/>Persistence + broadcast"]
+    BS -->|"events with seq"| WS["WebSocket Clients"]
+    BS -->|"immediate persist"| STORE["events.jsonl"]
+```
 
 1. **Chunk Reception**: `WebClient.SessionUpdate()` receives `AgentMessageChunk` events
 2. **Sequence Assignment**: `WebClient` obtains `seq` from `SeqProvider` immediately at receive time
@@ -272,31 +176,10 @@ The ACP agent sends responses as text chunks via `SessionUpdate` callbacks. The 
 5. **WebSocket Delivery**: HTML chunks sent with preserved `seq` to browser
 6. **Frontend Rendering**: Preact renders HTML via `dangerouslySetInnerHTML`, sorted by `seq`
 
-### Sequence Number Assignment
+For details on sequence number assignment and ordering guarantees, see
+[Sequence Numbers](websockets/sequence-numbers.md).
 
-Sequence numbers are assigned **at ACP receive time**, not when content is emitted from buffers. This ensures correct ordering even when:
-
-- Agent messages are buffered in `MarkdownBuffer` for markdown rendering
-- Tool calls arrive while text is still buffered
-- Multiple text chunks are coalesced into a single message
-
-The `WebClient` uses a `SeqProvider` interface (implemented by `BackgroundSession`) to obtain sequence numbers:
-
-```go
-// In WebClient.SessionUpdate()
-case u.AgentMessageChunk != nil:
-    seq := c.seqProvider.GetNextSeq()  // Assign seq NOW
-    c.mdBuffer.Write(seq, content)      // Pass seq through buffer
-
-case u.ToolCall != nil:
-    seq := c.seqProvider.GetNextSeq()  // Assign seq NOW
-    c.mdBuffer.SafeFlush()              // Try to flush pending content
-    c.onToolCall(seq, id, title, status)
-```
-
-See [WebSocket Documentation](websockets/) for detailed documentation on sequence numbers and message ordering.
-
-## Markdown Buffer Strategy
+### Markdown Buffer Strategy
 
 The `MarkdownBuffer` balances real-time streaming with correct Markdown rendering:
 
@@ -308,7 +191,9 @@ The `MarkdownBuffer` balances real-time streaming with correct Markdown renderin
 | Timeout         | 200ms idle      | Ensure eventual delivery        |
 | Buffer limit    | 4KB accumulated | Prevent memory issues           |
 
-The buffer also tracks `pendingSeq` - the sequence number from the first chunk of buffered content. When the buffer flushes, this seq is passed to the callback, ensuring correct ordering even after buffering delays.
+The buffer also tracks `pendingSeq` — the sequence number from the first chunk of buffered
+content. When the buffer flushes, this seq is passed to the callback, ensuring correct ordering
+even after buffering delays.
 
 ## Frontend Technology
 
@@ -350,9 +235,11 @@ App
 
 ## Mobile Wake Resync
 
-Mobile browsers (iOS Safari, Android Chrome) suspend WebSocket connections when the device sleeps. When the user wakes their phone, the app may show stale data. The frontend implements a resync mechanism to catch up on missed events.
+Mobile browsers (iOS Safari, Android Chrome) suspend WebSocket connections when the device
+sleeps. The frontend detects this and automatically recovers.
 
-Additionally, the frontend uses a **client-side keepalive mechanism** to proactively detect "zombie" connections (connections that appear open but are actually dead). See [Synchronization](websockets/synchronization.md) for details.
+> **📖 Full details:** See [Synchronization — Mobile Wake Resync](websockets/synchronization.md)
+> for the complete sync flow, keepalive mechanism, and zombie connection detection.
 
 ### Problem Scenario
 
@@ -360,94 +247,18 @@ Additionally, the frontend uses a **client-side keepalive mechanism** to proacti
 2. Phone goes to sleep (screen off)
 3. WebSocket connection is terminated by the browser (or becomes a zombie)
 4. Agent continues processing in the background (server-side)
-5. User wakes phone - UI shows stale messages
+5. User wakes phone — UI shows stale messages
 
-### Solution Architecture
+### Solution Summary
 
 ```mermaid
-sequenceDiagram
-    participant Phone as Mobile Browser
-    participant WS as WebSocket
-    participant Server as Mitto Server
-    participant Storage as localStorage
-
-    Note over Phone: Phone sleeps
-    WS-xServer: Connection closed/zombied
-
-    Note over Phone: Phone wakes
-    Phone->>Phone: visibilitychange event fires
-    Phone->>Server: fetchStoredSessions() (REST)
-    Server-->>Phone: Updated session list
-
-    Phone->>Phone: forceReconnectActiveSession()
-    Phone->>WS: Close existing (zombie) connection
-    Phone->>WS: Create fresh /api/sessions/{id}/ws
-    WS->>Server: Connection established
-
-    Note over Phone,Server: ws.onopen handler
-    Phone->>Storage: Read lastSeenSeq
-    Storage-->>Phone: lastSeenSeq = 42
-    Phone->>WS: load_events {after_seq: 42}
-    WS->>Server: Request events after seq 42
-    Server-->>WS: events_loaded {events, ...}
-    WS-->>Phone: Receive events
-    Phone->>Phone: mergeMessagesWithSync (deduplicate)
-    Phone->>Storage: Update lastSeenSeq
+flowchart LR
+    WAKE["Phone wakes<br/>visibilitychange"] --> REFRESH["Refresh session list<br/>(REST)"]
+    REFRESH --> RECONNECT["Force reconnect<br/>Close zombie WS"]
+    RECONNECT --> SYNC["Sync via load_events<br/>after_seq from lastKnownSeqRef"]
+    SYNC --> MERGE["Merge with dedup<br/>mergeMessagesWithSync()"]
 ```
 
-### Sync Triggers
-
-1. **WebSocket Connect** (`ws.onopen`):
-   - When per-session WebSocket connects, sends `load_events` with `after_seq: lastSeenSeq`
-   - Catches up on events missed during disconnection
-   - Uses `mergeMessagesWithSync` to deduplicate (handles stale `lastSeenSeq`)
-   - Retries pending prompts after 500ms
-   - Starts keepalive interval for zombie detection
-
-2. **Visibility Change** (`document.visibilityState === 'visible'`):
-   - Refreshes session list via REST API
-   - Forces WebSocket reconnect (closes zombie, creates fresh connection)
-   - The fresh connection triggers sync via `ws.onopen`
-
-3. **Keepalive Failure** (missed keepalive responses):
-   - If 2 consecutive keepalives go unanswered, connection is considered dead
-   - WebSocket is force-closed, triggering automatic reconnection
-   - See [Synchronization](websockets/synchronization.md)
-
-### Sequence Number Tracking
-
-The `lastSeenSeq` is updated in these scenarios:
-
-- **Session load**: Set to highest sequence number from loaded events
-- **Receiving `prompt_complete`**: Updated from `event_count` in server response
-- **Receiving `events_loaded`**: Updated from `last_seq` in server response
-
-**Important:** The `lastSeenSeq` is only updated at these specific points, not during streaming. If a visibility change occurs during active streaming (before `prompt_complete`), the `lastSeenSeq` may be stale. This is why the frontend uses `mergeMessagesWithSync` for client-side deduplication when syncing.
-
-### Client-Side Deduplication
-
-When syncing after reconnect, the frontend uses `mergeMessagesWithSync` to handle cases where:
-
-- `lastSeenSeq` in localStorage is stale (visibility change during streaming)
-- Messages already in UI have `seq` values from streaming
-- Server returns events that overlap with what's already displayed
-
-The function deduplicates by:
-
-1. **Sequence number** (preferred): Same `seq` = same event
-2. **Content hash** (fallback): For messages without `seq`
-
-See [Synchronization](websockets/synchronization.md) for detailed documentation on the deduplication strategy.
-
-### Backend Support
-
-The `handleLoadEvents` function in `session_ws.go` handles event loading via WebSocket:
-
-```go
-// Client sends: {"type": "load_events", "data": {"limit": 50}}           // Initial load
-// Client sends: {"type": "load_events", "data": {"after_seq": 42}}       // Sync after reconnect
-// Client sends: {"type": "load_events", "data": {"before_seq": 10, "limit": 50}}  // Load more
-// Server responds with events_loaded message
-```
-
-See [WebSocket Documentation](websockets/) for details on the WebSocket-only architecture.
+- **Sequence tracking via `lastKnownSeqRef`** (not localStorage or React state alone)
+- **Three-tier deduplication**: Server-side `lastSentSeq` + client-side seq tracker + content merge
+- **Server authority**: When client and server disagree, the server always wins

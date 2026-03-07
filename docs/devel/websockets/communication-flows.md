@@ -4,9 +4,9 @@ This document shows complete communication flows between the Mitto UI (frontend)
 
 ## Related Documentation
 
-- [Protocol Specification](./protocol-spec.md) - Message types and formats
-- [Sequence Numbers](./sequence-numbers.md) - Ordering and deduplication
-- [Synchronization](./synchronization.md) - Reconnection and sync
+- [Protocol Specification](./protocol-spec.md) — Message types and formats
+- [Sequence Numbers](./sequence-numbers.md) — Ordering and deduplication
+- [Synchronization](./synchronization.md) — Reconnection and sync
 
 ## Golden Path: Complete Conversation Flow
 
@@ -62,7 +62,8 @@ sequenceDiagram
     WS-->>UI: Append to response
 
     ACP-->>Backend: PromptComplete
-    Backend->>Store: Persist all buffered events
+    Backend->>Backend: Final flush of MarkdownBuffer
+    Note over Backend,Store: Events already persisted at receive time
     Backend-->>WS: prompt_complete {event_count=54}
     WS-->>UI: Mark response complete
     UI->>UI: Hide "Stop" button
@@ -70,7 +71,7 @@ sequenceDiagram
 
 ## Golden Path: Permission Request Flow
 
-When the agent needs user permission for an action:
+When the agent needs user permission for an action (using the unified `ui_prompt` system):
 
 ```mermaid
 sequenceDiagram
@@ -81,16 +82,18 @@ sequenceDiagram
 
     Note over UI,ACP: Agent requests permission
     ACP-->>Backend: RequestPermission(title, options)
-    Backend-->>WS: permission {request_id, title, description, options}
+    Backend-->>WS: ui_prompt {request_id, prompt_type="permission", title, options}
     WS-->>UI: Display permission dialog
 
     Note over UI,ACP: User approves
-    UI->>WS: permission_answer {option_id, cancel=false}
+    UI->>WS: ui_prompt_answer {request_id, option_id, label}
     Backend->>ACP: PermissionResponse(approved)
     ACP-->>Backend: Continue with action...
     Backend-->>WS: agent_message {html}
     WS-->>UI: Display result
 ```
+
+> **Note:** The legacy `permission` / `permission_answer` message types are still accepted for backward compatibility but should not be used in new code. See [Protocol Specification](./protocol-spec.md#unified-ui-prompt-system) for details.
 
 ## Corner Case: Mobile Phone Sleep/Wake
 
@@ -123,7 +126,8 @@ sequenceDiagram
         UI->>OldWS: close()
         UI->>NewWS: Connect to /api/sessions/{id}/ws
         Backend-->>NewWS: connected {...}
-        UI->>NewWS: load_events {after_seq: lastSeenSeq}
+        UI->>UI: lastSeq = max(lastKnownSeqRef, stateSeq)
+        UI->>NewWS: load_events {after_seq: lastSeq}
         Backend-->>NewWS: events_loaded {events missed while sleeping}
         NewWS-->>UI: Merge with existing messages
     else Hidden > 1 hour (stale session)
@@ -310,7 +314,7 @@ sequenceDiagram
     ACP-->>Backend: AgentMessage (seq=31)
     ACP-->>Backend: ToolCall (seq=32)
     ACP-->>Backend: PromptComplete
-    Backend->>Backend: Persist all events
+    Note over Backend: Events already persisted at receive time
 
     Note over UI: Reconnect after 2 seconds
     UI->>NewWS: Connect to /api/sessions/{id}/ws
@@ -324,6 +328,52 @@ sequenceDiagram
     Note over UI: seq=30 already displayed → skip
     Note over UI: seq=31, 32 are new → add
 ```
+
+## Corner Case: Session Completion and session_end Delivery
+
+When a session completes, the `session_end` event is written to the store but NOT
+delivered via the observer pattern. The client catches up via keepalive sync or
+a delayed sync triggered by `acp_stopped`:
+
+```mermaid
+sequenceDiagram
+    participant UI as Mitto UI
+    participant WS as WebSocket
+    participant Backend as Mitto Backend
+    participant Store as Session Store
+
+    Note over Backend: Session completes
+    Backend->>Backend: Close() called
+    Backend-->>WS: acp_stopped {reason}
+    WS-->>UI: Update UI (isRunning=false, isStreaming=false)
+
+    Backend->>Backend: recorder.End() writes session_end (seq=N)
+    Backend->>Store: Persist session_end event
+    Backend->>Store: Update metadata (status=completed, MaxSeq=N)
+
+    Note over UI: 2 second delay
+    UI->>WS: load_events {after_seq: N-1}
+    Backend->>Store: ReadEventsFrom(N-1)
+    Store-->>Backend: [session_end event]
+    Backend-->>WS: events_loaded {events: [session_end]}
+    WS-->>UI: Client now has all events ✓
+
+    Note over UI: Alternative: next keepalive (5-10s)
+    UI->>WS: keepalive {client_time, last_seen_seq=N-1}
+    Backend-->>WS: keepalive_ack {max_seq=N, status=completed}
+    Note over UI: tolerance=0 (not streaming), N > N-1 + 0 → sync!
+    UI->>WS: load_events {after_seq: N-1}
+    Backend-->>WS: events_loaded {events: [session_end]}
+```
+
+**Key points:**
+
+- `session_end` is an internal persisted event, not a streaming event
+- The observer interface has no `OnSessionEnd` method
+- `OnACPStopped` is the observer-level notification; `session_end` is the persisted record
+- Two paths deliver `session_end` to the client:
+  1. **Delayed sync** after `acp_stopped` (~2 seconds)
+  2. **Keepalive sync** with tolerance=0 for non-streaming sessions (~5-10 seconds)
 
 ## Corner Case: Load More (Pagination)
 
@@ -355,13 +405,14 @@ sequenceDiagram
 
 ## Corner Case: Session Deleted While Phone Sleeping
 
-When the active session is deleted by another client while the phone is asleep:
+When the active session is deleted by another client while the phone is asleep. The server sends a `session_gone` message (circuit breaker) to prevent error storms:
 
 ```mermaid
 sequenceDiagram
     participant Mobile as Mobile Client
     participant Desktop as Desktop Client
     participant Backend as Mitto Backend
+    participant Cache as Negative Cache
     participant Storage as localStorage
 
     Note over Mobile: Phone goes to sleep
@@ -369,23 +420,72 @@ sequenceDiagram
 
     Note over Desktop: User deletes session on desktop
     Desktop->>Backend: DELETE /api/sessions/session-123
-    Backend->>Backend: Delete session
+    Backend->>Backend: Delete session from store
 
-    Note over Mobile: Phone wakes up
-    Mobile->>Mobile: visibilitychange → visible
-    Mobile->>Backend: GET /api/sessions (fetch session list)
-    Backend-->>Mobile: Sessions list (session-123 not included)
+    Note over Mobile: Phone wakes up, WebSocket reconnects
+    Mobile->>Backend: WebSocket connect to /api/sessions/session-123/ws
+    Backend->>Backend: Check memory → session not found
+    Backend->>Backend: Check store → ErrSessionNotFound
+    Backend->>Cache: MarkNotFound("session-123")
+    Backend-->>Mobile: session_gone {session_id, reason: "session not found"}
+    Backend->>Backend: Close WebSocket (after 100ms flush delay)
 
-    Mobile->>Mobile: Check if activeSessionId exists in list
-    Mobile->>Mobile: Session "session-123" not found!
+    Note over Mobile: Circuit breaker activates
+    Mobile->>Mobile: handleSessionGone("session-123")
+    Mobile->>Mobile: Cancel reconnect timers
+    Mobile->>Storage: Remove session from stored sessions
 
     alt Other sessions exist
         Mobile->>Mobile: Switch to most recent session
-        Mobile->>Storage: Update activeSessionId
     else No sessions
-        Mobile->>Mobile: Clear activeSessionId
         Mobile->>Mobile: Show "New conversation" prompt
     end
+```
+
+### Session Deleted: Negative Cache Fast Path
+
+When multiple clients try to reconnect to the same deleted session, the negative cache prevents repeated filesystem lookups:
+
+```mermaid
+sequenceDiagram
+    participant Client1 as Client 1
+    participant Client2 as Client 2
+    participant Backend as Mitto Backend
+    participant Cache as Negative Cache
+    participant Store as Session Store
+
+    Note over Client1: First reconnect attempt
+    Client1->>Backend: WebSocket connect (session-123)
+    Backend->>Backend: Check memory → not found
+    Backend->>Store: GetMetadata("session-123")
+    Store-->>Backend: ErrSessionNotFound
+    Backend->>Cache: MarkNotFound("session-123") [TTL: 30s]
+    Backend-->>Client1: session_gone {reason: "session not found"}
+
+    Note over Client2: Second client connects (within 30s)
+    Client2->>Backend: WebSocket connect (session-123)
+    Backend->>Backend: Check memory → not found
+    Backend->>Cache: IsNotFound("session-123") → true
+    Note over Backend: No filesystem I/O needed!
+    Backend-->>Client2: session_gone {reason: "session not found (cached)"}
+```
+
+### Session Deleted: Defense-in-Depth (Error Message Detection)
+
+For backward compatibility with older servers, the client also detects terminal errors in generic `error` messages:
+
+```mermaid
+sequenceDiagram
+    participant Client as Client
+    participant Backend as Backend (older version)
+
+    Client->>Backend: WebSocket connect (session-123)
+    Backend-->>Client: error {message: "Session not found"}
+
+    Note over Client: case "error" handler
+    Client->>Client: isTerminalSessionError("Session not found") → true
+    Client->>Client: handleSessionGone("session-123")
+    Note over Client: No reconnection attempted
 ```
 
 ## Agent Response as Implicit ACK

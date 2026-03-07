@@ -4,9 +4,9 @@ This document covers how clients synchronize with the server, handle reconnectio
 
 ## Related Documentation
 
-- [Protocol Specification](./protocol-spec.md) - Message types and formats
-- [Sequence Numbers](./sequence-numbers.md) - Ordering and deduplication
-- [Communication Flows](./communication-flows.md) - Complete interaction flows
+- [Protocol Specification](./protocol-spec.md) — Message types and formats
+- [Sequence Numbers](./sequence-numbers.md) — Ordering and deduplication
+- [Communication Flows](./communication-flows.md) — Complete interaction flows
 
 ## Replay of Missing Content
 
@@ -111,16 +111,36 @@ sequenceDiagram
     participant Store as Session Store
 
     Note over Client: WebSocket reconnects
-    Client->>Client: Calculate lastSeenSeq from messages
-    Client->>WS: load_events {after_seq: 42}
-    WS->>Handler: handleLoadEvents(afterSeq=42)
-    Handler->>Handler: Update lastSentSeq = 42
-    Handler->>Store: ReadEventsFrom(sessionID, 42)
-    Store-->>Handler: Events with seq > 42
-    Handler-->>WS: events_loaded {events, ...}
-    WS-->>Client: Receive events
-    Client->>Client: Merge with deduplication (mergeMessagesWithSync)
+    Client->>Client: Read lastKnownSeqRef (primary) + React state (fallback)
+    Client->>Client: lastSeq = max(refSeq, stateSeq)
+    alt lastSeq > 0
+        Client->>WS: load_events {after_seq: lastSeq}
+        WS->>Handler: handleLoadEvents(afterSeq=lastSeq)
+        Handler->>Handler: Update lastSentSeq = lastSeq
+        Handler->>Store: ReadEventsFrom(sessionID, lastSeq)
+        Store-->>Handler: Events with seq > lastSeq
+        Handler-->>WS: events_loaded {events, ...}
+        WS-->>Client: Receive events
+        Client->>Client: Merge with deduplication (mergeMessagesWithSync)
+    else lastSeq = 0 (first connection)
+        Client->>WS: load_events {limit: 50}
+        WS->>Handler: handleLoadEvents(limit=50)
+        Handler->>Store: ReadEventsLast(sessionID, 50, 0)
+        Store-->>Handler: Last 50 events
+        Handler-->>WS: events_loaded {events, has_more, ...}
+        WS-->>Client: Receive events
+        Client->>Client: Set messages (initial load)
+    end
 ```
+
+**Sequence source priority on reconnection:**
+
+The `ws.onopen` handler determines `lastSeq` using two sources:
+
+1. **`lastKnownSeqRef`** (primary): A `useRef` updated on every received event. Survives reconnections, always current. Not affected by React state resets.
+2. **React state** (fallback): `Math.max(getMaxSeq(session.messages), session.lastLoadedSeq)`. May be empty/stale during reconnection but provides a safety net.
+
+The final value is `Math.max(refSeq, stateSeq)`. If both are 0, this is a first connection and the initial-load path is used.
 
 ## Deduplication Strategy
 
@@ -241,6 +261,24 @@ sequenceDiagram
     Note over Frontend: onclose triggers reconnection
 ```
 
+### Keepalive Sync Tolerance
+
+The keepalive sync uses a tolerance to avoid excessive sync requests during active streaming,
+where the markdown buffer may temporarily hold unflushed content:
+
+```javascript
+const KEEPALIVE_SYNC_TOLERANCE = 2; // Only applies during streaming
+```
+
+- **During streaming** (`isStreaming=true`): Tolerance of 2 — sync only triggers if client is >2 behind.
+  This prevents noise from normal buffering delays.
+- **When not streaming** (`isStreaming=false`): Tolerance of 0 — any gap triggers sync immediately.
+  This ensures events written during session close (like `session_end`) are delivered promptly.
+
+This distinction is critical because `session_end` events are persisted by `recorder.End()` during
+`BackgroundSession.Close()`, but are NOT delivered via the observer pattern. They can only reach
+the client through the keepalive sync or load_events mechanism.
+
 ### Connection Health Check Before Sending
 
 ```javascript
@@ -305,6 +343,72 @@ sequenceDiagram
 - `events_loaded`
 - `keepalive_ack`
 
+## Circuit Breaker: Terminal Session Errors
+
+When a session is deleted (or never existed), the server sends a `session_gone` message instead of a generic `error`. This is a **terminal signal** — the client MUST stop all reconnection attempts for that session immediately.
+
+### The Problem
+
+Without a circuit breaker, a deleted session causes an error storm: the client reconnects up to 15 times over ~3.5 minutes, each attempt generating a filesystem lookup and error log. If two requestors (WebSocket + REST polling) are active, this doubles to ~9.5 errors/second.
+
+### Server-Side: Negative Session Cache
+
+The server maintains a `NegativeSessionCache` — a thread-safe TTL cache (30 seconds) for session IDs known to not exist. This prevents repeated filesystem lookups for deleted sessions:
+
+1. **First request**: Server checks memory → checks store → session not found → caches the negative result → sends `session_gone`
+2. **Subsequent requests** (within 30s): Server checks memory → checks negative cache → cache hit → sends `session_gone` immediately (no filesystem I/O)
+
+The cache is invalidated when a session is created (`handleCreateSession`) or resumed (`ResumeSession`), preventing stale entries from blocking legitimate reconnections.
+
+### Server-Side: `session_gone` Message
+
+When the server detects a session doesn't exist (neither in memory nor in the store), it sends:
+
+```json
+{
+  "type": "session_gone",
+  "data": {
+    "session_id": "session-123",
+    "reason": "session not found"
+  }
+}
+```
+
+After sending `session_gone`, the server closes the WebSocket connection (with a 100ms delay to allow the message to flush).
+
+This replaces the previous behavior where `handleLoadEvents` would send a generic `error` message with "Session not found", which clients did not treat as terminal.
+
+### Client-Side: Three-Layer Protection
+
+The client uses defense-in-depth to detect terminal session errors:
+
+1. **Explicit `session_gone` handler**: The `handleSessionMessage` function has a dedicated `case "session_gone"` that calls `handleSessionGone()` immediately.
+
+2. **Defense-in-depth in `error` handler**: The `case "error"` handler checks if the error message contains "session not found" using `isTerminalSessionError()`. This provides backward compatibility with older servers that haven't been updated.
+
+3. **REST existence check on reconnect**: In the `ws.onclose` handler, before scheduling a reconnect, the client calls `checkSessionExists()` via REST API — not just when `!ws._wasOpen` (server rejected upgrade) but also after any failed reconnect attempt (`attempt >= 1`). If the session doesn't exist, `handleSessionGone()` is called.
+
+### `handleSessionGone()` Behavior
+
+When a session is determined to be gone, `handleSessionGone()`:
+
+- Cancels any pending reconnect timers for the session
+- Closes and cleans up the WebSocket connection
+- Clears reconnect attempt counter and keepalive state
+- Clears seen sequence numbers
+- Removes the session from stored sessions
+- Switches the UI to another available session (or shows "new conversation")
+
+### Edge Cases
+
+| Scenario                                   | Behavior                                                                                                    |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| **Archived session**                       | Store lookup succeeds (metadata exists) → NOT cached as not-found, session loads normally in read-only mode |
+| **Session recreated after deletion**       | `Remove()` called on create/resume invalidates negative cache → next connection succeeds                    |
+| **Multiple clients for same dead session** | First client populates negative cache; subsequent clients get fast-path rejection (no filesystem I/O)       |
+| **Old client, new server**                 | Old clients ignore unknown `session_gone` type; 15-attempt limit still applies                              |
+| **New client, old server**                 | Defense-in-depth catches "Session not found" in `error` messages                                            |
+
 ## Exponential Backoff (M2 fix)
 
 WebSocket reconnection uses exponential backoff with jitter:
@@ -323,3 +427,38 @@ function calculateReconnectDelay(attempt) {
   return Math.floor(exponentialDelay + jitter);
 }
 ```
+
+The attempt counter is shared between `forceReconnectActiveSession` and `onclose`, so repeated failures accumulate delay correctly. The counter is reset to 0 on successful connection (`ws.onopen`).
+
+## WebSocket Close Codes
+
+The following WebSocket close codes are relevant to the reconnection flow:
+
+| Code | Name             | Meaning                                                 | Sent By                                |
+| ---- | ---------------- | ------------------------------------------------------- | -------------------------------------- |
+| 1000 | Normal Closure   | Clean shutdown, send channel closed                     | Server (WritePump)                     |
+| 1001 | Going Away       | Server shutting down, ping failed, or context cancelled | Server (WritePump)                     |
+| 1006 | Abnormal Closure | Connection closed without a close frame (TCP teardown)  | Protocol-level (not sent explicitly)   |
+| 3001 | Force Reconnect  | Client-initiated forced reconnection                    | Client (`forceReconnectActiveSession`) |
+
+### Server-Side Close Frame Behavior (`ws_conn.go` WritePump)
+
+The `WritePump` goroutine sends close frames in these exit paths:
+
+| Exit Path                           | Close Code           | Close Reason        |
+| ----------------------------------- | -------------------- | ------------------- |
+| Send channel closed (`!ok`)         | 1000 (NormalClosure) | `""`                |
+| Ping write failed                   | 1001 (GoingAway)     | `"ping failed"`     |
+| Context cancelled (readPump exited) | 1001 (GoingAway)     | `"server shutdown"` |
+
+**Note:** Close frame sending on ping failure and context cancellation is best-effort — the write may fail if the connection is already degraded, which results in the client seeing code 1006 (Abnormal Closure) instead.
+
+### Client-Side Close Handling
+
+When the client receives a close event:
+
+- **Code 1000/1001**: Normal close. Reconnect with standard backoff.
+- **Code 1006**: Abnormal closure. The connection died without a proper handshake. Reconnect with backoff.
+- **Code 3001**: Client-initiated force reconnect. The `forceReconnectActiveSession` function pre-deletes the WS ref before closing to prevent `onclose` from scheduling a duplicate reconnect.
+
+All reconnection paths read `lastKnownSeqRef` to determine the correct `after_seq` for the sync request.

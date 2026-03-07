@@ -1,6 +1,7 @@
 # Session Management
 
-This document covers session recording, playback, and state management. For the message queue system, see [Message Queue](message-queue.md).
+This document covers session recording, playback, and state management.
+For the message queue system, see [Message Queue](message-queue.md).
 
 ## Session Recording Flow
 
@@ -182,7 +183,7 @@ graph TB
 `BackgroundSession` uses the observer pattern to decouple from WebSocket clients:
 
 ```go
-// SessionObserver receives real-time updates from a BackgroundSession
+// SessionObserver receives real-time updates from a BackgroundSession.
 // Events include a sequence number (seq) for ordering and deduplication.
 type SessionObserver interface {
     OnAgentMessage(seq int64, html string)
@@ -200,101 +201,36 @@ type SessionObserver interface {
 }
 ```
 
-**Sequence numbers (`seq`)**: All event methods include a `seq` parameter that uniquely identifies the event within the session. This enables:
+Multiple `SessionWSClient` instances can observe the same `BackgroundSession`, enabling
+multi-tab viewing and reconnection with sync.
 
-- **Deduplication**: Same `(session_id, seq)` = same event
-- **Ordering**: Sort by `seq` for correct chronological order
-- **Sync tracking**: Clients track `lastSeenSeq` to request missed events
-
-Multiple `SessionWSClient` instances can observe the same `BackgroundSession`, enabling:
-
-- Multiple browser tabs viewing the same session
-- Session continues running when all clients disconnect
-- Clients can reconnect and sync via incremental updates
-
-## Message Processing and Deduplication
-
-The system uses a **two-tier deduplication** strategy to ensure messages are never duplicated in the UI:
-
-### Server-Side Deduplication
-
-Each `SessionWSClient` tracks `lastSentSeq` - the highest sequence number sent to that client. Before sending any event, the server checks `seq > lastSentSeq`:
-
-```go
-type SessionWSClient struct {
-    lastSentSeq int64      // Highest seq sent to this client
-    seqMu       sync.Mutex // Protects lastSentSeq
-}
-```
-
-This prevents duplicates during normal streaming operations.
-
-### Client-Side Deduplication
-
-When syncing after reconnect (e.g., phone wake), the frontend uses `mergeMessagesWithSync` to handle cases where:
-
-1. **Stale `lastSeenSeq`**: The `lastSeenSeq` in localStorage is only updated at specific points (`prompt_complete`, `events_loaded`). If a visibility change occurs during streaming, it may be stale.
-
-2. **Overlapping events**: The server returns events that are already displayed in the UI.
-
-The `mergeMessagesWithSync` function deduplicates by:
-
-- **Sequence number** (preferred): Same `seq` = same event
-- **Content hash** (fallback): For messages without `seq`
-
-```mermaid
-flowchart TB
-    subgraph "Sync After Reconnect"
-        WAKE[Phone Wakes] --> READ[Read lastSeenSeq from localStorage]
-        READ --> LOAD[load_events after_seq: lastSeenSeq]
-        LOAD --> EVENTS[Server returns events]
-        EVENTS --> MERGE[mergeMessagesWithSync]
-        MERGE --> DEDUP{Deduplicate}
-        DEDUP --> |By seq| SEQ[Filter by seq match]
-        DEDUP --> |Fallback| HASH[Filter by content hash]
-        SEQ --> SORT[Sort by seq]
-        HASH --> SORT
-        SORT --> UI[Update UI]
-    end
-```
-
-### When `lastSeenSeq` is Updated
-
-The `lastSeenSeq` is updated at these specific points:
-
-| Event                       | Update Source                   |
-| --------------------------- | ------------------------------- |
-| `events_loaded`             | `last_seq` field in response    |
-| `prompt_complete`           | `event_count` field in response |
-| `session_sync` (deprecated) | `event_count` field in response |
-
-**Important:** `lastSeenSeq` is NOT updated during streaming. This is intentional - it ensures that if a reconnect happens mid-stream, the client can request all events from the last known checkpoint.
-
-For detailed documentation on WebSocket message handling and ordering, see [WebSocket Documentation](websockets/).
+> **📖 See also:** [WebSocket Sequence Numbers](websockets/sequence-numbers.md) for how `seq`
+> values are assigned and tracked, and [WebSocket Synchronization](websockets/synchronization.md)
+> for deduplication and reconnection strategies.
 
 ## Mobile Considerations
 
-Mobile clients face unique challenges due to network variability and browser behavior. The system includes several mitigations:
+Mobile clients face unique challenges due to network variability and browser behavior:
 
-### Extended Timeouts
+- **Extended timeouts**: Prompt ACK timeout is 30 seconds on mobile (vs 15 seconds on desktop)
+- **Agent response as implicit ACK**: If the agent starts responding, pending sends are auto-resolved
+- **Zombie detection**: Keepalive mechanism detects dead connections
 
-- **Prompt ACK timeout**: 30 seconds on mobile (vs 15 seconds on desktop)
-- Mobile networks have higher latency and more variability
-- iOS Safari may suspend WebSocket activity during app transitions
+> **📖 Full details:** See [Communication Flows — Agent Response as Implicit ACK](websockets/communication-flows.md)
+> and [Synchronization — Mobile Wake Resync](websockets/synchronization.md).
 
-### Agent Response as Implicit ACK
+## Connecting to Non-Existent Sessions
 
-If the agent starts responding (`agent_message` or `agent_thought`), pending sends are automatically resolved. This handles cases where:
+When a client attempts to connect to a session that no longer exists, the server uses a
+**circuit breaker** pattern to prevent error storms.
 
-1. The `prompt_received` ACK was lost due to a network hiccup
-2. The prompt was received but ACK timing was disrupted
-3. Mobile network transitions caused ACK delivery issues
-
-For detailed documentation on these mechanisms, see [Communication Flows](websockets/communication-flows.md).
+> **📖 Full details:** See [Synchronization — Circuit Breaker](websockets/synchronization.md#circuit-breaker-terminal-session-errors)
+> and [Protocol Spec — session_gone](websockets/protocol-spec.md#session_gone--terminal-session-no-longer-exists).
 
 ## Message Queue
 
-Each session has an optional message queue that allows users to queue messages while the agent is processing. Queued messages are automatically delivered when the agent becomes idle.
+Each session has an optional message queue that allows users to queue messages while the agent
+is processing. Queued messages are automatically delivered when the agent becomes idle.
 
 For detailed documentation on the queue system, including:
 
