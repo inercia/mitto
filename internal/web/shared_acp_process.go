@@ -237,8 +237,30 @@ func (p *SharedACPProcess) doStartProcess() error {
 		p.conn.SetLogger(logging.DowngradeInfoToDebug(p.logger))
 	}
 
+	// Create an init context that gets cancelled when the ACP process dies.
+	// This ensures we fail fast instead of waiting for the ACP server's internal
+	// 60-second control request timeout when the CLI subprocess has crashed.
+	// See: claude-code-agent-sdk DEFAULT_CONTROL_REQUEST_TIMEOUT (60s)
+	initCtx, initCancel := context.WithCancel(p.ctx)
+	defer initCancel()
+
+	// Monitor ACP process health: if the connection's Done() channel closes
+	// (meaning the ACP subprocess died), cancel the init context immediately.
+	go func() {
+		select {
+		case <-p.conn.Done():
+			if p.logger != nil {
+				p.logger.Warn("ACP connection closed during initialization, cancelling",
+					"acp_server", p.config.ACPServer)
+			}
+			initCancel()
+		case <-initCtx.Done():
+			// Initialization completed normally or was cancelled for another reason
+		}
+	}()
+
 	initStart := time.Now()
-	initResp, err := p.conn.Initialize(p.ctx, acp.InitializeRequest{
+	initResp, err := p.conn.Initialize(initCtx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
 			Fs: acp.FileSystemCapability{

@@ -1285,8 +1285,30 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		bs.acpConn.SetLogger(logging.DowngradeInfoToDebug(bs.logger))
 	}
 
+	// Create an init context that gets cancelled when the ACP process dies.
+	// This ensures we fail fast instead of waiting for the ACP server's internal
+	// 60-second control request timeout when the CLI subprocess has crashed.
+	// See: claude-code-agent-sdk DEFAULT_CONTROL_REQUEST_TIMEOUT (60s)
+	initCtx, initCancel := context.WithCancel(bs.ctx)
+	defer initCancel()
+
+	// Monitor ACP process health: if the connection's Done() channel closes
+	// (meaning the ACP subprocess died), cancel the init context immediately.
+	go func() {
+		select {
+		case <-bs.acpConn.Done():
+			if bs.logger != nil {
+				bs.logger.Warn("ACP connection closed during initialization, cancelling",
+					"session_id", bs.persistedID)
+			}
+			initCancel()
+		case <-initCtx.Done():
+			// Initialization completed normally or was cancelled for another reason
+		}
+	}()
+
 	// Initialize and get agent capabilities
-	initResp, err := bs.acpConn.Initialize(bs.ctx, acp.InitializeRequest{
+	initResp, err := bs.acpConn.Initialize(initCtx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
 			Fs: acp.FileSystemCapability{
@@ -1330,7 +1352,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Try to load existing session if we have an ACP session ID and the agent supports it
 	if acpSessionID != "" && initResp.AgentCapabilities.LoadSession {
-		loadResp, err := bs.acpConn.LoadSession(bs.ctx, acp.LoadSessionRequest{
+		loadResp, err := bs.acpConn.LoadSession(initCtx, acp.LoadSessionRequest{
 			SessionId:  acp.SessionId(acpSessionID),
 			Cwd:        cwd,
 			McpServers: mcpServers,
@@ -1355,7 +1377,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	}
 
 	// Create new session
-	sessResp, err := bs.acpConn.NewSession(bs.ctx, acp.NewSessionRequest{
+	sessResp, err := bs.acpConn.NewSession(initCtx, acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: mcpServers,
 	})
