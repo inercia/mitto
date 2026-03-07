@@ -145,6 +145,12 @@ export function calculateReconnectDelay(attempt, options = {}) {
 // native app activate) that can fire 1–6s apart into a single reconnect.
 const RECONNECT_DEBOUNCE_MS = 3000;
 
+// Maximum number of consecutive reconnect attempts before giving up on a session.
+// After this many failures, the client assumes the session is permanently gone
+// and stops retrying to prevent error storms (see: "Session not found" error storm).
+// At 30s max backoff, 15 attempts ≈ ~3.5 minutes of retrying before giving up.
+const MAX_SESSION_RECONNECT_ATTEMPTS = 15;
+
 /**
  * Create a per-session reconnect debounce tracker.
  * Returns an object that can be passed to shouldDebounceReconnect.
@@ -183,6 +189,125 @@ export function shouldDebounceReconnect(tracker, sessionId, options = {}) {
   return { debounced: false, elapsed };
 }
 
+// =============================================================================
+// Reconnection Seq Watermark
+// =============================================================================
+
+/**
+ * Check whether a session still exists on the server via a lightweight REST call.
+ * Used by the WebSocket reconnect loop to detect "session not found" (HTTP 404)
+ * and stop retrying for permanently gone sessions.
+ *
+ * The WebSocket API does not expose the HTTP status code when the server rejects
+ * the upgrade (e.g., with 404), so we must make a separate REST request to
+ * distinguish "session gone" from transient network errors.
+ *
+ * @param {string} sessionId - The session ID to check
+ * @param {function} fetchFn - Fetch function to use (e.g., authFetch for credentials)
+ * @param {function} apiUrlFn - Function to build API URLs (e.g., apiUrl)
+ * @returns {Promise<{exists: boolean, networkError: boolean}>}
+ */
+export async function checkSessionExists(sessionId, fetchFn, apiUrlFn) {
+  try {
+    const response = await fetchFn(apiUrlFn(`/api/sessions/${sessionId}`));
+    if (response.status === 404) {
+      return { exists: false, networkError: false };
+    }
+    // Any other response (200, 500, etc.) — session may exist, don't give up
+    return { exists: true, networkError: false };
+  } catch (_err) {
+    // Network error — can't determine, treat as transient
+    return { exists: true, networkError: true };
+  }
+}
+
+/**
+ * Check whether the reconnect attempt count has exceeded the maximum allowed.
+ *
+ * @param {number} attempt - Current attempt number (0-based)
+ * @param {Object} [options]
+ * @param {number} [options.maxAttempts] - Override max attempts (default: MAX_SESSION_RECONNECT_ATTEMPTS)
+ * @returns {boolean} true if the limit has been reached
+ */
+export function isReconnectLimitReached(attempt, options = {}) {
+  const max = options.maxAttempts ?? MAX_SESSION_RECONNECT_ATTEMPTS;
+  return attempt >= max;
+}
+
+// =============================================================================
+
+/**
+ * Create a per-session seq watermark tracker for reconnection.
+ * This tracks the highest received sequence number per session so that
+ * ws.onopen can always send the correct after_seq on reconnection,
+ * even when React state (messages array) is empty.
+ *
+ * @returns {Object} tracker - { [sessionId]: number }
+ */
+export function createSeqWatermark() {
+  return {};
+}
+
+/**
+ * Update the seq watermark for a session if the new seq is higher.
+ * Returns true if the watermark was updated.
+ *
+ * @param {Object} watermark - Created by createSeqWatermark()
+ * @param {string} sessionId - The session ID
+ * @param {number|undefined|null} seq - The sequence number
+ * @returns {boolean} True if watermark was updated
+ */
+export function updateSeqWatermark(watermark, sessionId, seq) {
+  if (!seq || seq <= 0) return false;
+  if (seq > (watermark[sessionId] || 0)) {
+    watermark[sessionId] = seq;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Get the watermark value for a session.
+ *
+ * @param {Object} watermark - Created by createSeqWatermark()
+ * @param {string} sessionId - The session ID
+ * @returns {number} The highest known seq, or 0
+ */
+export function getSeqWatermark(watermark, sessionId) {
+  return watermark[sessionId] || 0;
+}
+
+/**
+ * Clear the watermark for a session (e.g., on deletion or stale client reset).
+ *
+ * @param {Object} watermark - Created by createSeqWatermark()
+ * @param {string} sessionId - The session ID
+ */
+export function clearSeqWatermark(watermark, sessionId) {
+  delete watermark[sessionId];
+}
+
+// =============================================================================
+// Circuit Breaker: Terminal Session Error Detection
+// =============================================================================
+
+/**
+ * Check if a server error message indicates the session is permanently gone
+ * and reconnection should stop immediately.
+ *
+ * This is used as defense-in-depth alongside the explicit `session_gone`
+ * message type. It catches "Session not found" errors from older servers
+ * that don't yet send the `session_gone` message.
+ *
+ * @param {string} message - The error message from the server
+ * @returns {boolean} True if this is a terminal "session gone" error
+ */
+export function isTerminalSessionError(message) {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return lower.includes("session not found");
+}
+
 // Export constants for testing
 export const WEBSOCKET_CONSTANTS = {
   MAX_RECENT_SEQS,
@@ -190,4 +315,5 @@ export const WEBSOCKET_CONSTANTS = {
   RECONNECT_MAX_DELAY_MS,
   RECONNECT_JITTER_FACTOR,
   RECONNECT_DEBOUNCE_MS,
+  MAX_SESSION_RECONNECT_ATTEMPTS,
 };

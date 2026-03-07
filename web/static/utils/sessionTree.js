@@ -25,16 +25,6 @@ export function buildSessionTree(sessions) {
   const rootSessions = [];
   const sessionById = new Map();
 
-  // DEBUG: Log input sessions with parent_session_id
-  const withParents = sessions.filter(s => s.parent_session_id);
-  if (withParents.length > 0) {
-    console.log('[DEBUG] buildSessionTree: Input sessions with parent_session_id:', withParents.map(s => ({
-      id: s.session_id?.substring(0, 8),
-      parent: s.parent_session_id?.substring(0, 8),
-      name: s.name
-    })));
-  }
-
   // First pass: index all sessions by ID
   sessions.forEach(session => {
     sessionById.set(session.session_id, session);
@@ -59,7 +49,7 @@ export function buildSessionTree(sessions) {
   childrenMap.forEach((children, parentId) => {
     if (!sessionById.has(parentId)) {
       // Parent doesn't exist in current session list
-      console.log('[DEBUG] buildSessionTree: Found orphaned children for missing parent:', parentId.substring(0, 8));
+      console.warn('buildSessionTree: Found orphaned children for missing parent:', parentId.substring(0, 8));
       children.forEach(child => {
         child._isOrphan = true;
         orphans.push(child);
@@ -67,14 +57,6 @@ export function buildSessionTree(sessions) {
       // Remove from childrenMap since parent doesn't exist
       childrenMap.delete(parentId);
     }
-  });
-
-  // DEBUG: Log results
-  console.log('[DEBUG] buildSessionTree: Results -', {
-    roots: rootSessions.length,
-    parentsWithChildren: childrenMap.size,
-    orphans: orphans.length,
-    totalChildren: Array.from(childrenMap.values()).reduce((sum, arr) => sum + arr.length, 0)
   });
 
   return { rootSessions, childrenMap, orphans };

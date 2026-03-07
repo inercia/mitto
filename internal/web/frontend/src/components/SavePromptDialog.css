@@ -1,0 +1,209 @@
+.save-prompt-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+.save-prompt-dialog {
+  background: var(--color-bg-secondary, #1e1e2e);
+  border: 1px solid var(--color-border, #363647);
+  border-radius: 12px;
+  width: 480px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+
+.save-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border, #363647);
+}
+
+.save-prompt-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary, #e0e0e0);
+}
+
+.save-prompt-close {
+  background: none;
+  border: none;
+  color: var(--color-text-secondary, #888);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.save-prompt-close:hover {
+  background: var(--color-bg-hover, #2a2a3a);
+  color: var(--color-text-primary, #e0e0e0);
+}
+
+.save-prompt-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.save-prompt-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.save-prompt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.save-prompt-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary, #888);
+}
+
+.save-prompt-field label .required {
+  color: #e74c3c;
+  margin-left: 2px;
+}
+
+.save-prompt-field input {
+  background: var(--color-bg-primary, #161622);
+  border: 1px solid var(--color-border, #363647);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--color-text-primary, #e0e0e0);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.save-prompt-field input:focus {
+  border-color: var(--color-accent, #7c5cbf);
+}
+
+.save-prompt-field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.save-prompt-field input.error {
+  border-color: #e74c3c;
+}
+
+.save-prompt-field input.monospace {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 12px;
+}
+
+.save-prompt-path {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+  color: var(--color-text-tertiary, #666);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.save-prompt-error {
+  font-size: 12px;
+  color: #e74c3c;
+}
+
+.save-prompt-error-banner {
+  background: rgba(231, 76, 60, 0.1);
+  border: 1px solid rgba(231, 76, 60, 0.2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #e74c3c;
+}
+
+.save-prompt-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.save-prompt-preview label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary, #888);
+}
+
+.save-prompt-preview-text {
+  background: var(--color-bg-primary, #161622);
+  border: 1px solid var(--color-border, #363647);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--color-text-tertiary, #666);
+  max-height: 80px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.save-prompt-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--color-border, #363647);
+}
+
+.save-prompt-cancel {
+  background: none;
+  border: 1px solid var(--color-border, #363647);
+  color: var(--color-text-secondary, #888);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.save-prompt-cancel:hover {
+  background: var(--color-bg-hover, #2a2a3a);
+  color: var(--color-text-primary, #e0e0e0);
+}
+
+.save-prompt-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.save-prompt-save {
+  background: var(--color-accent, #7c5cbf);
+  border: none;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.save-prompt-save:hover:not(:disabled) {
+  background: var(--color-accent-hover, #6b4dab);
+}
+
+.save-prompt-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

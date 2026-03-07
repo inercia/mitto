@@ -15,6 +15,13 @@ import {
   calculateReconnectDelay,
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
+  checkSessionExists,
+  isReconnectLimitReached,
+  isTerminalSessionError,
+  createSeqWatermark,
+  updateSeqWatermark,
+  getSeqWatermark,
+  clearSeqWatermark,
   WEBSOCKET_CONSTANTS,
 } from "./websocket.js";
 
@@ -687,5 +694,383 @@ describe("forceReconnectActiveSession backoff simulation", () => {
     });
     expect(delayB).toBe(WEBSOCKET_CONSTANTS.RECONNECT_BASE_DELAY_MS);
     expect(attempts["sessionA"]).toBe(3); // unchanged
+  });
+});
+
+// =============================================================================
+// Reconnection Seq Watermark Tests
+//
+// These test the seq watermark used by lastKnownSeqRef in useWebSocket.js to
+// track the highest received sequence number across WebSocket reconnections.
+// The watermark is the primary source for after_seq on reconnect, fixing the
+// bug where the client always resynced from seq=0.
+// =============================================================================
+
+describe("createSeqWatermark", () => {
+  test("creates an empty watermark object", () => {
+    const wm = createSeqWatermark();
+    expect(wm).toEqual({});
+  });
+});
+
+describe("updateSeqWatermark", () => {
+  test("updates watermark when seq is higher than current", () => {
+    const wm = createSeqWatermark();
+    expect(updateSeqWatermark(wm, "s1", 10)).toBe(true);
+    expect(wm["s1"]).toBe(10);
+  });
+
+  test("does not update when seq is lower than current", () => {
+    const wm = createSeqWatermark();
+    updateSeqWatermark(wm, "s1", 50);
+    expect(updateSeqWatermark(wm, "s1", 30)).toBe(false);
+    expect(wm["s1"]).toBe(50);
+  });
+
+  test("does not update when seq equals current", () => {
+    const wm = createSeqWatermark();
+    updateSeqWatermark(wm, "s1", 42);
+    expect(updateSeqWatermark(wm, "s1", 42)).toBe(false);
+    expect(wm["s1"]).toBe(42);
+  });
+
+  test("handles undefined seq gracefully", () => {
+    const wm = createSeqWatermark();
+    expect(updateSeqWatermark(wm, "s1", undefined)).toBe(false);
+    expect(wm["s1"]).toBeUndefined();
+  });
+
+  test("handles null seq gracefully", () => {
+    const wm = createSeqWatermark();
+    expect(updateSeqWatermark(wm, "s1", null)).toBe(false);
+    expect(wm["s1"]).toBeUndefined();
+  });
+
+  test("handles zero seq gracefully", () => {
+    const wm = createSeqWatermark();
+    expect(updateSeqWatermark(wm, "s1", 0)).toBe(false);
+    expect(wm["s1"]).toBeUndefined();
+  });
+
+  test("handles negative seq gracefully", () => {
+    const wm = createSeqWatermark();
+    expect(updateSeqWatermark(wm, "s1", -5)).toBe(false);
+    expect(wm["s1"]).toBeUndefined();
+  });
+
+  test("tracks multiple sessions independently", () => {
+    const wm = createSeqWatermark();
+    updateSeqWatermark(wm, "s1", 100);
+    updateSeqWatermark(wm, "s2", 200);
+    updateSeqWatermark(wm, "s3", 50);
+    expect(wm["s1"]).toBe(100);
+    expect(wm["s2"]).toBe(200);
+    expect(wm["s3"]).toBe(50);
+  });
+
+  test("monotonically increases for a session with interleaved events", () => {
+    const wm = createSeqWatermark();
+    // Simulate receiving events: some with seq, some with max_seq
+    updateSeqWatermark(wm, "s1", 1); // first event seq=1
+    updateSeqWatermark(wm, "s1", 5); // max_seq=5
+    updateSeqWatermark(wm, "s1", 2); // late event seq=2 (should not lower)
+    updateSeqWatermark(wm, "s1", 5); // same max_seq (no-op)
+    updateSeqWatermark(wm, "s1", 10); // new event seq=10
+    expect(wm["s1"]).toBe(10);
+  });
+});
+
+describe("getSeqWatermark", () => {
+  test("returns 0 for unknown session", () => {
+    const wm = createSeqWatermark();
+    expect(getSeqWatermark(wm, "unknown")).toBe(0);
+  });
+
+  test("returns stored value for known session", () => {
+    const wm = createSeqWatermark();
+    updateSeqWatermark(wm, "s1", 42);
+    expect(getSeqWatermark(wm, "s1")).toBe(42);
+  });
+});
+
+describe("clearSeqWatermark", () => {
+  test("removes watermark for a session", () => {
+    const wm = createSeqWatermark();
+    updateSeqWatermark(wm, "s1", 100);
+    clearSeqWatermark(wm, "s1");
+    expect(getSeqWatermark(wm, "s1")).toBe(0);
+    expect(wm["s1"]).toBeUndefined();
+  });
+
+  test("does not affect other sessions", () => {
+    const wm = createSeqWatermark();
+    updateSeqWatermark(wm, "s1", 100);
+    updateSeqWatermark(wm, "s2", 200);
+    clearSeqWatermark(wm, "s1");
+    expect(getSeqWatermark(wm, "s1")).toBe(0);
+    expect(getSeqWatermark(wm, "s2")).toBe(200);
+  });
+
+  test("clearing unknown session is a no-op", () => {
+    const wm = createSeqWatermark();
+    clearSeqWatermark(wm, "nonexistent"); // should not throw
+    expect(getSeqWatermark(wm, "nonexistent")).toBe(0);
+  });
+});
+
+describe("seq watermark reconnection scenario", () => {
+  test("watermark survives simulated reconnection (ref not cleared)", () => {
+    // This simulates the core bug fix: the watermark persists across
+    // WebSocket reconnections because it's stored in a ref, not in
+    // React state that can be empty during reconnection.
+    const wm = createSeqWatermark();
+
+    // Connection 1: receive events seq=1 through seq=113
+    for (let i = 1; i <= 113; i++) {
+      updateSeqWatermark(wm, "session-abc", i);
+    }
+    expect(getSeqWatermark(wm, "session-abc")).toBe(113);
+
+    // Simulate forceReconnect: WS closes, messages array may be cleared,
+    // but the watermark ref is NOT cleared.
+    // (In the real code, sessionsRef.current[id].messages could be empty here)
+
+    // Connection 2: ws.onopen fires — watermark provides the correct after_seq
+    const afterSeq = getSeqWatermark(wm, "session-abc");
+    expect(afterSeq).toBe(113); // NOT 0!
+
+    // Connection 2 receives events from seq=114 onwards
+    updateSeqWatermark(wm, "session-abc", 114);
+    updateSeqWatermark(wm, "session-abc", 158);
+    expect(getSeqWatermark(wm, "session-abc")).toBe(158);
+  });
+
+  test("watermark is reset on stale client detection", () => {
+    const wm = createSeqWatermark();
+    updateSeqWatermark(wm, "s1", 500); // stale value from old server session
+
+    // Server says max_seq is 50 — client is stale
+    // The events_loaded handler should clear the watermark
+    clearSeqWatermark(wm, "s1");
+    expect(getSeqWatermark(wm, "s1")).toBe(0);
+
+    // Fresh events from server update the watermark correctly
+    updateSeqWatermark(wm, "s1", 50);
+    expect(getSeqWatermark(wm, "s1")).toBe(50);
+  });
+
+  test("watermark is cleaned up on session deletion", () => {
+    const wm = createSeqWatermark();
+    updateSeqWatermark(wm, "s1", 100);
+    updateSeqWatermark(wm, "s2", 200);
+
+    // Delete session s1
+    clearSeqWatermark(wm, "s1");
+
+    expect(getSeqWatermark(wm, "s1")).toBe(0);
+    expect(getSeqWatermark(wm, "s2")).toBe(200);
+  });
+});
+
+// =============================================================================
+// checkSessionExists
+// =============================================================================
+
+describe("checkSessionExists", () => {
+  // Helper: create a mock fetch that records calls and returns a fixed status
+  function createMockFetch(status) {
+    const calls = [];
+    const fn = async (url) => {
+      calls.push(url);
+      return { status };
+    };
+    fn.calls = calls;
+    return fn;
+  }
+
+  // Helper: create a mock fetch that rejects with an error
+  function createFailingFetch(error) {
+    const calls = [];
+    const fn = async (url) => {
+      calls.push(url);
+      throw error;
+    };
+    fn.calls = calls;
+    return fn;
+  }
+
+  const mockApiUrl = (path) => `http://localhost${path}`;
+
+  test("returns { exists: false } when server responds with 404", async () => {
+    const mockFetch = createMockFetch(404);
+
+    const result = await checkSessionExists("session-123", mockFetch, mockApiUrl);
+    expect(result).toEqual({ exists: false, networkError: false });
+    expect(mockFetch.calls).toEqual(["http://localhost/api/sessions/session-123"]);
+  });
+
+  test("returns { exists: true } when server responds with 200", async () => {
+    const mockFetch = createMockFetch(200);
+
+    const result = await checkSessionExists("session-456", mockFetch, mockApiUrl);
+    expect(result).toEqual({ exists: true, networkError: false });
+  });
+
+  test("returns { exists: true } when server responds with 500 (don't give up on server errors)", async () => {
+    const mockFetch = createMockFetch(500);
+
+    const result = await checkSessionExists("session-789", mockFetch, mockApiUrl);
+    expect(result).toEqual({ exists: true, networkError: false });
+  });
+
+  test("returns { exists: true, networkError: true } on network failure", async () => {
+    const mockFetch = createFailingFetch(new Error("Network error"));
+
+    const result = await checkSessionExists("session-abc", mockFetch, mockApiUrl);
+    expect(result).toEqual({ exists: true, networkError: true });
+  });
+
+  test("passes session ID correctly in the URL", async () => {
+    const mockFetch = createMockFetch(200);
+    const prefixApiUrl = (path) => `/prefix${path}`;
+
+    await checkSessionExists("01JNPKPC01SJYTSE3EYMW5J26R", mockFetch, prefixApiUrl);
+    expect(mockFetch.calls).toEqual([
+      "/prefix/api/sessions/01JNPKPC01SJYTSE3EYMW5J26R",
+    ]);
+  });
+});
+
+// =============================================================================
+// isReconnectLimitReached
+// =============================================================================
+
+describe("isReconnectLimitReached", () => {
+  test("returns false when attempt is 0", () => {
+    expect(isReconnectLimitReached(0)).toBe(false);
+  });
+
+  test("returns false when attempt is below default limit", () => {
+    expect(isReconnectLimitReached(5)).toBe(false);
+    expect(isReconnectLimitReached(14)).toBe(false);
+  });
+
+  test("returns true when attempt equals default limit", () => {
+    const limit = WEBSOCKET_CONSTANTS.MAX_SESSION_RECONNECT_ATTEMPTS;
+    expect(isReconnectLimitReached(limit)).toBe(true);
+  });
+
+  test("returns true when attempt exceeds default limit", () => {
+    const limit = WEBSOCKET_CONSTANTS.MAX_SESSION_RECONNECT_ATTEMPTS;
+    expect(isReconnectLimitReached(limit + 1)).toBe(true);
+    expect(isReconnectLimitReached(100)).toBe(true);
+  });
+
+  test("default limit matches MAX_SESSION_RECONNECT_ATTEMPTS constant", () => {
+    expect(WEBSOCKET_CONSTANTS.MAX_SESSION_RECONNECT_ATTEMPTS).toBe(15);
+  });
+
+  test("accepts custom maxAttempts override", () => {
+    expect(isReconnectLimitReached(3, { maxAttempts: 3 })).toBe(true);
+    expect(isReconnectLimitReached(2, { maxAttempts: 3 })).toBe(false);
+  });
+
+  test("custom maxAttempts of 0 means always reached", () => {
+    expect(isReconnectLimitReached(0, { maxAttempts: 0 })).toBe(true);
+  });
+});
+
+// =============================================================================
+// Error storm prevention (integration-style tests)
+// =============================================================================
+
+describe("error storm prevention", () => {
+  test("session-gone detection: 404 response stops reconnection", async () => {
+    // Simulates the scenario from the bug report:
+    // 1. WebSocket connects to a dead session
+    // 2. Server returns 404 (before upgrade)
+    // 3. ws.onclose fires (ws._wasOpen is false)
+    // 4. Client checks REST API → 404 → calls handleSessionGone
+    const mockFetch = async () => ({ status: 404 });
+    const mockApiUrl = (path) => path;
+
+    const result = await checkSessionExists(
+      "01JNPKPC01SJYTSE3EYMW5J26R",
+      mockFetch,
+      mockApiUrl,
+    );
+
+    expect(result.exists).toBe(false);
+    // In the real code, this would trigger handleSessionGone()
+    // which stops all reconnection attempts for this session
+  });
+
+  test("max retry limit prevents unbounded reconnection", () => {
+    // Simulates the scenario where the session exists but keeps failing:
+    // After MAX_SESSION_RECONNECT_ATTEMPTS failures, reconnection stops
+    const maxAttempts = WEBSOCKET_CONSTANTS.MAX_SESSION_RECONNECT_ATTEMPTS;
+
+    // Simulate the attempt counter incrementing
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      expect(isReconnectLimitReached(attempt)).toBe(false);
+    }
+    // At the limit, reconnection should stop
+    expect(isReconnectLimitReached(maxAttempts)).toBe(true);
+  });
+
+  test("successful connection resets attempt counter (backoff sequence restarts)", () => {
+    // Verify that the backoff delay sequence restarts from base after
+    // a successful connection (attempt 0)
+    const baseDelay = WEBSOCKET_CONSTANTS.RECONNECT_BASE_DELAY_MS;
+    const delay = calculateReconnectDelay(0, { jitterFactor: 0 });
+    expect(delay).toBe(baseDelay);
+  });
+});
+
+// =============================================================================
+// Circuit Breaker: isTerminalSessionError
+// =============================================================================
+
+describe("isTerminalSessionError", () => {
+  test('returns true for "Session not found"', () => {
+    expect(isTerminalSessionError("Session not found")).toBe(true);
+  });
+
+  test('returns true for "session not found" (lowercase)', () => {
+    expect(isTerminalSessionError("session not found")).toBe(true);
+  });
+
+  test('returns true for "SESSION NOT FOUND" (uppercase)', () => {
+    expect(isTerminalSessionError("SESSION NOT FOUND")).toBe(true);
+  });
+
+  test('returns true for messages containing "session not found" in context', () => {
+    expect(isTerminalSessionError("Session not found in store")).toBe(true);
+    expect(
+      isTerminalSessionError("Error: session not found for ID abc123"),
+    ).toBe(true);
+  });
+
+  test("returns false for null", () => {
+    expect(isTerminalSessionError(null)).toBe(false);
+  });
+
+  test("returns false for undefined", () => {
+    expect(isTerminalSessionError(undefined)).toBe(false);
+  });
+
+  test("returns false for empty string", () => {
+    expect(isTerminalSessionError("")).toBe(false);
+  });
+
+  test("returns false for unrelated errors", () => {
+    expect(isTerminalSessionError("Connection timeout")).toBe(false);
+    expect(isTerminalSessionError("Internal server error")).toBe(false);
+    expect(isTerminalSessionError("Failed to send prompt")).toBe(false);
+  });
+
+  test("returns false for partial matches that are not session-not-found", () => {
+    expect(isTerminalSessionError("session expired")).toBe(false);
+    expect(isTerminalSessionError("not found")).toBe(false);
   });
 });

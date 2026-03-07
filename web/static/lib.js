@@ -640,6 +640,51 @@ export function isStaleClientState(clientLastSeq, serverLastSeq) {
 }
 
 /**
+ * Determine if a keepalive sync should be triggered based on sequence gap.
+ * Uses different tolerance levels for streaming vs non-streaming sessions:
+ * - Streaming: tolerance=2 (avoid noise from markdown buffer delays)
+ * - Non-streaming: tolerance=0 (immediate sync to catch session_end events)
+ *
+ * @param {number} clientMaxSeq - Client's maximum sequence number
+ * @param {number} serverMaxSeq - Server's maximum sequence number from keepalive_ack
+ * @param {boolean} isStreaming - Whether the session is actively streaming
+ * @returns {boolean} True if sync should be triggered
+ */
+export function shouldSyncOnKeepalive(
+  clientMaxSeq,
+  serverMaxSeq,
+  isStreaming,
+) {
+  // Validate inputs
+  if (
+    typeof clientMaxSeq !== "number" ||
+    typeof serverMaxSeq !== "number" ||
+    clientMaxSeq < 0 ||
+    serverMaxSeq < 0
+  ) {
+    return false;
+  }
+
+  // Client ahead of server = stale state, always sync
+  if (clientMaxSeq > serverMaxSeq) {
+    return true;
+  }
+
+  // Client in sync or ahead, no sync needed
+  if (clientMaxSeq >= serverMaxSeq) {
+    return false;
+  }
+
+  // Client is behind. Apply tolerance based on streaming state.
+  // Streaming: tolerance=2 (avoid noise from markdown buffer delays)
+  // Non-streaming: tolerance=0 (immediate sync to catch session_end events)
+  const tolerance = isStreaming ? 2 : 0;
+  const gap = serverMaxSeq - clientMaxSeq;
+
+  return gap > tolerance;
+}
+
+/**
  * Create a content hash for a message for deduplication.
  * Handles different message types appropriately:
  * - user/agent/thought/error: use text or html content

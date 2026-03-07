@@ -79,6 +79,8 @@ const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
 // This avoids excessive sync requests during normal streaming where the markdown buffer
 // may hold content briefly before flushing to the UI. A tolerance of 2 prevents
 // sync requests when client is just 1-2 behind due to normal buffering delays.
+// NOTE: This tolerance is only applied during active streaming. For non-streaming sessions,
+// tolerance is 0 to ensure immediate sync of final events like session_end.
 const KEEPALIVE_SYNC_TOLERANCE = 2;
 
 /**
@@ -742,53 +744,74 @@ export function useWebSocket() {
   }, [sessions, activeSessionId]);
 
   // Get all active sessions as array for sidebar
-  // Note: Not using useMemo to ensure working_dir is always up-to-date
-  const activeSessions = Object.entries(sessions).map(([id, data]) => {
-    // Find the most recent user message timestamp
-    const userMessages = (data.messages || []).filter(
-      (m) => m.role === ROLE_USER,
-    );
-    const lastUserMsgTime =
-      userMessages.length > 0
-        ? new Date(
-            Math.max(...userMessages.map((m) => m.timestamp || 0)),
-          ).toISOString()
-        : null;
-    // Get working_dir from multiple sources (in order of priority):
-    // 1. Global map (populated from API responses, most reliable)
-    // 2. workingDirMap state (populated from storedSessions and WebSocket connected messages)
-    // 3. storedSessions (original API response)
-    // 4. session info (set by switchSession or WebSocket connected handler)
-    const storedSession = storedSessions.find((s) => s.session_id === id);
-    const workingDir =
-      getGlobalWorkingDir(id) ||
-      workingDirMap[id] ||
-      storedSession?.working_dir ||
-      data.info?.working_dir ||
-      "";
-    // Check if session is archived (from session info or stored session)
-    // Archived sessions should not be marked as "active" since they have no ACP connection
-    const isArchived = data.info?.archived || storedSession?.archived || false;
-    // Check if archive is pending (waiting for agent to finish)
-    const isArchivePending =
-      data.info?.archive_pending || storedSession?.archive_pending || false;
-    return {
-      session_id: id,
-      name: data.info?.name || "New conversation",
-      acp_server: data.info?.acp_server || "",
-      working_dir: workingDir,
-      created_at: data.info?.created_at || new Date().toISOString(),
-      updated_at: data.info?.updated_at || new Date().toISOString(),
-      last_user_message_at: lastUserMsgTime || data.info?.last_user_message_at,
-      // Archived sessions are not "active" - they have no ACP connection
-      status: isArchived ? "archived" : "active",
-      isActive: !isArchived,
-      isStreaming: !isArchived && (data.isStreaming || false),
-      messageCount: data.messages?.length || 0,
-      archived: isArchived,
-      archive_pending: isArchivePending,
-    };
-  });
+  // Memoized with structural fingerprint to prevent unnecessary re-renders
+  // when only non-structural properties change (e.g., messageCount, timestamps)
+  const prevActiveSessionsFingerprint = useRef('');
+  const prevActiveSessionsResult = useRef([]);
+
+  const activeSessions = useMemo(() => {
+    const result = Object.entries(sessions).map(([id, data]) => {
+      // Find the most recent user message timestamp
+      const userMessages = (data.messages || []).filter(
+        (m) => m.role === ROLE_USER,
+      );
+      const lastUserMsgTime =
+        userMessages.length > 0
+          ? new Date(
+              Math.max(...userMessages.map((m) => m.timestamp || 0)),
+            ).toISOString()
+          : null;
+      // Get working_dir from multiple sources (in order of priority):
+      // 1. Global map (populated from API responses, most reliable)
+      // 2. workingDirMap state (populated from storedSessions and WebSocket connected messages)
+      // 3. storedSessions (original API response)
+      // 4. session info (set by switchSession or WebSocket connected handler)
+      const storedSession = storedSessions.find((s) => s.session_id === id);
+      const workingDir =
+        getGlobalWorkingDir(id) ||
+        workingDirMap[id] ||
+        storedSession?.working_dir ||
+        data.info?.working_dir ||
+        "";
+      // Check if session is archived (from session info or stored session)
+      // Archived sessions should not be marked as "active" since they have no ACP connection
+      const isArchived = data.info?.archived || storedSession?.archived || false;
+      // Check if archive is pending (waiting for agent to finish)
+      const isArchivePending =
+        data.info?.archive_pending || storedSession?.archive_pending || false;
+      return {
+        session_id: id,
+        name: data.info?.name || "New conversation",
+        acp_server: data.info?.acp_server || "",
+        working_dir: workingDir,
+        created_at: data.info?.created_at || new Date().toISOString(),
+        updated_at: data.info?.updated_at || new Date().toISOString(),
+        last_user_message_at: lastUserMsgTime || data.info?.last_user_message_at,
+        // Archived sessions are not "active" - they have no ACP connection
+        status: isArchived ? "archived" : "active",
+        isActive: !isArchived,
+        isStreaming: !isArchived && (data.isStreaming || false),
+        messageCount: data.messages?.length || 0,
+        archived: isArchived,
+        archive_pending: isArchivePending,
+      };
+    });
+
+    // Structural fingerprint: only produce a new array reference when
+    // sidebar-relevant fields change. Fields like messageCount, timestamps,
+    // and archive_pending change frequently during streaming but don't
+    // affect the sidebar layout or tree structure.
+    const fingerprint = result.map(s =>
+      `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.status}`
+    ).sort().join('\n');
+
+    if (fingerprint === prevActiveSessionsFingerprint.current) {
+      return prevActiveSessionsResult.current;
+    }
+    prevActiveSessionsFingerprint.current = fingerprint;
+    prevActiveSessionsResult.current = result;
+    return result;
+  }, [sessions, storedSessions, workingDirMap]);
 
   // Handle messages from per-session WebSocket
   const handleSessionMessage = useCallback((sessionId, msg) => {
@@ -1496,27 +1519,33 @@ export function useWebSocket() {
                 }),
               );
             }
-          } else if (serverMaxSeq > clientMaxSeq + KEEPALIVE_SYNC_TOLERANCE) {
-            // We're behind. Skip sync if actively streaming — events are arriving
-            // in real-time and the gap closes naturally when the stream ends.
-            console.log(
-              `[keepalive] Session ${sessionId} is behind: client_max_seq=${clientMaxSeq}, server_max_seq=${serverMaxSeq} (tolerance=${KEEPALIVE_SYNC_TOLERANCE}), requesting sync`,
-            );
-            const currentSession = sessionsRef.current[sessionId];
-            if (currentSession?.isStreaming) {
-              console.debug(
-                `[keepalive] Skipping sync for ${sessionId} — stream in progress`,
+          } else {
+            // Use tolerance only during streaming (where markdown buffer may hold unflushed content).
+            // For non-streaming sessions, any gap should trigger sync immediately to catch
+            // session_end events and other events written during session close.
+            const syncTolerance = currentSession?.isStreaming ? KEEPALIVE_SYNC_TOLERANCE : 0;
+
+            if (serverMaxSeq > clientMaxSeq + syncTolerance) {
+              // We're behind. Skip sync if actively streaming — events are arriving
+              // in real-time and the gap closes naturally when the stream ends.
+              console.log(
+                `[keepalive] Session ${sessionId} is behind: client_max_seq=${clientMaxSeq}, server_max_seq=${serverMaxSeq} (tolerance=${syncTolerance}), requesting sync`,
               );
-              break;
-            }
-            const ws = sessionWsRefs.current[sessionId];
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(
-                JSON.stringify({
-                  type: "load_events",
-                  data: { after_seq: clientMaxSeq },
-                }),
-              );
+              if (currentSession?.isStreaming) {
+                console.debug(
+                  `[keepalive] Skipping sync for ${sessionId} — stream in progress`,
+                );
+                break;
+              }
+              const ws = sessionWsRefs.current[sessionId];
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: "load_events",
+                    data: { after_seq: clientMaxSeq },
+                  }),
+                );
+              }
             }
           }
         }
@@ -2121,6 +2150,30 @@ export function useWebSocket() {
             s.session_id === sessionId ? { ...s, isStreaming: false } : s,
           ),
         );
+
+        // Delayed sync to catch session_end event.
+        // The server writes session_end AFTER sending acp_stopped (see background_session.go Close()),
+        // so we need a short delay to allow recorder.End() to complete before requesting the event.
+        // This provides faster session_end delivery (~2s) vs waiting for keepalive (~5-10s).
+        setTimeout(() => {
+          const ws = sessionWsRefs.current[sessionId];
+          const session = sessionsRef.current[sessionId];
+          const lastSeq = Math.max(
+            getMaxSeq(session?.messages || []),
+            session?.lastLoadedSeq || 0,
+          );
+          if (ws && ws.readyState === WebSocket.OPEN && lastSeq > 0) {
+            console.log(
+              `[acp_stopped] Requesting delayed sync for session ${sessionId} after_seq=${lastSeq}`,
+            );
+            ws.send(
+              JSON.stringify({
+                type: "load_events",
+                data: { after_seq: lastSeq },
+              }),
+            );
+          }
+        }, 2000);
         break;
 
       case "queue_message_titled":

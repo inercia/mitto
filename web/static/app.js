@@ -1658,8 +1658,10 @@ function SessionList({
   queueLength = 0,
 }) {
   // Combine active and stored sessions using shared helper function
-  // Note: Not using useMemo to ensure working_dir is always up-to-date
-  const allSessions = computeAllSessions(activeSessions, storedSessions);
+  const allSessions = useMemo(
+    () => computeAllSessions(activeSessions, storedSessions),
+    [activeSessions, storedSessions]
+  );
 
   const isLight = theme === "light";
   const isLargeFont = fontSize === "large";
@@ -1870,6 +1872,12 @@ function SessionList({
     };
   }, [regularSessions, periodicSessions, archivedSessions]);
 
+  // Structural fingerprint tracking for groupedSessions optimization
+  // Prevents expensive buildSessionTree rebuilds when only non-structural properties change
+  // (e.g., isStreaming, message content during tool_update events)
+  const prevSessionFingerprint = useRef('');
+  const prevGroupedSessions = useRef(null);
+
   // Group sessions based on current mode (uses filtered sessions)
   // Returns:
   // - null for "none" mode (flat list)
@@ -1880,18 +1888,26 @@ function SessionList({
       return null; // No grouping, render flat list
     }
 
+    // Compute structural fingerprint: only session IDs, parent IDs, and working dirs matter for tree structure
+    // This avoids expensive buildSessionTree rebuilds when only isStreaming or message content changes
+    const fingerprint = filteredSessions.map(s =>
+      `${s.session_id}|${s.parent_session_id || ''}|${s.working_dir || ''}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ''}`
+    ).sort().join('\n');
+
+    if (fingerprint === prevSessionFingerprint.current && prevGroupedSessions.current) {
+      return prevGroupedSessions.current;
+    }
+    prevSessionFingerprint.current = fingerprint;
+
     // Helper to get session working dir and acp server
+    // working_dir and acp_server are already merged by computeAllSessions() in lib.js
     const getSessionInfo = (session) => {
-      const storedSession = storedSessions.find(
-        (s) => s.session_id === session.session_id,
-      );
       return {
         workingDir:
           session.working_dir ||
-          storedSession?.working_dir ||
           getGlobalWorkingDir(session.session_id) ||
           "",
-        acpServer: session.acp_server || storedSession?.acp_server || "",
+        acpServer: session.acp_server || "",
       };
     };
 
@@ -1900,23 +1916,9 @@ function SessionList({
       // Structure: Folder → Parent sessions (with nested child sessions)
       const folderGroups = new Map();
 
-      // DEBUG: Log storedSessions state before building hierarchy
-      const storedWithParents = storedSessions.filter(s => s.parent_session_id);
-      if (storedWithParents.length > 0) {
-        console.log('[DEBUG] Hierarchical grouping: storedSessions with parent_session_id:', storedWithParents.map(s => ({
-          id: s.session_id?.substring(0, 8),
-          parent: s.parent_session_id?.substring(0, 8),
-          name: s.name
-        })));
-      }
-
       // Helper to get parent_session_id from session
-      const getParentSessionId = (session) => {
-        const storedSession = storedSessions.find(
-          (s) => s.session_id === session.session_id,
-        );
-        return session.parent_session_id || storedSession?.parent_session_id || "";
-      };
+      // parent_session_id is already merged by computeAllSessions() in lib.js
+      const getParentSessionId = (session) => session.parent_session_id || "";
 
       // First pass: group all sessions by folder
       filteredSessions.forEach((session) => {
@@ -1988,6 +1990,7 @@ function SessionList({
         })
         .sort((a, b) => a.label.localeCompare(b.label));
 
+      prevGroupedSessions.current = result;
       return result;
     }
 
@@ -2029,10 +2032,13 @@ function SessionList({
     });
 
     // Convert to array and sort by label
-    return Array.from(groups.entries())
+    const result = Array.from(groups.entries())
       .map(([key, value]) => ({ key, ...value }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [filteredSessions, groupingMode, storedSessions]);
+
+    prevGroupedSessions.current = result;
+    return result;
+  }, [filteredSessions, groupingMode]);
 
   // Enforce accordion mode when groups change (e.g., tab switch, grouping mode change)
   // If multiple groups are expanded and accordion mode is enabled, collapse all but the first.
@@ -2722,6 +2728,7 @@ function App() {
   const [uiPromptToastData, setUIPromptToastData] = useState(null); // { sessionId, sessionName, question }
   const [runnerFallbackWarning, setRunnerFallbackWarning] = useState(null); // { requestedType, fallbackType, reason }
   const [acpStartFailedError, setAcpStartFailedError] = useState(null); // { session_id, error }
+  const [acpPermanentError, setAcpPermanentError] = useState(null); // { session_id, error, user_message, user_guidance, command }
   const [hookFailedError, setHookFailedError] = useState(null); // { name, exit_code, error }
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
@@ -3020,6 +3027,30 @@ function App() {
       window.removeEventListener(
         "mitto:acp_start_failed",
         handleAcpStartFailed,
+      );
+    };
+  }, []);
+
+  // Listen for ACP permanent error events (non-retryable errors with guidance)
+  useEffect(() => {
+    const handleAcpPermanentError = (event) => {
+      const data = event.detail;
+      if (data) {
+        setAcpPermanentError(data);
+        // Permanent errors stay visible longer (30s) since user action is needed
+        setTimeout(() => {
+          setAcpPermanentError(null);
+        }, 30000);
+      }
+    };
+    window.addEventListener(
+      "mitto:acp_error_permanent",
+      handleAcpPermanentError,
+    );
+    return () => {
+      window.removeEventListener(
+        "mitto:acp_error_permanent",
+        handleAcpPermanentError,
       );
     };
   }, []);
@@ -3926,6 +3957,113 @@ function App() {
         handleFollowSystemThemeChanged,
       );
   }, [handleSetFollowSystemTheme]);
+
+  // Follow system reduced motion state - persisted to localStorage
+  const [followSystemReducedMotion, setFollowSystemReducedMotion] = useState(
+    () => {
+      if (typeof localStorage !== "undefined") {
+        const saved = localStorage.getItem(
+          "mitto-follow-system-reduced-motion",
+        );
+        // Default to true for new users (respect OS preference by default)
+        return saved === null ? true : saved === "true";
+      }
+      return true;
+    },
+  );
+
+  // Reduce animations state - respects OS preference when followSystemReducedMotion is enabled
+  const [reduceAnimations, setReduceAnimations] = useState(() => {
+    if (typeof localStorage !== "undefined") {
+      const followSystem = localStorage.getItem(
+        "mitto-follow-system-reduced-motion",
+      );
+      // If following system preference (default for new users)
+      if (followSystem === null || followSystem === "true") {
+        if (typeof window !== "undefined" && window.matchMedia) {
+          return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        }
+      }
+      // Otherwise use saved explicit preference
+      const saved = localStorage.getItem("mitto-reduce-animations");
+      if (saved !== null) return saved === "true";
+    }
+    // Fallback: check OS preference
+    if (typeof window !== "undefined" && window.matchMedia) {
+      return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    }
+    return false;
+  });
+
+  // Listen for OS reduced motion changes when followSystemReducedMotion is enabled
+  useEffect(() => {
+    if (
+      !followSystemReducedMotion ||
+      typeof window === "undefined" ||
+      !window.matchMedia
+    ) {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const handleChange = (e) => {
+      setReduceAnimations(e.matches);
+    };
+
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, [followSystemReducedMotion]);
+
+  // Persist followSystemReducedMotion to localStorage
+  useEffect(() => {
+    localStorage.setItem(
+      "mitto-follow-system-reduced-motion",
+      String(followSystemReducedMotion),
+    );
+  }, [followSystemReducedMotion]);
+
+  // Apply reduce-animations class to document
+  useEffect(() => {
+    const root = document.documentElement;
+    if (reduceAnimations) {
+      root.classList.add("reduce-animations");
+    } else {
+      root.classList.remove("reduce-animations");
+    }
+    localStorage.setItem("mitto-reduce-animations", String(reduceAnimations));
+  }, [reduceAnimations]);
+
+  const handleSetFollowSystemReducedMotion = useCallback((value) => {
+    setFollowSystemReducedMotion(value);
+    // When enabling follow system, immediately sync with OS preference
+    if (value && typeof window !== "undefined" && window.matchMedia) {
+      const prefersReduced = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      setReduceAnimations(prefersReduced);
+    }
+  }, []);
+
+  // Listen for reduce animations changes from SettingsDialog
+  useEffect(() => {
+    const handleReduceAnimationsChanged = (e) => {
+      if (e.detail.followSystem !== undefined) {
+        handleSetFollowSystemReducedMotion(e.detail.followSystem);
+      }
+      if (e.detail.reduceAnimations !== undefined) {
+        setReduceAnimations(e.detail.reduceAnimations);
+      }
+    };
+    window.addEventListener(
+      "mitto-reduce-animations-changed",
+      handleReduceAnimationsChanged,
+    );
+    return () =>
+      window.removeEventListener(
+        "mitto-reduce-animations-changed",
+        handleReduceAnimationsChanged,
+      );
+  }, [handleSetFollowSystemReducedMotion]);
 
   // Font size state - persisted to localStorage
   const [fontSize, setFontSize] = useState(() => {
@@ -5192,6 +5330,51 @@ function App() {
         </div>
       `}
 
+      <!-- ACP permanent error toast (enhanced with guidance) -->
+      ${acpPermanentError &&
+      html`
+        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
+          <div
+            class="flex flex-col gap-2 px-4 py-3 bg-red-700 text-white rounded-lg shadow-lg max-w-lg"
+          >
+            <div class="flex items-center gap-2">
+              <span class="text-lg">🚫</span>
+              <span class="text-sm font-semibold"
+                >${acpPermanentError.user_message ||
+                "ACP Server Error"}</span
+              >
+              <button
+                onClick=${() => setAcpPermanentError(null)}
+                class="ml-auto text-white/80 hover:text-white"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+            ${acpPermanentError.user_guidance &&
+            html`
+              <div
+                class="text-xs bg-red-800/50 rounded px-3 py-2 ml-7"
+              >
+                <div class="font-medium mb-1">How to fix:</div>
+                <div class="text-white/90">
+                  ${acpPermanentError.user_guidance}
+                </div>
+              </div>
+            `}
+            ${acpPermanentError.command &&
+            html`
+              <div
+                class="text-xs text-white/60 ml-7 font-mono truncate"
+                title=${acpPermanentError.command}
+              >
+                Command: ${acpPermanentError.command}
+              </div>
+            `}
+          </div>
+        </div>
+      `}
+
       <!-- Hook failed toast -->
       ${hookFailedError &&
       html`
@@ -5571,6 +5754,7 @@ function App() {
             actionButtons=${actionButtons}
             availableCommands=${availableCommands}
             periodicEnabled=${sessionInfo?.periodic_enabled || false}
+            agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
             activeUIPrompt=${activeUIPrompt}
             onUIPromptAnswer=${(requestId, optionId, label) =>
               sendUIPromptAnswer(activeSessionId, requestId, optionId, label)}

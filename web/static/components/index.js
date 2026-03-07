@@ -5,6 +5,7 @@ export { Message } from "./Message.js";
 export { ChatInput } from "./ChatInput.js";
 export { SettingsDialog } from "./SettingsDialog.js";
 export { ConfirmDialog } from "./ConfirmDialog.js";
+export { SavePromptDialog } from "./SavePromptDialog.js";
 export { QueueDropdown } from "./QueueDropdown.js";
 export { ConversationPropertiesPanel } from "./ConversationPropertiesPanel.js";
 

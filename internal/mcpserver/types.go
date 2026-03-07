@@ -82,9 +82,10 @@ type ConversationDetails struct {
 
 // AvailableACPServer describes an ACP server available for conversation creation.
 type AvailableACPServer struct {
-	Name    string `json:"name"`              // Server name (used as identifier in mitto_conversation_new)
-	Type    string `json:"type,omitempty"`    // Server type for prompt matching
-	Current bool   `json:"current,omitempty"` // True if this is the current session's ACP server
+	Name    string   `json:"name"`              // Server name (used as identifier in mitto_conversation_new)
+	Type    string   `json:"type,omitempty"`    // Server type for prompt matching
+	Tags    []string `json:"tags,omitempty"`    // Optional categorization tags for this server
+	Current bool     `json:"current,omitempty"` // True if this is the current session's ACP server
 }
 
 // ConfigInfo contains the Mitto configuration info.

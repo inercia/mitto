@@ -316,6 +316,7 @@
 }
 .streaming-indicator {
   animation: pulse-streaming 1.2s ease-in-out infinite;
+  will-change: opacity, transform;
 }
 
 /* Filter tab streaming pulse - uses ::before pseudo-element to only animate background */
@@ -328,36 +329,29 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  animation: filter-tab-pulse-dark 1.8s ease-in-out infinite;
+  background-color: rgba(51, 65, 85, 1); /* slate-700 fixed background */
+  animation: filter-tab-pulse 1.8s ease-in-out infinite;
+  will-change: opacity;
 }
 .filter-tab-streaming > * {
   position: relative;
   z-index: 1;
 }
 
-/* Dark theme pulse animation (default) */
-@keyframes filter-tab-pulse-dark {
+/* Opacity-only pulse animation (GPU-compositable) */
+@keyframes filter-tab-pulse {
   0%,
   100% {
-    background-color: rgba(30, 41, 59, 0.3); /* slate-800 subtle */
+    opacity: 0.3;
   }
   50% {
-    background-color: rgba(51, 65, 85, 0.9); /* slate-700 strong */
+    opacity: 0.9;
   }
 }
 
-/* Light theme pulse animation */
-@keyframes filter-tab-pulse-light {
-  0%,
-  100% {
-    background-color: rgba(248, 250, 252, 0.3); /* slate-50 subtle */
-  }
-  50% {
-    background-color: rgba(203, 213, 225, 0.9); /* slate-300 strong */
-  }
-}
+/* Light theme: different fixed background color */
 .light .filter-tab-streaming::before {
-  animation: filter-tab-pulse-light 1.8s ease-in-out infinite;
+  background-color: rgba(203, 213, 225, 1); /* slate-300 fixed background */
 }
 
 /* Streaming cursor */
@@ -366,6 +360,7 @@
   animation: blink 1s infinite;
   color: #60a5fa;
   margin-left: 2px;
+  will-change: opacity;
 }
 @keyframes blink {
   0%,
@@ -1034,6 +1029,7 @@ a.mailto-link:hover {
   border-radius: 50%;
   border: 2px solid #1e293b;
   animation: pulse-indicator 1.5s ease-in-out infinite;
+  will-change: opacity, transform;
 }
 
 @keyframes pulse-indicator {
@@ -1426,12 +1422,18 @@ mitto-action {
 
 /* Reverse stagger for hiding */
 .action-toolbar:not(.visible) .action-toolbar-btn:nth-child(1) {
-  transition-delay: 0.1s;
+  transition-delay: 0.15s;
 }
 .action-toolbar:not(.visible) .action-toolbar-btn:nth-child(2) {
-  transition-delay: 0.05s;
+  transition-delay: 0.1s;
 }
 .action-toolbar:not(.visible) .action-toolbar-btn:nth-child(3) {
+  transition-delay: 0.05s;
+}
+.action-toolbar:not(.visible) .action-toolbar-btn:nth-child(4) {
+  transition-delay: 0.025s;
+}
+.action-toolbar:not(.visible) .action-toolbar-btn:nth-child(5) {
   transition-delay: 0s;
 }
 
@@ -1659,4 +1661,69 @@ mitto-action {
 
 .no-underline:hover {
   text-decoration: none !important;
+}
+
+/* =============================================================================
+   Reduce Animations
+   Applied via .reduce-animations class on <html> or OS prefers-reduced-motion.
+   Disables infinite/looping animations and replaces with static indicators.
+   One-shot transitions (fadeIn, slideUp, etc.) are intentionally NOT affected.
+   ============================================================================= */
+
+.reduce-animations .streaming-indicator {
+  animation: none;
+  opacity: 1;
+  will-change: auto;
+}
+
+.reduce-animations .filter-tab-streaming::before {
+  animation: none;
+  opacity: 0.5;
+  will-change: auto;
+}
+
+.reduce-animations .streaming-cursor::after {
+  animation: none;
+  opacity: 1;
+  will-change: auto;
+}
+
+.reduce-animations .new-messages-indicator {
+  animation: none;
+  opacity: 1;
+  will-change: auto;
+}
+
+/* Also respect OS-level reduced motion preference directly via media query.
+   This provides a CSS-only baseline before JavaScript loads. */
+@media (prefers-reduced-motion: reduce) {
+  .streaming-indicator {
+    animation: none;
+    opacity: 1;
+    will-change: auto;
+  }
+
+  .filter-tab-streaming::before {
+    animation: none;
+    opacity: 0.5;
+    will-change: auto;
+  }
+
+  .light .filter-tab-streaming::before {
+    animation: none;
+    opacity: 0.5;
+    will-change: auto;
+  }
+
+  .streaming-cursor::after {
+    animation: none;
+    opacity: 1;
+    will-change: auto;
+  }
+
+  .new-messages-indicator {
+    animation: none;
+    opacity: 1;
+    will-change: auto;
+  }
 }

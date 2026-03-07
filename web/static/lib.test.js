@@ -39,6 +39,7 @@ import {
   getMinSeq,
   getMaxSeq,
   isStaleClientState,
+  shouldSyncOnKeepalive,
   getMessageHash,
   mergeMessagesWithSync,
   safeJsonParse,
@@ -207,6 +208,259 @@ describe("computeAllSessions", () => {
     const result = computeAllSessions(active, stored);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("My Custom Name");
+  });
+
+  // ---------------------------------------------------------------------------
+  // parent_session_id merge tests (critical for session tree hierarchy)
+  // ---------------------------------------------------------------------------
+
+  test("preserves parent_session_id from stored session when active session lacks it", () => {
+    const active = [
+      {
+        session_id: "child-1",
+        created_at: "2024-01-01T10:00:00Z",
+        // No parent_session_id — active session doesn't have it
+      },
+    ];
+    const stored = [
+      {
+        session_id: "child-1",
+        parent_session_id: "parent-1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].session_id).toBe("child-1");
+    expect(result[0].parent_session_id).toBe("parent-1");
+  });
+
+  test("active session parent_session_id takes precedence over stored", () => {
+    const active = [
+      {
+        session_id: "child-1",
+        parent_session_id: "parent-A",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "child-1",
+        parent_session_id: "parent-B",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].parent_session_id).toBe("parent-A");
+  });
+
+  test("stored-only sessions preserve parent_session_id", () => {
+    const active = [
+      {
+        session_id: "active-1",
+        created_at: "2024-01-01T12:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "stored-child-1",
+        parent_session_id: "parent-1",
+        created_at: "2024-01-01T08:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(2);
+    const storedChild = result.find((s) => s.session_id === "stored-child-1");
+    expect(storedChild).toBeDefined();
+    expect(storedChild.parent_session_id).toBe("parent-1");
+  });
+
+  test("parent_session_id is null when neither active nor stored has it", () => {
+    const active = [
+      {
+        session_id: "session-1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "session-1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].parent_session_id).toBeNull();
+  });
+
+  test("parent_session_id is null for active-only session without parent", () => {
+    const active = [
+      {
+        session_id: "session-1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, []);
+    expect(result).toHaveLength(1);
+    expect(result[0].parent_session_id).toBeNull();
+  });
+
+  test("preserves parent_session_id across full tree of active and stored sessions", () => {
+    const active = [
+      {
+        session_id: "parent-1",
+        created_at: "2024-01-01T12:00:00Z",
+      },
+      {
+        session_id: "child-1",
+        created_at: "2024-01-01T11:00:00Z",
+        // No parent_session_id in active — relies on stored merge
+      },
+    ];
+    const stored = [
+      {
+        session_id: "parent-1",
+        created_at: "2024-01-01T12:00:00Z",
+      },
+      {
+        session_id: "child-1",
+        parent_session_id: "parent-1",
+        created_at: "2024-01-01T11:00:00Z",
+      },
+      {
+        session_id: "child-2",
+        parent_session_id: "parent-1",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    // active parent-1, active child-1 (merged), stored child-2 (not in active)
+    expect(result).toHaveLength(3);
+    const parent = result.find((s) => s.session_id === "parent-1");
+    const child1 = result.find((s) => s.session_id === "child-1");
+    const child2 = result.find((s) => s.session_id === "child-2");
+    expect(parent.parent_session_id).toBeNull();
+    expect(child1.parent_session_id).toBe("parent-1");
+    expect(child2.parent_session_id).toBe("parent-1");
+  });
+
+  // ---------------------------------------------------------------------------
+  // working_dir merge tests
+  // ---------------------------------------------------------------------------
+
+  test("merges working_dir from stored session when active session lacks it", () => {
+    const active = [
+      {
+        session_id: "1",
+        created_at: "2024-01-01T10:00:00Z",
+        // No working_dir
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        working_dir: "/home/user/project",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].working_dir).toBe("/home/user/project");
+  });
+
+  test("stored session working_dir takes precedence in merge order", () => {
+    const active = [
+      {
+        session_id: "1",
+        working_dir: "/home/user/active-project",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        working_dir: "/home/user/stored-project",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    // stored working_dir takes precedence per the merge logic:
+    // stored?.working_dir || globalWd || s.working_dir || s.info?.working_dir
+    expect(result[0].working_dir).toBe("/home/user/stored-project");
+  });
+
+  test("working_dir from info is used as fallback", () => {
+    // Use unique session_id to avoid globalWorkingDirMap pollution from other tests
+    const active = [
+      {
+        session_id: "info-wd-test-unique",
+        created_at: "2024-01-01T10:00:00Z",
+        info: { working_dir: "/home/user/info-project" },
+      },
+    ];
+    const result = computeAllSessions(active, []);
+    expect(result).toHaveLength(1);
+    expect(result[0].working_dir).toBe("/home/user/info-project");
+  });
+
+  // ---------------------------------------------------------------------------
+  // acp_server merge tests
+  // ---------------------------------------------------------------------------
+
+  test("merges acp_server from stored session when active session lacks it", () => {
+    const active = [
+      {
+        session_id: "1",
+        created_at: "2024-01-01T10:00:00Z",
+        // No acp_server
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        acp_server: "https://acp.example.com",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].acp_server).toBe("https://acp.example.com");
+  });
+
+  test("active session acp_server takes precedence over stored", () => {
+    const active = [
+      {
+        session_id: "1",
+        acp_server: "https://active.example.com",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        acp_server: "https://stored.example.com",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result).toHaveLength(1);
+    expect(result[0].acp_server).toBe("https://active.example.com");
+  });
+
+  test("acp_server from info is used as fallback", () => {
+    // Use unique session_id to avoid any global state pollution
+    const active = [
+      {
+        session_id: "info-acp-test-unique",
+        created_at: "2024-01-01T10:00:00Z",
+        info: { acp_server: "https://info.example.com" },
+      },
+    ];
+    const result = computeAllSessions(active, []);
+    expect(result).toHaveLength(1);
+    expect(result[0].acp_server).toBe("https://info.example.com");
   });
 });
 
@@ -1065,6 +1319,168 @@ describe("isStaleClientState", () => {
       const serverMaxSeq = 100;
       expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(false);
       // When false and serverMaxSeq <= clientMaxSeq, no sync needed
+    });
+  });
+});
+
+// =============================================================================
+// shouldSyncOnKeepalive Tests
+// =============================================================================
+
+describe("shouldSyncOnKeepalive", () => {
+  // Tests for the session_end delivery bug fix:
+  // 1. Keepalive tolerance of 2 prevents catching up when only 1 behind
+  // 2. Non-streaming sessions should use tolerance=0 to catch session_end events
+
+  describe("non-streaming sessions (tolerance=0)", () => {
+    test("detects 1-behind on non-streaming session triggers sync", () => {
+      // Scenario: session completed, client is exactly 1 behind (the session_end event)
+      // client_max_seq=311, server_max_seq=312, isStreaming=false
+      // Expected: sync should be triggered (tolerance=0 for non-streaming)
+      const clientMaxSeq = 311;
+      const serverMaxSeq = 312;
+      const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
+    });
+
+    test("detects 2-behind on non-streaming session triggers sync", () => {
+      // Non-streaming with gap of 2 should sync (tolerance=0)
+      const clientMaxSeq = 310;
+      const serverMaxSeq = 312;
+      const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
+    });
+
+    test("in-sync non-streaming session does not trigger sync", () => {
+      // Client and server at same seq, no sync needed
+      const clientMaxSeq = 312;
+      const serverMaxSeq = 312;
+      const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
+    });
+  });
+
+  describe("streaming sessions (tolerance=2)", () => {
+    test("1-behind during streaming does not trigger sync (within tolerance)", () => {
+      // Scenario: client is 1 behind during active streaming
+      // client_max_seq=311, server_max_seq=312, isStreaming=true
+      // Expected: no sync (tolerance=2 applies, within tolerance)
+      const clientMaxSeq = 311;
+      const serverMaxSeq = 312;
+      const isStreaming = true;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
+    });
+
+    test("2-behind during streaming does not trigger sync (within tolerance)", () => {
+      // Gap of 2 is within tolerance for streaming
+      const clientMaxSeq = 310;
+      const serverMaxSeq = 312;
+      const isStreaming = true;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
+    });
+
+    test("3-behind during streaming triggers sync (exceeds tolerance)", () => {
+      // Scenario: client is 3 behind during streaming
+      // client_max_seq=309, server_max_seq=312, isStreaming=true
+      // Expected: sync triggered (3 > tolerance of 2)
+      const clientMaxSeq = 309;
+      const serverMaxSeq = 312;
+      const isStreaming = true;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
+    });
+
+    test("10-behind during streaming triggers sync", () => {
+      // Large gap should always trigger sync
+      const clientMaxSeq = 100;
+      const serverMaxSeq = 110;
+      const isStreaming = true;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
+    });
+
+    test("in-sync streaming session does not trigger sync", () => {
+      // Client and server at same seq, no sync needed
+      const clientMaxSeq = 312;
+      const serverMaxSeq = 312;
+      const isStreaming = true;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
+    });
+  });
+
+  describe("stale client detection (client ahead of server)", () => {
+    test("client ahead triggers sync regardless of streaming state", () => {
+      // Client thinks it has seq 463, server only has 160
+      // This is stale state - always sync
+      expect(shouldSyncOnKeepalive(463, 160, false)).toBe(true);
+      expect(shouldSyncOnKeepalive(463, 160, true)).toBe(true);
+    });
+
+    test("client 1 ahead triggers sync (non-streaming)", () => {
+      expect(shouldSyncOnKeepalive(313, 312, false)).toBe(true);
+    });
+
+    test("client 1 ahead triggers sync (streaming)", () => {
+      expect(shouldSyncOnKeepalive(313, 312, true)).toBe(true);
+    });
+  });
+
+  describe("edge cases", () => {
+    test("returns false for negative client seq", () => {
+      expect(shouldSyncOnKeepalive(-1, 100, false)).toBe(false);
+    });
+
+    test("returns false for negative server seq", () => {
+      expect(shouldSyncOnKeepalive(100, -1, false)).toBe(false);
+    });
+
+    test("returns false for non-number client seq", () => {
+      expect(shouldSyncOnKeepalive(null, 100, false)).toBe(false);
+      expect(shouldSyncOnKeepalive(undefined, 100, false)).toBe(false);
+      expect(shouldSyncOnKeepalive("100", 100, false)).toBe(false);
+    });
+
+    test("returns false for non-number server seq", () => {
+      expect(shouldSyncOnKeepalive(100, null, false)).toBe(false);
+      expect(shouldSyncOnKeepalive(100, undefined, false)).toBe(false);
+      expect(shouldSyncOnKeepalive(100, "100", false)).toBe(false);
+    });
+
+    test("handles zero sequences", () => {
+      expect(shouldSyncOnKeepalive(0, 0, false)).toBe(false);
+      expect(shouldSyncOnKeepalive(0, 1, false)).toBe(true); // 1 behind, non-streaming
+      expect(shouldSyncOnKeepalive(0, 1, true)).toBe(false); // 1 behind, streaming (within tolerance)
+    });
+  });
+
+  describe("real-world scenarios", () => {
+    test("session_end delivery bug - non-streaming catches final event", () => {
+      // Bug scenario: Agent finishes, writes session_end event (seq 312)
+      // Client has seq 311, keepalive returns server_max_seq=312
+      // With tolerance=0 for non-streaming, this triggers sync
+      const clientMaxSeq = 311;
+      const serverMaxSeq = 312;
+      const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
+    });
+
+    test("normal streaming - markdown buffer delay within tolerance", () => {
+      // During streaming, markdown buffer may hold content briefly
+      // Client is 1-2 behind due to buffering - this is normal, don't sync
+      expect(shouldSyncOnKeepalive(310, 311, true)).toBe(false); // 1 behind
+      expect(shouldSyncOnKeepalive(310, 312, true)).toBe(false); // 2 behind
+    });
+
+    test("streaming with significant lag - triggers sync", () => {
+      // If client falls significantly behind during streaming, sync
+      expect(shouldSyncOnKeepalive(310, 314, true)).toBe(true); // 4 behind
+    });
+
+    test("mobile wake after session completion", () => {
+      // Mobile wakes up, session has completed (isStreaming=false)
+      // Client is 5 behind, should sync immediately
+      const clientMaxSeq = 100;
+      const serverMaxSeq = 105;
+      const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
     });
   });
 });

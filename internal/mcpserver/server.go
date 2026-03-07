@@ -961,8 +961,12 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_children_tasks_wait",
 		Description: "Send a progress inquiry to multiple child conversations and BLOCK until all of them report back. " +
-			"For each child, the provided prompt (or a default) is enqueued along with instructions to call " +
-			"mitto_children_tasks_report. This tool blocks until all children have reported or the timeout expires. " +
+			"For each child, the provided prompt (plus reporting instructions) is enqueued. " +
+			"If prompt is empty or omitted, no message is sent — the tool just waits for children to report " +
+			"(useful for retrying after a timeout without re-enqueuing duplicate messages). " +
+			"Duplicate messages are also prevented: if a child already has a pending message from this parent " +
+			"in its queue, the prompt is skipped for that child. " +
+			"This tool blocks until all children have reported or the timeout expires. " +
 			"Returns a consolidated report from all children. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,

@@ -69,6 +69,88 @@ describe('sessionTree', () => {
       expect(childrenMap.get('root-1')).toHaveLength(1);
       expect(childrenMap.get('root-2')).toBeUndefined();
     });
+
+    // -------------------------------------------------------------------------
+    // Tests for parent_session_id values as produced by computeAllSessions
+    // (null instead of empty string for root sessions)
+    // -------------------------------------------------------------------------
+
+    test('treats null parent_session_id as root session', () => {
+      const sessions = [
+        { session_id: 'root-1', parent_session_id: null },
+        { session_id: 'child-1', parent_session_id: 'root-1' },
+      ];
+
+      const { rootSessions, childrenMap, orphans } = buildSessionTree(sessions);
+
+      expect(rootSessions).toHaveLength(1);
+      expect(rootSessions[0].session_id).toBe('root-1');
+      expect(childrenMap.get('root-1')).toHaveLength(1);
+      expect(childrenMap.get('root-1')[0].session_id).toBe('child-1');
+      expect(orphans).toHaveLength(0);
+    });
+
+    test('treats undefined parent_session_id as root session', () => {
+      const sessions = [
+        { session_id: 'root-1' },  // no parent_session_id property at all
+        { session_id: 'child-1', parent_session_id: 'root-1' },
+      ];
+
+      const { rootSessions, childrenMap } = buildSessionTree(sessions);
+
+      expect(rootSessions).toHaveLength(1);
+      expect(rootSessions[0].session_id).toBe('root-1');
+      expect(childrenMap.get('root-1')).toHaveLength(1);
+    });
+
+    test('builds deep tree with grandchildren', () => {
+      const sessions = [
+        { session_id: 'root', parent_session_id: null },
+        { session_id: 'child', parent_session_id: 'root' },
+        { session_id: 'grandchild', parent_session_id: 'child' },
+      ];
+
+      const { rootSessions, childrenMap, orphans } = buildSessionTree(sessions);
+
+      expect(rootSessions).toHaveLength(1);
+      expect(rootSessions[0].session_id).toBe('root');
+      expect(childrenMap.get('root')).toHaveLength(1);
+      expect(childrenMap.get('root')[0].session_id).toBe('child');
+      expect(childrenMap.get('child')).toHaveLength(1);
+      expect(childrenMap.get('child')[0].session_id).toBe('grandchild');
+      expect(orphans).toHaveLength(0);
+    });
+
+    test('handles mix of null, empty string, and valid parent_session_id', () => {
+      const sessions = [
+        { session_id: 'root-1', parent_session_id: null },
+        { session_id: 'root-2', parent_session_id: '' },
+        { session_id: 'root-3' },  // undefined
+        { session_id: 'child-1', parent_session_id: 'root-1' },
+        { session_id: 'child-2', parent_session_id: 'root-2' },
+      ];
+
+      const { rootSessions, childrenMap, orphans } = buildSessionTree(sessions);
+
+      expect(rootSessions).toHaveLength(3);
+      expect(childrenMap.get('root-1')).toHaveLength(1);
+      expect(childrenMap.get('root-2')).toHaveLength(1);
+      expect(orphans).toHaveLength(0);
+    });
+
+    test('multiple orphaned children from different missing parents', () => {
+      const sessions = [
+        { session_id: 'root-1', parent_session_id: null },
+        { session_id: 'orphan-1', parent_session_id: 'missing-A' },
+        { session_id: 'orphan-2', parent_session_id: 'missing-B' },
+      ];
+
+      const { rootSessions, orphans } = buildSessionTree(sessions);
+
+      expect(rootSessions).toHaveLength(1);
+      expect(orphans).toHaveLength(2);
+      expect(orphans.every(o => o._isOrphan)).toBe(true);
+    });
   });
 
   describe('getAllDescendants', () => {
