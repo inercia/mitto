@@ -1,9 +1,10 @@
 ---
-description: Backend sequence number assignment, observer pattern, MarkdownBuffer flushing, prompt ACK, and SeqProvider
+description: Backend sequence number assignment, observer pattern, MarkdownBuffer flushing, prompt ACK, SeqProvider, WritePump close frames
 globs:
   - "internal/web/client.go"
   - "internal/web/markdown.go"
   - "internal/web/session_ws*.go"
+  - "internal/web/ws_conn.go"
   - "internal/web/background_session.go"
 keywords:
   - sequence number
@@ -13,6 +14,11 @@ keywords:
   - prompt ACK
   - max_seq
   - Flush SafeFlush
+  - WritePump
+  - close frame
+  - CloseMessage
+  - session_gone
+  - NegativeSessionCache
 ---
 
 # Sequence Numbers and Observer Pattern (Backend)
@@ -113,6 +119,67 @@ func (c *SessionWSClient) getServerMaxSeq() int64 {
 ```
 
 `GetMaxAssignedSeq()` returns `nextSeq - 1` (highest ever assigned), preventing false stale detection during streaming.
+
+## Terminal Session Messages (`session_gone`)
+
+When sending `session_gone` for a deleted session, the write pump must have time to flush the message before the connection closes:
+
+```go
+// Start pumps so the message can be written
+go client.writePump()
+go client.readPump()
+
+// Send terminal message
+client.sendMessage(WSMsgTypeSessionGone, map[string]interface{}{
+    "session_id": sessionID,
+    "reason":     "session not found",
+})
+
+// Close after flush delay (100ms lets writePump deliver the message)
+go func() {
+    time.Sleep(100 * time.Millisecond)
+    client.wsConn.Close()
+}()
+```
+
+This pattern ensures the client receives the `session_gone` message before the WebSocket close frame.
+
+## WritePump Close Frames (`ws_conn.go`)
+
+The `WritePump` goroutine sends proper WebSocket close frames before exiting, so clients receive a clean close code instead of an abrupt TCP teardown (code 1006):
+
+| Exit Path | Close Code | Reason | Notes |
+|-----------|-----------|--------|-------|
+| Send channel closed (`!ok`) | 1000 (NormalClosure) | `""` | Clean shutdown |
+| Ping write failed | 1001 (GoingAway) | `"ping failed"` | Best-effort: write may fail |
+| Context cancelled | 1001 (GoingAway) | `"server shutdown"` | Best-effort: write may fail |
+
+```go
+// Send channel closed — normal closure
+case message, ok := <-w.send:
+    if !ok {
+        w.conn.WriteMessage(websocket.CloseMessage,
+            websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+        return
+    }
+
+// Ping failed — going away (best-effort)
+if err := w.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+    w.conn.SetWriteDeadline(time.Now().Add(time.Second))
+    w.conn.WriteMessage(websocket.CloseMessage,
+        websocket.FormatCloseMessage(websocket.CloseGoingAway, "ping failed"))
+    return
+}
+
+// Context cancelled — going away (best-effort)
+case <-ctx.Done():
+    w.conn.SetWriteDeadline(time.Now().Add(time.Second))
+    w.conn.WriteMessage(websocket.CloseMessage,
+        websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutdown"))
+    return
+```
+
+> For the complete close code table and client-side handling, see [synchronization.md — WebSocket Close Codes](../../docs/devel/websockets/synchronization.md#websocket-close-codes).
 
 ## Backend Anti-Pattern: lastSentSeq Reset
 

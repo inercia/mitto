@@ -13,6 +13,9 @@ keywords:
   - graceful shutdown
   - session resume
   - archived session
+  - session_gone
+  - negative cache
+  - circuit breaker
 ---
 
 # Session Lifecycle Management
@@ -112,6 +115,53 @@ if c.bgSession == nil {
 
 Per-session resources must be destroyed on archive and recreated (new instances) on unarchive.
 
+## Connecting to Deleted Sessions (Circuit Breaker)
+
+When a client connects to a session that no longer exists, send `session_gone` (NOT a generic `error`):
+
+```go
+// GOOD: Send terminal signal for deleted sessions
+if err == session.ErrSessionNotFound {
+    if s.negativeSessionCache != nil {
+        s.negativeSessionCache.MarkNotFound(sessionID)
+    }
+    client.sendMessage(WSMsgTypeSessionGone, map[string]interface{}{
+        "session_id": sessionID,
+        "reason":     "session not found",
+    })
+    // Close after flush delay
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        client.wsConn.Close()
+    }()
+    return
+}
+
+// BAD: Generic error that clients don't treat as terminal
+client.sendError("Session not found")  // Client retries 15 times!
+```
+
+### Negative Session Cache
+
+The `NegativeSessionCache` prevents repeated filesystem lookups for deleted sessions (30s TTL):
+
+- **Check cache** before hitting the store: `s.negativeSessionCache.IsNotFound(sessionID)`
+- **Populate cache** when `store.GetMetadata()` returns `ErrSessionNotFound`
+- **Invalidate cache** on `handleCreateSession` and `ResumeSession`
+
+### Important: Archived ≠ Deleted
+
+Archived sessions still exist in the store — they must NOT be cached as "not found":
+
+```go
+meta, err := store.GetMetadata(sessionID)
+if err == session.ErrSessionNotFound {
+    // Session truly gone → cache + send session_gone
+} else if err == nil && meta.Archived {
+    // Archived session → load in read-only mode (do NOT cache)
+}
+```
+
 ## WebSocket Messages
 
 | Message Type        | Direction       | When                          |
@@ -120,3 +170,4 @@ Per-session resources must be destroyed on archive and recreated (new instances)
 | `acp_stopped`       | Server->Client  | ACP connection closed         |
 | `acp_started`       | Server->Client  | ACP connection started        |
 | `acp_start_failed`  | Server->Client  | ACP failed to start           |
+| `session_gone`      | Server->Client  | Session deleted/not found (terminal — client must stop reconnecting) |

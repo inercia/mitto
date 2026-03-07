@@ -19,6 +19,7 @@ keywords:
   - mobile anti-pattern
   - localStorage stale
   - lastSeenSeq
+  - lastKnownSeqRef
 ---
 
 # Mobile Wake Resync and Browser Handling
@@ -29,15 +30,25 @@ Mobile browsers suspend WebSocket connections when the device sleeps. The fronte
 
 Phone sleeps -> WebSocket terminated -> Agent continues server-side -> Phone wakes -> UI shows stale messages. Connections may also enter "zombie state" (appearing open but dead).
 
-## Critical: Calculate Seq from State, Not localStorage
+## Critical: Calculate Seq from lastKnownSeqRef, Not localStorage
 
 ```javascript
 // BAD: localStorage can be stale in WKWebView
 const lastSeq = localStorage.getItem(`mitto_last_seen_seq_${sessionId}`);
 
-// GOOD: Calculate dynamically from messages in state
+// OUTDATED: React state alone can be empty during reconnection
 const lastSeq = getMaxSeq(sessionsRef.current[sessionId]?.messages || []);
+
+// GOOD: Use lastKnownSeqRef (primary) with React state (fallback)
+const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+const stateSeq = Math.max(
+  getMaxSeq(session?.messages || []),
+  session?.lastLoadedSeq || 0,
+);
+const lastSeq = Math.max(refSeq, stateSeq);
 ```
+
+> See [Sequence Numbers — Frontend Responsibilities](../../docs/devel/websockets/sequence-numbers.md#frontend-responsibilities) for the full pattern.
 
 ## Force Reconnect on Visibility Change
 

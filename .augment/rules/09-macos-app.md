@@ -52,7 +52,7 @@ const isMacApp = typeof window.mittoPickFolder === "function";
 
 | Issue              | Symptom                        | Solution                    |
 | ------------------ | ------------------------------ | --------------------------- |
-| Stale localStorage | Missing messages               | Calculate seq from state, not localStorage |
+| Stale localStorage | Missing messages               | Use `lastKnownSeqRef` (primary) with React state fallback, not localStorage |
 | Cached JavaScript  | Old behavior after code change | Clear WKWebView cache       |
 | WebSocket zombie   | "Connected" but no messages    | Keepalive mechanism detects |
 | Different behavior | Works in browser, not in app   | Check Web Inspector console |

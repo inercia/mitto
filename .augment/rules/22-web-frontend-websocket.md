@@ -25,6 +25,7 @@ keywords:
   - message deduplication
   - server authority
   - lastSeenSeq
+  - lastKnownSeqRef
   - mergeMessagesWithSync
   - getMaxSeq
   - seenSeqsRef
@@ -35,6 +36,10 @@ keywords:
   - lastSentSeq
   - race condition
   - zombie connection
+  - session_gone
+  - circuit breaker
+  - isTerminalSessionError
+  - handleSessionGone
 ---
 
 # WebSocket, Sync, and Deduplication
@@ -134,7 +139,10 @@ case "keepalive_ack": {
     keepalive.pendingKeepalive = false;
 
     const maxSeq = msg.data?.max_seq || 0;
-    const clientMaxSeq = getMaxSeq(sessions[sessionId]?.messages || []);
+    // Use lastKnownSeqRef (primary) with React state (fallback), same pattern as reconnection
+    const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+    const stateSeq = getMaxSeq(sessions[sessionId]?.messages || []);
+    const clientMaxSeq = Math.max(refSeq, stateSeq);
     if (maxSeq > clientMaxSeq + KEEPALIVE_SYNC_TOLERANCE) {
         ws.send(JSON.stringify({ type: "load_events", data: { after_seq: clientMaxSeq } }));
     }
@@ -145,14 +153,22 @@ case "keepalive_ack": {
 
 **The server is always right.** When client and server disagree, server wins.
 
-### Dynamic Sequence Calculation
+### Sequence Tracking for Reconnection
 
-`lastSeenSeq` is calculated from messages in state, NOT localStorage (avoids WKWebView stale issues):
+The highest received seq is tracked via `lastKnownSeqRef` (primary) with React state as fallback:
 
 ```javascript
-const sessionMessages = sessionsRef.current[sessionId]?.messages || [];
-const lastSeq = getMaxSeq(sessionMessages);
+// Primary: dedicated ref, updated on every event, survives reconnections
+const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+// Fallback: React state (may be empty during reconnection)
+const stateSeq = Math.max(
+  getMaxSeq(session?.messages || []),
+  session?.lastLoadedSeq || 0,
+);
+const lastSeq = Math.max(refSeq, stateSeq);
 ```
+
+Update `lastKnownSeqRef` via `updateLastKnownSeq(sessionId, seq)` in every event handler (`agent_message`, `tool_call`, `user_prompt`, `agent_thought`, `tool_update`, `prompt_complete`, `events_loaded`).
 
 ### Stale Client Detection
 
@@ -160,7 +176,7 @@ const lastSeq = getMaxSeq(sessionMessages);
 const isStaleClient = clientLastSeq > 0 && serverLastSeq > 0 && clientLastSeq > serverLastSeq;
 ```
 
-When detected: full reload (discard client messages, use server data), reset seq tracker.
+When detected: full reload (discard client messages, use server data), reset seq tracker AND `lastKnownSeqRef`.
 
 | Scenario                        | Client Action                     |
 | ------------------------------- | --------------------------------- |
@@ -168,21 +184,24 @@ When detected: full reload (discard client messages, use server data), reset seq
 | `clientSeq < serverSeq - tol.`  | Client behind -> request missing  |
 | `clientSeq ~ serverSeq`         | In sync -> no action              |
 
-## Two-Tier Deduplication
+## Three-Tier Deduplication
+
+> Canonical reference: [synchronization.md — Deduplication Strategy](../../docs/devel/websockets/synchronization.md#deduplication-strategy)
 
 1. **Server-side** (`lastSentSeq`): Prevents duplicates during streaming
-2. **Client-side** (`mergeMessagesWithSync`): Handles reconnect overlap
-3. **M1 seq tracker** (`seenSeqsRef`): Skips duplicates during streaming
+2. **M1 seq tracker** (`seenSeqsRef`): Skips duplicates during streaming
+3. **Client-side merge** (`mergeMessagesWithSync`): Handles reconnect overlap
 
 ### Critical: Reset Seq Tracker on Stale Recovery
 
 ```javascript
 if (isStaleClient) {
     clearSeenSeqs(sessionId);  // MUST reset before processing events
+    delete lastKnownSeqRef.current[sessionId];  // Reset reconnection watermark too
 }
 ```
 
-Without reset: tracker's `highestSeq` from stale state causes fresh events to be rejected as "very old" duplicates.
+Without reset: tracker's `highestSeq` from stale state causes fresh events to be rejected as "very old" duplicates, and the reconnection watermark would request non-existent events.
 
 ### events_loaded Handler
 
@@ -232,6 +251,71 @@ const newHtml = (last.html || "") + msg.data.html;
 // GOOD: Check for duplicate content
 if (!existingHtml.endsWith(incomingHtml)) {
     const newHtml = existingHtml + incomingHtml;
+}
+```
+
+## Circuit Breaker: Terminal Session Errors
+
+When a session is deleted, the client must stop reconnecting immediately. Three layers of defense:
+
+### 1. Explicit `session_gone` Handler
+
+```javascript
+case "session_gone": {
+    console.warn(`[CircuitBreaker] Server sent session_gone for ${sessionId}`);
+    handleSessionGone(sessionId, msg.data?.reason || "session_gone from server");
+    break;
+}
+```
+
+### 2. Defense-in-Depth in `error` Handler
+
+For backward compatibility with older servers that send generic `error` instead of `session_gone`:
+
+```javascript
+case "error": {
+    const errorMessage = msg.data?.message || "";
+    if (isTerminalSessionError(errorMessage)) {
+        handleSessionGone(sessionId, errorMessage);
+        break;
+    }
+    // ... existing error handling ...
+}
+```
+
+The `isTerminalSessionError()` utility (in `utils/websocket.js`) checks for "session not found" in the error message.
+
+### 3. REST Existence Check on Reconnect
+
+In `ws.onclose`, check session existence before reconnecting — not just when `!ws._wasOpen` but also after any failed attempt:
+
+```javascript
+const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
+if (!ws._wasOpen || attempt >= 1) {
+    const { exists } = await checkSessionExists(sessionId, authFetch, apiUrl);
+    if (!exists) {
+        handleSessionGone(sessionId, "session not found (verified via REST)");
+        return;
+    }
+}
+```
+
+### Anti-Pattern: Generic Error as Terminal
+
+```javascript
+// BAD: Treats ALL errors as non-terminal, retries indefinitely
+case "error":
+    appendError(msg.data.message);
+    break;
+
+// GOOD: Check for terminal session errors first
+case "error": {
+    if (isTerminalSessionError(msg.data?.message)) {
+        handleSessionGone(sessionId, msg.data.message);
+        break;
+    }
+    appendError(msg.data.message);
+    break;
 }
 ```
 
