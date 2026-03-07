@@ -87,72 +87,72 @@ graph TB
 
 ### Frontend → Backend Messages
 
-| Type                    | Purpose                                          |
-| ----------------------- | ------------------------------------------------ |
-| `prompt`                | Send user message                                |
-| `load_events`           | Load events (initial, pagination, sync)          |
-| `keepalive`             | Connection health check                          |
-| `cancel`                | Cancel agent operation                           |
-| `force_reset`           | Forcefully reset stuck session                   |
-| `ui_prompt_answer`      | Respond to UI prompt (MCP, permissions)          |
-| `rename_session`        | Rename the current session                       |
-| `set_config_option`     | Change a session config option                   |
-| `run_mcp_install_command` | Execute MCP installation command               |
-| `permission_answer`     | ⚠️ Legacy — use `ui_prompt_answer`               |
+| Type                      | Purpose                                 |
+| ------------------------- | --------------------------------------- |
+| `prompt`                  | Send user message                       |
+| `load_events`             | Load events (initial, pagination, sync) |
+| `keepalive`               | Connection health check                 |
+| `cancel`                  | Cancel agent operation                  |
+| `force_reset`             | Forcefully reset stuck session          |
+| `ui_prompt_answer`        | Respond to UI prompt (MCP, permissions) |
+| `rename_session`          | Rename the current session              |
+| `set_config_option`       | Change a session config option          |
+| `run_mcp_install_command` | Execute MCP installation command        |
+| `permission_answer`       | ⚠️ Legacy — use `ui_prompt_answer`      |
 
 ### Backend → Frontend Messages (Session WS)
 
-| Type                         | Purpose                                     |
-| ---------------------------- | ------------------------------------------- |
-| `connected`                  | Connection established                      |
-| `prompt_received`            | Prompt ACK                                  |
-| `user_prompt`                | Broadcast of user prompt to all clients     |
-| `agent_message`              | Streaming agent response (HTML)             |
-| `agent_thought`              | Agent thinking/reasoning (plain text)       |
-| `tool_call` / `tool_update`  | Tool invocations and status updates         |
-| `plan`                       | Agent task plan                             |
-| `file_read` / `file_write`   | File operations by agent                    |
-| `events_loaded`              | Response to `load_events`                   |
-| `keepalive_ack`              | Connection health + state sync              |
-| `prompt_complete`            | Agent finished responding                   |
-| `ui_prompt` / `ui_prompt_dismiss` | Interactive prompts (MCP, permissions) |
-| `action_buttons`             | AI-generated follow-up suggestions          |
-| `available_commands_updated` | Agent's available slash commands             |
-| `config_option_changed`      | Session config option changed               |
-| `error`                      | Error notification                          |
-| `session_gone`               | Terminal: session no longer exists           |
-| `session_reset`              | Session was forcefully reset                |
-| `session_renamed`            | Session name changed                        |
-| `acp_stopped` / `acp_started` | ACP process lifecycle                     |
-| `acp_start_failed`          | ACP process failed to start                  |
-| `acp_error_permanent`       | Permanent ACP error with user guidance       |
-| `runner_fallback`            | Runner fell back to exec mode               |
-| `hook_failed`                | Lifecycle hook execution failed              |
-| `mcp_tools_unavailable`     | MCP tools not available in workspace         |
-| `queue_updated`              | Queue state changed                         |
-| `queue_message_sending/sent` | Queue message delivery lifecycle            |
-| `queue_message_titled`       | Queue message received auto-generated title |
-| `queue_reordered`            | Queue order changed                         |
+| Type                              | Purpose                                     |
+| --------------------------------- | ------------------------------------------- |
+| `connected`                       | Connection established                      |
+| `prompt_received`                 | Prompt ACK                                  |
+| `user_prompt`                     | Broadcast of user prompt to all clients     |
+| `agent_message`                   | Streaming agent response (HTML)             |
+| `agent_thought`                   | Agent thinking/reasoning (plain text)       |
+| `tool_call` / `tool_update`       | Tool invocations and status updates         |
+| `plan`                            | Agent task plan                             |
+| `file_read` / `file_write`        | File operations by agent                    |
+| `events_loaded`                   | Response to `load_events`                   |
+| `keepalive_ack`                   | Connection health + state sync              |
+| `prompt_complete`                 | Agent finished responding                   |
+| `ui_prompt` / `ui_prompt_dismiss` | Interactive prompts (MCP, permissions)      |
+| `action_buttons`                  | AI-generated follow-up suggestions          |
+| `available_commands_updated`      | Agent's available slash commands            |
+| `config_option_changed`           | Session config option changed               |
+| `error`                           | Error notification                          |
+| `session_gone`                    | Terminal: session no longer exists          |
+| `session_reset`                   | Session was forcefully reset                |
+| `session_renamed`                 | Session name changed                        |
+| `acp_stopped` / `acp_started`     | ACP process lifecycle                       |
+| `acp_start_failed`                | ACP process failed to start                 |
+| `acp_error_permanent`             | Permanent ACP error with user guidance      |
+| `runner_fallback`                 | Runner fell back to exec mode               |
+| `hook_failed`                     | Lifecycle hook execution failed             |
+| `mcp_tools_unavailable`           | MCP tools not available in workspace        |
+| `queue_updated`                   | Queue state changed                         |
+| `queue_message_sending/sent`      | Queue message delivery lifecycle            |
+| `queue_message_titled`            | Queue message received auto-generated title |
+| `queue_reordered`                 | Queue order changed                         |
 
 ### Backend → Frontend Messages (Global Events WS)
 
-| Type                        | Purpose                              |
-| --------------------------- | ------------------------------------ |
-| `connected`                 | Global events connection established |
-| `session_created`           | New session created                  |
-| `session_deleted`           | Session deleted                      |
-| `session_renamed`           | Session renamed                      |
-| `session_pinned`            | Session pin state changed            |
-| `session_archived`          | Session archive state changed        |
-| `session_archive_pending`   | Session archiving initiated          |
-| `session_streaming`         | Session streaming state changed      |
-| `session_settings_updated`  | Session advanced settings changed    |
-| `periodic_updated`          | Periodic prompt config changed       |
-| `periodic_started`          | Periodic prompt was delivered        |
-| `acp_started`               | ACP process started for session      |
-| `acp_start_failed`          | ACP process failed to start          |
-| `hook_failed`               | Lifecycle hook failed                |
-| `prompts_changed`           | Prompt files changed on disk         |
+| Type                       | Purpose                              |
+| -------------------------- | ------------------------------------ |
+| `connected`                | Global events connection established |
+| `session_created`          | New session created                  |
+| `session_deleted`          | Session deleted                      |
+| `session_renamed`          | Session renamed                      |
+| `session_pinned`           | Session pin state changed            |
+| `session_archived`         | Session archive state changed        |
+| `session_archive_pending`  | Session archiving initiated          |
+| `session_streaming`        | Session streaming state changed      |
+| `session_settings_updated` | Session advanced settings changed    |
+| `periodic_updated`         | Periodic prompt config changed       |
+| `periodic_started`         | Periodic prompt was delivered        |
+| `acp_started`              | ACP process started for session      |
+| `acp_start_failed`         | ACP process failed to start          |
+| `hook_failed`              | Lifecycle hook failed                |
+| `prompts_changed`          | Prompt files changed on disk         |
 
 ### Key Concepts
 

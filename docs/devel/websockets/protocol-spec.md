@@ -37,10 +37,10 @@ graph LR
     SESSION <--> WSC
 ```
 
-| Endpoint                  | Handler              | Purpose                                               |
-| ------------------------- | -------------------- | ----------------------------------------------------- |
-| `/api/events`             | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed)   |
-| `/api/sessions/{id}/ws`   | `SessionWSClient`    | Per-session communication (prompts, responses, tools)  |
+| Endpoint                | Handler              | Purpose                                               |
+| ----------------------- | -------------------- | ----------------------------------------------------- |
+| `/api/events`           | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed)  |
+| `/api/sessions/{id}/ws` | `SessionWSClient`    | Per-session communication (prompts, responses, tools) |
 
 This separation allows:
 
@@ -80,11 +80,11 @@ These messages are sent from the browser to the server on the **session WebSocke
 }
 ```
 
-| Field      | Type     | Required | Description                      |
-| ---------- | -------- | -------- | -------------------------------- |
-| `message`  | string   | Yes      | User message text                |
-| `image_ids`| string[] | No       | Attached image IDs               |
-| `prompt_id`| string   | No       | Client-generated ID for delivery verification |
+| Field       | Type     | Required | Description                                   |
+| ----------- | -------- | -------- | --------------------------------------------- |
+| `message`   | string   | Yes      | User message text                             |
+| `image_ids` | string[] | No       | Attached image IDs                            |
+| `prompt_id` | string   | No       | Client-generated ID for delivery verification |
 
 ### `cancel` — Cancel agent operation
 
@@ -116,11 +116,11 @@ Unified message type for all event loading. Parameters are mutually exclusive.
 { "type": "load_events", "data": { "after_seq": 42 } }
 ```
 
-| Field        | Type  | Description                                       |
-| ------------ | ----- | ------------------------------------------------- |
-| `limit`      | int   | Maximum events to return (default: 50, max: 500)  |
-| `before_seq` | int64 | Load events with seq < value (pagination)          |
-| `after_seq`  | int64 | Load events with seq > value (sync)                |
+| Field        | Type  | Description                                      |
+| ------------ | ----- | ------------------------------------------------ |
+| `limit`      | int   | Maximum events to return (default: 50, max: 500) |
+| `before_seq` | int64 | Load events with seq < value (pagination)        |
+| `after_seq`  | int64 | Load events with seq > value (sync)              |
 
 > **Note:** `before_seq` and `after_seq` are mutually exclusive.
 
@@ -167,7 +167,10 @@ Sent when the user responds to a `ui_prompt` (MCP questions, permissions, follow
 ### `set_config_option` — Change session config option
 
 ```json
-{ "type": "set_config_option", "data": { "config_id": "mode", "value": "plan" } }
+{
+  "type": "set_config_option",
+  "data": { "config_id": "mode", "value": "plan" }
+}
 ```
 
 ### `run_mcp_install_command` — Execute MCP installation
@@ -183,7 +186,10 @@ Sent from frontend when user confirms running a suggested MCP installation comma
 > **Deprecated.** Use `ui_prompt_answer` instead.
 
 ```json
-{ "type": "permission_answer", "data": { "request_id": "id", "approved": true } }
+{
+  "type": "permission_answer",
+  "data": { "request_id": "id", "approved": true }
+}
 ```
 
 ---
@@ -213,15 +219,15 @@ Sent immediately after WebSocket upgrade. Includes last prompt info for delivery
 }
 ```
 
-| Field                  | Type   | Description                                          |
-| ---------------------- | ------ | ---------------------------------------------------- |
-| `session_id`           | string | Session identifier                                   |
-| `client_id`            | string | Unique ID for this WebSocket client                  |
-| `acp_server`           | string | ACP server name                                      |
-| `is_running`           | bool   | Whether ACP process is active                        |
-| `is_prompting`         | bool   | Whether agent is currently responding                |
-| `last_user_prompt_id`  | string | Last prompt ID (for delivery verification)           |
-| `last_user_prompt_seq` | int64  | Last prompt sequence (for delivery verification)     |
+| Field                  | Type   | Description                                      |
+| ---------------------- | ------ | ------------------------------------------------ |
+| `session_id`           | string | Session identifier                               |
+| `client_id`            | string | Unique ID for this WebSocket client              |
+| `acp_server`           | string | ACP server name                                  |
+| `is_running`           | bool   | Whether ACP process is active                    |
+| `is_prompting`         | bool   | Whether agent is currently responding            |
+| `last_user_prompt_id`  | string | Last prompt ID (for delivery verification)       |
+| `last_user_prompt_seq` | int64  | Last prompt sequence (for delivery verification) |
 
 #### `session_gone` — Terminal: session no longer exists
 
@@ -261,7 +267,10 @@ Sent after a `force_reset` message is processed.
 #### `session_renamed` — Session name changed
 
 ```json
-{ "type": "session_renamed", "data": { "session_id": "...", "name": "New Name" } }
+{
+  "type": "session_renamed",
+  "data": { "session_id": "...", "name": "New Name" }
+}
 ```
 
 #### `acp_stopped` — ACP connection stopped
@@ -285,7 +294,11 @@ Sent when the ACP process is started (e.g., session unarchived).
 ```json
 {
   "type": "acp_start_failed",
-  "data": { "session_id": "...", "error": "command not found", "command": "auggie --acp" }
+  "data": {
+    "session_id": "...",
+    "error": "command not found",
+    "command": "auggie --acp"
+  }
 }
 ```
 
@@ -314,7 +327,12 @@ All streaming events include `seq` and `max_seq` for ordering and gap detection.
 ```json
 {
   "type": "agent_message",
-  "data": { "seq": 52, "max_seq": 52, "html": "<p>Here's the fix...</p>", "is_prompting": true }
+  "data": {
+    "seq": 52,
+    "max_seq": 52,
+    "html": "<p>Here's the fix...</p>",
+    "is_prompting": true
+  }
 }
 ```
 
@@ -323,7 +341,12 @@ All streaming events include `seq` and `max_seq` for ordering and gap detection.
 ```json
 {
   "type": "agent_thought",
-  "data": { "seq": 53, "max_seq": 53, "text": "Let me analyze the code...", "is_prompting": true }
+  "data": {
+    "seq": 53,
+    "max_seq": 53,
+    "text": "Let me analyze the code...",
+    "is_prompting": true
+  }
 }
 ```
 
@@ -332,7 +355,14 @@ All streaming events include `seq` and `max_seq` for ordering and gap detection.
 ```json
 {
   "type": "tool_call",
-  "data": { "seq": 54, "max_seq": 54, "id": "tc_1", "title": "Read file", "status": "running", "is_prompting": true }
+  "data": {
+    "seq": 54,
+    "max_seq": 54,
+    "id": "tc_1",
+    "title": "Read file",
+    "status": "running",
+    "is_prompting": true
+  }
 }
 ```
 
@@ -341,7 +371,13 @@ All streaming events include `seq` and `max_seq` for ordering and gap detection.
 ```json
 {
   "type": "tool_update",
-  "data": { "seq": 54, "max_seq": 55, "id": "tc_1", "status": "completed", "is_prompting": true }
+  "data": {
+    "seq": 54,
+    "max_seq": 55,
+    "id": "tc_1",
+    "status": "completed",
+    "is_prompting": true
+  }
 }
 ```
 
@@ -350,7 +386,12 @@ All streaming events include `seq` and `max_seq` for ordering and gap detection.
 ```json
 {
   "type": "plan",
-  "data": { "seq": 56, "max_seq": 56, "entries": [{"title": "Fix bug", "status": "in_progress"}], "is_prompting": true }
+  "data": {
+    "seq": 56,
+    "max_seq": 56,
+    "entries": [{ "title": "Fix bug", "status": "in_progress" }],
+    "is_prompting": true
+  }
 }
 ```
 
@@ -400,7 +441,8 @@ Broadcast to all clients on the session. The sender sees `is_mine: true`.
 {
   "type": "user_prompt",
   "data": {
-    "seq": 51, "max_seq": 51,
+    "seq": 51,
+    "max_seq": 51,
     "sender_id": "ws-client-1",
     "prompt_id": "p-1738396800-xyz",
     "message": "Fix the login bug",
@@ -438,16 +480,16 @@ Broadcast to all clients on the session. The sender sees `is_mine: true`.
 }
 ```
 
-| Field          | Type   | Description                                          |
-| -------------- | ------ | ---------------------------------------------------- |
-| `events`       | array  | Array of event objects                               |
-| `has_more`     | bool   | Whether more events exist beyond this batch          |
-| `first_seq`    | int64  | Lowest seq in returned events                        |
-| `last_seq`     | int64  | Highest seq in returned events                       |
-| `max_seq`      | int64  | Highest seq in the entire session                    |
-| `total_count`  | int    | Total events in session                              |
-| `prepend`      | bool   | True if these are older events (for "Load More")     |
-| `is_prompting` | bool   | Whether agent is currently responding                |
+| Field          | Type  | Description                                      |
+| -------------- | ----- | ------------------------------------------------ |
+| `events`       | array | Array of event objects                           |
+| `has_more`     | bool  | Whether more events exist beyond this batch      |
+| `first_seq`    | int64 | Lowest seq in returned events                    |
+| `last_seq`     | int64 | Highest seq in returned events                   |
+| `max_seq`      | int64 | Highest seq in the entire session                |
+| `total_count`  | int   | Total events in session                          |
+| `prepend`      | bool  | True if these are older events (for "Load More") |
+| `is_prompting` | bool  | Whether agent is currently responding            |
 
 #### Event Types in `events_loaded`
 
@@ -482,15 +524,15 @@ Broadcast to all clients on the session. The sender sees `is_mine: true`.
 }
 ```
 
-| Field          | Type   | Description                                          |
-| -------------- | ------ | ---------------------------------------------------- |
-| `client_time`  | int64  | Echo of client time for RTT calculation              |
-| `server_time`  | int64  | Server timestamp                                     |
-| `max_seq`      | int64  | Highest seq on server (for gap detection)            |
-| `is_prompting` | bool   | Whether agent is currently responding                |
-| `is_running`   | bool   | Whether ACP process is active                        |
-| `queue_length` | int    | Messages waiting in queue (multi-tab sync)           |
-| `status`       | string | Session status: `active`, `completed`, `error`       |
+| Field          | Type   | Description                                    |
+| -------------- | ------ | ---------------------------------------------- |
+| `client_time`  | int64  | Echo of client time for RTT calculation        |
+| `server_time`  | int64  | Server timestamp                               |
+| `max_seq`      | int64  | Highest seq on server (for gap detection)      |
+| `is_prompting` | bool   | Whether agent is currently responding          |
+| `is_running`   | bool   | Whether ACP process is active                  |
+| `queue_length` | int    | Messages waiting in queue (multi-tab sync)     |
+| `status`       | string | Session status: `active`, `completed`, `error` |
 
 ### Interactive Prompts
 
@@ -507,8 +549,18 @@ Unified system for all interactive prompts (MCP tool questions, permissions, fol
     "question": "Permission requested",
     "title": "Run: npm install",
     "options": [
-      { "id": "allow_once", "label": "Allow", "kind": "allow_once", "style": "success" },
-      { "id": "reject_once", "label": "Deny", "kind": "reject_once", "style": "danger" }
+      {
+        "id": "allow_once",
+        "label": "Allow",
+        "kind": "allow_once",
+        "style": "success"
+      },
+      {
+        "id": "reject_once",
+        "label": "Deny",
+        "kind": "reject_once",
+        "style": "danger"
+      }
     ],
     "timeout_seconds": 300,
     "blocking": true,
@@ -541,7 +593,11 @@ Unified system for all interactive prompts (MCP tool questions, permissions, fol
 ```json
 {
   "type": "ui_prompt_dismiss",
-  "data": { "session_id": "...", "request_id": "unique-id", "reason": "timeout" }
+  "data": {
+    "session_id": "...",
+    "request_id": "unique-id",
+    "reason": "timeout"
+  }
 }
 ```
 
@@ -592,7 +648,10 @@ Sent asynchronously after `prompt_complete` when follow-up suggestions are enabl
 #### `error` — Error notification
 
 ```json
-{ "type": "error", "data": { "message": "Agent error occurred", "code": "agent_error" } }
+{
+  "type": "error",
+  "data": { "message": "Agent error occurred", "code": "agent_error" }
+}
 ```
 
 #### `runner_fallback` — Runner fell back to exec
@@ -600,7 +659,12 @@ Sent asynchronously after `prompt_complete` when follow-up suggestions are enabl
 ```json
 {
   "type": "runner_fallback",
-  "data": { "session_id": "...", "requested_type": "docker", "fallback_type": "exec", "reason": "Docker not available" }
+  "data": {
+    "session_id": "...",
+    "requested_type": "docker",
+    "fallback_type": "exec",
+    "reason": "Docker not available"
+  }
 }
 ```
 
@@ -609,7 +673,11 @@ Sent asynchronously after `prompt_complete` when follow-up suggestions are enabl
 ```json
 {
   "type": "hook_failed",
-  "data": { "name": "on-session-start", "exit_code": 1, "error": "Script not found" }
+  "data": {
+    "name": "on-session-start",
+    "exit_code": 1,
+    "error": "Script not found"
+  }
 }
 ```
 
@@ -635,7 +703,12 @@ See [Message Queue](../message-queue.md) for the full queue system documentation
 ```json
 {
   "type": "queue_updated",
-  "data": { "session_id": "...", "queue_length": 3, "action": "added", "message_id": "q-123" }
+  "data": {
+    "session_id": "...",
+    "queue_length": 3,
+    "action": "added",
+    "message_id": "q-123"
+  }
 }
 ```
 
@@ -653,7 +726,11 @@ Action values: `added`, `removed`, `cleared`.
 ```json
 {
   "type": "queue_message_titled",
-  "data": { "session_id": "...", "message_id": "q-123", "title": "Login Bug Fix" }
+  "data": {
+    "session_id": "...",
+    "message_id": "q-123",
+    "title": "Login Bug Fix"
+  }
 }
 ```
 
@@ -668,12 +745,12 @@ Action values: `added`, `removed`, `cleared`.
 
 ### Legacy Messages
 
-| Type                | Replacement                                      |
-| ------------------- | ------------------------------------------------ |
-| `permission`        | `ui_prompt` with `prompt_type: "permission"`     |
-| `permission_answer` | `ui_prompt_answer`                               |
-| `sync_session`      | `load_events` with `after_seq`                   |
-| `session_sync`      | `events_loaded`                                  |
+| Type                | Replacement                                  |
+| ------------------- | -------------------------------------------- |
+| `permission`        | `ui_prompt` with `prompt_type: "permission"` |
+| `permission_answer` | `ui_prompt_answer`                           |
+| `sync_session`      | `load_events` with `after_seq`               |
+| `session_sync`      | `events_loaded`                              |
 
 ---
 
@@ -712,7 +789,14 @@ stateDiagram-v2
 #### `session_created`
 
 ```json
-{ "type": "session_created", "data": { "session_id": "...", "name": "New Session", "working_dir": "/project" } }
+{
+  "type": "session_created",
+  "data": {
+    "session_id": "...",
+    "name": "New Session",
+    "working_dir": "/project"
+  }
+}
 ```
 
 #### `session_deleted`
@@ -724,7 +808,10 @@ stateDiagram-v2
 #### `session_renamed`
 
 ```json
-{ "type": "session_renamed", "data": { "session_id": "...", "name": "Better Name" } }
+{
+  "type": "session_renamed",
+  "data": { "session_id": "...", "name": "Better Name" }
+}
 ```
 
 #### `session_pinned`
@@ -743,13 +830,19 @@ stateDiagram-v2
 #### `session_streaming`
 
 ```json
-{ "type": "session_streaming", "data": { "session_id": "...", "is_streaming": true } }
+{
+  "type": "session_streaming",
+  "data": { "session_id": "...", "is_streaming": true }
+}
 ```
 
 #### `session_settings_updated`
 
 ```json
-{ "type": "session_settings_updated", "data": { "session_id": "...", "settings": { "can_do_introspection": true } } }
+{
+  "type": "session_settings_updated",
+  "data": { "session_id": "...", "settings": { "can_do_introspection": true } }
+}
 ```
 
 ### Periodic Prompt Events
@@ -772,7 +865,10 @@ stateDiagram-v2
 #### `periodic_started`
 
 ```json
-{ "type": "periodic_started", "data": { "session_id": "...", "session_name": "Daily Report" } }
+{
+  "type": "periodic_started",
+  "data": { "session_id": "...", "session_name": "Daily Report" }
+}
 ```
 
 ### ACP Process Events
@@ -789,7 +885,10 @@ stateDiagram-v2
 #### `hook_failed`
 
 ```json
-{ "type": "hook_failed", "data": { "name": "on-session-start", "exit_code": 1, "error": "..." } }
+{
+  "type": "hook_failed",
+  "data": { "name": "on-session-start", "exit_code": 1, "error": "..." }
+}
 ```
 
 #### `prompts_changed`
@@ -797,7 +896,10 @@ stateDiagram-v2
 ```json
 {
   "type": "prompts_changed",
-  "data": { "changed_dirs": ["/project/.mitto/prompts"], "timestamp": "2026-02-01T12:00:00Z" }
+  "data": {
+    "changed_dirs": ["/project/.mitto/prompts"],
+    "timestamp": "2026-02-01T12:00:00Z"
+  }
 }
 ```
 

@@ -26,6 +26,7 @@ Each entry consists of:
 - **command** - The shell command to start the ACP server
 - **type** (optional) - A category/class for the server, used for prompt matching (see [Server Types](#server-types))
 - **cwd** (optional) - The working directory for the ACP server process
+- **tags** (optional) - A list of short keywords for categorization (see [Tags](#tags))
 
 The first server in the list is the default.
 
@@ -43,6 +44,25 @@ acp:
 This is cleaner than using shell wrappers like `sh -c 'cd /some/dir && command'`.
 
 > **Note:** When using [restricted runners](restricted.md), the `cwd` option is not supported. A warning will be logged if `cwd` is specified with a restricted runner.
+
+### Tags
+
+The `tags` option assigns categorization keywords to an ACP server. Tags are short, single-word or hyphenated-word labels that help organize and identify servers:
+
+```yaml
+acp:
+  - auggie:
+      command: auggie --acp --allow-indexing
+      tags: [coding, ai-assistant]
+  - claude-code-fast:
+      command: npx -y @zed-industries/claude-code-acp@latest
+      tags: [coding, fast-model]
+  - claude-code-safe:
+      command: npx -y @zed-industries/claude-code-acp@latest
+      tags: [coding, production]
+```
+
+Tags are displayed as small badges in the Settings dialog next to the server name. In the UI, tags can be entered as a comma-separated list (e.g., `coding, fast-model, production`).
 
 ### Multiple Configurations of the Same Agent
 

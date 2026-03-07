@@ -149,8 +149,8 @@ The web interface uses two WebSocket endpoints:
 
 | Endpoint                | Handler              | Purpose                                               |
 | ----------------------- | -------------------- | ----------------------------------------------------- |
-| `/api/events`           | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed)   |
-| `/api/sessions/{id}/ws` | `SessionWSClient`    | Per-session communication (prompts, responses, tools)  |
+| `/api/events`           | `GlobalEventsClient` | Session lifecycle events (created, deleted, renamed)  |
+| `/api/sessions/{id}/ws` | `SessionWSClient`    | Per-session communication (prompts, responses, tools) |
 
 This separation allows global events to be broadcast to all connected clients while per-session
 events are scoped to interested clients only.
