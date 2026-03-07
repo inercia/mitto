@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/msghooks"
@@ -89,6 +90,10 @@ type SessionManager struct {
 	// When set, new sessions use a shared process instead of starting their own.
 	// When nil, legacy per-session process ownership is used.
 	acpProcessManager *ACPProcessManager
+
+	// auxiliaryManager provides workspace-scoped auxiliary tasks (title generation,
+	// follow-up analysis, conversation summaries, etc.).
+	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
 
 	// mcpCheckedWorkspaces tracks which workspaces have had MCP availability checked.
 	mcpCheckedWorkspaces   map[string]bool
@@ -590,6 +595,14 @@ func (sm *SessionManager) SetACPProcessManager(pm *ACPProcessManager) {
 	sm.acpProcessManager = pm
 }
 
+// SetAuxiliaryManager sets the workspace-scoped auxiliary manager for title generation,
+// follow-up analysis, and other auxiliary tasks.
+func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryManager) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.auxiliaryManager = am
+}
+
 // getSharedProcess returns the shared ACP process for the given workspace,
 // or nil if shared process management is not enabled.
 // The caller must NOT hold sm.mu when calling this method.
@@ -911,6 +924,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		WorkspaceUUID:       workspaceUUID,
 		MittoConfig:         sm.mittoConfig, // Pass config for default flags
 		GlobalMCPServer:     sm.mcpServer,
+		AuxiliaryManager:    sm.auxiliaryManager,
 		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
@@ -1246,6 +1260,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
 		GlobalMCPServer:     sm.mcpServer,
+		AuxiliaryManager:    sm.auxiliaryManager,
 		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
@@ -1565,7 +1580,6 @@ func (sm *SessionManager) ProcessPendingQueues() {
 		}(bs, meta.SessionID)
 	}
 }
-
 
 // GetWorkspaceUUIDForSession returns the workspace UUID for a given session ID.
 // Returns empty string if the session is not found.

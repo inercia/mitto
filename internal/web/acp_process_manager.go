@@ -280,10 +280,11 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	// Update last used time
 	auxState.lastUsed = time.Now()
 
-	// Get the shared process
+	// Get the shared process (it must exist, since getOrCreateAuxiliarySession succeeded,
+	// but it could have died in the meantime — handle gracefully).
 	process := m.GetProcess(workspaceUUID)
 	if process == nil {
-		return "", fmt.Errorf("workspace process not found: %s", workspaceUUID)
+		return "", fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
 	}
 
 	// Reset the response buffer

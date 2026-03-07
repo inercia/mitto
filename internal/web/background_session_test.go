@@ -1681,6 +1681,140 @@ func TestBackgroundSession_Close_DifferentReasons(t *testing.T) {
 	}
 }
 
+// TestBackgroundSession_Close_RecordsSessionEndAfterOnACPStopped verifies that
+// Close() records the session_end event with the correct sequence number AFTER
+// sending the OnACPStopped notification. This ensures that:
+// 1. Observers are notified before the session_end event is written
+// 2. The session_end event uses MaxSeq + 1 (not EventCount + 1)
+// 3. The metadata status is set to "completed"
+//
+// This test is part of the fix for the session_end delivery bug where the event
+// was never delivered to WebSocket clients.
+func TestBackgroundSession_Close_RecordsSessionEndAfterOnACPStopped(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with a recorder
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Record some events to establish a known MaxSeq
+	// session_start is seq 1, record a few more events
+	for i := 0; i < 3; i++ {
+		if err := recorder.RecordUserPrompt("test message"); err != nil {
+			t.Fatalf("RecordUserPrompt failed: %v", err)
+		}
+	}
+
+	// Simulate streaming by recording events with explicit sequence numbers
+	// This is what BackgroundSession does during streaming
+	streamingEvents := []session.Event{
+		{Seq: 100, Type: session.EventTypeAgentMessage, Data: session.AgentMessageData{Text: "streaming message 1"}},
+		{Seq: 200, Type: session.EventTypeAgentMessage, Data: session.AgentMessageData{Text: "streaming message 2"}},
+		{Seq: 311, Type: session.EventTypeAgentMessage, Data: session.AgentMessageData{Text: "streaming message 3"}},
+	}
+	for _, e := range streamingEvents {
+		if err := recorder.RecordEventWithSeq(e); err != nil {
+			t.Fatalf("RecordEventWithSeq failed: %v", err)
+		}
+	}
+
+	// Verify initial state
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	// MaxSeq should be 311 (highest seq recorded)
+	if meta.MaxSeq != 311 {
+		t.Errorf("Expected MaxSeq=311 before Close, got %d", meta.MaxSeq)
+	}
+	// EventCount = 1 (session_start) + 3 (user_prompt) + 3 (agent_message) = 7
+	if meta.EventCount != 7 {
+		t.Errorf("Expected EventCount=7 before Close, got %d", meta.EventCount)
+	}
+
+	// Create BackgroundSession with the recorder and an observer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	observer := &mockSessionObserver{}
+	bs := &BackgroundSession{
+		persistedID: sessionID,
+		store:       store,
+		recorder:    recorder,
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	bs.AddObserver(observer)
+
+	// Close the session
+	bs.Close("test_shutdown")
+
+	// Verify observer received OnACPStopped
+	reasons := observer.getACPStoppedReasons()
+	if len(reasons) != 1 {
+		t.Fatalf("Observer should have received 1 OnACPStopped call, got %d", len(reasons))
+	}
+	if reasons[0] != "test_shutdown" {
+		t.Errorf("OnACPStopped reason = %q, want %q", reasons[0], "test_shutdown")
+	}
+
+	// Verify session_end event was recorded with correct sequence number
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	// Find the session_end event (should be the last one)
+	var sessionEndEvent *session.Event
+	for i := range events {
+		if events[i].Type == session.EventTypeSessionEnd {
+			sessionEndEvent = &events[i]
+			break
+		}
+	}
+
+	if sessionEndEvent == nil {
+		t.Fatal("session_end event not found in events")
+	}
+
+	// Verify session_end uses MaxSeq + 1 (not EventCount + 1)
+	// MaxSeq was 311, so session_end should be 312
+	// If the bug existed, it would be 8 (EventCount + 1)
+	expectedSeq := int64(312)
+	if sessionEndEvent.Seq != expectedSeq {
+		t.Errorf("session_end seq = %d, want %d (MaxSeq + 1, not EventCount + 1)", sessionEndEvent.Seq, expectedSeq)
+	}
+
+	// Verify metadata was updated
+	meta, err = store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed after Close: %v", err)
+	}
+
+	if meta.Status != "completed" {
+		t.Errorf("Metadata status = %q, want %q", meta.Status, "completed")
+	}
+
+	// Verify MaxSeq was updated to include session_end
+	if meta.MaxSeq != expectedSeq {
+		t.Errorf("Metadata MaxSeq = %d, want %d", meta.MaxSeq, expectedSeq)
+	}
+
+	// Verify EventCount was incremented (7 + 1 = 8)
+	if meta.EventCount != 8 {
+		t.Errorf("Metadata EventCount = %d, want 8", meta.EventCount)
+	}
+}
+
 // trackingObserver is a minimal observer that tracks specific callbacks for testing.
 type trackingObserver struct {
 	onACPStopped      func(reason string)

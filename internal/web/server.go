@@ -172,6 +172,10 @@ type Server struct {
 
 	// Auxiliary manager for workspace-scoped auxiliary tasks (title generation, etc.)
 	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
+
+	// Negative session cache for circuit-breaking "Session not found" error storms.
+	// Caches session IDs known to not exist, preventing repeated filesystem lookups.
+	negativeSessionCache *NegativeSessionCache
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -354,13 +358,12 @@ func NewServer(config Config) (*Server, error) {
 
 	eventsManager := NewGlobalEventsManager()
 
-	// Initialize ACP process manager for workspace-scoped shared processes
-	// This manages one shared ACP process per workspace, with multiple sessions
-	acpProcessManager := NewACPProcessManager(context.Background(), logger)
-
 	// Initialize auxiliary manager for workspace-scoped auxiliary tasks
 	// This provides high-level operations (title generation, follow-up analysis, etc.)
-	auxiliaryManager := auxiliary.NewWorkspaceAuxiliaryManager(acpProcessManager, logger)
+	// Note: reuses acpProcessMgr (the same instance used by sessionMgr) so that
+	// auxiliary sessions can find the workspace processes registered by user sessions.
+	auxiliaryManager := auxiliary.NewWorkspaceAuxiliaryManager(acpProcessMgr, logger)
+	sessionMgr.SetAuxiliaryManager(auxiliaryManager)
 
 	// Initialize scanner defense
 	// Enabled by default when external access is configured (ExternalPort >= 0)
@@ -386,22 +389,23 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	s := &Server{
-		config:            config,
-		logger:            logger,
-		apiPrefix:         apiPrefix,
-		eventsManager:     eventsManager,
-		sessionManager:    sessionMgr,
-		store:             store,
-		authManager:       authMgr,
-		csrfManager:       csrfMgr,
-		rateLimiter:       rateLimiter,
-		connectionTracker: connectionTracker,
-		wsSecurityConfig:  wsSecurityConfig,
-		proxyChecker:      proxyChecker,
-		accessLogger:      accessLogger,
-		defense:           scannerDefense,
-		acpProcessManager: acpProcessManager,
-		auxiliaryManager:  auxiliaryManager,
+		config:               config,
+		logger:               logger,
+		apiPrefix:            apiPrefix,
+		eventsManager:        eventsManager,
+		sessionManager:       sessionMgr,
+		store:                store,
+		authManager:          authMgr,
+		csrfManager:          csrfMgr,
+		rateLimiter:          rateLimiter,
+		connectionTracker:    connectionTracker,
+		wsSecurityConfig:     wsSecurityConfig,
+		proxyChecker:         proxyChecker,
+		accessLogger:         accessLogger,
+		defense:              scannerDefense,
+		acpProcessManager:    acpProcessMgr,
+		auxiliaryManager:     auxiliaryManager,
+		negativeSessionCache: NewNegativeSessionCache(),
 	}
 
 	// Set events manager in session manager for broadcasting
@@ -508,6 +512,10 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
 	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
 	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.handleUIPreferences)
+
+	// File save endpoints - restricted to localhost only (used by native macOS app)
+	mux.HandleFunc(apiPrefix+"/api/save-file-to-path", s.handleSaveFileToPath)
+	mux.HandleFunc(apiPrefix+"/api/check-file-exists", s.handleCheckFileExists)
 
 	// M3: Health check endpoint for load balancer integration and monitoring
 	// This endpoint is intentionally NOT behind auth to allow health checks
@@ -959,18 +967,45 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 }
 
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
-func (s *Server) BroadcastACPStartFailed(sessionID, errorMsg string) {
+// If err is an *ACPClassifiedError with a permanent classification, a more detailed
+// "acp_error_permanent" message is broadcast with actionable user guidance.
+func (s *Server) BroadcastACPStartFailed(sessionID string, err error, command string) {
 	if s.eventsManager == nil {
 		return
 	}
 
-	s.eventsManager.Broadcast(WSMsgTypeACPStartFailed, map[string]string{
+	data := map[string]interface{}{
 		"session_id": sessionID,
-		"error":      errorMsg,
-	})
+		"error":      err.Error(),
+		"command":    command,
+	}
+
+	// Check if this is a classified permanent error — broadcast with extra context.
+	if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
+		data["error_class"] = classified.Class.String()
+		data["user_message"] = classified.UserMessage
+		data["user_guidance"] = classified.UserGuidance
+
+		s.eventsManager.Broadcast(WSMsgTypeACPErrorPermanent, data)
+
+		if s.logger != nil {
+			s.logger.Warn("Broadcast ACP permanent error",
+				"session_id", sessionID,
+				"user_message", classified.UserMessage,
+				"command", command,
+				"clients", s.eventsManager.ClientCount())
+		}
+		return
+	}
+
+	// Default: broadcast as regular start-failed.
+	s.eventsManager.Broadcast(WSMsgTypeACPStartFailed, data)
 
 	if s.logger != nil {
-		s.logger.Warn("Broadcast ACP start failed", "session_id", sessionID, "error", errorMsg,
+		s.logger.Warn("Broadcast ACP start failed",
+			"session_id", sessionID,
+			"error", err.Error(),
+			"command", command,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

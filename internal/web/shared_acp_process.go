@@ -19,13 +19,22 @@ import (
 
 const (
 	// maxProcessStartRetries is the maximum number of times to retry starting the ACP process.
-	maxProcessStartRetries = 2
-	// processStartRetryDelay is the delay between process start retries.
-	processStartRetryDelay = 500 * time.Millisecond
+	maxProcessStartRetries = 3
+	// processStartRetryBaseDelay is the initial delay between process start retries.
+	processStartRetryBaseDelay = 500 * time.Millisecond
+	// processStartRetryMaxDelay is the maximum delay between process start retries.
+	processStartRetryMaxDelay = 4 * time.Second
+	// processStartRetryJitterRatio is the jitter ratio (±) applied to retry delays.
+	processStartRetryJitterRatio = 0.3
+
 	// maxProcessRestarts is the maximum number of automatic restarts within processRestartWindow.
 	maxProcessRestarts = 3
 	// processRestartWindow is the time window for counting restart attempts.
 	processRestartWindow = 5 * time.Minute
+	// processRestartBaseDelay is the initial delay between runtime restart attempts.
+	processRestartBaseDelay = 1 * time.Second
+	// processRestartMaxDelay is the maximum delay between runtime restart attempts.
+	processRestartMaxDelay = 10 * time.Second
 )
 
 // SharedACPProcessConfig holds configuration for creating a SharedACPProcess.
@@ -69,6 +78,12 @@ type SharedACPProcess struct {
 	wait   func() error
 	cancel context.CancelFunc // for restricted runner processes
 
+	// Process death detection (Fix A: faster crash detection)
+	// processDone is closed when the ACP OS process exits, providing sub-second
+	// detection via OS-level liveness checks (signal 0 polling).
+	processDone     chan struct{} // Closed when ACP OS process exits
+	processDoneOnce sync.Once     // Ensures processDone is closed exactly once
+
 	// Configuration (immutable after creation)
 	config SharedACPProcessConfig
 
@@ -111,51 +126,89 @@ func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*S
 
 // startProcess starts the ACP process and performs the Initialize handshake.
 // Must be called with appropriate synchronization (only from constructor or restart).
+// Returns an *ACPClassifiedError when the error has been classified, allowing
+// callers to distinguish permanent from transient failures.
 func (p *SharedACPProcess) startProcess() error {
 	var lastErr error
+	var lastClassified *ACPClassifiedError
+
 	for attempt := 0; attempt < maxProcessStartRetries; attempt++ {
 		if attempt > 0 {
+			delay := backoffDelay(attempt-1, processStartRetryBaseDelay, processStartRetryMaxDelay, processStartRetryJitterRatio)
 			if p.logger != nil {
 				p.logger.Info("Retrying ACP process start",
 					"attempt", attempt+1,
 					"max_attempts", maxProcessStartRetries,
-					"last_error", lastErr)
+					"delay", delay.String(),
+					"last_error", lastErr,
+					"error_class", lastClassified.Class.String(),
+					"command", p.config.ACPCommand,
+					"cwd", p.config.ACPCwd)
 			}
 			select {
 			case <-p.ctx.Done():
 				return fmt.Errorf("context cancelled during retry: %w", p.ctx.Err())
-			case <-time.After(processStartRetryDelay):
+			case <-time.After(delay):
 			}
 		}
 
-		err := p.doStartProcess()
-		if err == nil {
+		processErr, stderr := p.doStartProcess()
+		if processErr == nil {
 			return nil
 		}
-		lastErr = err
+		lastErr = processErr
 
-		if strings.Contains(err.Error(), "empty ACP command") {
-			return err // Don't retry validation errors
-		}
+		// Classify the error to determine if retrying is worthwhile.
+		lastClassified = classifyACPError(processErr, stderr)
 
 		if p.logger != nil {
 			p.logger.Warn("ACP process start failed",
 				"attempt", attempt+1,
-				"error", err)
+				"max_attempts", maxProcessStartRetries,
+				"error", processErr,
+				"error_class", lastClassified.Class.String(),
+				"command", p.config.ACPCommand,
+				"cwd", p.config.ACPCwd)
+		}
+
+		// Don't retry permanent errors — they won't resolve by retrying.
+		if !lastClassified.IsRetryable() {
+			if p.logger != nil {
+				p.logger.Error("ACP process start failed with permanent error, skipping retries",
+					"error", processErr,
+					"user_message", lastClassified.UserMessage,
+					"user_guidance", lastClassified.UserGuidance,
+					"command", p.config.ACPCommand,
+					"cwd", p.config.ACPCwd)
+			}
+			return lastClassified
 		}
 	}
 
+	// All retries exhausted — return the classified error if available.
+	if lastClassified != nil {
+		return lastClassified
+	}
 	return lastErr
 }
 
-func (p *SharedACPProcess) doStartProcess() error {
+// doStartProcess performs a single attempt to start the ACP process and run the Initialize handshake.
+// Returns the error and any captured stderr output for error classification.
+func (p *SharedACPProcess) doStartProcess() (error, string) {
 	processStart := time.Now()
 	acpCommand := p.config.ACPCommand
 	acpCwd := p.config.ACPCwd
 
+	if p.logger != nil {
+		p.logger.Info("Starting ACP process",
+			"command", acpCommand,
+			"cwd", acpCwd,
+			"acp_server", p.config.ACPServer)
+	}
+
 	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
-		return fmt.Errorf("parse command: %w", err)
+		return fmt.Errorf("parse command: %w", err), ""
 	}
 
 	var stdin runner.WriteCloser
@@ -165,6 +218,21 @@ func (p *SharedACPProcess) doStartProcess() error {
 	var cmd *exec.Cmd
 
 	stderrCollector := newStderrCollector(8192, p.logger)
+
+	// Pre-create process death detection channel so the stderr crash detector
+	// (Fix C) can signal it immediately when crash patterns are detected.
+	p.processDone = make(chan struct{})
+	p.processDoneOnce = sync.Once{}
+
+	onCrashDetected := func() {
+		if p.logger != nil {
+			p.logger.Warn("ACP subprocess crash detected via stderr patterns",
+				"acp_server", p.config.ACPServer)
+		}
+		p.processDoneOnce.Do(func() {
+			close(p.processDone)
+		})
+	}
 
 	if p.config.Runner != nil {
 		if acpCwd != "" && p.logger != nil {
@@ -185,11 +253,11 @@ func (p *SharedACPProcess) doStartProcess() error {
 		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], nil)
 		if err != nil {
 			runCancel()
-			return fmt.Errorf("failed to start with runner: %w", err)
+			return fmt.Errorf("failed to start with runner: %w", err), ""
 		}
 		p.cancel = runCancel
 
-		startStderrMonitor(stderr, stderrCollector)
+		startStderrMonitor(stderr, stderrCollector, onCrashDetected)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -205,22 +273,22 @@ func (p *SharedACPProcess) doStartProcess() error {
 
 		stdin, err = cmd.StdinPipe()
 		if err != nil {
-			return fmt.Errorf("stdin pipe: %w", err)
+			return fmt.Errorf("stdin pipe: %w", err), ""
 		}
 		stdout, err = cmd.StdoutPipe()
 		if err != nil {
-			return fmt.Errorf("stdout pipe: %w", err)
+			return fmt.Errorf("stdout pipe: %w", err), ""
 		}
 		stderrPipe, err := cmd.StderrPipe()
 		if err != nil {
-			return fmt.Errorf("stderr pipe: %w", err)
+			return fmt.Errorf("stderr pipe: %w", err), ""
 		}
 
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start ACP server: %w", err)
+			return fmt.Errorf("failed to start ACP server: %w", err), ""
 		}
 
-		startStderrMonitor(stderrPipe, stderrCollector)
+		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected)
 
 		wait = func() error {
 			return cmd.Wait()
@@ -228,7 +296,54 @@ func (p *SharedACPProcess) doStartProcess() error {
 	}
 
 	p.cmd = cmd
-	p.wait = wait
+
+	// Wrap wait function to also close processDone channel on process exit.
+	// The channel was pre-created above (before stderr monitors started).
+	origWait := wait
+	p.wait = func() error {
+		err := origWait()
+		p.processDoneOnce.Do(func() {
+			close(p.processDone)
+		})
+		return err
+	}
+
+	// Start process liveness monitor for direct-exec processes.
+	// Polls process every 2 seconds using kill(pid, 0) for fast death detection.
+	if cmd != nil && cmd.Process != nil {
+		processDoneCh := p.processDone
+		processDoneOnce := &p.processDoneOnce
+		pid := cmd.Process.Pid
+		processCtx := p.ctx
+		logger := p.logger
+		acpServer := p.config.ACPServer
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-processDoneCh:
+					return
+				case <-processCtx.Done():
+					return
+				case <-ticker.C:
+					err := syscall.Kill(pid, 0)
+					if err != nil {
+						if logger != nil {
+							logger.Warn("ACP process no longer alive (detected by liveness check)",
+								"pid", pid,
+								"error", err,
+								"acp_server", acpServer)
+						}
+						processDoneOnce.Do(func() {
+							close(processDoneCh)
+						})
+						return
+					}
+				}
+			}
+		}()
+	}
 
 	filteredStdout := mittoAcp.NewJSONLineFilterReader(stdout, p.logger)
 
@@ -245,12 +360,18 @@ func (p *SharedACPProcess) doStartProcess() error {
 	defer initCancel()
 
 	// Monitor ACP process health: if the connection's Done() channel closes
-	// (meaning the ACP subprocess died), cancel the init context immediately.
+	// or the OS process exits (processDone), cancel the init context immediately.
 	go func() {
 		select {
 		case <-p.conn.Done():
 			if p.logger != nil {
 				p.logger.Warn("ACP connection closed during initialization, cancelling",
+					"acp_server", p.config.ACPServer)
+			}
+			initCancel()
+		case <-p.processDone:
+			if p.logger != nil {
+				p.logger.Warn("ACP process exited during initialization, cancelling",
 					"acp_server", p.config.ACPServer)
 			}
 			initCancel()
@@ -278,6 +399,7 @@ func (p *SharedACPProcess) doStartProcess() error {
 		if p.logger != nil {
 			logAttrs := []any{
 				"command", acpCommand,
+				"cwd", acpCwd,
 				"error", err,
 				"initialize_ms", initDuration.Milliseconds(),
 			}
@@ -288,7 +410,7 @@ func (p *SharedACPProcess) doStartProcess() error {
 		}
 
 		p.killProcess()
-		return fmt.Errorf("failed to initialize: %w", err)
+		return fmt.Errorf("failed to initialize: %w", err), stderrOutput
 	}
 
 	p.capabilities = &initResp.AgentCapabilities
@@ -296,13 +418,15 @@ func (p *SharedACPProcess) doStartProcess() error {
 	if p.logger != nil {
 		p.logger.Info("Shared ACP process started",
 			"acp_server", p.config.ACPServer,
+			"command", acpCommand,
+			"cwd", acpCwd,
 			"protocol_version", initResp.ProtocolVersion,
 			"load_session", initResp.AgentCapabilities.LoadSession,
 			"process_start_ms", time.Since(processStart).Milliseconds(),
 			"initialize_rpc_ms", initDuration.Milliseconds())
 	}
 
-	return nil
+	return nil, ""
 }
 
 // NewSession creates a new ACP session on this shared process.
@@ -424,6 +548,15 @@ func (p *SharedACPProcess) RegisterSession(sessionID acp.SessionId, callbacks *S
 // UnregisterSession removes per-session callbacks.
 func (p *SharedACPProcess) UnregisterSession(sessionID acp.SessionId) {
 	p.client.UnregisterSession(sessionID)
+}
+
+// ProcessDone returns a channel that is closed when the ACP OS process exits.
+// This provides faster death detection than conn.Done() which relies on pipe EOF.
+// Returns nil if the process has not been started yet.
+func (p *SharedACPProcess) ProcessDone() <-chan struct{} {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.processDone
 }
 
 // Prompt sends a prompt to a specific session on this shared process.
@@ -565,15 +698,38 @@ func (p *SharedACPProcess) recordRestart() {
 
 // Restart kills the old process and starts a new one.
 // All sessions must re-register their callbacks and LoadSession after restart.
-// Returns nil on success.
+// Returns nil on success. Returns an *ACPClassifiedError for permanent failures.
 func (p *SharedACPProcess) Restart() error {
 	if !p.canRestart() {
 		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", maxProcessRestarts, processRestartWindow)
 	}
 
+	// Apply backoff based on how many recent restarts have occurred.
+	p.restartMu.Lock()
+	recentCount := len(p.restartTimes)
+	p.restartMu.Unlock()
+
+	if recentCount > 0 {
+		delay := backoffDelay(recentCount-1, processRestartBaseDelay, processRestartMaxDelay, processStartRetryJitterRatio)
+		if p.logger != nil {
+			p.logger.Info("Waiting before restart",
+				"delay", delay.String(),
+				"recent_restarts", recentCount,
+				"command", p.config.ACPCommand,
+				"cwd", p.config.ACPCwd)
+		}
+		select {
+		case <-p.ctx.Done():
+			return fmt.Errorf("context cancelled during restart backoff: %w", p.ctx.Err())
+		case <-time.After(delay):
+		}
+	}
+
 	if p.logger != nil {
 		p.logger.Info("Restarting shared ACP process",
-			"restart_count", p.restartCount+1)
+			"restart_count", p.restartCount+1,
+			"command", p.config.ACPCommand,
+			"cwd", p.config.ACPCwd)
 	}
 
 	p.mu.Lock()
@@ -586,13 +742,21 @@ func (p *SharedACPProcess) Restart() error {
 
 	if err := p.startProcess(); err != nil {
 		if p.logger != nil {
-			p.logger.Error("Failed to restart shared ACP process", "error", err)
+			logAttrs := []any{"error", err}
+			if classified, ok := err.(*ACPClassifiedError); ok {
+				logAttrs = append(logAttrs,
+					"error_class", classified.Class.String(),
+					"user_message", classified.UserMessage,
+					"user_guidance", classified.UserGuidance)
+			}
+			p.logger.Error("Failed to restart shared ACP process", logAttrs...)
 		}
 		return err
 	}
 
 	if p.logger != nil {
-		p.logger.Info("Shared ACP process restarted successfully")
+		p.logger.Info("Shared ACP process restarted successfully",
+			"command", p.config.ACPCommand)
 	}
 
 	return nil
