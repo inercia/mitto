@@ -889,21 +889,6 @@ export function useWebSocket() {
         const maxSeq = msg.data.max_seq;
         const htmlLen = msg.data.html?.length || 0;
         const isPromptingFromServer = msg.data.is_prompting;
-        console.log(
-          "[DEBUG agent_message] received:",
-          "sessionId:",
-          sessionId,
-          "seq:",
-          msgSeq,
-          "max_seq:",
-          maxSeq,
-          "html_len:",
-          htmlLen,
-          "is_prompting:",
-          isPromptingFromServer,
-          "html_preview:",
-          msg.data.html?.substring(0, 80) + (htmlLen > 80 ? "..." : ""),
-        );
 
         // Check for gaps using max_seq (immediate gap detection)
         if (maxSeq) {
@@ -932,10 +917,6 @@ export function useWebSocket() {
 
           // M1 fix: Check for duplicate events (but allow same-seq for coalescing)
           if (isSeqDuplicate(sessionId, msgSeq, last?.seq)) {
-            console.log(
-              "[DEBUG agent_message] Skipping duplicate seq:",
-              msgSeq,
-            );
             return prev; // Skip duplicate
           }
 
@@ -949,17 +930,6 @@ export function useWebSocket() {
             !last.complete &&
             (sameSeq || !msgSeq);
 
-          console.log("[DEBUG agent_message] State update:", {
-            msgSeq,
-            lastSeq: last?.seq,
-            lastRole: last?.role,
-            lastComplete: last?.complete,
-            sameSeq,
-            shouldAppend,
-            prevHtmlLen: last?.html?.length || 0,
-            newHtmlLen: htmlLen,
-            messageCount: messages.length,
-          });
 
           if (shouldAppend) {
             // Safeguard: Check if the incoming HTML is a duplicate of what we already have.
@@ -969,10 +939,6 @@ export function useWebSocket() {
             const existingHtml = last.html || "";
             const incomingHtml = msg.data.html;
             if (existingHtml.endsWith(incomingHtml)) {
-              console.log(
-                "[DEBUG agent_message] Skipping duplicate append - HTML already contains this content, seq:",
-                msgSeq,
-              );
               return prev; // Skip duplicate append
             }
 
@@ -981,10 +947,6 @@ export function useWebSocket() {
               ...last,
               html: newHtml,
             };
-            console.log(
-              "[DEBUG agent_message] Appended to existing message, new html_len:",
-              newHtml.length,
-            );
           } else {
             // New message - mark seq as seen
             markSeqSeen(sessionId, msgSeq);
@@ -996,16 +958,8 @@ export function useWebSocket() {
               seq: msgSeq,
             });
             messages = limitMessages(messages);
-            console.log(
-              "[DEBUG agent_message] Created new message, total messages:",
-              messages.length,
-            );
           }
           const isPrompting = isPromptingFromServer ?? true;
-          console.log(
-            "[DEBUG agent_message] Setting isStreaming to:",
-            isPrompting,
-          );
           return {
             ...prev,
             [sessionId]: { ...session, messages, isStreaming: isPrompting },
@@ -1147,20 +1101,6 @@ export function useWebSocket() {
       case "tool_update": {
         const msgSeq = msg.data.seq;
         const maxSeq = msg.data.max_seq;
-        console.log(
-          "tool_update received:",
-          sessionId,
-          "seq:",
-          msgSeq,
-          "max_seq:",
-          maxSeq,
-          "id:",
-          msg.data.id,
-          "status:",
-          msg.data.status,
-          "is_prompting:",
-          msg.data.is_prompting,
-        );
 
         // Check for gaps using max_seq (immediate gap detection)
         if (maxSeq) {
@@ -1342,26 +1282,6 @@ export function useWebSocket() {
           currentSession?.messages?.[currentSession.messages.length - 1];
         const maxSeq = msg.data.max_seq;
 
-        console.log(
-          "[DEBUG prompt_complete] received:",
-          "sessionId:",
-          sessionId,
-          "event_count:",
-          msg.data.event_count,
-          "max_seq:",
-          maxSeq,
-          "wasStreaming:",
-          wasStreaming,
-          "lastMessage:",
-          lastMessage
-            ? {
-                role: lastMessage.role,
-                complete: lastMessage.complete,
-                seq: lastMessage.seq,
-                html_len: lastMessage.html?.length || 0,
-              }
-            : null,
-        );
 
         // Check for gaps using max_seq (immediate gap detection)
         // This is important for prompt_complete as it signals the end of a response
@@ -1381,28 +1301,11 @@ export function useWebSocket() {
           const messages = [...session.messages];
           const lastIdx = messages.length - 1;
 
-          console.log("[DEBUG prompt_complete] State update:", {
-            messageCount: messages.length,
-            lastIdx,
-            lastMessage:
-              lastIdx >= 0
-                ? {
-                    role: messages[lastIdx].role,
-                    complete: messages[lastIdx].complete,
-                    seq: messages[lastIdx].seq,
-                    html_len: messages[lastIdx].html?.length || 0,
-                  }
-                : null,
-          });
 
           if (lastIdx >= 0) {
             const last = messages[lastIdx];
             if (last.role === ROLE_AGENT || last.role === ROLE_THOUGHT) {
               messages[lastIdx] = { ...last, complete: true };
-              console.log(
-                "[DEBUG prompt_complete] Marked last message as complete, html_len:",
-                last.html?.length || 0,
-              );
             }
           }
           return {
@@ -1739,39 +1642,7 @@ export function useWebSocket() {
         );
         const isStaleClient = isStaleClientState(clientLastSeq, maxSeq);
 
-        console.log("[DEBUG events_loaded] received:", {
-          sessionId,
-          eventCount: events.length,
-          isPrepend,
-          hasMore,
-          firstSeq,
-          lastSeq,
-          maxSeq,
-          isPrompting,
-          totalCount,
-          clientLastSeq,
-          clientLastLoadedSeq: currentSession?.lastLoadedSeq || 0,
-          clientMaxSeqFromMessages: getMaxSeq(sessionMessages),
-          messageCount: sessionMessages.length,
-          isStaleClient,
-        });
 
-        // DEBUG: Log event order to check if they're in correct seq order
-        console.log(
-          "[DEBUG events_loaded] Event order:",
-          events.map((e) => ({
-            seq: e.seq,
-            type: e.type,
-            preview:
-              e.type === "agent_message"
-                ? e.data?.html?.substring(0, 50) + "..."
-                : e.type === "tool_call"
-                  ? e.data?.title
-                  : e.type === "user_prompt"
-                    ? e.data?.message?.substring(0, 50) + "..."
-                    : e.type,
-          })),
-        );
 
         // M1 fix: When client has stale state, reset the seq tracker BEFORE processing events.
         // Without this, the seq tracker's highestSeq from the stale state would cause
@@ -2561,23 +2432,6 @@ export function useWebSocket() {
           updateGlobalWorkingDir(s.session_id, s.working_dir);
         }
       });
-      // DEBUG: Log parent_session_id values
-      console.log(
-        "[DEBUG] fetchStoredSessions: Updating storedSessions with",
-        data?.length || 0,
-        "sessions",
-      );
-      const withParents = (data || []).filter((s) => s.parent_session_id);
-      if (withParents.length > 0) {
-        console.log(
-          "[DEBUG] Sessions with parent_session_id:",
-          withParents.map((s) => ({
-            id: s.session_id.substring(0, 8),
-            parent: s.parent_session_id?.substring(0, 8),
-            name: s.name,
-          })),
-        );
-      }
       setStoredSessions(data || []);
       return data || [];
     } catch (err) {
@@ -2626,11 +2480,6 @@ export function useWebSocket() {
   // so the conversation opens already positioned at the latest message.
   const switchSession = useCallback(
     async (sessionId) => {
-      // DEBUG: Log when switching sessions
-      console.log(
-        "[DEBUG] switchSession called for:",
-        sessionId.substring(0, 8),
-      );
 
       // Use sessionsRef to get current sessions state and avoid stale closures
       const currentSessions = sessionsRef.current;
@@ -2647,16 +2496,6 @@ export function useWebSocket() {
         (s) => s.session_id === sessionId,
       );
 
-      // DEBUG: Log parent_session_id from storedSession
-      if (storedSession) {
-        console.log("[DEBUG] switchSession: Found in storedSessions:", {
-          id: storedSession.session_id?.substring(0, 8),
-          parent: storedSession.parent_session_id?.substring(0, 8),
-          name: storedSession.name,
-        });
-      } else {
-        console.log("[DEBUG] switchSession: NOT found in storedSessions!");
-      }
 
       const workingDir =
         existingSession?.info?.working_dir || storedSession?.working_dir || "";
@@ -2792,26 +2631,16 @@ export function useWebSocket() {
 
       case "session_created":
         // A new session was created (possibly by another client)
-        console.log("[DEBUG] session_created event:", {
-          id: msg.data.session_id?.substring(0, 8),
-          parent: msg.data.parent_session_id?.substring(0, 8),
-          name: msg.data.name,
-        });
 
         // If this is a child session, auto-expand the parent session group and folder
         if (msg.data.parent_session_id) {
           const parentKey = `parent:${msg.data.parent_session_id}`;
-          console.log(
-            "[DEBUG] Auto-expanding parent session group:",
-            parentKey,
-          );
           setGroupExpanded(parentKey, true);
 
           // Also expand the folder containing the parent session
           // Folder key is just the working_dir (no prefix)
           if (msg.data.working_dir) {
             const folderKey = msg.data.working_dir;
-            console.log("[DEBUG] Auto-expanding folder:", folderKey);
             setGroupExpanded(folderKey, true);
           }
         }
