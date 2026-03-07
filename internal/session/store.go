@@ -572,7 +572,11 @@ func (s *Store) clearParentReferenceInChildren(parentSessionID string) error {
 
 		// Check if this session has the parent we're deleting
 		if meta.ParentSessionID == parentSessionID {
-			// Clear the parent reference
+			// Clear the parent reference - this child is now a root session.
+			// Since children inherit the parent's flags, and the MCP handler
+			// prevents children from starting conversations via the ParentSessionID
+			// check (not flags), clearing the parent reference is all that's needed
+			// to allow orphaned children to start new conversations.
 			meta.ParentSessionID = ""
 			meta.UpdatedAt = time.Now()
 

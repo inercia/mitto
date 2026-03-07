@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"strings"
@@ -278,14 +277,16 @@ func TestConversationStartUniqueTitleAllowed(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Create a parent session with can_start_conversation enabled
+	// Create a parent session with can_start_conversation enabled and other flags
 	parentMeta := session.Metadata{
 		SessionID:  session.GenerateSessionID(),
 		Name:       "Parent Session",
 		ACPServer:  "test-server",
 		WorkingDir: "/test/dir",
 		AdvancedSettings: map[string]bool{
-			session.FlagCanStartConversation: true,
+			session.FlagCanStartConversation:   true,
+			session.FlagCanPromptUser:          true,
+			session.FlagAutoApprovePermissions: true,
 		},
 	}
 	if err := store.Create(parentMeta); err != nil {
@@ -338,6 +339,23 @@ func TestConversationStartUniqueTitleAllowed(t *testing.T) {
 	// Verify the title matches
 	if output.Title != "Unique Title" {
 		t.Errorf("Expected title 'Unique Title', got: %s", output.Title)
+	}
+
+	// Verify the child inherited all of the parent's flags
+	// Note: children are prevented from starting conversations by the ParentSessionID
+	// check in handleConversationStart, not by flags.
+	childMeta, err := store.GetMetadata(output.SessionID)
+	if err != nil {
+		t.Fatalf("Failed to get child metadata: %v", err)
+	}
+	if !session.GetFlagValue(childMeta.AdvancedSettings, session.FlagCanStartConversation) {
+		t.Error("Child should have inherited can_start_conversation=true from parent")
+	}
+	if !session.GetFlagValue(childMeta.AdvancedSettings, session.FlagCanPromptUser) {
+		t.Error("Child should have inherited can_prompt_user=true from parent")
+	}
+	if !session.GetFlagValue(childMeta.AdvancedSettings, session.FlagAutoApprovePermissions) {
+		t.Error("Child should have inherited auto_approve_permissions=true from parent")
 	}
 }
 
@@ -584,11 +602,11 @@ func TestChildrenTasksWait_AllReport(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Report from both children
-	for i, childID := range childIDs {
-		report := json.RawMessage([]byte(`{"status": "completed", "child_index": ` + string(rune('0'+i)) + `}`))
+	for _, childID := range childIDs {
 		_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-			SelfID: childID,
-			Report: report,
+			SelfID:  childID,
+			Status:  "completed",
+			Summary: "Child task completed",
 		})
 		if err != nil {
 			t.Fatalf("handleChildrenTasksReport failed for child %s: %v", childID, err)
@@ -625,8 +643,8 @@ func TestChildrenTasksWait_AllReport(t *testing.T) {
 			if !report.Completed {
 				t.Errorf("Expected child %s report to be completed", childID)
 			}
-			if report.Report == nil {
-				t.Errorf("Expected non-nil report for child %s", childID)
+			if len(report.Report) == 0 {
+				t.Errorf("Expected non-empty report for child %s", childID)
 			}
 		}
 	case <-time.After(10 * time.Second):
@@ -659,8 +677,9 @@ func TestChildrenTasksWait_Timeout(t *testing.T) {
 
 	// Only report from one child
 	_, _, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"status": "done"}`),
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Done",
 	})
 	if err != nil {
 		t.Fatalf("handleChildrenTasksReport failed: %v", err)
@@ -699,8 +718,9 @@ func TestChildrenTasksReport_NoParentWaiting(t *testing.T) {
 
 	// Report without parent waiting — the report call itself should succeed
 	_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"status": "done"}`),
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Done",
 	})
 	if err != nil {
 		t.Fatalf("handleChildrenTasksReport returned error: %v", err)
@@ -761,16 +781,18 @@ func TestChildrenTasksReport_DuplicateReport(t *testing.T) {
 
 	// Report twice from child[0] (second overwrites first)
 	_, _, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"attempt": 1}`),
+		SelfID:  childIDs[0],
+		Status:  "in_progress",
+		Summary: "Attempt 1",
 	})
 	if err != nil {
 		t.Fatalf("First report failed: %v", err)
 	}
 
 	_, output2, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"attempt": 2}`),
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Attempt 2",
 	})
 	if err != nil {
 		t.Fatalf("Second report failed: %v", err)
@@ -781,8 +803,9 @@ func TestChildrenTasksReport_DuplicateReport(t *testing.T) {
 
 	// Now report from child[1] to complete
 	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[1],
-		Report: json.RawMessage(`{"status": "done"}`),
+		SelfID:  childIDs[1],
+		Status:  "completed",
+		Summary: "Done",
 	})
 	if err != nil {
 		t.Fatalf("Child[1] report failed: %v", err)
@@ -799,8 +822,8 @@ func TestChildrenTasksReport_DuplicateReport(t *testing.T) {
 			t.Error("Expected completed report")
 		}
 		// The report should be the second one (overwritten)
-		if string(report.Report) != `{"attempt": 2}` {
-			t.Errorf("Expected second report, got: %s", string(report.Report))
+		if !strings.Contains(string(report.Report), `"summary":"Attempt 2"`) {
+			t.Errorf("Expected second report with summary 'Attempt 2', got: %s", string(report.Report))
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for result")
@@ -916,8 +939,9 @@ func TestChildrenTasksReport_NoParentSession(t *testing.T) {
 
 	ctx := context.Background()
 	_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: sessionID,
-		Report: json.RawMessage(`{"status": "done"}`),
+		SelfID:  sessionID,
+		Status:  "completed",
+		Summary: "Done",
 	})
 	if err != nil {
 		t.Fatalf("handleChildrenTasksReport returned error: %v", err)
@@ -1126,8 +1150,9 @@ func TestChildrenTasksWait_MixedRunningAndClosed(t *testing.T) {
 
 	// Report from the running child only
 	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: runningChildID,
-		Report: json.RawMessage(`{"status": "done"}`),
+		SelfID:  runningChildID,
+		Status:  "completed",
+		Summary: "Done",
 	})
 	if err != nil {
 		t.Fatalf("handleChildrenTasksReport failed: %v", err)
@@ -1278,8 +1303,9 @@ func TestChildrenTasksWait_ChildReportsBeforeWait(t *testing.T) {
 
 	// Child reports first (no parent waiting) — this report will be discarded by startWait
 	_, reportOutput, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"pre_reported": true}`),
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Pre-reported",
 	})
 	if err != nil {
 		t.Fatalf("handleChildrenTasksReport returned error: %v", err)
@@ -1309,8 +1335,9 @@ func TestChildrenTasksWait_ChildReportsBeforeWait(t *testing.T) {
 
 	// Child reports again during the active wait
 	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"fresh_report": true}`),
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Fresh report",
 	})
 	if err != nil {
 		t.Fatalf("Second report failed: %v", err)
@@ -1335,7 +1362,7 @@ func TestChildrenTasksWait_ChildReportsBeforeWait(t *testing.T) {
 		if !report.Completed {
 			t.Error("Expected child report to be completed")
 		}
-		if string(report.Report) != `{"fresh_report": true}` {
+		if !strings.Contains(string(report.Report), `"summary":"Fresh report"`) {
 			t.Errorf("Expected fresh report (not the pre-wait one), got: %s", string(report.Report))
 		}
 	case <-time.After(10 * time.Second):
@@ -1368,16 +1395,18 @@ func TestChildrenTasksWait_BothReportDuringWait(t *testing.T) {
 
 	// Both children report during the wait
 	_, _, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"child": 0}`),
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Child 0 done",
 	})
 	if err != nil {
 		t.Fatalf("Child[0] report failed: %v", err)
 	}
 
 	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[1],
-		Report: json.RawMessage(`{"child": 1}`),
+		SelfID:  childIDs[1],
+		Status:  "completed",
+		Summary: "Child 1 done",
 	})
 	if err != nil {
 		t.Fatalf("Child[1] report failed: %v", err)
@@ -1397,11 +1426,11 @@ func TestChildrenTasksWait_BothReportDuringWait(t *testing.T) {
 
 		// Both reports should be present
 		report0 := result.output.Reports[childIDs[0]]
-		if !report0.Completed || string(report0.Report) != `{"child": 0}` {
+		if !report0.Completed || !strings.Contains(string(report0.Report), `"summary":"Child 0 done"`) {
 			t.Errorf("Expected report for child[0], got: completed=%v report=%s", report0.Completed, string(report0.Report))
 		}
 		report1 := result.output.Reports[childIDs[1]]
-		if !report1.Completed || string(report1.Report) != `{"child": 1}` {
+		if !report1.Completed || !strings.Contains(string(report1.Report), `"summary":"Child 1 done"`) {
 			t.Errorf("Expected report for child[1], got: completed=%v report=%s", report1.Completed, string(report1.Report))
 		}
 	case <-time.After(10 * time.Second):
@@ -1429,8 +1458,9 @@ func TestChildrenTasksWait_ReportsClearedAcrossWaits(t *testing.T) {
 
 	// Child reports after first wait has returned
 	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"between_waits": true}`),
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Between waits",
 	})
 	if err != nil {
 		t.Fatalf("Report failed: %v", err)
@@ -1461,8 +1491,9 @@ func TestUnregisterSession_CleansUpCollector(t *testing.T) {
 
 	// Child reports (creates collector for parent)
 	_, _, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
-		SelfID: childIDs[0],
-		Report: json.RawMessage(`{"status": "done"}`),
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Done",
 	})
 	if err != nil {
 		t.Fatalf("Report failed: %v", err)
@@ -1485,6 +1516,90 @@ func TestUnregisterSession_CleansUpCollector(t *testing.T) {
 	srv.childReportCollectorsMu.Unlock()
 	if exists {
 		t.Error("Expected collector to be cleaned up after unregistering parent session")
+	}
+}
+
+func TestChildrenTasksWait_EmptyPromptSkipsSending(t *testing.T) {
+	// When prompt is empty, no message should be enqueued (wait-only mode).
+	srv, store, parentID, childIDs := setupParentChildSessions(t, 1)
+	ctx := context.Background()
+
+	// Start wait with empty prompt and short timeout
+	go func() {
+		srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   childIDs,
+			Prompt:         "", // empty = wait-only
+			TimeoutSeconds: 1,
+		})
+	}()
+
+	// Give time for the wait to set up
+	time.Sleep(200 * time.Millisecond)
+
+	// Check that NO prompt was enqueued to the child
+	queue := store.Queue(childIDs[0])
+	messages, err := queue.List()
+	if err != nil {
+		t.Fatalf("Failed to list queue: %v", err)
+	}
+
+	if len(messages) != 0 {
+		t.Errorf("Expected 0 queued messages (wait-only mode), got %d", len(messages))
+	}
+}
+
+func TestChildrenTasksWait_DeduplicatesQueuedPrompts(t *testing.T) {
+	// When a child already has a pending message from the parent,
+	// a second wait call should NOT enqueue another message.
+	srv, store, parentID, childIDs := setupParentChildSessions(t, 1)
+	ctx := context.Background()
+
+	// First wait: enqueues a prompt, then times out
+	_, waitOutput1, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		Prompt:         "Report your progress please.",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("First wait returned error: %v", err)
+	}
+	if !waitOutput1.TimedOut {
+		t.Error("Expected first wait to time out")
+	}
+
+	// Verify first message was enqueued
+	queue := store.Queue(childIDs[0])
+	messages, err := queue.List()
+	if err != nil {
+		t.Fatalf("Failed to list queue: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("Expected 1 queued message after first wait, got %d", len(messages))
+	}
+
+	// Second wait: should NOT enqueue because the first message is still pending
+	_, waitOutput2, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		Prompt:         "Report your progress please.",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("Second wait returned error: %v", err)
+	}
+	if !waitOutput2.TimedOut {
+		t.Error("Expected second wait to time out")
+	}
+
+	// Verify still only 1 message in queue (dedup prevented the second)
+	messages, err = queue.List()
+	if err != nil {
+		t.Fatalf("Failed to list queue after second wait: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Errorf("Expected 1 queued message (dedup should prevent duplicate), got %d", len(messages))
 	}
 }
 
@@ -1840,7 +1955,7 @@ func (m *mockSessionManagerForWait) GetWorkspacesForFolder(string) []config.Work
 	return nil
 }
 func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, string, string, string) {}
-func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)                        {}
+func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)                          {}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {

@@ -29,13 +29,13 @@ func (m *mockProcessProvider) CloseWorkspaceAuxiliary(workspaceUUID string) erro
 
 func TestWorkspaceAuxiliaryManager_GenerateTitle(t *testing.T) {
 	tests := []struct {
-		name          string
-		message       string
-		mockResponse  string
-		mockError     error
-		wantContains  string
-		wantErr       bool
-		checkPurpose  string
+		name           string
+		message        string
+		mockResponse   string
+		mockError      error
+		wantContains   string
+		wantErr        bool
+		checkPurpose   string
 		checkWorkspace string
 	}{
 		{
@@ -353,4 +353,3 @@ func TestWorkspaceAuxiliaryManager_GenerateConversationSummary(t *testing.T) {
 		t.Errorf("GenerateConversationSummary() = %q, want to contain 'Summary'", got)
 	}
 }
-

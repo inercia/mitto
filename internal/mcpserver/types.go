@@ -478,8 +478,10 @@ type ChildReportInfo struct {
 
 // ChildrenTasksReportInput is the input for mitto_children_tasks_report tool.
 type ChildrenTasksReportInput struct {
-	SelfID string          `json:"self_id"` // Child session ID
-	Report json.RawMessage `json:"report"`  // Flexible JSON report
+	SelfID  string `json:"self_id"`           // Child session ID
+	Status  string `json:"status"`            // e.g. "completed", "in_progress", "failed"
+	Summary string `json:"summary"`           // Brief summary of findings/progress
+	Details string `json:"details,omitempty"` // Optional detailed information
 }
 
 // ChildrenTasksReportOutput is the output for mitto_children_tasks_report tool.

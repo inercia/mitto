@@ -977,7 +977,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Name: "mitto_children_tasks_report",
 		Description: "Report task completion or progress back to a waiting parent conversation. " +
 			"The parent must have previously called mitto_children_tasks_wait with this conversation's ID in the children_list. " +
-			"The report parameter is a flexible JSON object describing your findings, progress, and whether work is completed. " +
+			"Provide a status (e.g. 'completed', 'in_progress', 'failed'), a summary of your findings, " +
+			"and optionally details with additional information. " +
 			selfIDNote,
 	}, s.handleChildrenTasksReport)
 }
@@ -1641,8 +1642,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	}
 
 	// Permission check: requires can_start_conversation flag
-	// Note: This is checked first since it's the most common reason for failure
-	// (flag defaults to false for security reasons)
+	// This allows users to disable conversation creation via the UI toggle
 	if !s.checkSessionFlag(realSessionID, session.FlagCanStartConversation) {
 		return nil, ConversationStartOutput{}, fmt.Errorf(
 			"the '%s' flag is not enabled for this session. Enable it in this session's Advanced Settings (gear icon) to allow creating new conversations",
@@ -1696,20 +1696,24 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	newSessionID := session.GenerateSessionID()
 
 	// Create the new session metadata
-	// NOTE: Recursion is prevented by setting can_start_conversation=false for child sessions.
-	// The parent check above (ParentSessionID != "") also blocks child sessions from creating new ones.
-	// TODO: Consider adding a max recursion depth counter in metadata as a defensive measure,
-	// though the current prevention logic should be sufficient.
+	// NOTE: Recursion is prevented by the ParentSessionID check above — children
+	// with a parent cannot create new conversations. When the parent is deleted,
+	// the child becomes an orphan (ParentSessionID is cleared) and can then create
+	// new conversations since it inherits the parent's flags including can_start_conversation.
+
+	// Inherit parent's advanced settings so orphaned children retain the same flags.
+	childSettings := make(map[string]bool)
+	for k, v := range sourceMeta.AdvancedSettings {
+		childSettings[k] = v
+	}
+
 	newMeta := session.Metadata{
-		SessionID:       newSessionID,
-		Name:            input.Title,
-		ACPServer:       acpServerName,
-		WorkingDir:      sourceMeta.WorkingDir,
-		ParentSessionID: realSessionID, // Mark this session as a child
-		// Child sessions explicitly have can_start_conversation disabled to prevent infinite recursion
-		AdvancedSettings: map[string]bool{
-			session.FlagCanStartConversation: false,
-		},
+		SessionID:        newSessionID,
+		Name:             input.Title,
+		ACPServer:        acpServerName,
+		WorkingDir:       sourceMeta.WorkingDir,
+		ParentSessionID:  realSessionID, // Mark this session as a child
+		AdvancedSettings: childSettings,
 	}
 
 	// Create the session
@@ -2546,14 +2550,11 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 // defaultChildrenTasksTimeout is the default timeout for waiting for children to report.
 const defaultChildrenTasksTimeout = 10 * time.Minute
 
-// defaultChildrenTasksPrompt is the default prompt sent to children when none is provided.
-const defaultChildrenTasksPrompt = "Please report your progress on the tasks you have been given."
-
 // childrenReportSuffix is appended to the prompt sent to each child,
 // instructing them to call mitto_children_tasks_report.
 const childrenReportSuffix = "\n\nIMPORTANT: When you are done, report your results using the `mitto_children_tasks_report` " +
-	"MCP tool with your `self_id` and a `report` JSON object describing your findings, progress, " +
-	"and whether all work is completed."
+	"MCP tool with your `self_id`, a `status` (e.g. \"completed\", \"in_progress\", \"failed\"), " +
+	"a `summary` of your findings, and optionally `details` with additional information."
 
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
 	// Validate self_id
@@ -2675,34 +2676,58 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	waitCh, _ := collector.startWait(runningChildren)
 	defer collector.clearWait()
 
-	// Build the prompt to send to all running children
+	// Build the prompt to send to all running children.
+	// If no prompt is provided, skip sending entirely (wait-only mode).
+	// This allows callers to retry waits without re-enqueuing duplicate messages.
 	promptText := input.Prompt
-	if promptText == "" {
-		promptText = defaultChildrenTasksPrompt
-	}
-	promptText += childrenReportSuffix
+	sendPrompt := promptText != ""
 
-	// Send prompt to all running children
-	for _, childID := range runningChildren {
-		queue := store.Queue(childID)
-		msg, err := queue.Add(promptText, nil, nil, realSessionID, 0)
-		if err != nil {
-			s.logger.Warn("Failed to enqueue prompt to child",
+	if sendPrompt {
+		promptText += childrenReportSuffix
+	}
+
+	// Send prompt to running children (unless wait-only mode)
+	if sendPrompt {
+		for _, childID := range runningChildren {
+			queue := store.Queue(childID)
+
+			// Dedup: skip if there's already a pending message from this parent in the child's queue.
+			// This prevents duplicate report-request messages from accumulating when the parent
+			// retries after a timeout and the child hasn't consumed the previous message yet.
+			existingMsgs, _ := queue.List()
+			alreadyQueued := false
+			for _, m := range existingMsgs {
+				if m.ClientID == realSessionID {
+					alreadyQueued = true
+					break
+				}
+			}
+			if alreadyQueued {
+				s.logger.Debug("Skipping duplicate prompt — parent already has a pending message in child's queue",
+					"parent_session", realSessionID,
+					"child_session", childID)
+				continue
+			}
+
+			msg, err := queue.Add(promptText, nil, nil, realSessionID, 0)
+			if err != nil {
+				s.logger.Warn("Failed to enqueue prompt to child",
+					"parent_session", realSessionID,
+					"child_session", childID,
+					"error", err)
+				continue
+			}
+
+			s.logger.Info("Progress inquiry sent to child",
 				"parent_session", realSessionID,
 				"child_session", childID,
-				"error", err)
-			continue
-		}
+				"message_id", msg.ID)
 
-		s.logger.Info("Progress inquiry sent to child",
-			"parent_session", realSessionID,
-			"child_session", childID,
-			"message_id", msg.ID)
-
-		// Try to process the queued message immediately if agent is idle
-		if s.sessionManager != nil {
-			if bs := s.sessionManager.GetSession(childID); bs != nil {
-				go bs.TryProcessQueuedMessage()
+			// Try to process the queued message immediately if agent is idle
+			if s.sessionManager != nil {
+				if bs := s.sessionManager.GetSession(childID); bs != nil {
+					go bs.TryProcessQueuedMessage()
+				}
 			}
 		}
 	}
@@ -2778,9 +2803,22 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 		return nil, ChildrenTasksReportOutput{Success: false, Error: "self_id is required"}, nil
 	}
 
-	// Validate report
-	if len(input.Report) == 0 {
-		return nil, ChildrenTasksReportOutput{Success: false, Error: "report is required"}, nil
+	// Validate report fields
+	if input.Status == "" {
+		return nil, ChildrenTasksReportOutput{Success: false, Error: "status is required"}, nil
+	}
+	if input.Summary == "" {
+		return nil, ChildrenTasksReportOutput{Success: false, Error: "summary is required"}, nil
+	}
+
+	// Serialize the report fields into JSON for internal storage
+	reportJSON, err := json.Marshal(map[string]string{
+		"status":  input.Status,
+		"summary": input.Summary,
+		"details": input.Details,
+	})
+	if err != nil {
+		return nil, ChildrenTasksReportOutput{Success: false, Error: fmt.Sprintf("failed to serialize report: %v", err)}, nil
 	}
 
 	// Resolve the self_id to a real session ID (child)
@@ -2831,7 +2869,7 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 	collector := s.getOrCreateCollector(parentSessionID)
 
 	// Store the report (may also signal a waiting parent)
-	collector.addReport(realSessionID, input.Report)
+	collector.addReport(realSessionID, json.RawMessage(reportJSON))
 
 	s.logger.Info("Child reported to parent",
 		"child_session", realSessionID,

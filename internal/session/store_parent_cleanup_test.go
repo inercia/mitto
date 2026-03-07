@@ -25,7 +25,7 @@ func TestDelete_ClearsParentReferences(t *testing.T) {
 		t.Fatalf("Create parent failed: %v", err)
 	}
 
-	// Create multiple child sessions
+	// Create multiple child sessions (children inherit parent's flags)
 	child1Meta := Metadata{
 		SessionID:       "child-session-1",
 		ACPServer:       "test-server",

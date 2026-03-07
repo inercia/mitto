@@ -42,7 +42,7 @@ var AvailableFlags = []FlagDefinition{
 	{
 		Name:        FlagCanStartConversation,
 		Label:       "Can start conversation",
-		Description: "Allow this conversation to create new conversations via MCP tool. Child conversations cannot start further conversations.",
+		Description: "Allow this conversation to create new conversations via MCP tool. Child conversations cannot start further conversations while the parent exists.",
 		Default:     true, // Changed to true - new conversations can create child conversations by default
 	},
 	{
@@ -70,7 +70,9 @@ const (
 
 	// FlagCanStartConversation controls whether the conversation can create
 	// new conversations via the mitto_conversation_new MCP tool.
-	// Child conversations (those with a ParentSessionID) cannot start further conversations.
+	// Child conversations (those with a ParentSessionID) cannot start further conversations
+	// while the parent exists. When the parent is deleted, orphaned children have this
+	// flag restored to the default value so they can start conversations again.
 	FlagCanStartConversation = "can_start_conversation"
 
 	// FlagAutoApprovePermissions controls whether permission requests from the agent
