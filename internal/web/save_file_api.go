@@ -24,6 +24,50 @@ type SaveFileToPathResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// handleCheckFileExists handles GET /api/check-file-exists?path=<absolutePath>
+// Returns whether a file exists at the given path.
+// SECURITY: This endpoint is restricted to localhost connections only.
+func (s *Server) handleCheckFileExists(w http.ResponseWriter, r *http.Request) {
+	// Security check 1 (defense-in-depth): Reject ALL requests from the external listener.
+	if IsExternalConnection(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Security check 2: Verify this is a localhost connection
+	if !isLocalhostRequest(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		http.Error(w, "path query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	if !filepath.IsAbs(filePath) {
+		http.Error(w, "Path must be absolute", http.StatusBadRequest)
+		return
+	}
+
+	cleanPath := filepath.Clean(filePath)
+	if strings.Contains(cleanPath, "..") {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+
+	_, err := os.Stat(cleanPath)
+	exists := err == nil
+
+	writeJSONOK(w, map[string]bool{"exists": exists})
+}
+
 // handleSaveFileToPath handles POST /api/save-file-to-path
 // This endpoint is used by the native macOS app to save files to arbitrary paths.
 // SECURITY: This endpoint is restricted to localhost connections only to prevent
@@ -121,4 +165,3 @@ func (s *Server) handleSaveFileToPath(w http.ResponseWriter, r *http.Request) {
 
 	writeJSONOK(w, response)
 }
-

@@ -78,6 +78,7 @@ func TestValidateConfigRequest_NoWorkspaces(t *testing.T) {
 			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
 			Source      config.ConfigItemSource `json:"source,omitempty"`
 			AutoApprove bool                    `json:"auto_approve,omitempty"`
+			Tags        []string                `json:"tags,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
 	}
 
@@ -103,6 +104,7 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
 			Source      config.ConfigItemSource `json:"source,omitempty"`
 			AutoApprove bool                    `json:"auto_approve,omitempty"`
+			Tags        []string                `json:"tags,omitempty"`
 		}{},
 	}
 
@@ -128,6 +130,7 @@ func TestValidateConfigRequest_EmptyServerName(t *testing.T) {
 			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
 			Source      config.ConfigItemSource `json:"source,omitempty"`
 			AutoApprove bool                    `json:"auto_approve,omitempty"`
+			Tags        []string                `json:"tags,omitempty"`
 		}{{Name: "", Command: "cmd"}},
 	}
 
@@ -150,6 +153,7 @@ func TestValidateConfigRequest_EmptyServerCommand(t *testing.T) {
 			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
 			Source      config.ConfigItemSource `json:"source,omitempty"`
 			AutoApprove bool                    `json:"auto_approve,omitempty"`
+			Tags        []string                `json:"tags,omitempty"`
 		}{{Name: "test", Command: ""}},
 	}
 
@@ -172,6 +176,7 @@ func TestValidateConfigRequest_DuplicateServerName(t *testing.T) {
 			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
 			Source      config.ConfigItemSource `json:"source,omitempty"`
 			AutoApprove bool                    `json:"auto_approve,omitempty"`
+			Tags        []string                `json:"tags,omitempty"`
 		}{
 			{Name: "test", Command: "cmd1"},
 			{Name: "test", Command: "cmd2"},
@@ -197,6 +202,7 @@ func TestValidateConfigRequest_Valid(t *testing.T) {
 			Prompts     []config.WebPrompt      `json:"prompts,omitempty"`
 			Source      config.ConfigItemSource `json:"source,omitempty"`
 			AutoApprove bool                    `json:"auto_approve,omitempty"`
+			Tags        []string                `json:"tags,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
 	}
 

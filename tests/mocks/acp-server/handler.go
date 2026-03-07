@@ -47,6 +47,7 @@ func (s *MockACPServer) handleInitialize(req JSONRPCRequest) error {
 	result.ServerInfo.Version = "1.0.0"
 	result.Capabilities.Streaming = true
 	result.AgentCapabilities.Streaming = true
+	result.AgentCapabilities.PromptCapabilities.Image = true
 
 	return s.sendResponse(req.ID, result)
 }
@@ -138,9 +139,19 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 		return s.sendError(req.ID, -32602, "Invalid params", nil)
 	}
 
+	// Count image blocks in the prompt
+	var imageBlockCount int
+	var imageMimeTypes []string
+	for _, block := range params.Prompt {
+		if block.IsImage() {
+			imageBlockCount++
+			imageMimeTypes = append(imageMimeTypes, block.GetMimeType())
+		}
+	}
+
 	// Extract text message from prompt content blocks
 	message := params.Message // Use legacy message field as fallback
-	s.log("Prompt blocks: %d, legacy message: %q", len(params.Prompt), message)
+	s.log("Prompt blocks: %d, image blocks: %d, legacy message: %q", len(params.Prompt), imageBlockCount, message)
 	for _, block := range params.Prompt {
 		text := block.GetText()
 		if text != "" {
@@ -150,6 +161,18 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 	}
 
 	s.log("Prompt received: %s", message)
+
+	// If image blocks are present, respond acknowledging them
+	if imageBlockCount > 0 {
+		response := fmt.Sprintf("I received %d image(s) with types: %s. Text: %s",
+			imageBlockCount, strings.Join(imageMimeTypes, ", "), message)
+		s.sendSessionUpdate(SessionUpdate{
+			AgentMessageChunk: &AgentMessageChunk{
+				Content: ContentBlock{Type: "text", Text: response},
+			},
+		})
+		return s.sendResponse(req.ID, PromptResponse{StopReason: "end_turn"})
+	}
 
 	// Check for special REPLAY: prefix to replay events from a file
 	// Format: REPLAY:filename.jsonl

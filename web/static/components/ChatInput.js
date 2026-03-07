@@ -15,6 +15,7 @@ import { apiUrl } from "../utils/api.js";
 import { getPromptSortMode } from "../utils/storage.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
+import { SavePromptDialog } from "./SavePromptDialog.js";
 import { LockIcon, UnlockIcon } from "./Icons.js";
 
 /**
@@ -174,6 +175,7 @@ export function ChatInput({
   actionButtons = [],
   availableCommands = [],
   periodicEnabled = false,
+  agentSupportsImages = false,
   activeUIPrompt = null,
   onUIPromptAnswer,
   workingDir = "",
@@ -215,6 +217,9 @@ export function ChatInput({
   const [improveError, setImproveError] = useState(null);
   const textareaRef = useRef(null);
   const dropupRef = useRef(null);
+
+  // Save prompt dialog state
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
 
   // Track textarea focus for action toolbar visibility
   const [isTextareaFocused, setIsTextareaFocused] = useState(false);
@@ -882,7 +887,13 @@ export function ChatInput({
       const response = await secureFetch(apiUrl("/api/aux/improve-prompt"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: text }),
+        body: JSON.stringify({
+          prompt: text,
+          workspace_uuid:
+            window.mittoCurrentWorkspaceUUID ||
+            sessionStorage.getItem("mittoCurrentWorkspaceUUID") ||
+            "",
+        }),
         signal: controller.signal,
       });
 
@@ -944,12 +955,19 @@ export function ChatInput({
     if (isDragOver) return "Drop files here...";
     return isSmallWindow
       ? "Type your message..."
-      : "Type your message... (drop or paste images/files)";
+      : agentSupportsImages
+        ? "Type your message... (drop or paste images/files)"
+        : "Type your message... (drop or paste files)";
   };
 
   // Upload an image file to the session
   const uploadImage = async (file) => {
     if (!sessionId) return null;
+
+    if (!agentSupportsImages) {
+      setUploadError("Image attachments are not supported by this agent");
+      return null;
+    }
 
     const validTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
     if (!validTypes.includes(file.type)) {
@@ -1375,6 +1393,11 @@ export function ChatInput({
     const imageItems = items.filter((item) => item.type.startsWith("image/"));
 
     if (imageItems.length > 0) {
+      if (!agentSupportsImages) {
+        e.preventDefault();
+        setUploadError("Image attachments are not supported by this agent");
+        return;
+      }
       e.preventDefault();
       for (const item of imageItems) {
         const file = item.getAsFile();
@@ -1876,6 +1899,8 @@ export function ChatInput({
       `}
 
       <!-- Collapsible Action Toolbar - positioned at bottom-right of conversation area -->
+      <!-- Note: toolbar uses flex-direction: row-reverse, so DOM order is reversed from visual order -->
+      <!-- Visual order (left to right): magic-wand / save / attach-file / attach-image / trash -->
       <div
         ref=${toolbarRef}
         class="action-toolbar ${isTextareaFocused &&
@@ -1884,14 +1909,45 @@ export function ChatInput({
           ? "visible"
           : ""}"
       >
+        <!-- Clear Button (trash icon) - rightmost in visual order -->
+        <button
+          type="button"
+          onClick=${() => {
+            setText("");
+            setPendingImages([]);
+            setPendingFiles([]);
+          }}
+          onMouseDown=${(e) => e.preventDefault()}
+          disabled=${isFullyDisabled ||
+          isReadOnly ||
+          isImproving ||
+          (!text.trim() && !hasPendingAttachments)}
+          class="action-toolbar-btn"
+          title="Clear message"
+        >
+          <svg
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+            />
+          </svg>
+        </button>
+
         <!-- Attach Image Button -->
         <button
           type="button"
           onClick=${handleAttachImageClick}
           onMouseDown=${(e) => e.preventDefault()}
-          disabled=${isFullyDisabled || isReadOnly || isImproving}
+          disabled=${isFullyDisabled || isReadOnly || isImproving || !agentSupportsImages}
           class="action-toolbar-btn"
-          title="Attach image"
+          title=${agentSupportsImages ? "Attach image" : "Image attachments not supported by this agent"}
         >
           <svg
             class="w-5 h-5"
@@ -1932,7 +1988,38 @@ export function ChatInput({
           </svg>
         </button>
 
-        <!-- Magic Wand / Improve Prompt Button -->
+        <!-- Save Prompt Button (floppy disk icon) - macOS native only, hidden on external access -->
+        ${isNativeApp() &&
+        window.mittoIsExternal !== true &&
+        html`
+          <button
+            type="button"
+            onClick=${() => setShowSaveDialog(true)}
+            onMouseDown=${(e) => e.preventDefault()}
+            disabled=${isFullyDisabled ||
+            !text.trim() ||
+            isReadOnly ||
+            isImproving}
+            class="action-toolbar-btn"
+            title="Save prompt as file"
+          >
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
+              />
+            </svg>
+          </button>
+        `}
+
+        <!-- Magic Wand / Improve Prompt Button - leftmost in visual order -->
         <button
           type="button"
           onClick=${handleImprovePrompt}
@@ -1981,37 +2068,6 @@ export function ChatInput({
                   />
                 </svg>
               `}
-        </button>
-
-        <!-- Clear Button (trash icon) - positioned at right end of toolbar -->
-        <button
-          type="button"
-          onClick=${() => {
-            setText("");
-            setPendingImages([]);
-            setPendingFiles([]);
-          }}
-          onMouseDown=${(e) => e.preventDefault()}
-          disabled=${isFullyDisabled ||
-          isReadOnly ||
-          isImproving ||
-          (!text.trim() && !hasPendingAttachments)}
-          class="action-toolbar-btn"
-          title="Clear message"
-        >
-          <svg
-            class="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-            />
-          </svg>
         </button>
       </div>
 
@@ -2646,6 +2702,14 @@ export function ChatInput({
           </div>
         </div>
       `}
+
+      <!-- Save Prompt Dialog -->
+      <${SavePromptDialog}
+        isOpen=${showSaveDialog}
+        onClose=${() => setShowSaveDialog(false)}
+        promptText=${text}
+        workingDir=${workingDir}
+      />
     </form>
   `;
 }

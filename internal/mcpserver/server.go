@@ -785,6 +785,7 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 			servers = append(servers, AvailableACPServer{
 				Name:    srv.Name,
 				Type:    srv.GetType(),
+				Tags:    srv.Tags,
 				Current: srv.Name == meta.ACPServer,
 			})
 		}

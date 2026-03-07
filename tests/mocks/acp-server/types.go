@@ -45,7 +45,12 @@ type InitializeResult struct {
 }
 
 type AgentCapabilities struct {
-	Streaming bool `json:"streaming"`
+	Streaming          bool               `json:"streaming"`
+	PromptCapabilities PromptCapabilities `json:"promptCapabilities,omitempty"`
+}
+
+type PromptCapabilities struct {
+	Image bool `json:"image,omitempty"`
 }
 
 type NewSessionParams struct {
@@ -200,12 +205,14 @@ type AgentThoughtChunk struct {
 }
 
 // ContentBlock represents both prompt content (flat format) and notification content.
-// Prompt format from SDK: {"type": "text", "text": "hello"}
+// Prompt format from SDK: {"type": "text", "text": "hello"} or {"type": "image", "data": "...", "mimeType": "image/png"}
 // Notification format: {"type": "text", "text": "hello"} or legacy {"text": {"text": "hello"}}
 type ContentBlock struct {
 	// Flat format used by SDK
-	Type string `json:"type,omitempty"`
-	Text string `json:"text,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`     // base64 image data (for type=image)
+	MimeType string `json:"mimeType,omitempty"` // image MIME type (for type=image)
 	// Nested format for backward compatibility
 	TextContent *TextContent `json:"textContent,omitempty"`
 }
@@ -224,6 +231,16 @@ func (c *ContentBlock) GetText() string {
 		return c.TextContent.Text
 	}
 	return ""
+}
+
+// IsImage returns true if this block is an image content block.
+func (c *ContentBlock) IsImage() bool {
+	return c.Type == "image" && c.Data != ""
+}
+
+// GetMimeType returns the MIME type of an image block.
+func (c *ContentBlock) GetMimeType() string {
+	return c.MimeType
 }
 
 type ToolCall struct {

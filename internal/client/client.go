@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"time"
@@ -177,6 +178,53 @@ func (c *Client) DeleteSession(sessionID string) error {
 		return fmt.Errorf("delete session: status %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// --- Image API ---
+
+// ImageInfo represents an uploaded image.
+type ImageInfo struct {
+	ID       string `json:"id"`
+	URL      string `json:"url"`
+	Name     string `json:"name"`
+	MimeType string `json:"mime_type"`
+}
+
+// UploadImage uploads an image to a session via multipart form.
+func (c *Client) UploadImage(sessionID string, filename string, mimeType string, data []byte) (*ImageInfo, error) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("image", filename)
+	if err != nil {
+		return nil, fmt.Errorf("upload image: create form: %w", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return nil, fmt.Errorf("upload image: write data: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("upload image: close writer: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/images"),
+		writer.FormDataContentType(),
+		&buf,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upload image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("upload image: status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var info ImageInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("upload image: decode: %w", err)
+	}
+	return &info, nil
 }
 
 // --- Queue API ---

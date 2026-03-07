@@ -112,8 +112,8 @@ func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request, store
 
 	// Determine MIME type
 	mimeType := header.Header.Get("Content-Type")
-	if mimeType == "" {
-		// Try to detect from content
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		// Try to detect from content (multipart form files often default to application/octet-stream)
 		mimeType = http.DetectContentType(data)
 	}
 

@@ -15,7 +15,7 @@ type TitleGenerationConfig struct {
 	SessionID        string
 	Message          string
 	Logger           *slog.Logger
-	WorkspaceUUID    string                              // Workspace UUID for auxiliary session
+	WorkspaceUUID    string                               // Workspace UUID for auxiliary session
 	AuxiliaryManager *auxiliary.WorkspaceAuxiliaryManager // Auxiliary manager for title generation
 	// OnTitleGenerated is called when a title is successfully generated and saved.
 	// It receives the session ID and the generated title.
@@ -53,7 +53,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 
 		if cfg.AuxiliaryManager == nil {
 			if cfg.Logger != nil {
-				cfg.Logger.Error("Cannot generate title: no auxiliary manager",
+				cfg.Logger.Warn("Cannot generate title: no auxiliary manager (legacy mode or unsupported ACP server)",
 					"session_id", cfg.SessionID)
 			}
 			return

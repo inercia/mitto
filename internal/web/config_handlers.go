@@ -25,6 +25,7 @@ type ConfigSaveRequest struct {
 		Prompts     []configPkg.WebPrompt      `json:"prompts,omitempty"`
 		Source      configPkg.ConfigItemSource `json:"source,omitempty"`       // Source of the server (rcfile, settings)
 		AutoApprove bool                       `json:"auto_approve,omitempty"` // Auto-approve permission requests
+		Tags        []string                   `json:"tags,omitempty"`         // Optional categorization tags
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
@@ -37,7 +38,8 @@ type ConfigSaveRequest struct {
 				Password string `json:"password"`
 			} `json:"simple,omitempty"`
 		} `json:"auth,omitempty"`
-		Hooks *configPkg.WebHooks `json:"hooks,omitempty"`
+		Hooks     *configPkg.WebHooks        `json:"hooks,omitempty"`
+		AccessLog *configPkg.AccessLogConfig `json:"access_log,omitempty"`
 	} `json:"web"`
 	UI            *configPkg.UIConfig            `json:"ui,omitempty"`
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
@@ -127,6 +129,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 				"source":       string(srv.Source), // Include source for frontend read-only indication
 				"auto_approve": srv.AutoApprove,    // Include auto-approve setting for permissions
 				"env":          srv.Env,            // Include environment variables
+				"tags":         srv.Tags,           // Include categorization tags
 			}
 
 			// Include type if specified (for prompt matching)
@@ -367,6 +370,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			Env:         srv.Env,                  // Environment variables
 			Source:      configPkg.SourceSettings, // Mark as settings-sourced
 			AutoApprove: srv.AutoApprove,          // Auto-approve permission requests
+			Tags:        srv.Tags,                 // Categorization tags
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field
 		}
@@ -429,6 +433,11 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 	} else {
 		// Clear hooks if not provided
 		newWebConfig.Hooks = configPkg.WebHooks{}
+	}
+
+	// Update access log settings
+	if req.Web.AccessLog != nil {
+		newWebConfig.AccessLog = req.Web.AccessLog
 	}
 
 	// Build UI config - preserve existing settings, update from request if provided
