@@ -1057,11 +1057,7 @@ export function useWebSocket() {
           // ThoughtBuffer flushes assign different seq numbers, but they're
           // part of the same logical thinking block. Coalesce as long as
           // the last message is an incomplete thought.
-          if (
-            last &&
-            last.role === ROLE_THOUGHT &&
-            !last.complete
-          ) {
+          if (last && last.role === ROLE_THOUGHT && !last.complete) {
             // Mark the new seq as seen even when coalescing
             markSeqSeen(sessionId, msgSeq);
             messages[messages.length - 1] = {
@@ -1598,12 +1594,18 @@ export function useWebSocket() {
               );
             }
           } else if (serverMaxSeq > clientMaxSeq + KEEPALIVE_SYNC_TOLERANCE) {
-            // We're significantly behind! Request missing events.
-            // Using tolerance to avoid sync noise during normal streaming where
-            // markdown buffer may hold content briefly before flushing to UI.
+            // We're behind. Skip sync if actively streaming — events are arriving
+            // in real-time and the gap closes naturally when the stream ends.
             console.log(
               `[keepalive] Session ${sessionId} is behind: client_max_seq=${clientMaxSeq}, server_max_seq=${serverMaxSeq} (tolerance=${KEEPALIVE_SYNC_TOLERANCE}), requesting sync`,
             );
+            const currentSession = sessionsRef.current[sessionId];
+            if (currentSession?.isStreaming) {
+              console.debug(
+                `[keepalive] Skipping sync for ${sessionId} — stream in progress`,
+              );
+              break;
+            }
             const ws = sessionWsRefs.current[sessionId];
             if (ws && ws.readyState === WebSocket.OPEN) {
               ws.send(
@@ -2508,23 +2510,32 @@ export function useWebSocket() {
           activeSessionIdRef.current === sessionId &&
           !sessionWsRefs.current[sessionId]
         ) {
-          // M2: Use exponential backoff for reconnection
-          const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
-          const delay = calculateReconnectDelay(attempt);
-          console.log(
-            `Scheduling reconnect for session ${sessionId} (attempt ${attempt + 1}, delay ${delay}ms)`,
-          );
+          // Guard: if forceReconnectActiveSession (or a prior onclose) already scheduled
+          // a reconnect timer, don't add a second one. The existing timer will fire with
+          // the correct backoff delay.
+          if (sessionReconnectRefs.current[sessionId]) {
+            console.debug(
+              `Reconnect already scheduled for session ${sessionId}, skipping onclose reschedule`,
+            );
+          } else {
+            // M2: Use exponential backoff for reconnection
+            const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
+            const delay = calculateReconnectDelay(attempt);
+            console.log(
+              `Scheduling reconnect for session ${sessionId} (attempt ${attempt + 1}, delay ${delay}ms)`,
+            );
 
-          sessionReconnectRefs.current[sessionId] = setTimeout(() => {
-            delete sessionReconnectRefs.current[sessionId];
-            // Double-check the session is still active before reconnecting
-            if (activeSessionIdRef.current === sessionId) {
-              // Increment attempt counter before reconnecting
-              sessionReconnectAttemptsRef.current[sessionId] = attempt + 1;
-              console.log(`Reconnecting to session: ${sessionId}`);
-              connectToSession(sessionId);
-            }
-          }, delay);
+            sessionReconnectRefs.current[sessionId] = setTimeout(() => {
+              delete sessionReconnectRefs.current[sessionId];
+              // Double-check the session is still active before reconnecting
+              if (activeSessionIdRef.current === sessionId) {
+                // Increment attempt counter before reconnecting
+                sessionReconnectAttemptsRef.current[sessionId] = attempt + 1;
+                console.log(`Reconnecting to session: ${sessionId}`);
+                connectToSession(sessionId);
+              }
+            }, delay);
+          }
         }
       };
 
@@ -2551,14 +2562,21 @@ export function useWebSocket() {
         }
       });
       // DEBUG: Log parent_session_id values
-      console.log('[DEBUG] fetchStoredSessions: Updating storedSessions with', data?.length || 0, 'sessions');
-      const withParents = (data || []).filter(s => s.parent_session_id);
+      console.log(
+        "[DEBUG] fetchStoredSessions: Updating storedSessions with",
+        data?.length || 0,
+        "sessions",
+      );
+      const withParents = (data || []).filter((s) => s.parent_session_id);
       if (withParents.length > 0) {
-        console.log('[DEBUG] Sessions with parent_session_id:', withParents.map(s => ({
-          id: s.session_id.substring(0, 8),
-          parent: s.parent_session_id?.substring(0, 8),
-          name: s.name
-        })));
+        console.log(
+          "[DEBUG] Sessions with parent_session_id:",
+          withParents.map((s) => ({
+            id: s.session_id.substring(0, 8),
+            parent: s.parent_session_id?.substring(0, 8),
+            name: s.name,
+          })),
+        );
       }
       setStoredSessions(data || []);
       return data || [];
@@ -2571,34 +2589,37 @@ export function useWebSocket() {
   // Helper to expand the target session's group when navigating
   // Always expands the group containing the session so it's visible in the sidebar
   // In accordion mode, also collapses all other groups
-  const expandGroupForSession = useCallback((sessionId, workingDir, acpServer) => {
-    // Build the group key for this session based on current grouping mode
-    const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-    let groupKey;
-    if (groupingMode === "server") {
-      groupKey = acpServer || "Unknown";
-    } else if (groupingMode === "workspace") {
-      // Workspace mode uses composite key: working_dir|acp_server
-      groupKey = `${workingDir || ""}|${acpServer || ""}`;
-    }
+  const expandGroupForSession = useCallback(
+    (sessionId, workingDir, acpServer) => {
+      // Build the group key for this session based on current grouping mode
+      const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
+      let groupKey;
+      if (groupingMode === "server") {
+        groupKey = acpServer || "Unknown";
+      } else if (groupingMode === "workspace") {
+        // Workspace mode uses composite key: working_dir|acp_server
+        groupKey = `${workingDir || ""}|${acpServer || ""}`;
+      }
 
-    // Only expand if we have a valid group key and groups are being used
-    if (groupKey && groupingMode && groupingMode !== "none") {
-      // In accordion mode, collapse all other groups first
-      if (getSingleExpandedGroupMode()) {
-        const expandedGroups = getExpandedGroups();
-        for (const key of Object.keys(expandedGroups)) {
-          if (key !== groupKey && isGroupExpanded(key)) {
-            setGroupExpanded(key, false);
+      // Only expand if we have a valid group key and groups are being used
+      if (groupKey && groupingMode && groupingMode !== "none") {
+        // In accordion mode, collapse all other groups first
+        if (getSingleExpandedGroupMode()) {
+          const expandedGroups = getExpandedGroups();
+          for (const key of Object.keys(expandedGroups)) {
+            if (key !== groupKey && isGroupExpanded(key)) {
+              setGroupExpanded(key, false);
+            }
           }
         }
+        // Always expand the session's group so it's visible
+        if (!isGroupExpanded(groupKey)) {
+          setGroupExpanded(groupKey, true);
+        }
       }
-      // Always expand the session's group so it's visible
-      if (!isGroupExpanded(groupKey)) {
-        setGroupExpanded(groupKey, true);
-      }
-    }
-  }, []);
+    },
+    [],
+  );
 
   // Switch to an existing session
   // Uses reverse-order loading for better UX: newest messages load first,
@@ -2606,7 +2627,10 @@ export function useWebSocket() {
   const switchSession = useCallback(
     async (sessionId) => {
       // DEBUG: Log when switching sessions
-      console.log('[DEBUG] switchSession called for:', sessionId.substring(0, 8));
+      console.log(
+        "[DEBUG] switchSession called for:",
+        sessionId.substring(0, 8),
+      );
 
       // Use sessionsRef to get current sessions state and avoid stale closures
       const currentSessions = sessionsRef.current;
@@ -2620,28 +2644,24 @@ export function useWebSocket() {
 
       // Get session info from stored sessions (for accordion mode group expansion)
       const storedSession = storedSessionsRef.current?.find(
-        (s) => s.session_id === sessionId
+        (s) => s.session_id === sessionId,
       );
 
       // DEBUG: Log parent_session_id from storedSession
       if (storedSession) {
-        console.log('[DEBUG] switchSession: Found in storedSessions:', {
+        console.log("[DEBUG] switchSession: Found in storedSessions:", {
           id: storedSession.session_id?.substring(0, 8),
           parent: storedSession.parent_session_id?.substring(0, 8),
-          name: storedSession.name
+          name: storedSession.name,
         });
       } else {
-        console.log('[DEBUG] switchSession: NOT found in storedSessions!');
+        console.log("[DEBUG] switchSession: NOT found in storedSessions!");
       }
 
       const workingDir =
-        existingSession?.info?.working_dir ||
-        storedSession?.working_dir ||
-        "";
+        existingSession?.info?.working_dir || storedSession?.working_dir || "";
       const acpServer =
-        existingSession?.info?.acp_server ||
-        storedSession?.acp_server ||
-        "";
+        existingSession?.info?.acp_server || storedSession?.acp_server || "";
 
       // In accordion mode, expand the group containing this session
       // (and collapse all other groups)
@@ -2772,23 +2792,26 @@ export function useWebSocket() {
 
       case "session_created":
         // A new session was created (possibly by another client)
-        console.log('[DEBUG] session_created event:', {
+        console.log("[DEBUG] session_created event:", {
           id: msg.data.session_id?.substring(0, 8),
           parent: msg.data.parent_session_id?.substring(0, 8),
-          name: msg.data.name
+          name: msg.data.name,
         });
 
         // If this is a child session, auto-expand the parent session group and folder
         if (msg.data.parent_session_id) {
           const parentKey = `parent:${msg.data.parent_session_id}`;
-          console.log('[DEBUG] Auto-expanding parent session group:', parentKey);
+          console.log(
+            "[DEBUG] Auto-expanding parent session group:",
+            parentKey,
+          );
           setGroupExpanded(parentKey, true);
 
           // Also expand the folder containing the parent session
           // Folder key is just the working_dir (no prefix)
           if (msg.data.working_dir) {
             const folderKey = msg.data.working_dir;
-            console.log('[DEBUG] Auto-expanding folder:', folderKey);
+            console.log("[DEBUG] Auto-expanding folder:", folderKey);
             setGroupExpanded(folderKey, true);
           }
         }
@@ -4057,13 +4080,15 @@ export function useWebSocket() {
     };
   }, [connectToEvents]);
 
-  // Force reconnect active session WebSocket - closes existing connection and creates new one
-  // This is more reliable than trying to sync over a potentially stale connection
+  // Force reconnect active session WebSocket - closes existing connection and schedules a new one
+  // Uses the shared exponential backoff counter so repeated failures accumulate delay,
+  // and debouncing collapses bursts of concurrent triggers (keepalive miss, visibility
+  // change, native app activate) that can fire seconds apart into a single reconnect.
   const forceReconnectActiveSession = useCallback(() => {
     const currentSessionId = activeSessionIdRef.current;
     if (!currentSessionId) return;
 
-    // Debounce: skip if a reconnect was already triggered for this session within 500ms
+    // Debounce: skip if a reconnect was already triggered for this session within the window
     const { debounced, elapsed } = shouldDebounceReconnect(
       reconnectDebounceRef.current,
       currentSessionId,
@@ -4077,22 +4102,40 @@ export function useWebSocket() {
 
     console.log(`Force reconnecting session ${currentSessionId}`);
 
-    // Clear any pending reconnect timer
+    // Clear any pending reconnect timer so we don't double-schedule
     if (sessionReconnectRefs.current[currentSessionId]) {
       clearTimeout(sessionReconnectRefs.current[currentSessionId]);
       delete sessionReconnectRefs.current[currentSessionId];
     }
 
-    // Close existing WebSocket if any (this will trigger a clean reconnect)
+    // Close existing WebSocket if any.
+    // Pre-delete the ref so that the ws.onclose handler sees no active WS ref
+    // and skips its own scheduling (it checks sessionReconnectRefs too).
     const existingWs = sessionWsRefs.current[currentSessionId];
     if (existingWs) {
-      // Remove the ref first so onclose doesn't schedule another reconnect
       delete sessionWsRefs.current[currentSessionId];
       existingWs.close();
     }
 
-    // Connect to session - this will sync events in the onopen handler
-    connectToSession(currentSessionId);
+    // Use the shared exponential backoff counter — the same one used by onclose.
+    // This means repeated failures across all paths accumulate delay correctly.
+    // On successful connect, onopen resets the counter (via delete), so the
+    // next disconnect starts fresh from attempt 0.
+    const attempt = sessionReconnectAttemptsRef.current[currentSessionId] || 0;
+    const delay = calculateReconnectDelay(attempt);
+    console.log(
+      `Scheduling force-reconnect for session ${currentSessionId} (attempt ${attempt + 1}, delay ${delay}ms)`,
+    );
+
+    sessionReconnectRefs.current[currentSessionId] = setTimeout(() => {
+      delete sessionReconnectRefs.current[currentSessionId];
+      // Double-check the session is still active before reconnecting
+      if (activeSessionIdRef.current === currentSessionId) {
+        // Increment shared attempt counter before connecting
+        sessionReconnectAttemptsRef.current[currentSessionId] = attempt + 1;
+        connectToSession(currentSessionId);
+      }
+    }, delay);
   }, [connectToSession]);
 
   // Ref to track which sessions we've already attempted to recover from inconsistent state

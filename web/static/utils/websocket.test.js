@@ -481,7 +481,7 @@ describe("shouldDebounceReconnect", () => {
     const tracker = createReconnectDebounceTracker();
     shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
     const result = shouldDebounceReconnect(tracker, "session1", {
-      now: () => 1600,
+      now: () => 4100, // 3100ms later — past the 3000ms window
     });
     expect(result.debounced).toBe(false);
   });
@@ -490,7 +490,7 @@ describe("shouldDebounceReconnect", () => {
     const tracker = createReconnectDebounceTracker();
     shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
     const result = shouldDebounceReconnect(tracker, "session1", {
-      now: () => 1500,
+      now: () => 4000, // exactly 3000ms later — at the boundary
     });
     expect(result.debounced).toBe(false);
   });
@@ -525,9 +525,9 @@ describe("shouldDebounceReconnect", () => {
   test("updates timestamp when call goes through", () => {
     const tracker = createReconnectDebounceTracker();
     shouldDebounceReconnect(tracker, "session1", { now: () => 1000 });
-    // After window
-    shouldDebounceReconnect(tracker, "session1", { now: () => 2000 });
-    expect(tracker.timestamps["session1"]).toBe(2000);
+    // After window (3000ms+)
+    shouldDebounceReconnect(tracker, "session1", { now: () => 4100 });
+    expect(tracker.timestamps["session1"]).toBe(4100);
   });
 
   test("does not update timestamp when debounced", () => {
@@ -561,14 +561,14 @@ describe("shouldDebounceReconnect", () => {
   });
 
   test("default window matches RECONNECT_DEBOUNCE_MS constant", () => {
-    expect(WEBSOCKET_CONSTANTS.RECONNECT_DEBOUNCE_MS).toBe(500);
+    expect(WEBSOCKET_CONSTANTS.RECONNECT_DEBOUNCE_MS).toBe(3000);
   });
 
   test("third call after second debounced still debounced within window", () => {
     const tracker = createReconnectDebounceTracker();
     shouldDebounceReconnect(tracker, "s1", { now: () => 1000 });
     shouldDebounceReconnect(tracker, "s1", { now: () => 1100 }); // debounced
-    const result = shouldDebounceReconnect(tracker, "s1", { now: () => 1300 }); // still within 500ms of 1000
+    const result = shouldDebounceReconnect(tracker, "s1", { now: () => 2000 }); // still within 3000ms of 1000
     expect(result.debounced).toBe(true);
   });
 
@@ -576,8 +576,116 @@ describe("shouldDebounceReconnect", () => {
     const tracker = createReconnectDebounceTracker();
     shouldDebounceReconnect(tracker, "s1", { now: () => 1000 }); // through
     shouldDebounceReconnect(tracker, "s1", { now: () => 1100 }); // debounced
-    shouldDebounceReconnect(tracker, "s1", { now: () => 1300 }); // debounced
-    const result = shouldDebounceReconnect(tracker, "s1", { now: () => 1600 }); // through (500ms after 1000)
+    shouldDebounceReconnect(tracker, "s1", { now: () => 2000 }); // debounced
+    const result = shouldDebounceReconnect(tracker, "s1", { now: () => 4100 }); // through (3100ms after 1000)
     expect(result.debounced).toBe(false);
+  });
+});
+
+// =============================================================================
+// forceReconnectActiveSession backoff behaviour (unit-level simulation)
+//
+// The hook itself is not unit-tested here, but we can verify that the
+// calculateReconnectDelay + shared-attempt-counter pattern used by
+// forceReconnectActiveSession produces the right delay sequence when
+// called the same way the refactored hook code does.
+// =============================================================================
+
+describe("forceReconnectActiveSession backoff simulation", () => {
+  /**
+   * Simulate the shared-counter pattern used by forceReconnectActiveSession
+   * and onclose: both read the same attempts object and increment it before
+   * calling connectToSession.
+   */
+  function simulateReconnectSequence(attempts, sessionId, count) {
+    const delays = [];
+    for (let i = 0; i < count; i++) {
+      const attempt = attempts[sessionId] || 0;
+      const delay = calculateReconnectDelay(attempt, { jitterFactor: 0 });
+      delays.push(delay);
+      // Simulate what the timeout callback does: increment before connecting
+      attempts[sessionId] = attempt + 1;
+    }
+    return delays;
+  }
+
+  test("first force-reconnect uses attempt 0 (base delay ~1s)", () => {
+    const attempts = {};
+    const delays = simulateReconnectSequence(attempts, "s1", 1);
+    expect(delays[0]).toBe(WEBSOCKET_CONSTANTS.RECONNECT_BASE_DELAY_MS); // 1000ms
+  });
+
+  test("repeated force-reconnects produce increasing delays", () => {
+    const attempts = {};
+    const delays = simulateReconnectSequence(attempts, "s1", 5);
+    const base = WEBSOCKET_CONSTANTS.RECONNECT_BASE_DELAY_MS;
+    expect(delays[0]).toBe(base); // 1000ms
+    expect(delays[1]).toBe(base * 2); // 2000ms
+    expect(delays[2]).toBe(base * 4); // 4000ms
+    expect(delays[3]).toBe(base * 8); // 8000ms
+    expect(delays[4]).toBe(base * 16); // 16000ms
+  });
+
+  test("delays cap at RECONNECT_MAX_DELAY_MS", () => {
+    const attempts = {};
+    // Run enough iterations to hit the cap
+    const delays = simulateReconnectSequence(attempts, "s1", 10);
+    const max = WEBSOCKET_CONSTANTS.RECONNECT_MAX_DELAY_MS;
+    delays.forEach((d) => expect(d).toBeLessThanOrEqual(max));
+    // Last few should be exactly at the cap (no jitter in this test)
+    expect(delays[9]).toBe(max);
+  });
+
+  test("resetting attempt counter restarts backoff from base delay", () => {
+    const attempts = {};
+    // Simulate several failures
+    simulateReconnectSequence(attempts, "s1", 4);
+    expect(attempts["s1"]).toBe(4);
+
+    // Simulate successful connect: onopen does `delete attempts[sessionId]`
+    delete attempts["s1"];
+
+    // Next reconnect should start from base delay again
+    const delays = simulateReconnectSequence(attempts, "s1", 1);
+    expect(delays[0]).toBe(WEBSOCKET_CONSTANTS.RECONNECT_BASE_DELAY_MS);
+  });
+
+  test("force-reconnect and onclose share the same counter (no reset between them)", () => {
+    // Scenario: force-reconnect fires (attempt 0→1), then the resulting
+    // WebSocket closes immediately (attempt 1→2). Delay should keep growing.
+    const attempts = {};
+
+    // forceReconnectActiveSession fires: reads attempt 0, schedules with 1s delay, sets attempt=1
+    const delay1 = calculateReconnectDelay(attempts["s1"] || 0, {
+      jitterFactor: 0,
+    });
+    attempts["s1"] = (attempts["s1"] || 0) + 1;
+    expect(delay1).toBe(1000);
+    expect(attempts["s1"]).toBe(1);
+
+    // The new WebSocket opens but immediately closes (onclose fires).
+    // onopen was never reached, so counter was NOT reset.
+    // onclose reads attempt 1, schedules with 2s delay, sets attempt=2
+    const delay2 = calculateReconnectDelay(attempts["s1"] || 0, {
+      jitterFactor: 0,
+    });
+    attempts["s1"] = (attempts["s1"] || 0) + 1;
+    expect(delay2).toBe(2000);
+    expect(attempts["s1"]).toBe(2);
+  });
+
+  test("different sessions have independent attempt counters", () => {
+    const attempts = {};
+
+    // Session A fails 3 times
+    simulateReconnectSequence(attempts, "sessionA", 3);
+    expect(attempts["sessionA"]).toBe(3);
+
+    // Session B starts fresh
+    const delayB = calculateReconnectDelay(attempts["sessionB"] || 0, {
+      jitterFactor: 0,
+    });
+    expect(delayB).toBe(WEBSOCKET_CONSTANTS.RECONNECT_BASE_DELAY_MS);
+    expect(attempts["sessionA"]).toBe(3); // unchanged
   });
 });

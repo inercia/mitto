@@ -141,7 +141,9 @@ export function calculateReconnectDelay(attempt, options = {}) {
 // =============================================================================
 
 // Default debounce window for force-reconnect (ms)
-const RECONNECT_DEBOUNCE_MS = 500;
+// 3s window collapses multi-source triggers (visibility change, keepalive miss,
+// native app activate) that can fire 1–6s apart into a single reconnect.
+const RECONNECT_DEBOUNCE_MS = 3000;
 
 /**
  * Create a per-session reconnect debounce tracker.
