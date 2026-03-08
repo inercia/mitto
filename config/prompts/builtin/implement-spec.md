@@ -6,94 +6,56 @@ backgroundColor: "#FFECB3"
 ---
 
 <investigate_before_answering>
-Before planning the implementation, read the spec file thoroughly. Also explore the
-existing codebase to understand current architecture, patterns, and utilities that
-can be reused. Do not speculate about the codebase — read the relevant files first.
+Read the spec file thoroughly. Explore the codebase for current architecture,
+patterns, and reusable utilities. Do not speculate — read relevant files first.
 </investigate_before_answering>
 
 <task>
-Read the spec file we wrote, design the architecture, and create a detailed
-implementation plan broken into small, iterative steps.
+Read the spec, design the architecture, and create a detailed implementation plan
+broken into small iterative steps.
 </task>
 
 <scope>
-Only plan and implement what the specification requires. Keep solutions simple and
-focused. Do not add features, abstractions, or defensive coding beyond what the spec
-calls for. The right amount of complexity is the minimum needed for the current requirements.
+Only plan and implement what the spec requires. Keep solutions simple. No extra
+features, abstractions, or defensive coding beyond what's specified.
 </scope>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
-**Note**: This prompt can work without Mitto's MCP server, but provides a better user experience with it.
+**Note**: Works without Mitto's MCP server, but provides a better experience with it.
 
 **Optional tools:**
 - `mitto_ui_ask_yes_no`
 
-**Check availability:**
-1. Look for these tools in your available tools list
-2. If ANY of these tools are missing, inform the user how to install Mitto's MCP server. Mitto's MCP server is at http://127.0.0.1:5757/mcp, so think about the instructions for adding it. Then tell the user:
-
-```
-💡 This prompt works better with Mitto's MCP server for interactive prompts. To enable interactive UI features, you need to add Mitto's MCP server in this assistant. Please follow the instructions below to add it:
-```
-
-and then show the instructions for adding it.
-
-**After displaying this message, proceed with the sections below using text-based conversation instead.**
+If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
 
 ---
 
 <instructions>
 
-## Phase 1: Understand the Specification
+## Phase 1: Understand the Spec
 
-Before planning, ensure you fully understand:
+1. Core requirements
+2. Success criteria
+3. Constraints (tech stack, dependencies)
+4. Scope boundaries
 
-1. **Core requirements**: What must be built?
-2. **Success criteria**: How will we know it's complete?
-3. **Constraints**: What limitations exist (tech stack, time, dependencies)?
-4. **Scope boundaries**: What is explicitly out of scope?
+Ask clarifying questions if anything is unclear.
 
-If anything is unclear, ask clarifying questions before proceeding.
+## Phase 2: Design Architecture
 
-## Phase 2: Design the Architecture
+Consider: data models, APIs/interfaces, business logic, error handling, security, testing strategy, observability, versioning.
 
-Create a detailed blueprint for the implementation:
+Identify dependencies between components and optimal build order.
 
-### Components to Consider
+Use the `think` tool for deep reasoning about the design.
 
-1. **Data models**: Entities, relationships, schemas
-2. **APIs/Interfaces**: Endpoints, contracts, protocols
-3. **Business logic**: Core algorithms, rules, workflows
-4. **Error handling**: Failure modes, recovery strategies
-5. **Security**: Authentication, authorization, data protection
-6. **Testing strategy**: Unit, integration, E2E test approach
-7. **Observability**: Logging, metrics, monitoring
-8. **Versioning**: Backward compatibility considerations (if applicable)
+## Phase 3: Implementation Plan
 
-### Dependency Analysis
-
-- Identify dependencies between components
-- Determine the optimal build order
-- Note external dependencies that need to be installed/configured
-
-Use the `think` tool (or any sequential/deep thinking tool available)
-to reason deeply about the design.
-
-## Phase 3: Create the Implementation Plan
-
-Break down the work into small, iterative chunks:
-
-### Iteration Guidelines
-
-1. **First pass**: Identify major components and their order
-2. **Second pass**: Break each component into smaller steps
-3. **Third pass**: Review and ensure steps are:
-   - Small enough to implement safely with strong testing
-   - Large enough to make meaningful progress
-   - Properly ordered based on dependencies
-
-### Step Format
+Break into small iterative steps:
+1. Identify major components and order
+2. Break each into smaller steps
+3. Ensure steps are: small enough for safe testing, large enough for progress, properly ordered
 
 <output_format>
 
@@ -104,42 +66,19 @@ Break down the work into small, iterative chunks:
 
 </output_format>
 
-### Principles
+Each step should be independently testable. Include test writing in each step, not as a separate phase. Prefer working software at every step.
 
-- Each step should be independently testable
-- Prefer working software at every step over big-bang integration
-- Include test writing as part of each step, not as a separate phase
-- Consider rollback strategy for each step
-
-Use the `todo` tool (or any task list tool available) to track
-the implementation plan and mark progress.
+Use the `todo` tool to track progress.
 
 ## Phase 4: Begin Implementation
 
-Present the plan and wait for approval before executing.
+Present plan, wait for approval.
 
-**Using Mitto UI tools (if available):** Use `mitto_ui_ask_yes_no` to get approval:
-```
-Question: "Implementation plan is ready. Would you like me to proceed?"
-Yes label: "Approve and start"
-No label: "Modify plan"
-```
+**With Mitto UI**: `mitto_ui_ask_yes_no` → "Approve and start / Modify plan"
+**Without**: Ask in conversation.
 
-If the user selects "Modify plan", discuss the changes in conversation before proceeding.
+Once approved, per step: implement → write/update tests → verify → report → next.
 
-**Fallback (if Mitto UI tools are not available):**
-
-Ask in conversation: "Does this plan look good? Should I proceed with implementation, or would you like to modify anything first?"
-
-Once approved, work through the steps systematically:
-
-1. Implement the step
-2. Write/update tests
-3. Verify the step works
-4. Report progress
-5. Move to the next step
-
-If issues arise during implementation that affect the plan, stop and discuss
-before continuing.
+If issues arise that affect the plan, stop and discuss before continuing.
 
 </instructions>

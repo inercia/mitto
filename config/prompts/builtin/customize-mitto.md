@@ -6,33 +6,29 @@ backgroundColor: "#B3E5FC"
 ---
 
 <task>
-Set up the Mitto configuration for this project by creating the `.mitto` directory structure,
-analyzing the project, and creating customized versions of builtin prompts that are tailored
-to this project's specific technologies and workflows.
+Set up Mitto configuration for this project: create `.mitto` directory structure,
+analyze the project, and create customized prompt overrides tailored to its
+technologies and workflows.
 </task>
 
 <efficiency>
-When analyzing the project, read multiple configuration files in parallel (e.g., Makefile,
-package.json, go.mod, CI configs) to build context faster.
+Read multiple configuration files in parallel (Makefile, package.json, go.mod, CI configs).
 </efficiency>
 
 <instructions>
 
 ## Step 1: Create Directory Structure
 
-Create the following directory structure in the project root:
-
 ```
 .mitto/
 └── prompts/
 ```
 
-1. Create the `.mitto` directory if it doesn't exist
-2. Create the `.mitto/prompts` subdirectory for project-specific prompts
+Create `.mitto/` and `.mitto/prompts/` if they don't exist.
 
-## Step 2: Create the `.mittorc` File
+## Step 2: Create `.mittorc`
 
-Create a `.mittorc` file in the project root with the following content:
+Create `.mittorc` in the project root:
 
 ```yaml
 # Mitto workspace configuration
@@ -42,68 +38,28 @@ prompts_dirs:
   - ".mitto/prompts"
 ```
 
-This tells Mitto to look for prompt files in the `.mitto/prompts` directory.
-
 ## Step 3: Analyze the Project
 
-Before creating any prompts, analyze the project to understand:
+Investigate:
 
-### Build & Development
-- What build system or package manager is used? (npm, yarn, cargo, go, make, etc.)
-- What are the common development commands? (build, dev server, watch mode)
-- Are there any custom scripts defined?
-- Check `Makefile`, `package.json`, `go.mod`, etc.
-
-### Testing
-- What testing frameworks are used?
-  - Go: `go test`, table-driven tests
-  - JavaScript: Jest, Playwright
-  - Integration tests: Mock servers, in-process testing
-- How are tests run? (unit tests, integration tests, e2e tests)
-- Are there specific test patterns or commands?
-- Check `Makefile` targets, `package.json` scripts
-
-### Code Quality
-- What linters or formatters are configured?
-- How is code quality checked? (lint, format, typecheck)
-- Check for `golangci-lint`, `gofmt`, `prettier`, etc.
-
-### Deployment & CI/CD
-- Are there deployment scripts or commands?
-- Is there a CI/CD configuration?
-- Check `.github/workflows/`, `.gitlab-ci.yml`, etc.
-
-### Project-Specific Workflows
-- Are there any domain-specific commands or workflows?
-- Are there common tasks specific to this project type?
-- Check for custom Makefile targets, scripts, etc.
+- **Build & Development**: Build system, package manager, dev commands, custom scripts. Check `Makefile`, `package.json`, `go.mod`, etc.
+- **Testing**: Frameworks, test types (unit/integration/e2e), specific commands. Check Makefile targets, package.json scripts.
+- **Code Quality**: Linters, formatters (`golangci-lint`, `gofmt`, `prettier`, etc.)
+- **CI/CD**: Deployment scripts, CI configuration (`.github/workflows/`, `.gitlab-ci.yml`)
+- **Project-Specific Workflows**: Domain-specific commands, custom Makefile targets
 
 ## Step 4: Examine Builtin Prompts
 
-Before creating custom prompts, examine the builtin prompts in `MITTO_DIR/prompts/builtin/`
-(typically `~/Library/Application Support/Mitto/prompts/builtin/` on macOS).
-
-Key builtin prompts to review:
-- `run-tests.md` - Generic test running instructions
-- `add-tests.md` - Generic test writing instructions
-- `fix-ci.md` - Generic CI fixing instructions
-- `cleanup-code.md` - Generic code cleanup instructions
-- `check-ci.md` - Generic CI status checking
+Review builtin prompts in `MITTO_DIR/prompts/builtin/` (typically `~/Library/Application Support/Mitto/prompts/builtin/` on macOS):
+`run-tests.md`, `add-tests.md`, `fix-ci.md`, `cleanup-code.md`, `check-ci.md`
 
 ## Step 5: Create Customized Prompt Overrides
 
-Create customized versions of builtin prompts in `.mitto/prompts/` that override the generic
-versions with project-specific instructions. These prompts should have the **same name** as
-the builtin prompts they override.
+Create project-specific versions in `.mitto/prompts/` with the **same name** as the builtin prompts they override.
 
 ### Required Customizations
 
-Create the following customized prompts based on this project's technology stack:
-
-#### 1. `run-tests.md` - Customized Test Runner
-
-**Why customize**: This project uses multiple test frameworks (Go, Jest, Playwright) with
-specific Makefile targets.
+#### 1. `run-tests.md`
 
 ```markdown
 ---
@@ -120,50 +76,19 @@ Run the project's test suite using the Makefile targets.
 
 ### 1. Run Tests
 
-This project uses multiple test frameworks:
-
-**Go Unit Tests:**
-```bash
-make test-go
-```
-Runs all Go unit tests in `internal/` and `cmd/` packages.
-
-**JavaScript Unit Tests:**
-```bash
-make test-js
-```
-Runs Jest tests for the web interface (`web/static/**/*.test.js`).
-
-**Integration Tests:**
-```bash
-make test-integration
-```
-Runs Go integration tests with mock ACP server.
-
-**UI Tests (Playwright):**
-```bash
-make test-ui
-```
-Runs Playwright end-to-end tests.
-
-**All Tests:**
-```bash
-make test-all
-```
-Runs all test suites (Go, JS, integration, UI).
+**Go Unit Tests:** `make test-go`
+**JavaScript Unit Tests:** `make test-js`
+**Integration Tests:** `make test-integration`
+**UI Tests (Playwright):** `make test-ui`
+**All Tests:** `make test-all`
 
 ### 2. Analyze Results
 
-If tests pass:
-- Report success with a brief summary
+If tests pass, report success.
 
 If tests fail:
-- For simple failures (typos, missing imports, obvious fixes):
-  - Fix the issue immediately
-  - Re-run the specific test suite to verify the fix
-  - Repeat until tests pass or failures are complex
-- For complex failures:
-  - Report them for manual review
+- Simple failures: fix immediately, re-run to verify
+- Complex failures: report for manual review
 
 ### 3. Summary Table
 
@@ -179,22 +104,14 @@ If tests fail:
 
 </output_format>
 
-### 4. If Failures Remain
+### 4. Unresolved Failures
 
-For each unresolved failure:
-- **Test Suite**: Which test suite failed (Go/JS/Integration/UI)
-- **Test**: Name of the failing test
-- **Error**: The error message
-- **Cause**: Brief analysis of why it failed
-- **Suggested fix**: What needs to change
+Per failure: **Test Suite**, **Test**, **Error**, **Cause**, **Suggested fix**
 
 </instructions>
 ```
 
-#### 2. `add-tests.md` - Customized Test Writing
-
-**Why customize**: This project has specific testing conventions for Go (table-driven tests)
-and JavaScript (Jest with jsdom).
+#### 2. `add-tests.md`
 
 ```markdown
 ---
@@ -204,50 +121,31 @@ backgroundColor: "#FFE0B2"
 ---
 
 <investigate_before_answering>
-Before writing tests, read the code that was created or modified. Also review
-existing test files to understand this project's testing conventions and patterns.
+Read the modified code and existing test files to understand testing conventions.
 </investigate_before_answering>
 
 <task>
-Write comprehensive tests following this project's testing conventions.
+Write comprehensive tests following this project's conventions.
 </task>
 
 <instructions>
 
-### Testing Frameworks
+### Frameworks
 
-**Go Tests:**
-- Use table-driven tests for multiple test cases
-- Follow the pattern in existing `*_test.go` files
-- Use `t.Run()` for subtests
-- Mock external dependencies (ACP server, file system)
-- Test files go in the same package as the code (e.g., `session_test.go` for `session.go`)
+**Go:** Table-driven tests with `t.Run()`, mock external deps. Tests in same package.
+**JavaScript:** Jest with jsdom. Test files: `*.test.js` in `web/static/`.
+**Integration:** Mock ACP server from `tests/integration/mock_acp_server.go`, `httptest`.
+**UI:** Playwright with TypeScript, page object pattern. Tests in `tests/ui/`.
 
-**JavaScript Tests:**
-- Use Jest with jsdom environment
-- Test files: `*.test.js` in `web/static/`
-- Mock browser globals (localStorage, WebSocket)
-- Test pure functions in `lib.js`
+### Coverage
 
-**Integration Tests:**
-- Use mock ACP server from `tests/integration/mock_acp_server.go`
-- Test in-process with `httptest`
-- Test files in `tests/integration/`
+1. Happy path
+2. Edge cases (empty inputs, boundaries)
+3. Error cases (invalid inputs, missing data)
+4. Concurrency (if applicable)
+5. Integration with dependencies
 
-**UI Tests:**
-- Use Playwright with TypeScript config
-- Test files in `tests/ui/`
-- Use page object pattern for reusable selectors
-
-### Include tests for:
-
-1. **Happy path**: Normal expected usage
-2. **Edge cases**: Empty inputs, boundary values, maximum sizes
-3. **Error cases**: Invalid inputs, missing data, permission errors
-4. **Concurrency**: Race conditions, deadlocks (if applicable)
-5. **Integration**: Interaction with dependencies
-
-### Test structure:
+### Test Structure
 
 **Go (Table-Driven):**
 ```go
@@ -261,7 +159,6 @@ func TestFunctionName(t *testing.T) {
         {"happy path", "input", "output", false},
         {"error case", "bad", "", true},
     }
-
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             result, err := FunctionName(tt.input)
@@ -280,32 +177,22 @@ func TestFunctionName(t *testing.T) {
 ```javascript
 describe('functionName', () => {
   it('should handle happy path', () => {
-    const result = functionName('input');
-    expect(result).toBe('output');
+    expect(functionName('input')).toBe('output');
   });
-
   it('should handle error case', () => {
     expect(() => functionName('bad')).toThrow();
   });
 });
 ```
 
-### After writing:
+### After Writing
 
-- Run the appropriate test suite:
-  - `make test-go` for Go tests
-  - `make test-js` for JavaScript tests
-  - `make test-integration` for integration tests
-  - `make test-ui` for UI tests
-- Verify all tests pass
-- Check that new code is covered
+Run appropriate suite: `make test-go`, `make test-js`, `make test-integration`, or `make test-ui`.
 
 </instructions>
 ```
 
-#### 3. `fix-ci.md` - Customized CI Fixing
-
-**Why customize**: This project uses GitHub Actions with specific workflows.
+#### 3. `fix-ci.md`
 
 ```markdown
 ---
@@ -315,8 +202,7 @@ backgroundColor: "#B2DFDB"
 ---
 
 <investigate_before_answering>
-Before attempting fixes, check the CI status and read the failure logs first.
-Understand the actual error messages and the code involved before making changes.
+Check CI status and read failure logs before making changes.
 </investigate_before_answering>
 
 <task>
@@ -324,30 +210,21 @@ Diagnose and fix GitHub Actions CI failures for the current branch.
 </task>
 
 <scope>
-Only fix the issues causing CI failures. Keep changes minimal and focused.
+Only fix CI-failing issues. Keep changes minimal.
 </scope>
 
 <instructions>
 
 ### 1. Check GitHub CLI
 
-Verify `gh` CLI is installed and authenticated:
 ```bash
 gh auth status
 ```
 
-If not authenticated, run:
-```bash
-gh auth login
-```
-
-### 2. Get Current Branch and CI Status
+### 2. Get CI Status
 
 ```bash
-# Get current branch
 git branch --show-current
-
-# Check workflow runs
 gh run list --branch $(git branch --show-current) --limit 5
 ```
 
@@ -355,93 +232,45 @@ If CI is passing, report success and stop.
 
 ### 3. Diagnose Failures
 
-This project has three main workflows:
+**Workflows:**
+- **Tests** (`.github/workflows/tests.yml`): `make test-ci`, Go formatting, linting
+- **Release** (`.github/workflows/release.yml`): Multi-platform builds, GitHub releases
+- **Homebrew** (`.github/workflows/homebrew.yml`): Formula testing
 
-**Tests Workflow (`.github/workflows/tests.yml`):**
-- Runs on every push and PR
-- Executes: `make test-ci` (Go, JS, integration, UI tests)
-- Checks: Go formatting, linting
-
-**Release Workflow (`.github/workflows/release.yml`):**
-- Runs on tags
-- Builds binaries for multiple platforms
-- Creates GitHub releases
-
-**Homebrew Workflow (`.github/workflows/homebrew.yml`):**
-- Tests Homebrew formula
-- Runs on changes to formula files
-
-Get the failed run logs:
 ```bash
 gh run view <run-id> --log-failed
 ```
 
-### 4. Common Failure Patterns
+### 4. Common Patterns
 
-**Go Test Failures:**
-- Check for race conditions: `go test -race`
-- Check for missing mocks or test fixtures
-- Verify table-driven test cases are complete
+- **Go tests**: Race conditions (`go test -race`), missing mocks, incomplete table-driven tests
+- **JS tests**: Missing Jest mocks, jsdom setup, async timing
+- **Playwright**: Selector changes, stale fixtures, timing (use proper waits)
+- **Formatting/Linting**: `make fmt`, `make lint`, `npx prettier --write .`
+- **Build**: Missing deps (`make deps-go deps-js`), Go version mismatch, import errors
 
-**JavaScript Test Failures:**
-- Check for missing Jest mocks
-- Verify jsdom environment is set up correctly
-- Check for async timing issues
+### 5. Fix and Verify
 
-**Playwright Test Failures:**
-- Check for selector changes in UI
-- Verify test fixtures are up to date
-- Check for timing issues (use proper waits)
+1. Implement fix
+2. Run `make test-ci` locally
+3. Commit and push
 
-**Formatting/Linting:**
-- Run `make fmt` to fix Go formatting
-- Run `make lint` to check for issues
-- Run `npx prettier --write .` for JS formatting
-
-**Build Failures:**
-- Check for missing dependencies: `make deps-go deps-js`
-- Verify Go version matches `go.mod`
-- Check for import errors
-
-### 5. Fix Issues
-
-For each identified issue:
-1. **Implement the fix** in the codebase
-2. **Explain the change** and why it resolves the issue
-3. **Verify locally**:
-   - Run `make test-ci` to run all CI checks locally
-   - Run specific test suite if needed
-   - Run `make fmt lint` for code quality
-
-### 6. Commit and Push
-
-After fixes are implemented:
-```bash
-git add .
-git commit -m "fix: resolve CI failures"
-git push
-```
-
-### 7. Monitor CI
+### 6. Monitor
 
 ```bash
 gh run watch
 ```
 
-The tests workflow typically takes 5-10 minutes to complete.
-
 </instructions>
 
 <rules>
-- Run `make test-ci` locally before pushing, to catch issues before CI runs
-- Get explicit user approval before modifying workflow files or changing dependencies
-- Group related fixes in a single commit when possible for cleaner history
+- Run `make test-ci` locally before pushing
+- Get user approval before modifying workflow files or dependencies
+- Group related fixes in a single commit
 </rules>
 ```
 
-#### 4. `cleanup-code.md` - Customized Code Cleanup
-
-**Why customize**: This project uses specific Go and JavaScript tools.
+#### 4. `cleanup-code.md`
 
 ```markdown
 ---
@@ -451,147 +280,73 @@ backgroundColor: "#E8F5E9"
 ---
 
 <investigate_before_answering>
-Before proposing cleanup, read the relevant code and search for references.
-When analyzing multiple files, read them in parallel to build context faster.
+Read relevant code and search for references before proposing cleanup.
+Read multiple files in parallel.
 </investigate_before_answering>
 
 <task>
-Analyze the codebase for cleanup opportunities using project-specific tools.
-
-Propose a plan first and wait for approval before making any changes.
+Analyze for cleanup opportunities. Propose a plan and wait for approval.
 </task>
 
 <instructions>
 
-### 1. Analyze the Codebase
+### 1. Analyze
 
 **Unused Imports:**
-
-**Go:**
-```bash
-# goimports will remove unused imports
-goimports -l .
-```
-
-**JavaScript:**
-- Check ESLint output for unused variables
-- Review import statements in `web/static/` files
+- Go: `goimports -l .`
+- JS: Check ESLint output for `web/static/` files
 
 **Dead Code:**
-
-**Go:**
-```bash
-# Use golangci-lint to find unused code
-golangci-lint run --enable=unused,deadcode
-```
-
-Look for:
-- Unexported functions never called within the package
-- Exported functions with no references in the codebase
-- Unused struct fields
-- Unused constants and variables
-
-**JavaScript:**
-- Review functions in `web/static/utils/lib.js`
-- Check for unused component functions
-- Look for unused hooks
+- Go: `golangci-lint run --enable=unused,deadcode`
+- Look for: unexported functions never called, exported functions with no references, unused fields/constants
+- JS: Review `web/static/utils/lib.js`, unused component functions/hooks
 
 **Commented-Out Code:**
-
-Search for large blocks of commented-out code:
 ```bash
 grep -r "^\s*//" internal/ cmd/ web/static/ | grep -v "^\s*// " | head -20
 ```
 
-**Outdated Documentation:**
+**Outdated Docs:** Check `docs/`, code comments, `.augment/rules/`
+**Obsolete Tests:** Unused helpers in `*_test.go`, fixtures in `tests/integration/`, Playwright page objects
 
-- Check `docs/` for references to deleted features
-- Review comments in code for accuracy
-- Check `.augment/rules/` for outdated patterns
-
-**Obsolete Test Code:**
-
-- Look for unused test helpers in `*_test.go` files
-- Check for unused fixtures in `tests/integration/`
-- Review unused Playwright page objects
-
-### 2. Propose Cleanup Plan
+### 2. Propose Plan
 
 <output_format>
 
 | Priority | Category | Location | Description | Risk | Effort |
 |----------|----------|----------|-------------|------|--------|
-| 1 | Dead Code | `internal/pkg/file.go` | Remove unused function `oldHelper()` | Low | Small |
-| 2 | Imports | `internal/session/store.go` | Remove 3 unused imports | Low | Small |
-| 3 | Documentation | `docs/devel/api.md` | Update outdated API references | Low | Medium |
+| 1 | Dead Code | `internal/pkg/file.go` | Remove unused `oldHelper()` | Low | Small |
 
 </output_format>
 
 ### 3. Wait for Approval
 
-Ask the user to:
-- **Approve all** - proceed with all cleanup items
-- **Approve selected** - specify which items (by priority number)
-- **Investigate** - get more details on specific items
-- **Cancel** - abort without making changes
+Options: **Approve all**, **Approve selected**, **Investigate**, **Cancel**
 
-Wait for the user to explicitly approve before proceeding.
+### 4. Execute
 
-### 4. Execute Approved Changes
+Per item: make change, run checks (`make test-go`/`make test-js`/`make fmt lint`), report.
 
-For each approved item:
-1. Make the change
-2. Run appropriate checks:
-   - `make test-go` for Go changes
-   - `make test-js` for JavaScript changes
-   - `make fmt lint` for code quality
-3. Report the result
+### 5. Summary
 
-### 5. Report Summary
-
-```markdown
-## Cleanup Summary
-
-### Changes Made
-- `internal/pkg/file.go`: Removed unused function `oldHelper()`
-- `internal/session/store.go`: Removed 3 unused imports
-
-### Verification
-- ✅ Go tests passing (`make test-go`)
-- ✅ JS tests passing (`make test-js`)
-- ✅ Linter checks passing (`make lint`)
-- ✅ Code formatted correctly (`make fmt`)
-
-### Skipped Items
-- Item #4: Skipped per user request
-```
+Report changes made, verification status, skipped items.
 
 </instructions>
 
 <rules>
-- Propose changes before removing code, and wait for user approval
+- Propose before removing; wait for approval
 - Run tests after changes: `make test-go` or `make test-js`
-- Run formatting: `make fmt` for Go code
-- Be conservative with exported APIs — they might be used externally
-- Update related documentation when removing code, to keep docs in sync
+- Run `make fmt` for Go code
+- Be conservative with exported APIs
+- Update related docs when removing code
 </rules>
 ```
 
 ### Optional Customizations
 
-Consider creating these additional customized prompts if they would be useful:
-
-#### 5. `check-ci.md` - Customized CI Status Check
-
-Customize to show GitHub Actions status for this project's specific workflows.
-
-#### 6. `document-code.md` - Customized Documentation
-
-Customize to follow this project's documentation structure in `docs/devel/`.
+Consider also customizing: `check-ci.md` (GitHub Actions status), `document-code.md` (project's `docs/devel/` structure).
 
 ### Prompt File Format
-
-All prompts should use this format:
 
 ```markdown
 ---
@@ -603,46 +358,19 @@ backgroundColor: "#HEXCOLOR"
 Prompt content here...
 ```
 
-**Color Guidelines:**
-- Testing prompts: `#FFE0B2` (orange)
-- CI/Build prompts: `#B2DFDB` (teal)
-- Code quality prompts: `#E8F5E9` (green)
-- Documentation prompts: `#F3E5F5` (purple)
-- General prompts: `#B3E5FC` (blue)
+**Colors:** Testing: `#FFE0B2`, CI/Build: `#B2DFDB`, Code quality: `#E8F5E9`, Docs: `#F3E5F5`, General: `#B3E5FC`
 
 ## Step 6: Summary
 
-After completing this setup:
+After setup:
+1. ✅ `.mitto/` and `.mitto/prompts/` created
+2. ✅ `.mittorc` configured
+3. ✅ Project analyzed
+4. ✅ Builtin prompts examined
+5. ✅ Customized overrides created: `run-tests.md`, `add-tests.md`, `fix-ci.md`, `cleanup-code.md`
 
-1. ✅ `.mitto/` directory created
-2. ✅ `.mitto/prompts/` directory created
-3. ✅ `.mittorc` file created with `prompts_dirs` configuration
-4. ✅ Project analyzed for technology stack and workflows
-5. ✅ Builtin prompts examined
-6. ✅ Customized prompt overrides created in `.mitto/prompts/`:
-   - `run-tests.md` - Customized for Go, Jest, Playwright, Makefile targets
-   - `add-tests.md` - Customized for table-driven Go tests and Jest patterns
-   - `fix-ci.md` - Customized for GitHub Actions workflows
-   - `cleanup-code.md` - Customized for Go and JavaScript tooling
-   - (Optional) Additional customized prompts as needed
+### How Overrides Work
 
-### How Prompt Overrides Work
-
-When you use a prompt, Mitto searches for it in this order:
-1. `.mitto/prompts/` (project-specific overrides)
-2. `MITTO_DIR/prompts/builtin/` (builtin prompts)
-
-By creating prompts with the same name in `.mitto/prompts/`, you override the builtin
-versions with project-specific instructions.
-
-### Next Steps
-
-You can now use the customized prompts:
-- Click "Run tests" to run tests using the project's Makefile targets
-- Click "Add tests" to write tests following this project's conventions
-- Click "Fix CI" to diagnose and fix GitHub Actions failures
-- Click "Cleanup Code" to clean up code using project-specific tools
-
-The prompts are now tailored to this project's specific technology stack and workflows!
+Mitto searches: `.mitto/prompts/` first, then `MITTO_DIR/prompts/builtin/`. Same-name files override builtins.
 
 </instructions>

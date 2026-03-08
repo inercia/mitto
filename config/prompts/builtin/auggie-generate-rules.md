@@ -7,127 +7,70 @@ backgroundColor: "#1b0bc693"
 ---
 
 <task>
-Analyze this workspace and generate comprehensive `.augment/rules` files that will help
-future AI interactions understand and work effectively with this codebase.
+Analyze this workspace and generate `.augment/rules` files for effective future AI interactions.
 </task>
 
 <efficiency>
-When exploring the codebase, read multiple files in parallel to build context faster.
-For example, read configuration files, entry points, and test files simultaneously.
+Read multiple files in parallel (configs, entry points, tests).
 </efficiency>
 
 <instructions>
 
 ## Step 1: Explore the Project
 
-Thoroughly examine the codebase to understand:
-
-### Project Overview
-- What does this project do? What problem does it solve?
-- What is the main functionality and key features?
-- Who are the intended users?
-
-### Directory Structure
-- What are the key directories and their purposes?
-- How are files organized (by feature, by layer, by type)?
-- Where are entry points, configurations, tests, and documentation?
-
-### Technology Stack
-- Programming languages used (primary and secondary)
-- Frameworks and major libraries
-- Build tools, package managers, task runners
-- Testing frameworks and tools
-- Linting, formatting, and code quality tools
-
-### Architecture (for software projects)
-- Main modules/packages and their responsibilities
-- Dependencies and relationships between components
-- Entry points and data flow patterns
-- Design patterns used (MVC, Repository, Factory, etc.)
-- API structure (REST, GraphQL, RPC, etc.)
-
-### Code Conventions
-- Naming conventions (files, functions, classes, variables)
-- Import organization and grouping
-- Comment styles and documentation patterns
-- Formatting rules (indentation, line length, etc.)
-- Error handling patterns
-
-### Development Patterns
-- How tests are organized and written
-- Configuration management approach
-- Environment handling (dev, staging, prod)
-- Logging and debugging patterns
-- Common idioms specific to this codebase
+Examine:
+- **Overview**: Purpose, functionality, users
+- **Directory structure**: Key directories, file organization, entry points
+- **Tech stack**: Languages, frameworks, build tools, test tools, linters
+- **Architecture**: Modules, dependencies, data flow, design patterns, API structure
+- **Conventions**: Naming, imports, comments, formatting, error handling
+- **Dev patterns**: Test organization, config management, environments, logging
 
 ## Step 2: Generate Rules Files
 
-Create `.augment/rules/` files following this format:
-
 ### File Structure
-
-Each file should have YAML frontmatter:
 
 ```markdown
 ---
-description: Brief description of what this rule covers
+description: Brief description
 globs:
-  - "**/*.ext"  # File patterns this rule applies to
-alwaysApply: true  # Optional: if this rule should always be loaded
+  - "**/*.ext"
+alwaysApply: true  # Optional
 ---
-
 # Rule Title
-
-Content goes here...
+Content...
 ```
 
 ### Recommended Files
 
-Create files numbered for logical ordering:
-
-1. **00-overview.md** - Project overview and architecture
-   - Set `alwaysApply: true` and `globs: **/*`
-   - Include project purpose, package structure, key concepts
-
-2. **01-[language]-conventions.md** - Primary language conventions
-   - Naming, formatting, idioms, error handling
-   - Code examples showing correct patterns
-
-3. **02-[major-component].md** - Rules for major components
-   - One file per significant subsystem
-   - Architecture, patterns, common operations
-
-4. **0N-testing.md** - Testing conventions (if relevant)
-   - Test organization, naming, patterns
-   - How to run tests, coverage targets
-
-5. **0N-config.md** - Configuration patterns (if relevant)
-   - Config file formats, environment variables
-   - How settings are loaded and used
+1. **00-overview.md** - Project overview (`alwaysApply: true`, `globs: **/*`)
+2. **01-[language]-conventions.md** - Naming, formatting, idioms, error handling with examples
+3. **02-[component].md** - Per major subsystem: architecture, patterns, operations
+4. **0N-testing.md** - Test organization, naming, patterns, how to run
+5. **0N-config.md** - Config formats, env variables, settings loading
 
 ### Content Guidelines
 
-- **Be specific**: Include file paths, function names, exact patterns — "Use 2-space indentation" is better than "Format code properly"
-- **Show examples**: Code snippets demonstrating correct usage, because concrete examples are more actionable than abstract rules
-- **Explain why**: Document rationale for conventions, so future contributors understand the reasoning
-- **Make it actionable**: Rules should guide actual coding decisions
-- **Keep focused**: Each file covers one cohesive topic
-- **Use tables**: For quick reference (command lists, pattern summaries)
-- **Include common pitfalls**: What to avoid and why
+- Be specific: include file paths, function names, exact patterns
+- Show code examples demonstrating correct usage
+- Explain rationale for conventions
+- Make rules actionable for coding decisions
+- One cohesive topic per file
+- Use tables for quick reference
+- Include common pitfalls
 
-## Step 3: Create the Files
+## Step 3: Create Files
 
-1. Create the `.augment/rules/` directory if it doesn't exist
-2. Generate each rules file with appropriate content
-3. Ensure files are well-organized and not too long (aim for <200 lines each)
-4. Cross-reference between files where relevant
+1. Create `.augment/rules/` if needed
+2. Generate each file (<200 lines)
+3. Cross-reference between files
 
 </instructions>
 
 <rules>
-- Focus on patterns that will help AI assistants write better code
+- Focus on patterns that help AI assistants write better code
 - Prioritize actionable guidance over exhaustive documentation
-- Include "don't do this" examples for common mistakes, so the assistant learns from anti-patterns
-- Reference existing documentation in the repo rather than duplicating it
-- If the project already has `.augment/rules/`, enhance rather than replace
+- Include anti-pattern examples
+- Reference existing repo docs rather than duplicating
+- If `.augment/rules/` exists, enhance rather than replace
 </rules>

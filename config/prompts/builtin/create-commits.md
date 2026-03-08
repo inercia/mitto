@@ -6,28 +6,17 @@ backgroundColor: "#B2DFDB"
 ---
 
 <task>
-Create Git commits for the changes in this repository, following a structured workflow
-that ensures code quality and proper commit organization.
+Create Git commits for changes in this repository with proper organization and messages.
 </task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
-**Note**: This prompt can work without Mitto's MCP server, but provides a better user experience with it.
+**Note**: Works without Mitto's MCP server, but provides a better experience with it.
 
 **Optional tools:**
 - `mitto_ui_options_buttons`
 
-**Check availability:**
-1. Look for these tools in your available tools list
-2. If ANY of these tools are missing, inform the user how to install Mitto's MCP server. Mitto's MCP server is at http://127.0.0.1:5757/mcp, so think about the instructions for adding it. Then tell the user:
-
-```
-💡 This prompt works better with Mitto's MCP server for interactive prompts. To enable interactive UI features, you need to add Mitto's MCP server in this assistant. Please follow the instructions below to add it:
-```
-
-and then show the instructions for adding it.
-
-**After displaying this message, proceed with the sections below using text-based conversation instead.**
+If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
 
 ---
 
@@ -35,127 +24,56 @@ and then show the instructions for adding it.
 
 ### 0. Prerequisites
 
-Before analyzing changes, verify the codebase is in a good state:
-
-**Formatting:**
-
-1. Identify the project's formatters (check for Makefile targets, package.json scripts, or common tools)
-2. Run the appropriate formatters for code and documentation
-3. If any files are modified by the formatters, report which files were changed and include them in the commit analysis
+**Formatting:** Run project formatters. Report any files modified and include in commit analysis.
 
 **Tests:**
+- If not run recently: warn user, ask to proceed or run tests first
+- If failing: warn user, ask to fix or proceed
 
-1. Check if tests were run recently in this session
-2. If tests have not been run, or if code has changed since the last test run:
-   - ⚠️ Warn the user: "Tests have not been run recently. Consider running tests before committing to ensure the changes work correctly."
-   - Ask if they want to proceed anyway or run tests first
-3. If tests were run and failed:
-   - ⚠️ Warn the user: "Tests are currently failing. Committing with failing tests is not recommended."
-   - Ask if they want to fix the tests first or proceed anyway
+### 1. Check Branch
 
-### 1. Check Current Branch
+```bash
+git branch --show-current
+```
 
-Before creating commits, verify we're on an appropriate branch:
+If on protected branch (`main`, `master`, `develop`):
+- Warn user
+- **With Mitto UI**: `mitto_ui_options_buttons` → "Create feature branch / Continue on current"
+- **Without**: Ask in conversation
+- If creating branch, suggest name based on changes
 
-1. Run `git branch --show-current` to identify the current branch
-2. If on a protected branch (`main`, `master`, `develop`):
-   - ⚠️ Warn the user: "You are currently on the `<branch>` branch. It's recommended to create commits on a feature branch."
-   - **Using Mitto UI tools (if available):** Use `mitto_ui_options_buttons` with:
-     ```
-     Question: "You're on a protected branch. What would you like to do?"
-     Options: ["Create feature branch", "Continue on current branch"]
-     ```
-   - **Fallback:** Ask in conversation if they want to create a feature branch or continue
-   - If creating a branch, suggest a name based on the changes (e.g., `feat/add-feature-x` or `fix/issue-description`)
-
-3. If already on a feature branch,
-   - fetch latest changes in the target branch (usually "main") and rebase the
-      current branch on top of them.
-   - **Using Mitto UI tools (if available):** Use `mitto_ui_options_buttons` with:
-     ```
-     Question: "Already on feature branch. What would you like to do?"
-     Options: ["Continue on current branch", "Create new feature branch"]
-     ```
-   - **Fallback:** Ask in conversation which option they prefer
-   - If creating a new branch, suggest a name based on the changes
+If on feature branch: fetch and rebase on target branch (usually "main").
 
 ### 2. Analyze Changes
 
-- Run `git status --porcelain` to list all changes
-- Verify the directory is a valid Git repository
-- Group changes by scope:
-  - **Feature/component**: Related source files + their tests
-  - **Type**: Config files, documentation, dependencies
-  - **Path**: Files in the same module/directory
-- Make sure there are no staged changes. If there are, check
-  how they relate to the changes you are seeing, if they should go first,
-  or if they should be unstaged in order to be included in the commits
-  you are going to propose.
-- If you are not sure about anything, ask me.
+- `git status --porcelain`
+- Group by scope: feature/component, type (config/docs/deps), path (module/directory)
+- Check for staged changes: should they go first or be unstaged?
+- Ask if uncertain
 
 ### 3. Propose Commits
 
 <output_format>
 
-Present a table, formatted as Markdown, with each proposed commit:
+SEQUENCE | COMMIT MESSAGE | FILES | REASON
 
-SEQUENCE-NUMBER | COMMIT MESSAGE | FILES | REASON
-
-Use conventional commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
-Files can be expressed with Unix shell-style wildcards (e.g. `*.md`, `docs/*`).
-
-Order commits logically (e.g., implementation before documentation).
+Use conventional prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
+Files can use wildcards (`*.md`, `docs/*`). Order logically.
 
 </output_format>
 
 ### 4. Wait for Approval
 
-**Using Mitto UI tools (if available):**
+**With Mitto UI**: `mitto_ui_options_buttons` → "Approve all / Modify / Cancel"
+**Without**: Ask in conversation. Wait for explicit approval.
 
-If the `mitto_ui_options_buttons` tool is available, use it to present the approval options:
+### 5. Execute
 
-```
-Question: "How would you like to proceed with the proposed commits?"
-Options: ["Approve all", "Modify", "Cancel"]
-```
-
-If the user selects "Modify", follow up with a text conversation to get the specific changes (reorder, merge, split, edit messages).
-
-**Fallback (if Mitto UI tools are not available):**
-
-Ask the user in the conversation to choose one of these options:
-
-- **Approve all** - proceed with commits
-- **Modify** - specify changes (reorder, merge, split, edit messages)
-- **Cancel** - abort without committing
-
-Wait for the user to explicitly approve before committing.
-
-### 5. Execute Commits
-
-For each approved commit:
-
-1. `git add <files>`
-2. `git commit -m "<message>"`
-
-Report success or errors after execution.
+Per commit: `git add <files>` → `git commit -m "<message>"`. Report results.
 
 ### 6. Update Agent Rules (Optional)
 
-After completing the workflow, if during this session:
-
-- You asked the user for clarification about project conventions
-- You discovered project-specific patterns or preferences
-- The user corrected your assumptions
-
-Then update the appropriate Agent rules or memories in order
-to memorize these learnings for future sessions:
-
-- Add branch naming conventions discovered
-- Add remote/upstream preferences
-- Add any project-specific PR workflows or requirements
-
-Ask the user before making changes to rules files.
+If you discovered project conventions or the user corrected assumptions, update Agent rules/memories (with user approval).
 
 </instructions>
 

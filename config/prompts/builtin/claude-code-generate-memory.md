@@ -7,152 +7,87 @@ backgroundColor: "#1b0bc693"
 ---
 
 <task>
-Analyze this workspace and generate comprehensive Claude Code memory files that will help
-future AI interactions understand and work effectively with this codebase.
+Analyze this workspace and generate Claude Code memory files for effective future AI interactions.
 </task>
 
 <efficiency>
-When exploring the codebase, read multiple files in parallel to build context faster.
-For example, read configuration files, entry points, and test files simultaneously.
+Read multiple files in parallel (configs, entry points, tests).
 </efficiency>
 
 <instructions>
 
 ## Step 1: Explore the Project
 
-Thoroughly examine the codebase to understand:
-
-### Project Overview
-- What does this project do? What problem does it solve?
-- What is the main functionality and key features?
-- Who are the intended users?
-
-### Directory Structure
-- What are the key directories and their purposes?
-- How are files organized (by feature, by layer, by type)?
-- Where are entry points, configurations, tests, and documentation?
-
-### Technology Stack
-- Programming languages used (primary and secondary)
-- Frameworks and major libraries
-- Build tools, package managers, task runners
-- Testing frameworks and tools
-- Linting, formatting, and code quality tools
-
-### Architecture (for software projects)
-- Main modules/packages and their responsibilities
-- Dependencies and relationships between components
-- Entry points and data flow patterns
-- Design patterns used (MVC, Repository, Factory, etc.)
-- API structure (REST, GraphQL, RPC, etc.)
-
-### Code Conventions
-- Naming conventions (files, functions, classes, variables)
-- Import organization and grouping
-- Comment styles and documentation patterns
-- Formatting rules (indentation, line length, etc.)
-- Error handling patterns
-
-### Development Patterns
-- How tests are organized and written
-- Configuration management approach
-- Environment handling (dev, staging, prod)
-- Logging and debugging patterns
-- Common idioms specific to this codebase
+Examine:
+- **Overview**: Purpose, functionality, users
+- **Directory structure**: Key directories, file organization, entry points
+- **Tech stack**: Languages, frameworks, build tools, test tools, linters
+- **Architecture**: Modules, dependencies, data flow, design patterns, API structure
+- **Conventions**: Naming, imports, comments, formatting, error handling
+- **Dev patterns**: Test organization, config management, environments, logging
 
 ## Step 2: Generate Memory Files
 
-Create Claude Code memory files following this structure:
-
-### Option A: Single CLAUDE.md (for smaller projects)
-
-Create `./CLAUDE.md` with all project instructions:
+### Option A: Single `./CLAUDE.md` (smaller projects)
 
 ```markdown
 # Project Name
-
-Brief description of what this project does.
-
+Brief description.
 ## Build & Test Commands
-- `<install-command>` - Install dependencies
-- `<test-command>` - Run tests
-- `<build-command>` - Build for production
-
+- `<command>` - description
 ## Code Style
-- <describe formatting rules>
-- <describe naming conventions>
-- ...
-
+- <rules>
 ## Architecture
-- ...
+- <structure>
 ```
 
-### Option B: Modular Rules (for larger projects)
-
-Create `.claude/CLAUDE.md` for overview and `.claude/rules/` for topic-specific rules:
+### Option B: Modular (larger projects)
 
 ```
 .claude/
-├── CLAUDE.md           # Main project overview and common commands
+├── CLAUDE.md           # Overview and common commands
 └── rules/
-    ├── code-style.md   # Code style guidelines
+    ├── code-style.md   # Style guidelines
     ├── testing.md      # Testing conventions
-    ├── api.md          # API development rules
-    └── security.md     # Security requirements
+    └── api.md          # API rules
 ```
 
 ### File Format
 
-For `.claude/rules/*.md` files, use YAML frontmatter with `paths` for conditional rules:
+For `.claude/rules/*.md`, use YAML frontmatter with `paths` for conditional rules:
 
 ```markdown
 ---
 paths:
   - "src/api/**/*"
-  - "src/services/**/*"
 ---
-
-# API Development Rules
-
-- All API endpoints must include input validation
-- Use the standard error response format
-- Include API documentation comments
+# API Rules
+- All endpoints must include input validation
 ```
 
-Rules without `paths` frontmatter are loaded unconditionally.
-
-### Glob Patterns for `paths`
-
-| Pattern | Matches |
-|---------|---------|
-| `**/*.<ext>` | All files with extension in any directory |
-| `src/**/*` | All files under `src/` directory |
-| `*.md` | Markdown files in the project root |
-| `src/**/*.{ext1,ext2}` | Multiple extensions in src |
+Rules without `paths` load unconditionally.
 
 ### Content Guidelines
 
-- **Be specific**: "Use 2-space indentation" not "Format code properly" — specificity makes rules actionable
-- **Use bullet points**: Format each instruction as a bullet point
-- **Group related items**: Use markdown headings to organize
-- **Include commands**: Document build, test, lint commands
-- **Show examples**: Code snippets demonstrating correct usage
-- **Explain why**: Document rationale for conventions, so future contributors understand the reasoning
+- Be specific: "Use 2-space indentation" not "Format properly"
+- Use bullet points
+- Group with headings
+- Include commands, examples, rationale
 
-## Step 3: Create the Files
+## Step 3: Create Files
 
-1. Create `.claude/` directory if using modular rules
-2. Generate the main `CLAUDE.md` file
-3. Generate topic-specific rules in `.claude/rules/` if needed
-4. Ensure files are well-organized and not too long (aim for <200 lines each)
+1. Create `.claude/` if using modular rules
+2. Generate main `CLAUDE.md`
+3. Generate topic-specific rules if needed
+4. Keep files <200 lines each
 
 </instructions>
 
 <rules>
-- Focus on patterns that will help AI assistants write better code
+- Focus on patterns that help AI assistants write better code
 - Prioritize actionable guidance over exhaustive documentation
-- Include "don't do this" examples for common mistakes
-- Reference existing documentation in the repo rather than duplicating it
-- If the project already has `CLAUDE.md`, enhance rather than replace
-- Use `CLAUDE.local.md` for personal preferences that shouldn't be committed
+- Include anti-pattern examples
+- Reference existing repo docs rather than duplicating
+- If `CLAUDE.md` exists, enhance rather than replace
+- Use `CLAUDE.local.md` for personal preferences (not committed)
 </rules>

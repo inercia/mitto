@@ -11,51 +11,36 @@ Run the project's test suite and report results.
 
 <instructions>
 
-### 1. Discover and Run Tests
+### 1. Discover and Run
 
-- Identify the test framework used by checking project configuration files:
-  - Go: `go test`
-  - Python: `pytest`, `unittest`
-  - JavaScript/TypeScript: `jest`, `mocha`, `vitest`
-  - Rust: `cargo test`
-  - Java: `mvn test`, `gradle test`
-  - Ruby: `rspec`, `rake test`
-  - Check for Makefile targets, package.json scripts, or similar
-- Run all tests or tests related to recent changes
-- Capture the full output
+Identify test framework from project config:
+- Go: `go test` | Python: `pytest`, `unittest` | JS/TS: `jest`, `vitest` | Rust: `cargo test` | Java: `mvn test`
+- Check Makefile targets, package.json scripts
 
-### 2. Analyze Results
+Run all tests or tests related to recent changes.
 
-If tests pass:
-- Report success with a brief summary
+### 2. Analyze
 
-If tests fail:
-- For simple failures (typos, missing imports, obvious fixes):
-  - Fix the issue immediately
-  - Re-run the tests to verify the fix
-  - Repeat until tests pass or failures are complex
-- For complex failures:
-  - Report them for manual review
+Pass: report success.
 
-### 3. Summary Table
+Fail:
+- Simple failures (typos, missing imports): fix immediately, re-run, repeat
+- Complex failures: report for manual review
+
+### 3. Summary
 
 <output_format>
-Present a results table:
 
 | Test Group | Passed | Failed | Skipped | Status |
 |------------|--------|--------|---------|--------|
 | unit       | 45     | 0      | 2       | ✅     |
 | integration| 12     | 1      | 0       | ❌     |
-| e2e        | 8      | 0      | 0       | ✅     |
-| **Total**  | **65** | **1**  | **2**   | ❌     |
+| **Total**  | **57** | **1**  | **2**   | ❌     |
+
 </output_format>
 
-### 4. If Failures Remain
+### 4. Unresolved Failures
 
-For each unresolved failure:
-- **Test**: Name of the failing test
-- **Error**: The error message
-- **Cause**: Brief analysis of why it failed
-- **Suggested fix**: What needs to change
+Per failure: **Test**, **Error**, **Cause**, **Suggested fix**
 
 </instructions>

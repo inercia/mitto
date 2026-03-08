@@ -7,48 +7,37 @@ backgroundColor: "#1b0bc693"
 ---
 
 <task>
-Review and update the Augment rules in `.augment/rules` based on all insights,
-patterns, and lessons learned from our recent conversations and code changes.
+Review and update `.augment/rules` based on insights and lessons from recent
+conversations and code changes.
 </task>
 
 <instructions>
 
-# Update Rules Content
+## Update Content
 
-1. Add any new architectural patterns or components that have been introduced
-2. Document new conventions, best practices, or anti-patterns discovered during implementation
-3. Update existing sections if they are outdated or incomplete
-4. Add new sections for areas not currently covered (e.g., new packages, APIs, frontend patterns)
-5. Ensure examples reflect the current codebase state
+1. Add new architectural patterns or components introduced
+2. Document new conventions, best practices, or anti-patterns discovered
+3. Update outdated or incomplete sections
+4. Add sections for uncovered areas (new packages, APIs, patterns)
+5. Ensure examples reflect current codebase
 
-Focus on actionable guidance that will help future development sessions.
-Preserve existing valid content — only add or update information.
+Focus on actionable guidance. Preserve existing valid content.
 
-# Reorganize Rules Files
+## Reorganize Files
 
-Once you have a good understanding of the existing rules files, consider if it
-would make sense to reorganize the `.augment/rules/` files to optimize
-automatic context inclusion.
+Consider splitting large files into focused, scope-specific files:
 
-Specifically:
+- Analyze each file for sections that could be separate files
+- Split by package, feature, or concern
+- Update trigger descriptions to be specific and targeted
+- Keep related content together; avoid excessively long files
+- Follow logical numbering/naming convention
 
-* Analyze each existing rules file and identify sections that could
-  be split into separate, more focused files
-* Split large rules files into smaller, scope-specific files
-  (e.g., separate files for different packages, features, or concerns)
-* Update each file's trigger description (the "If the user prompt matches..."
-  condition) to be specific and targeted, ensuring rules are only included when truly relevant
-* Keep related content together but ensure no single file is excessively long
-* Update the global rules file to reflect any new file structure
-* Ensure file naming follows a logical numbering/naming convention
-
-The goal is to have focused rules files that are automatically loaded
-only when their specific topic is being worked on, reducing context noise
-and improving relevance.
+Goal: focused rules files loaded only when their topic is relevant.
 
 </instructions>
 
 <rules>
 - Preserve existing valid content — only add or update
-- Be cautious with changes you're uncertain about
+- Be cautious with uncertain changes
 </rules>
