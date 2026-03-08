@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"time"
 )
@@ -194,7 +195,10 @@ type ImageInfo struct {
 func (c *Client) UploadImage(sessionID string, filename string, mimeType string, data []byte) (*ImageInfo, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
-	part, err := writer.CreateFormFile("image", filename)
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename))
+	h.Set("Content-Type", mimeType)
+	part, err := writer.CreatePart(h)
 	if err != nil {
 		return nil, fmt.Errorf("upload image: create form: %w", err)
 	}
