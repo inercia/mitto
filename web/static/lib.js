@@ -319,7 +319,7 @@ export function computeAllSessions(activeSessions, storedSessions) {
   const storedMap = new Map(storedSessions.map((s) => [s.session_id, s]));
 
   // Merge properties from storedSessions into activeSessions
-  // Properties like archived, name, pinned, isStreaming are shared between active and stored sessions
+  // Properties like archived, name, pinned are shared between active and stored sessions
   // Flatten acp_server and working_dir from active session's info so grouping uses the correct ACP server
   const mergedActive = activeSessions.map((s) => {
     const stored = storedMap.get(s.session_id);
@@ -335,7 +335,7 @@ export function computeAllSessions(activeSessions, storedSessions) {
     // Flatten acp_server from info so session.acp_server is set for grouping/tooltips
     const acpServer = s.acp_server || s.info?.acp_server || stored?.acp_server || "";
 
-    // Always merge stored properties (archived, name, pinned, isStreaming, periodic_enabled, next_scheduled_at, periodic_frequency) if stored session exists
+    // Always merge stored properties (archived, name, pinned, periodic_enabled, next_scheduled_at, periodic_frequency) if stored session exists
     if (stored) {
       return {
         ...s,
@@ -346,9 +346,11 @@ export function computeAllSessions(activeSessions, storedSessions) {
         archived: stored.archived,
         name: s.name || stored.name,
         pinned: stored.pinned,
-        // For isStreaming: active session takes precedence (it has real-time state),
-        // but also consider stored session's value from global events
-        isStreaming: s.isStreaming || stored.isStreaming || false,
+        // For isStreaming: active session is authoritative (per-session WebSocket has real-time state).
+        // Do NOT OR with stored.isStreaming — the global events WebSocket can deliver
+        // session_streaming events out of order, causing the sidebar dot to stay lit
+        // after the per-session WebSocket has already received prompt_complete.
+        isStreaming: s.isStreaming || false,
         // Periodic enabled state (from stored session, updated via WebSocket)
         periodic_enabled: stored.periodic_enabled || false,
         // Progress bar: next run time and frequency (from API list or WebSocket periodic_updated)
