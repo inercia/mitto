@@ -270,8 +270,10 @@ where the markdown buffer may temporarily hold unflushed content:
 const KEEPALIVE_SYNC_TOLERANCE = 2; // Only applies during streaming
 ```
 
-- **During streaming** (`isStreaming=true`): Tolerance of 2 — sync only triggers if client is >2 behind.
-  This prevents noise from normal buffering delays.
+- **During streaming** (`isStreaming=true`): Tolerance of 2 is applied for logging. When the client is behind by more than 2, a debug log is emitted (`"requesting sync"`) but sync is **skipped** (hard break) — events arrive via the observer pattern in real-time, and any remaining gap is resolved at `prompt_complete` via `checkAndFillGap()` and the `max_seq` piggybacking mechanism.
+
+  The log message correctly indicates: `"Skipping sync for {sessionId} — stream in progress"` when streaming is active.
+
 - **When not streaming** (`isStreaming=false`): Tolerance of 0 — any gap triggers sync immediately.
   This ensures events written during session close (like `session_end`) are delivered promptly.
 
@@ -293,6 +295,19 @@ const isConnectionHealthy = (sessionId) => {
   );
 };
 ```
+
+**Sequence Number Source**: The keepalive handler uses `lastKnownSeqRef` as the **primary source** for `clientMaxSeq`, with React state (`getMaxSeq(session.messages)` and `session.lastLoadedSeq`) as a fallback:
+
+```javascript
+const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+const stateSeq = Math.max(
+  getMaxSeq(session.messages),
+  session.lastLoadedSeq || 0
+);
+const clientMaxSeq = Math.max(refSeq, stateSeq);
+```
+
+This ensures accurate gap detection even when React state is temporarily empty during reconnection or fast reconnects.
 
 ## Immediate Gap Detection (max_seq Piggybacking)
 
@@ -331,6 +346,7 @@ sequenceDiagram
 
 - `checkAndFillGap(sessionId, maxSeq, msgSeq)` is called for each streaming message
 - Gap fill requests are debounced (500ms) to avoid duplicate requests
+- `clientMaxSeq` is calculated using `lastKnownSeqRef` (primary) + React state (fallback): `Math.max(refSeq, stateSeq)`
 
 ### Messages That Include max_seq
 

@@ -154,8 +154,8 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
 | **Assignment Time**       | `seq` is assigned when the event is received from ACP, not at persistence |
 | **Immediate Persistence** | Events are persisted immediately with their pre-assigned `seq` values     |
 | **Coalescing**            | Multiple chunks of the same logical message share the same `seq`          |
-| **No Gaps**               | `seq` values are contiguous (1, 2, 3, ...) with no gaps                   |
-| **No Reuse**              | Once assigned, a `seq` is never reused or reassigned                      |
+| **No Gaps**               | `seq` values are contiguous within a persistence cycle; pruning may renumber on-disk events, creating a transient gap between on-disk and in-memory seq |
+| **No Reuse**              | Once assigned, a `seq` is never reused in the streaming context; pruning renumbers on-disk events for compaction |
 
 ### Backend Responsibilities
 
@@ -244,6 +244,31 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
 
 6. **Reset watermark on stale client detection**: When `events_loaded` detects the client has stale state (client's max seq > server's max seq), both the seq tracker and `lastKnownSeqRef` are reset before processing fresh events from the server.
 
+
+## Pruning and Sequence Numbers
+
+Session pruning (`PruneIfNeeded`) removes oldest events to stay within size/count limits. When pruning occurs:
+
+1. **Renumbering**: Remaining events are renumbered starting from 1 (contiguous)
+2. **MaxSeq reset**: `Metadata.MaxSeq` is reset to match the new highest seq (= number of remaining events)
+3. **In-memory counter preserved**: The `BackgroundSession.nextSeq` counter is NOT reset (would break monotonicity for streaming clients)
+
+### Transient Inconsistency
+
+After pruning during active streaming:
+- On-disk events: seq 1..N (renumbered)
+- Next streaming event: seq M (where M >> N, from the old counter)
+- `RecordEvent` logs a `seq_mismatch_on_persist` DEBUG warning (expected, harmless)
+
+This inconsistency resolves on session restart, when `refreshNextSeq()` reads the corrected `MaxSeq` from metadata.
+
+### Reconnection After Pruning
+
+If a client reconnects with `after_seq: M` (where M > N, the renumbered max):
+- `ReadEventsFrom(sessionID, M)` returns empty (no events with seq > M on disk)
+- New streaming events (seq M+1, M+2...) will be delivered via the observer pattern
+- The keepalive sync mechanism (`max_seq` piggybacking) ensures clients eventually catch up
+
 ## Event Type Ordering Guarantees
 
 The system guarantees correct ordering for **all event types**, not just agent messages. The `StreamBuffer` wraps the `MarkdownBuffer` and handles buffering of non-markdown events when they arrive mid-block (list, table, code block).
@@ -321,12 +346,13 @@ The system protects against flushing content with unmatched inline formatting ma
 
 **Fix**: The frontend tracks seen `seq` values in a sliding window and skips duplicates.
 
-**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), both the seq tracker AND `lastKnownSeqRef` for the session MUST be reset BEFORE processing events:
+**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), the seq tracker is reset BEFORE processing events to prevent fresh events from being rejected as duplicates:
 
 ```javascript
 clearSeenSeqs(sessionId); // Reset M1 seq tracker
-delete lastKnownSeqRef.current[sessionId]; // Reset reconnection watermark
 ```
+
+**Note**: `lastKnownSeqRef` is NOT reset during stale client detection. It continues to track the highest seq monotonically. The stale client recovery replaces all messages with fresh data from the server, so the ref will naturally be updated as new events arrive.
 
 ## Testing the Contract
 
