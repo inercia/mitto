@@ -29,7 +29,6 @@ type MCPAvailabilityResult struct {
 // It provides high-level operations (title generation, prompt improvement, etc.)
 // that delegate to the ProcessProvider for actual ACP session management.
 type WorkspaceAuxiliaryManager struct {
-	mu       sync.RWMutex
 	provider ProcessProvider
 	logger   *slog.Logger
 

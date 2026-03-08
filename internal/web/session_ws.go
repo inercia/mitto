@@ -114,13 +114,18 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// Create client-scoped logger with session and client context
 	clientLogger := logging.WithClient(s.logger, clientID, sessionID)
 
-	// Create shared WebSocket connection wrapper
+	// Create shared WebSocket connection wrapper.
+	// Use a larger send buffer (1024) for session connections because high-traffic
+	// sessions can generate thousands of events. The default (256) is too small and
+	// causes backpressure that propagates to the ACP SDK's notification queue,
+	// which can overflow and kill the connection.
 	wsConn := NewWSConn(WSConnConfig{
 		Conn:     conn,
 		Config:   s.wsSecurityConfig,
 		Logger:   clientLogger,
 		ClientIP: clientIP,
 		Tracker:  s.connectionTracker,
+		SendSize: 1024,
 	})
 
 	client := &SessionWSClient{
@@ -162,7 +167,8 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	if bs == nil && store != nil {
 		// Check if session exists in store
 		meta, err := store.GetMetadata(sessionID)
-		if err == nil {
+		switch err {
+		case nil:
 			// Don't resume archived sessions - they should remain read-only
 			// without an ACP connection. Users can still view history.
 			if meta.Archived {
@@ -196,7 +202,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-		} else if err == session.ErrSessionNotFound {
+		case session.ErrSessionNotFound:
 			// Session truly doesn't exist in memory or store — send session_gone and close.
 			// Also cache this result to prevent repeated filesystem lookups for the same
 			// deleted session (circuit breaker for "Session not found" error storms).
@@ -218,8 +224,9 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 				client.wsConn.Close()
 			}()
 			return
+		default:
+			// other store errors — log and continue (let client see what's possible)
 		}
-		// else: other store errors — log and continue (let client see what's possible)
 	}
 
 	// Store reference to background session if available.

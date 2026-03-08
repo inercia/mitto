@@ -1154,7 +1154,7 @@ func (bs *BackgroundSession) startACPProcess(acpCommand, acpCwd, workingDir, acp
 			}
 		}
 
-		processErr, stderr := bs.doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID)
+		stderr, processErr := bs.doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID)
 		if processErr == nil {
 			return nil
 		}
@@ -1302,7 +1302,7 @@ func startStderrMonitor(stderr runner.ReadCloser, collector *stderrCollector, on
 
 // doStartACPProcess performs a single attempt to start the ACP process.
 // Returns the error and any captured stderr output for error classification.
-func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID string) (error, string) {
+func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, acpSessionID string) (string, error) {
 	if bs.logger != nil {
 		bs.logger.Info("Starting ACP process",
 			"command", acpCommand,
@@ -1314,7 +1314,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	// Parse command using shell-aware tokenization
 	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
-		return &sessionError{err.Error()}, ""
+		return "", &sessionError{err.Error()}
 	}
 
 	var stdin runner.WriteCloser
@@ -1363,7 +1363,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		}
 		stdin, stdout, stderr, wait, err = bs.runner.RunWithPipes(bs.ctx, args[0], args[1:], nil)
 		if err != nil {
-			return &sessionError{"failed to start with runner: " + err.Error()}, ""
+			return "", &sessionError{"failed to start with runner: " + err.Error()}
 		}
 
 		// Monitor stderr in background (with crash detection for Fix C)
@@ -1392,19 +1392,19 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 		stdin, err = cmd.StdinPipe()
 		if err != nil {
-			return &sessionError{"failed to create stdin pipe: " + err.Error()}, ""
+			return "", &sessionError{"failed to create stdin pipe: " + err.Error()}
 		}
 		stdout, err = cmd.StdoutPipe()
 		if err != nil {
-			return &sessionError{"failed to create stdout pipe: " + err.Error()}, ""
+			return "", &sessionError{"failed to create stdout pipe: " + err.Error()}
 		}
 		stderrPipe, err := cmd.StderrPipe()
 		if err != nil {
-			return &sessionError{"failed to create stderr pipe: " + err.Error()}, ""
+			return "", &sessionError{"failed to create stderr pipe: " + err.Error()}
 		}
 
 		if err := cmd.Start(); err != nil {
-			return &sessionError{"failed to start ACP server: " + err.Error()}, ""
+			return "", &sessionError{"failed to start ACP server: " + err.Error()}
 		}
 
 		// Monitor stderr in background (same as runner case, with crash detection for Fix C)
@@ -1590,7 +1590,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		}
 
 		bs.killACPProcess()
-		return &sessionError{"failed to initialize: " + err.Error()}, stderrOutput
+		return stderrOutput, &sessionError{"failed to initialize: " + err.Error()}
 	}
 
 	// Log agent information at DEBUG level
@@ -1620,7 +1620,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 					"acp_session_id", acpSessionID)
 				bs.logSessionModes(loadResp.Modes)
 			}
-			return nil, ""
+			return "", nil
 		}
 		// Log the error but fall through to create a new session
 		if bs.logger != nil {
@@ -1655,7 +1655,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		}
 
 		bs.killACPProcess()
-		return &sessionError{"failed to create session: " + err.Error()}, stderrOutput
+		return stderrOutput, &sessionError{"failed to create session: " + err.Error()}
 	}
 
 	bs.acpID = string(sessResp.SessionId)
@@ -1670,7 +1670,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		bs.logSessionModes(sessResp.Modes)
 	}
 
-	return nil, ""
+	return "", nil
 }
 
 // logSessionModes logs the session modes/config options at DEBUG level.
