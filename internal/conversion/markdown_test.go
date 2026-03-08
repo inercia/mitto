@@ -601,7 +601,7 @@ func TestNestedCodeFences(t *testing.T) {
 			wantContent: []string{
 				"```python",
 				"print",
-				"`bash", // 4-backtick fence rendered with backticks split across spans
+				"bash", // Nested bash fence language label should appear, regardless of backtick span splitting
 				"echo hi",
 			},
 			wantAbsent: []string{
