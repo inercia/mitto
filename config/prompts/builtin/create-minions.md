@@ -87,7 +87,7 @@ First, gather information about the current conversation and available resources
    ```
    This will give you the session_id and other metadata.
 
-2. **List available ACP servers** - The response from step 1 includes `available_acp_servers` field showing all configured ACP servers (e.g., "auggie", "claude-code").
+2. **List available ACP servers** - The response from step 1 includes `available_acp_servers` field showing all configured ACP servers. Each server entry includes a `name`, an optional `type`, optional `tags` (e.g., `["coding", "fast"]`, `["reasoning", "planning"]`), and a `current` flag indicating whether it's the ACP server used by this conversation. **Pay attention to the tags** — they describe each server's strengths and will be used for automatic selection if the user doesn't respond in Phase 3.
 
 3. **Get conversation summary** using `mitto_conversation_get_summary`:
    ```
@@ -143,12 +143,13 @@ timeout_seconds: 60
 **If the user responds**, use their selected ACP server.
 
 **If the request times out** (no response within 60 seconds):
-- Make a best-effort guess based on the task characteristics:
-  - For **implementation/coding tasks**: Prefer faster models (e.g., "claude-code" if available)
-  - For **complex reasoning/planning**: Prefer more capable models (e.g., "auggie" if available)
-  - For **mixed tasks**: Use the first available ACP server from the list
+- Use the `tags` from the `available_acp_servers` list (obtained in Phase 1 via `mitto_conversation_get_current`) to determine the most appropriate server for the tasks:
+  - **Match task characteristics to server tags**: For example, if the tasks are implementation/coding work, prefer a server tagged with `"coding"` or `"fast"`; if the tasks require complex reasoning or planning, prefer a server tagged with `"reasoning"` or `"planning"`.
+  - **If multiple servers match**: Prefer the one whose tags are the closest match to the task requirements.
+  - **If no tags are available or no tags match**: Fall back to using the same ACP server as the current conversation (the one with `current: true` in the `available_acp_servers` list).
+  - **If the current server cannot be determined**: Use the first available ACP server from the list.
 - Proceed with the selected server
-- Mention in the final report which server was auto-selected due to timeout
+- Mention in the final report which server was auto-selected due to timeout and which tags influenced the decision
 
 **Note**: On subsequent iterations, reuse the previously selected server unless the nature of the work has changed significantly. Don't re-ask unless there's a reason to switch.
 
