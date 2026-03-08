@@ -731,6 +731,12 @@ func (s *Server) Store() *session.Store {
 	return s.store
 }
 
+// GetSessionManager returns the server's session manager.
+// This is primarily used for testing to access session internals.
+func (s *Server) GetSessionManager() *SessionManager {
+	return s.sessionManager
+}
+
 // handleHealthCheck handles the health check endpoint for load balancer integration.
 // M3: This endpoint returns server health status and basic metrics.
 // It is intentionally NOT behind authentication to allow health checks from load balancers.
