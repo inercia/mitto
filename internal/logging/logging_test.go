@@ -713,3 +713,204 @@ func TestDowngradeInfoToDebug_FilteredByLevel(t *testing.T) {
 		t.Errorf("WARN message should appear, got: %s", content)
 	}
 }
+
+func TestDowngradeACPSDKErrors(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Initialize with DEBUG level to capture all messages
+	err := Initialize(Config{
+		Level: "debug",
+		FileLog: &FileLogConfig{
+			Path: logPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Create a downgraded logger
+	baseLogger := Get().With("component", "acp-sdk")
+	downgradedLogger := DowngradeACPSDKErrors(baseLogger)
+
+	// Log at INFO level - should appear as DEBUG in output
+	downgradedLogger.Info("info becomes debug", "key", "value")
+
+	// Log the specific ERROR message with $/cancel_request rejection pattern - should be suppressed
+	downgradedLogger.Error("received message with neither id nor method",
+		"raw", `{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error","data":"Unknown method"}}`)
+
+	// Log the same ERROR message but with different raw data - should appear as WARN
+	downgradedLogger.Error("received message with neither id nor method",
+		"raw", `{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}`)
+
+	// Log a different ERROR message - should remain as ERROR
+	downgradedLogger.Error("some other error")
+
+	// Log at WARN level - should remain as WARN
+	downgradedLogger.Warn("warn stays warn")
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	contentStr := string(content)
+
+	// Check that the INFO message was downgraded to DEBUG
+	if !strings.Contains(contentStr, "level=DEBUG") {
+		t.Errorf("Log should contain DEBUG level (downgraded from INFO), got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "info becomes debug") {
+		t.Errorf("Log should contain the message, got: %s", contentStr)
+	}
+
+	// Check that $/cancel_request rejection was completely suppressed
+	lines := strings.Split(contentStr, "\n")
+	foundCancelRequestRejection := false
+	foundOtherMalformedResponse := false
+	for _, line := range lines {
+		if strings.Contains(line, "received message with neither id nor method") {
+			// Check if this is the $/cancel_request rejection (should be suppressed)
+			if strings.Contains(line, "Unknown method") {
+				foundCancelRequestRejection = true
+				t.Errorf("$/cancel_request rejection should be suppressed, but found: %s", line)
+			}
+			// Check if this is the other malformed response (should be downgraded to WARN)
+			if strings.Contains(line, "Parse error") {
+				if !strings.Contains(line, "level=WARN") {
+					t.Errorf("Other malformed response should be downgraded to WARN, got: %s", line)
+				} else {
+					foundOtherMalformedResponse = true
+				}
+			}
+		}
+	}
+	if !foundOtherMalformedResponse {
+		t.Errorf("Should find the downgraded malformed response message, got: %s", contentStr)
+	}
+	if foundCancelRequestRejection {
+		t.Errorf("$/cancel_request rejection should have been suppressed")
+	}
+
+	// Check that other ERROR messages remain as ERROR
+	foundOtherError := false
+	for _, line := range lines {
+		if strings.Contains(line, "some other error") {
+			if !strings.Contains(line, "level=ERROR") {
+				t.Errorf("Other ERROR should remain as ERROR, got: %s", line)
+			} else {
+				foundOtherError = true
+			}
+		}
+	}
+	if !foundOtherError {
+		t.Errorf("Should find the other error message, got: %s", contentStr)
+	}
+
+	// Check that WARN stayed as WARN
+	if !strings.Contains(contentStr, "level=WARN") {
+		t.Errorf("Log should contain WARN level, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "warn stays warn") {
+		t.Errorf("Log should contain warn message, got: %s", contentStr)
+	}
+}
+
+func TestDowngradeACPSDKErrors_Nil(t *testing.T) {
+	result := DowngradeACPSDKErrors(nil)
+	if result != nil {
+		t.Error("DowngradeACPSDKErrors(nil) should return nil")
+	}
+}
+
+func TestDowngradeACPSDKErrors_FilteredByLevel(t *testing.T) {
+	resetGlobalState()
+	defer resetGlobalState()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+
+	// Initialize with WARN level - DEBUG and INFO should be filtered
+	err := Initialize(Config{
+		Level: "warn",
+		FileLog: &FileLogConfig{
+			Path: logPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	defer Close()
+
+	// Create a downgraded logger
+	downgradedLogger := DowngradeACPSDKErrors(Get())
+
+	// Log at INFO level - becomes DEBUG and should be filtered since level is WARN
+	downgradedLogger.Info("should not appear")
+
+	// Log the specific ERROR message with $/cancel_request pattern - should be suppressed
+	downgradedLogger.Error("received message with neither id nor method",
+		"raw", `{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error","data":"Unknown method"}}`)
+
+	// Log the same ERROR message but without the $/cancel_request pattern - becomes WARN and should appear
+	downgradedLogger.Error("received message with neither id nor method",
+		"raw", `{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}`)
+
+	// Log at ERROR level - should appear
+	downgradedLogger.Error("real error")
+
+	// Close to flush
+	if err := Close(); err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+
+	// Read and verify content
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	contentStr := string(content)
+
+	// Downgraded INFO should NOT appear
+	if strings.Contains(contentStr, "should not appear") {
+		t.Errorf("Downgraded INFO should NOT appear when level is WARN, got: %s", contentStr)
+	}
+
+	// $/cancel_request rejection should be completely suppressed
+	if strings.Contains(contentStr, "Unknown method") {
+		t.Errorf("$/cancel_request rejection should be suppressed, got: %s", contentStr)
+	}
+
+	// Other malformed response (downgraded ERROR to WARN) should appear
+	lines := strings.Split(contentStr, "\n")
+	foundMalformedResponse := false
+	for _, line := range lines {
+		if strings.Contains(line, "received message with neither id nor method") &&
+			strings.Contains(line, "Parse error") {
+			foundMalformedResponse = true
+			if !strings.Contains(line, "level=WARN") {
+				t.Errorf("Malformed response should be WARN level, got: %s", line)
+			}
+		}
+	}
+	if !foundMalformedResponse {
+		t.Errorf("Downgraded ERROR should appear as WARN, got: %s", contentStr)
+	}
+
+	// Real ERROR should appear
+	if !strings.Contains(contentStr, "real error") {
+		t.Errorf("Real ERROR should appear, got: %s", contentStr)
+	}
+}

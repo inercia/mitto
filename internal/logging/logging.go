@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -380,6 +381,18 @@ func DowngradeInfoToDebug(logger *slog.Logger) *slog.Logger {
 	return slog.New(&downgradeHandler{inner: logger.Handler()})
 }
 
+// DowngradeACPSDKErrors returns a logger that downgrades both INFO messages to DEBUG
+// and specific ACP SDK error messages to WARN level.
+// This is specifically for the acp-go-sdk which:
+// 1. Logs at INFO level for messages that should be DEBUG (e.g., "peer connection closed")
+// 2. Logs at ERROR level for malformed JSONRPC responses during crashes (expected during crash recovery)
+func DowngradeACPSDKErrors(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		return nil
+	}
+	return slog.New(&acpSDKDowngradeHandler{inner: logger.Handler()})
+}
+
 // downgradeHandler wraps a slog.Handler and downgrades INFO to DEBUG.
 type downgradeHandler struct {
 	inner slog.Handler
@@ -413,4 +426,82 @@ func (h *downgradeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *downgradeHandler) WithGroup(name string) slog.Handler {
 	return &downgradeHandler{inner: h.inner.WithGroup(name)}
+}
+
+// acpSDKDowngradeHandler wraps a slog.Handler and downgrades both INFO to DEBUG
+// and specific ACP SDK error messages to WARN.
+type acpSDKDowngradeHandler struct {
+	inner slog.Handler
+}
+
+func (h *acpSDKDowngradeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	// If checking INFO, check if DEBUG is enabled (since we'll downgrade)
+	if level == slog.LevelInfo {
+		return h.inner.Enabled(ctx, slog.LevelDebug)
+	}
+	// If checking ERROR, check if WARN is enabled (since we might downgrade)
+	if level == slog.LevelError {
+		return h.inner.Enabled(ctx, slog.LevelWarn)
+	}
+	return h.inner.Enabled(ctx, level)
+}
+
+func (h *acpSDKDowngradeHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Downgrade INFO to DEBUG
+	if r.Level == slog.LevelInfo {
+		newRecord := slog.NewRecord(r.Time, slog.LevelDebug, r.Message, r.PC)
+		r.Attrs(func(a slog.Attr) bool {
+			newRecord.AddAttrs(a)
+			return true
+		})
+		return h.inner.Handle(ctx, newRecord)
+	}
+
+	// Handle "received message with neither id nor method" errors
+	// These come from the acp-go-sdk when receiving malformed JSONRPC responses
+	if r.Level == slog.LevelError && r.Message == "received message with neither id nor method" {
+		// Check if this is a $/cancel_request rejection (harmless protocol noise)
+		// Background: The acp-go-sdk sends two cancel notifications when a request is cancelled:
+		//   1. session/cancel (ACP protocol) - handled correctly by agents
+		//   2. $/cancel_request (JSON-RPC 2.0 LSP-style) - NOT supported by ACP agents
+		// ACP agents reject $/cancel_request with: {"code":-32603,"message":"Internal error","data":"Unknown method"}
+		// This rejection is harmless protocol noise that should be completely suppressed.
+		isCancelRequestRejection := false
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "raw" {
+				rawStr := a.Value.String()
+				// Check for the specific error pattern that indicates $/cancel_request rejection
+				if strings.Contains(rawStr, `"code":-32603`) &&
+					strings.Contains(rawStr, `"message":"Internal error"`) &&
+					strings.Contains(rawStr, `"data":"Unknown method"`) {
+					isCancelRequestRejection = true
+					return false // Stop iteration
+				}
+			}
+			return true
+		})
+
+		// Completely suppress $/cancel_request rejections (they're harmless protocol noise)
+		if isCancelRequestRejection {
+			return nil
+		}
+
+		// For other malformed responses (e.g., from dying ACP processes), downgrade to WARN
+		newRecord := slog.NewRecord(r.Time, slog.LevelWarn, r.Message, r.PC)
+		r.Attrs(func(a slog.Attr) bool {
+			newRecord.AddAttrs(a)
+			return true
+		})
+		return h.inner.Handle(ctx, newRecord)
+	}
+
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *acpSDKDowngradeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &acpSDKDowngradeHandler{inner: h.inner.WithAttrs(attrs)}
+}
+
+func (h *acpSDKDowngradeHandler) WithGroup(name string) slog.Handler {
+	return &acpSDKDowngradeHandler{inner: h.inner.WithGroup(name)}
 }
