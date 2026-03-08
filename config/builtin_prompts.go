@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -89,6 +90,7 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 	}
 
 	deployed := false
+	var errs []error
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -101,6 +103,7 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 		// Read embedded content
 		embeddedContent, err := fs.ReadFile(BuiltinPromptsFS, srcPath)
 		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to read embedded prompt %s: %w", filename, err))
 			continue
 		}
 
@@ -112,9 +115,14 @@ func EnsureBuiltinPrompts(targetDir string) (bool, error) {
 
 		// Deploy or update the file
 		if err := os.WriteFile(dstPath, embeddedContent, 0644); err != nil {
+			errs = append(errs, fmt.Errorf("failed to write prompt %s: %w", filename, err))
 			continue
 		}
 		deployed = true
+	}
+
+	if len(errs) > 0 {
+		return deployed, fmt.Errorf("some builtin prompts failed to deploy: %w", errors.Join(errs...))
 	}
 
 	return deployed, nil
