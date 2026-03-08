@@ -337,6 +337,26 @@ export function useWebSocket() {
   // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
   const keepaliveRef = useRef({});
 
+  // Dedicated ref for tracking last known seq per session
+  // Survives reconnections, always current, updated on every received event
+  // This is the PRIMARY source for client max seq (React state is fallback)
+  // { sessionId: number }
+  const lastKnownSeqRef = useRef({});
+
+  /**
+   * Update the last known seq for a session.
+   * Only updates if the new seq is higher than the current value.
+   * This is called on every received event to maintain an accurate watermark.
+   *
+   * @param {string} sessionId - The session ID
+   * @param {number} seq - The sequence number to record
+   */
+  const updateLastKnownSeq = useCallback((sessionId, seq) => {
+    if (seq && seq > (lastKnownSeqRef.current[sessionId] || 0)) {
+      lastKnownSeqRef.current[sessionId] = seq;
+    }
+  }, []);
+
   /**
    * Check for gaps in message sequence and request missing events if needed.
    *
@@ -358,12 +378,14 @@ export function useWebSocket() {
       const session = sessionsRef.current[sessionId];
       if (!session) return;
 
-      // Get our last known seq (highest of messages in memory or lastLoadedSeq)
+      // Get our last known seq (primary: ref, fallback: React state)
+      const refSeq = lastKnownSeqRef.current[sessionId] || 0;
       const sessionMessages = session.messages || [];
-      const clientMaxSeq = Math.max(
+      const stateSeq = Math.max(
         getMaxSeq(sessionMessages),
         session.lastLoadedSeq || 0,
       );
+      const clientMaxSeq = Math.max(refSeq, stateSeq);
 
       // If client has stale state (client > server), don't try to fill gaps
       // This will be handled by the stale detection in keepalive or events_loaded
@@ -913,6 +935,9 @@ export function useWebSocket() {
         const htmlLen = msg.data.html?.length || 0;
         const isPromptingFromServer = msg.data.is_prompting;
 
+        // Update last known seq from this event
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
+
         // Check for gaps using max_seq (immediate gap detection)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
@@ -1007,6 +1032,9 @@ export function useWebSocket() {
           msg.data.is_prompting,
         );
 
+        // Update last known seq from this event
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
+
         // Check for gaps using max_seq (immediate gap detection)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
@@ -1083,6 +1111,9 @@ export function useWebSocket() {
           msg.data.is_prompting,
         );
 
+        // Update last known seq from this event
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
+
         // Check for gaps using max_seq (immediate gap detection)
         if (maxSeq) {
           checkAndFillGap(sessionId, maxSeq, msgSeq);
@@ -1124,6 +1155,9 @@ export function useWebSocket() {
       case "tool_update": {
         const msgSeq = msg.data.seq;
         const maxSeq = msg.data.max_seq;
+
+        // Update last known seq from this event
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
 
         // Check for gaps using max_seq (immediate gap detection)
         if (maxSeq) {
@@ -1305,6 +1339,8 @@ export function useWebSocket() {
           currentSession?.messages?.[currentSession.messages.length - 1];
         const maxSeq = msg.data.max_seq;
 
+        // Update last known seq from max_seq (server's authoritative max)
+        updateLastKnownSeq(sessionId, maxSeq || 0);
 
         // Check for gaps using max_seq (immediate gap detection)
         // This is important for prompt_complete as it signals the end of a response
@@ -1495,11 +1531,13 @@ export function useWebSocket() {
         if (serverMaxSeq > 0) {
           const session = sessionsRef.current[sessionId];
           const sessionMessages = session?.messages || [];
-          // Use the higher of: max seq from messages OR lastLoadedSeq (which includes session_end, etc.)
-          const clientMaxSeq = Math.max(
+          // Get our last known seq (primary: ref, fallback: React state)
+          const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+          const stateSeq = Math.max(
             getMaxSeq(sessionMessages),
             session?.lastLoadedSeq || 0,
           );
+          const clientMaxSeq = Math.max(refSeq, stateSeq);
 
           if (isStaleClientState(clientMaxSeq, serverMaxSeq)) {
             // Client has stale state! Server is always right.
@@ -1528,15 +1566,15 @@ export function useWebSocket() {
             if (serverMaxSeq > clientMaxSeq + syncTolerance) {
               // We're behind. Skip sync if actively streaming — events are arriving
               // in real-time and the gap closes naturally when the stream ends.
-              console.log(
-                `[keepalive] Session ${sessionId} is behind: client_max_seq=${clientMaxSeq}, server_max_seq=${serverMaxSeq} (tolerance=${syncTolerance}), requesting sync`,
-              );
               if (currentSession?.isStreaming) {
                 console.debug(
-                  `[keepalive] Skipping sync for ${sessionId} — stream in progress`,
+                  `[keepalive] Session ${sessionId} behind by ${serverMaxSeq - clientMaxSeq} during streaming — skipping sync`,
                 );
                 break;
               }
+              console.log(
+                `[keepalive] Session ${sessionId} is behind: client_max_seq=${clientMaxSeq}, server_max_seq=${serverMaxSeq} (tolerance=${syncTolerance}), requesting sync`,
+              );
               const ws = sessionWsRefs.current[sessionId];
               if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(
@@ -1665,7 +1703,10 @@ export function useWebSocket() {
         // server session, but lastLoadedSeq was reset, causing stale detection to fail.
         const currentSession = sessionsRef.current[sessionId];
         const sessionMessages = currentSession?.messages || [];
+        // Include lastKnownSeqRef for accurate stale detection
+        const refSeq = lastKnownSeqRef.current[sessionId] || 0;
         const clientLastSeq = Math.max(
+          refSeq,
           getMaxSeq(sessionMessages),
           currentSession?.lastLoadedSeq || 0,
         );
@@ -1683,7 +1724,12 @@ export function useWebSocket() {
             `[M1 fix] Resetting seq tracker for stale client (highestSeq was from stale state)`,
           );
           clearSeenSeqs(sessionId);
+          // Also reset the lastKnownSeqRef watermark
+          delete lastKnownSeqRef.current[sessionId];
         }
+
+        // Update last known seq from max_seq (server's authoritative max)
+        updateLastKnownSeq(sessionId, maxSeq || 0);
 
         // Convert events to messages
         const newMessages = convertEventsToMessages(events, {
@@ -1836,6 +1882,9 @@ export function useWebSocket() {
           message: message?.substring(0, 50),
           is_queue_message: sender_id === "queue",
         });
+
+        // Update last known seq from this event
+        updateLastKnownSeq(sessionId, Math.max(seq || 0, max_seq || 0));
 
         // Check for gaps using max_seq (immediate gap detection)
         if (max_seq) {
@@ -2158,10 +2207,13 @@ export function useWebSocket() {
         setTimeout(() => {
           const ws = sessionWsRefs.current[sessionId];
           const session = sessionsRef.current[sessionId];
-          const lastSeq = Math.max(
+          // Get our last known seq (primary: ref, fallback: React state)
+          const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+          const stateSeq = Math.max(
             getMaxSeq(session?.messages || []),
             session?.lastLoadedSeq || 0,
           );
+          const lastSeq = Math.max(refSeq, stateSeq);
           if (ws && ws.readyState === WebSocket.OPEN && lastSeq > 0) {
             console.log(
               `[acp_stopped] Requesting delayed sync for session ${sessionId} after_seq=${lastSeq}`,
@@ -2204,14 +2256,42 @@ export function useWebSocket() {
 
       case "plan": {
         // Agent sent a plan update with task entries
+        const msgSeq = msg.data?.seq;
+        const maxSeq = msg.data?.max_seq;
         const entries = msg.data?.entries || [];
         console.log(`Plan update received: ${entries.length} entries`);
+
+        // Update last known seq from this event
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
+
         // Dispatch event for AgentPlanPanel to handle
         window.dispatchEvent(
           new CustomEvent("mitto:plan_update", {
             detail: { sessionId, entries },
           }),
         );
+        break;
+      }
+
+      case "file_read": {
+        // Agent read a file
+        const msgSeq = msg.data?.seq;
+        const maxSeq = msg.data?.max_seq;
+        console.log(`File read: ${msg.data?.path} (${msg.data?.size} bytes)`);
+
+        // Update last known seq from this event
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
+        break;
+      }
+
+      case "file_write": {
+        // Agent wrote a file
+        const msgSeq = msg.data?.seq;
+        const maxSeq = msg.data?.max_seq;
+        console.log(`File write: ${msg.data?.path} (${msg.data?.size} bytes)`);
+
+        // Update last known seq from this event
+        updateLastKnownSeq(sessionId, Math.max(msgSeq || 0, maxSeq || 0));
         break;
       }
 
@@ -2274,11 +2354,13 @@ export function useWebSocket() {
         // This avoids stale localStorage issues, especially in WKWebView
         const session = sessionsRef.current[sessionId];
         const sessionMessages = session?.messages || [];
-        // Use the higher of: max seq from messages OR lastLoadedSeq (which includes session_end, etc.)
-        const lastSeq = Math.max(
+        // Get our last known seq (primary: ref, fallback: React state)
+        const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+        const stateSeq = Math.max(
           getMaxSeq(sessionMessages),
           session?.lastLoadedSeq || 0,
         );
+        const lastSeq = Math.max(refSeq, stateSeq);
         if (lastSeq > 0) {
           // Reconnection: sync events after lastSeq
           console.log(
@@ -2347,11 +2429,13 @@ export function useWebSocket() {
           // This allows the server to tell us if we're behind
           const session = sessionsRef.current[sessionId];
           const sessionMessages = session?.messages || [];
-          // Use the higher of: max seq from messages OR lastLoadedSeq (which includes session_end, etc.)
-          const lastSeenSeq = Math.max(
+          // Get our last known seq (primary: ref, fallback: React state)
+          const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+          const stateSeq = Math.max(
             getMaxSeq(sessionMessages),
             session?.lastLoadedSeq || 0,
           );
+          const lastSeenSeq = Math.max(refSeq, stateSeq);
 
           keepaliveRef.current[sessionId] = {
             ...keepaliveRef.current[sessionId],
@@ -2396,8 +2480,12 @@ export function useWebSocket() {
         }
       };
 
-      ws.onclose = async () => {
-        console.log(`Session WebSocket closed: ${sessionId} (ws: ${wsId})`);
+      ws.onclose = async (event) => {
+        console.log(`Session WebSocket closed: ${sessionId} (ws: ${wsId})`, {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+        });
 
         // Clean up keepalive interval for this session
         if (keepaliveRef.current[sessionId]?.intervalId) {
@@ -2464,7 +2552,13 @@ export function useWebSocket() {
       };
 
       ws.onerror = (err) => {
-        console.error(`Session WebSocket error: ${sessionId}`, err);
+        console.error(`Session WebSocket error: ${sessionId}`, {
+          type: err.type,
+          readyState: ws.readyState,
+          url: ws.url,
+          bufferedAmount: ws.bufferedAmount,
+          timestamp: new Date().toISOString(),
+        });
         ws.close();
       };
 
@@ -3087,7 +3181,12 @@ export function useWebSocket() {
       }
     };
 
-    socket.onclose = async () => {
+    socket.onclose = async (event) => {
+      console.log("Global events WebSocket closed", {
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+      });
       if (eventsWsRef.current) {
         wasConnectedRef.current = true;
       }
@@ -3113,7 +3212,13 @@ export function useWebSocket() {
     };
 
     socket.onerror = (err) => {
-      console.error("Global events WebSocket error:", err);
+      console.error("Global events WebSocket error:", {
+        type: err.type,
+        readyState: socket.readyState,
+        url: socket.url,
+        bufferedAmount: socket.bufferedAmount,
+        timestamp: new Date().toISOString(),
+      });
       socket.close();
     };
 
@@ -3347,15 +3452,17 @@ export function useWebSocket() {
           sessionWsRefs.current[sessionId] = ws;
 
           // Sync events we may have missed while disconnected
-          // Calculate lastSeenSeq dynamically from messages in state (not localStorage)
+          // Calculate lastSeenSeq dynamically (not localStorage)
           // Use load_events instead of deprecated sync_session
           const session = sessionsRef.current[sessionId];
           const sessionMessages = session?.messages || [];
-          // Use the higher of: max seq from messages OR lastLoadedSeq (which includes session_end, etc.)
-          const lastSeq = Math.max(
+          // Get our last known seq (primary: ref, fallback: React state)
+          const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+          const stateSeq = Math.max(
             getMaxSeq(sessionMessages),
             session?.lastLoadedSeq || 0,
           );
+          const lastSeq = Math.max(refSeq, stateSeq);
           if (lastSeq > 0) {
             console.log(
               `Syncing session ${sessionId} from seq ${lastSeq} (lastLoadedSeq=${session?.lastLoadedSeq}, messages=${sessionMessages.length})`,
@@ -3373,11 +3480,22 @@ export function useWebSocket() {
 
         ws.onerror = (err) => {
           clearTimeout(timeoutId);
-          console.error(`Session WebSocket error during reconnect:`, err);
+          console.error(`Session WebSocket error during reconnect:`, {
+            type: err.type,
+            readyState: ws.readyState,
+            url: ws.url,
+            bufferedAmount: ws.bufferedAmount,
+            timestamp: new Date().toISOString(),
+          });
           reject(new Error("Failed to connect. Please try again."));
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
+          console.log(`Session WebSocket closed during reconnect: ${sessionId}`, {
+            code: event.code,
+            reason: event.reason,
+            wasClean: event.wasClean,
+          });
           // If we haven't resolved yet, this is an early close
           clearTimeout(timeoutId);
           if (sessionWsRefs.current[sessionId] === ws) {

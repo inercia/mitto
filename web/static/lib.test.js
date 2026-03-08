@@ -1471,15 +1471,113 @@ describe("shouldSyncOnKeepalive", () => {
 
     test("streaming with significant lag - triggers sync", () => {
       // If client falls significantly behind during streaming, sync
-      expect(shouldSyncOnKeepalive(310, 314, true)).toBe(true); // 4 behind
+      expect(shouldSyncOnKeepalive(310, 314, true)).toBe(true); // 4 behind, exceeds tolerance
     });
 
     test("mobile wake after session completion", () => {
-      // Mobile wakes up, session has completed (isStreaming=false)
-      // Client is 5 behind, should sync immediately
-      const clientMaxSeq = 100;
-      const serverMaxSeq = 105;
+      // Phone wakes up, session completed while asleep
+      // Client has seq 311, server has seq 312 (session_end)
+      // Non-streaming (session complete), should sync
+      expect(shouldSyncOnKeepalive(311, 312, false)).toBe(true);
+    });
+  });
+
+  describe("ref-based clientMaxSeq scenarios", () => {
+    // These tests verify that shouldSyncOnKeepalive works correctly when
+    // clientMaxSeq is computed from Math.max(refSeq, stateSeq) where refSeq
+    // comes from lastKnownSeqRef and stateSeq comes from React state.
+
+    test("ref ahead of state - uses ref value for sync decision", () => {
+      // Scenario: ref has seq 113, state has seq 0 (messages cleared)
+      // Server has seq 113 - client is in sync
+      const refSeq = 113;
+      const stateSeq = 0;
+      const clientMaxSeq = Math.max(refSeq, stateSeq); // 113
+      const serverMaxSeq = 113;
       const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
+    });
+
+    test("ref ahead of state - detects gap correctly", () => {
+      // Scenario: ref has seq 113, state has seq 0
+      // Server has seq 158 - client is behind
+      const refSeq = 113;
+      const stateSeq = 0;
+      const clientMaxSeq = Math.max(refSeq, stateSeq); // 113
+      const serverMaxSeq = 158;
+      const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
+    });
+
+    test("state ahead of ref - uses state value for sync decision", () => {
+      // Scenario: state has seq 200, ref has seq 150 (shouldn't happen but safety net)
+      // Server has seq 200 - client is in sync
+      const refSeq = 150;
+      const stateSeq = 200;
+      const clientMaxSeq = Math.max(refSeq, stateSeq); // 200
+      const serverMaxSeq = 200;
+      const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
+    });
+
+    test("ref provides correct value during reconnection", () => {
+      // Scenario: reconnection in progress, messages cleared, ref has last known seq
+      // Server has seq 113 - client is in sync via ref
+      const refSeq = 113;
+      const messagesMaxSeq = 0; // messages cleared during reconnect
+      const lastLoadedSeq = 0; // no events loaded yet
+      const clientMaxSeq = Math.max(refSeq, Math.max(messagesMaxSeq, lastLoadedSeq));
+      const serverMaxSeq = 113;
+      const isStreaming = false;
+      expect(clientMaxSeq).toBe(113); // ref provides the value
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
+    });
+
+    test("ref prevents false positive sync during reconnection", () => {
+      // Scenario: without ref, clientMaxSeq would be 0, triggering unnecessary sync
+      // With ref, clientMaxSeq is correct and no sync is needed
+      const refSeq = 113;
+      const messagesMaxSeq = 0;
+      const lastLoadedSeq = 0;
+      const clientMaxSeqWithRef = Math.max(refSeq, Math.max(messagesMaxSeq, lastLoadedSeq));
+      const clientMaxSeqWithoutRef = Math.max(messagesMaxSeq, lastLoadedSeq);
+      const serverMaxSeq = 113;
+      const isStreaming = false;
+
+      // Without ref: would incorrectly trigger sync
+      expect(shouldSyncOnKeepalive(clientMaxSeqWithoutRef, serverMaxSeq, isStreaming)).toBe(true);
+
+      // With ref: correctly detects in-sync state
+      expect(shouldSyncOnKeepalive(clientMaxSeqWithRef, serverMaxSeq, isStreaming)).toBe(false);
+    });
+
+    test("ref detects 1-behind on non-streaming session", () => {
+      // Scenario: session completed, ref has seq 311, server has seq 312 (session_end)
+      const refSeq = 311;
+      const stateSeq = 311;
+      const clientMaxSeq = Math.max(refSeq, stateSeq);
+      const serverMaxSeq = 312;
+      const isStreaming = false;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
+    });
+
+    test("ref with streaming tolerance - 1 behind does not sync", () => {
+      // Scenario: streaming session, ref has seq 311, server has seq 312
+      const refSeq = 311;
+      const stateSeq = 310;
+      const clientMaxSeq = Math.max(refSeq, stateSeq); // 311
+      const serverMaxSeq = 312;
+      const isStreaming = true;
+      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
+    });
+
+    test("ref with streaming tolerance - 3 behind triggers sync", () => {
+      // Scenario: streaming session, ref has seq 309, server has seq 312
+      const refSeq = 309;
+      const stateSeq = 300;
+      const clientMaxSeq = Math.max(refSeq, stateSeq); // 309
+      const serverMaxSeq = 312;
+      const isStreaming = true;
       expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
     });
   });

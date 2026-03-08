@@ -873,6 +873,256 @@ describe("seq watermark reconnection scenario", () => {
 });
 
 // =============================================================================
+// lastKnownSeqRef Synchronization Tests
+//
+// These tests verify the logic for using lastKnownSeqRef as the primary source
+// for determining after_seq on reconnection and gap detection. The ref is
+// updated on every received event and provides a more reliable source than
+// React state (getMaxSeq(messages) and lastLoadedSeq) which can be stale.
+// =============================================================================
+
+describe("lastKnownSeqRef synchronization logic", () => {
+  // Simulated updateLastKnownSeq logic from useWebSocket.js
+  function updateLastKnownSeq(ref, sessionId, seq) {
+    if (seq && seq > (ref[sessionId] || 0)) {
+      ref[sessionId] = seq;
+    }
+  }
+
+  // Simulated getClientMaxSeq computation from useWebSocket.js
+  function getClientMaxSeq(ref, sessionId, messagesMaxSeq, lastLoadedSeq) {
+    const refSeq = ref[sessionId] || 0;
+    const stateSeq = Math.max(messagesMaxSeq, lastLoadedSeq);
+    return Math.max(refSeq, stateSeq);
+  }
+
+  describe("updateLastKnownSeq behavior", () => {
+    test("ref starts empty", () => {
+      const ref = {};
+      expect(ref["session1"]).toBeUndefined();
+    });
+
+    test("updates ref when seq is higher than current", () => {
+      const ref = {};
+      updateLastKnownSeq(ref, "session1", 10);
+      expect(ref["session1"]).toBe(10);
+    });
+
+    test("does not update when seq is lower", () => {
+      const ref = { session1: 50 };
+      updateLastKnownSeq(ref, "session1", 30);
+      expect(ref["session1"]).toBe(50);
+    });
+
+    test("does not update when seq equals current", () => {
+      const ref = { session1: 42 };
+      updateLastKnownSeq(ref, "session1", 42);
+      expect(ref["session1"]).toBe(42);
+    });
+
+    test("ignores null seq", () => {
+      const ref = { session1: 10 };
+      updateLastKnownSeq(ref, "session1", null);
+      expect(ref["session1"]).toBe(10);
+    });
+
+    test("ignores undefined seq", () => {
+      const ref = { session1: 10 };
+      updateLastKnownSeq(ref, "session1", undefined);
+      expect(ref["session1"]).toBe(10);
+    });
+
+    test("ignores zero seq", () => {
+      const ref = { session1: 10 };
+      updateLastKnownSeq(ref, "session1", 0);
+      expect(ref["session1"]).toBe(10);
+    });
+
+    test("ignores negative seq", () => {
+      const ref = { session1: 10 };
+      updateLastKnownSeq(ref, "session1", -5);
+      expect(ref["session1"]).toBe(10);
+    });
+
+    test("tracks multiple sessions independently", () => {
+      const ref = {};
+      updateLastKnownSeq(ref, "session1", 100);
+      updateLastKnownSeq(ref, "session2", 200);
+      updateLastKnownSeq(ref, "session3", 50);
+      expect(ref["session1"]).toBe(100);
+      expect(ref["session2"]).toBe(200);
+      expect(ref["session3"]).toBe(50);
+    });
+
+    test("monotonically increases with interleaved events", () => {
+      const ref = {};
+      updateLastKnownSeq(ref, "s1", 1);
+      updateLastKnownSeq(ref, "s1", 5);
+      updateLastKnownSeq(ref, "s1", 2); // late event, should not lower
+      updateLastKnownSeq(ref, "s1", 5); // same seq, no-op
+      updateLastKnownSeq(ref, "s1", 10);
+      expect(ref["s1"]).toBe(10);
+    });
+  });
+
+  describe("getClientMaxSeq computation", () => {
+    test("uses ref when ref is ahead of state", () => {
+      const ref = { session1: 100 };
+      const messagesMaxSeq = 50;
+      const lastLoadedSeq = 60;
+      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      expect(result).toBe(100); // ref wins
+    });
+
+    test("uses state when state is ahead of ref", () => {
+      const ref = { session1: 50 };
+      const messagesMaxSeq = 100;
+      const lastLoadedSeq = 80;
+      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      expect(result).toBe(100); // state wins
+    });
+
+    test("uses ref when ref exists and state is zero", () => {
+      const ref = { session1: 100 };
+      const messagesMaxSeq = 0;
+      const lastLoadedSeq = 0;
+      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      expect(result).toBe(100);
+    });
+
+    test("uses state when ref is zero", () => {
+      const ref = {};
+      const messagesMaxSeq = 50;
+      const lastLoadedSeq = 60;
+      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      expect(result).toBe(60);
+    });
+
+    test("returns zero when both ref and state are zero", () => {
+      const ref = {};
+      const messagesMaxSeq = 0;
+      const lastLoadedSeq = 0;
+      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      expect(result).toBe(0);
+    });
+
+    test("uses higher of messagesMaxSeq and lastLoadedSeq for state", () => {
+      const ref = {};
+      const messagesMaxSeq = 100;
+      const lastLoadedSeq = 150;
+      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      expect(result).toBe(150);
+    });
+
+    test("ref provides safety net when messages array is empty", () => {
+      // This is the key scenario: messages array cleared during reconnect
+      const ref = { session1: 113 };
+      const messagesMaxSeq = 0; // messages array is empty
+      const lastLoadedSeq = 0; // no loaded events yet
+      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      expect(result).toBe(113); // ref saves the day!
+    });
+  });
+
+  describe("stale client reset clears ref", () => {
+    test("deleting ref entry resets to undefined", () => {
+      const ref = { session1: 500 };
+      delete ref["session1"];
+      expect(ref["session1"]).toBeUndefined();
+    });
+
+    test("getClientMaxSeq falls back to state after ref is cleared", () => {
+      const ref = { session1: 500 };
+      delete ref["session1"]; // stale client reset
+      const messagesMaxSeq = 50;
+      const lastLoadedSeq = 40;
+      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      expect(result).toBe(50); // uses state since ref is gone
+    });
+
+    test("ref can be rebuilt after stale reset", () => {
+      const ref = { session1: 500 };
+      delete ref["session1"];
+      updateLastKnownSeq(ref, "session1", 50);
+      expect(ref["session1"]).toBe(50);
+    });
+  });
+
+  describe("reconnection scenarios", () => {
+    test("ref survives reconnection when messages are cleared", () => {
+      const ref = {};
+
+      // Initial connection: receive events
+      updateLastKnownSeq(ref, "s1", 1);
+      updateLastKnownSeq(ref, "s1", 50);
+      updateLastKnownSeq(ref, "s1", 113);
+
+      // Simulate reconnection: messages array cleared, but ref persists
+      const messagesMaxSeq = 0; // messages cleared
+      const lastLoadedSeq = 0;
+
+      // Compute after_seq for reconnection
+      const afterSeq = getClientMaxSeq(ref, "s1", messagesMaxSeq, lastLoadedSeq);
+      expect(afterSeq).toBe(113); // ref provides correct value
+    });
+
+    test("ref continues to update after reconnection", () => {
+      const ref = { s1: 113 };
+
+      // After reconnection, receive new events
+      updateLastKnownSeq(ref, "s1", 114);
+      updateLastKnownSeq(ref, "s1", 158);
+
+      expect(ref["s1"]).toBe(158);
+    });
+
+    test("multiple reconnections preserve ref", () => {
+      const ref = {};
+
+      // Connection 1
+      updateLastKnownSeq(ref, "s1", 50);
+
+      // Reconnect 1
+      let afterSeq = getClientMaxSeq(ref, "s1", 0, 0);
+      expect(afterSeq).toBe(50);
+      updateLastKnownSeq(ref, "s1", 100);
+
+      // Reconnect 2
+      afterSeq = getClientMaxSeq(ref, "s1", 0, 0);
+      expect(afterSeq).toBe(100);
+      updateLastKnownSeq(ref, "s1", 150);
+
+      expect(ref["s1"]).toBe(150);
+    });
+  });
+
+  describe("multi-session scenarios", () => {
+    test("each session has independent ref tracking", () => {
+      const ref = {};
+
+      updateLastKnownSeq(ref, "s1", 100);
+      updateLastKnownSeq(ref, "s2", 200);
+
+      const seq1 = getClientMaxSeq(ref, "s1", 0, 0);
+      const seq2 = getClientMaxSeq(ref, "s2", 0, 0);
+
+      expect(seq1).toBe(100);
+      expect(seq2).toBe(200);
+    });
+
+    test("clearing one session does not affect others", () => {
+      const ref = { s1: 100, s2: 200, s3: 300 };
+
+      delete ref["s2"];
+
+      expect(ref["s1"]).toBe(100);
+      expect(ref["s2"]).toBeUndefined();
+      expect(ref["s3"]).toBe(300);
+    });
+  });
+});
+
+// =============================================================================
 // checkSessionExists
 // =============================================================================
 
