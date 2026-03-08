@@ -152,7 +152,7 @@ func (p *SharedACPProcess) startProcess() error {
 			}
 		}
 
-		processErr, stderr := p.doStartProcess()
+		stderr, processErr := p.doStartProcess()
 		if processErr == nil {
 			return nil
 		}
@@ -194,7 +194,7 @@ func (p *SharedACPProcess) startProcess() error {
 
 // doStartProcess performs a single attempt to start the ACP process and run the Initialize handshake.
 // Returns the error and any captured stderr output for error classification.
-func (p *SharedACPProcess) doStartProcess() (error, string) {
+func (p *SharedACPProcess) doStartProcess() (string, error) {
 	processStart := time.Now()
 	acpCommand := p.config.ACPCommand
 	acpCwd := p.config.ACPCwd
@@ -208,7 +208,7 @@ func (p *SharedACPProcess) doStartProcess() (error, string) {
 
 	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
-		return fmt.Errorf("parse command: %w", err), ""
+		return "", fmt.Errorf("parse command: %w", err)
 	}
 
 	var stdin runner.WriteCloser
@@ -253,7 +253,7 @@ func (p *SharedACPProcess) doStartProcess() (error, string) {
 		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], nil)
 		if err != nil {
 			runCancel()
-			return fmt.Errorf("failed to start with runner: %w", err), ""
+			return "", fmt.Errorf("failed to start with runner: %w", err)
 		}
 		p.cancel = runCancel
 
@@ -273,19 +273,19 @@ func (p *SharedACPProcess) doStartProcess() (error, string) {
 
 		stdin, err = cmd.StdinPipe()
 		if err != nil {
-			return fmt.Errorf("stdin pipe: %w", err), ""
+			return "", fmt.Errorf("stdin pipe: %w", err)
 		}
 		stdout, err = cmd.StdoutPipe()
 		if err != nil {
-			return fmt.Errorf("stdout pipe: %w", err), ""
+			return "", fmt.Errorf("stdout pipe: %w", err)
 		}
 		stderrPipe, err := cmd.StderrPipe()
 		if err != nil {
-			return fmt.Errorf("stderr pipe: %w", err), ""
+			return "", fmt.Errorf("stderr pipe: %w", err)
 		}
 
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start ACP server: %w", err), ""
+			return "", fmt.Errorf("failed to start ACP server: %w", err)
 		}
 
 		startStderrMonitor(stderrPipe, stderrCollector, onCrashDetected)
@@ -410,7 +410,7 @@ func (p *SharedACPProcess) doStartProcess() (error, string) {
 		}
 
 		p.killProcess()
-		return fmt.Errorf("failed to initialize: %w", err), stderrOutput
+		return stderrOutput, fmt.Errorf("failed to initialize: %w", err)
 	}
 
 	p.capabilities = &initResp.AgentCapabilities
@@ -426,7 +426,7 @@ func (p *SharedACPProcess) doStartProcess() (error, string) {
 			"initialize_rpc_ms", initDuration.Milliseconds())
 	}
 
-	return nil, ""
+	return "", nil
 }
 
 // NewSession creates a new ACP session on this shared process.

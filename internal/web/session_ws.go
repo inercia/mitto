@@ -161,8 +161,8 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// If no running session, try to resume it (unless archived)
 	if bs == nil && store != nil {
 		// Check if session exists in store
-		meta, err := store.GetMetadata(sessionID)
-		if err == nil {
+		switch meta, err := store.GetMetadata(sessionID); err {
+		case nil:
 			// Don't resume archived sessions - they should remain read-only
 			// without an ACP connection. Users can still view history.
 			if meta.Archived {
@@ -196,7 +196,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-		} else if err == session.ErrSessionNotFound {
+		case session.ErrSessionNotFound:
 			// Session truly doesn't exist in memory or store — send session_gone and close.
 			// Also cache this result to prevent repeated filesystem lookups for the same
 			// deleted session (circuit breaker for "Session not found" error storms).

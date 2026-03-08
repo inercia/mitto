@@ -437,13 +437,6 @@ func (c *childReportCollector) clearWait() {
 	c.waitingFor = nil
 }
 
-// getReport returns the report for a child, or nil if not yet reported.
-func (c *childReportCollector) getReport(childID string) *childReport {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.reports[childID]
-}
-
 // childReport stores the report from a single child conversation.
 type childReport struct {
 	Report    json.RawMessage `json:"report"`
