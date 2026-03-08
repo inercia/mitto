@@ -965,10 +965,16 @@ const maxACPRestarts = 3
 const acpRestartWindow = 5 * time.Minute
 
 // acpRestartBaseDelay is the initial delay between runtime restart attempts.
-const acpRestartBaseDelay = 1 * time.Second
+// This is intentionally longer than the start-retry delay to give the system
+// time to recover from transient conditions (e.g., notification queue overflow
+// due to backpressure from slow WebSocket clients).
+const acpRestartBaseDelay = 3 * time.Second
 
 // acpRestartMaxDelay is the maximum delay between runtime restart attempts.
-const acpRestartMaxDelay = 10 * time.Second
+// With exponential backoff (3s → 6s → 12s → 24s → 30s), this prevents
+// rapid crash loops that burn resources without letting the underlying
+// condition (e.g., client backpressure) resolve.
+const acpRestartMaxDelay = 30 * time.Second
 
 // canRestartACP checks if we can restart the ACP process based on rate limiting.
 // Returns true if restart is allowed, false if we've exceeded the limit.
@@ -1000,6 +1006,25 @@ func (bs *BackgroundSession) recordRestart() {
 
 	bs.restartCount++
 	bs.restartTimes = append(bs.restartTimes, time.Now())
+}
+
+// getRestartInfo returns a human-readable restart attempt indicator like "(attempt 2 of 3)".
+// This is shown to the user so they understand the system is in a retry loop and won't retry forever.
+// This method is thread-safe.
+func (bs *BackgroundSession) getRestartInfo() string {
+	bs.restartMu.Lock()
+	defer bs.restartMu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-acpRestartWindow)
+	count := 0
+	for _, t := range bs.restartTimes {
+		if t.After(cutoff) {
+			count++
+		}
+	}
+	// count is the number of recent restarts already done; the next one will be count+1
+	return fmt.Sprintf("(attempt %d of %d)", count+1, maxACPRestarts)
 }
 
 // restartACPProcess attempts to restart the ACP process after it has died.
@@ -1038,6 +1063,11 @@ func (bs *BackgroundSession) restartACPProcess() error {
 			"command", bs.acpCommand,
 			"cwd", bs.acpCwd)
 	}
+
+	// Unregister from global MCP server before killing the old process.
+	// Without this, the re-registration during startACPProcess() fails with
+	// "session already registered" because the old registration is still present.
+	bs.stopSessionMcpServer()
 
 	// Kill the old process and clean up
 	bs.killACPProcess()
@@ -1820,9 +1850,11 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 			// Check if we can restart automatically
 			if bs.canRestartACP() {
-				// Notify observers that we're restarting
+				// Notify observers that we're restarting (include attempt count so
+				// the user understands this is a retry loop, not a one-off)
+				restartInfo := bs.getRestartInfo()
 				bs.notifyObservers(func(o SessionObserver) {
-					o.OnError("The AI agent process stopped unexpectedly. Restarting...")
+					o.OnError(fmt.Sprintf("The AI agent process stopped unexpectedly. Restarting %s...", restartInfo))
 				})
 
 				// Attempt to restart the ACP process
@@ -1838,9 +1870,12 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					return &sessionError{"ACP process died and restart failed: " + err.Error()}
 				}
 
-				// Restart succeeded - notify user and retry the prompt
+				// Restart succeeded - notify user to retry the prompt
+				// Note: we say "restarted" (not "restarted successfully") because the
+				// process may crash again on the next prompt — we don't want to give
+				// false confidence.
 				bs.notifyObservers(func(o SessionObserver) {
-					o.OnError("AI agent restarted successfully. Please resend your message.")
+					o.OnError("AI agent restarted. Please resend your message.")
 				})
 				return &sessionError{"ACP process restarted - please resend your message"}
 			}
@@ -1883,17 +1918,15 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	if len(imageIDs) > 0 && !bs.agentSupportsImages {
 		if bs.logger != nil {
-			bs.logger.Warn("Agent does not support image prompts, images will be dropped",
+			bs.logger.Warn("Agent did not advertise image support, sending images anyway",
 				"image_count", len(imageIDs),
 				"session_id", bs.persistedID)
 		}
-		// Notify the user via an error/warning message that images are unsupported
+		// Warn the user but still send images — models sometimes misreport capabilities
 		bs.notifyObservers(func(o SessionObserver) {
-			o.OnError("⚠️ The current AI agent does not support image attachments. " +
-				"Your images were not included in this prompt. " +
-				"The agent will only see your text message.")
+			o.OnError("⚠️ The current AI agent did not advertise image support. " +
+				"Images will be sent anyway, but may not be processed correctly.")
 		})
-		imageIDs = nil // Clear image IDs so they are not processed
 	}
 
 	if len(imageIDs) > 0 && bs.store != nil {
@@ -2209,8 +2242,9 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			}
 
 			if acpDead && bs.canRestartACP() {
+				restartInfo := bs.getRestartInfo()
 				bs.notifyObservers(func(o SessionObserver) {
-					o.OnError("The AI agent process stopped unexpectedly. Restarting...")
+					o.OnError(fmt.Sprintf("The AI agent process stopped unexpectedly. Restarting %s...", restartInfo))
 				})
 				if restartErr := bs.restartACPProcess(); restartErr != nil {
 					// Provide specific guidance for permanent errors
@@ -2224,7 +2258,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					})
 				} else {
 					bs.notifyObservers(func(o SessionObserver) {
-						o.OnError("AI agent restarted successfully. Please resend your message.")
+						o.OnError("AI agent restarted. Please resend your message.")
 					})
 				}
 			} else {

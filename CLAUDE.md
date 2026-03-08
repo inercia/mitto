@@ -60,7 +60,7 @@ Capabilities are advertised during ACP initialization. Always check before using
 caps := resp.AgentCapabilities
 bs.agentSupportsImages = caps.PromptCapabilities.Image
 // Later in PromptWithMeta:
-if len(imageIDs) > 0 && !bs.agentSupportsImages { /* warn and drop */ }
+if len(imageIDs) > 0 && !bs.agentSupportsImages { /* warn but send anyway */ }
 ```
 
 ### Frontend Capability Flow

@@ -955,9 +955,7 @@ export function ChatInput({
     if (isDragOver) return "Drop files here...";
     return isSmallWindow
       ? "Type your message..."
-      : agentSupportsImages
-        ? "Type your message... (drop or paste images/files)"
-        : "Type your message... (drop or paste files)";
+      : "Type your message... (drop or paste images/files)";
   };
 
   // Upload an image file to the session
@@ -965,8 +963,8 @@ export function ChatInput({
     if (!sessionId) return null;
 
     if (!agentSupportsImages) {
-      setUploadError("Image attachments are not supported by this agent");
-      return null;
+      setUploadError("⚠️ This agent may not support images — attaching anyway");
+      setTimeout(() => setUploadError(null), 5000);
     }
 
     const validTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -1394,9 +1392,8 @@ export function ChatInput({
 
     if (imageItems.length > 0) {
       if (!agentSupportsImages) {
-        e.preventDefault();
-        setUploadError("Image attachments are not supported by this agent");
-        return;
+        setUploadError("⚠️ This agent may not support images — attaching anyway");
+        setTimeout(() => setUploadError(null), 5000);
       }
       e.preventDefault();
       for (const item of imageItems) {
@@ -1945,9 +1942,9 @@ export function ChatInput({
           type="button"
           onClick=${handleAttachImageClick}
           onMouseDown=${(e) => e.preventDefault()}
-          disabled=${isFullyDisabled || isReadOnly || isImproving || !agentSupportsImages}
+          disabled=${isFullyDisabled || isReadOnly || isImproving}
           class="action-toolbar-btn"
-          title=${agentSupportsImages ? "Attach image" : "Image attachments not supported by this agent"}
+          title="Attach image"
         >
           <svg
             class="w-5 h-5"
