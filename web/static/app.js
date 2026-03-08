@@ -1916,6 +1916,10 @@ function SessionList({
       // Structure: Folder → Parent sessions (with nested child sessions)
       const folderGroups = new Map();
 
+      // All known session IDs across all tabs (conversations + periodic + archived)
+      // Used by buildSessionTree to distinguish "parent in another tab" from "parent truly missing"
+      const allKnownSessionIds = new Set(allSessions.map(s => s.session_id));
+
       // Helper to get parent_session_id from session
       // parent_session_id is already merged by computeAllSessions() in lib.js
       const getParentSessionId = (session) => session.parent_session_id || "";
@@ -1939,10 +1943,10 @@ function SessionList({
       // Second pass: build parent-child hierarchy within each folder
       const result = Array.from(folderGroups.entries())
         .map(([key, folder]) => {
-          const { allSessions } = folder;
+          const { allSessions: folderSessions } = folder;
 
           // Build parent-child tree using utility function
-          const { rootSessions, childrenMap, orphans } = buildSessionTree(allSessions);
+          const { rootSessions, childrenMap, orphans } = buildSessionTree(folderSessions, allKnownSessionIds);
 
           // Attach children array to each parent session
           const parents = rootSessions.map((parent) => ({
@@ -2038,7 +2042,7 @@ function SessionList({
 
     prevGroupedSessions.current = result;
     return result;
-  }, [filteredSessions, groupingMode]);
+  }, [filteredSessions, groupingMode, allSessions]);
 
   // Enforce accordion mode when groups change (e.g., tab switch, grouping mode change)
   // If multiple groups are expanded and accordion mode is enabled, collapse all but the first.

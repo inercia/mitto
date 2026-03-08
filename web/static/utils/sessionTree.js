@@ -5,10 +5,21 @@
  * Handles parent-child relationships created via mitto_conversation_new MCP tool.
  */
 
+// Deduplicate orphan warnings across repeated buildSessionTree calls.
+// Only warns once per missing parent per page load.
+const _warnedOrphanParents = new Set();
+
+// Exported for testing only — resets the orphan warning deduplication set
+export function _resetWarnedOrphanParents() {
+  _warnedOrphanParents.clear();
+}
+
 /**
  * Build a conversation tree from a flat list of sessions.
  * 
  * @param {Array} sessions - Flat array of session objects
+ * @param {Set|null} allKnownSessionIds - Optional Set of all session IDs across all tabs.
+ *   When provided, distinguishes "parent in another tab" from "parent truly missing".
  * @returns {Object} Tree structure with rootSessions and childrenMap
  * 
  * @example
@@ -16,7 +27,7 @@
  * // rootSessions: sessions with no parent
  * // childrenMap: Map<parentId, Array<childSession>>
  */
-export function buildSessionTree(sessions) {
+export function buildSessionTree(sessions, allKnownSessionIds = null) {
   if (!sessions || !Array.isArray(sessions)) {
     return { rootSessions: [], childrenMap: new Map(), orphans: [] };
   }
@@ -48,13 +59,23 @@ export function buildSessionTree(sessions) {
   const orphans = [];
   childrenMap.forEach((children, parentId) => {
     if (!sessionById.has(parentId)) {
-      // Parent doesn't exist in current session list
-      console.warn('buildSessionTree: Found orphaned children for missing parent:', parentId.substring(0, 8));
+      // Parent is not in the current filtered session list.
+      // Check if parent exists in another tab (e.g., archived vs conversations)
+      const parentExistsElsewhere = allKnownSessionIds ? allKnownSessionIds.has(parentId) : false;
+
+      if (!parentExistsElsewhere && !_warnedOrphanParents.has(parentId)) {
+        // Parent is truly missing — warn once per parent per page load
+        console.warn('buildSessionTree: Found orphaned children for missing parent:', parentId);
+        _warnedOrphanParents.add(parentId);
+      }
+
+      // In both cases, promote children to root level (parent isn't in THIS view)
       children.forEach(child => {
         child._isOrphan = true;
+        child._parentInOtherTab = parentExistsElsewhere;
         orphans.push(child);
       });
-      // Remove from childrenMap since parent doesn't exist
+      // Remove from childrenMap since parent doesn't exist in this view
       childrenMap.delete(parentId);
     }
   });

@@ -9,10 +9,15 @@ import {
   getChildCount,
   detectCircularReference,
   getSessionDepth,
+  _resetWarnedOrphanParents,
 } from './sessionTree.js';
 
 describe('sessionTree', () => {
   describe('buildSessionTree', () => {
+    beforeEach(() => {
+      _resetWarnedOrphanParents();
+    });
+
     test('handles empty array', () => {
       const result = buildSessionTree([]);
       expect(result.rootSessions).toEqual([]);
@@ -150,6 +155,98 @@ describe('sessionTree', () => {
       expect(rootSessions).toHaveLength(1);
       expect(orphans).toHaveLength(2);
       expect(orphans.every(o => o._isOrphan)).toBe(true);
+    });
+
+    test('suppresses warning when parent exists in allKnownSessionIds', () => {
+      const sessions = [
+        { session_id: 'root-1', parent_session_id: null },
+        { session_id: 'orphan-1', parent_session_id: 'archived-parent' },
+      ];
+      // archived-parent exists in the full session list (another tab)
+      const allKnownSessionIds = new Set(['root-1', 'orphan-1', 'archived-parent']);
+
+      const warnCalls = [];
+      const origWarn = console.warn;
+      console.warn = (...args) => warnCalls.push(args);
+      try {
+        const { orphans } = buildSessionTree(sessions, allKnownSessionIds);
+
+        expect(orphans).toHaveLength(1);
+        expect(orphans[0]._isOrphan).toBe(true);
+        expect(orphans[0]._parentInOtherTab).toBe(true);
+        // Should NOT have warned (parent exists elsewhere)
+        expect(warnCalls).toHaveLength(0);
+      } finally {
+        console.warn = origWarn;
+      }
+    });
+
+    test('warns when parent is truly missing (not in allKnownSessionIds)', () => {
+      const sessions = [
+        { session_id: 'root-1', parent_session_id: null },
+        { session_id: 'orphan-1', parent_session_id: 'deleted-parent' },
+      ];
+      // deleted-parent is NOT in the full session list
+      const allKnownSessionIds = new Set(['root-1', 'orphan-1']);
+
+      const warnCalls = [];
+      const origWarn = console.warn;
+      console.warn = (...args) => warnCalls.push(args);
+      try {
+        const { orphans } = buildSessionTree(sessions, allKnownSessionIds);
+
+        expect(orphans).toHaveLength(1);
+        expect(orphans[0]._isOrphan).toBe(true);
+        expect(orphans[0]._parentInOtherTab).toBe(false);
+        expect(warnCalls).toHaveLength(1);
+        expect(warnCalls[0]).toEqual([
+          'buildSessionTree: Found orphaned children for missing parent:',
+          'deleted-parent'
+        ]);
+      } finally {
+        console.warn = origWarn;
+      }
+    });
+
+    test('works without allKnownSessionIds (backward compatible)', () => {
+      const sessions = [
+        { session_id: 'root-1', parent_session_id: null },
+        { session_id: 'orphan-1', parent_session_id: 'missing-parent' },
+      ];
+      // No allKnownSessionIds passed — should still work (warns)
+      const origWarn = console.warn;
+      console.warn = () => {};
+      try {
+        const { orphans } = buildSessionTree(sessions);
+
+        expect(orphans).toHaveLength(1);
+        expect(orphans[0]._isOrphan).toBe(true);
+        expect(orphans[0]._parentInOtherTab).toBe(false);
+      } finally {
+        console.warn = origWarn;
+      }
+    });
+
+    test('deduplicates warnings for the same missing parent across calls', () => {
+      const sessions = [
+        { session_id: 'root-1', parent_session_id: null },
+        { session_id: 'orphan-1', parent_session_id: 'deleted-parent' },
+      ];
+      const allKnownSessionIds = new Set(['root-1', 'orphan-1']);
+
+      const warnCalls = [];
+      const origWarn = console.warn;
+      console.warn = (...args) => warnCalls.push(args);
+      try {
+        // Call buildSessionTree twice with the same missing parent
+        buildSessionTree(sessions, allKnownSessionIds);
+        buildSessionTree(sessions, allKnownSessionIds);
+
+        // Should only have warned once (deduplication)
+        expect(warnCalls).toHaveLength(1);
+      } finally {
+        console.warn = origWarn;
+      }
     });
   });
 
