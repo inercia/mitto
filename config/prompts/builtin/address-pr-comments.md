@@ -15,6 +15,11 @@ Address all review comments on the current pull request with thoughtful response
 
 **Optional tools:**
 - `mitto_ui_ask_yes_no`
+- `mitto_conversation_get_current`
+- `mitto_conversation_new`
+- `mitto_children_tasks_wait`
+- `mitto_children_tasks_report`
+- `mitto_conversation_delete`
 
 **Check availability:**
 1. Look for these tools in your available tools list
@@ -166,6 +171,91 @@ For each required code change:
    ```
 4. **Update or reply to the comment** explaining what was done
 
+#### Delegating Significant Fixes to Child Conversations
+
+When a review comment requires **significant work** — such as a large refactor, adding substantial
+test coverage, implementing a new module, or changes spanning multiple files — consider delegating
+it to a new Mitto child conversation instead of doing it inline. This keeps the main PR review
+workflow focused and allows heavy lifting to happen in parallel.
+
+**When to delegate (any of the following):**
+- The fix involves changes across 3+ files
+- The fix requires writing substantial new code (e.g., new tests, new utility functions)
+- The fix involves a refactor that could introduce regressions
+- Multiple independent significant fixes can be parallelized
+
+**How to delegate (requires Mitto MCP tools):**
+
+1. **Get your current conversation ID** using `mitto_conversation_get_current`:
+   ```
+   self_id: "init"
+   ```
+
+2. **Identify the best ACP server** for the work. From the `available_acp_servers` returned in
+   step 1, prefer servers tagged with `"coding"` and/or `"fast"` — these are fast-thinking,
+   coding-focused agents best suited for implementation tasks. If no tags match, fall back to the
+   current conversation's ACP server (the one with `current: true`).
+
+3. **Create a new conversation** for each significant fix using `mitto_conversation_new`:
+   ```
+   self_id: <your session_id>
+   title: "PR fix: <brief description of the review comment>"
+   initial_prompt: |
+     You are addressing a PR review comment. Here is the context:
+
+     **Repository**: <repo info>
+     **Branch**: <current branch>
+     **PR**: <pr number/url>
+
+     **Review comment to address**:
+     <paste the full review comment and any surrounding context>
+
+     **What needs to be done**:
+     <detailed description of the fix, including which files to modify and the expected outcome>
+
+     **Constraints**:
+     - Only modify files related to this specific fix
+     - Run tests after making changes to verify nothing is broken
+     - Follow the project's existing code style and conventions
+
+     When you complete this task, report your results back to the parent conversation
+     using the `mitto_children_tasks_report` MCP tool:
+
+     mitto_children_tasks_report(
+       self_id: <your session ID - get it via mitto_conversation_get_current>,
+       status: "completed" or "failed" or "partial",
+       summary: "<brief description of what was accomplished>",
+       details: "<detailed info: files modified, tests run, any issues encountered>"
+     )
+
+     Call mitto_conversation_get_current first to get your self_id, then call
+     mitto_children_tasks_report with your results. Do this as your final action.
+   acp_server: <selected ACP server — prefer "coding"/"fast" tagged servers>
+   ```
+
+4. **Wait for child conversations to complete** using `mitto_children_tasks_wait`:
+   ```
+   self_id: <your session_id>
+   children_list: [<child_id_1>, <child_id_2>, ...]
+   timeout_seconds: 600
+   ```
+
+5. **Review the results** from each child:
+   - Verify that reported changes are correct and address the review comments
+   - Run tests to confirm nothing is broken
+   - If a child failed or partially completed, either retry with refined instructions or handle the
+     remaining work in the current conversation
+
+6. **Clean up** child conversations after incorporating their work:
+   ```
+   mitto_conversation_delete(self_id: <your session_id>, conversation_id: <child_id>)
+   ```
+
+7. **Commit the combined changes** with a clear message referencing the review comments addressed
+
+**If Mitto tools are not available**, implement all fixes directly in the current conversation as
+described in the steps above (make the change, verify, commit).
+
 ### 7. Respond to All Comments
 
 **Before pushing changes:**
@@ -272,7 +362,9 @@ All comments have been responded to. The PR is ready for re-review.
 - Group related changes in single commits when logical, for cleaner history
 - Run tests before pushing to avoid introducing new issues
 - Only mark conversations as resolved if you are the author of the comment (unless explicitly asked)
-- If a comment suggests a larger refactor, discuss scope before implementing
+- If a comment suggests a larger refactor, discuss scope before implementing — and consider delegating it to a child conversation using a fast-thinking, coding agent
+- When delegating fixes to child conversations, prefer ACP servers tagged with `"coding"` or `"fast"` for implementation work
+- Limit parallel child conversations to 4 at a time to avoid overwhelming the system
 - If feedback conflicts between reviewers, ask them to align before proceeding
 - In fork workflows, push to `origin` (your fork), not `upstream` — verify the remote before pushing
 </rules>
