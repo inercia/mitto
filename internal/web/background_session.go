@@ -128,13 +128,14 @@ type BackgroundSession struct {
 
 	// ACP process restart tracking
 	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
-	// To prevent infinite restart loops, we limit restarts to maxACPRestarts within
-	// acpRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
-	acpCommand   string      // Command used to start ACP process (for restart)
-	acpCwd       string      // Working directory for ACP process (for restart)
-	restartCount int         // Number of restarts in current window
-	restartTimes []time.Time // Timestamps of recent restarts (for rate limiting)
-	restartMu    sync.Mutex  // Protects restart tracking fields
+	// To prevent infinite restart loops, we limit restarts to MaxACPRestarts within
+	// ACPRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
+	acpCommand    string             // Command used to start ACP process (for restart)
+	acpCwd        string             // Working directory for ACP process (for restart)
+	restartCount  int                // Number of restarts in current window
+	restartTimes  []time.Time        // Timestamps of recent restarts (for rate limiting)
+	restartReasons []RestartReason   // Reasons for recent restarts (parallel to restartTimes)
+	restartMu     sync.Mutex         // Protects restart tracking fields
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -956,25 +957,11 @@ const acpStartRetryMaxDelay = 4 * time.Second
 // acpStartRetryJitterRatio is the jitter ratio (±) applied to retry delays.
 const acpStartRetryJitterRatio = 0.3
 
-// maxACPRestarts is the maximum number of automatic restarts allowed within acpRestartWindow.
-// If this limit is exceeded, the user must manually restart the session.
-const maxACPRestarts = 3
-
-// acpRestartWindow is the time window for counting restart attempts.
-// Restarts older than this are not counted toward the limit.
-const acpRestartWindow = 5 * time.Minute
-
-// acpRestartBaseDelay is the initial delay between runtime restart attempts.
-// This is intentionally longer than the start-retry delay to give the system
-// time to recover from transient conditions (e.g., notification queue overflow
-// due to backpressure from slow WebSocket clients).
-const acpRestartBaseDelay = 3 * time.Second
-
-// acpRestartMaxDelay is the maximum delay between runtime restart attempts.
-// With exponential backoff (3s → 6s → 12s → 24s → 30s), this prevents
-// rapid crash loops that burn resources without letting the underlying
-// condition (e.g., client backpressure) resolve.
-const acpRestartMaxDelay = 30 * time.Second
+// Note: Runtime restart constants (maxACPRestarts, acpRestartWindow,
+// acpRestartBaseDelay, acpRestartMaxDelay) are now defined in
+// acp_error_classification.go as shared constants (MaxACPRestarts, ACPRestartWindow,
+// ACPRestartBaseDelay, ACPRestartMaxDelay) to ensure consistent behavior between
+// SharedACPProcess and BackgroundSession.
 
 // canRestartACP checks if we can restart the ACP process based on rate limiting.
 // Returns true if restart is allowed, false if we've exceeded the limit.
@@ -984,7 +971,7 @@ func (bs *BackgroundSession) canRestartACP() bool {
 	defer bs.restartMu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-acpRestartWindow)
+	cutoff := now.Add(-ACPRestartWindow)
 
 	// Filter out old restart times
 	var recentRestarts []time.Time
@@ -995,17 +982,28 @@ func (bs *BackgroundSession) canRestartACP() bool {
 	}
 	bs.restartTimes = recentRestarts
 
-	return len(recentRestarts) < maxACPRestarts
+	return len(recentRestarts) < MaxACPRestarts
 }
 
-// recordRestart records a restart attempt for rate limiting.
+// recordRestart records a restart attempt for rate limiting and telemetry.
 // This method is thread-safe.
-func (bs *BackgroundSession) recordRestart() {
+func (bs *BackgroundSession) recordRestart(reason RestartReason) {
 	bs.restartMu.Lock()
 	defer bs.restartMu.Unlock()
 
 	bs.restartCount++
-	bs.restartTimes = append(bs.restartTimes, time.Now())
+	now := time.Now()
+	bs.restartTimes = append(bs.restartTimes, now)
+	bs.restartReasons = append(bs.restartReasons, reason)
+
+	// Log restart reason for telemetry
+	if bs.logger != nil {
+		bs.logger.Info("Recording ACP restart",
+			"session_id", bs.persistedID,
+			"restart_count", bs.restartCount,
+			"reason", string(reason),
+			"timestamp", now.Format(time.RFC3339))
+	}
 }
 
 // getRestartInfo returns a human-readable restart attempt indicator like "(attempt 2 of 3)".
@@ -1016,7 +1014,7 @@ func (bs *BackgroundSession) getRestartInfo() string {
 	defer bs.restartMu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-acpRestartWindow)
+	cutoff := now.Add(-ACPRestartWindow)
 	count := 0
 	for _, t := range bs.restartTimes {
 		if t.After(cutoff) {
@@ -1024,22 +1022,67 @@ func (bs *BackgroundSession) getRestartInfo() string {
 		}
 	}
 	// count is the number of recent restarts already done; the next one will be count+1
-	return fmt.Sprintf("(attempt %d of %d)", count+1, maxACPRestarts)
+	return fmt.Sprintf("(attempt %d of %d)", count+1, MaxACPRestarts)
+}
+
+// RestartStats contains statistics about ACP process restarts.
+type RestartStats struct {
+	TotalRestarts   int                    // Total number of restarts in session lifetime
+	RecentRestarts  int                    // Number of restarts in the current window
+	ReasonCounts    map[RestartReason]int  // Count of restarts by reason
+	LastRestartTime time.Time              // Timestamp of most recent restart
+	LastReason      RestartReason          // Reason for most recent restart
+}
+
+// GetRestartStats returns statistics about ACP process restarts for telemetry.
+// This method is thread-safe.
+func (bs *BackgroundSession) GetRestartStats() RestartStats {
+	bs.restartMu.Lock()
+	defer bs.restartMu.Unlock()
+
+	stats := RestartStats{
+		TotalRestarts: bs.restartCount,
+		ReasonCounts:  make(map[RestartReason]int),
+	}
+
+	// Count recent restarts and reasons
+	now := time.Now()
+	cutoff := now.Add(-ACPRestartWindow)
+	for i, t := range bs.restartTimes {
+		if t.After(cutoff) {
+			stats.RecentRestarts++
+		}
+		// Count all reasons (not just recent)
+		if i < len(bs.restartReasons) {
+			stats.ReasonCounts[bs.restartReasons[i]]++
+		}
+	}
+
+	// Get last restart info
+	if len(bs.restartTimes) > 0 {
+		stats.LastRestartTime = bs.restartTimes[len(bs.restartTimes)-1]
+		if len(bs.restartReasons) > 0 {
+			stats.LastReason = bs.restartReasons[len(bs.restartReasons)-1]
+		}
+	}
+
+	return stats
 }
 
 // restartACPProcess attempts to restart the ACP process after it has died.
 // It kills the old process, cleans up resources, and starts a new one.
 // The new process will attempt to resume the ACP session if the agent supports it.
+// The reason parameter is used for telemetry and diagnostics.
 // Returns nil on success, or an error if restart fails.
 // Returns an *ACPClassifiedError for permanent failures.
-func (bs *BackgroundSession) restartACPProcess() error {
+func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 	// Apply backoff based on how many recent restarts have occurred.
 	bs.restartMu.Lock()
 	recentCount := len(bs.restartTimes)
 	bs.restartMu.Unlock()
 
 	if recentCount > 0 {
-		delay := backoffDelay(recentCount-1, acpRestartBaseDelay, acpRestartMaxDelay, acpStartRetryJitterRatio)
+		delay := backoffDelay(recentCount-1, ACPRestartBaseDelay, ACPRestartMaxDelay, acpStartRetryJitterRatio)
 		if bs.logger != nil {
 			bs.logger.Info("Waiting before ACP restart",
 				"delay", delay.String(),
@@ -1060,6 +1103,7 @@ func (bs *BackgroundSession) restartACPProcess() error {
 			"session_id", bs.persistedID,
 			"acp_id", bs.acpID,
 			"restart_count", bs.restartCount+1,
+			"reason", string(reason),
 			"command", bs.acpCommand,
 			"cwd", bs.acpCwd)
 	}
@@ -1081,8 +1125,8 @@ func (bs *BackgroundSession) restartACPProcess() error {
 	// Clear the old connection
 	bs.acpConn = nil
 
-	// Record this restart attempt
-	bs.recordRestart()
+	// Record this restart attempt with reason
+	bs.recordRestart(reason)
 
 	// Start a new ACP process, attempting to resume the session
 	err := bs.startACPProcess(bs.acpCommand, bs.acpCwd, bs.workingDir, bs.acpID)
@@ -1264,6 +1308,10 @@ var stderrCrashPatterns = []string{
 	"background reader: stream ended",
 	"connection reset by peer",
 	"broken pipe",
+	// From acp-go-sdk's JSONRPC parser when receiving malformed messages from a dying process
+	"received message with neither id nor method",
+	// From acp-go-sdk's notification queue overflow handler (triggers when process is overwhelmed)
+	"failed to queue notification; closing connection",
 }
 
 // startStderrMonitor starts a goroutine that reads from stderr and writes to the collector.
@@ -1434,6 +1482,40 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	origWait := wait
 	bs.acpWait = func() error {
 		err := origWait()
+
+		// Log exit code and signal for crash telemetry
+		if err != nil && bs.logger != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				logAttrs := []any{
+					"exit_code", exitErr.ExitCode(),
+					"session_id", bs.persistedID,
+				}
+				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+					if status.Signaled() {
+						logAttrs = append(logAttrs, "signal", status.Signal().String())
+					}
+				}
+
+				// Log at DEBUG if we intentionally killed it, WARN if it crashed on its own
+				if bs.ctx.Err() != nil {
+					bs.logger.Debug("ACP process exited (intentional shutdown)", logAttrs...)
+				} else {
+					bs.logger.Warn("ACP process exited abnormally", logAttrs...)
+				}
+			} else {
+				// Non-ExitError wait failures (shouldn't happen in practice)
+				if bs.ctx.Err() != nil {
+					bs.logger.Debug("ACP process wait error (intentional shutdown)",
+						"error", err,
+						"session_id", bs.persistedID)
+				} else {
+					bs.logger.Warn("ACP process wait error",
+						"error", err,
+						"session_id", bs.persistedID)
+				}
+			}
+		}
+
 		bs.acpProcessDoneOnce.Do(func() {
 			close(bs.acpProcessDone)
 		})
@@ -1526,10 +1608,12 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	// Create ACP connection with filtered stdout
 	bs.acpConn = acp.NewClientSideConnection(bs.acpClient, stdin, filteredStdout)
 	if bs.logger != nil {
-		// Use a downgraded logger for the SDK to convert INFO to DEBUG
+		// Use a downgraded logger for the SDK to convert INFO to DEBUG and
+		// downgrade specific ERROR messages (malformed JSONRPC during crashes) to WARN.
 		// This prevents verbose SDK logs (e.g., "peer connection closed") from
-		// appearing in stdout when log level is INFO.
-		bs.acpConn.SetLogger(logging.DowngradeInfoToDebug(bs.logger))
+		// appearing in stdout when log level is INFO, and prevents misleading ERROR
+		// logs for expected crash recovery scenarios.
+		bs.acpConn.SetLogger(logging.DowngradeACPSDKErrors(bs.logger))
 	}
 
 	// Create an init context that gets cancelled when the ACP process dies.
@@ -1858,7 +1942,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				})
 
 				// Attempt to restart the ACP process
-				if err := bs.restartACPProcess(); err != nil {
+				if err := bs.restartACPProcess(RestartReasonCrashDuringPrompt); err != nil {
 					// Provide specific guidance for permanent errors
 					errMsg := "Failed to restart the AI agent: " + err.Error() + ". Please switch to another conversation and back to retry."
 					if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
@@ -2246,7 +2330,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				bs.notifyObservers(func(o SessionObserver) {
 					o.OnError(fmt.Sprintf("The AI agent process stopped unexpectedly. Restarting %s...", restartInfo))
 				})
-				if restartErr := bs.restartACPProcess(); restartErr != nil {
+				if restartErr := bs.restartACPProcess(RestartReasonCrashDuringStream); restartErr != nil {
 					// Provide specific guidance for permanent errors
 					errMsg := "Failed to restart the AI agent: " + restartErr.Error() +
 						". Please switch to another conversation and back to retry."

@@ -7,6 +7,48 @@ import (
 	"time"
 )
 
+// Shared ACP process restart constants.
+// These are used by both SharedACPProcess and BackgroundSession to ensure
+// consistent restart behavior across both code paths.
+const (
+	// MaxACPRestarts is the maximum number of automatic restarts allowed within ACPRestartWindow.
+	// If this limit is exceeded, the user must manually restart the session.
+	MaxACPRestarts = 3
+
+	// ACPRestartWindow is the time window for counting restart attempts.
+	// Restarts older than this are not counted toward the limit.
+	ACPRestartWindow = 5 * time.Minute
+
+	// ACPRestartBaseDelay is the initial delay between runtime restart attempts.
+	// This is intentionally longer than the start-retry delay (500ms) to give the system
+	// time to recover from transient conditions (e.g., notification queue overflow
+	// due to backpressure from slow WebSocket clients).
+	// With exponential backoff: 3s → 6s → 12s → 24s → 30s (capped).
+	ACPRestartBaseDelay = 3 * time.Second
+
+	// ACPRestartMaxDelay is the maximum delay between runtime restart attempts.
+	// This prevents rapid crash loops that burn resources without letting the underlying
+	// condition (e.g., client backpressure) resolve.
+	ACPRestartMaxDelay = 30 * time.Second
+)
+
+// RestartReason represents the reason why an ACP process was restarted.
+type RestartReason string
+
+const (
+	// RestartReasonCrashDuringPrompt indicates the process crashed while handling a prompt.
+	RestartReasonCrashDuringPrompt RestartReason = "crash_during_prompt"
+
+	// RestartReasonCrashDuringStream indicates the process crashed while streaming a response.
+	RestartReasonCrashDuringStream RestartReason = "crash_during_stream"
+
+	// RestartReasonUnexpectedExit indicates the process exited unexpectedly outside of prompt handling.
+	RestartReasonUnexpectedExit RestartReason = "unexpected_exit"
+
+	// RestartReasonUnknown indicates the restart reason could not be determined.
+	RestartReasonUnknown RestartReason = "unknown"
+)
+
 // ACPErrorClass represents the severity classification of an ACP process error.
 type ACPErrorClass int
 

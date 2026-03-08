@@ -27,14 +27,11 @@ const (
 	// processStartRetryJitterRatio is the jitter ratio (±) applied to retry delays.
 	processStartRetryJitterRatio = 0.3
 
-	// maxProcessRestarts is the maximum number of automatic restarts within processRestartWindow.
-	maxProcessRestarts = 3
-	// processRestartWindow is the time window for counting restart attempts.
-	processRestartWindow = 5 * time.Minute
-	// processRestartBaseDelay is the initial delay between runtime restart attempts.
-	processRestartBaseDelay = 1 * time.Second
-	// processRestartMaxDelay is the maximum delay between runtime restart attempts.
-	processRestartMaxDelay = 10 * time.Second
+	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
+	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
+	// acp_error_classification.go as shared constants (MaxACPRestarts, ACPRestartWindow,
+	// ACPRestartBaseDelay, ACPRestartMaxDelay) to ensure consistent behavior between
+	// SharedACPProcess and BackgroundSession.
 )
 
 // SharedACPProcessConfig holds configuration for creating a SharedACPProcess.
@@ -302,6 +299,40 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	origWait := wait
 	p.wait = func() error {
 		err := origWait()
+
+		// Log exit code and signal for crash telemetry
+		if err != nil && p.logger != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				logAttrs := []any{
+					"exit_code", exitErr.ExitCode(),
+					"acp_server", p.config.ACPServer,
+				}
+				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+					if status.Signaled() {
+						logAttrs = append(logAttrs, "signal", status.Signal().String())
+					}
+				}
+
+				// Log at DEBUG if we intentionally killed it, WARN if it crashed on its own
+				if p.ctx.Err() != nil {
+					p.logger.Debug("ACP process exited (intentional shutdown)", logAttrs...)
+				} else {
+					p.logger.Warn("ACP process exited abnormally", logAttrs...)
+				}
+			} else {
+				// Non-ExitError wait failures (shouldn't happen in practice)
+				if p.ctx.Err() != nil {
+					p.logger.Debug("ACP process wait error (intentional shutdown)",
+						"error", err,
+						"acp_server", p.config.ACPServer)
+				} else {
+					p.logger.Warn("ACP process wait error",
+						"error", err,
+						"acp_server", p.config.ACPServer)
+				}
+			}
+		}
+
 		p.processDoneOnce.Do(func() {
 			close(p.processDone)
 		})
@@ -349,7 +380,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 	p.conn = acp.NewClientSideConnection(p.client, stdin, filteredStdout)
 	if p.logger != nil {
-		p.conn.SetLogger(logging.DowngradeInfoToDebug(p.logger))
+		p.conn.SetLogger(logging.DowngradeACPSDKErrors(p.logger))
 	}
 
 	// Create an init context that gets cancelled when the ACP process dies.
@@ -674,7 +705,7 @@ func (p *SharedACPProcess) canRestart() bool {
 	defer p.restartMu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-processRestartWindow)
+	cutoff := now.Add(-ACPRestartWindow)
 
 	// Remove old restart timestamps
 	valid := p.restartTimes[:0]
@@ -685,7 +716,7 @@ func (p *SharedACPProcess) canRestart() bool {
 	}
 	p.restartTimes = valid
 
-	return len(p.restartTimes) < maxProcessRestarts
+	return len(p.restartTimes) < MaxACPRestarts
 }
 
 // recordRestart records a restart attempt.
@@ -701,7 +732,7 @@ func (p *SharedACPProcess) recordRestart() {
 // Returns nil on success. Returns an *ACPClassifiedError for permanent failures.
 func (p *SharedACPProcess) Restart() error {
 	if !p.canRestart() {
-		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", maxProcessRestarts, processRestartWindow)
+		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", MaxACPRestarts, ACPRestartWindow)
 	}
 
 	// Apply backoff based on how many recent restarts have occurred.
@@ -710,7 +741,7 @@ func (p *SharedACPProcess) Restart() error {
 	p.restartMu.Unlock()
 
 	if recentCount > 0 {
-		delay := backoffDelay(recentCount-1, processRestartBaseDelay, processRestartMaxDelay, processStartRetryJitterRatio)
+		delay := backoffDelay(recentCount-1, ACPRestartBaseDelay, ACPRestartMaxDelay, processStartRetryJitterRatio)
 		if p.logger != nil {
 			p.logger.Info("Waiting before restart",
 				"delay", delay.String(),
