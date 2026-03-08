@@ -174,6 +174,20 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 		return s.sendResponse(req.ID, PromptResponse{StopReason: "end_turn"})
 	}
 
+	// Check for special CRASH command to simulate process crash
+	// This is used for testing restart logic
+	if strings.HasPrefix(message, "CRASH") {
+		s.log("CRASH command received - simulating process crash")
+		// Send a brief message before crashing
+		s.sendSessionUpdate(SessionUpdate{
+			AgentMessageChunk: &AgentMessageChunk{
+				Content: ContentBlock{Type: "text", Text: "Simulating crash..."},
+			},
+		})
+		// Exit with non-zero code to simulate crash
+		os.Exit(1)
+	}
+
 	// Check for special REPLAY: prefix to replay events from a file
 	// Format: REPLAY:filename.jsonl
 	if strings.HasPrefix(message, "REPLAY:") {
