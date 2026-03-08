@@ -51,7 +51,7 @@ Server logs rotate and can have gaps of 30+ minutes. If critical events are miss
 
 3. **"Agent process crashed"**
    - Look for `"ACP connection closed during prompt"` in logs
-   - Check if auto-restart kicked in: `"The AI agent process stopped unexpectedly. Restarting..."`
+   - Check if auto-restart kicked in: `"The AI agent process stopped unexpectedly. Restarting (attempt N of 3)..."`
 
 ## MCP Debug Tools
 The MCP server exposes debug tools accessible from the AI agent:
