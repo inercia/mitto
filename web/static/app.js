@@ -1863,6 +1863,18 @@ function SessionList({
     }
   }, [filterTab, regularSessions, periodicSessions, archivedSessions]);
 
+  // Build a lookup map of session_id → true for sessions currently streaming.
+  // This provides fresh streaming state that can be used instead of stale values
+  // from cached groupedSessions (whose fingerprint intentionally excludes isStreaming
+  // to avoid expensive tree rebuilds during streaming).
+  const streamingMap = useMemo(() => {
+    const map = new Map();
+    allSessions.forEach((s) => {
+      if (s.isStreaming) map.set(s.session_id, true);
+    });
+    return map;
+  }, [allSessions]);
+
   // Check which filter tabs have streaming sessions (for pulsing animation)
   const streamingTabs = useMemo(() => {
     return {
@@ -2196,7 +2208,8 @@ function SessionList({
         const expanded = isGroupExpanded(group.key);
         const sessionCount = group.sessions.length;
         // Check if any session in this group is actively streaming
-        const hasStreamingSession = group.sessions.some((s) => s.isStreaming);
+        // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
+        const hasStreamingSession = group.sessions.some((s) => streamingMap.has(s.session_id));
         // Get workspace info for badge display (workspace mode only)
         const workspace =
           groupingMode === "workspace" && group.workingDir
@@ -2259,7 +2272,7 @@ function SessionList({
             </div>
             ${expanded &&
             group.sessions.map((session) =>
-              renderSessionItem(session, {
+              renderSessionItem({ ...session, isStreaming: streamingMap.has(session.session_id) }, {
                 // In workspace grouping, hide entire badge (both abbreviation and ACP server are in group header)
                 hideBadge: groupingMode === "workspace",
                 // In server grouping, hide the ACP server name (redundant with group header)
@@ -2296,11 +2309,12 @@ function SessionList({
     };
 
     // Helper to check if any session (or its children) is streaming
+    // Uses streamingMap for fresh state (groupedSessions may cache stale isStreaming)
     const hasStreaming = (sessions) => {
       return sessions.some(
         (s) =>
-          s.isStreaming ||
-          (s.children && s.children.some((c) => c.isStreaming)),
+          streamingMap.has(s.session_id) ||
+          (s.children && s.children.some((c) => streamingMap.has(c.session_id))),
       );
     };
 
@@ -2347,8 +2361,9 @@ function SessionList({
               const childrenExpanded = hasChildren
                 ? isGroupExpanded(parentKey)
                 : false;
+              // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
               const hasChildStreaming =
-                hasChildren && session.children.some((c) => c.isStreaming);
+                hasChildren && session.children.some((c) => streamingMap.has(c.session_id));
 
               return html`
                 <div
@@ -2356,7 +2371,7 @@ function SessionList({
                   class="parent-session-group ${hasChildren ? "has-children" : ""}"
                 >
                   <!-- Parent/regular session - render with expand/collapse integrated into SessionItem -->
-                  ${renderSessionItem(session, {
+                  ${renderSessionItem({ ...session, isStreaming: streamingMap.has(session.session_id) }, {
                     hideBadge: false, // Show badge to display ACP server
                     badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
                     badgeHideAcpServer: false, // Show ACP server badge
@@ -2381,7 +2396,7 @@ function SessionList({
                     >
                       ${session.children.map((child) =>
                         html`<div class="session-item--child">
-                          ${renderSessionItem(child, {
+                          ${renderSessionItem({ ...child, isStreaming: streamingMap.has(child.session_id) }, {
                             hideBadge: false, // Show badge to display ACP server
                             badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
                             badgeHideAcpServer: false, // Show ACP server badge
