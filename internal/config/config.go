@@ -1150,6 +1150,10 @@ func Parse(data []byte) (*Config, error) {
 			}
 			// Copy server-specific prompts
 			for _, p := range server.Prompts {
+				// Skip prompts with empty name or prompt text
+				if p.Name == "" || p.Prompt == "" {
+					continue
+				}
 				// Skip disabled prompts
 				if p.Enabled != nil && !*p.Enabled {
 					continue
@@ -1173,6 +1177,10 @@ func Parse(data []byte) (*Config, error) {
 
 	// Populate global prompts (top-level)
 	for _, p := range raw.Prompts {
+		// Skip prompts with empty name or prompt text
+		if p.Name == "" || p.Prompt == "" {
+			continue
+		}
 		// Skip disabled prompts
 		if p.Enabled != nil && !*p.Enabled {
 			continue

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -196,7 +197,10 @@ func (c *Client) UploadImage(sessionID string, filename string, mimeType string,
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename))
+	h.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{
+		"name":     "image",
+		"filename": filename,
+	}))
 	h.Set("Content-Type", mimeType)
 	part, err := writer.CreatePart(h)
 	if err != nil {
