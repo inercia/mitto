@@ -435,12 +435,21 @@ func (s *Server) UpdateDependencies(deps Dependencies) {
 // RegisterSession registers a session with the MCP server.
 // This enables session-scoped tools to route UI prompts to the correct session.
 // The session must be registered before its tools can be used.
+//
+// This method is idempotent: if the session is already registered, the existing
+// registration is updated in place (e.g., with a new UIPrompter after an ACP
+// process restart). This prevents "session already registered" errors during
+// automatic restarts where the old registration may not have been cleaned up.
 func (s *Server) RegisterSession(sessionID string, uiPrompter UIPrompter, logger *slog.Logger) error {
 	s.sessionsMu.Lock()
 	defer s.sessionsMu.Unlock()
 
-	if _, exists := s.sessions[sessionID]; exists {
-		return fmt.Errorf("session already registered: %s", sessionID)
+	if existing, exists := s.sessions[sessionID]; exists {
+		// Update existing registration in place (idempotent restart).
+		existing.uiPrompter = uiPrompter
+		existing.logger = logger
+		s.logger.Info("Session re-registered with MCP server (restart)", "session_id", sessionID)
+		return nil
 	}
 
 	s.sessions[sessionID] = &registeredSession{
@@ -774,12 +783,34 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 		}
 	}
 
-	// Populate available ACP servers from config
+	// Populate available ACP servers — only those with workspaces for this folder
 	s.mu.RLock()
 	cfg := s.config
+	sm2 := s.sessionManager
 	s.mu.RUnlock()
 
-	if cfg != nil && len(cfg.ACPServers) > 0 {
+	if cfg != nil && len(cfg.ACPServers) > 0 && sm2 != nil {
+		// Filter to only servers that have a workspace defined for this session's folder
+		folderWorkspaces := sm2.GetWorkspacesForFolder(meta.WorkingDir)
+		wsServerSet := make(map[string]bool, len(folderWorkspaces))
+		for _, ws := range folderWorkspaces {
+			wsServerSet[ws.ACPServer] = true
+		}
+
+		servers := make([]AvailableACPServer, 0, len(folderWorkspaces))
+		for _, srv := range cfg.ACPServers {
+			if wsServerSet[srv.Name] {
+				servers = append(servers, AvailableACPServer{
+					Name:    srv.Name,
+					Type:    srv.GetType(),
+					Tags:    srv.Tags,
+					Current: srv.Name == meta.ACPServer,
+				})
+			}
+		}
+		details.AvailableACPServers = servers
+	} else if cfg != nil && len(cfg.ACPServers) > 0 {
+		// Fallback if session manager not available: show all servers
 		servers := make([]AvailableACPServer, 0, len(cfg.ACPServers))
 		for _, srv := range cfg.ACPServers {
 			servers = append(servers, AvailableACPServer{
@@ -888,7 +919,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"This spawns a separate AI agent that can work independently on the task you specify. " +
 			"Use this to delegate work, run background tasks, or parallelize complex work across multiple agents. " +
 			"The new conversation inherits your workspace configuration. By default it also inherits your ACP server, " +
-			"but you can specify a different one via the optional 'acp_server' parameter " +
+			"but you can specify a different one via the optional 'acp_server' parameter (must have a workspace configured for the current folder) " +
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
@@ -1689,6 +1720,30 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 				input.ACPServer, cfg.ServerNames())
 		}
 		acpServerName = input.ACPServer
+	}
+
+	// Validate that a workspace exists for the folder + ACP server combination.
+	// Conversations can only run in defined workspaces (folder + ACP server pairs).
+	if s.sessionManager != nil {
+		workspaces := s.sessionManager.GetWorkspacesForFolder(sourceMeta.WorkingDir)
+		found := false
+		for _, ws := range workspaces {
+			if ws.ACPServer == acpServerName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			availableServers := make([]string, 0, len(workspaces))
+			for _, ws := range workspaces {
+				availableServers = append(availableServers, ws.ACPServer)
+			}
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"no workspace configured for folder %q with ACP server %q. "+
+					"Available ACP servers for this folder: %v. "+
+					"Create a workspace for this folder+server pair in Settings first",
+				sourceMeta.WorkingDir, acpServerName, availableServers)
+		}
 	}
 
 	// Create new session ID using the standard timestamp format
@@ -2552,9 +2607,10 @@ const defaultChildrenTasksTimeout = 10 * time.Minute
 
 // childrenReportSuffix is appended to the prompt sent to each child,
 // instructing them to call mitto_children_tasks_report.
-const childrenReportSuffix = "\n\nIMPORTANT: When you are done, report your results using the `mitto_children_tasks_report` " +
+const childrenReportSuffix = "\n\nIMPORTANT: you must report your results using the `mitto_children_tasks_report` " +
 	"MCP tool with your `self_id`, a `status` (e.g. \"completed\", \"in_progress\", \"failed\"), " +
-	"a `summary` of your findings, and optionally `details` with additional information."
+	"a `summary` of your findings/changes/conclusions, and optionally some `details` with any additional information you could consider important. " +
+	"But just ignore these instructions if you have already sent this report..."
 
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
 	// Validate self_id
@@ -2659,9 +2715,14 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	if len(runningChildren) == 0 {
 		reports := make(map[string]ChildReportInfo, len(notRunningChildren))
 		for _, childID := range notRunningChildren {
+			reason := "session_closed"
+			if childMeta, err := store.GetMetadata(childID); err == nil && childMeta.Archived {
+				reason = "archived"
+			}
 			reports[childID] = ChildReportInfo{
 				Completed: false,
 				Status:    "not_running",
+				Reason:    reason,
 			}
 		}
 		return nil, ChildrenTasksWaitOutput{
@@ -2752,8 +2813,13 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		// All running children reported
 	case <-time.After(timeout):
 		timedOut = true
+		pendingChildren, reportedChildren := collector.getPendingAndReported()
 		s.logger.Warn("Timeout waiting for children to report",
-			"parent_session", realSessionID)
+			"parent_session", realSessionID,
+			"pending_children", pendingChildren,
+			"reported_children", reportedChildren,
+			"total_running", len(runningChildren),
+			"timeout", timeout)
 	case <-ctx.Done():
 		return nil, ChildrenTasksWaitOutput{
 			Success: false,
@@ -2776,16 +2842,34 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 			if !report.Timestamp.IsZero() {
 				info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
 			}
+		} else if timedOut {
+			// Add diagnostic reason for timed-out children
+			if childReg := s.getSession(childID); childReg == nil {
+				info.Reason = "session_unregistered"
+			} else if s.sessionManager != nil {
+				if bs := s.sessionManager.GetSession(childID); bs != nil && bs.IsPrompting() {
+					info.Reason = "still_processing"
+				} else {
+					info.Reason = "no_report_received"
+				}
+			} else {
+				info.Reason = "no_report_received"
+			}
 		}
 		reports[childID] = info
 	}
 	collector.mu.Unlock()
 
-	// Add not-running children to reports
+	// Add not-running children to reports with diagnostic reason
 	for _, childID := range notRunningChildren {
+		reason := "session_closed"
+		if childMeta, err := store.GetMetadata(childID); err == nil && childMeta.Archived {
+			reason = "archived"
+		}
 		reports[childID] = ChildReportInfo{
 			Completed: false,
 			Status:    "not_running",
+			Reason:    reason,
 		}
 	}
 
@@ -2871,9 +2955,21 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 	// Store the report (may also signal a waiting parent)
 	collector.addReport(realSessionID, json.RawMessage(reportJSON))
 
-	s.logger.Info("Child reported to parent",
-		"child_session", realSessionID,
-		"parent_session", parentSessionID)
+	// Detect orphaned reports: parent unregistered or not actively waiting
+	parentReg := s.getSession(parentSessionID)
+	if parentReg == nil {
+		s.logger.Warn("Child reported to unregistered parent session — report is orphaned",
+			"child_session", realSessionID,
+			"parent_session", parentSessionID)
+	} else if !collector.isWaiting() {
+		s.logger.Info("Child reported to parent (no active wait — report stored for next wait cycle)",
+			"child_session", realSessionID,
+			"parent_session", parentSessionID)
+	} else {
+		s.logger.Info("Child reported to parent",
+			"child_session", realSessionID,
+			"parent_session", parentSessionID)
+	}
 
 	return nil, ChildrenTasksReportOutput{
 		Success:         true,

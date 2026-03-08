@@ -376,7 +376,8 @@ func findSubstring(s, substr string) bool {
 
 // mockSessionManager is a mock implementation of SessionManager for testing.
 type mockSessionManager struct {
-	broadcastCalls []broadcastCall
+	broadcastCalls      []broadcastCall
+	workspacesForFolder []config.WorkspaceSettings
 }
 
 type broadcastCall struct {
@@ -407,7 +408,7 @@ func (m *mockSessionManager) ResumeSession(sessionID, sessionName, workingDir st
 }
 
 func (m *mockSessionManager) GetWorkspacesForFolder(folder string) []config.WorkspaceSettings {
-	return nil
+	return m.workspacesForFolder
 }
 
 func (m *mockSessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
@@ -446,7 +447,11 @@ func TestConversationStartBroadcastsEvent(t *testing.T) {
 	}
 
 	// Create mock session manager to track broadcasts
-	mockSM := &mockSessionManager{}
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "test-server", WorkingDir: "/test/dir"},
+		},
+	}
 
 	// Create server with mock session manager
 	srv, err := NewServer(
@@ -503,6 +508,221 @@ func TestConversationStartBroadcastsEvent(t *testing.T) {
 	}
 	if call.parentSessionID != parentMeta.SessionID {
 		t.Errorf("Expected broadcast parentSessionID %s, got %s", parentMeta.SessionID, call.parentSessionID)
+	}
+}
+
+func TestConversationStart_NoWorkspaceForACPServer(t *testing.T) {
+	// Create a temporary store
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Create a parent session with can_start_conversation enabled
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "server-a",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	// Mock session manager with only server-a workspace for this folder
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "server-a", WorkingDir: "/test/dir"},
+		},
+	}
+
+	// Create server with mock session manager and a second ACP server in config
+	appConfig := &config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "server-a", Command: "echo a"},
+			{Name: "server-b", Command: "echo b"},
+		},
+	}
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{
+			Store:          store,
+			Config:         appConfig,
+			SessionManager: mockSM,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Register the parent session
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	// Try to create a conversation with an ACP server that has no workspace for this folder
+	ctx := context.Background()
+	input := ConversationStartInput{
+		SelfID:    parentMeta.SessionID,
+		Title:     "Should Fail",
+		ACPServer: "server-b", // No workspace for this server + folder pair
+	}
+
+	_, _, err = srv.handleConversationStart(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error when creating conversation with ACP server that has no workspace, got nil")
+	}
+
+	// Verify error message
+	if !contains(err.Error(), "no workspace configured") {
+		t.Errorf("Expected error to contain 'no workspace configured', got: %v", err)
+	}
+	if !contains(err.Error(), "server-b") {
+		t.Errorf("Expected error to mention requested server 'server-b', got: %v", err)
+	}
+}
+
+func TestConversationStart_WorkspaceExistsForACPServer(t *testing.T) {
+	// Create a temporary store
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Create a parent session with can_start_conversation enabled
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "server-a",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	// Mock session manager with both server-a and server-b workspaces for this folder
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "server-a", WorkingDir: "/test/dir"},
+			{ACPServer: "server-b", WorkingDir: "/test/dir"},
+		},
+	}
+
+	// Create server with mock session manager
+	appConfig := &config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "server-a", Command: "echo a"},
+			{Name: "server-b", Command: "echo b"},
+		},
+	}
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{
+			Store:          store,
+			Config:         appConfig,
+			SessionManager: mockSM,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Register the parent session
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	// Create a conversation with server-b — should succeed because workspace exists
+	ctx := context.Background()
+	input := ConversationStartInput{
+		SelfID:    parentMeta.SessionID,
+		Title:     "Should Succeed",
+		ACPServer: "server-b",
+	}
+
+	_, output, err := srv.handleConversationStart(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("Expected no error when creating conversation with valid workspace, got: %v", err)
+	}
+
+	if output.SessionID == "" {
+		t.Error("Expected session ID in output")
+	}
+	if output.ACPServer != "server-b" {
+		t.Errorf("Expected ACP server 'server-b', got: %s", output.ACPServer)
+	}
+}
+
+func TestConversationStart_InheritedServerRequiresWorkspace(t *testing.T) {
+	// Test that even when inheriting the parent's ACP server (no explicit acp_server),
+	// the workspace validation still applies
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Create a parent session
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent Session",
+		ACPServer:  "orphan-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanStartConversation: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	// Mock session manager returns NO workspaces for this folder
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{},
+	}
+
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{
+			Store:          store,
+			SessionManager: mockSM,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	// Try to create a conversation — no explicit acp_server, inherits "orphan-server"
+	ctx := context.Background()
+	input := ConversationStartInput{
+		SelfID: parentMeta.SessionID,
+		Title:  "Should Fail Too",
+	}
+
+	_, _, err = srv.handleConversationStart(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error when inheriting ACP server with no workspace, got nil")
+	}
+	if !contains(err.Error(), "no workspace configured") {
+		t.Errorf("Expected error to contain 'no workspace configured', got: %v", err)
 	}
 }
 
@@ -702,10 +922,16 @@ func TestChildrenTasksWait_Timeout(t *testing.T) {
 		if !report0.Completed {
 			t.Error("Expected first child report to be completed")
 		}
-		// Second child should NOT have reported
+		if report0.Reason != "" {
+			t.Errorf("Expected no reason for completed child, got '%s'", report0.Reason)
+		}
+		// Second child should NOT have reported — with diagnostic reason
 		report1 := result.output.Reports[childIDs[1]]
 		if report1.Completed {
 			t.Error("Expected second child report to NOT be completed")
+		}
+		if report1.Reason != "no_report_received" {
+			t.Errorf("Expected reason 'no_report_received' for timed-out child, got '%s'", report1.Reason)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
@@ -1057,7 +1283,7 @@ func TestChildrenTasksWait_AllChildrenNotRunning(t *testing.T) {
 		t.Error("Should not have timed out - should return immediately")
 	}
 
-	// Check that the child is reported as not_running
+	// Check that the child is reported as not_running with reason
 	report, ok := output.Reports[childID]
 	if !ok {
 		t.Fatal("Missing report for child")
@@ -1067,6 +1293,9 @@ func TestChildrenTasksWait_AllChildrenNotRunning(t *testing.T) {
 	}
 	if report.Status != "not_running" {
 		t.Errorf("Expected status 'not_running', got '%s'", report.Status)
+	}
+	if report.Reason != "session_closed" {
+		t.Errorf("Expected reason 'session_closed' for closed child, got '%s'", report.Reason)
 	}
 
 	// Check warnings
@@ -1183,7 +1412,7 @@ func TestChildrenTasksWait_MixedRunningAndClosed(t *testing.T) {
 			t.Errorf("Expected status 'completed', got '%s'", runningReport.Status)
 		}
 
-		// Closed child should be marked as not_running
+		// Closed child should be marked as not_running with reason
 		closedReport, ok := result.output.Reports[closedChildID]
 		if !ok {
 			t.Fatal("Missing report for closed child")
@@ -1193,6 +1422,9 @@ func TestChildrenTasksWait_MixedRunningAndClosed(t *testing.T) {
 		}
 		if closedReport.Status != "not_running" {
 			t.Errorf("Expected status 'not_running', got '%s'", closedReport.Status)
+		}
+		if closedReport.Reason != "session_closed" {
+			t.Errorf("Expected reason 'session_closed' for closed child, got '%s'", closedReport.Reason)
 		}
 
 		// Check warnings
@@ -1270,13 +1502,16 @@ func TestChildrenTasksWait_ArchivedChild(t *testing.T) {
 		t.Fatalf("Expected success, got error: %s", output.Error)
 	}
 
-	// Check that archived child is not_running
+	// Check that archived child is not_running with reason "archived"
 	report, ok := output.Reports[childID]
 	if !ok {
 		t.Fatal("Missing report for archived child")
 	}
 	if report.Status != "not_running" {
 		t.Errorf("Expected status 'not_running', got '%s'", report.Status)
+	}
+	if report.Reason != "archived" {
+		t.Errorf("Expected reason 'archived' for archived child, got '%s'", report.Reason)
 	}
 
 	// Check warnings mention "archived"
@@ -2502,5 +2737,262 @@ func TestResolveSelfIDWithMCP_Phase3CacheFallback(t *testing.T) {
 	cached := srv.lookupMCPSession("mcp-protocol-session-xyz")
 	if cached != "resolved-mitto-session" {
 		t.Errorf("Expected resolved-mitto-session from cache, got: %s", cached)
+	}
+}
+
+// =============================================================================
+// childReportCollector Unit Tests
+// =============================================================================
+
+func TestChildReportCollector_GetPendingAndReported(t *testing.T) {
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	// Start a wait with 3 children
+	childIDs := []string{"child-a", "child-b", "child-c"}
+	collector.startWait(childIDs)
+
+	// Report from only one child
+	collector.addReport("child-b", []byte(`{"status":"completed"}`))
+
+	pending, reported := collector.getPendingAndReported()
+
+	if len(reported) != 1 {
+		t.Errorf("Expected 1 reported child, got %d", len(reported))
+	}
+	if len(reported) == 1 && reported[0] != "child-b" {
+		t.Errorf("Expected reported child to be 'child-b', got '%s'", reported[0])
+	}
+	if len(pending) != 2 {
+		t.Errorf("Expected 2 pending children, got %d", len(pending))
+	}
+	// Verify pending contains child-a and child-c (order may vary)
+	pendingSet := make(map[string]bool)
+	for _, id := range pending {
+		pendingSet[id] = true
+	}
+	if !pendingSet["child-a"] || !pendingSet["child-c"] {
+		t.Errorf("Expected pending to contain child-a and child-c, got %v", pending)
+	}
+}
+
+func TestChildReportCollector_IsWaiting(t *testing.T) {
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	// Initially not waiting
+	if collector.isWaiting() {
+		t.Error("Expected isWaiting() to be false initially")
+	}
+
+	// Start a wait
+	collector.startWait([]string{"child-1"})
+	if !collector.isWaiting() {
+		t.Error("Expected isWaiting() to be true during active wait")
+	}
+
+	// Clear the wait
+	collector.clearWait()
+	if collector.isWaiting() {
+		t.Error("Expected isWaiting() to be false after clearWait")
+	}
+}
+
+// =============================================================================
+// Orphaned Report Detection Tests
+// =============================================================================
+
+func TestChildrenTasksReport_OrphanedParent(t *testing.T) {
+	// Set up parent + child, then unregister parent before child reports.
+	// The child should still be able to report without error — the report is stored
+	// but the parent is no longer registered (orphaned report).
+	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
+	ctx := context.Background()
+
+	// Unregister the parent session
+	srv.UnregisterSession(parentID)
+
+	// Child reports — should succeed (no panic, no error)
+	_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Done, but parent is gone",
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksReport returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+	if output.ParentSessionID != parentID {
+		t.Errorf("Expected parent_session_id '%s', got '%s'", parentID, output.ParentSessionID)
+	}
+}
+
+// =============================================================================
+// Session Health Diagnostic Reason Tests
+// =============================================================================
+
+// mockSessionManagerForChildren implements SessionManager for testing children wait diagnostics.
+type mockSessionManagerForChildren struct {
+	sessions map[string]BackgroundSession
+}
+
+func (m *mockSessionManagerForChildren) GetSession(sessionID string) BackgroundSession {
+	bs, ok := m.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	return bs
+}
+
+func (m *mockSessionManagerForChildren) ListRunningSessions() []string { return nil }
+func (m *mockSessionManagerForChildren) CloseSessionGracefully(string, string, time.Duration) bool {
+	return true
+}
+func (m *mockSessionManagerForChildren) CloseSession(string, string) {}
+func (m *mockSessionManagerForChildren) ResumeSession(string, string, string) (BackgroundSession, error) {
+	return nil, nil
+}
+func (m *mockSessionManagerForChildren) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForChildren) BroadcastSessionCreated(string, string, string, string, string) {
+}
+func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool) {}
+
+func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
+	// Set up parent + child, child is prompting (still processing).
+	// On timeout, the child's reason should be "still_processing".
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	parentMeta := session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	childMeta := session.Metadata{
+		SessionID:       childID,
+		Name:            "Busy Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}
+	if err := store.Create(childMeta); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Create mock that reports child as prompting
+	mockBS := newMockBackgroundSessionForWait(true) // IsPrompting() == true
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{
+			childID: mockBS,
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 1, // Short timeout — child never reports
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success (even on timeout), got error: %s", output.Error)
+	}
+	if !output.TimedOut {
+		t.Error("Expected timeout")
+	}
+
+	report, ok := output.Reports[childID]
+	if !ok {
+		t.Fatal("Missing report for child")
+	}
+	if report.Completed {
+		t.Error("Expected child to NOT have completed")
+	}
+	if report.Reason != "still_processing" {
+		t.Errorf("Expected reason 'still_processing', got '%s'", report.Reason)
+	}
+}
+
+func TestChildrenTasksWait_TimeoutWithSessionUnregistered(t *testing.T) {
+	// Set up parent + child, start a wait, then unregister the child mid-wait.
+	// On timeout, the child's reason should be "session_unregistered".
+	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
+	ctx := context.Background()
+
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   childIDs,
+			TimeoutSeconds: 2,
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	// Give time for coordination setup
+	time.Sleep(100 * time.Millisecond)
+
+	// Unregister child session mid-wait (simulates crash)
+	srv.UnregisterSession(childIDs[0])
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("handleChildrenTasksWait returned error: %v", result.err)
+		}
+		if !result.output.TimedOut {
+			t.Error("Expected timeout")
+		}
+		report := result.output.Reports[childIDs[0]]
+		if report.Completed {
+			t.Error("Expected child to NOT have completed")
+		}
+		if report.Reason != "session_unregistered" {
+			t.Errorf("Expected reason 'session_unregistered', got '%s'", report.Reason)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
 	}
 }

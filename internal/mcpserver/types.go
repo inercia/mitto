@@ -437,6 +437,29 @@ func (c *childReportCollector) clearWait() {
 	c.waitingFor = nil
 }
 
+// getPendingAndReported returns the lists of child IDs that are still pending
+// and those that have already reported, from the current waitingFor set.
+func (c *childReportCollector) getPendingAndReported() (pending []string, reported []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for childID := range c.waitingFor {
+		r := c.reports[childID]
+		if r != nil && r.Completed {
+			reported = append(reported, childID)
+		} else {
+			pending = append(pending, childID)
+		}
+	}
+	return
+}
+
+// isWaiting returns whether a parent is currently blocked waiting for reports.
+func (c *childReportCollector) isWaiting() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.waitCh != nil
+}
+
 // childReport stores the report from a single child conversation.
 type childReport struct {
 	Report    json.RawMessage `json:"report"`
@@ -467,6 +490,7 @@ type ChildReportInfo struct {
 	Report    json.RawMessage `json:"report,omitempty"`
 	Timestamp string          `json:"timestamp,omitempty"` // ISO 8601
 	Status    string          `json:"status,omitempty"`    // "pending", "completed", "not_running"
+	Reason    string          `json:"reason,omitempty"`    // Diagnostic hint when report is incomplete (e.g., "still_processing", "session_unregistered", "archived")
 }
 
 // ChildrenTasksReportInput is the input for mitto_children_tasks_report tool.
