@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"syscall"
+	"sort"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/inercia/mitto/internal/logging"
@@ -113,7 +113,9 @@ func NewConnection(
 		// Create a new process group so we can kill all child processes on Close().
 		// Without this, child processes (e.g., "claude" spawned by "node claude-code-acp")
 		// become orphans when we kill only the direct child.
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if attr := newProcessGroupSysProcAttr(); attr != nil {
+			cmd.SysProcAttr = attr
+		}
 
 		// Set working directory for the ACP process if specified
 		if cwd != "" {
@@ -264,21 +266,6 @@ func (c *Connection) Close() error {
 	return nil
 }
 
-// KillProcessGroup kills the entire process group for the given PID.
-// Falls back to killing just the process if the group cannot be determined.
-func KillProcessGroup(pid int) {
-	pgid, err := syscall.Getpgid(pid)
-	if err == nil {
-		// Kill the entire process group (negative PID signals the group)
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	} else {
-		// Fallback: kill just the direct process
-		if p, err := os.FindProcess(pid); err == nil {
-			_ = p.Kill()
-		}
-	}
-}
-
 // Done returns a channel that's closed when the connection is done.
 func (c *Connection) Done() <-chan struct{} {
 	return c.conn.Done()
@@ -293,23 +280,33 @@ func mergeEnv(baseEnv []string, serverEnv map[string]string) []string {
 		return baseEnv
 	}
 
-	// Build a map from the base environment for easy lookup
-	envMap := make(map[string]string, len(baseEnv)+len(serverEnv))
-	for _, kv := range baseEnv {
+	// Track which server env vars have been applied
+	applied := make(map[string]bool, len(serverEnv))
+
+	// First pass: override existing vars in-place (preserves original order)
+	result := make([]string, len(baseEnv))
+	for i, kv := range baseEnv {
 		if idx := indexByte(kv, '='); idx != -1 {
-			envMap[kv[:idx]] = kv[idx+1:]
+			key := kv[:idx]
+			if val, ok := serverEnv[key]; ok {
+				result[i] = key + "=" + val
+				applied[key] = true
+				continue
+			}
+		}
+		result[i] = kv
+	}
+
+	// Second pass: append new keys not in base env (sorted for determinism)
+	var newKeys []string
+	for k := range serverEnv {
+		if !applied[k] {
+			newKeys = append(newKeys, k)
 		}
 	}
-
-	// Merge server-specific variables (overwriting any existing ones)
-	for k, v := range serverEnv {
-		envMap[k] = v
-	}
-
-	// Convert back to slice format
-	result := make([]string, 0, len(envMap))
-	for k, v := range envMap {
-		result = append(result, k+"="+v)
+	sort.Strings(newKeys)
+	for _, k := range newKeys {
+		result = append(result, k+"="+serverEnv[k])
 	}
 
 	return result

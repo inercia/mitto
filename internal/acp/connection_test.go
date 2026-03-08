@@ -392,3 +392,62 @@ func TestNewConnection_ShellQuotingSuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeEnv(t *testing.T) {
+	tests := []struct {
+		name      string
+		baseEnv   []string
+		serverEnv map[string]string
+		want      []string
+	}{
+		{
+			name:      "nil server env returns base unchanged",
+			baseEnv:   []string{"A=1", "B=2"},
+			serverEnv: nil,
+			want:      []string{"A=1", "B=2"},
+		},
+		{
+			name:      "empty server env returns base unchanged",
+			baseEnv:   []string{"A=1", "B=2"},
+			serverEnv: map[string]string{},
+			want:      []string{"A=1", "B=2"},
+		},
+		{
+			name:      "override existing var preserves order",
+			baseEnv:   []string{"A=1", "B=2", "C=3"},
+			serverEnv: map[string]string{"B": "new"},
+			want:      []string{"A=1", "B=new", "C=3"},
+		},
+		{
+			name:      "add new vars in sorted order",
+			baseEnv:   []string{"A=1"},
+			serverEnv: map[string]string{"Z": "last", "M": "middle"},
+			want:      []string{"A=1", "M=middle", "Z=last"},
+		},
+		{
+			name:      "override and add combined",
+			baseEnv:   []string{"A=1", "B=2"},
+			serverEnv: map[string]string{"B": "new", "C": "3"},
+			want:      []string{"A=1", "B=new", "C=3"},
+		},
+		{
+			name:      "empty base with server vars",
+			baseEnv:   []string{},
+			serverEnv: map[string]string{"B": "2", "A": "1"},
+			want:      []string{"A=1", "B=2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeEnv(tt.baseEnv, tt.serverEnv)
+			if len(got) != len(tt.want) {
+				t.Fatalf("mergeEnv() returned %d items, want %d: got %v", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("mergeEnv()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
