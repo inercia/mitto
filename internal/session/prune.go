@@ -269,6 +269,11 @@ func (s *Store) performPrune(
 		return result, err
 	}
 	meta.EventCount = len(remainingEvents)
+	// Reset MaxSeq to match renumbered events (prevents stale MaxSeq after pruning).
+	// Note: remainingEvents slice still has original seq values (the renumbering loop
+	// at line 218-220 modifies local copies), so we use len() directly since
+	// renumbering always assigns seq = i+1, making the highest seq = len(remainingEvents).
+	meta.MaxSeq = int64(len(remainingEvents))
 	if err := s.writeMetadata(meta); err != nil {
 		return result, err
 	}
