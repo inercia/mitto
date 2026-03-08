@@ -96,10 +96,10 @@ func (w *WorkspaceSettings) GetRestrictedRunner() string {
 	return w.RestrictedRunner
 }
 
-// IsAutoApprove returns whether permission requests should be auto-approved for this workspace.
+// GetAutoApprove returns whether permission requests should be auto-approved for this workspace.
 // Returns nil if not configured (fall back to global/server settings), true if explicitly enabled,
 // or false if explicitly disabled.
-func (w *WorkspaceSettings) IsAutoApprove() *bool {
+func (w *WorkspaceSettings) GetAutoApprove() *bool {
 	return w.AutoApprove
 }
 
