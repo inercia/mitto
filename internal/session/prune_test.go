@@ -830,9 +830,11 @@ func TestPruneIfNeeded_RecordEventAfterPrune_NoMismatch(t *testing.T) {
 	}
 }
 
-// TestPruneIfNeeded_EmptyAfterPrune_ResetsMaxSeqToZero verifies that MaxSeq
-// is reset to 0 when all events are pruned.
-func TestPruneIfNeeded_EmptyAfterPrune_ResetsMaxSeqToZero(t *testing.T) {
+// TestPruneIfNeeded_MaxSeqMatchesKeptEvents verifies that MaxSeq is correctly
+// reset to match the renumbered events after pruning, regardless of how many
+// events are kept. The implementation currently keeps at least 1 event even
+// with MaxMessages: 0 (see TestStore_PruneIfNeeded_KeepsAtLeastOneEvent).
+func TestPruneIfNeeded_MaxSeqMatchesKeptEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)
 	if err != nil {
@@ -840,7 +842,7 @@ func TestPruneIfNeeded_EmptyAfterPrune_ResetsMaxSeqToZero(t *testing.T) {
 	}
 	defer store.Close()
 
-	sessionID := "test-empty-after-prune"
+	sessionID := "test-maxseq-matches-kept"
 	meta := Metadata{
 		SessionID:  sessionID,
 		ACPServer:  "test-server",
@@ -873,41 +875,30 @@ func TestPruneIfNeeded_EmptyAfterPrune_ResetsMaxSeqToZero(t *testing.T) {
 		t.Errorf("MaxSeq before prune = %d, want 1", metaBefore.MaxSeq)
 	}
 
-	// Prune with MaxMessages: 0 (removes all events, but keeps at least 1)
-	// According to TestStore_PruneIfNeeded_KeepsAtLeastOneEvent, pruning keeps at least 1 event
-	// So we need to use a different approach - let's check if we can prune all by using
-	// an extremely small size limit that forces removal of all events
+	// Prune with MaxMessages: 0
+	// The implementation keeps at least 1 event (see TestStore_PruneIfNeeded_KeepsAtLeastOneEvent)
 	config := &PruneConfig{MaxMessages: 0}
 	result, err := store.PruneIfNeeded(sessionID, config)
 	if err != nil {
 		t.Fatalf("PruneIfNeeded failed: %v", err)
 	}
 
-	// Check the result - if pruning keeps at least 1 event, adjust expectations
+	// Verify MaxSeq matches the number of kept events
 	metaAfter, err := store.GetMetadata(sessionID)
 	if err != nil {
 		t.Fatalf("GetMetadata after prune failed: %v", err)
 	}
 
 	// The implementation keeps at least 1 event, so we expect EventCount = 1, MaxSeq = 1
-	// If the implementation changes to allow 0 events, this test will need adjustment
-	if metaAfter.EventCount == 0 {
-		// All events were removed
-		if metaAfter.MaxSeq != 0 {
-			t.Errorf("MaxSeq after pruning all events = %d, want 0", metaAfter.MaxSeq)
-		}
-		if result == nil {
-			t.Error("Expected non-nil result when events were removed")
-		}
-	} else {
-		// At least 1 event was kept (current implementation behavior)
-		if metaAfter.EventCount != 1 {
-			t.Errorf("EventCount after prune = %d, want 1 (implementation keeps at least 1 event)", metaAfter.EventCount)
-		}
-		if metaAfter.MaxSeq != 1 {
-			t.Errorf("MaxSeq after prune = %d, want 1 (should match the kept event)", metaAfter.MaxSeq)
-		}
-		// This is expected behavior based on TestStore_PruneIfNeeded_KeepsAtLeastOneEvent
-		t.Logf("Note: Implementation keeps at least 1 event even with MaxMessages: 0")
+	if metaAfter.EventCount != 1 {
+		t.Errorf("EventCount after prune = %d, want 1 (implementation keeps at least 1 event)", metaAfter.EventCount)
 	}
+	if metaAfter.MaxSeq != 1 {
+		t.Errorf("MaxSeq after prune = %d, want 1 (should match the kept event)", metaAfter.MaxSeq)
+	}
+	// Result may be nil if no events were actually removed (trying to prune to 0 but keeping 1)
+	if result != nil && result.EventsRemoved != 0 {
+		t.Errorf("EventsRemoved = %d, want 0 (no events should be removed when already at minimum)", result.EventsRemoved)
+	}
+	t.Logf("Note: Implementation keeps at least 1 event even with MaxMessages: 0")
 }
