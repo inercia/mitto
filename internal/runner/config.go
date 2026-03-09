@@ -114,10 +114,6 @@ func MergeRestrictions(base, override *config.RunnerRestrictions, strategy strin
 		getBaseFolders(base, func(r *config.RunnerRestrictions) []string { return r.AllowWriteFolders }),
 		override.AllowWriteFolders,
 	)
-	merged.DenyFolders = mergeFolderLists(
-		getBaseFolders(base, func(r *config.RunnerRestrictions) []string { return r.DenyFolders }),
-		override.DenyFolders,
-	)
 
 	// Docker config: override completely if specified
 	if override.Docker != nil {

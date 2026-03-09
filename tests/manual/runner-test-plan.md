@@ -51,8 +51,6 @@ echo "test" > /tmp/test-file.txt
            - "$HOME/.config"
          allow_write_folders:
            - "$WORKSPACE"
-         deny_folders:
-           - "$HOME/.ssh"
    ```
 3. Start session
 

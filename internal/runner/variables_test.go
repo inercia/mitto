@@ -132,9 +132,6 @@ func TestResolveVariables(t *testing.T) {
 		AllowWriteFolders: []string{
 			"$WORKSPACE/build",
 		},
-		DenyFolders: []string{
-			"$HOME/.ssh",
-		},
 	}
 
 	resolved := resolveVariables(restrictions, resolver)
@@ -161,10 +158,6 @@ func TestResolveVariables(t *testing.T) {
 	}
 	if resolved.AllowWriteFolders[0] != "/workspace/build" {
 		t.Errorf("expected /workspace/build, got %s", resolved.AllowWriteFolders[0])
-	}
-
-	if len(resolved.DenyFolders) != 1 {
-		t.Errorf("expected 1 deny folder, got %d", len(resolved.DenyFolders))
 	}
 }
 

@@ -249,12 +249,6 @@ restricted_runners:
         - "$HOME/.cache"            # Cache directory
         - "$TMPDIR"                 # Temporary files
 
-      # Folders to explicitly deny access to (security)
-      deny_folders:
-        - "$HOME/.ssh"              # SSH keys
-        - "$HOME/.aws"              # AWS credentials
-        - "$HOME/.gnupg"            # GPG keys
-
     # Merge strategy: extend (merge with agent/workspace configs)
     merge_strategy: "extend"
 
@@ -285,12 +279,6 @@ restricted_runners:
         - "$HOME/.cache"            # Cache directory
         - "$TMPDIR"                 # Temporary files
         - "/tmp"                    # Temporary files (fallback)
-
-      # Folders to explicitly deny access to (security)
-      deny_folders:
-        - "$HOME/.ssh"              # SSH keys
-        - "$HOME/.aws"              # AWS credentials
-        - "$HOME/.gnupg"            # GPG keys
 
     # Merge strategy: extend (merge with agent/workspace configs)
     merge_strategy: "extend"

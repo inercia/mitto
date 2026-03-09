@@ -830,10 +830,6 @@ type RunnerRestrictions struct {
 	// AllowWriteFolders lists folders that can be written (supports variables).
 	AllowWriteFolders []string `json:"allow_write_folders,omitempty" yaml:"allow_write_folders,omitempty"`
 
-	// DenyFolders lists folders that are explicitly denied (supports variables).
-	// These override allow lists.
-	DenyFolders []string `json:"deny_folders,omitempty" yaml:"deny_folders,omitempty"`
-
 	// MergeWithDefaults controls whether to merge with default restrictions.
 	MergeWithDefaults *bool `json:"merge_with_defaults,omitempty" yaml:"merge_with_defaults,omitempty"`
 

@@ -98,7 +98,6 @@ func resolveVariables(restrictions *config.RunnerRestrictions, resolver *Variabl
 
 	resolved.AllowReadFolders = resolver.ResolvePaths(restrictions.AllowReadFolders)
 	resolved.AllowWriteFolders = resolver.ResolvePaths(restrictions.AllowWriteFolders)
-	resolved.DenyFolders = resolver.ResolvePaths(restrictions.DenyFolders)
 
 	return resolved
 }

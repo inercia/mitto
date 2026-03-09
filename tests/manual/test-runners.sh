@@ -73,8 +73,6 @@ restricted_runners:
       allow_write_folders:
         - "\$WORKSPACE"
         - "/tmp"
-      deny_folders:
-        - "\$HOME/.ssh"
     merge_strategy: "extend"
 EOF
 echo -e "${GREEN}✓ Created workspace: $WORKSPACE_SANDBOX${NC}"

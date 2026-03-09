@@ -25,9 +25,6 @@ restricted_runners:
         - "$WORKSPACE"
         - "$HOME/.cache"
         - "/tmp"
-      deny_folders:
-        - "$HOME/.ssh"
-        - "$HOME/.aws"
     merge_strategy: "extend"
 
   # firejail: Linux isolation (will fallback on macOS)
@@ -39,8 +36,6 @@ restricted_runners:
         - "$HOME/.config"
       allow_write_folders:
         - "$WORKSPACE"
-      deny_folders:
-        - "$HOME/.ssh"
     merge_strategy: "extend"
 
   # docker: Container isolation
