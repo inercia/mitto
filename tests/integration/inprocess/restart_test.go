@@ -6,12 +6,44 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/web"
 )
+
+// safeErrorCollector is a thread-safe error message collector for tests.
+type safeErrorCollector struct {
+	mu     sync.Mutex
+	errors []string
+}
+
+func (c *safeErrorCollector) add(msg string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.errors = append(c.errors, msg)
+}
+
+func (c *safeErrorCollector) contains(substr string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.errors {
+		if strings.Contains(e, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *safeErrorCollector) copy() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make([]string, len(c.errors))
+	copy(result, c.errors)
+	return result
+}
 
 // TestACPRestart_SingleCrash tests that the ACP process restarts after a single crash.
 func TestACPRestart_SingleCrash(t *testing.T) {
@@ -28,10 +60,10 @@ func TestACPRestart_SingleCrash(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var errors []string
+	errorCollector := &safeErrorCollector{}
 	callbacks := client.SessionCallbacks{
 		OnError: func(msg string) {
-			errors = append(errors, msg)
+			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)
 		},
 	}
@@ -55,23 +87,11 @@ func TestACPRestart_SingleCrash(t *testing.T) {
 
 	// Wait for restart notification
 	waitFor(t, 10*time.Second, func() bool {
-		for _, e := range errors {
-			if strings.Contains(e, "Restarting") && strings.Contains(e, "attempt 1 of 3") {
-				return true
-			}
-		}
-		return false
+		return errorCollector.contains("Restarting") && errorCollector.contains("attempt 1 of 3")
 	}, "restart notification")
 
 	// Verify we got the restart message
-	foundRestart := false
-	for _, e := range errors {
-		if strings.Contains(e, "AI agent restarted") {
-			foundRestart = true
-			break
-		}
-	}
-	if !foundRestart {
+	if !errorCollector.contains("AI agent restarted") {
 		t.Error("Expected 'AI agent restarted' message")
 	}
 }
@@ -92,10 +112,10 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	var errors []string
+	errorCollector := &safeErrorCollector{}
 	callbacks := client.SessionCallbacks{
 		OnError: func(msg string) {
-			errors = append(errors, msg)
+			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)
 		},
 	}
@@ -116,44 +136,27 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		t.Logf("Triggering crash %d", i)
 
-		// Clear errors before each attempt
-		errors = nil
-
 		if err := ws.SendPrompt(fmt.Sprintf("CRASH_%d", i)); err != nil {
 			t.Logf("SendPrompt %d failed (expected): %v", i, err)
 		}
 
 		if i <= 3 {
 			// First 3 should restart. Wait for the "Restarting" notification.
+			attemptMsg := fmt.Sprintf("attempt %d of 3", i)
 			waitFor(t, 15*time.Second, func() bool {
-				for _, e := range errors {
-					if strings.Contains(e, "Restarting") && strings.Contains(e, fmt.Sprintf("attempt %d of 3", i)) {
-						return true
-					}
-				}
-				return false
+				return errorCollector.contains("Restarting") && errorCollector.contains(attemptMsg)
 			}, fmt.Sprintf("crash %d: restart notification with 'attempt %d of 3'", i, i))
 
 			// Wait for the restart to complete before triggering the next crash.
 			// This is critical because restartACPProcess applies exponential backoff
 			// (3s, 6s, 12s) before actually starting the new process.
 			waitFor(t, 30*time.Second, func() bool {
-				for _, e := range errors {
-					if strings.Contains(e, "AI agent restarted") {
-						return true
-					}
-				}
-				return false
+				return errorCollector.contains("AI agent restarted")
 			}, fmt.Sprintf("crash %d: restart completion", i))
 		} else {
 			// 4th should hit the limit
 			waitFor(t, 15*time.Second, func() bool {
-				for _, e := range errors {
-					if strings.Contains(e, "keeps crashing") {
-						return true
-					}
-				}
-				return false
+				return errorCollector.contains("keeps crashing")
 			}, "crash 4: 'keeps crashing' message after hitting restart limit")
 		}
 	}
@@ -174,10 +177,10 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	var errors []string
+	errorCollector := &safeErrorCollector{}
 	callbacks := client.SessionCallbacks{
 		OnError: func(msg string) {
-			errors = append(errors, msg)
+			errorCollector.add(msg)
 		},
 	}
 
@@ -199,8 +202,6 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 	var cycleDurations []time.Duration
 
 	for i := 1; i <= 3; i++ {
-		errors = nil
-
 		start := time.Now()
 		if err := ws.SendPrompt(fmt.Sprintf("CRASH_%d", i)); err != nil {
 			t.Logf("SendPrompt %d failed (expected): %v", i, err)
@@ -208,12 +209,7 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 
 		// Wait for restart to complete (includes backoff delay)
 		waitFor(t, 20*time.Second, func() bool {
-			for _, e := range errors {
-				if strings.Contains(e, "AI agent restarted") {
-					return true
-				}
-			}
-			return false
+			return errorCollector.contains("AI agent restarted")
 		}, fmt.Sprintf("restart %d completion", i))
 
 		duration := time.Since(start)
@@ -255,10 +251,10 @@ func TestACPRestart_ReasonTracking(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var errors []string
+	errorCollector := &safeErrorCollector{}
 	callbacks := client.SessionCallbacks{
 		OnError: func(msg string) {
-			errors = append(errors, msg)
+			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)
 		},
 	}
@@ -282,12 +278,7 @@ func TestACPRestart_ReasonTracking(t *testing.T) {
 
 	// Wait for restart to complete
 	waitFor(t, 10*time.Second, func() bool {
-		for _, e := range errors {
-			if strings.Contains(e, "AI agent restarted") {
-				return true
-			}
-		}
-		return false
+		return errorCollector.contains("AI agent restarted")
 	}, "restart completion")
 
 	// Check restart stats

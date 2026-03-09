@@ -973,14 +973,20 @@ func (bs *BackgroundSession) canRestartACP() bool {
 	now := time.Now()
 	cutoff := now.Add(-ACPRestartWindow)
 
-	// Filter out old restart times
+	// Filter out old restart times and corresponding reasons (keep indices in sync)
 	var recentRestarts []time.Time
-	for _, t := range bs.restartTimes {
+	var recentReasons []RestartReason
+	for i, t := range bs.restartTimes {
 		if t.After(cutoff) {
 			recentRestarts = append(recentRestarts, t)
+			// Keep reasons in sync with times
+			if i < len(bs.restartReasons) {
+				recentReasons = append(recentReasons, bs.restartReasons[i])
+			}
 		}
 	}
 	bs.restartTimes = recentRestarts
+	bs.restartReasons = recentReasons
 
 	return len(recentRestarts) < MaxACPRestarts
 }

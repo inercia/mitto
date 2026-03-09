@@ -439,10 +439,8 @@ func (h *acpSDKDowngradeHandler) Enabled(ctx context.Context, level slog.Level) 
 	if level == slog.LevelInfo {
 		return h.inner.Enabled(ctx, slog.LevelDebug)
 	}
-	// If checking ERROR, check if WARN is enabled (since we might downgrade)
-	if level == slog.LevelError {
-		return h.inner.Enabled(ctx, slog.LevelWarn)
-	}
+	// For ERROR level, check the actual ERROR level - we'll selectively downgrade
+	// specific errors in Handle() based on inner.Enabled(ctx, WARN)
 	return h.inner.Enabled(ctx, level)
 }
 
@@ -487,12 +485,17 @@ func (h *acpSDKDowngradeHandler) Handle(ctx context.Context, r slog.Record) erro
 		}
 
 		// For other malformed responses (e.g., from dying ACP processes), downgrade to WARN
-		newRecord := slog.NewRecord(r.Time, slog.LevelWarn, r.Message, r.PC)
-		r.Attrs(func(a slog.Attr) bool {
-			newRecord.AddAttrs(a)
-			return true
-		})
-		return h.inner.Handle(ctx, newRecord)
+		// only if WARN is enabled. Otherwise, pass through as ERROR.
+		if h.inner.Enabled(ctx, slog.LevelWarn) {
+			newRecord := slog.NewRecord(r.Time, slog.LevelWarn, r.Message, r.PC)
+			r.Attrs(func(a slog.Attr) bool {
+				newRecord.AddAttrs(a)
+				return true
+			})
+			return h.inner.Handle(ctx, newRecord)
+		}
+		// If WARN is not enabled, pass through as ERROR
+		return h.inner.Handle(ctx, r)
 	}
 
 	return h.inner.Handle(ctx, r)
