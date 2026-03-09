@@ -130,12 +130,12 @@ type BackgroundSession struct {
 	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
 	// To prevent infinite restart loops, we limit restarts to MaxACPRestarts within
 	// ACPRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
-	acpCommand    string             // Command used to start ACP process (for restart)
-	acpCwd        string             // Working directory for ACP process (for restart)
-	restartCount  int                // Number of restarts in current window
-	restartTimes  []time.Time        // Timestamps of recent restarts (for rate limiting)
-	restartReasons []RestartReason   // Reasons for recent restarts (parallel to restartTimes)
-	restartMu     sync.Mutex         // Protects restart tracking fields
+	acpCommand     string          // Command used to start ACP process (for restart)
+	acpCwd         string          // Working directory for ACP process (for restart)
+	restartCount   int             // Number of restarts in current window
+	restartTimes   []time.Time     // Timestamps of recent restarts (for rate limiting)
+	restartReasons []RestartReason // Reasons for recent restarts (parallel to restartTimes)
+	restartMu      sync.Mutex      // Protects restart tracking fields
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -1027,11 +1027,11 @@ func (bs *BackgroundSession) getRestartInfo() string {
 
 // RestartStats contains statistics about ACP process restarts.
 type RestartStats struct {
-	TotalRestarts   int                    // Total number of restarts in session lifetime
-	RecentRestarts  int                    // Number of restarts in the current window
-	ReasonCounts    map[RestartReason]int  // Count of restarts by reason
-	LastRestartTime time.Time              // Timestamp of most recent restart
-	LastReason      RestartReason          // Reason for most recent restart
+	TotalRestarts   int                   // Total number of restarts in session lifetime
+	RecentRestarts  int                   // Number of restarts in the current window
+	ReasonCounts    map[RestartReason]int // Count of restarts by reason
+	LastRestartTime time.Time             // Timestamp of most recent restart
+	LastReason      RestartReason         // Reason for most recent restart
 }
 
 // GetRestartStats returns statistics about ACP process restarts for telemetry.
@@ -2345,6 +2345,11 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 						o.OnError("AI agent restarted. Please resend your message.")
 					})
 				}
+			} else if acpDead {
+				// ACP process died but restart limit exceeded — tell user to manually restart
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("The AI agent keeps crashing. Please switch to another conversation and back to restart.")
+				})
 			} else {
 				userFriendlyErr := formatACPError(err)
 				bs.notifyObservers(func(o SessionObserver) {

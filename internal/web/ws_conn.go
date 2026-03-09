@@ -9,6 +9,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	// sendBackpressureTimeout is the maximum time to wait when the send buffer is full
+	// before closing the connection. This absorbs short bursts while ensuring slow
+	// clients are disconnected rather than having their messages silently dropped.
+	// A disconnected client will reconnect and catch up from persisted events.
+	sendBackpressureTimeout = 100 * time.Millisecond
+)
+
 // WSConn wraps a WebSocket connection with common functionality for
 // message sending, ping/pong keepalive, and connection lifecycle management.
 // It provides a unified interface used by both SessionWSClient and GlobalEventsClient.
@@ -54,7 +62,10 @@ func NewWSConn(cfg WSConnConfig) *WSConn {
 }
 
 // SendMessage sends a typed message with optional data payload.
-// This is non-blocking - if the send buffer is full, the message is dropped.
+// Uses graceful backpressure: if the send buffer is full, waits briefly for
+// space. If the buffer remains full after the timeout, the connection is closed
+// to force the slow client to reconnect and catch up from persisted events.
+// This prevents silent message drops that cause sequence gaps on the client.
 func (w *WSConn) SendMessage(msgType string, data interface{}) {
 	var dataJSON json.RawMessage
 	if data != nil {
@@ -63,15 +74,7 @@ func (w *WSConn) SendMessage(msgType string, data interface{}) {
 	msg := WSMessage{Type: msgType, Data: dataJSON}
 	msgBytes, _ := json.Marshal(msg)
 
-	select {
-	case w.send <- msgBytes:
-	default:
-		// Send buffer full, drop message
-		if w.logger != nil {
-			w.logger.Warn("WebSocket send buffer full, dropping message",
-				"type", msgType, "client_ip", w.clientIP)
-		}
-	}
+	w.sendWithBackpressure(msgBytes, msgType)
 }
 
 // SendError sends an error message to the client.
@@ -80,11 +83,52 @@ func (w *WSConn) SendError(message string) {
 }
 
 // SendRaw sends raw bytes to the client.
-// This is non-blocking - if the send buffer is full, the message is dropped.
+// Uses graceful backpressure: waits briefly if buffer is full, then closes
+// the connection if the client can't keep up.
 func (w *WSConn) SendRaw(data []byte) {
+	w.sendWithBackpressure(data, "raw")
+}
+
+// sendWithBackpressure attempts to enqueue data on the send channel.
+// First tries a non-blocking send for the fast path. If the buffer is full,
+// waits up to sendBackpressureTimeout for space. If the timeout expires,
+// closes the WebSocket connection so the slow client is forced to reconnect
+// and sync from persisted events (rather than silently dropping messages
+// which causes unrecoverable sequence gaps).
+func (w *WSConn) sendWithBackpressure(data []byte, msgType string) {
+	// Fast path: non-blocking send
 	select {
 	case w.send <- data:
+		return
 	default:
+	}
+
+	// Slow path: buffer is full, apply backpressure with timeout
+	if w.logger != nil {
+		w.logger.Warn("WebSocket send buffer full, applying backpressure",
+			"type", msgType, "client_ip", w.clientIP,
+			"buffer_cap", cap(w.send), "timeout", sendBackpressureTimeout)
+	}
+
+	timer := time.NewTimer(sendBackpressureTimeout)
+	defer timer.Stop()
+
+	select {
+	case w.send <- data:
+		// Buffer drained enough, message sent
+		if w.logger != nil {
+			w.logger.Debug("WebSocket backpressure resolved",
+				"type", msgType, "client_ip", w.clientIP)
+		}
+	case <-timer.C:
+		// Client is too slow — close the connection to force reconnection.
+		// The client will reconnect and sync from persisted events via load_events.
+		if w.logger != nil {
+			w.logger.Warn("WebSocket client too slow, closing connection for reconnect",
+				"type", msgType, "client_ip", w.clientIP,
+				"buffer_cap", cap(w.send))
+		}
+		w.conn.Close()
 	}
 }
 

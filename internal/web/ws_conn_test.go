@@ -70,33 +70,46 @@ func TestParseMessage(t *testing.T) {
 	}
 }
 
-func TestWSConn_SendRaw_NonBlocking(t *testing.T) {
-	// Create a WSConn with a small buffer to test non-blocking behavior
-	w := &WSConn{
-		send: make(chan []byte, 1),
+func TestWSConn_SendRaw_Backpressure(t *testing.T) {
+	// Create a WSConn with a small buffer and a mock connection for close detection.
+	server, wsConnCh, cancel := setupWritePumpTestServer(t)
+	defer server.Close()
+	defer cancel()
+
+	// Connect client
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/"
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	// Wait for server-side WSConn
+	var wc *WSConn
+	select {
+	case wc = <-wsConnCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for server connection")
 	}
 
-	// First send should succeed
-	w.SendRaw([]byte("first"))
+	// Fill the buffer completely
+	for i := 0; i < cap(wc.send); i++ {
+		wc.send <- []byte("fill")
+	}
 
-	// Second send should not block (buffer full, message dropped)
+	// Next send should apply backpressure (wait briefly then close connection)
 	done := make(chan bool)
 	go func() {
-		w.SendRaw([]byte("second"))
+		wc.SendRaw([]byte("overflow"))
 		done <- true
 	}()
 
+	// Should complete within backpressure timeout + margin (not hang forever)
 	select {
 	case <-done:
-		// Good - SendRaw returned without blocking
-	case <-time.After(100 * time.Millisecond):
-		t.Error("SendRaw blocked when buffer was full")
-	}
-
-	// Verify first message is in buffer
-	msg := <-w.send
-	if string(msg) != "first" {
-		t.Errorf("Expected 'first', got %s", string(msg))
+		// Good - SendRaw returned after backpressure timeout
+	case <-time.After(500 * time.Millisecond):
+		t.Error("SendRaw blocked indefinitely instead of timing out")
 	}
 }
 
@@ -169,37 +182,86 @@ func TestWSConnConfig_Fields(t *testing.T) {
 	}
 }
 
-func TestWSConn_SendMessage_NonBlocking(t *testing.T) {
-	// Create a WSConn with a small buffer to test non-blocking behavior
+func TestWSConn_SendMessage_Backpressure(t *testing.T) {
+	// Create a WSConn with a small buffer and a real WebSocket connection.
+	server, wsConnCh, cancel := setupWritePumpTestServer(t)
+	defer server.Close()
+	defer cancel()
+
+	// Connect client
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/"
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	// Wait for server-side WSConn
+	var wc *WSConn
+	select {
+	case wc = <-wsConnCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for server connection")
+	}
+
+	// Fill the buffer completely
+	for i := 0; i < cap(wc.send); i++ {
+		wc.send <- []byte(`{"type":"fill"}`)
+	}
+
+	// Next send should apply backpressure (wait briefly then close connection)
+	done := make(chan bool)
+	go func() {
+		wc.SendMessage("overflow", nil)
+		done <- true
+	}()
+
+	// Should complete within backpressure timeout + margin
+	select {
+	case <-done:
+		// Good - SendMessage returned after backpressure timeout
+	case <-time.After(500 * time.Millisecond):
+		t.Error("SendMessage blocked indefinitely instead of timing out")
+	}
+}
+
+func TestWSConn_SendMessage_BackpressureResolves(t *testing.T) {
+	// Test that backpressure resolves when the buffer drains within the timeout.
 	w := &WSConn{
 		send: make(chan []byte, 1),
 	}
 
-	// First send should succeed
-	w.SendMessage("test", map[string]string{"key": "value"})
+	// First send succeeds (fills buffer)
+	w.SendMessage("first", map[string]string{"key": "value"})
 
-	// Second send should not block (buffer full, message dropped)
+	// Start a goroutine that will drain the buffer after a short delay
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		<-w.send // drain one slot
+	}()
+
+	// Second send should succeed after the drain (within backpressure timeout)
 	done := make(chan bool)
 	go func() {
-		w.SendMessage("test2", nil)
+		w.SendMessage("second", nil)
 		done <- true
 	}()
 
 	select {
 	case <-done:
-		// Good - SendMessage returned without blocking
-	case <-time.After(100 * time.Millisecond):
-		t.Error("SendMessage blocked when buffer was full")
+		// Good - backpressure resolved when buffer drained
+	case <-time.After(500 * time.Millisecond):
+		t.Error("SendMessage did not resolve backpressure when buffer drained")
 	}
 
-	// Verify first message is in buffer
+	// Verify second message is now in buffer
 	msg := <-w.send
 	var wsMsg WSMessage
 	if err := json.Unmarshal(msg, &wsMsg); err != nil {
 		t.Fatalf("Failed to unmarshal message: %v", err)
 	}
-	if wsMsg.Type != "test" {
-		t.Errorf("Expected type 'test', got %s", wsMsg.Type)
+	if wsMsg.Type != "second" {
+		t.Errorf("Expected type 'second', got %s", wsMsg.Type)
 	}
 }
 

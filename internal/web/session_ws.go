@@ -116,9 +116,9 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	// Create shared WebSocket connection wrapper.
 	// Use a larger send buffer (1024) for session connections because high-traffic
-	// sessions can generate thousands of events. The default (256) is too small and
-	// causes backpressure that propagates to the ACP SDK's notification queue,
-	// which can overflow and kill the connection.
+	// sessions can generate thousands of events. Combined with graceful backpressure
+	// in WSConn (which waits briefly then closes slow connections instead of dropping
+	// messages), this prevents sequence gaps that confuse the frontend.
 	wsConn := NewWSConn(WSConnConfig{
 		Conn:     conn,
 		Config:   s.wsSecurityConfig,
