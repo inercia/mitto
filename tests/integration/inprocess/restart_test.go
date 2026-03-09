@@ -37,6 +37,25 @@ func (c *safeErrorCollector) contains(substr string) bool {
 	return false
 }
 
+// containsSince checks if any message added since the given index contains the substring.
+// Returns true if found, and the current length of the errors slice.
+func (c *safeErrorCollector) containsSince(since int, substr string) (bool, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := since; i < len(c.errors); i++ {
+		if strings.Contains(c.errors[i], substr) {
+			return true, len(c.errors)
+		}
+	}
+	return false, len(c.errors)
+}
+
+func (c *safeErrorCollector) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.errors)
+}
+
 func (c *safeErrorCollector) copy() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -136,6 +155,9 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		t.Logf("Triggering crash %d", i)
 
+		// Mark the current position in the error log before sending the crash
+		startIdx := errorCollector.len()
+
 		if err := ws.SendPrompt(fmt.Sprintf("CRASH_%d", i)); err != nil {
 			t.Logf("SendPrompt %d failed (expected): %v", i, err)
 		}
@@ -144,19 +166,23 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 			// First 3 should restart. Wait for the "Restarting" notification.
 			attemptMsg := fmt.Sprintf("attempt %d of 3", i)
 			waitFor(t, 15*time.Second, func() bool {
-				return errorCollector.contains("Restarting") && errorCollector.contains(attemptMsg)
+				found, _ := errorCollector.containsSince(startIdx, "Restarting")
+				foundAttempt, _ := errorCollector.containsSince(startIdx, attemptMsg)
+				return found && foundAttempt
 			}, fmt.Sprintf("crash %d: restart notification with 'attempt %d of 3'", i, i))
 
 			// Wait for the restart to complete before triggering the next crash.
 			// This is critical because restartACPProcess applies exponential backoff
 			// (3s, 6s, 12s) before actually starting the new process.
 			waitFor(t, 30*time.Second, func() bool {
-				return errorCollector.contains("AI agent restarted")
+				found, _ := errorCollector.containsSince(startIdx, "AI agent restarted")
+				return found
 			}, fmt.Sprintf("crash %d: restart completion", i))
 		} else {
 			// 4th should hit the limit
 			waitFor(t, 15*time.Second, func() bool {
-				return errorCollector.contains("keeps crashing")
+				found, _ := errorCollector.containsSince(startIdx, "keeps crashing")
+				return found
 			}, "crash 4: 'keeps crashing' message after hitting restart limit")
 		}
 	}
@@ -202,6 +228,9 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 	var cycleDurations []time.Duration
 
 	for i := 1; i <= 3; i++ {
+		// Mark the current position in the error log before sending the crash
+		startIdx := errorCollector.len()
+
 		start := time.Now()
 		if err := ws.SendPrompt(fmt.Sprintf("CRASH_%d", i)); err != nil {
 			t.Logf("SendPrompt %d failed (expected): %v", i, err)
@@ -209,7 +238,8 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 
 		// Wait for restart to complete (includes backoff delay)
 		waitFor(t, 20*time.Second, func() bool {
-			return errorCollector.contains("AI agent restarted")
+			found, _ := errorCollector.containsSince(startIdx, "AI agent restarted")
+			return found
 		}, fmt.Sprintf("restart %d completion", i))
 
 		duration := time.Since(start)
