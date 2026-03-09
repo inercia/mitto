@@ -346,13 +346,14 @@ The system protects against flushing content with unmatched inline formatting ma
 
 **Fix**: The frontend tracks seen `seq` values in a sliding window and skips duplicates.
 
-**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), the seq tracker is reset BEFORE processing events to prevent fresh events from being rejected as duplicates:
+**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), both the seq tracker AND `lastKnownSeqRef` for the session are reset BEFORE processing events to prevent fresh events from being rejected as duplicates:
 
 ```javascript
 clearSeenSeqs(sessionId); // Reset M1 seq tracker
+delete lastKnownSeqRef.current[sessionId]; // Reset reconnection watermark
 ```
 
-**Note**: `lastKnownSeqRef` is NOT reset during stale client detection. It continues to track the highest seq monotonically. The stale client recovery replaces all messages with fresh data from the server, so the ref will naturally be updated as new events arrive.
+**Note**: On stale client detection, the implementation clears `lastKnownSeqRef` for the affected `sessionId`. After the stale reset, `lastKnownSeqRef` is repopulated from the fresh stream of events sent by the server (via `updateLastKnownSeq(sessionId, maxSeq)`), and from that point forward it again tracks the highest observed `seq` monotonically for the session.
 
 ## Testing the Contract
 
