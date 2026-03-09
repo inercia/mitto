@@ -270,9 +270,9 @@ where the markdown buffer may temporarily hold unflushed content:
 const KEEPALIVE_SYNC_TOLERANCE = 2; // Only applies during streaming
 ```
 
-- **During streaming** (`isStreaming=true`): Tolerance of 2 is applied for logging. When the client is behind by more than 2, a debug log is emitted (`"requesting sync"`) but sync is **skipped** (hard break) — events arrive via the observer pattern in real-time, and any remaining gap is resolved at `prompt_complete` via `checkAndFillGap()` and the `max_seq` piggybacking mechanism.
+- **During streaming** (`isStreaming=true`): Tolerance of 2 is applied for logging. When the client is behind by more than 2, a debug log is emitted indicating that the client is behind by `X` events and that sync is being skipped during streaming (containing `"behind by"` and `"skipping sync"`), and sync is **skipped** (hard break) — events arrive via the observer pattern in real-time, and any remaining gap is resolved at `prompt_complete` via `checkAndFillGap()` and the `max_seq` piggybacking mechanism. No `"requesting sync"` log is emitted while streaming in this case.
 
-  The log message correctly indicates: `"Skipping sync for {sessionId} — stream in progress"` when streaming is active.
+  This behavior is expected: while a prompt is actively streaming, the keepalive mechanism avoids redundant sync requests and relies on the observer pattern plus the final `prompt_complete` reconciliation to close any remaining gap.
 
 - **When not streaming** (`isStreaming=false`): Tolerance of 0 — any gap triggers sync immediately.
   This ensures events written during session close (like `session_end`) are delivered promptly.
