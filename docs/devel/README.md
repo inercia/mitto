@@ -22,6 +22,10 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Follow-up Suggestions](follow-up-suggestions.md)** — AI-generated response suggestions, persistence, multi-client sync, and lifecycle
 
+### Infrastructure
+
+- **[Restricted Runner Integration](restricted-runner-integration.md)** — Runner system architecture, sandbox types, configuration hierarchy, and ACP subprocess integration
+
 ### Debugging & Tools
 
 - **[MCP Servers](mcp.md)** — Global debug server, per-session MCP servers for ACP agents, advanced settings (feature flags)
@@ -50,6 +54,7 @@ This directory contains technical documentation for developers working on Mitto.
 | MCP debugging       | [MCP Servers](mcp.md)                               | Global Debug Server                   |
 | Session MCP         | [MCP Servers](mcp.md)                               | Per-Session MCP Servers               |
 | Settings API        | [MCP Servers](mcp.md)                               | Advanced Settings API                 |
+| Restricted runners  | [Restricted Runner Integration](restricted-runner-integration.md) | Architecture, Runner Types, Config Hierarchy |
 
 ## Additional Documentation
 
