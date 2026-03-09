@@ -144,6 +144,34 @@ go func() {
 
 This pattern ensures the client receives the `session_gone` message before the WebSocket close frame.
 
+## Send Buffer Backpressure (`ws_conn.go`)
+
+`WSConn.SendMessage` and `SendRaw` use **backpressure** instead of silently dropping messages when the send buffer is full:
+
+```go
+func (w *WSConn) sendWithBackpressure(data []byte, msgType string) {
+    // Fast path: non-blocking send
+    select {
+    case w.send <- data:
+        return
+    default:
+    }
+    // Slow path: wait up to 100ms, then close connection
+    timer := time.NewTimer(sendBackpressureTimeout) // 100ms
+    defer timer.Stop()
+    select {
+    case w.send <- data:
+        // Buffer drained, message sent
+    case <-timer.C:
+        w.conn.Close() // Force reconnect — client syncs via load_events
+    }
+}
+```
+
+**Why not drop?** Silent drops cause unrecoverable sequence gaps — the client has no way to detect the loss. Closing the connection triggers the client's reconnection flow, which syncs from persisted events.
+
+**Why 100ms timeout?** Observer notifications call `SendMessage` on all observers sequentially. A long wait would delay healthy clients. The 100ms absorbs short bursts without blocking.
+
 ## WritePump Close Frames (`ws_conn.go`)
 
 The `WritePump` goroutine sends proper WebSocket close frames before exiting, so clients receive a clean close code instead of an abrupt TCP teardown (code 1006):
@@ -153,33 +181,9 @@ The `WritePump` goroutine sends proper WebSocket close frames before exiting, so
 | Send channel closed (`!ok`) | 1000 (NormalClosure) | `""` | Clean shutdown |
 | Ping write failed | 1001 (GoingAway) | `"ping failed"` | Best-effort: write may fail |
 | Context cancelled | 1001 (GoingAway) | `"server shutdown"` | Best-effort: write may fail |
+| Backpressure timeout | 1006 (Abnormal) | _(no close frame)_ | `conn.Close()` from `sendWithBackpressure` |
 
-```go
-// Send channel closed — normal closure
-case message, ok := <-w.send:
-    if !ok {
-        w.conn.WriteMessage(websocket.CloseMessage,
-            websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-        return
-    }
-
-// Ping failed — going away (best-effort)
-if err := w.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-    w.conn.SetWriteDeadline(time.Now().Add(time.Second))
-    w.conn.WriteMessage(websocket.CloseMessage,
-        websocket.FormatCloseMessage(websocket.CloseGoingAway, "ping failed"))
-    return
-}
-
-// Context cancelled — going away (best-effort)
-case <-ctx.Done():
-    w.conn.SetWriteDeadline(time.Now().Add(time.Second))
-    w.conn.WriteMessage(websocket.CloseMessage,
-        websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutdown"))
-    return
-```
-
-> For the complete close code table and client-side handling, see [synchronization.md — WebSocket Close Codes](../../docs/devel/websockets/synchronization.md#websocket-close-codes).
+> For the complete close code table, backpressure flow, and client-side handling, see [synchronization.md — WebSocket Close Codes](../../docs/devel/websockets/synchronization.md#websocket-close-codes).
 
 ## Backend Anti-Pattern: lastSentSeq Reset
 

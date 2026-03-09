@@ -1,10 +1,12 @@
 ---
-description: Session lifecycle management, archive/unarchive flows, ACP connection lifecycle, graceful shutdown, and session lifecycle anti-patterns
+description: Session lifecycle management, archive/unarchive flows, ACP connection lifecycle, graceful shutdown, crash recovery, error classification, and session lifecycle anti-patterns
 globs:
   - "internal/web/session_api.go"
   - "internal/web/session_manager.go"
   - "internal/web/background_session.go"
   - "internal/web/session_ws.go"
+  - "internal/web/acp_error_classification.go"
+  - "internal/web/shared_acp_process.go"
 keywords:
   - session lifecycle
   - archive
@@ -16,6 +18,10 @@ keywords:
   - session_gone
   - negative cache
   - circuit breaker
+  - error classification
+  - crash recovery
+  - restart
+  - backoff
 ---
 
 # Session Lifecycle Management
@@ -102,6 +108,96 @@ if c.bgSession == nil {
     c.tryAttachToSession()  // Check if session was resumed
 }
 ```
+
+## ACP Process Crash Recovery
+
+When an ACP process dies unexpectedly, both `BackgroundSession` and `SharedACPProcess` attempt automatic restart with error classification and telemetry.
+
+### Error Classification (`acp_error_classification.go`)
+
+Errors are classified as **transient** (retryable) or **permanent** (fatal) to avoid wasting retries on unrecoverable failures:
+
+```go
+classified := classifyACPError(err, stderrOutput)
+if !classified.IsRetryable() {
+    // Permanent: missing binary, syntax error, permission denied
+    // → Stop retrying, show actionable guidance to user
+}
+// Transient: network timeout, port conflict, crash
+// → Retry with exponential backoff
+```
+
+| Error Class  | Examples                                                | Action                          |
+| ------------ | ------------------------------------------------------- | ------------------------------- |
+| **Permanent** | `command not found`, `MODULE_NOT_FOUND`, `EACCES`, `SyntaxError` | Stop retrying, show user guidance |
+| **Transient** | Network timeout, port conflict, unexpected crash        | Retry with backoff              |
+
+The `ACPClassifiedError` type implements `error` and carries user-facing messages:
+
+```go
+type ACPClassifiedError struct {
+    Class         ACPErrorClass  // Transient or Permanent
+    OriginalError error
+    Stderr        string         // Captured stderr for diagnostics
+    UserMessage   string         // "The ACP command was not found"
+    UserGuidance  string         // "Check that the ACP command is installed..."
+}
+```
+
+### Restart Rate Limiting
+
+Both code paths use shared constants from `acp_error_classification.go`:
+
+| Constant            | Value   | Purpose                                    |
+| ------------------- | ------- | ------------------------------------------ |
+| `MaxACPRestarts`    | 3       | Max restarts within the window             |
+| `ACPRestartWindow`  | 5 min   | Sliding window for counting restarts       |
+| `ACPRestartBaseDelay` | 3s    | Initial backoff (longer than start-retry)  |
+| `ACPRestartMaxDelay`  | 30s   | Backoff cap                                |
+
+Backoff progression: 3s → 6s → 12s → 24s → 30s (capped). The longer base delay (vs 500ms for start-retries) gives the system time to recover from conditions like notification queue overflow.
+
+### Restart Telemetry
+
+Each restart records its reason for diagnostics:
+
+```go
+type RestartReason string
+const (
+    RestartReasonCrashDuringPrompt  = "crash_during_prompt"
+    RestartReasonCrashDuringStream  = "crash_during_stream"
+    RestartReasonUnexpectedExit     = "unexpected_exit"
+)
+
+bs.recordRestart(RestartReasonCrashDuringPrompt)
+stats := bs.GetRestartStats() // TotalRestarts, RecentRestarts, ReasonCounts, LastReason
+```
+
+### ACP Process Death Detection (Three-Layer)
+
+Fast crash detection avoids waiting for the ACP SDK's 60-second control request timeout:
+
+| Layer | Mechanism | Detection Time | File |
+| ----- | --------- | -------------- | ---- |
+| **Fix A** | OS liveness polling (`kill(pid, 0)`) | ~2s | `shared_acp_process.go` |
+| **Fix B** | `conn.Done()` pipe EOF | ~seconds | SDK level |
+| **Fix C** | Stderr crash pattern matching | Immediate | `background_session.go`, `shared_acp_process.go` |
+
+Stderr patterns that trigger immediate crash detection:
+
+```go
+var stderrCrashPatterns = []string{
+    "stream ended unexpectedly",
+    "EOF received from CLI stdout",
+    "background reader: stream ended",
+    "connection reset by peer",
+    "broken pipe",
+    "received message with neither id nor method",
+    "failed to queue notification; closing connection",  // SDK notification queue overflow
+}
+```
+
+All three layers signal via the `processDone` channel (closed exactly once via `sync.Once`).
 
 ## MCP Server Lifecycle
 

@@ -28,6 +28,7 @@ keywords:
 | ------------------- | ----------------------- | ---------------------------------------------------- |
 | `Server`            | `server.go`             | HTTP server, routing, lifecycle                      |
 | `SessionWSClient`   | `session_ws.go`         | Per-session WebSocket (implements `SessionObserver`) |
+| `WSConn`            | `ws_conn.go`            | WebSocket wrapper with backpressure send, WritePump  |
 | `BackgroundSession` | `background_session.go` | Long-lived ACP session with observer pattern         |
 | `SessionManager`    | `session_manager.go`    | Session registry + workspace management              |
 | `QueueTitleWorker`  | `queue_title.go`        | Auto-generates titles for queued messages            |

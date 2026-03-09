@@ -125,6 +125,8 @@ grep "seq=42" ~/Library/Logs/Mitto/webview.log ~/Library/Logs/Mitto/mitto.log
 | Streaming issues         | Seq gaps in events.jsonl, MarkdownBuffer flush |
 | Session not loading      | metadata.json validity, lock.json              |
 | WebSocket disconnections | webview.log for connection errors, access.log  |
+| ACP process crash loop   | mitto.log for `restart_count`, `error_class`, `reason`; see `15-web-backend-session-lifecycle.md` for crash recovery details |
+| WebSocket backpressure   | mitto.log for `"applying backpressure"` or `"client too slow"`; see `11-web-backend-sequences.md` for backpressure design |
 
 ## Replaying Events
 

@@ -469,12 +469,34 @@ The `WritePump` goroutine sends close frames in these exit paths:
 
 **Note:** Close frame sending on ping failure and context cancellation is best-effort — the write may fail if the connection is already degraded, which results in the client seeing code 1006 (Abnormal Closure) instead.
 
+### Send Buffer Backpressure (`ws_conn.go` sendWithBackpressure)
+
+When a message is sent via `SendMessage` or `SendRaw`, the send buffer may be full (high-traffic sessions during streaming). Instead of silently dropping the message (which causes unrecoverable sequence gaps on the client), `WSConn` uses a **backpressure** strategy:
+
+```
+Fast path: try non-blocking send → success
+                                  ↓ (buffer full)
+Slow path: wait up to 100ms for buffer space
+           → space freed: message sent (backpressure resolved)
+           → timeout: close connection (force client reconnect)
+```
+
+| Outcome             | What Happens                                                             | Client Sees   |
+| ------------------- | ------------------------------------------------------------------------ | ------------- |
+| Buffer has space    | Message enqueued immediately (fast path)                                 | Normal        |
+| Buffer drains in <100ms | Backpressure absorbed, message enqueued after brief wait             | Normal        |
+| Buffer stays full   | Connection closed via `conn.Close()` — client forced to reconnect       | Code 1006     |
+
+**Design rationale:** Silent message drops caused unrecoverable sequence gaps — the client had no way to know a message was lost. By closing the connection instead, the client's reconnection flow kicks in: it sends `load_events` with `after_seq` and catches up from persisted events. The 100ms timeout absorbs short bursts (e.g., rapid tool call updates) without prematurely disconnecting clients.
+
+The `sendBackpressureTimeout` constant (100ms) is intentionally short: long waits would block the observer notification goroutine (which calls `SendMessage` on all observers sequentially), delaying message delivery to healthy clients.
+
 ### Client-Side Close Handling
 
 When the client receives a close event:
 
 - **Code 1000/1001**: Normal close. Reconnect with standard backoff.
-- **Code 1006**: Abnormal closure. The connection died without a proper handshake. Reconnect with backoff.
+- **Code 1006**: Abnormal closure. The connection died without a proper handshake (includes backpressure-triggered closes). Reconnect with backoff.
 - **Code 3001**: Client-initiated force reconnect. The `forceReconnectActiveSession` function pre-deletes the WS ref before closing to prevent `onclose` from scheduling a duplicate reconnect.
 
 All reconnection paths read `lastKnownSeqRef` to determine the correct `after_seq` for the sync request.
