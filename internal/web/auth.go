@@ -608,6 +608,10 @@ var publicStaticPaths = map[string]bool{
 	"/styles-v2.css":           true,
 	"/favicon.ico":             true,
 	"/favicon.png":             true, // Referenced by auth.html
+	"/manifest.json":           true, // PWA manifest (needed for installability from auth page)
+	"/sw.js":                   true, // Service worker (needed for PWA installability)
+	"/icon-192x192.png":        true, // PWA icon
+	"/icon-512x512.png":        true, // PWA icon
 	"/robots.txt":              true, // Bots must read without auth
 }
 

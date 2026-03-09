@@ -49,11 +49,13 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // Skip non-GET requests, API calls, and WebSocket upgrades
+  // Skip non-GET requests, API calls, and WebSocket upgrades.
+  // Use segment-based matching to handle API prefix deployments (e.g., /mitto/api/...).
+  const pathSegments = url.pathname.split("/").filter(Boolean);
   if (
     event.request.method !== "GET" ||
-    url.pathname.startsWith("/api/") ||
-    url.pathname.startsWith("/ws")
+    pathSegments.includes("api") ||
+    pathSegments.includes("ws")
   ) {
     return;
   }
