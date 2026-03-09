@@ -197,9 +197,6 @@ restricted_runners:
       allow_write_folders:
         - "$WORKSPACE"
         - "$HOME/.cache"
-      deny_folders:
-        - "$HOME/.ssh"
-        - "$HOME/.aws"
     merge_strategy: "extend"
 
   # firejail: Linux namespace isolation
@@ -215,9 +212,6 @@ restricted_runners:
       allow_write_folders:
         - "$WORKSPACE"
         - "$HOME/.cache"
-      deny_folders:
-        - "$HOME/.ssh"
-        - "$HOME/.aws"
     merge_strategy: "extend"
 
   # docker: Container execution
@@ -435,17 +429,6 @@ List of folders the agent can write to. Supports variables.
 allow_write_folders:
   - "$WORKSPACE" # Current workspace directory
   - "$HOME/.cache" # Cache directory
-```
-
-#### deny_folders
-
-List of folders to explicitly deny access to (overrides allow lists).
-
-```yaml
-deny_folders:
-  - "$HOME/.ssh" # SSH keys
-  - "$HOME/.aws" # AWS credentials
-  - "$HOME/.env" # Environment files
 ```
 
 ### Docker-Specific Options
@@ -761,8 +744,6 @@ restricted_runners:
     # Applied when any workspace in this folder uses sandbox-exec
     restrictions:
       allow_networking: false # Override: disable network
-      deny_folders:
-        - "$WORKSPACE/.env" # Explicitly deny .env file
     merge_strategy: "extend"
 ```
 
@@ -907,8 +888,6 @@ Add comments explaining why each restriction exists:
 restricted_runner:
   restrictions:
     allow_networking: false # This project handles PII, no external access
-    deny_folders:
-      - "$WORKSPACE/.env" # Contains production credentials
 ```
 
 ### 5. Monitor and Adjust
