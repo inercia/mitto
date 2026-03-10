@@ -66,7 +66,7 @@ workspaces:
 | Type      | Description                                    |
 | --------- | ---------------------------------------------- |
 | `session` | Use session's working directory                |
-| `hook`    | Use hook file's directory (for relative paths) |
+| `hook`    | Use processor file's directory (for relative paths) |
 
 ## Processor Application Flow
 

@@ -44,7 +44,10 @@ func (l *Loader) Load() ([]*Processor, error) {
 
 	// Check if directory exists; fall back to legacy "hooks" directory
 	info, err := os.Stat(loadDir)
-	if os.IsNotExist(err) {
+	switch {
+	case err == nil:
+		// Directory exists, use it
+	case os.IsNotExist(err):
 		// Try legacy "hooks" directory in the same parent
 		legacyDir := filepath.Join(filepath.Dir(loadDir), "hooks")
 		if legacyInfo, legacyErr := os.Stat(legacyDir); legacyErr == nil && legacyInfo.IsDir() {
@@ -58,8 +61,7 @@ func (l *Loader) Load() ([]*Processor, error) {
 			l.logger.Debug("processors directory does not exist", "path", loadDir)
 			return nil, nil
 		}
-	}
-	if err != nil && !os.IsNotExist(err) {
+	default:
 		return nil, fmt.Errorf("failed to stat processors directory: %w", err)
 	}
 	if !info.IsDir() {
