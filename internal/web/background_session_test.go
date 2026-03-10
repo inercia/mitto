@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3299,11 +3300,11 @@ func TestUIPrompt(t *testing.T) {
 		}
 
 		// Track dismiss calls
-		var dismissReceived bool
+		var dismissReceived atomic.Bool
 		observer := &trackingObserver{
 			onUIPrompt: func(req UIPromptRequest) {},
 			onUIPromptDismiss: func(requestID string, reason string) {
-				dismissReceived = true
+				dismissReceived.Store(true)
 			},
 		}
 		bs.AddObserver(observer)
@@ -3328,7 +3329,7 @@ func TestUIPrompt(t *testing.T) {
 
 		// Wait for dismiss notification
 		time.Sleep(100 * time.Millisecond)
-		if !dismissReceived {
+		if !dismissReceived.Load() {
 			t.Error("Observer should have received OnUIPromptDismiss call")
 		}
 	})

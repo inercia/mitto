@@ -3701,7 +3701,13 @@ func (bs *BackgroundSession) UIPrompt(ctx context.Context, req UIPromptRequest) 
 
 	case <-promptCtx.Done():
 		bs.activePromptMu.Lock()
-		bs.dismissActivePromptLocked("timeout")
+		// Only dismiss if this prompt is still the active one. When a prompt is
+		// replaced by a newer one, both responseCh and promptCtx.Done() fire
+		// simultaneously (the replacer cancels our context). If select picks
+		// Done(), we must not dismiss the replacement prompt.
+		if bs.activePrompt != nil && bs.activePrompt.request.RequestID == req.RequestID {
+			bs.dismissActivePromptLocked("timeout")
+		}
 		bs.activePromptMu.Unlock()
 		if bs.logger != nil {
 			bs.logger.Info("UI prompt timed out",
@@ -3713,7 +3719,9 @@ func (bs *BackgroundSession) UIPrompt(ctx context.Context, req UIPromptRequest) 
 	case <-bs.ctx.Done():
 		// Session closed
 		bs.activePromptMu.Lock()
-		bs.dismissActivePromptLocked("cancelled")
+		if bs.activePrompt != nil && bs.activePrompt.request.RequestID == req.RequestID {
+			bs.dismissActivePromptLocked("cancelled")
+		}
 		bs.activePromptMu.Unlock()
 		return UIPromptResponse{}, bs.ctx.Err()
 	}
