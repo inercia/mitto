@@ -3126,6 +3126,15 @@ export function useWebSocket() {
           new CustomEvent("mitto:prompts_changed", { detail: msg.data }),
         );
         break;
+
+      case "mcp_tools_unavailable":
+        // Server notifies that Mitto MCP tools are not available in the ACP agent.
+        // Dispatches an event so UI components can show an installation prompt.
+        console.warn("MCP tools unavailable:", msg.data);
+        window.dispatchEvent(
+          new CustomEvent("mitto:mcp_tools_unavailable", { detail: msg.data }),
+        );
+        break;
     }
   }, []);
 

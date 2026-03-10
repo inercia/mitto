@@ -48,6 +48,353 @@ import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
 // For now, we'll receive it as a prop
 
 /**
+ * FolderListEditor — reusable folder list editing component with append/replace modes.
+ *
+ * In "append" mode: inherited folders are shown dimmed at the top (read-only),
+ * then workspace-level folders below with [×] buttons.
+ * In "replace" mode: only workspace folders are shown (inherited are hidden).
+ */
+function FolderListEditor({
+  folders,
+  inheritedFolders,
+  mode,
+  onModeChange,
+  onFoldersChange,
+  placeholder,
+  label,
+}) {
+  const addFolder = () => onFoldersChange([...(folders || []), ""]);
+  const removeFolder = (idx) =>
+    onFoldersChange((folders || []).filter((_, i) => i !== idx));
+  const updateFolder = (idx, val) => {
+    const updated = [...(folders || [])];
+    updated[idx] = val;
+    onFoldersChange(updated);
+  };
+
+  return html`
+    <div class="space-y-1">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-sm font-medium text-gray-300 flex-1">${label}</span>
+        <select
+          value=${mode}
+          onChange=${(e) => onModeChange(e.target.value)}
+          class="px-2 py-0.5 bg-slate-700 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="append">Append</option>
+          <option value="replace">Replace</option>
+        </select>
+      </div>
+
+      ${mode === "append" &&
+      (inheritedFolders || []).length > 0 &&
+      html`
+        <div class="space-y-1 opacity-50 pb-1 border-b border-slate-600/40">
+          ${(inheritedFolders || []).map(
+            (f, idx) => html`
+              <div key=${"inh-" + idx} class="flex items-center gap-2">
+                <input
+                  type="text"
+                  value=${f}
+                  disabled
+                  class="flex-1 px-3 py-1.5 bg-slate-800 rounded text-sm font-mono cursor-not-allowed"
+                />
+              </div>
+            `,
+          )}
+        </div>
+      `}
+
+      ${mode === "replace" &&
+      html`
+        <p class="text-xs text-amber-400/80 mb-1">
+          Replaces all inherited folders
+        </p>
+      `}
+
+      <div class="space-y-1">
+        ${(folders || []).map(
+          (f, idx) => html`
+            <div key=${idx} class="flex items-center gap-2">
+              <input
+                type="text"
+                value=${f}
+                onInput=${(e) => updateFolder(idx, e.target.value)}
+                placeholder=${placeholder || "$WORKSPACE"}
+                class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                onClick=${() => removeFolder(idx)}
+                class="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                title="Remove folder"
+              >
+                <${TrashIcon} className="w-4 h-4" />
+              </button>
+            </div>
+          `,
+        )}
+        <button
+          type="button"
+          onClick=${addFolder}
+          class="flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+        >
+          <${PlusIcon} className="w-3 h-3" />
+          Add folder
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * RunnerRestrictionsEditor — per-workspace runner restriction overrides.
+ * Shown when the workspace runner is not "exec".
+ */
+function RunnerRestrictionsEditor({
+  runnerType,
+  config: runnerConfig,
+  effectiveConfig,
+  onChange,
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Networking override
+  const overrideNetworking =
+    runnerConfig?.restrictions?.allow_networking != null;
+  const inheritedNetworking =
+    effectiveConfig?.restrictions?.allow_networking !== false; // default true
+
+  // Folder modes (per-list)
+  const [readMode, setReadMode] = useState(
+    runnerConfig?.merge_strategy === "replace" ? "replace" : "append",
+  );
+  const [writeMode, setWriteMode] = useState(
+    runnerConfig?.merge_strategy === "replace" ? "replace" : "append",
+  );
+
+  // Helper: update a restriction field
+  const updateRestriction = (field, value) => {
+    const newConfig = {
+      ...(runnerConfig || {}),
+      restrictions: {
+        ...(runnerConfig?.restrictions || {}),
+        [field]: value,
+      },
+    };
+    onChange(newConfig);
+  };
+
+  // Helper: update docker field
+  const updateDocker = (field, value) => {
+    const newConfig = {
+      ...(runnerConfig || {}),
+      restrictions: {
+        ...(runnerConfig?.restrictions || {}),
+        docker: {
+          ...(runnerConfig?.restrictions?.docker || {}),
+          [field]: value,
+        },
+      },
+    };
+    onChange(newConfig);
+  };
+
+  const handleNetworkingOverride = (checked) => {
+    if (checked) {
+      updateRestriction("allow_networking", inheritedNetworking);
+    } else {
+      // Remove override
+      const newConfig = {
+        ...(runnerConfig || {}),
+        restrictions: { ...(runnerConfig?.restrictions || {}) },
+      };
+      delete newConfig.restrictions.allow_networking;
+      onChange(newConfig);
+    }
+  };
+
+  const hasConfig =
+    runnerConfig &&
+    (runnerConfig.restrictions?.allow_networking != null ||
+      (runnerConfig.restrictions?.allow_read_folders || []).length > 0 ||
+      (runnerConfig.restrictions?.allow_write_folders || []).length > 0 ||
+      runnerConfig.restrictions?.docker);
+
+  return html`
+    <div class="border border-slate-600/50 rounded-lg overflow-hidden mt-2">
+      <button
+        type="button"
+        onClick=${() => setExpanded(!expanded)}
+        class="w-full flex items-center justify-between p-3 bg-slate-700/30 hover:bg-slate-700/50 transition-colors"
+      >
+        <div class="flex items-center gap-2">
+          <${expanded ? ChevronDownIcon : ChevronRightIcon}
+            className="w-4 h-4 text-gray-400"
+          />
+          <span class="text-sm font-medium">Runner Restrictions</span>
+        </div>
+        ${hasConfig &&
+        html`
+          <span
+            class="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+          >
+            Configured
+          </span>
+        `}
+      </button>
+
+      ${expanded &&
+      html`
+        <div class="p-4 space-y-4 border-t border-slate-600/50">
+          <p class="text-xs text-gray-500">
+            Override inherited restrictions from global/agent config.
+            ${effectiveConfig
+              ? ""
+              : " Loading inherited values..."}
+          </p>
+
+          <!-- Networking -->
+          <div class="space-y-1">
+            <div class="flex items-center gap-3">
+              <input
+                type="checkbox"
+                id="override-networking"
+                checked=${overrideNetworking}
+                onChange=${(e) => handleNetworkingOverride(e.target.checked)}
+                class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+              />
+              <label for="override-networking" class="text-sm font-medium"
+                >Override networking</label
+              >
+            </div>
+            ${overrideNetworking
+              ? html`
+                  <label class="flex items-center gap-3 ml-6 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked=${runnerConfig?.restrictions?.allow_networking !==
+                      false}
+                      onChange=${(e) =>
+                        updateRestriction(
+                          "allow_networking",
+                          e.target.checked,
+                        )}
+                      class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                    />
+                    <span class="text-sm">Allow networking</span>
+                  </label>
+                `
+              : html`
+                  <p class="text-xs text-gray-500 ml-6">
+                    Inherited:
+                    ${inheritedNetworking ? "allowed" : "blocked"}
+                  </p>
+                `}
+          </div>
+
+          <!-- Read folders -->
+          <${FolderListEditor}
+            label="Allow read folders"
+            folders=${runnerConfig?.restrictions?.allow_read_folders || []}
+            inheritedFolders=${effectiveConfig?.restrictions
+              ?.allow_read_folders || []}
+            mode=${readMode}
+            onModeChange=${(m) => {
+              setReadMode(m);
+              const newConfig = {
+                ...(runnerConfig || {}),
+                merge_strategy: m === "replace" ? "replace" : "extend",
+              };
+              onChange(newConfig);
+            }}
+            onFoldersChange=${(folders) =>
+              updateRestriction("allow_read_folders", folders)}
+            placeholder="$WORKSPACE"
+          />
+
+          <!-- Write folders -->
+          <${FolderListEditor}
+            label="Allow write folders"
+            folders=${runnerConfig?.restrictions?.allow_write_folders || [
+              "$WORKSPACE",
+            ]}
+            inheritedFolders=${effectiveConfig?.restrictions
+              ?.allow_write_folders || []}
+            mode=${writeMode}
+            onModeChange=${(m) => {
+              setWriteMode(m);
+              const newConfig = {
+                ...(runnerConfig || {}),
+                merge_strategy: m === "replace" ? "replace" : "extend",
+              };
+              onChange(newConfig);
+            }}
+            onFoldersChange=${(folders) =>
+              updateRestriction("allow_write_folders", folders)}
+            placeholder="$WORKSPACE"
+          />
+
+          ${runnerType === "docker" &&
+          html`
+            <div class="space-y-2 pt-2 border-t border-slate-600/50">
+              <label class="text-sm font-medium text-gray-300"
+                >Docker Settings</label
+              >
+              <div class="grid grid-cols-3 gap-3">
+                <div>
+                  <label class="text-xs text-gray-500">Image</label>
+                  <input
+                    type="text"
+                    value=${runnerConfig?.restrictions?.docker?.image || ""}
+                    onInput=${(e) => updateDocker("image", e.target.value)}
+                    class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="alpine:latest"
+                  />
+                </div>
+                <div>
+                  <label class="text-xs text-gray-500">Memory Limit</label>
+                  <input
+                    type="text"
+                    value=${runnerConfig?.restrictions?.docker?.memory_limit ||
+                    ""}
+                    onInput=${(e) =>
+                      updateDocker("memory_limit", e.target.value)}
+                    class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="4g"
+                  />
+                </div>
+                <div>
+                  <label class="text-xs text-gray-500">CPU Limit</label>
+                  <input
+                    type="text"
+                    value=${runnerConfig?.restrictions?.docker?.cpu_limit || ""}
+                    onInput=${(e) => updateDocker("cpu_limit", e.target.value)}
+                    class="w-full px-2 py-1 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="2.0"
+                  />
+                </div>
+              </div>
+            </div>
+          `}
+
+          <!-- Clear button -->
+          <div class="flex justify-end pt-2 border-t border-slate-600/50">
+            <button
+              type="button"
+              onClick=${() => onChange(null)}
+              class="px-3 py-1.5 text-xs text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+            >
+              Clear Restrictions
+            </button>
+          </div>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+/**
  * Helper component for editing a workspace inline (accordion-style)
  */
 function WorkspaceEditForm({
@@ -71,6 +418,34 @@ function WorkspaceEditForm({
   const [autoApprove, setAutoApprove] = useState(
     workspace.auto_approve === true,
   );
+  // Per-workspace runner restriction overrides (null = no overrides)
+  const [runnerConfig, setRunnerConfig] = useState(
+    workspace.restricted_runner_config || null,
+  );
+  // Effective config from global+agent levels (for showing inherited values)
+  const [effectiveConfig, setEffectiveConfig] = useState(null);
+
+  // Fetch effective runner config when workspace UUID changes or on mount
+  useEffect(() => {
+    if (!workspace.uuid) return;
+    secureFetch(apiUrl(`/api/workspaces/${workspace.uuid}/effective-runner-config`))
+      .then((r) => r.json())
+      .then((data) => setEffectiveConfig(data))
+      .catch(() => {}); // Ignore errors — effective config is optional for display
+  }, [workspace.uuid]);
+
+  // When runner type switches to "exec", clear runner config
+  const handleRunnerChange = (newRunner) => {
+    setRunner(newRunner);
+    if (newRunner === "exec") {
+      setRunnerConfig(null);
+    } else if (!runnerConfig) {
+      // Pre-populate write folders with $WORKSPACE when first enabling restrictions
+      setRunnerConfig({
+        restrictions: { allow_write_folders: ["$WORKSPACE"] },
+      });
+    }
+  };
 
   // Sort ACP servers alphabetically by name for display
   const sortedServers = useMemo(
@@ -87,6 +462,8 @@ function WorkspaceEditForm({
       color: color || undefined,
       acp_server: acpServer,
       restricted_runner: runner,
+      // Only include runner config for non-exec runners
+      restricted_runner_config: runner !== "exec" ? runnerConfig : undefined,
       auto_approve: autoApprove || undefined, // undefined to omit if false
     });
   };
@@ -129,7 +506,7 @@ function WorkspaceEditForm({
         <label class="block text-sm text-gray-400 mb-1">Sandbox Type</label>
         <select
           value=${runner}
-          onChange=${(e) => setRunner(e.target.value)}
+          onChange=${(e) => handleRunnerChange(e.target.value)}
           class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           ${supportedRunners
@@ -143,6 +520,16 @@ function WorkspaceEditForm({
         <p class="text-xs text-gray-500 mt-1">
           Controls how the agent is sandboxed
         </p>
+
+        ${runner !== "exec" &&
+        html`
+          <${RunnerRestrictionsEditor}
+            runnerType=${runner}
+            config=${runnerConfig}
+            effectiveConfig=${effectiveConfig}
+            onChange=${setRunnerConfig}
+          />
+        `}
       </div>
 
       <!-- Auto-approve Permissions -->
@@ -1719,6 +2106,7 @@ export function SettingsDialog({
               acp_server: updates.acp_server,
               acp_command: selectedServer.command,
               restricted_runner: updates.restricted_runner,
+              restricted_runner_config: updates.restricted_runner_config,
               auto_approve: updates.auto_approve,
             }
           : ws,
