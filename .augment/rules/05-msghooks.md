@@ -1,25 +1,27 @@
 ---
-description: Message hooks for pre/post processing, external command execution, message transformation
+description: Command processors for pre/post processing, external command execution, message transformation
 globs:
-  - "internal/msghooks/**/*"
+  - "internal/processors/**/*"
 ---
 
-# Message Hooks Package
+# Command Processors Package
 
-The `internal/msghooks` package provides external command-based hooks for message transformation. Hooks are loaded from YAML files in `MITTO_DIR/hooks/` directory.
+The `internal/processors` package provides external command-based processors for message transformation. Processors are loaded from YAML files in `MITTO_DIR/processors/` directory.
+
+> **Note:** The old `hooks/` directory name is still supported for backward compatibility.
 
 ## Quick Reference
 
-| Component  | Purpose                          |
-| ---------- | -------------------------------- |
-| `Hook`     | Hook definition loaded from YAML |
-| `Loader`   | Loads and validates hook files   |
-| `Executor` | Runs hooks as external commands  |
-| `Apply*`   | Applies hooks to messages        |
+| Component    | Purpose                               |
+| ------------ | ------------------------------------- |
+| `Processor`  | Processor definition loaded from YAML |
+| `Loader`     | Loads and validates processor files   |
+| `Executor`   | Runs processors as external commands  |
+| `Apply*`     | Applies processors to messages        |
 
-## Hook Configuration
+## Processor Configuration
 
-Hooks are defined in YAML files in `MITTO_DIR/hooks/*.yaml`:
+Processors are defined in YAML files in `MITTO_DIR/processors/*.yaml`:
 
 ```yaml
 name: system-prompt
@@ -66,28 +68,28 @@ workspaces:
 | `session` | Use session's working directory                |
 | `hook`    | Use hook file's directory (for relative paths) |
 
-## Hook Application Flow
+## Processor Application Flow
 
 ```
 Message
   ↓
-Load hooks from MITTO_DIR/hooks/*.yaml
+Load processors from MITTO_DIR/processors/*.yaml
   ↓
 Filter by enabled, when, workspace
   ↓
 Sort by priority (lower first)
   ↓
-Execute each hook in order
+Execute each processor in order
   ↓
 Transformed message
 ```
 
 ## Error Handling
 
-| Mode   | Behavior                                     |
-| ------ | -------------------------------------------- |
-| `skip` | Continue without the hook on error (default) |
-| `fail` | Abort the message on error                   |
+| Mode   | Behavior                                          |
+| ------ | ------------------------------------------------- |
+| `skip` | Continue without the processor on error (default) |
+| `fail` | Abort the message on error                        |
 
 ## Key Patterns
 
@@ -95,26 +97,26 @@ Transformed message
 
 Commands are resolved as follows:
 
-- `./ or ../` prefix → relative to hook file directory
+- `./ or ../` prefix → relative to processor file directory
 - Absolute path → used as-is
 - Otherwise → PATH lookup
 
 ```go
-func (h *Hook) ResolveCommand() string {
-    if strings.HasPrefix(h.Command, "./") || strings.HasPrefix(h.Command, "../") {
-        return filepath.Join(h.HookDir, h.Command)
+func (p *Processor) ResolveCommand() string {
+    if strings.HasPrefix(p.Command, "./") || strings.HasPrefix(p.Command, "../") {
+        return filepath.Join(p.ProcessorDir, p.Command)
     }
-    return h.Command
+    return p.Command
 }
 ```
 
 ### ShouldApply Logic
 
-Hooks check enabled, workspace filter, and when condition:
+Processors check enabled, workspace filter, and when condition:
 
 ```go
-func (h *Hook) ShouldApply(isFirstMessage bool, workingDir string) bool {
-    if !h.IsEnabled() { return false }
+func (p *Processor) ShouldApply(isFirstMessage bool, workingDir string) bool {
+    if !p.IsEnabled() { return false }
     // Check workspace filter...
     // Check when condition (first, all, all-except-first)...
 }

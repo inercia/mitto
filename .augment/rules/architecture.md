@@ -8,7 +8,7 @@ This is the most complex file in the codebase (~3500 lines). It manages the life
 - Starts and manages the ACP subprocess (Claude Code CLI)
 - Bridges WebSocket clients to the ACP agent via the observer pattern
 - Handles image uploads, base64 encoding, and content block assembly
-- Manages prompt queuing, history injection, and hook execution
+- Manages prompt queuing, history injection, and processor execution
 - Stores agent capabilities from ACP initialization
 
 ### Observer Pattern
@@ -22,8 +22,8 @@ This is the most complex file in the codebase (~3500 lines). It manages the life
 ### PromptWithMeta Flow
 1. Validate capabilities (e.g., image support)
 2. Load images from disk, base64 encode → `acp.ImageBlock()`
-3. Run message hooks (pre-processing)
-4. Build `finalBlocks` array: image blocks + hook blocks + text block
+3. Run command processors (pre-processing)
+4. Build `finalBlocks` array: image blocks + processor blocks + text block
 5. Log content block summary
 6. Launch goroutine: create prompt context → send to ACP → stream response
 

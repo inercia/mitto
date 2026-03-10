@@ -19,7 +19,6 @@ Simplify the current implementation while preserving functionality.
 **Note**: Works without Mitto's MCP server, but provides a better experience with it.
 
 **Optional tools:**
-- `mitto_conversation_get_current`
 - `mitto_conversation_new`
 - `mitto_children_tasks_wait`
 - `mitto_children_tasks_report`
@@ -56,13 +55,13 @@ For simplifications spanning 3+ files, removing abstraction layers, or multiple 
 
 **Choosing the right ACP server:**
 
-1. `mitto_conversation_get_current(self_id: "init")` → get `available_acp_servers`
+1. Available ACP servers: `@mitto:available_acp_servers`. Your session ID is `@mitto:session_id`.
 2. Match server tags to task:
    - Mechanical simplifications (consolidating duplicates, flattening conditionals) → prefer `"coding"`/`"fast"` servers
    - Judgment-heavy simplifications (which abstractions to remove, non-obvious decompositions) → prefer `"reasoning"`/`"planning"` servers
-   - No match → current server, then first available
-3. `mitto_conversation_new` with full context, constraints (preserve behavior), and reporting directive
-4. `mitto_children_tasks_wait(timeout_seconds: 600)`
+   - No match → server marked `(current)`, then first available
+3. `mitto_conversation_new(self_id: "@mitto:session_id")` with full context, constraints (preserve behavior), and reporting directive
+4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<short task description>", timeout_seconds: 600)`
 5. Review: verify behavior preserved, code genuinely simpler (not just different)
 6. `mitto_conversation_delete` for completed children
 
