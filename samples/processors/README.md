@@ -1,12 +1,14 @@
-# Sample Hooks
+# Sample Processors
 
-This directory contains example hooks for Mitto. Copy the hooks you want to use to your Mitto hooks directory:
+This directory contains example processors for Mitto. Copy the processors you want to use to your Mitto processors directory:
 
-- **macOS**: `~/Library/Application Support/Mitto/hooks/`
-- **Linux**: `~/.local/share/mitto/hooks/`
-- **Windows**: `%APPDATA%\Mitto\hooks\`
+- **macOS**: `~/Library/Application Support/Mitto/processors/`
+- **Linux**: `~/.local/share/mitto/processors/`
+- **Windows**: `%APPDATA%\Mitto\processors\`
 
-## Available Hooks
+> **Note:** The old `hooks/` directory name is still supported for backward compatibility.
+
+## Available Processors
 
 ### git-status
 
@@ -60,30 +62,30 @@ Adds current date/time to the first message of each conversation.
 
 ```bash
 # macOS example
-HOOKS_DIR="$HOME/Library/Application Support/Mitto/hooks"
+PROCESSORS_DIR="$HOME/Library/Application Support/Mitto/processors"
 
-# Copy a specific hook
-cp git-status.yaml git-status.sh "$HOOKS_DIR/"
+# Copy a specific processor
+cp git-status.yaml git-status.sh "$PROCESSORS_DIR/"
 
-# Or copy all hooks
-cp *.yaml *.sh "$HOOKS_DIR/"
+# Or copy all processors
+cp *.yaml *.sh "$PROCESSORS_DIR/"
 
 # Make scripts executable
-chmod +x "$HOOKS_DIR"/*.sh
+chmod +x "$PROCESSORS_DIR"/*.sh
 ```
 
 ## Requirements
 
-These hooks require:
+These processors require:
 - `jq` - JSON processor (install via `brew install jq` or `apt install jq`)
-- `git` - For git-related hooks
+- `git` - For git-related processors
 
-## Creating Your Own Hooks
+## Creating Your Own Processors
 
-See [docs/config/hooks.md](../../docs/config/hooks.md) for the full hook configuration reference.
+See [docs/config/processors.md](../../docs/config/processors.md) for the full processor configuration reference.
 
 Basic structure:
-1. Create a YAML file defining the hook configuration
+1. Create a YAML file defining the processor configuration
 2. Create a companion script (bash, python, etc.)
 3. The script receives JSON on stdin and outputs JSON on stdout
 
