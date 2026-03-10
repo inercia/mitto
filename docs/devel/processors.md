@@ -1,15 +1,15 @@
 # Message Processing Pipeline
 
-Mitto has a two-stage message processing pipeline that transforms user messages before sending them to the ACP agent. Both stages run **before** the message reaches the agent, and the **original** (untransformed) message is what gets recorded in session history.
+Mitto has a unified message processing pipeline that transforms user messages before sending them to the ACP agent. All processors run **before** the message reaches the agent, and the **original** (untransformed) message is what gets recorded in session history.
 
 ## Architecture Overview
 
-The pipeline consists of two independent systems applied sequentially:
+The pipeline is managed by a single `processors.Manager` that merges two types of processors into a priority-sorted(stable) list:
 
-1. **Declarative Processors** (`internal/config/`) — Lightweight, declarative text prepend/append rules defined in YAML configuration.
-2. **Command Processors** (`internal/processors/`) — External command-based transformations that can run arbitrary scripts, produce attachments, and fully replace messages.
+1. **Text-mode Processors** (from `config.MessageProcessor`) — Lightweight, declarative text prepend/append rules defined in YAML configuration. These run at priority 0 by default.
+2. **Command-mode Processors** (from `internal/processors/`) — External command-based transformations that can run arbitrary scripts, produce attachments, and fully replace messages. These run at priority 100 by default.
 
-Both systems share the same `when` condition types (`first`, `all`, `all-except-first`) from the `config.ProcessorWhen` type.
+Both types share the same `when` condition types (`first`, `all`, `all-except-first`) from the `config.ProcessorWhen` type. Text-mode processors from config are merged into the unified pipeline via `Manager.CloneWithTextProcessors()`, which returns a per-session copy to avoid data races on the shared Manager instance.
 
 ## Processing Flow
 
@@ -18,30 +18,27 @@ sequenceDiagram
     participant User
     participant Session as BackgroundSession / CLI
     participant Rec as Session Recorder
-    participant Proc as Declarative Processors
-    participant CmdProc as Command Processors
+    participant ProcMgr as Processor Manager
     participant ACP as ACP Agent
 
     User->>Session: Send message + optional images/files
     Session->>Rec: Record original message (events.jsonl)
     Session->>Session: Notify observers (OnUserPrompt)
 
-    Note over Session: Stage 1: Declarative Processors
-    Session->>Proc: ApplyProcessors(message, processors, isFirst)
-    Proc-->>Session: Transformed message
-
-    Note over Session: Stage 2: Command Processors
-    Session->>CmdProc: manager.Apply(ctx, processorInput)
+    Note over Session: Unified Pipeline (priority-sorted)
+    Session->>ProcMgr: manager.Apply(ctx, processorInput)
 
     loop Each processor (priority order)
-        CmdProc->>CmdProc: ShouldApply? (enabled, when, workspace)
-        alt Processor applies
-            CmdProc->>CmdProc: Execute external command
-            CmdProc->>CmdProc: Apply output (transform/prepend/append/discard)
-            CmdProc->>CmdProc: Collect attachments
+        ProcMgr->>ProcMgr: ShouldApply? (enabled, when, workspace)
+        alt Text-mode processor (priority 0)
+            ProcMgr->>ProcMgr: Prepend/append text
+        else Command-mode processor (priority 100)
+            ProcMgr->>ProcMgr: Execute external command
+            ProcMgr->>ProcMgr: Apply output (transform/prepend/append/discard)
+            ProcMgr->>ProcMgr: Collect attachments
         end
     end
-    CmdProc-->>Session: ProcessorResult {message, attachments}
+    ProcMgr-->>Session: ProcessorResult {message, attachments}
 
     Session->>Session: Build content blocks (images + processor attachments + text)
     Session->>ACP: Prompt(contentBlocks)
@@ -347,17 +344,16 @@ In CLI mode (`internal/cmd/cli.go`), all session metadata variables (`@mitto:ses
 
 ## Integration Points
 
-Both stages integrate at the same point in `BackgroundSession.PromptWithMeta()`:
+The unified pipeline integrates at a single point in `BackgroundSession.PromptWithMeta()`:
 
 ```
 1. Record original message → observers + events.jsonl
-2. config.ApplyProcessors(message, processors, isFirst)     ← Stage 1
-3. processorManager.Apply(ctx, processorInput)               ← Stage 2
-4. Build content blocks (uploaded images + processor attachments + text)
-5. Send to ACP agent
+2. processorManager.Apply(ctx, processorInput)               ← unified pipeline
+3. Build content blocks (uploaded images + processor attachments + text)
+4. Send to ACP agent
 ```
 
-The CLI (`internal/cmd/cli.go`) follows the same two-stage pattern in both `runOnceMode()` and `runInteractiveLoop()`.
+The CLI (`internal/cmd/cli.go`) follows the same pattern in both `runOnceMode()` and `runInteractiveLoop()`. Text-mode processors from config are merged into the Manager via `CloneWithTextProcessors()` during session creation.
 
 ### First-Message Tracking
 

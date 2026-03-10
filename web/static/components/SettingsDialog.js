@@ -165,13 +165,22 @@ function RunnerRestrictionsEditor({
   const inheritedNetworking =
     effectiveConfig?.restrictions?.allow_networking !== false; // default true
 
-  // Folder modes (per-list)
-  const [readMode, setReadMode] = useState(
-    runnerConfig?.merge_strategy === "replace" ? "replace" : "append",
-  );
-  const [writeMode, setWriteMode] = useState(
-    runnerConfig?.merge_strategy === "replace" ? "replace" : "append",
-  );
+  // Folder modes — both derive from the single merge_strategy field, so
+  // changing one must sync the other to keep UI consistent with the model.
+  const derivedMode =
+    runnerConfig?.merge_strategy === "replace" ? "replace" : "append";
+  const [readMode, setReadMode] = useState(derivedMode);
+  const [writeMode, setWriteMode] = useState(derivedMode);
+
+  const updateMergeMode = (mode, setThisMode, setOtherMode) => {
+    setThisMode(mode);
+    setOtherMode(mode); // keep in sync — single merge_strategy backs both
+    const newConfig = {
+      ...(runnerConfig || {}),
+      merge_strategy: mode === "replace" ? "replace" : "extend",
+    };
+    onChange(newConfig);
+  };
 
   // Helper: update a restriction field
   const updateRestriction = (field, value) => {
@@ -300,14 +309,8 @@ function RunnerRestrictionsEditor({
             inheritedFolders=${effectiveConfig?.restrictions
               ?.allow_read_folders || []}
             mode=${readMode}
-            onModeChange=${(m) => {
-              setReadMode(m);
-              const newConfig = {
-                ...(runnerConfig || {}),
-                merge_strategy: m === "replace" ? "replace" : "extend",
-              };
-              onChange(newConfig);
-            }}
+            onModeChange=${(m) =>
+              updateMergeMode(m, setReadMode, setWriteMode)}
             onFoldersChange=${(folders) =>
               updateRestriction("allow_read_folders", folders)}
             placeholder="$WORKSPACE"
@@ -322,14 +325,8 @@ function RunnerRestrictionsEditor({
             inheritedFolders=${effectiveConfig?.restrictions
               ?.allow_write_folders || []}
             mode=${writeMode}
-            onModeChange=${(m) => {
-              setWriteMode(m);
-              const newConfig = {
-                ...(runnerConfig || {}),
-                merge_strategy: m === "replace" ? "replace" : "extend",
-              };
-              onChange(newConfig);
-            }}
+            onModeChange=${(m) =>
+              updateMergeMode(m, setWriteMode, setReadMode)}
             onFoldersChange=${(folders) =>
               updateRestriction("allow_write_folders", folders)}
             placeholder="$WORKSPACE"

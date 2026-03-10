@@ -169,6 +169,9 @@ func NewManager(processorsDir string, logger *slog.Logger) *Manager {
 // command-mode processors (which default to priority 100).
 //
 // Declaration order is preserved for processors with the same effective priority.
+//
+// NOTE: This method mutates the receiver. If the Manager is shared across
+// goroutines, use CloneWithTextProcessors instead to avoid data races.
 func (m *Manager) AddTextProcessors(procs []config.MessageProcessor, priority int) {
 	for i, p := range procs {
 		proc := &Processor{
@@ -184,6 +187,20 @@ func (m *Manager) AddTextProcessors(procs []config.MessageProcessor, priority in
 	sort.SliceStable(m.processors, func(i, j int) bool {
 		return m.processors[i].GetPriority() < m.processors[j].GetPriority()
 	})
+}
+
+// CloneWithTextProcessors returns a shallow copy of the Manager with the given
+// text-mode processors merged in. The original Manager is not modified, making
+// this safe to call concurrently on a shared instance.
+func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, priority int) *Manager {
+	clone := &Manager{
+		processorsDir: m.processorsDir,
+		logger:        m.logger,
+		processors:    make([]*Processor, len(m.processors)),
+	}
+	copy(clone.processors, m.processors)
+	clone.AddTextProcessors(procs, priority)
+	return clone
 }
 
 // Load loads all processors from the processors directory.

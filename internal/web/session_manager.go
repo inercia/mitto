@@ -888,8 +888,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	}
 	// Merge text-mode processors from config into the unified pipeline.
 	// Text-mode processors use priority 0 so they run before command-mode processors (priority 100).
+	// Use CloneWithTextProcessors to avoid mutating the shared Manager instance.
 	if textProcs := config.MergeProcessors(globalConv, workspaceConv); len(textProcs) > 0 && procMgr != nil {
-		procMgr.AddTextProcessors(textProcs, 0)
+		procMgr = procMgr.CloneWithTextProcessors(textProcs, 0)
 	}
 
 	// Get queue config (prefer workspace config, fall back to global)
@@ -1283,15 +1284,19 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// signalDone stores the resume result in pr and unblocks any goroutines that are
 	// waiting on this session's pending resume channel. It must be called exactly once
 	// on every code path below (success or failure).
+	//
+	// Order matters: set result fields first, then close the channel (which
+	// establishes the happens-before guarantee for readers), and only then
+	// remove the entry from pendingResumes. This prevents a TOCTOU window
+	// where a new goroutine could enter ResumeSession after the delete but
+	// before pr.done is closed.
 	signalDone := func(result *BackgroundSession, err error) {
-		sm.mu.Lock()
-		delete(sm.pendingResumes, sessionID)
-		sm.mu.Unlock()
-		// Set fields before closing the channel: the close establishes the
-		// happens-before guarantee that readers observe the correct values.
 		pr.bs = result
 		pr.err = err
 		close(pr.done)
+		sm.mu.Lock()
+		delete(sm.pendingResumes, sessionID)
+		sm.mu.Unlock()
 	}
 
 	// Load workspace-specific conversation config and merge with global.
@@ -1304,8 +1309,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	}
 	// Merge text-mode processors from config into the unified pipeline.
 	// Text-mode processors use priority 0 so they run before command-mode processors (priority 100).
+	// Use CloneWithTextProcessors to avoid mutating the shared Manager instance.
 	if textProcs := config.MergeProcessors(globalConv, workspaceConv); len(textProcs) > 0 && procMgr != nil {
-		procMgr.AddTextProcessors(textProcs, 0)
+		procMgr = procMgr.CloneWithTextProcessors(textProcs, 0)
 	}
 
 	// Get queue config (prefer workspace config, fall back to global)

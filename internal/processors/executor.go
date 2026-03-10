@@ -111,9 +111,12 @@ func (e *Executor) buildEnvironment(proc *Processor, input *ProcessorInput) []st
 		"MITTO_SESSION_ID":            input.SessionID,
 		"MITTO_WORKING_DIR":           input.WorkingDir,
 		"MITTO_IS_FIRST_MESSAGE":      fmt.Sprintf("%t", input.IsFirstMessage),
-		"MITTO_HOOKS_DIR":             e.processorsDir,
-		"MITTO_HOOK_FILE":             proc.FilePath,
-		"MITTO_HOOK_DIR":              proc.HookDir,
+		"MITTO_PROCESSORS_DIR":        e.processorsDir,
+		"MITTO_PROCESSOR_FILE":        proc.FilePath,
+		"MITTO_PROCESSOR_DIR":         proc.HookDir,
+		"MITTO_HOOKS_DIR":             e.processorsDir,    // legacy alias
+		"MITTO_HOOK_FILE":             proc.FilePath,       // legacy alias
+		"MITTO_HOOK_DIR":              proc.HookDir,        // legacy alias
 		"MITTO_PARENT_SESSION_ID":     input.ParentSessionID,
 		"MITTO_SESSION_NAME":          input.SessionName,
 		"MITTO_ACP_SERVER":            input.ACPServer,

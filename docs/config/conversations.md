@@ -306,4 +306,4 @@ When external images are enabled:
 - [User Data](user-data.md) - Custom metadata for conversations
 - [Workspace Configuration](web/workspace.md) - Project-specific `.mittorc` files
 - [Configuration Overview](overview.md) - Global configuration options
-- [Messages Processors](processors.md) - External command-based processors
+- [Message Processors](processors.md) - External command-based processors
