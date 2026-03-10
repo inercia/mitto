@@ -14,7 +14,6 @@ Continue the current work in a new conversation, optionally with a different mod
 This prompt requires Mitto's MCP server tools.
 
 **Required tools:**
-- `mitto_conversation_get_current`
 - `mitto_conversation_get_summary`
 - `mitto_conversation_new`
 - `mitto_ui_options_combo`
@@ -27,9 +26,10 @@ If any are missing, **stop** and show instructions for adding Mitto's MCP server
 
 ## Phase 1: Analyze Context
 
-1. `mitto_conversation_get_current(self_id: "init")` → session_id, `available_acp_servers`
-2. Note server `tags` (e.g., `["coding", "fast"]`, `["reasoning", "planning"]`) and `current` flag
-3. `mitto_conversation_get_summary(self_id, conversation_id)` → current work context
+1. Your session ID is `@mitto:session_id` — use this as `self_id` for all MCP tool calls.
+2. Available ACP servers for this workspace: `@mitto:available_acp_servers`
+   Note each server's name, tags (e.g., `[coding, fast]`, `[reasoning, planning]`), and the `(current)` marker.
+3. `mitto_conversation_get_summary(self_id: "@mitto:session_id", conversation_id: "@mitto:session_id")` → current work context
 
 ## Phase 2: Prepare Handoff
 
@@ -53,7 +53,7 @@ Present to user with recommended model:
 Ask via `mitto_ui_options_combo` (timeout: 60s):
 ```
 question: "Which AI agent for continuing this work?"
-options: <available_acp_servers>
+options: <list of server names from @mitto:available_acp_servers>
 ```
 
 **On timeout**, auto-select by matching work to server tags:
@@ -63,7 +63,7 @@ options: <available_acp_servers>
 
 ## Phase 4: Create Conversation
 
-`mitto_conversation_new(self_id, title, initial_prompt, acp_server)`
+`mitto_conversation_new(self_id: "@mitto:session_id", title, initial_prompt, acp_server)`
 
 ## Phase 5: Report
 

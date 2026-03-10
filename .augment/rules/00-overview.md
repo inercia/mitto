@@ -35,7 +35,7 @@ internal/config/      → Configuration loading (YAML/JSON)
 internal/conversion/  → Markdown-to-HTML conversion, file link detection
 internal/defense/     → Scanner defense, blocklist, IP metrics (used by web middleware)
 internal/mcpserver/   → MCP servers (global debug + per-session)
-internal/msghooks/    → Message hooks (pre/post processing via external commands)
+internal/processors/  → Command processors (pre/post processing via external commands)
 internal/runner/      → Restricted runner, sandbox execution (go-restricted-runner)
 internal/secrets/     → Secure credential storage (Keychain on macOS)
 internal/session/     → Session persistence (Store/Recorder/Player/Lock/Queue/Flags)

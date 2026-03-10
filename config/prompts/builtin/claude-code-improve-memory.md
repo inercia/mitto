@@ -31,5 +31,10 @@ Update Claude Code memory files based on insights from recent conversations and 
 - Focus on actionable guidance for future sessions
 - Preserve existing valid content — only add or update
 - One topic per file, bullet points, descriptive headings
+- **Balance knowledge and length**: Optimize the total length of all memory files while preserving essential knowledge
+  - Remove redundant or outdated information
+  - Consolidate overlapping sections
+  - Keep examples concise but illustrative
+  - Prioritize high-value patterns over exhaustive coverage
 
 </instructions>

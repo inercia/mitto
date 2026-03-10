@@ -14,7 +14,6 @@ Continue the current work in an existing conversation that shares the same works
 This prompt requires Mitto's MCP server tools.
 
 **Required tools:**
-- `mitto_conversation_get_current`
 - `mitto_conversation_list`
 - `mitto_conversation_send_prompt`
 - `mitto_ui_options_combo`
@@ -27,11 +26,11 @@ If any are missing, **stop** and show instructions for adding Mitto's MCP server
 
 ## Phase 1: Analyze Context
 
-`mitto_conversation_get_current(self_id: "init")` → get session_id and working directory.
+Your session ID is `@mitto:session_id` and working directory is `@mitto:working_dir`.
 
 ## Phase 2: Find Sibling Conversations
 
-`mitto_conversation_list(working_dir, archived: false, exclude_self: <session_id>)`
+`mitto_conversation_list(self_id: "@mitto:session_id", working_dir: "@mitto:working_dir", archived: false, exclude_self: "@mitto:session_id")`
 
 If none found: inform user, suggest "Handoff to new conversation". Abort.
 
@@ -63,7 +62,7 @@ On timeout: abort. Do not send without explicit selection.
 
 ## Phase 5: Send Handoff
 
-`mitto_conversation_send_prompt(self_id, conversation_id, prompt)`
+`mitto_conversation_send_prompt(self_id: "@mitto:session_id", conversation_id, prompt)`
 
 Structure the prompt with: Context, Current State, Your Task, Instructions, Files to Work On, Success Criteria, Constraints.
 

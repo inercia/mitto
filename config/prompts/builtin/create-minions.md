@@ -15,7 +15,6 @@ collect results, and iterate until solved.
 This prompt requires Mitto's MCP server tools.
 
 **Required tools:**
-- `mitto_conversation_get_current`
 - `mitto_conversation_get_summary`
 - `mitto_conversation_new`
 - `mitto_conversation_delete`
@@ -45,9 +44,10 @@ Track throughout: overall goal, completed subtasks and outcomes, open items, ite
 
 ## Phase 1: Analyze Context
 
-1. `mitto_conversation_get_current(self_id: "init")` → get session_id, `available_acp_servers`
-2. Note each server's `name`, `tags` (e.g., `["coding", "fast"]`), and `current` flag
-3. `mitto_conversation_get_summary(self_id: <id>, conversation_id: <id>)` → current work context
+1. Your session ID is `@mitto:session_id` — use this as `self_id` for all MCP tool calls.
+2. Available ACP servers for this workspace: `@mitto:available_acp_servers`
+   Note each server's name, tags (e.g., `[coding, fast]`), and the `(current)` marker.
+3. `mitto_conversation_get_summary(self_id: "@mitto:session_id", conversation_id: "@mitto:session_id")` → current work context
 
 ## Phase 2: Decompose the Problem
 
@@ -67,7 +67,7 @@ For subsequent iterations, also show: learnings from previous round, new vs. ref
 Ask via `mitto_ui_options_combo` (timeout: 60s):
 ```
 question: "Which AI agent would you like to use for the parallel tasks?"
-options: <available_acp_servers>
+options: <list of server names from @mitto:available_acp_servers>
 ```
 
 **On timeout**, auto-select by matching task characteristics to server tags:
@@ -84,7 +84,8 @@ For each task (max 4), create sequentially:
 1. Build prompt with full task description + **mandatory reporting directive**:
    ```
    When complete, report via mitto_children_tasks_report:
-     self_id: <get via mitto_conversation_get_current>
+     self_id: <your own session ID — call mitto_conversation_get_current(self_id: "init") to get it>
+     task_id: "<task_id from the parent's wait call>"
      status: "completed" | "failed" | "partial"
      summary: "<what was accomplished>"
      details: "<files modified, errors, discoveries, open questions>"
@@ -96,13 +97,15 @@ For each task (max 4), create sequentially:
 
 ## Phase 5: Wait for Results
 
+Choose a short, descriptive `task_id` for this iteration (e.g., `"iter1-investigate"`, `"iter2-fix-tests"`).
+
 ```
-mitto_children_tasks_wait(self_id, children_list: [...], timeout_seconds: 600)
+mitto_children_tasks_wait(self_id, children_list: [...], task_id: "<task_id>", timeout_seconds: 600)
 ```
 
 Inform user: "Waiting for child tasks (iteration N)... Monitor in Conversations panel."
 
-**On timeout**: retry pending children with `mitto_children_tasks_wait` (omit prompt to avoid duplicates). After two timeouts, treat as failure.
+**On timeout**: retry pending children with `mitto_children_tasks_wait` using the **same `task_id`** (omit prompt to avoid duplicates). Reports already received are preserved. After two timeouts, treat as failure.
 
 ## Phase 6: Synthesize and Evaluate
 

@@ -20,7 +20,6 @@ Analyze for cleanup opportunities. Propose a plan and wait for approval.
 
 **Optional tools:**
 - `mitto_ui_options_buttons`
-- `mitto_conversation_get_current`
 - `mitto_conversation_new`
 - `mitto_children_tasks_wait`
 - `mitto_children_tasks_report`
@@ -86,13 +85,13 @@ For cleanup spanning 3+ files, module restructuring, or multiple parallelizable 
 
 **Choosing the right ACP server:**
 
-1. `mitto_conversation_get_current(self_id: "init")` → get `available_acp_servers`
+1. Available ACP servers: `@mitto:available_acp_servers`. Your session ID is `@mitto:session_id`.
 2. Match server tags to task:
    - Well-defined removals → prefer `"coding"`/`"fast"` servers
    - Complex refactors, ambiguous decisions → prefer `"reasoning"`/`"planning"` servers
-   - No match → current server, then first available
-3. `mitto_conversation_new` with full context, constraints, and reporting directive
-4. `mitto_children_tasks_wait(timeout_seconds: 600)`
+   - No match → server marked `(current)`, then first available
+3. `mitto_conversation_new(self_id: "@mitto:session_id")` with full context, constraints, and reporting directive
+4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<short task description>", timeout_seconds: 600)`
 5. Review results, verify changes, run tests
 6. `mitto_conversation_delete` for completed children
 

@@ -23,6 +23,12 @@ conversations and code changes.
 
 Focus on actionable guidance. Preserve existing valid content.
 
+**Balance knowledge and length**: Optimize the total length of all rules files while preserving essential knowledge:
+- Remove redundant or outdated information
+- Consolidate overlapping sections
+- Keep examples concise but illustrative
+- Prioritize high-value patterns over exhaustive coverage
+
 ## Reorganize Files
 
 Consider splitting large files into focused, scope-specific files:

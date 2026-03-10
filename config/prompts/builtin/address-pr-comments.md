@@ -15,7 +15,6 @@ Address all review comments on the current pull request with thoughtful response
 
 **Optional tools:**
 - `mitto_ui_ask_yes_no`
-- `mitto_conversation_get_current`
 - `mitto_conversation_new`
 - `mitto_children_tasks_wait`
 - `mitto_children_tasks_report`
@@ -93,9 +92,9 @@ For fixes requiring **significant work** (3+ files, substantial new code, risky 
 
 **How to delegate (requires Mitto MCP tools):**
 
-1. `mitto_conversation_get_current(self_id: "init")` → get session_id, `available_acp_servers`
-2. Select ACP server: prefer `"coding"`/`"fast"` tagged servers for implementation tasks. Fallback: current server (`current: true`).
-3. `mitto_conversation_new`:
+1. Your session ID is `@mitto:session_id`. Available ACP servers: `@mitto:available_acp_servers`
+2. Select ACP server: prefer `"coding"`/`"fast"` tagged servers for implementation tasks. Fallback: current server (marked `(current)` in the list above).
+3. `mitto_conversation_new(self_id: "@mitto:session_id")`:
    ```
    title: "PR fix: <description>"
    initial_prompt: |
@@ -105,10 +104,11 @@ For fixes requiring **significant work** (3+ files, substantial new code, risky 
      **What to do**: <detailed fix description>
      **Constraints**: Only modify related files, run tests, follow project style.
 
-     When done, report via mitto_children_tasks_report(self_id, status, summary, details).
+     When done, report via mitto_children_tasks_report(self_id, task_id: "<task_id>", status, summary, details).
+     (Get your own self_id by calling mitto_conversation_get_current(self_id: "init").)
    acp_server: <selected server>
    ```
-4. `mitto_children_tasks_wait(self_id, children_list, timeout_seconds: 600)`
+4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", children_list, task_id: "<short task description>", timeout_seconds: 600)`
 5. Review results, verify changes, run tests
 6. `mitto_conversation_delete` for completed children
 7. Commit combined changes
