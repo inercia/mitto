@@ -450,6 +450,6 @@ files.
 
 - [Workspace Configuration](web/workspace.md) - Workspace-specific prompts in `.mittorc`
 - [Configuration Overview](overview.md) - Global settings including prompts
-- [Message Hooks](hooks.md) - Dynamic message transformation
+- [Messages Processors](processors.md) - Dynamic message transformation
 - [Web Interface Configuration](web/README.md) - Web interface settings
 - [macOS App Configuration](mac/README.md) - Desktop app settings

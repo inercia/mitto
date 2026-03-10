@@ -325,6 +325,7 @@ This tool enables parent-child task coordination: a parent spawns children via `
 | `children_list`   | string[] | Yes      | List of child conversation IDs to query                                      |
 | `prompt`          | string   | No       | Custom prompt to send. If empty/omitted, no message is sent (wait-only mode) |
 | `timeout_seconds` | int      | No       | Timeout in seconds (default: 600 / 10 min)                                   |
+| `task_id`         | string   | No       | Task identifier to scope reports. Same task_id across retries preserves already-received reports. A new task_id clears stale reports from the previous task. |
 
 Returns:
 
@@ -354,19 +355,20 @@ Each report in `reports` contains:
 - The prompt sent to each child includes an instruction to call `mitto_children_tasks_report` with their results
 - **Empty prompt = wait-only mode**: If `prompt` is empty or omitted, no message is sent to any child — the tool only waits for reports. This is useful for retrying after a timeout without re-enqueuing duplicate messages
 - **Queue deduplication**: Even when a prompt is provided, the tool checks each child's queue before enqueuing. If the child already has a pending (unconsumed) message from this parent, the prompt is skipped for that child to prevent duplicate messages
+- **Task-scoped reports**: When `task_id` is provided, reports are scoped to that task. Retrying with the same `task_id` preserves reports already received (children don't need to re-report). Using a different `task_id` clears stale reports from the previous task. The `task_id` is included in the prompt sent to children so they can echo it back in their `mitto_children_tasks_report` call.
 - On timeout, partial results are returned (whatever has been received so far)
 
 **Example:**
 
 ```
 Parent calls:
-  mitto_children_tasks_wait(self_id=PARENT, children_list=[CHILD_A, CHILD_B])
+  mitto_children_tasks_wait(self_id=PARENT, children_list=[CHILD_A, CHILD_B], task_id="investigate-failures")
 
-→ CHILD_A receives: "Please report your progress.\n\nReport your results using mitto_children_tasks_report..."
+→ CHILD_A receives: "Please report your progress.\n\nReport your results using mitto_children_tasks_report... You MUST include task_id: "investigate-failures" in your report call."
 → CHILD_B receives the same
 
-CHILD_A calls: mitto_children_tasks_report(self_id=CHILD_A, status="completed", summary="done", details="changed 3 files")
-CHILD_B calls: mitto_children_tasks_report(self_id=CHILD_B, status="in_progress", summary="60% complete")
+CHILD_A calls: mitto_children_tasks_report(self_id=CHILD_A, status="completed", summary="done", details="changed 3 files", task_id="investigate-failures")
+CHILD_B calls: mitto_children_tasks_report(self_id=CHILD_B, status="in_progress", summary="60% complete", task_id="investigate-failures")
 
 → Parent unblocks, receives:
   {
@@ -376,6 +378,10 @@ CHILD_B calls: mitto_children_tasks_report(self_id=CHILD_B, status="in_progress"
       "CHILD_B": {"completed": true, "status": "completed", "report": {"status": "in_progress", "summary": "60% complete", "details": ""}}
     }
   }
+
+Retry after timeout (same task_id preserves CHILD_A's report):
+  mitto_children_tasks_wait(self_id=PARENT, children_list=[CHILD_A, CHILD_B], task_id="investigate-failures")
+  → CHILD_A's report is already stored — only waits for CHILD_B
 ```
 
 #### `mitto_children_tasks_report`
@@ -388,6 +394,7 @@ Report results back to a waiting parent conversation. Called by child conversati
 | `status`  | string | Yes      | Status: e.g. "completed", "in_progress", "failed" |
 | `summary` | string | Yes      | Brief summary of findings/progress                |
 | `details` | string | No       | Optional detailed information                     |
+| `task_id` | string | No       | Task identifier matching the parent's wait call. Include this if the parent provided a `task_id` in `mitto_children_tasks_wait`. |
 
 Returns:
 
@@ -618,23 +625,23 @@ sequenceDiagram
     participant Child1 as Child Agent A
     participant Child2 as Child Agent B
 
-    Parent->>MCP: mitto_children_tasks_wait(children=[A,B])
-    MCP->>MCP: Get-or-create collector<br/>Clear previous reports
+    Parent->>MCP: mitto_children_tasks_wait(children=[A,B], task_id="investigate")
+    MCP->>MCP: Get-or-create collector<br/>Set task_id="investigate"
     MCP->>Child1: Enqueue prompt via Queue
     MCP->>Child2: Enqueue prompt via Queue
     MCP->>MCP: Block on waitCh channel
 
-    Child1->>MCP: mitto_children_tasks_report(status, summary, ...)
+    Child1->>MCP: mitto_children_tasks_report(status, summary, task_id="investigate")
     MCP->>MCP: Store report for A<br/>(1/2 reported)
 
-    Child2->>MCP: mitto_children_tasks_report(status, summary, ...)
+    Child2->>MCP: mitto_children_tasks_report(status, summary, task_id="investigate")
     MCP->>MCP: Store report for B<br/>(2/2 reported)
     MCP->>MCP: Close waitCh channel
 
     MCP-->>Parent: {reports: {A: {...}, B: {...}}}
 ```
 
-#### Scenario 2: Iterative workflow (reports cleared between waits)
+#### Scenario 2: Retry after timeout (same task_id preserves reports)
 
 ```mermaid
 sequenceDiagram
@@ -643,32 +650,52 @@ sequenceDiagram
     participant Child1 as Child Agent A
     participant Child2 as Child Agent B
 
-    Note over Parent,Child2: Iteration 1
-    Parent->>MCP: mitto_children_tasks_wait(children=[A,B])
-    MCP->>MCP: Clear reports, start fresh cycle
-    MCP->>Child1: Enqueue prompt
-    MCP->>Child2: Enqueue prompt
-    Child1->>MCP: report({status: "completed"})
-    Child2->>MCP: report({status: "partial"})
-    MCP-->>Parent: {reports: {A: completed, B: partial}}
+    Note over Parent,Child2: First attempt — times out
+    Parent->>MCP: mitto_children_tasks_wait(children=[A,B], task_id="investigate")
+    MCP->>MCP: Set task_id="investigate", clear reports
+    Child1->>MCP: report(status="completed", task_id="investigate")
+    MCP->>MCP: Store report for A (1/2)
+    Note over MCP: Timeout — B hasn't reported
+    MCP-->>Parent: {timed_out: true, reports: {A: completed, B: pending}}
 
-    Note over Parent,Child2: Iteration 2 (follow-up)
-    Parent->>MCP: mitto_children_tasks_wait(children=[B])
-    MCP->>MCP: Clear ALL reports (A's too)
-    MCP->>Child2: Enqueue refined prompt
-    Child2->>MCP: report({status: "completed"})
-    MCP-->>Parent: {reports: {B: completed}}
+    Note over Parent,Child2: Retry — same task_id preserves A's report
+    Parent->>MCP: mitto_children_tasks_wait(children=[A,B], task_id="investigate")
+    MCP->>MCP: Same task_id → preserve A's report
+    Child2->>MCP: report(status="completed", task_id="investigate")
+    MCP->>MCP: Store report for B (2/2)
+    MCP-->>Parent: {reports: {A: completed, B: completed}}
+```
+
+#### Scenario 3: New task clears old reports
+
+```mermaid
+sequenceDiagram
+    participant Parent as Parent Agent
+    participant MCP as MCP Server
+    participant Child1 as Child Agent A
+
+    Note over Parent,Child1: Task 1
+    Parent->>MCP: mitto_children_tasks_wait(children=[A], task_id="investigate")
+    Child1->>MCP: report(status="completed", task_id="investigate")
+    MCP-->>Parent: {reports: {A: completed}}
+
+    Note over Parent,Child1: Task 2 — different task_id clears old reports
+    Parent->>MCP: mitto_children_tasks_wait(children=[A], task_id="fix-bugs")
+    MCP->>MCP: New task_id → clear old reports
+    Child1->>MCP: report(status="completed", task_id="fix-bugs")
+    MCP-->>Parent: {reports: {A: completed}}
 ```
 
 **Key design decisions:**
 
-- **Fresh cycle per wait**: Each `_wait` call clears all previously stored reports and starts a clean collection cycle. This prevents stale data from previous iterations leaking into the current one.
-- **Collector lifecycle**: The `childReportCollector` itself persists for the parent session's lifetime (cleaned up on `UnregisterSession`), but its contents are reset on each `_wait`.
+- **Task-scoped reports**: Reports are scoped by `task_id`. When the parent retries with the same `task_id`, existing reports are preserved — children that already reported don't need to re-report. When the `task_id` changes, stale reports from the previous task are cleared.
+- **Pre-wait reports preserved**: If a child reports with a `task_id` before the parent starts waiting with the same `task_id`, the report is preserved and the wait returns immediately for that child.
+- **Collector lifecycle**: The `childReportCollector` itself persists for the parent session's lifetime (cleaned up on `UnregisterSession`), but its contents are scoped by `task_id`.
 - **Go channel signaling**: The collector uses a `waitCh` channel (created per `_wait` call) that is closed when all waited-on children have reported. The channel is cleared (`clearWait`) when the wait returns.
 - **Thread-safe**: `childReportCollector.mu` protects the reports map and wait signaling; `Server.childReportCollectorsMu` protects the collectors map.
 - **Closed children handling**: Children not registered with the MCP server (closed/archived) are detected before blocking. They appear as `status: "not_running"` in reports with warnings. If all children are closed, the tool returns immediately.
 - **Idempotent reports**: A child can report multiple times during a single wait cycle; each report overwrites the previous one.
-- **Reports between waits are discarded**: If a child calls `_report` when no wait is active, the report is accepted (no error) but will be cleared when the next `_wait` starts.
+- **Reports between waits are stored**: If a child calls `_report` when no wait is active, the report is accepted and stored. It will be available when the parent next calls `_wait` with the same `task_id`.
 
 ---
 

@@ -361,5 +361,5 @@ The CSP restricts what resources can be loaded:
 [Workspace Config] [workspace.md)
 [Configuration Overview] (../overview.md)
 [Prompts & Quick Actions] (../prompts.md)
-[Message Hooks] (../hooks.md)
+[Command Processors] (../processors.md)
 [macOS App] (../mac/README.md)

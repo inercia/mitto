@@ -25,7 +25,7 @@ The Mitto macOS app is a native application that embeds the web interface in a W
 | Configuration Overview  | [../overview.md](../overview.md)     |
 | ACP Servers             | [../acp.md](../acp.md)               |
 | Prompts & Quick Actions | [../prompts.md](../prompts.md)       |
-| Message Hooks           | [../hooks.md](../hooks.md)           |
+| Command Processors      | [../processors.md](../processors.md) |
 | Web Interface           | [../web/README.md](../web/README.md) |
 
 ---

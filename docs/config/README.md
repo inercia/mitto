@@ -28,7 +28,7 @@ topic.
 | ⚡ **Prompts**       | [prompts.md](prompts.md)             | Quick actions and predefined prompts          |
 | 💬 **Conversations** | [conversations.md](conversations.md) | Message processors (prepend/append)           |
 | 📝 **User Data**     | [user-data.md](user-data.md)         | Custom metadata for conversations             |
-| 🔗 **Hooks**         | [hooks.md](hooks.md)                 | External command-based message transformation |
+| 🔗 **Processors**    | [processors.md](processors.md)       | External command-based message transformation |
 | 🔌 **MCP Server**    | [mcp.md](mcp.md)                     | MCP server for AI agent integration           |
 
 ## Quick Reference
@@ -49,7 +49,7 @@ topic.
 | Project prompts     | [Workspace](web/workspace.md)     | Prompts                        |
 | System prompts      | [Conversations](conversations.md) | System Prompt on First Message |
 | User data schema    | [User Data](user-data.md)         | Schema, Types, Validation      |
-| External hooks      | [Hooks](hooks.md)                 | Hook Configuration Schema      |
+| Command processors  | [Processors](processors.md)       | Processor Configuration Schema |
 | MCP server setup    | [MCP Server](mcp.md)              | Auggie, Claude, Cursor, Gemini |
 
 ## Configuration File Locations

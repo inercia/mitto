@@ -47,7 +47,76 @@ conversations:
 |            | `all-except-first` | Apply to all messages except the first            |
 | `position` | `prepend`          | Insert text before the user's message             |
 |            | `append`           | Insert text after the user's message              |
-| `text`     | string             | The text to insert (supports multi-line YAML)     |
+| `text`     | string             | The text to insert (supports multi-line YAML); supports `@mitto:variable` substitution (see below) |
+
+## Variable Substitution in Processor Text
+
+The `text` field of a declarative processor (and any text produced by [command processors](processors.md)) can include `@mitto:variable` placeholders. After all processors have run, Mitto replaces each placeholder with the corresponding session value before the message is sent to the ACP agent.
+
+> The user's **original** message is still what gets recorded in session history — only the text forwarded to the agent is expanded.
+
+### Available Variables
+
+| Placeholder                   | Value                                                                         |
+| ----------------------------- | ----------------------------------------------------------------------------- |
+| `@mitto:session_id`              | Current session ID                                                            |
+| `@mitto:parent_session_id`       | Parent conversation ID; empty string if this is a root session                |
+| `@mitto:session_name`            | Conversation title/name; empty string if not yet set                          |
+| `@mitto:working_dir`             | Session working directory                                                     |
+| `@mitto:acp_server`              | Active ACP server name (e.g. `claude-code`)                                  |
+| `@mitto:workspace_uuid`          | Workspace UUID                                                                |
+| `@mitto:available_acp_servers`   | Comma-separated list of ACP servers with workspaces for this folder (see below) |
+
+### `@mitto:available_acp_servers` format
+
+Produces a comma-separated list of the ACP servers that have workspaces configured for the session's working directory, for example:
+
+```
+auggie [coding, ai-assistant] (current), claude-code [coding, fast-model]
+```
+
+Each entry contains the server name, optional tags in brackets, and `(current)` for the active server.
+
+### Behaviour
+
+- **Unknown placeholders** — `@mitto:unknown` is left verbatim
+- **Empty values** — e.g. `@mitto:parent_session_id` when there is no parent → replaced with empty string
+- **Fast path** — if the assembled message contains no `@mitto:`, the substitution pass is skipped entirely
+
+### Examples
+
+Inject the session ID and working directory into a first-message system prompt:
+
+```yaml
+conversations:
+  processing:
+    processors:
+      - when: first
+        position: prepend
+        text: |
+          Session: @mitto:session_id
+          Project: @mitto:working_dir
+          Agent: @mitto:acp_server
+
+          ---
+
+```
+
+Show the user which other agents are available for the same project:
+
+```yaml
+conversations:
+  processing:
+    processors:
+      - when: first
+        position: prepend
+        text: |
+          You are connected via @mitto:acp_server.
+          Other agents available for this project: @mitto:available_acp_servers
+
+          ---
+
+```
 
 ## Examples
 
@@ -237,4 +306,4 @@ When external images are enabled:
 - [User Data](user-data.md) - Custom metadata for conversations
 - [Workspace Configuration](web/workspace.md) - Project-specific `.mittorc` files
 - [Configuration Overview](overview.md) - Global configuration options
-- [Message Hooks](hooks.md) - External command-based hooks
+- [Messages Processors](processors.md) - External command-based processors
