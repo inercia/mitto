@@ -160,14 +160,16 @@ func EnsureDir() error {
 		return fmt.Errorf("failed to create sessions directory %s: %w", sessionsDir, err)
 	}
 
-	// Backward compatibility: if old "hooks" directory exists but "processors" doesn't, log migration hint
+	// Backward compatibility note: the processor Loader will automatically fall back to
+	// loading from the legacy "hooks" directory if "processors" doesn't exist.
+	// Log a migration hint when both directories are present to encourage migration.
 	oldHooksDir := filepath.Join(dir, "hooks")
 	processorsDir := filepath.Join(dir, ProcessorsDirName)
 	if _, err := os.Stat(oldHooksDir); err == nil {
-		if _, err := os.Stat(processorsDir); os.IsNotExist(err) {
-			slog.Info("Found legacy 'hooks' directory. Please migrate your processor files to the new 'processors' directory.",
-				"old_path", oldHooksDir,
-				"new_path", processorsDir,
+		if _, err := os.Stat(processorsDir); err == nil {
+			slog.Info("Both 'hooks' and 'processors' directories exist. Only 'processors' will be loaded. Please migrate files from 'hooks' to 'processors'.",
+				"hooks_path", oldHooksDir,
+				"processors_path", processorsDir,
 			)
 		}
 	}

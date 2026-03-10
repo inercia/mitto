@@ -319,9 +319,7 @@ function RunnerRestrictionsEditor({
           <!-- Write folders -->
           <${FolderListEditor}
             label="Allow write folders"
-            folders=${runnerConfig?.restrictions?.allow_write_folders || [
-              "$WORKSPACE",
-            ]}
+            folders=${runnerConfig?.restrictions?.allow_write_folders || []}
             inheritedFolders=${effectiveConfig?.restrictions
               ?.allow_write_folders || []}
             mode=${writeMode}

@@ -31,28 +31,45 @@ func NewLoader(processorsDir string, logger *slog.Logger) *Loader {
 // Load discovers and parses all YAML files in the processors directory.
 // Returns processors sorted by priority (lower priority first).
 // Files in subdirectories named "disabled" are skipped.
+//
+// For backward compatibility, if the processors directory does not exist,
+// the loader also checks for a legacy "hooks" directory in the same parent
+// and loads processors from there instead.
 func (l *Loader) Load() ([]*Processor, error) {
 	if l.processorsDir == "" {
 		return nil, nil
 	}
 
-	// Check if directory exists
-	info, err := os.Stat(l.processorsDir)
+	loadDir := l.processorsDir
+
+	// Check if directory exists; fall back to legacy "hooks" directory
+	info, err := os.Stat(loadDir)
 	if os.IsNotExist(err) {
-		l.logger.Debug("processors directory does not exist", "path", l.processorsDir)
-		return nil, nil
+		// Try legacy "hooks" directory in the same parent
+		legacyDir := filepath.Join(filepath.Dir(loadDir), "hooks")
+		if legacyInfo, legacyErr := os.Stat(legacyDir); legacyErr == nil && legacyInfo.IsDir() {
+			l.logger.Info("Loading processors from legacy 'hooks' directory; consider migrating to 'processors'",
+				"legacy_path", legacyDir,
+				"new_path", loadDir,
+			)
+			loadDir = legacyDir
+			info = legacyInfo
+		} else {
+			l.logger.Debug("processors directory does not exist", "path", loadDir)
+			return nil, nil
+		}
 	}
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to stat processors directory: %w", err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("processors path is not a directory: %s", l.processorsDir)
+		return nil, fmt.Errorf("processors path is not a directory: %s", loadDir)
 	}
 
 	var procs []*Processor
 
-	// Walk the processors directory
-	err = filepath.WalkDir(l.processorsDir, func(path string, d os.DirEntry, err error) error {
+	// Walk the processors directory (or legacy hooks directory)
+	err = filepath.WalkDir(loadDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			l.logger.Warn("error accessing path", "path", path, "error", err)
 			return nil // Continue walking

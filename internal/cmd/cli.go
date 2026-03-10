@@ -146,6 +146,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		workspaceConv = workspaceRC.Conversations
 	}
 	if textProcs := config.MergeProcessors(cfg.Conversations, workspaceConv); len(textProcs) > 0 {
+		// CLI is single-threaded, so direct mutation is safe (no need for CloneWithTextProcessors).
 		procMgr.AddTextProcessors(textProcs, 0)
 	}
 
@@ -189,6 +190,9 @@ func runOnceMode(ctx context.Context, conn *acp.Connection, procMgr *cmdprocesso
 				})
 			}
 		}
+
+		// Apply @mitto:variable substitution (session-specific vars will be empty in CLI mode)
+		transformedPrompt = cmdprocessors.SubstituteVariables(transformedPrompt, processorInput)
 	}
 
 	// Send the prompt to the agent
@@ -304,6 +308,9 @@ func runInteractiveLoop(ctx context.Context, conn *acp.Connection, procMgr *cmdp
 					})
 				}
 			}
+
+			// Apply @mitto:variable substitution (session-specific vars will be empty in CLI mode)
+			transformedLine = cmdprocessors.SubstituteVariables(transformedLine, processorInput)
 		}
 
 		isFirstMessage = false

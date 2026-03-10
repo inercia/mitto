@@ -944,13 +944,10 @@ func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string, acpSer
 
 // handleWorkspaceDetail dispatches /api/workspaces/{uuid}/... sub-routes.
 func (s *Server) handleWorkspaceDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract the path after "/api/workspaces/"
+	// Extract the path after "/api/workspaces/", stripping apiPrefix first (mirrors handleSessionDetail).
 	path := r.URL.Path
-	// Find the prefix end
-	prefix := "/api/workspaces/"
-	if idx := strings.Index(path, prefix); idx >= 0 {
-		path = path[idx+len(prefix):]
-	}
+	path = strings.TrimPrefix(path, s.apiPrefix)
+	path = strings.TrimPrefix(path, "/api/workspaces/")
 
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) < 2 {

@@ -225,7 +225,7 @@ when: first
 command: ./gather-context.sh
 output: prepend
 priority: 10
-working_dir: processor   # resolve command relative to the YAML file
+working_dir: hook   # resolve command relative to the YAML file
 ```
 
 **A processor that loads helper scripts from its own directory:**
@@ -303,7 +303,12 @@ The full structured data (including `type` field) is also available:
 
 ### Where Substitution Happens
 
-Substitution is applied at the end of `ApplyProcessors()` in `internal/processors/apply.go`, implemented in `SubstituteVariables()` in `internal/processors/variables.go`.
+Substitution is applied **after** `processorManager.Apply()` returns:
+
+- **Web mode**: Called in `BackgroundSession.PromptWithMeta()` (`internal/web/background_session.go`) after the processor pipeline completes.
+- **CLI mode**: Called in `runOnceMode()` / `runInteractiveLoop()` (`internal/cmd/cli.go`) after the processor pipeline completes. CLI variables that require a running session (e.g., `@mitto:session_id`) substitute to empty strings.
+
+The implementation is in `SubstituteVariables()` in `internal/processors/variables.go`.
 
 ### Data Flow for `@mitto:available_acp_servers`
 
