@@ -255,4 +255,3 @@ type AttachmentData struct {
 	MimeType string
 	Name     string
 }
-

@@ -185,4 +185,3 @@ func detectMimeType(path string, data []byte) string {
 		return "application/octet-stream"
 	}
 }
-

@@ -71,9 +71,9 @@ func TestSubstituteVariables(t *testing.T) {
 			expected: "session-123 in /home/user/project",
 		},
 		{
-			name:    "empty value substitutes to empty string",
-			message: "parent: @mitto:parent_session_id",
-			input:   &ProcessorInput{SessionID: "x"}, // ParentSessionID is empty
+			name:     "empty value substitutes to empty string",
+			message:  "parent: @mitto:parent_session_id",
+			input:    &ProcessorInput{SessionID: "x"}, // ParentSessionID is empty
 			expected: "parent: ",
 		},
 		{
@@ -125,9 +125,9 @@ func TestSubstituteVariables(t *testing.T) {
 			expected: "servers: auggie [coding, ai-assistant], claude-code [coding] (current)",
 		},
 		{
-			name:    "available_acp_servers empty list",
-			message: "servers: @mitto:available_acp_servers",
-			input:   &ProcessorInput{},
+			name:     "available_acp_servers empty list",
+			message:  "servers: @mitto:available_acp_servers",
+			input:    &ProcessorInput{},
 			expected: "servers: ",
 		},
 		{
@@ -219,4 +219,3 @@ func TestFormatAvailableACPServers(t *testing.T) {
 		})
 	}
 }
-

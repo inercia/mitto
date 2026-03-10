@@ -972,7 +972,7 @@ func (s *Server) handleWorkspaceDetail(w http.ResponseWriter, r *http.Request) {
 // It returns the resolved runner config from global + agent levels (no workspace overrides),
 // so the UI can show what restrictions a workspace would inherit.
 type EffectiveRunnerConfigResponse struct {
-	RunnerType   string                    `json:"runner_type"`
+	RunnerType   string                     `json:"runner_type"`
 	Restrictions *config.RunnerRestrictions `json:"restrictions,omitempty"`
 }
 

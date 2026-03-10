@@ -114,9 +114,9 @@ func (e *Executor) buildEnvironment(proc *Processor, input *ProcessorInput) []st
 		"MITTO_PROCESSORS_DIR":        e.processorsDir,
 		"MITTO_PROCESSOR_FILE":        proc.FilePath,
 		"MITTO_PROCESSOR_DIR":         proc.HookDir,
-		"MITTO_HOOKS_DIR":             e.processorsDir,    // legacy alias
-		"MITTO_HOOK_FILE":             proc.FilePath,       // legacy alias
-		"MITTO_HOOK_DIR":              proc.HookDir,        // legacy alias
+		"MITTO_HOOKS_DIR":             e.processorsDir, // legacy alias
+		"MITTO_HOOK_FILE":             proc.FilePath,   // legacy alias
+		"MITTO_HOOK_DIR":              proc.HookDir,    // legacy alias
 		"MITTO_PARENT_SESSION_ID":     input.ParentSessionID,
 		"MITTO_SESSION_NAME":          input.SessionName,
 		"MITTO_ACP_SERVER":            input.ACPServer,
@@ -181,4 +181,3 @@ func (e *Executor) parseOutput(data []byte) (*ProcessorOutput, error) {
 
 	return &output, nil
 }
-

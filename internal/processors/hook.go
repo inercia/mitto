@@ -119,4 +119,3 @@ func (h *Processor) ResolveCommand() string {
 	}
 	return h.Command
 }
-

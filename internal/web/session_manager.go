@@ -24,7 +24,7 @@ var ErrTooManySessions = errors.New("maximum number of sessions reached")
 // Goroutines that race to resume the same session ID wait on done, then read
 // the result set by the first (primary) goroutine — preventing duplicate ACP launches.
 type pendingResumeResult struct {
-	done chan struct{}       // closed when the resume is complete
+	done chan struct{}      // closed when the resume is complete
 	bs   *BackgroundSession // result (valid after done is closed)
 	err  error              // error  (valid after done is closed)
 }
@@ -1004,8 +1004,8 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
-		MittoConfig:         sm.mittoConfig,    // Pass config for default flags
-		AvailableACPServers: availableServers,  // Pre-computed workspace server list
+		MittoConfig:         sm.mittoConfig,   // Pass config for default flags
+		AvailableACPServers: availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
 		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)

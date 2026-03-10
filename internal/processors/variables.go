@@ -13,7 +13,7 @@ import "strings"
 //   - @mitto:acp_server             — ACP server name (e.g., "claude-code")
 //   - @mitto:workspace_uuid         — Workspace identifier
 //   - @mitto:available_acp_servers  — ACP servers with workspaces for this folder,
-//                                     comma-separated with tags and current marker
+//     comma-separated with tags and current marker
 //
 // Unknown @mitto: variables are left as-is.
 // Empty values substitute to empty string.
@@ -67,4 +67,3 @@ func formatAvailableACPServers(servers []AvailableACPServer) string {
 	}
 	return strings.Join(parts, ", ")
 }
-

@@ -130,4 +130,3 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 
 	return &proc, nil
 }
-

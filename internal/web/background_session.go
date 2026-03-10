@@ -91,9 +91,9 @@ type BackgroundSession struct {
 	historyInjected bool           // True after history has been injected
 
 	// Conversation processing
-	processorManager    *processors.Manager       // Unified processor pipeline (text-mode + command-mode)
-	workingDir          string                    // Working directory for processor execution
-	isFirstPrompt       bool                      // True until first prompt is sent (for processor conditions)
+	processorManager    *processors.Manager             // Unified processor pipeline (text-mode + command-mode)
+	workingDir          string                          // Working directory for processor execution
+	isFirstPrompt       bool                            // True until first prompt is sent (for processor conditions)
 	availableACPServers []processors.AvailableACPServer // ACP servers available in this workspace folder
 
 	// Queue processing
@@ -167,19 +167,19 @@ type activeUIPrompt struct {
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
 type BackgroundSessionConfig struct {
-	PersistedID  string
-	ACPCommand   string
-	ACPCwd       string // Working directory for the ACP process (not the session working dir)
-	ACPServer    string
-	ACPSessionID string // ACP-assigned session ID for resumption (optional)
-	WorkingDir   string
-	AutoApprove  bool
-	Logger       *slog.Logger
-	Store        *session.Store
-	SessionName  string
+	PersistedID      string
+	ACPCommand       string
+	ACPCwd           string // Working directory for the ACP process (not the session working dir)
+	ACPServer        string
+	ACPSessionID     string // ACP-assigned session ID for resumption (optional)
+	WorkingDir       string
+	AutoApprove      bool
+	Logger           *slog.Logger
+	Store            *session.Store
+	SessionName      string
 	ProcessorManager *processors.Manager // Unified processor pipeline (text-mode + command-mode)
-	QueueConfig  *config.QueueConfig       // Queue processing configuration
-	Runner       *runner.Runner            // Optional restricted runner for sandboxed execution
+	QueueConfig      *config.QueueConfig // Queue processing configuration
+	Runner           *runner.Runner      // Optional restricted runner for sandboxed execution
 
 	ActionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration
 	FileLinksConfig     *config.FileLinksConfig     // File path linking configuration
@@ -243,11 +243,11 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
-		acpCommand:              cfg.ACPCommand,            // Store for restart
-		acpCwd:                  cfg.ACPCwd,                // Store for restart
-		globalMcpServer:         cfg.GlobalMCPServer,       // Global MCP server for session registration
-		auxiliaryManager:        cfg.AuxiliaryManager,      // Workspace-scoped auxiliary manager
-		availableACPServers:     cfg.AvailableACPServers,   // Pre-computed workspace server list
+		acpCommand:              cfg.ACPCommand,          // Store for restart
+		acpCwd:                  cfg.ACPCwd,              // Store for restart
+		globalMcpServer:         cfg.GlobalMCPServer,     // Global MCP server for session registration
+		auxiliaryManager:        cfg.AuxiliaryManager,    // Workspace-scoped auxiliary manager
+		availableACPServers:     cfg.AvailableACPServers, // Pre-computed workspace server list
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -399,11 +399,11 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
-		acpCommand:              config.ACPCommand,            // Store for restart
-		acpCwd:                  config.ACPCwd,                // Store for restart
-		globalMcpServer:         config.GlobalMCPServer,       // Global MCP server for session registration
-		auxiliaryManager:        config.AuxiliaryManager,      // Workspace-scoped auxiliary manager
-		availableACPServers:     config.AvailableACPServers,   // Pre-computed workspace server list
+		acpCommand:              config.ACPCommand,          // Store for restart
+		acpCwd:                  config.ACPCwd,              // Store for restart
+		globalMcpServer:         config.GlobalMCPServer,     // Global MCP server for session registration
+		auxiliaryManager:        config.AuxiliaryManager,    // Workspace-scoped auxiliary manager
+		availableACPServers:     config.AvailableACPServers, // Pre-computed workspace server list
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)

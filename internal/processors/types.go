@@ -153,4 +153,3 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 func (d Duration) Duration() time.Duration {
 	return time.Duration(d)
 }
-

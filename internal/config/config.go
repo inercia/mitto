@@ -429,8 +429,6 @@ type MessageProcessor struct {
 	Text string `json:"text" yaml:"text"`
 }
 
-
-
 // ConversationProcessing contains configuration for message processing.
 // This is the inner structure that holds the actual processor list and merge behavior.
 type ConversationProcessing struct {
@@ -688,8 +686,6 @@ func MergeProcessors(global, workspace *ConversationsConfig) []MessageProcessor 
 
 	return result
 }
-
-
 
 // ============================================================================
 // Prompt Merging
