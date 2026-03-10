@@ -341,11 +341,14 @@ type OptionsComboOutput struct {
 
 // childReportCollector collects reports from child conversations.
 // It persists in-memory on the Server for the lifetime of the parent session.
-// Each call to startWait clears all previous reports, starting a fresh collection cycle.
-// Between wait cycles, children can still report — but those reports are discarded
-// when the next wait begins.
+//
+// Reports are scoped by task_id. When the parent starts waiting for a new task,
+// only reports from the previous (different) task are cleared. Reports for the
+// same task are preserved across wait cycles, so children that already reported
+// don't need to report again on retry.
 type childReportCollector struct {
 	parentSessionID string
+	currentTaskID   string                  // task_id of the current/last wait cycle
 	reports         map[string]*childReport // child_id -> report (nil = pending)
 	mu              sync.Mutex
 
@@ -356,8 +359,9 @@ type childReportCollector struct {
 }
 
 // addReport stores a child's report. Any child can report at any time.
+// If the child provides a taskID, it is stored with the report for matching.
 // If the parent is currently waiting and this report completes the wait set, signals the parent.
-func (c *childReportCollector) addReport(childID string, report json.RawMessage) {
+func (c *childReportCollector) addReport(childID string, taskID string, report json.RawMessage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -369,6 +373,7 @@ func (c *childReportCollector) addReport(childID string, report json.RawMessage)
 	r.Report = report
 	r.Completed = true
 	r.Timestamp = time.Now()
+	r.TaskID = taskID
 
 	c.checkAndSignalWait()
 }
@@ -395,19 +400,36 @@ func (c *childReportCollector) checkAndSignalWait() {
 }
 
 // startWait sets up wait signaling for the given children.
-// Clears all previously stored reports so each wait cycle starts fresh.
+//
+// Task-scoped cleanup: if taskID differs from the previous wait's task, all
+// reports are cleared (new task = clean slate). If taskID matches the previous
+// wait (e.g. retry after timeout), existing reports for the same task are
+// preserved so children that already reported don't need to report again.
+//
 // Returns (waitCh, alreadyDone). If alreadyDone is true, caller should not block.
-func (c *childReportCollector) startWait(childIDs []string) (chan struct{}, bool) {
+func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan struct{}, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Clear all previous reports — each wait cycle starts with a clean slate.
-	// Children that reported between cycles will need to report again.
-	c.reports = make(map[string]*childReport, len(childIDs))
+	// Only clear reports when the task changes. Same task = preserve existing reports.
+	if taskID != c.currentTaskID {
+		// New task: clear all reports, but preserve any that were already
+		// filed with the new taskID (child reported before parent started waiting).
+		oldReports := c.reports
+		c.reports = make(map[string]*childReport, len(childIDs))
+		for _, id := range childIDs {
+			if r := oldReports[id]; r != nil && r.Completed && r.TaskID == taskID {
+				c.reports[id] = r // preserve matching report
+			}
+		}
+		c.currentTaskID = taskID
+	}
 
-	// Add all children as pending
+	// Ensure all requested children have an entry (nil = pending if not already reported)
 	for _, id := range childIDs {
-		c.reports[id] = nil // pending
+		if _, exists := c.reports[id]; !exists {
+			c.reports[id] = nil // pending
+		}
 	}
 
 	// Build waitingFor set
@@ -418,7 +440,7 @@ func (c *childReportCollector) startWait(childIDs []string) (chan struct{}, bool
 
 	c.waitCh = make(chan struct{})
 
-	// Check if all waited-on children have already reported
+	// Check if all waited-on children have already reported (for this task)
 	c.checkAndSignalWait()
 
 	select {
@@ -465,6 +487,7 @@ type childReport struct {
 	Report    json.RawMessage `json:"report"`
 	Completed bool            `json:"completed"`
 	Timestamp time.Time       `json:"timestamp"`
+	TaskID    string          `json:"task_id,omitempty"`
 }
 
 // ChildrenTasksWaitInput is the input for mitto_children_tasks_wait tool.
@@ -473,6 +496,7 @@ type ChildrenTasksWaitInput struct {
 	ChildrenList   []string `json:"children_list"`             // Child conversation IDs
 	Prompt         string   `json:"prompt,omitempty"`          // Instruction to send to children
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min)
+	TaskID         string   `json:"task_id,omitempty"`         // Task identifier — reports are scoped by task
 }
 
 // ChildrenTasksWaitOutput is the output for mitto_children_tasks_wait tool.
@@ -499,6 +523,7 @@ type ChildrenTasksReportInput struct {
 	Status  string `json:"status"`            // e.g. "completed", "in_progress", "failed"
 	Summary string `json:"summary"`           // Brief summary of findings/progress
 	Details string `json:"details,omitempty"` // Optional detailed information
+	TaskID  string `json:"task_id,omitempty"` // Task identifier matching the parent's wait
 }
 
 // ChildrenTasksReportOutput is the output for mitto_children_tasks_report tool.

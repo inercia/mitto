@@ -9,7 +9,7 @@ import (
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
-	"github.com/inercia/mitto/internal/msghooks"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -20,6 +20,15 @@ const MaxSessions = 32
 // ErrTooManySessions is returned when the session limit is reached.
 var ErrTooManySessions = errors.New("maximum number of sessions reached")
 
+// pendingResumeResult holds the outcome of an in-progress session resume operation.
+// Goroutines that race to resume the same session ID wait on done, then read
+// the result set by the first (primary) goroutine — preventing duplicate ACP launches.
+type pendingResumeResult struct {
+	done chan struct{}       // closed when the resume is complete
+	bs   *BackgroundSession // result (valid after done is closed)
+	err  error              // error  (valid after done is closed)
+}
+
 // WorkspaceSaveFunc is a callback function called when workspaces are modified.
 // It receives the current list of workspaces to be persisted.
 type WorkspaceSaveFunc func(workspaces []config.WorkspaceSettings) error
@@ -29,7 +38,15 @@ type WorkspaceSaveFunc func(workspaces []config.WorkspaceSettings) error
 type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*BackgroundSession // keyed by persisted session ID
-	logger   *slog.Logger
+
+	// pendingResumes tracks in-progress session resume operations, keyed by session ID.
+	// This prevents the TOCTOU race where two goroutines both observe no running session
+	// and both launch a separate ACP subprocess for the same session ID.
+	// Entries are added under sm.mu before the expensive ACP work begins, and removed
+	// (also under sm.mu) by the primary goroutine after the work completes.
+	pendingResumes map[string]*pendingResumeResult
+
+	logger *slog.Logger
 
 	// Workspaces configuration - maps workspace UUID to workspace config.
 	// Using UUID as key allows multiple workspaces to share the same working directory
@@ -64,8 +81,8 @@ type SessionManager struct {
 	// mittoConfig contains the full Mitto configuration (for looking up agent configs).
 	mittoConfig *config.Config
 
-	// hookManager manages external command hooks for message transformation.
-	hookManager *msghooks.Manager
+	// processorManager manages external command processors for message transformation.
+	processorManager *processors.Manager
 
 	// apiPrefix is the URL prefix for API endpoints (e.g., "/mitto").
 	// Used to generate HTTP file links for web browser access.
@@ -111,6 +128,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 	}
 	return &SessionManager{
 		sessions:             make(map[string]*BackgroundSession),
+		pendingResumes:       make(map[string]*pendingResumeResult),
 		workspaces:           make(map[string]*config.WorkspaceSettings),
 		logger:               logger,
 		defaultWorkspace:     defaultWS,
@@ -144,6 +162,7 @@ type SessionManagerOptions struct {
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
 		sessions:             make(map[string]*BackgroundSession),
+		pendingResumes:       make(map[string]*pendingResumeResult),
 		workspaces:           make(map[string]*config.WorkspaceSettings),
 		logger:               opts.Logger,
 		autoApprove:          opts.AutoApprove,
@@ -175,11 +194,11 @@ func (sm *SessionManager) SetGlobalConversations(conv *config.ConversationsConfi
 	sm.globalConversations = conv
 }
 
-// SetHookManager sets the hook manager for external command msghooks.
-func (sm *SessionManager) SetHookManager(hm *msghooks.Manager) {
+// SetProcessorManager sets the processor manager for external command processors.
+func (sm *SessionManager) SetProcessorManager(pm *processors.Manager) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.hookManager = hm
+	sm.processorManager = pm
 }
 
 // SetAPIPrefix sets the API prefix for HTTP file links.
@@ -365,6 +384,41 @@ func (sm *SessionManager) GetDefaultWorkspace() *config.WorkspaceSettings {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.defaultWorkspace
+}
+
+// buildAvailableACPServers returns the list of ACP servers that have workspaces
+// configured for the given folder, using the same logic as the MCP tool
+// (mitto_conversation_get_current). Each entry includes the server name, type,
+// and tags, plus whether it is the currently active server for the session.
+//
+// Returns nil when no config is available or no workspace is found for the folder.
+func (sm *SessionManager) buildAvailableACPServers(folder, currentACPServer string) []processors.AvailableACPServer {
+	if sm.mittoConfig == nil || len(sm.mittoConfig.ACPServers) == 0 {
+		return nil
+	}
+
+	folderWorkspaces := sm.GetWorkspacesForFolder(folder)
+	if len(folderWorkspaces) == 0 {
+		return nil
+	}
+
+	wsServerSet := make(map[string]bool, len(folderWorkspaces))
+	for _, ws := range folderWorkspaces {
+		wsServerSet[ws.ACPServer] = true
+	}
+
+	servers := make([]processors.AvailableACPServer, 0, len(folderWorkspaces))
+	for _, srv := range sm.mittoConfig.ACPServers {
+		if wsServerSet[srv.Name] {
+			servers = append(servers, processors.AvailableACPServer{
+				Name:    srv.Name,
+				Type:    srv.GetType(),
+				Tags:    srv.Tags,
+				Current: srv.Name == currentACPServer,
+			})
+		}
+	}
+	return servers
 }
 
 // GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
@@ -703,14 +757,27 @@ func (sm *SessionManager) SetMittoConfig(cfg *config.Config) {
 }
 
 // createRunner creates a restricted runner for the given workspace and agent.
+// workspace is optional — when provided, its RestrictedRunnerConfig (if set) overrides
+// any .mittorc workspace-level configuration for the same runner type.
 // Returns nil if no runner configuration is found (direct execution).
-func (sm *SessionManager) createRunner(workingDir, acpServer string) (*runner.Runner, error) {
+func (sm *SessionManager) createRunner(workingDir, acpServer string, workspace *config.WorkspaceSettings) (*runner.Runner, error) {
 	// Get workspace-specific runner configs from .mittorc (by runner type)
 	var workspaceRunnerConfigByType map[string]*config.WorkspaceRunnerConfig
 	if workingDir != "" && sm.workspaceRCCache != nil {
 		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
 			workspaceRunnerConfigByType = rc.RestrictedRunners
 		}
+	}
+
+	// Merge workspace settings UI config into workspace-level config.
+	// WorkspaceSettings.RestrictedRunnerConfig (set via UI) takes precedence over .mittorc.
+	if workspace != nil && workspace.RestrictedRunnerConfig != nil {
+		runnerType := workspace.GetRestrictedRunner()
+		if workspaceRunnerConfigByType == nil {
+			workspaceRunnerConfigByType = make(map[string]*config.WorkspaceRunnerConfig)
+		}
+		// UI config overrides .mittorc for the same runner type
+		workspaceRunnerConfigByType[runnerType] = workspace.RestrictedRunnerConfig
 	}
 
 	// Get global and agent-specific configs
@@ -766,7 +833,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	}
 	store := sm.store
 	globalConv := sm.globalConversations
-	hookMgr := sm.hookManager
+	procMgr := sm.processorManager
 
 	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
@@ -819,7 +886,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 			workspaceConv = rc.Conversations
 		}
 	}
-	processors := config.MergeProcessors(globalConv, workspaceConv)
+	// Merge text-mode processors from config into the unified pipeline.
+	// Text-mode processors use priority 0 so they run before command-mode processors (priority 100).
+	if textProcs := config.MergeProcessors(globalConv, workspaceConv); len(textProcs) > 0 && procMgr != nil {
+		procMgr.AddTextProcessors(textProcs, 0)
+	}
 
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
@@ -845,8 +916,16 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		fileLinksConfig = globalConv.FileLinks
 	}
 
+	// Determine which workspace settings to use for runner config:
+	// - if workspace was passed in, use it directly
+	// - otherwise use foundWs (matched by working dir)
+	effectiveWorkspace := workspace
+	if effectiveWorkspace == nil {
+		effectiveWorkspace = foundWs
+	}
+
 	// Create restricted runner if configured
-	r, err := sm.createRunner(workingDir, acpServer)
+	r, err := sm.createRunner(workingDir, acpServer, effectiveWorkspace)
 	if err != nil {
 		return nil, err
 	}
@@ -904,6 +983,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 
 	configDuration := time.Since(createStart)
 
+	// Build available ACP servers list for this workspace folder (used in @mitto:variable substitution).
+	availableServers := sm.buildAvailableACPServers(workingDir, acpServer)
+
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		ACPCommand:          acpCommand,
@@ -914,15 +996,15 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		Logger:              sm.logger,
 		Store:               store,
 		SessionName:         name,
-		Processors:          processors,
-		HookManager:         hookMgr,
+		ProcessorManager:    procMgr,
 		QueueConfig:         queueConfig,
 		Runner:              r,
 		ActionButtonsConfig: actionButtonsConfig,
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
-		MittoConfig:         sm.mittoConfig, // Pass config for default flags
+		MittoConfig:         sm.mittoConfig,    // Pass config for default flags
+		AvailableACPServers: availableServers,  // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
 		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
@@ -1087,13 +1169,45 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	}
 
 	sm.mu.Lock()
+
+	// Re-check under write lock: another goroutine may have registered this session
+	// between our read-locked GetSession check above and acquiring the write lock here.
+	if bs, ok := sm.sessions[sessionID]; ok {
+		sm.mu.Unlock()
+		return bs, nil
+	}
+
+	// Check if another goroutine is already resuming this session. If so, release the
+	// lock, wait for its result, and return it directly — preventing a second ACP launch.
+	if pr, ok := sm.pendingResumes[sessionID]; ok {
+		sm.mu.Unlock()
+		if sm.logger != nil {
+			sm.logger.Debug("Waiting for concurrent session resume",
+				"session_id", sessionID)
+		}
+		<-pr.done
+		if sm.logger != nil {
+			sm.logger.Debug("Concurrent session resume completed, coalescing result",
+				"session_id", sessionID,
+				"success", pr.err == nil)
+		}
+		return pr.bs, pr.err
+	}
+
 	if len(sm.sessions) >= MaxSessions {
 		sm.mu.Unlock()
 		return nil, ErrTooManySessions
 	}
+
+	// Register our pending resume so any concurrent callers for this session ID
+	// will wait for our result instead of launching their own ACP subprocess.
+	// The channel is closed (with pr.bs/pr.err set) by signalDone below.
+	pr := &pendingResumeResult{done: make(chan struct{})}
+	sm.pendingResumes[sessionID] = pr
+
 	store := sm.store
 	globalConv := sm.globalConversations
-	hookMgr := sm.hookManager
+	procMgr := sm.processorManager
 
 	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
@@ -1166,15 +1280,33 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	}
 	sm.mu.Unlock()
 
-	// Load workspace-specific conversation config and merge with global
-	// Note: For resumed sessions, isFirstPrompt is false, so "first" processors won't apply
+	// signalDone stores the resume result in pr and unblocks any goroutines that are
+	// waiting on this session's pending resume channel. It must be called exactly once
+	// on every code path below (success or failure).
+	signalDone := func(result *BackgroundSession, err error) {
+		sm.mu.Lock()
+		delete(sm.pendingResumes, sessionID)
+		sm.mu.Unlock()
+		// Set fields before closing the channel: the close establishes the
+		// happens-before guarantee that readers observe the correct values.
+		pr.bs = result
+		pr.err = err
+		close(pr.done)
+	}
+
+	// Load workspace-specific conversation config and merge with global.
+	// Note: For resumed sessions, isFirstPrompt is false, so "first" processors won't apply.
 	var workspaceConv *config.ConversationsConfig
 	if workingDir != "" && sm.workspaceRCCache != nil {
 		if rc, err := sm.workspaceRCCache.Get(workingDir); err == nil && rc != nil {
 			workspaceConv = rc.Conversations
 		}
 	}
-	processors := config.MergeProcessors(globalConv, workspaceConv)
+	// Merge text-mode processors from config into the unified pipeline.
+	// Text-mode processors use priority 0 so they run before command-mode processors (priority 100).
+	if textProcs := config.MergeProcessors(globalConv, workspaceConv); len(textProcs) > 0 && procMgr != nil {
+		procMgr.AddTextProcessors(textProcs, 0)
+	}
 
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
@@ -1200,9 +1332,10 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		fileLinksConfig = globalConv.FileLinks
 	}
 
-	// Create restricted runner if configured
-	r, err := sm.createRunner(workingDir, acpServer)
+	// Create restricted runner if configured, passing foundWs for per-workspace restrictions
+	r, err := sm.createRunner(workingDir, acpServer, foundWs)
 	if err != nil {
+		signalDone(nil, err)
 		return nil, err
 	}
 
@@ -1238,6 +1371,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	}
 	sharedProcess := sm.getSharedProcess(resumeWs, r)
 
+	// Build available ACP servers list for this workspace folder (used in @mitto:variable substitution).
+	resumeAvailableServers := sm.buildAvailableACPServers(workingDir, acpServer)
+
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
 	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
@@ -1251,14 +1387,14 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		Logger:              sm.logger,
 		Store:               store,
 		SessionName:         sessionName,
-		Processors:          processors,
-		HookManager:         hookMgr,
+		ProcessorManager:    procMgr,
 		QueueConfig:         queueConfig,
 		Runner:              r,
 		ActionButtonsConfig: actionButtonsConfig,
 		FileLinksConfig:     fileLinksConfig,
 		APIPrefix:           sm.apiPrefix,
 		WorkspaceUUID:       workspaceUUID,
+		AvailableACPServers: resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
 		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
@@ -1284,20 +1420,27 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		},
 	})
 	if err != nil {
+		signalDone(nil, err)
 		return nil, err
 	}
 
 	sm.mu.Lock()
-	// Double-check after session creation
+	// Check session limit (another session may have been created concurrently).
 	if len(sm.sessions) >= MaxSessions {
 		sm.mu.Unlock()
 		bs.Close("session_limit_exceeded")
+		signalDone(nil, ErrTooManySessions)
 		return nil, ErrTooManySessions
 	}
-	// Check if another goroutine already created this session while we were creating ours
+	// Defensive check: pendingResumes should prevent this case, but handle it gracefully.
 	if existing, ok := sm.sessions[bs.GetSessionID()]; ok {
 		sm.mu.Unlock()
 		bs.Close("duplicate_session")
+		if sm.logger != nil {
+			sm.logger.Warn("Unexpected duplicate session after pendingResumes guard",
+				"session_id", sessionID)
+		}
+		signalDone(existing, nil)
 		return existing, nil
 	}
 	sm.sessions[bs.GetSessionID()] = bs
@@ -1312,6 +1455,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 			"total_sessions", len(sm.sessions))
 	}
 
+	signalDone(bs, nil)
 	return bs, nil
 }
 

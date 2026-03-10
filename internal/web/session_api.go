@@ -13,6 +13,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -939,4 +940,78 @@ func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string, acpSer
 	}
 
 	return allPrompts
+}
+
+// handleWorkspaceDetail dispatches /api/workspaces/{uuid}/... sub-routes.
+func (s *Server) handleWorkspaceDetail(w http.ResponseWriter, r *http.Request) {
+	// Extract the path after "/api/workspaces/"
+	path := r.URL.Path
+	// Find the prefix end
+	prefix := "/api/workspaces/"
+	if idx := strings.Index(path, prefix); idx >= 0 {
+		path = path[idx+len(prefix):]
+	}
+
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 2 {
+		http.NotFound(w, r)
+		return
+	}
+	uuid := parts[0]
+	subPath := parts[1]
+
+	switch subPath {
+	case "effective-runner-config":
+		s.handleEffectiveRunnerConfig(w, r, uuid)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// EffectiveRunnerConfigResponse is the response for GET /api/workspaces/{uuid}/effective-runner-config.
+// It returns the resolved runner config from global + agent levels (no workspace overrides),
+// so the UI can show what restrictions a workspace would inherit.
+type EffectiveRunnerConfigResponse struct {
+	RunnerType   string                    `json:"runner_type"`
+	Restrictions *config.RunnerRestrictions `json:"restrictions,omitempty"`
+}
+
+// handleEffectiveRunnerConfig handles GET /api/workspaces/{uuid}/effective-runner-config.
+// Returns the effective runner config resolved from global and agent levels only.
+func (s *Server) handleEffectiveRunnerConfig(w http.ResponseWriter, r *http.Request, uuid string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	ws := s.sessionManager.GetWorkspaceByUUID(uuid)
+	if ws == nil {
+		http.Error(w, "Workspace not found", http.StatusNotFound)
+		return
+	}
+
+	// Get global runner configs
+	sm := s.sessionManager
+	sm.mu.RLock()
+	globalRunnersByType := sm.globalRestrictedRunners
+	mittoConfig := sm.mittoConfig
+	sm.mu.RUnlock()
+
+	// Get agent-specific runner configs
+	var agentRunnersByType map[string]*config.WorkspaceRunnerConfig
+	if mittoConfig != nil && ws.ACPServer != "" {
+		if server, err := mittoConfig.GetServer(ws.ACPServer); err == nil && server != nil {
+			agentRunnersByType = server.RestrictedRunners
+		}
+	}
+
+	// Resolve global + agent levels only (no workspace level)
+	resolved := runner.ResolveEffectiveConfig(globalRunnersByType, agentRunnersByType)
+
+	resp := EffectiveRunnerConfigResponse{
+		RunnerType:   resolved.Type,
+		Restrictions: resolved.Restrictions,
+	}
+
+	writeJSONOK(w, resp)
 }

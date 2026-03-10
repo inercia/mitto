@@ -16,7 +16,7 @@ import (
 	"github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
-	"github.com/inercia/mitto/internal/msghooks"
+	cmdprocessors "github.com/inercia/mitto/internal/processors"
 )
 
 var (
@@ -126,54 +126,55 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Load workspace config and merge processors
+	// Load processors from processors directory
+	processorsDir, err := appdir.ProcessorsDir()
+	if err != nil {
+		return fmt.Errorf("failed to get processors directory: %w", err)
+	}
+	procMgr := cmdprocessors.NewManager(processorsDir, logger)
+	if err := procMgr.Load(); err != nil {
+		// Log warning but continue - processors are optional
+		if logger != nil {
+			logger.Warn("failed to load processors", "error", err)
+		}
+	}
+
+	// Merge text-mode processors from config into the unified pipeline.
+	// Text-mode processors use priority 0 so they run before command-mode processors (priority 100).
 	var workspaceConv *config.ConversationsConfig
 	if workspaceRC, err := config.LoadWorkspaceRC(workDir); err == nil && workspaceRC != nil {
 		workspaceConv = workspaceRC.Conversations
 	}
-	processors := config.MergeProcessors(cfg.Conversations, workspaceConv)
-
-	// Load hooks from hooks directory
-	hooksDir, err := appdir.HooksDir()
-	if err != nil {
-		return fmt.Errorf("failed to get hooks directory: %w", err)
-	}
-	hookManager := msghooks.NewManager(hooksDir, logger)
-	if err := hookManager.Load(); err != nil {
-		// Log warning but continue - hooks are optional
-		if logger != nil {
-			logger.Warn("failed to load hooks", "error", err)
-		}
+	if textProcs := config.MergeProcessors(cfg.Conversations, workspaceConv); len(textProcs) > 0 {
+		procMgr.AddTextProcessors(textProcs, 0)
 	}
 
 	// Run in once mode or interactive mode
 	if isOnceMode {
-		return runOnceMode(ctx, conn, processors, hookManager, workDir, oncePrompt)
+		return runOnceMode(ctx, conn, procMgr, workDir, oncePrompt)
 	}
-	return runInteractiveLoop(ctx, conn, processors, hookManager, workDir)
+	return runInteractiveLoop(ctx, conn, procMgr, workDir)
 }
 
 // runOnceMode sends a single prompt and exits after receiving the response.
-func runOnceMode(ctx context.Context, conn *acp.Connection, processors []config.MessageProcessor, hookManager *msghooks.Manager, workDir, prompt string) error {
-	// Apply message processors (this is always the first message in once mode)
-	transformedPrompt := config.ApplyProcessors(prompt, processors, true)
-
-	// Apply hooks
+func runOnceMode(ctx context.Context, conn *acp.Connection, procMgr *cmdprocessors.Manager, workDir, prompt string) error {
+	// Apply the unified processor pipeline (this is always the first message in once mode).
+	transformedPrompt := prompt
 	var attachments []acp.Attachment
-	if hookManager != nil && len(hookManager.Hooks()) > 0 {
-		hookInput := &msghooks.HookInput{
-			Message:        transformedPrompt,
+	if procMgr != nil {
+		processorInput := &cmdprocessors.ProcessorInput{
+			Message:        prompt,
 			IsFirstMessage: true,
 			SessionID:      "", // No session ID in CLI mode
 			WorkingDir:     workDir,
 		}
-		result, err := hookManager.Apply(ctx, hookInput)
+		result, err := procMgr.Apply(ctx, processorInput)
 		if err != nil {
-			return fmt.Errorf("hook error: %w", err)
+			return fmt.Errorf("processor error: %w", err)
 		}
 		transformedPrompt = result.Message
 
-		// Convert hook attachments to ACP attachments
+		// Convert processor attachments to ACP attachments
 		if len(result.Attachments) > 0 {
 			acpAttachments, err := result.ToACPAttachments(workDir)
 			if err != nil {
@@ -221,7 +222,7 @@ var slashCommands = []struct {
 	{"/cancel", "Cancel the current operation"},
 }
 
-func runInteractiveLoop(ctx context.Context, conn *acp.Connection, processors []config.MessageProcessor, hookManager *msghooks.Manager, workDir string) error {
+func runInteractiveLoop(ctx context.Context, conn *acp.Connection, procMgr *cmdprocessors.Manager, workDir string) error {
 	// Create readline shell
 	rl := readline.NewShell()
 	rl.Prompt.Primary(func() string { return "mitto> " })
@@ -270,26 +271,24 @@ func runInteractiveLoop(ctx context.Context, conn *acp.Connection, processors []
 			}
 		}
 
-		// Apply message processors
-		transformedLine := config.ApplyProcessors(line, processors, isFirstMessage)
-
-		// Apply hooks
+		// Apply the unified processor pipeline (text-mode + command-mode in priority order).
+		transformedLine := line
 		var attachments []acp.Attachment
-		if hookManager != nil && len(hookManager.Hooks()) > 0 {
-			hookInput := &msghooks.HookInput{
-				Message:        transformedLine,
+		if procMgr != nil {
+			processorInput := &cmdprocessors.ProcessorInput{
+				Message:        line,
 				IsFirstMessage: isFirstMessage,
 				SessionID:      "", // No session ID in CLI mode
 				WorkingDir:     workDir,
 			}
-			result, err := hookManager.Apply(ctx, hookInput)
+			result, err := procMgr.Apply(ctx, processorInput)
 			if err != nil {
-				fmt.Printf("\n❌ Hook error: %v\n", err)
+				fmt.Printf("\n❌ Processor error: %v\n", err)
 				continue
 			}
 			transformedLine = result.Message
 
-			// Convert hook attachments to ACP attachments
+			// Convert processor attachments to ACP attachments
 			if len(result.Attachments) > 0 {
 				acpAttachments, err := result.ToACPAttachments(workDir)
 				if err != nil {

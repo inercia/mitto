@@ -79,6 +79,16 @@ func resolveConfig(
 	}
 }
 
+// ResolveEffectiveConfig resolves the effective runner configuration from global and agent-level
+// configs only (no workspace-level). This is used by the effective-runner-config API endpoint
+// to show the user what restrictions a workspace would inherit before adding workspace overrides.
+func ResolveEffectiveConfig(
+	globalRunnersByType map[string]*config.WorkspaceRunnerConfig,
+	agentRunnersByType map[string]*config.WorkspaceRunnerConfig,
+) *ResolvedConfig {
+	return resolveConfig(globalRunnersByType, agentRunnersByType, nil)
+}
+
 // MergeRestrictions merges restrictions with the specified strategy.
 //
 // Strategy "replace": override completely replaces base (base is ignored).

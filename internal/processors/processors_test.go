@@ -1,4 +1,4 @@
-package msghooks
+package processors
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
-func TestHookIsEnabled(t *testing.T) {
+func TestProcessorIsEnabled(t *testing.T) {
 	tests := []struct {
 		name     string
 		enabled  *bool
@@ -23,7 +23,7 @@ func TestHookIsEnabled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &Hook{Enabled: tt.enabled}
+			h := &Processor{Enabled: tt.enabled}
 			if got := h.IsEnabled(); got != tt.expected {
 				t.Errorf("IsEnabled() = %v, want %v", got, tt.expected)
 			}
@@ -31,9 +31,9 @@ func TestHookIsEnabled(t *testing.T) {
 	}
 }
 
-func TestHookGetters(t *testing.T) {
+func TestProcessorGetters(t *testing.T) {
 	// Test defaults
-	h := &Hook{}
+	h := &Processor{}
 	if got := h.GetTimeout(); got != Duration(DefaultTimeout) {
 		t.Errorf("GetTimeout() = %v, want %v", got, DefaultTimeout)
 	}
@@ -54,7 +54,7 @@ func TestHookGetters(t *testing.T) {
 	}
 
 	// Test custom values
-	h2 := &Hook{
+	h2 := &Processor{
 		Timeout:    Duration(10 * time.Second),
 		Priority:   50,
 		Input:      InputConversation,
@@ -70,66 +70,66 @@ func TestHookGetters(t *testing.T) {
 	}
 }
 
-func TestHookShouldApply(t *testing.T) {
+func TestProcessorShouldApply(t *testing.T) {
 	tests := []struct {
 		name           string
-		hook           *Hook
+		hook           *Processor
 		isFirstMessage bool
 		workingDir     string
 		expected       bool
 	}{
 		{
 			name:           "disabled hook",
-			hook:           &Hook{Enabled: boolPtr(false), When: config.ProcessorWhenAll},
+			hook:           &Processor{Enabled: boolPtr(false), When: config.ProcessorWhenAll},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
 			name:           "when=first, is first",
-			hook:           &Hook{When: config.ProcessorWhenFirst},
+			hook:           &Processor{When: config.ProcessorWhenFirst},
 			isFirstMessage: true,
 			expected:       true,
 		},
 		{
 			name:           "when=first, not first",
-			hook:           &Hook{When: config.ProcessorWhenFirst},
+			hook:           &Processor{When: config.ProcessorWhenFirst},
 			isFirstMessage: false,
 			expected:       false,
 		},
 		{
 			name:           "when=all, is first",
-			hook:           &Hook{When: config.ProcessorWhenAll},
+			hook:           &Processor{When: config.ProcessorWhenAll},
 			isFirstMessage: true,
 			expected:       true,
 		},
 		{
 			name:           "when=all, not first",
-			hook:           &Hook{When: config.ProcessorWhenAll},
+			hook:           &Processor{When: config.ProcessorWhenAll},
 			isFirstMessage: false,
 			expected:       true,
 		},
 		{
 			name:           "when=all-except-first, is first",
-			hook:           &Hook{When: config.ProcessorWhenAllExceptFirst},
+			hook:           &Processor{When: config.ProcessorWhenAllExceptFirst},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
 			name:           "when=all-except-first, not first",
-			hook:           &Hook{When: config.ProcessorWhenAllExceptFirst},
+			hook:           &Processor{When: config.ProcessorWhenAllExceptFirst},
 			isFirstMessage: false,
 			expected:       true,
 		},
 		{
 			name:           "workspace filter match",
-			hook:           &Hook{When: config.ProcessorWhenAll, Workspaces: []string{"/project"}},
+			hook:           &Processor{When: config.ProcessorWhenAll, Workspaces: []string{"/project"}},
 			isFirstMessage: true,
 			workingDir:     "/project",
 			expected:       true,
 		},
 		{
 			name:           "workspace filter no match",
-			hook:           &Hook{When: config.ProcessorWhenAll, Workspaces: []string{"/project"}},
+			hook:           &Processor{When: config.ProcessorWhenAll, Workspaces: []string{"/project"}},
 			isFirstMessage: true,
 			workingDir:     "/other",
 			expected:       false,
@@ -146,7 +146,7 @@ func TestHookShouldApply(t *testing.T) {
 }
 
 func TestResolveCommand(t *testing.T) {
-	h := &Hook{
+	h := &Processor{
 		Command: "./script.sh",
 		HookDir: "/hooks",
 	}
@@ -154,7 +154,7 @@ func TestResolveCommand(t *testing.T) {
 		t.Errorf("ResolveCommand() = %v, want /hooks/script.sh", got)
 	}
 
-	h2 := &Hook{
+	h2 := &Processor{
 		Command: "/usr/bin/echo",
 		HookDir: "/hooks",
 	}
@@ -242,8 +242,8 @@ func TestLoaderLoadInvalidYAML(t *testing.T) {
 
 func TestExecutorPrepareInput(t *testing.T) {
 	executor := NewExecutor("/hooks", nil)
-	hook := &Hook{Input: InputMessage}
-	input := &HookInput{
+	hook := &Processor{Input: InputMessage}
+	input := &ProcessorInput{
 		Message:        "test message",
 		IsFirstMessage: true,
 		SessionID:      "session-123",
@@ -262,23 +262,23 @@ func TestExecutorPrepareInput(t *testing.T) {
 	}
 }
 
-func TestApplyHooksEmpty(t *testing.T) {
+func TestApplyProcessorsEmpty(t *testing.T) {
 	ctx := context.Background()
-	input := &HookInput{Message: "original"}
+	input := &ProcessorInput{Message: "original"}
 
-	result, err := ApplyHooks(ctx, nil, input, "", nil)
+	result, err := ApplyProcessors(ctx, nil, input, "", nil)
 	if err != nil {
-		t.Fatalf("ApplyHooks() error = %v", err)
+		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
 	if result.Message != "original" {
-		t.Errorf("ApplyHooks() = %v, want original", result.Message)
+		t.Errorf("ApplyProcessors() = %v, want original", result.Message)
 	}
 	if len(result.Attachments) != 0 {
-		t.Errorf("ApplyHooks() attachments = %d, want 0", len(result.Attachments))
+		t.Errorf("ApplyProcessors() attachments = %d, want 0", len(result.Attachments))
 	}
 }
 
-func TestApplyHooksTransform(t *testing.T) {
+func TestApplyProcessorsTransform(t *testing.T) {
 	// Create a temp directory for the hook
 	tmpDir := t.TempDir()
 
@@ -291,7 +291,7 @@ echo '{"message": "transformed message"}'
 		t.Fatalf("Failed to write script: %v", err)
 	}
 
-	hooks := []*Hook{
+	hooks := []*Processor{
 		{
 			Name:    "transform-hook",
 			Command: scriptPath,
@@ -303,23 +303,23 @@ echo '{"message": "transformed message"}'
 	}
 
 	ctx := context.Background()
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:        "original message",
 		IsFirstMessage: true,
 		SessionID:      "test-session",
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyHooks(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
 	if err != nil {
-		t.Fatalf("ApplyHooks() error = %v", err)
+		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
 	if result.Message != "transformed message" {
-		t.Errorf("ApplyHooks() = %q, want %q", result.Message, "transformed message")
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "transformed message")
 	}
 }
 
-func TestApplyHooksPrepend(t *testing.T) {
+func TestApplyProcessorsPrepend(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	scriptPath := filepath.Join(tmpDir, "prepend.sh")
@@ -330,7 +330,7 @@ echo '{"text": "PREFIX: "}'
 		t.Fatalf("Failed to write script: %v", err)
 	}
 
-	hooks := []*Hook{
+	hooks := []*Processor{
 		{
 			Name:    "prepend-hook",
 			Command: scriptPath,
@@ -342,23 +342,23 @@ echo '{"text": "PREFIX: "}'
 	}
 
 	ctx := context.Background()
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:        "original",
 		IsFirstMessage: true,
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyHooks(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
 	if err != nil {
-		t.Fatalf("ApplyHooks() error = %v", err)
+		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
 	expected := "PREFIX: original"
 	if result.Message != expected {
-		t.Errorf("ApplyHooks() = %q, want %q", result.Message, expected)
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
 }
 
-func TestApplyHooksAppend(t *testing.T) {
+func TestApplyProcessorsAppend(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	scriptPath := filepath.Join(tmpDir, "append.sh")
@@ -369,7 +369,7 @@ echo '{"text": " :SUFFIX"}'
 		t.Fatalf("Failed to write script: %v", err)
 	}
 
-	hooks := []*Hook{
+	hooks := []*Processor{
 		{
 			Name:    "append-hook",
 			Command: scriptPath,
@@ -381,23 +381,23 @@ echo '{"text": " :SUFFIX"}'
 	}
 
 	ctx := context.Background()
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:        "original",
 		IsFirstMessage: true,
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyHooks(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
 	if err != nil {
-		t.Fatalf("ApplyHooks() error = %v", err)
+		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
 	expected := "original :SUFFIX"
 	if result.Message != expected {
-		t.Errorf("ApplyHooks() = %q, want %q", result.Message, expected)
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
 }
 
-func TestApplyHooksDiscard(t *testing.T) {
+func TestApplyProcessorsDiscard(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Script that outputs something, but it should be discarded
@@ -409,7 +409,7 @@ echo '{"message": "this should be ignored"}'
 		t.Fatalf("Failed to write script: %v", err)
 	}
 
-	hooks := []*Hook{
+	hooks := []*Processor{
 		{
 			Name:    "discard-hook",
 			Command: scriptPath,
@@ -421,23 +421,23 @@ echo '{"message": "this should be ignored"}'
 	}
 
 	ctx := context.Background()
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:        "original",
 		IsFirstMessage: true,
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyHooks(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
 	if err != nil {
-		t.Fatalf("ApplyHooks() error = %v", err)
+		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
 	// Message should remain unchanged
 	if result.Message != "original" {
-		t.Errorf("ApplyHooks() = %q, want %q", result.Message, "original")
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "original")
 	}
 }
 
-func TestApplyHooksSkipsNonApplicable(t *testing.T) {
+func TestApplyProcessorsSkipsNonApplicable(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	scriptPath := filepath.Join(tmpDir, "first-only.sh")
@@ -448,7 +448,7 @@ echo '{"message": "first message only"}'
 		t.Fatalf("Failed to write script: %v", err)
 	}
 
-	hooks := []*Hook{
+	hooks := []*Processor{
 		{
 			Name:    "first-only-hook",
 			Command: scriptPath,
@@ -460,23 +460,23 @@ echo '{"message": "first message only"}'
 	}
 
 	ctx := context.Background()
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:        "original",
 		IsFirstMessage: false, // Not first message
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyHooks(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
 	if err != nil {
-		t.Fatalf("ApplyHooks() error = %v", err)
+		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
 	// Hook should not apply, message unchanged
 	if result.Message != "original" {
-		t.Errorf("ApplyHooks() = %q, want %q", result.Message, "original")
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "original")
 	}
 }
 
-func TestApplyHooksErrorSkip(t *testing.T) {
+func TestApplyProcessorsErrorSkip(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Script that fails
@@ -488,7 +488,7 @@ exit 1
 		t.Fatalf("Failed to write script: %v", err)
 	}
 
-	hooks := []*Hook{
+	hooks := []*Processor{
 		{
 			Name:    "failing-hook",
 			Command: scriptPath,
@@ -500,23 +500,23 @@ exit 1
 	}
 
 	ctx := context.Background()
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:        "original",
 		IsFirstMessage: true,
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyHooks(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
 	if err != nil {
-		t.Fatalf("ApplyHooks() should not error with ErrorSkip, got: %v", err)
+		t.Fatalf("ApplyProcessors() should not error with ErrorSkip, got: %v", err)
 	}
 	// Message should remain unchanged
 	if result.Message != "original" {
-		t.Errorf("ApplyHooks() = %q, want %q", result.Message, "original")
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "original")
 	}
 }
 
-func TestApplyHooksErrorFail(t *testing.T) {
+func TestApplyProcessorsErrorFail(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	scriptPath := filepath.Join(tmpDir, "fail.sh")
@@ -527,7 +527,7 @@ exit 1
 		t.Fatalf("Failed to write script: %v", err)
 	}
 
-	hooks := []*Hook{
+	hooks := []*Processor{
 		{
 			Name:    "failing-hook",
 			Command: scriptPath,
@@ -539,15 +539,275 @@ exit 1
 	}
 
 	ctx := context.Background()
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:        "original",
 		IsFirstMessage: true,
 		WorkingDir:     tmpDir,
 	}
 
-	_, err := ApplyHooks(ctx, hooks, input, tmpDir, nil)
+	_, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
 	if err == nil {
-		t.Fatal("ApplyHooks() should error with ErrorFail")
+		t.Fatal("ApplyProcessors() should error with ErrorFail")
+	}
+}
+
+func TestApplyProcessorsTextModePrepend(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name:     "text-prepend",
+			Text:     "PREFIX: ",
+			Position: config.ProcessorPositionPrepend,
+			When:     config.ProcessorWhenAll,
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:        "hello world",
+		IsFirstMessage: true,
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+	if result.Message != "PREFIX: hello world" {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "PREFIX: hello world")
+	}
+}
+
+func TestApplyProcessorsTextModeAppend(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name:     "text-append",
+			Text:     " SUFFIX",
+			Position: config.ProcessorPositionAppend,
+			When:     config.ProcessorWhenAll,
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:        "hello world",
+		IsFirstMessage: true,
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+	if result.Message != "hello world SUFFIX" {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "hello world SUFFIX")
+	}
+}
+
+func TestApplyProcessorsTextModeChained(t *testing.T) {
+	// Multiple text-mode processors applied in order
+	procs := []*Processor{
+		{
+			Name:     "prepend-context",
+			Text:     "Context: ",
+			Position: config.ProcessorPositionPrepend,
+			When:     config.ProcessorWhenAll,
+		},
+		{
+			Name:     "append-footer",
+			Text:     "\n---\nEnd",
+			Position: config.ProcessorPositionAppend,
+			When:     config.ProcessorWhenAll,
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:        "user message",
+		IsFirstMessage: true,
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+	expected := "Context: user message\n---\nEnd"
+	if result.Message != expected {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
+	}
+}
+
+func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name:     "first-only",
+			Text:     "FIRST: ",
+			Position: config.ProcessorPositionPrepend,
+			When:     config.ProcessorWhenFirst,
+		},
+	}
+
+	ctx := context.Background()
+
+	// First message — should apply
+	input := &ProcessorInput{Message: "msg", IsFirstMessage: true}
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+	if result.Message != "FIRST: msg" {
+		t.Errorf("first message: got %q, want %q", result.Message, "FIRST: msg")
+	}
+
+	// Subsequent message — should NOT apply
+	input2 := &ProcessorInput{Message: "msg", IsFirstMessage: false}
+	result2, err := ApplyProcessors(ctx, procs, input2, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+	if result2.Message != "msg" {
+		t.Errorf("subsequent message: got %q, want %q", result2.Message, "msg")
+	}
+}
+
+// TestApplyProcessorsWithVariableSubstitution simulates the full pipeline
+// as used in BackgroundSession.PromptWithMeta: ApplyProcessors followed by
+// SubstituteVariables on the result.
+func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name:     "inject-context",
+			Text:     "Session: @mitto:session_id\nProject: @mitto:working_dir\n\n",
+			Position: config.ProcessorPositionPrepend,
+			When:     config.ProcessorWhenFirst,
+		},
+		{
+			Name:     "inject-footer",
+			Text:     "\n[agent: @mitto:acp_server]",
+			Position: config.ProcessorPositionAppend,
+			When:     config.ProcessorWhenAll,
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:        "Fix the login bug",
+		IsFirstMessage: true,
+		SessionID:      "sess-001",
+		WorkingDir:     "/home/user/myproject",
+		ACPServer:      "claude-code",
+	}
+
+	// Step 1: Apply processors (text-mode prepend/append)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	// At this point, @mitto: variables are still unresolved
+	expectedBeforeSubst := "Session: @mitto:session_id\nProject: @mitto:working_dir\n\nFix the login bug\n[agent: @mitto:acp_server]"
+	if result.Message != expectedBeforeSubst {
+		t.Errorf("before substitution: got %q, want %q", result.Message, expectedBeforeSubst)
+	}
+
+	// Step 2: Substitute variables (as BackgroundSession does)
+	finalMessage := SubstituteVariables(result.Message, input)
+
+	expectedAfterSubst := "Session: sess-001\nProject: /home/user/myproject\n\nFix the login bug\n[agent: claude-code]"
+	if finalMessage != expectedAfterSubst {
+		t.Errorf("after substitution: got %q, want %q", finalMessage, expectedAfterSubst)
+	}
+}
+
+// TestApplyProcessorsVariablesInUserMessage tests that @mitto: variables
+// in the user's own message text are also substituted.
+func TestApplyProcessorsVariablesInUserMessage(t *testing.T) {
+	// No processors — just the user message with variables
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:         "Check work from @mitto:parent_session_id and continue in @mitto:session_id",
+		IsFirstMessage:  true,
+		SessionID:       "child-session",
+		ParentSessionID: "parent-session",
+	}
+
+	result, err := ApplyProcessors(ctx, nil, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	// ApplyProcessors with nil processors returns message unchanged
+	finalMessage := SubstituteVariables(result.Message, input)
+
+	expected := "Check work from parent-session and continue in child-session"
+	if finalMessage != expected {
+		t.Errorf("got %q, want %q", finalMessage, expected)
+	}
+}
+
+// TestApplyProcessorsVariablesEmptyValues tests that @mitto: variables
+// with empty values substitute to empty string (not left as-is).
+func TestApplyProcessorsVariablesEmptyValues(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name:     "context",
+			Text:     "Parent: @mitto:parent_session_id\n",
+			Position: config.ProcessorPositionPrepend,
+			When:     config.ProcessorWhenAll,
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:         "hello",
+		IsFirstMessage:  true,
+		SessionID:       "sess-001",
+		ParentSessionID: "", // No parent
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	finalMessage := SubstituteVariables(result.Message, input)
+
+	// Empty parent_session_id should substitute to empty string
+	expected := "Parent: \nhello"
+	if finalMessage != expected {
+		t.Errorf("got %q, want %q", finalMessage, expected)
+	}
+}
+
+// TestApplyProcessorsVariablesWithAvailableServers tests the
+// @mitto:available_acp_servers variable through the full pipeline.
+func TestApplyProcessorsVariablesWithAvailableServers(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name:     "server-info",
+			Text:     "Available: @mitto:available_acp_servers\n\n",
+			Position: config.ProcessorPositionPrepend,
+			When:     config.ProcessorWhenFirst,
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:        "do something",
+		IsFirstMessage: true,
+		AvailableACPServers: []AvailableACPServer{
+			{Name: "auggie", Tags: []string{"coding"}, Current: true},
+			{Name: "claude-code", Tags: []string{"fast"}},
+		},
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	finalMessage := SubstituteVariables(result.Message, input)
+
+	expected := "Available: auggie [coding] (current), claude-code [fast]\n\ndo something"
+	if finalMessage != expected {
+		t.Errorf("got %q, want %q", finalMessage, expected)
 	}
 }
 
@@ -574,22 +834,22 @@ output: transform
 	}
 
 	// Test Hooks
-	hooks := manager.Hooks()
+	hooks := manager.Processors()
 	if len(hooks) != 1 {
-		t.Fatalf("Manager.Hooks() = %d hooks, want 1", len(hooks))
+		t.Fatalf("Manager.Processors() = %d hooks, want 1", len(hooks))
 	}
 	if hooks[0].Name != "test-manager-hook" {
 		t.Errorf("Hook name = %q, want %q", hooks[0].Name, "test-manager-hook")
 	}
 
-	// Test HooksDir
-	if manager.HooksDir() != tmpDir {
-		t.Errorf("Manager.HooksDir() = %q, want %q", manager.HooksDir(), tmpDir)
+	// Test ProcessorsDir
+	if manager.ProcessorsDir() != tmpDir {
+		t.Errorf("Manager.ProcessorsDir() = %q, want %q", manager.ProcessorsDir(), tmpDir)
 	}
 
 	// Test Apply
 	ctx := context.Background()
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:        "original",
 		IsFirstMessage: true,
 		WorkingDir:     tmpDir,
@@ -616,14 +876,14 @@ echo '{"message": "executed"}'
 	}
 
 	executor := NewExecutor(tmpDir, nil)
-	hook := &Hook{
+	hook := &Processor{
 		Name:    "exec-test",
 		Command: scriptPath,
 		Output:  OutputTransform,
 		Input:   InputNone,
 		HookDir: tmpDir,
 	}
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:    "test",
 		WorkingDir: tmpDir,
 	}
@@ -652,14 +912,14 @@ echo '{"message": "should not reach"}'
 	}
 
 	executor := NewExecutor(tmpDir, nil)
-	hook := &Hook{
+	hook := &Processor{
 		Name:    "slow-hook",
 		Command: scriptPath,
 		Output:  OutputTransform,
 		Timeout: Duration(100 * time.Millisecond), // Very short timeout
 		HookDir: tmpDir,
 	}
-	input := &HookInput{
+	input := &ProcessorInput{
 		Message:    "test",
 		WorkingDir: tmpDir,
 	}
@@ -676,14 +936,14 @@ echo '{"message": "should not reach"}'
 
 func TestExecutorBuildEnvironment(t *testing.T) {
 	executor := NewExecutor("/hooks", nil)
-	hook := &Hook{
+	hook := &Processor{
 		FilePath: "/hooks/test.yaml",
 		HookDir:  "/hooks",
 		Environment: map[string]string{
 			"CUSTOM_VAR": "custom_value",
 		},
 	}
-	input := &HookInput{
+	input := &ProcessorInput{
 		SessionID:      "session-123",
 		WorkingDir:     "/project",
 		IsFirstMessage: true,
@@ -759,7 +1019,7 @@ func TestExecutorParseOutput(t *testing.T) {
 	}
 }
 
-func TestHookGetPosition(t *testing.T) {
+func TestProcessorGetPosition(t *testing.T) {
 	tests := []struct {
 		name     string
 		position config.ProcessorPosition
@@ -772,7 +1032,7 @@ func TestHookGetPosition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &Hook{Position: tt.position}
+			h := &Processor{Position: tt.position}
 			if got := h.GetPosition(); got != tt.expected {
 				t.Errorf("GetPosition() = %v, want %v", got, tt.expected)
 			}

@@ -66,6 +66,27 @@ func NewRunner(
 		workspaceConfigByType,
 	)
 
+	// Ensure $WORKSPACE is always in allow_write_folders for restricted runners.
+	// This is a safety net so the agent can always write to its own workspace.
+	if resolved.Type != "exec" {
+		if resolved.Restrictions == nil {
+			resolved.Restrictions = &config.RunnerRestrictions{}
+		}
+		hasWorkspace := false
+		for _, f := range resolved.Restrictions.AllowWriteFolders {
+			if f == "$WORKSPACE" || f == "${WORKSPACE}" {
+				hasWorkspace = true
+				break
+			}
+		}
+		if !hasWorkspace {
+			resolved.Restrictions.AllowWriteFolders = append(
+				resolved.Restrictions.AllowWriteFolders,
+				"$WORKSPACE",
+			)
+		}
+	}
+
 	// Create variable resolver
 	varResolver, err := NewVariableResolver(workspace)
 	if err != nil {

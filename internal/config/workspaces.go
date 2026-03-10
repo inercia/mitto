@@ -65,6 +65,11 @@ type WorkspaceSettings struct {
 	// When true, all permission requests (file writes, command execution, etc.) are auto-approved.
 	// When false or nil, the global auto_approve setting or per-conversation settings apply.
 	AutoApprove *bool `json:"auto_approve,omitempty"`
+	// RestrictedRunnerConfig holds per-workspace runner restriction overrides.
+	// Applied as level 3 in the config hierarchy (global → agent → workspace).
+	// Only used when RestrictedRunner is not "exec".
+	// When both a .mittorc workspace config and this field exist, this field takes precedence.
+	RestrictedRunnerConfig *WorkspaceRunnerConfig `json:"restricted_runner_config,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.

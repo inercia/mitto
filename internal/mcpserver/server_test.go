@@ -958,9 +958,8 @@ func TestChildrenTasksReport_NoParentWaiting(t *testing.T) {
 		t.Errorf("Expected parent ID %s, got %s", parentID, output.ParentSessionID)
 	}
 
-	// Now parent calls wait — startWait clears previous reports, so
-	// the child needs to re-report during the wait window. Without a
-	// concurrent reporter, the wait should time out.
+	// Now parent calls wait with the same (empty) task_id — report is preserved,
+	// so wait returns immediately with the existing report.
 	_, waitOutput, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 		SelfID:         parentID,
 		ChildrenList:   childIDs,
@@ -969,16 +968,16 @@ func TestChildrenTasksReport_NoParentWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
 	}
-	if !waitOutput.TimedOut {
-		t.Error("Expected timeout — startWait clears previous reports")
+	if waitOutput.TimedOut {
+		t.Error("Should not time out — report was preserved for same task")
 	}
 
 	report, ok := waitOutput.Reports[childIDs[0]]
 	if !ok {
 		t.Fatal("Missing report for child")
 	}
-	if report.Completed {
-		t.Error("Expected child report to be pending (previous report was cleared)")
+	if !report.Completed {
+		t.Error("Expected child report to be completed (preserved from same task)")
 	}
 }
 
@@ -1530,17 +1529,18 @@ func TestChildrenTasksWait_ArchivedChild(t *testing.T) {
 	}
 }
 
-func TestChildrenTasksWait_ChildReportsBeforeWait(t *testing.T) {
-	// Child reports BEFORE parent calls wait → startWait clears previous reports,
-	// so parent blocks until child reports again during the wait window.
+func TestChildrenTasksWait_ChildReportsBeforeWait_SameTask(t *testing.T) {
+	// Child reports BEFORE parent calls wait with the same task_id →
+	// report is preserved and wait returns immediately.
 	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
 	ctx := context.Background()
 
-	// Child reports first (no parent waiting) — this report will be discarded by startWait
+	// Child reports first (no parent waiting) with task_id
 	_, reportOutput, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
 		SelfID:  childIDs[0],
 		Status:  "completed",
 		Summary: "Pre-reported",
+		TaskID:  "investigate-failures",
 	})
 	if err != nil {
 		t.Fatalf("handleChildrenTasksReport returned error: %v", err)
@@ -1549,7 +1549,56 @@ func TestChildrenTasksWait_ChildReportsBeforeWait(t *testing.T) {
 		t.Fatalf("Report failed: %s", reportOutput.Error)
 	}
 
-	// Parent calls wait — clears the early report, then child re-reports during wait
+	// Parent calls wait with the SAME task_id → pre-report is preserved, returns immediately
+	_, waitOutput, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         "investigate-failures",
+		TimeoutSeconds: 5,
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if !waitOutput.Success {
+		t.Fatalf("Expected success, got error: %s", waitOutput.Error)
+	}
+	if waitOutput.TimedOut {
+		t.Error("Should not time out — child already reported for this task")
+	}
+
+	report, ok := waitOutput.Reports[childIDs[0]]
+	if !ok {
+		t.Fatal("Missing report for child")
+	}
+	if !report.Completed {
+		t.Error("Expected child report to be completed")
+	}
+	if !strings.Contains(string(report.Report), `"summary":"Pre-reported"`) {
+		t.Errorf("Expected pre-reported summary, got: %s", string(report.Report))
+	}
+}
+
+func TestChildrenTasksWait_ChildReportsBeforeWait_DifferentTask(t *testing.T) {
+	// Child reports BEFORE parent calls wait with a DIFFERENT task_id →
+	// report is cleared, parent blocks until child re-reports.
+	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
+	ctx := context.Background()
+
+	// Child reports first with task_id "task-A"
+	_, reportOutput, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Old task report",
+		TaskID:  "task-A",
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksReport returned error: %v", err)
+	}
+	if !reportOutput.Success {
+		t.Fatalf("Report failed: %s", reportOutput.Error)
+	}
+
+	// Parent calls wait with DIFFERENT task_id "task-B" → old report is cleared
 	type waitResult struct {
 		output ChildrenTasksWaitOutput
 		err    error
@@ -1560,6 +1609,7 @@ func TestChildrenTasksWait_ChildReportsBeforeWait(t *testing.T) {
 		_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 			SelfID:         parentID,
 			ChildrenList:   childIDs,
+			TaskID:         "task-B",
 			TimeoutSeconds: 5,
 		})
 		resultCh <- waitResult{output: output, err: err}
@@ -1568,11 +1618,12 @@ func TestChildrenTasksWait_ChildReportsBeforeWait(t *testing.T) {
 	// Give wait handler time to set up
 	time.Sleep(100 * time.Millisecond)
 
-	// Child reports again during the active wait
+	// Child reports again with the new task_id
 	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
 		SelfID:  childIDs[0],
 		Status:  "completed",
-		Summary: "Fresh report",
+		Summary: "New task report",
+		TaskID:  "task-B",
 	})
 	if err != nil {
 		t.Fatalf("Second report failed: %v", err)
@@ -1597,8 +1648,8 @@ func TestChildrenTasksWait_ChildReportsBeforeWait(t *testing.T) {
 		if !report.Completed {
 			t.Error("Expected child report to be completed")
 		}
-		if !strings.Contains(string(report.Report), `"summary":"Fresh report"`) {
-			t.Errorf("Expected fresh report (not the pre-wait one), got: %s", string(report.Report))
+		if !strings.Contains(string(report.Report), `"summary":"New task report"`) {
+			t.Errorf("Expected new task report, got: %s", string(report.Report))
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for result")
@@ -1673,15 +1724,16 @@ func TestChildrenTasksWait_BothReportDuringWait(t *testing.T) {
 	}
 }
 
-func TestChildrenTasksWait_ReportsClearedAcrossWaits(t *testing.T) {
-	// Each wait call clears previous reports. Child reports between waits are discarded.
+func TestChildrenTasksWait_ReportsPreservedSameTask(t *testing.T) {
+	// Same task_id across waits → reports are preserved.
 	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
 	ctx := context.Background()
 
-	// First wait: times out (child hasn't reported yet)
+	// First wait with task_id: times out (child hasn't reported yet)
 	_, waitOutput1, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 		SelfID:         parentID,
 		ChildrenList:   childIDs,
+		TaskID:         "investigate",
 		TimeoutSeconds: 1,
 	})
 	if err != nil {
@@ -1691,32 +1743,84 @@ func TestChildrenTasksWait_ReportsClearedAcrossWaits(t *testing.T) {
 		t.Error("Expected first wait to time out")
 	}
 
-	// Child reports after first wait has returned
+	// Child reports after first wait has returned, with same task_id
 	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
 		SelfID:  childIDs[0],
 		Status:  "completed",
 		Summary: "Between waits",
+		TaskID:  "investigate",
 	})
 	if err != nil {
 		t.Fatalf("Report failed: %v", err)
 	}
 
-	// Second wait: clears the report from between waits, so it should also time out
+	// Second wait with SAME task_id → report is preserved, returns immediately
 	_, waitOutput2, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 		SelfID:         parentID,
 		ChildrenList:   childIDs,
+		TaskID:         "investigate",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("Second wait returned error: %v", err)
+	}
+	if waitOutput2.TimedOut {
+		t.Error("Should not time out — report was preserved from same task")
+	}
+
+	report := waitOutput2.Reports[childIDs[0]]
+	if !report.Completed {
+		t.Error("Expected child report to be completed (preserved across same-task waits)")
+	}
+}
+
+func TestChildrenTasksWait_ReportsClearedOnNewTask(t *testing.T) {
+	// Different task_id across waits → reports are cleared.
+	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
+	ctx := context.Background()
+
+	// First wait with task_id "task-A": times out
+	_, waitOutput1, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         "task-A",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("First wait returned error: %v", err)
+	}
+	if !waitOutput1.TimedOut {
+		t.Error("Expected first wait to time out")
+	}
+
+	// Child reports after first wait with task_id "task-A"
+	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Task A result",
+		TaskID:  "task-A",
+	})
+	if err != nil {
+		t.Fatalf("Report failed: %v", err)
+	}
+
+	// Second wait with DIFFERENT task_id "task-B" → old report is cleared
+	_, waitOutput2, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         "task-B",
 		TimeoutSeconds: 1,
 	})
 	if err != nil {
 		t.Fatalf("Second wait returned error: %v", err)
 	}
 	if !waitOutput2.TimedOut {
-		t.Error("Expected second wait to time out — startWait clears reports from between cycles")
+		t.Error("Expected second wait to time out — different task clears old reports")
 	}
 
 	report := waitOutput2.Reports[childIDs[0]]
 	if report.Completed {
-		t.Error("Expected child report to be pending (cleared by startWait)")
+		t.Error("Expected child report to be pending (cleared by new task)")
 	}
 }
 
@@ -2752,10 +2856,10 @@ func TestChildReportCollector_GetPendingAndReported(t *testing.T) {
 
 	// Start a wait with 3 children
 	childIDs := []string{"child-a", "child-b", "child-c"}
-	collector.startWait(childIDs)
+	collector.startWait("test-task", childIDs)
 
 	// Report from only one child
-	collector.addReport("child-b", []byte(`{"status":"completed"}`))
+	collector.addReport("child-b", "test-task", []byte(`{"status":"completed"}`))
 
 	pending, reported := collector.getPendingAndReported()
 
@@ -2790,7 +2894,7 @@ func TestChildReportCollector_IsWaiting(t *testing.T) {
 	}
 
 	// Start a wait
-	collector.startWait([]string{"child-1"})
+	collector.startWait("test-task", []string{"child-1"})
 	if !collector.isWaiting() {
 		t.Error("Expected isWaiting() to be true during active wait")
 	}

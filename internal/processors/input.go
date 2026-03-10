@@ -1,4 +1,4 @@
-package msghooks
+package processors
 
 import (
 	"encoding/base64"
@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// HookInput provides context for hook execution.
-type HookInput struct {
+// ProcessorInput provides context for processor execution.
+type ProcessorInput struct {
 	// Message is the user's message text.
 	Message string `json:"message"`
 	// IsFirstMessage indicates if this is the first message in the conversation.
@@ -20,6 +20,33 @@ type HookInput struct {
 	WorkingDir string `json:"working_dir"`
 	// History contains previous conversation turns (only for InputConversation).
 	History []HistoryEntry `json:"history,omitempty"`
+
+	// Session metadata for variable substitution
+	// ParentSessionID is the parent conversation ID (empty if this is a root session).
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	// SessionName is the conversation title/name.
+	SessionName string `json:"session_name,omitempty"`
+	// ACPServer is the ACP server name (e.g., "claude-code").
+	ACPServer string `json:"acp_server,omitempty"`
+	// WorkspaceUUID is the workspace identifier.
+	WorkspaceUUID string `json:"workspace_uuid,omitempty"`
+	// AvailableACPServers lists the ACP servers that have workspaces configured for the
+	// session's working directory. Mirrors the data reported by the MCP tool.
+	// Each entry includes the server name, type, tags, and whether it is the current server.
+	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
+}
+
+// AvailableACPServer describes an ACP server available in the session's workspace.
+// It matches the structure reported by the mitto_conversation_get_current MCP tool.
+type AvailableACPServer struct {
+	// Name is the server identifier (e.g., "claude-code").
+	Name string `json:"name"`
+	// Type is the server type for prompt matching. Defaults to Name if not set.
+	Type string `json:"type,omitempty"`
+	// Tags contains optional categorization labels (e.g., ["coding", "fast-model"]).
+	Tags []string `json:"tags,omitempty"`
+	// Current is true if this is the active ACP server for the session.
+	Current bool `json:"current,omitempty"`
 }
 
 // HistoryEntry represents a single turn in the conversation history.
@@ -30,21 +57,21 @@ type HistoryEntry struct {
 	Content string `json:"content"`
 }
 
-// HookOutput contains the result of hook execution.
-type HookOutput struct {
+// ProcessorOutput contains the result of processor execution.
+type ProcessorOutput struct {
 	// Message is the transformed message (for OutputTransform).
 	Message string `json:"message,omitempty"`
 	// Text is the text to prepend/append (for OutputPrepend/OutputAppend).
 	Text string `json:"text,omitempty"`
 	// Attachments contains files to attach to the message.
 	Attachments []Attachment `json:"attachments,omitempty"`
-	// Error is an optional error message from the hook.
+	// Error is an optional error message from the processor.
 	Error string `json:"error,omitempty"`
-	// Metadata contains optional data the hook wants to log.
+	// Metadata contains optional data the processor wants to log.
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// Attachment represents a file attachment from a hook.
+// Attachment represents a file attachment from a processor.
 type Attachment struct {
 	// Type is the attachment type: "image", "text", "file"
 	Type string `json:"type"`
@@ -158,3 +185,4 @@ func detectMimeType(path string, data []byte) string {
 		return "application/octet-stream"
 	}
 }
+

@@ -179,20 +179,20 @@ func TestWorkspacesPath(t *testing.T) {
 	}
 }
 
-func TestHooksDir(t *testing.T) {
+func TestProcessorsDir(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv(MittoDirEnv, customDir)
 	ResetCache()
 	t.Cleanup(ResetCache)
 
-	hooksDir, err := HooksDir()
+	processorsDir, err := ProcessorsDir()
 	if err != nil {
-		t.Fatalf("HooksDir() failed: %v", err)
+		t.Fatalf("ProcessorsDir() failed: %v", err)
 	}
 
-	expected := filepath.Join(customDir, HooksDirName)
-	if hooksDir != expected {
-		t.Errorf("HooksDir() = %q, want %q", hooksDir, expected)
+	expected := filepath.Join(customDir, ProcessorsDirName)
+	if processorsDir != expected {
+		t.Errorf("ProcessorsDir() = %q, want %q", processorsDir, expected)
 	}
 }
 

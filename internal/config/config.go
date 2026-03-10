@@ -386,8 +386,8 @@ func (c *WebConfig) GetAPIPrefix() string {
 //
 // Example usage in code:
 //
-//	processors := config.MergeProcessors(globalConfig.Conversations, workspaceConfig.Conversations)
-//	processedMsg := config.ApplyProcessors(userMessage, processors, isFirst)
+//	procs := config.MergeProcessors(globalConfig.Conversations, workspaceConfig.Conversations)
+//	procMgr.AddTextProcessors(procs, 0) // priority 0 → runs before command-mode processors
 // ============================================================================
 
 // ProcessorWhen defines when a message processor should be applied.
@@ -429,45 +429,7 @@ type MessageProcessor struct {
 	Text string `json:"text" yaml:"text"`
 }
 
-// ShouldApply determines if this processor should be applied to a message.
-//
-// Parameters:
-//   - isFirstMessage: true if this is the first message in the conversation
-//
-// Returns true if the processor's When condition matches the message context.
-// Returns false for unknown When values (fail-safe behavior).
-func (p *MessageProcessor) ShouldApply(isFirstMessage bool) bool {
-	switch p.When {
-	case ProcessorWhenFirst:
-		return isFirstMessage
-	case ProcessorWhenAll:
-		return true
-	case ProcessorWhenAllExceptFirst:
-		return !isFirstMessage
-	default:
-		// Unknown When value - don't apply (fail-safe)
-		return false
-	}
-}
 
-// Apply transforms the message by inserting the processor's text at the configured position.
-//
-// Parameters:
-//   - message: the original user message
-//
-// Returns the transformed message with text prepended or appended.
-// Returns the original message unchanged for unknown Position values.
-func (p *MessageProcessor) Apply(message string) string {
-	switch p.Position {
-	case ProcessorPositionPrepend:
-		return p.Text + message
-	case ProcessorPositionAppend:
-		return message + p.Text
-	default:
-		// Unknown Position value - return unchanged (fail-safe)
-		return message
-	}
-}
 
 // ConversationProcessing contains configuration for message processing.
 // This is the inner structure that holds the actual processor list and merge behavior.
@@ -727,24 +689,7 @@ func MergeProcessors(global, workspace *ConversationsConfig) []MessageProcessor 
 	return result
 }
 
-// ApplyProcessors transforms a message by running it through a list of processors.
-//
-// Parameters:
-//   - message: the original user message
-//   - processors: the list of processors to apply (typically from MergeProcessors)
-//   - isFirstMessage: true if this is the first message in the conversation
-//
-// Returns the transformed message after all applicable processors have run.
-// Each processor's ShouldApply is checked before applying.
-func ApplyProcessors(message string, processors []MessageProcessor, isFirstMessage bool) string {
-	result := message
-	for _, processor := range processors {
-		if processor.ShouldApply(isFirstMessage) {
-			result = processor.Apply(result)
-		}
-	}
-	return result
-}
+
 
 // ============================================================================
 // Prompt Merging

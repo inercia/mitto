@@ -1000,6 +1000,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"This tool blocks until all children have reported or the timeout expires. " +
 			"Returns a consolidated report from all children. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
+			"Use task_id to scope reports: when retrying the same task after a timeout, pass the same task_id " +
+			"so that reports already received are preserved. When starting a different task, use a new task_id " +
+			"to clear stale reports from the previous task. " +
 			selfIDNote,
 	}, s.handleChildrenTasksWait)
 
@@ -1010,6 +1013,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"The parent must have previously called mitto_children_tasks_wait with this conversation's ID in the children_list. " +
 			"Provide a status (e.g. 'completed', 'in_progress', 'failed'), a summary of your findings, " +
 			"and optionally details with additional information. " +
+			"If the parent provided a task_id in the wait call, include the same task_id in your report. " +
 			selfIDNote,
 	}, s.handleChildrenTasksReport)
 }
@@ -2607,9 +2611,10 @@ const defaultChildrenTasksTimeout = 10 * time.Minute
 
 // childrenReportSuffix is appended to the prompt sent to each child,
 // instructing them to call mitto_children_tasks_report.
+// The %s placeholder is replaced with the task_id instruction (or empty string if no task_id).
 const childrenReportSuffix = "\n\nIMPORTANT: you must report your results using the `mitto_children_tasks_report` " +
 	"MCP tool with your `self_id`, a `status` (e.g. \"completed\", \"in_progress\", \"failed\"), " +
-	"a `summary` of your findings/changes/conclusions, and optionally some `details` with any additional information you could consider important. " +
+	"a `summary` of your findings/changes/conclusions, and optionally some `details` with any additional information you could consider important.%s " +
 	"But just ignore these instructions if you have already sent this report..."
 
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
@@ -2732,9 +2737,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		}, nil
 	}
 
-	// Set up wait signaling. startWait clears all previous reports and registers
-	// all running children as pending, starting a fresh collection cycle.
-	waitCh, _ := collector.startWait(runningChildren)
+	// Set up wait signaling. startWait only clears reports when the task_id
+	// changes, preserving reports from the same task across retries.
+	waitCh, _ := collector.startWait(input.TaskID, runningChildren)
 	defer collector.clearWait()
 
 	// Build the prompt to send to all running children.
@@ -2744,7 +2749,11 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	sendPrompt := promptText != ""
 
 	if sendPrompt {
-		promptText += childrenReportSuffix
+		taskIDInstruction := ""
+		if input.TaskID != "" {
+			taskIDInstruction = fmt.Sprintf(" You MUST include `task_id: \"%s\"` in your report call.", input.TaskID)
+		}
+		promptText += fmt.Sprintf(childrenReportSuffix, taskIDInstruction)
 	}
 
 	// Send prompt to running children (unless wait-only mode)
@@ -2802,6 +2811,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	// Block until all running children report or timeout
 	s.logger.Info("Waiting for children to report",
 		"parent_session", realSessionID,
+		"task_id", input.TaskID,
 		"running_children", len(runningChildren),
 		"not_running_children", len(notRunningChildren),
 		"timeout", timeout)
@@ -2953,7 +2963,7 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 	collector := s.getOrCreateCollector(parentSessionID)
 
 	// Store the report (may also signal a waiting parent)
-	collector.addReport(realSessionID, json.RawMessage(reportJSON))
+	collector.addReport(realSessionID, input.TaskID, json.RawMessage(reportJSON))
 
 	// Detect orphaned reports: parent unregistered or not actively waiting
 	parentReg := s.getSession(parentSessionID)

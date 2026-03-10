@@ -17,7 +17,7 @@ import (
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpserver"
-	"github.com/inercia/mitto/internal/msghooks"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 	mittoWeb "github.com/inercia/mitto/web"
 )
@@ -273,14 +273,14 @@ func NewServer(config Config) (*Server, error) {
 			"runner_types", len(config.MittoConfig.RestrictedRunners))
 	}
 
-	// Load and set hooks from hooks directory
-	if hooksDir, err := appdir.HooksDir(); err == nil {
-		hookMgr := msghooks.NewManager(hooksDir, logger)
-		if err := hookMgr.Load(); err != nil {
-			logger.Warn("Failed to load hooks", "error", err)
-		} else if len(hookMgr.Hooks()) > 0 {
-			sessionMgr.SetHookManager(hookMgr)
-			logger.Info("Loaded hooks", "count", len(hookMgr.Hooks()))
+	// Load and set processors from processors directory
+	if processorsDir, err := appdir.ProcessorsDir(); err == nil {
+		procMgr := processors.NewManager(processorsDir, logger)
+		if err := procMgr.Load(); err != nil {
+			logger.Warn("Failed to load processors", "error", err)
+		} else if len(procMgr.Processors()) > 0 {
+			sessionMgr.SetProcessorManager(procMgr)
+			logger.Info("Loaded processors", "count", len(procMgr.Processors()))
 		}
 	}
 
@@ -503,6 +503,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/sessions/running", s.handleRunningSessions)
 	mux.HandleFunc(apiPrefix+"/api/sessions/", s.handleSessionDetail)
 	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
+	mux.HandleFunc(apiPrefix+"/api/workspaces/", s.handleWorkspaceDetail)
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)

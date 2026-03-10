@@ -20,7 +20,7 @@ import (
 	"github.com/inercia/mitto/internal/conversion"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpserver"
-	"github.com/inercia/mitto/internal/msghooks"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -91,10 +91,10 @@ type BackgroundSession struct {
 	historyInjected bool           // True after history has been injected
 
 	// Conversation processing
-	processors    []config.MessageProcessor // Merged processors from global and workspace config
-	hookManager   *msghooks.Manager         // External command hooks for message transformation
-	workingDir    string                    // Working directory for hook execution
-	isFirstPrompt bool                      // True until first prompt is sent (for processor conditions)
+	processorManager    *processors.Manager       // Unified processor pipeline (text-mode + command-mode)
+	workingDir          string                    // Working directory for processor execution
+	isFirstPrompt       bool                      // True until first prompt is sent (for processor conditions)
+	availableACPServers []processors.AvailableACPServer // ACP servers available in this workspace folder
 
 	// Queue processing
 	queueConfig *config.QueueConfig // Queue configuration (nil means use defaults)
@@ -177,8 +177,7 @@ type BackgroundSessionConfig struct {
 	Logger       *slog.Logger
 	Store        *session.Store
 	SessionName  string
-	Processors   []config.MessageProcessor // Merged processors for message transformation
-	HookManager  *msghooks.Manager         // External command hooks for message transformation
+	ProcessorManager *processors.Manager // Unified processor pipeline (text-mode + command-mode)
 	QueueConfig  *config.QueueConfig       // Queue processing configuration
 	Runner       *runner.Runner            // Optional restricted runner for sandboxed execution
 
@@ -189,6 +188,11 @@ type BackgroundSessionConfig struct {
 
 	// MittoConfig is the full Mitto configuration (used for default flags)
 	MittoConfig *config.Config
+
+	// AvailableACPServers is the pre-computed list of ACP servers that have workspaces
+	// configured for the session's working directory. Populated by SessionManager using
+	// the same logic as the mitto_conversation_get_current MCP tool.
+	AvailableACPServers []processors.AvailableACPServer
 
 	// OnStreamingStateChanged is called when the session's streaming state changes.
 	// It's called with true when streaming starts (user sends prompt) and false when it ends.
@@ -227,8 +231,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		autoApprove:             cfg.AutoApprove,
 		logger:                  cfg.Logger,
 		observers:               make(map[SessionObserver]struct{}),
-		processors:              cfg.Processors,
-		hookManager:             cfg.HookManager,
+		processorManager:        cfg.ProcessorManager,
 		workingDir:              cfg.WorkingDir,
 		isFirstPrompt:           true, // New session starts with first prompt pending
 		queueConfig:             cfg.QueueConfig,
@@ -240,10 +243,11 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
-		acpCommand:              cfg.ACPCommand,       // Store for restart
-		acpCwd:                  cfg.ACPCwd,           // Store for restart
-		globalMcpServer:         cfg.GlobalMCPServer,  // Global MCP server for session registration
-		auxiliaryManager:        cfg.AuxiliaryManager, // Workspace-scoped auxiliary manager
+		acpCommand:              cfg.ACPCommand,            // Store for restart
+		acpCwd:                  cfg.ACPCwd,                // Store for restart
+		globalMcpServer:         cfg.GlobalMCPServer,       // Global MCP server for session registration
+		auxiliaryManager:        cfg.AuxiliaryManager,      // Workspace-scoped auxiliary manager
+		availableACPServers:     cfg.AvailableACPServers,   // Pre-computed workspace server list
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -383,8 +387,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		observers:               make(map[SessionObserver]struct{}),
 		isResumed:               true, // Mark as resumed session
 		store:                   config.Store,
-		processors:              config.Processors,
-		hookManager:             config.HookManager,
+		processorManager:        config.ProcessorManager,
 		workingDir:              config.WorkingDir,
 		isFirstPrompt:           false, // Resumed session = first prompt already sent
 		queueConfig:             config.QueueConfig,
@@ -396,10 +399,11 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
-		acpCommand:              config.ACPCommand,       // Store for restart
-		acpCwd:                  config.ACPCwd,           // Store for restart
-		globalMcpServer:         config.GlobalMCPServer,  // Global MCP server for session registration
-		auxiliaryManager:        config.AuxiliaryManager, // Workspace-scoped auxiliary manager
+		acpCommand:              config.ACPCommand,            // Store for restart
+		acpCwd:                  config.ACPCwd,                // Store for restart
+		globalMcpServer:         config.GlobalMCPServer,       // Global MCP server for session registration
+		auxiliaryManager:        config.AuxiliaryManager,      // Workspace-scoped auxiliary manager
+		availableACPServers:     config.AvailableACPServers,   // Pre-computed workspace server list
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
@@ -2140,39 +2144,55 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings)
 	})
 
-	// Build the actual prompt to send to ACP
-	// Apply message processors (prepend/append based on config)
-	promptMessage := config.ApplyProcessors(message, bs.processors, isFirst)
+	// Build the actual prompt to send to ACP.
+	// Apply the unified processor pipeline (text-mode + command-mode in priority order).
+	promptMessage := message
+	var procAttachmentBlocks []acp.ContentBlock
 
-	// Apply external command hooks
-	var hookAttachmentBlocks []acp.ContentBlock
-	if bs.hookManager != nil && len(bs.hookManager.Hooks()) > 0 {
-		hookInput := &msghooks.HookInput{
-			Message:        promptMessage,
-			IsFirstMessage: isFirst,
-			SessionID:      bs.persistedID,
-			WorkingDir:     bs.workingDir,
+	// Fetch session metadata for @mitto:variable substitution.
+	// Done unconditionally so substitution works even with no processors configured.
+	// Best-effort: unavailable fields substitute to "".
+	var sessionName, acpServer, parentSessionID string
+	if bs.store != nil && bs.persistedID != "" {
+		if sessionMeta, metaErr := bs.store.GetMetadata(bs.persistedID); metaErr == nil {
+			sessionName = sessionMeta.Name
+			acpServer = sessionMeta.ACPServer
+			parentSessionID = sessionMeta.ParentSessionID
 		}
-		hookResult, hookErr := bs.hookManager.Apply(bs.ctx, hookInput)
-		if hookErr != nil {
-			if bs.logger != nil {
-				bs.logger.Error("Hook execution failed", "error", hookErr)
-			}
-			// Continue with original message on hook failure
-		} else if hookResult != nil {
-			promptMessage = hookResult.Message
+	}
+	processorInput := &processors.ProcessorInput{
+		Message:             message,
+		IsFirstMessage:      isFirst,
+		SessionID:           bs.persistedID,
+		WorkingDir:          bs.workingDir,
+		ParentSessionID:     parentSessionID,
+		SessionName:         sessionName,
+		ACPServer:           acpServer,
+		WorkspaceUUID:       bs.workspaceUUID,
+		AvailableACPServers: bs.availableACPServers,
+	}
 
-			// Convert hook attachments to content blocks
-			if len(hookResult.Attachments) > 0 {
-				acpAttachments, err := hookResult.ToACPAttachments(bs.workingDir)
+	if bs.processorManager != nil {
+		procResult, procErr := bs.processorManager.Apply(bs.ctx, processorInput)
+		if procErr != nil {
+			if bs.logger != nil {
+				bs.logger.Error("Processor execution failed", "error", procErr)
+			}
+			// Continue with original message on processor failure
+		} else if procResult != nil {
+			promptMessage = procResult.Message
+
+			// Convert processor attachments to content blocks
+			if len(procResult.Attachments) > 0 {
+				acpAttachments, err := procResult.ToACPAttachments(bs.workingDir)
 				if err != nil {
 					if bs.logger != nil {
-						bs.logger.Error("Failed to resolve hook attachments", "error", err)
+						bs.logger.Error("Failed to resolve processor attachments", "error", err)
 					}
 				} else {
 					for _, att := range acpAttachments {
 						if att.Type == "image" {
-							hookAttachmentBlocks = append(hookAttachmentBlocks, acp.ImageBlock(att.Data, att.MimeType))
+							procAttachmentBlocks = append(procAttachmentBlocks, acp.ImageBlock(att.Data, att.MimeType))
 						}
 						// Note: Non-image attachments could be handled differently in the future
 					}
@@ -2181,14 +2201,19 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		}
 	}
 
+	// Apply @mitto:variable substitution unconditionally on the assembled message.
+	// This covers both the case where processors ran (substitution on assembled output)
+	// and the case where no processors are configured (substitution on the raw user message).
+	promptMessage = processors.SubstituteVariables(promptMessage, processorInput)
+
 	if shouldInjectHistory {
 		promptMessage = bs.buildPromptWithHistory(promptMessage)
 	}
 
-	// Build final content blocks: images first (from uploads and hooks), then text
-	finalBlocks := make([]acp.ContentBlock, 0, len(contentBlocks)+len(hookAttachmentBlocks)+1)
+	// Build final content blocks: images first (from uploads and processors), then text
+	finalBlocks := make([]acp.ContentBlock, 0, len(contentBlocks)+len(procAttachmentBlocks)+1)
 	finalBlocks = append(finalBlocks, contentBlocks...)
-	finalBlocks = append(finalBlocks, hookAttachmentBlocks...)
+	finalBlocks = append(finalBlocks, procAttachmentBlocks...)
 	finalBlocks = append(finalBlocks, acp.TextBlock(promptMessage))
 
 	// Log content block summary for debugging image delivery issues
@@ -2208,7 +2233,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			"image_blocks", imageBlockCount,
 			"text_blocks", textBlockCount,
 			"other_blocks", otherBlockCount,
-			"hook_attachment_blocks", len(hookAttachmentBlocks),
+			"processor_attachment_blocks", len(procAttachmentBlocks),
 			"agent_supports_images", bs.agentSupportsImages,
 			"session_id", bs.persistedID)
 	}

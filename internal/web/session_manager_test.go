@@ -655,11 +655,11 @@ func TestSessionManager_IsFromCLI(t *testing.T) {
 	}
 }
 
-func TestSessionManager_SetHookManager(t *testing.T) {
+func TestSessionManager_SetProcessorManager(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 
 	// Should not panic with nil
-	sm.SetHookManager(nil)
+	sm.SetProcessorManager(nil)
 }
 
 func TestSessionManager_SetGlobalConversations(t *testing.T) {
@@ -1380,6 +1380,150 @@ func TestSessionManager_WorkspaceAutoApprove_AddWorkspace(t *testing.T) {
 	}
 	if addedWs.AutoApprove == nil || !*addedWs.AutoApprove {
 		t.Error("AddWorkspace should preserve AutoApprove=true")
+	}
+}
+
+// =============================================================================
+// ResumeSession TOCTOU Race-Prevention Tests
+// =============================================================================
+
+// TestSessionManager_ResumeSession_WaitsForPending verifies that concurrent callers
+// of ResumeSession for the same session ID wait on the pending resume channel and
+// receive the result produced by the primary goroutine — without launching a second
+// ACP subprocess.
+func TestSessionManager_ResumeSession_WaitsForPending(t *testing.T) {
+	sm := NewSessionManager("", "test-server", true, nil)
+
+	sessionID := "pending-resume-session"
+	expectedBS := &BackgroundSession{persistedID: sessionID}
+
+	// Pre-register a pending resume entry as if a primary goroutine had already
+	// acquired the lock and registered it, but hasn't finished yet.
+	pr := &pendingResumeResult{done: make(chan struct{})}
+	sm.mu.Lock()
+	sm.pendingResumes[sessionID] = pr
+	sm.mu.Unlock()
+
+	const numWaiters = 5
+	results := make([]*BackgroundSession, numWaiters)
+	errs := make([]error, numWaiters)
+
+	var wg sync.WaitGroup
+	for i := 0; i < numWaiters; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = sm.ResumeSession(sessionID, "Test", "/tmp")
+		}(i)
+	}
+
+	// Give goroutines time to find the pendingResumes entry and block on <-pr.done.
+	time.Sleep(50 * time.Millisecond)
+
+	// Signal completion — set fields before closing to satisfy the happens-before guarantee.
+	pr.bs = expectedBS
+	pr.err = nil
+	close(pr.done)
+
+	// All goroutines must complete without deadlocking.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("goroutines deadlocked waiting for pending resume")
+	}
+
+	// Every goroutine should have received the same BackgroundSession pointer.
+	for i, result := range results {
+		if result != expectedBS {
+			t.Errorf("goroutine %d: got BackgroundSession %p, want %p (err=%v)",
+				i, result, expectedBS, errs[i])
+		}
+		if errs[i] != nil {
+			t.Errorf("goroutine %d: unexpected error: %v", i, errs[i])
+		}
+	}
+}
+
+// TestSessionManager_ResumeSession_ConcurrentNoDeadlock verifies that concurrent
+// ResumeSession calls for the same session ID complete without deadlocking.
+// Because "echo test" is not a valid ACP server, all calls are expected to fail,
+// but they must fail consistently and without blocking.
+func TestSessionManager_ResumeSession_ConcurrentNoDeadlock(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session in the store so the early "session not found" check passes.
+	meta := session.Metadata{
+		SessionID:  "race-test-session",
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "Race Test",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+
+	// "echo test" is not a valid ACP server — ResumeSession will fail quickly.
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm.SetStore(store)
+
+	const goroutines = 8
+	results := make([]*BackgroundSession, goroutines)
+	errs := make([]error, goroutines)
+
+	// Release all goroutines simultaneously to maximise race likelihood.
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = sm.ResumeSession("race-test-session", "Race Test", "/tmp")
+		}(i)
+	}
+	close(start)
+
+	// All goroutines must complete — a deadlock would trip this timeout.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("Concurrent ResumeSession calls deadlocked or timed out")
+	}
+
+	// With pendingResumes coalescing, every goroutine must receive the same result.
+	// (All will be nil / error since "echo test" is not a valid ACP server.)
+	for i := 1; i < goroutines; i++ {
+		if results[i] != results[0] {
+			t.Errorf("goroutine %d got different BackgroundSession than goroutine 0 (%p vs %p)",
+				i, results[i], results[0])
+		}
+		// Errors must match in nil-ness (exact pointer may differ for non-coalesced first run)
+		if (errs[i] == nil) != (errs[0] == nil) {
+			t.Errorf("goroutine %d error nil-ness mismatch: got %v, goroutine 0 got %v",
+				i, errs[i], errs[0])
+		}
+	}
+
+	// No session should have been registered (all resume attempts failed).
+	if sm.SessionCount() != 0 {
+		t.Errorf("SessionCount = %d after failed resumes, want 0", sm.SessionCount())
 	}
 }
 

@@ -1500,97 +1500,25 @@ func boolPtr(b bool) *bool {
 }
 
 // Tests for MessageProcessor
+// Note: ShouldApply, Apply, and ApplyProcessors have been removed from the config package.
+// Message processing is now done via the unified processor pipeline in internal/processors.
+// See MergeProcessors and Manager.AddTextProcessors for the new API.
 
-func TestMessageProcessor_ShouldApply(t *testing.T) {
-	tests := []struct {
-		name           string
-		when           ProcessorWhen
-		isFirstMessage bool
-		expected       bool
-	}{
-		{"first on first message", ProcessorWhenFirst, true, true},
-		{"first on later message", ProcessorWhenFirst, false, false},
-		{"all on first message", ProcessorWhenAll, true, true},
-		{"all on later message", ProcessorWhenAll, false, true},
-		{"all-except-first on first message", ProcessorWhenAllExceptFirst, true, false},
-		{"all-except-first on later message", ProcessorWhenAllExceptFirst, false, true},
-		{"unknown when value", ProcessorWhen("unknown"), true, false},
+func TestMessageProcessor_Fields(t *testing.T) {
+	// Verify the struct fields are correct (used for config parsing).
+	p := &MessageProcessor{
+		When:     ProcessorWhenFirst,
+		Position: ProcessorPositionPrepend,
+		Text:     "hello",
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := &MessageProcessor{When: tt.when}
-			got := p.ShouldApply(tt.isFirstMessage)
-			if got != tt.expected {
-				t.Errorf("ShouldApply(%v) = %v, want %v", tt.isFirstMessage, got, tt.expected)
-			}
-		})
+	if p.When != ProcessorWhenFirst {
+		t.Errorf("When = %q, want %q", p.When, ProcessorWhenFirst)
 	}
-}
-
-func TestMessageProcessor_Apply(t *testing.T) {
-	tests := []struct {
-		name     string
-		position ProcessorPosition
-		text     string
-		message  string
-		expected string
-	}{
-		{"prepend", ProcessorPositionPrepend, "PREFIX:", "hello", "PREFIX:hello"},
-		{"append", ProcessorPositionAppend, ":SUFFIX", "hello", "hello:SUFFIX"},
-		{"prepend empty text", ProcessorPositionPrepend, "", "hello", "hello"},
-		{"append empty text", ProcessorPositionAppend, "", "hello", "hello"},
-		{"unknown position", ProcessorPosition("unknown"), "text", "hello", "hello"},
+	if p.Position != ProcessorPositionPrepend {
+		t.Errorf("Position = %q, want %q", p.Position, ProcessorPositionPrepend)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := &MessageProcessor{Position: tt.position, Text: tt.text}
-			got := p.Apply(tt.message)
-			if got != tt.expected {
-				t.Errorf("Apply(%q) = %q, want %q", tt.message, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestApplyProcessors(t *testing.T) {
-	processors := []MessageProcessor{
-		{When: ProcessorWhenFirst, Position: ProcessorPositionPrepend, Text: "FIRST:"},
-		{When: ProcessorWhenAll, Position: ProcessorPositionAppend, Text: ":ALL"},
-		{When: ProcessorWhenAllExceptFirst, Position: ProcessorPositionPrepend, Text: "LATER:"},
-	}
-
-	tests := []struct {
-		name           string
-		message        string
-		isFirstMessage bool
-		expected       string
-	}{
-		{"first message", "hello", true, "FIRST:hello:ALL"},
-		{"second message", "world", false, "LATER:world:ALL"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ApplyProcessors(tt.message, processors, tt.isFirstMessage)
-			if got != tt.expected {
-				t.Errorf("ApplyProcessors(%q, %v) = %q, want %q", tt.message, tt.isFirstMessage, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestApplyProcessors_EmptyProcessors(t *testing.T) {
-	message := "hello"
-	got := ApplyProcessors(message, nil, true)
-	if got != message {
-		t.Errorf("ApplyProcessors with nil processors = %q, want %q", got, message)
-	}
-
-	got = ApplyProcessors(message, []MessageProcessor{}, true)
-	if got != message {
-		t.Errorf("ApplyProcessors with empty processors = %q, want %q", got, message)
+	if p.Text != "hello" {
+		t.Errorf("Text = %q, want %q", p.Text, "hello")
 	}
 }
 

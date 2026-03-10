@@ -5,6 +5,7 @@ package appdir
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,8 +31,8 @@ const (
 	// SessionsDirName is the name of the sessions subdirectory.
 	SessionsDirName = "sessions"
 
-	// HooksDirName is the name of the hooks subdirectory.
-	HooksDirName = "hooks"
+	// ProcessorsDirName is the name of the processors subdirectory.
+	ProcessorsDirName = "processors"
 
 	// PromptsDirName is the name of the prompts subdirectory.
 	PromptsDirName = "prompts"
@@ -141,7 +142,7 @@ func resolveDir() (string, error) {
 }
 
 // EnsureDir creates the Mitto data directory if it doesn't exist.
-// It also creates the sessions and hooks subdirectories.
+// It also creates the sessions and processors subdirectories.
 func EnsureDir() error {
 	dir, err := Dir()
 	if err != nil {
@@ -159,10 +160,21 @@ func EnsureDir() error {
 		return fmt.Errorf("failed to create sessions directory %s: %w", sessionsDir, err)
 	}
 
-	// Create hooks subdirectory
-	hooksDir := filepath.Join(dir, HooksDirName)
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
-		return fmt.Errorf("failed to create hooks directory %s: %w", hooksDir, err)
+	// Backward compatibility: if old "hooks" directory exists but "processors" doesn't, log migration hint
+	oldHooksDir := filepath.Join(dir, "hooks")
+	processorsDir := filepath.Join(dir, ProcessorsDirName)
+	if _, err := os.Stat(oldHooksDir); err == nil {
+		if _, err := os.Stat(processorsDir); os.IsNotExist(err) {
+			slog.Info("Found legacy 'hooks' directory. Please migrate your processor files to the new 'processors' directory.",
+				"old_path", oldHooksDir,
+				"new_path", processorsDir,
+			)
+		}
+	}
+
+	// Create processors subdirectory
+	if err := os.MkdirAll(processorsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create processors directory %s: %w", processorsDir, err)
 	}
 
 	// Create prompts subdirectory
@@ -254,13 +266,13 @@ func SessionsDir() (string, error) {
 	return filepath.Join(dir, SessionsDirName), nil
 }
 
-// HooksDir returns the full path to the hooks directory.
-func HooksDir() (string, error) {
+// ProcessorsDir returns the full path to the processors directory.
+func ProcessorsDir() (string, error) {
 	dir, err := Dir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, HooksDirName), nil
+	return filepath.Join(dir, ProcessorsDirName), nil
 }
 
 // PromptsDir returns the full path to the prompts directory.

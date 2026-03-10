@@ -1,8 +1,12 @@
-// Package hooks provides external command-based hooks for message transformation.
-// Hooks are loaded from YAML files in the MITTO_DIR/hooks/ directory and can
-// execute arbitrary commands to dynamically transform messages before sending
-// to the ACP server.
-package msghooks
+// Package processors provides a unified message processor pipeline for Mitto.
+// It supports two modes:
+//   - Text-mode: simple prepend/append of static text (no external command).
+//   - Command-mode: execute an external command to transform the message.
+//
+// Text-mode processors are typically created from config.MessageProcessor entries
+// via Manager.AddTextProcessors. Command-mode processors are loaded from YAML files
+// in the MITTO_DIR/processors/ directory.
+package processors
 
 import (
 	"time"
@@ -10,7 +14,7 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
-// InputType defines what data is sent to the hook's stdin.
+// InputType defines what data is sent to the processor's stdin.
 type InputType string
 
 const (
@@ -22,7 +26,7 @@ const (
 	InputNone InputType = "none"
 )
 
-// OutputType defines how the hook's stdout is used.
+// OutputType defines how the processor's stdout is used.
 type OutputType string
 
 const (
@@ -36,13 +40,13 @@ const (
 	OutputDiscard OutputType = "discard"
 )
 
-// WorkingDirType defines the working directory for hook execution.
+// WorkingDirType defines the working directory for processor execution.
 type WorkingDirType string
 
 const (
 	// WorkingDirSession uses the session's working directory.
 	WorkingDirSession WorkingDirType = "session"
-	// WorkingDirHook uses the hook file's directory.
+	// WorkingDirHook uses the processor file's directory.
 	WorkingDirHook WorkingDirType = "hook"
 )
 
@@ -50,13 +54,13 @@ const (
 type ErrorHandling string
 
 const (
-	// ErrorSkip continues without the hook on error.
+	// ErrorSkip continues without the processor on error.
 	ErrorSkip ErrorHandling = "skip"
 	// ErrorFail aborts the message on error.
 	ErrorFail ErrorHandling = "fail"
 )
 
-// Default values for hook configuration.
+// Default values for processor configuration.
 const (
 	DefaultTimeout     = 5 * time.Second
 	DefaultPriority    = 100
@@ -66,26 +70,31 @@ const (
 	DefaultErrorHandle = ErrorSkip
 )
 
-// Hook represents a loaded hook definition.
-type Hook struct {
-	// Name is a human-readable identifier for the hook.
+// Processor represents a loaded processor definition.
+type Processor struct {
+	// Name is a human-readable identifier for the processor.
 	Name string `yaml:"name" json:"name"`
-	// Description provides additional context about what the hook does.
+	// Description provides additional context about what the processor does.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
-	// Enabled controls whether the hook is active. Default: true.
+	// Enabled controls whether the processor is active. Default: true.
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 
-	// When specifies when the hook triggers: "first", "all", "all-except-first".
+	// When specifies when the processor triggers: "first", "all", "all-except-first".
 	When config.ProcessorWhen `yaml:"when" json:"when"`
 	// Position specifies where in the pipeline: "prepend" or "append".
 	Position config.ProcessorPosition `yaml:"position,omitempty" json:"position,omitempty"`
 	// Priority determines execution order (lower = earlier). Default: 100.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
-	// Command is the executable to run. Can be absolute, relative to hook dir, or in PATH.
-	Command string `yaml:"command" json:"command"`
-	// Args are additional arguments passed to the command.
+	// Command is the executable to run (command-mode only).
+	// Can be absolute, relative to processor dir, or found via PATH.
+	// If empty and Text is non-empty, the processor runs in text-mode.
+	Command string `yaml:"command,omitempty" json:"command,omitempty"`
+	// Args are additional arguments passed to the command (command-mode only).
 	Args []string `yaml:"args,omitempty" json:"args,omitempty"`
+
+	// Text is the static text to insert (text-mode only, used when Command is empty).
+	Text string `yaml:"text,omitempty" json:"text,omitempty"`
 
 	// Input defines what to send to stdin: "message", "conversation", "none".
 	Input InputType `yaml:"input,omitempty" json:"input,omitempty"`
@@ -102,13 +111,21 @@ type Hook struct {
 	// OnError defines error handling: "skip" or "fail". Default: "skip".
 	OnError ErrorHandling `yaml:"on_error,omitempty" json:"on_error,omitempty"`
 
-	// Workspaces limits the hook to specific workspace paths. Empty means all.
+	// Workspaces limits the processor to specific workspace paths. Empty means all.
 	Workspaces []string `yaml:"workspaces,omitempty" json:"workspaces,omitempty"`
 
-	// FilePath is the path to the hook's YAML file (set internally).
+	// FilePath is the path to the processor's YAML file (set internally).
 	FilePath string `yaml:"-" json:"-"`
-	// HookDir is the directory containing the hook file (set internally).
+	// HookDir is the directory containing the processor file (set internally).
 	HookDir string `yaml:"-" json:"-"`
+}
+
+// IsTextMode returns true if this processor operates in text-mode.
+// Text-mode processors have no Command but have a non-empty Text field.
+// They prepend or append the static Text string to the message without
+// executing any external command.
+func (h *Processor) IsTextMode() bool {
+	return h.Command == "" && h.Text != ""
 }
 
 // Duration is a wrapper for time.Duration that supports YAML unmarshaling.
@@ -136,3 +153,4 @@ func (d *Duration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 func (d Duration) Duration() time.Duration {
 	return time.Duration(d)
 }
+

@@ -852,6 +852,19 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		if lastSeq > 0 {
 			c.syncMissedEventsDuringRegistration(lastSeq)
 		}
+
+		// Trigger MCP availability check (once per workspace per server lifetime).
+		// This runs when a client focuses/switches to a conversation (load_events).
+		// The check is skipped if already done for this workspace (IsMCPChecked).
+		if c.bgSession != nil && c.server != nil && c.server.sessionManager != nil {
+			if workspaceUUID := c.bgSession.GetWorkspaceUUID(); workspaceUUID != "" {
+				if !c.server.sessionManager.IsMCPChecked(workspaceUUID) {
+					// Mark immediately to prevent concurrent checks for the same workspace.
+					c.server.sessionManager.MarkMCPChecked(workspaceUUID)
+					go c.triggerMCPAvailabilityCheck(workspaceUUID)
+				}
+			}
+		}
 	}
 
 	// If session has buffered events, we need to replay any that haven't been
@@ -1097,6 +1110,67 @@ func (c *SessionWSClient) generateAndSetTitle(initialMessage string) {
 			})
 		},
 	})
+}
+
+// triggerMCPAvailabilityCheck asynchronously checks if Mitto MCP tools are available
+// in the ACP server for the given workspace. Should be called in a goroutine.
+// Called at most once per workspace per server lifetime (enforced by IsMCPChecked/MarkMCPChecked).
+// If tools are not available, sends mcp_tools_unavailable to this client.
+func (c *SessionWSClient) triggerMCPAvailabilityCheck(workspaceUUID string) {
+	// Get MCP server URL from the running MCP server instance.
+	var mcpServerURL string
+	if c.server != nil && c.server.mcpServer != nil {
+		mcpServerURL = fmt.Sprintf("http://%s:%d/mcp",
+			c.server.mcpServer.Host(), c.server.mcpServer.Port())
+	}
+
+	// Get auxiliary manager for performing the check.
+	if c.server == nil || c.server.auxiliaryManager == nil {
+		if c.logger != nil {
+			c.logger.Debug("mcp availability check: no auxiliary manager available",
+				"workspace_uuid", workspaceUUID)
+		}
+		return
+	}
+	auxMgr := c.server.auxiliaryManager
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if c.logger != nil {
+		c.logger.Debug("mcp availability check: starting",
+			"workspace_uuid", workspaceUUID,
+			"mcp_server_url", mcpServerURL)
+	}
+
+	result, err := auxMgr.CheckMCPAvailability(ctx, workspaceUUID, mcpServerURL)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Debug("mcp availability check: failed",
+				"workspace_uuid", workspaceUUID,
+				"error", err)
+		}
+		return
+	}
+
+	if c.logger != nil {
+		c.logger.Debug("mcp availability check: completed",
+			"workspace_uuid", workspaceUUID,
+			"available", result.Available)
+	}
+
+	if !result.Available {
+		data := map[string]interface{}{
+			"workspace_uuid": workspaceUUID,
+		}
+		if result.SuggestedRun != "" {
+			data["suggested_run"] = result.SuggestedRun
+		}
+		if result.SuggestedInstructions != "" {
+			data["suggested_instructions"] = result.SuggestedInstructions
+		}
+		c.sendMessage(WSMsgTypeMCPToolsUnavailable, data)
+	}
 }
 
 func (c *SessionWSClient) sendMessage(msgType string, data interface{}) {
