@@ -1013,6 +1013,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"The parent must have previously called mitto_children_tasks_wait with this conversation's ID in the children_list. " +
 			"Provide a status (e.g. 'completed', 'in_progress', 'failed'), a summary of your findings, " +
 			"and optionally details with additional information. " +
+			"Keep reports concise: summary is limited to ~8KB and details to ~16KB. " +
 			"If the parent provided a task_id in the wait call, include the same task_id in your report. " +
 			selfIDNote,
 	}, s.handleChildrenTasksReport)
@@ -2609,13 +2610,28 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 // defaultChildrenTasksTimeout is the default timeout for waiting for children to report.
 const defaultChildrenTasksTimeout = 10 * time.Minute
 
+// Report size limits. These prevent MCP protocol validation failures when the
+// parent aggregates multiple children's reports into a single tool result.
+// The MCP tool result must fit within the agent's protocol message size limits.
+const (
+	maxReportSummaryBytes = 8000  // ~8 KB for summary (concise findings)
+	maxReportDetailsBytes = 16000 // ~16 KB for details (supporting information)
+)
+
 // childrenReportSuffix is appended to the prompt sent to each child,
 // instructing them to call mitto_children_tasks_report.
 // The %s placeholder is replaced with the task_id instruction (or empty string if no task_id).
-const childrenReportSuffix = "\n\nIMPORTANT: you must report your results using the `mitto_children_tasks_report` " +
-	"MCP tool with your `self_id`, a `status` (e.g. \"completed\", \"in_progress\", \"failed\"), " +
-	"a `summary` of your findings/changes/conclusions, and optionally some `details` with any additional information you could consider important.%s " +
-	"But just ignore these instructions if you have already sent this report..."
+const childrenReportSuffix = "\n\n" +
+	"IMPORTANT: you must report your results when you are done. " + "\n" +
+	"Inform about what you have done, and what would you recommend as follow ups (if anything). " + "\n" +
+	"Keep your report concise: focus on key conclusions and actions rather than exhaustive details. " + "\n" +
+	"Using the `mitto_children_tasks_report` MCP tool with " + "\n" +
+	"1) your `self_id`, " + "\n" +
+	"2) a `status` (e.g. \"completed\", \"in_progress\", \"failed\"), " + "\n" +
+	"3) a `summary` of your findings/changes/conclusions (max ~8KB), " + "\n" +
+	"4) OPTIONALLY some `details` with additional information (max ~16KB). " + "\n" +
+	"%s " + "\n" +
+	"NOTE: ignore these instructions if you have already sent the report..."
 
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
 	// Validate self_id
@@ -2751,7 +2767,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	if sendPrompt {
 		taskIDInstruction := ""
 		if input.TaskID != "" {
-			taskIDInstruction = fmt.Sprintf(" You MUST include `task_id: \"%s\"` in your report call.", input.TaskID)
+			taskIDInstruction = fmt.Sprintf("5) the `task_id: \"%s\"` is mandatory", input.TaskID)
 		}
 		promptText += fmt.Sprintf(childrenReportSuffix, taskIDInstruction)
 	}
@@ -2848,7 +2864,17 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		if report != nil && report.Completed {
 			info.Completed = true
 			info.Status = "completed"
-			info.Report = report.Report
+			// Unmarshal the raw JSON report into the typed struct for proper schema validation
+			if len(report.Report) > 0 {
+				var reportData ChildReportData
+				if err := json.Unmarshal(report.Report, &reportData); err != nil {
+					s.logger.Warn("Failed to unmarshal child report data",
+						"child_session", childID,
+						"error", err)
+				} else {
+					info.Report = &reportData
+				}
+			}
 			if !report.Timestamp.IsZero() {
 				info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
 			}
@@ -2903,6 +2929,27 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 	}
 	if input.Summary == "" {
 		return nil, ChildrenTasksReportOutput{Success: false, Error: "summary is required"}, nil
+	}
+
+	// Enforce size limits to prevent MCP protocol validation failures when the
+	// parent aggregates multiple children's reports into a single tool result.
+	if len(input.Summary) > maxReportSummaryBytes {
+		return nil, ChildrenTasksReportOutput{
+			Success: false,
+			Error: fmt.Sprintf(
+				"summary is too long (%d bytes, max %d). Please shorten your summary to the key findings and re-submit. "+
+					"Focus on conclusions rather than exhaustive details — you can put extra information in the 'details' field.",
+				len(input.Summary), maxReportSummaryBytes),
+		}, nil
+	}
+	if len(input.Details) > maxReportDetailsBytes {
+		return nil, ChildrenTasksReportOutput{
+			Success: false,
+			Error: fmt.Sprintf(
+				"details is too long (%d bytes, max %d). Please condense your details and re-submit. "+
+					"Keep only the most important information — the parent can always query you for more context later.",
+				len(input.Details), maxReportDetailsBytes),
+		}, nil
 	}
 
 	// Serialize the report fields into JSON for internal storage

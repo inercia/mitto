@@ -508,13 +508,22 @@ type ChildrenTasksWaitOutput struct {
 	Error    string                     `json:"error,omitempty"`
 }
 
+// ChildReportData contains the typed report data from a child conversation.
+// This is a typed struct (not json.RawMessage) so that the MCP SDK's jsonschema
+// auto-generation produces a correct schema for output validation.
+type ChildReportData struct {
+	Status  string `json:"status,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Details string `json:"details,omitempty"`
+}
+
 // ChildReportInfo contains the report from a single child conversation.
 type ChildReportInfo struct {
-	Completed bool            `json:"completed"`
-	Report    json.RawMessage `json:"report,omitempty"`
-	Timestamp string          `json:"timestamp,omitempty"` // ISO 8601
-	Status    string          `json:"status,omitempty"`    // "pending", "completed", "not_running"
-	Reason    string          `json:"reason,omitempty"`    // Diagnostic hint when report is incomplete (e.g., "still_processing", "session_unregistered", "archived")
+	Completed bool             `json:"completed"`
+	Report    *ChildReportData `json:"report,omitempty"`
+	Timestamp string           `json:"timestamp,omitempty"` // ISO 8601
+	Status    string           `json:"status,omitempty"`    // "pending", "completed", "not_running"
+	Reason    string           `json:"reason,omitempty"`    // Diagnostic hint when report is incomplete (e.g., "still_processing", "session_unregistered", "archived")
 }
 
 // ChildrenTasksReportInput is the input for mitto_children_tasks_report tool.
