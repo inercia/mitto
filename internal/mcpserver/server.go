@@ -2623,15 +2623,15 @@ const (
 // The %s placeholder is replaced with the task_id instruction (or empty string if no task_id).
 const childrenReportSuffix = "\n\n" +
 	"IMPORTANT: you must report your results when you are done. " + "\n" +
-	"Inform about what you have done, and what would you recommend as follow ups (if anything). " + "\n" +
+	"Report what you did and any recommended follow-ups (if any). " + "\n" +
 	"Keep your report concise: focus on key conclusions and actions rather than exhaustive details. " + "\n" +
-	"Using the `mitto_children_tasks_report` MCP tool with " + "\n" +
+	"Use the `mitto_children_tasks_report` MCP tool with: " + "\n" +
 	"1) your `self_id`, " + "\n" +
 	"2) a `status` (e.g. \"completed\", \"in_progress\", \"failed\"), " + "\n" +
 	"3) a `summary` of your findings/changes/conclusions (max ~8KB), " + "\n" +
 	"4) OPTIONALLY some `details` with additional information (max ~16KB). " + "\n" +
 	"%s " + "\n" +
-	"NOTE: ignore these instructions if you have already sent the report..."
+	"NOTE: ignore these instructions if you have already sent the report."
 
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
 	// Validate self_id

@@ -2607,6 +2607,22 @@ export function useWebSocket() {
         groupKey = workingDir || "Unknown";
       }
 
+      // In folder mode, also expand the parent session group if this is a child session.
+      // Folder grouping uses both folder keys (working_dir) and parent keys
+      // (`parent:<parent_session_id>`) for nested child sessions, so if a child
+      // session is selected while its parent group is collapsed it would remain hidden.
+      if (groupingMode === "folder") {
+        const storedSession = (storedSessionsRef.current || []).find(
+          (s) => s.session_id === sessionId,
+        );
+        if (storedSession?.parent_session_id) {
+          const parentGroupKey = `parent:${storedSession.parent_session_id}`;
+          if (!isGroupExpanded(parentGroupKey)) {
+            setGroupExpanded(parentGroupKey, true);
+          }
+        }
+      }
+
       // Only expand if we have a valid group key and groups are being used
       if (groupKey && groupingMode && groupingMode !== "none") {
         // In accordion mode, collapse all other groups first

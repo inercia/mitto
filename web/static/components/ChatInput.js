@@ -196,6 +196,7 @@ export function ChatInput({
   const [promptFilterText, setPromptFilterText] = useState("");
   const [promptSelectedIndex, setPromptSelectedIndex] = useState(-1);
   const promptFilterInputRef = useRef(null);
+  const selectedPromptItemRef = useRef(null);
 
   // State for prompt sort mode (alphabetical or color)
   const [promptSortMode, setPromptSortMode] = useState(() =>
@@ -309,6 +310,13 @@ export function ChatInput({
   // When locked, the prompt is saved to the periodic config and textarea is read-only
   const [isPeriodicLocked, setIsPeriodicLocked] = useState(false);
   const [isPeriodicSaving, setIsPeriodicSaving] = useState(false);
+
+  // Scroll selected prompt into view when keyboard selection changes
+  useEffect(() => {
+    if (promptSelectedIndex >= 0) {
+      selectedPromptItemRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [promptSelectedIndex]);
 
   // Listen for prompt sort mode changes from settings
   useEffect(() => {
@@ -2234,8 +2242,12 @@ export function ChatInput({
                     }
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      if (promptSelectedIndex >= 0 && promptSelectedIndex < flatFilteredPrompts.length) {
-                        handlePredefinedPrompt(flatFilteredPrompts[promptSelectedIndex]);
+                      if (promptSelectedIndex >= 0 && flatFilteredPrompts.length > 0) {
+                        const clampedIndex = Math.min(
+                          Math.max(promptSelectedIndex, 0),
+                          flatFilteredPrompts.length - 1
+                        );
+                        handlePredefinedPrompt(flatFilteredPrompts[clampedIndex]);
                       }
                       return;
                     }
@@ -2246,7 +2258,6 @@ export function ChatInput({
                   autocapitalize="off"
                   spellcheck=${false}
                   class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
-                  style="caret-color: transparent;"
                 />
               </div>
               <div class="py-1 overflow-y-auto">
@@ -2321,7 +2332,7 @@ export function ChatInput({
                       title=${prompt.description || prompt.name}
                       class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
                       style=${selectedStyle}
-                      ref=${isSelected ? (el) => el?.scrollIntoView({ block: "nearest" }) : null}
+                      ref=${isSelected ? selectedPromptItemRef : null}
                     >
                       <svg
                         class="w-4 h-4 flex-shrink-0 opacity-60"
