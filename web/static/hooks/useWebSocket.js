@@ -2593,21 +2593,42 @@ export function useWebSocket() {
   const expandGroupForSession = useCallback(
     (sessionId, workingDir, acpServer) => {
       // Build the group key for this session based on current grouping mode
+      // Must match the key format used by the sidebar rendering in app.js:
+      // - server mode: acpServer || "Unknown"
+      // - workspace mode: `${workingDir}|${acpServer}`
+      // - folder mode: workingDir || "Unknown" (just the folder, no acp server)
       const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
       let groupKey;
       if (groupingMode === "server") {
         groupKey = acpServer || "Unknown";
       } else if (groupingMode === "workspace") {
-        // Workspace mode uses composite key: working_dir|acp_server
         groupKey = `${workingDir || ""}|${acpServer || ""}`;
+      } else if (groupingMode === "folder") {
+        groupKey = workingDir || "Unknown";
       }
 
       // Only expand if we have a valid group key and groups are being used
       if (groupKey && groupingMode && groupingMode !== "none") {
         // In accordion mode, collapse all other groups first
         if (getSingleExpandedGroupMode()) {
-          const expandedGroups = getExpandedGroups();
-          for (const key of Object.keys(expandedGroups)) {
+          // Compute all group keys from stored sessions so we can collapse groups
+          // that were never explicitly toggled (which default to expanded).
+          // getExpandedGroups() only contains explicitly-set groups, so groups that
+          // default to expanded would be missed.
+          const allGroupKeys = new Set();
+          const storedSessions = storedSessionsRef.current || [];
+          for (const s of storedSessions) {
+            if (groupingMode === "server") {
+              allGroupKeys.add(s.acp_server || "Unknown");
+            } else if (groupingMode === "workspace") {
+              allGroupKeys.add(
+                `${s.working_dir || ""}|${s.acp_server || ""}`,
+              );
+            } else if (groupingMode === "folder") {
+              allGroupKeys.add(s.working_dir || "Unknown");
+            }
+          }
+          for (const key of allGroupKeys) {
             if (key !== groupKey && isGroupExpanded(key)) {
               setGroupExpanded(key, false);
             }
@@ -4028,6 +4049,13 @@ export function useWebSocket() {
       const currentActiveSessionId = activeSessionIdRef.current;
       const wasActiveSession = sessionId === currentActiveSessionId;
 
+      // Capture deleted session's group info before removing (for accordion mode fallback)
+      const deletedSession = storedSessionsRef.current?.find(
+        (s) => s.session_id === sessionId,
+      );
+      const deletedWorkingDir = deletedSession?.working_dir || "";
+      const deletedAcpServer = deletedSession?.acp_server || "";
+
       // Cancel any pending reconnect for this session
       if (sessionReconnectRefs.current[sessionId]) {
         clearTimeout(sessionReconnectRefs.current[sessionId]);
@@ -4059,8 +4087,37 @@ export function useWebSocket() {
         // Fetch remaining sessions from server to get accurate list
         const remainingSessions = await fetchStoredSessions();
         if (remainingSessions && remainingSessions.length > 0) {
-          // Switch to the most recent remaining session
-          const nextSession = remainingSessions[0];
+          // In accordion mode with grouping, prefer a session from the same group
+          // so we don't jump to a session in a different (possibly collapsed) group
+          let nextSession = remainingSessions[0];
+          const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
+          if (getSingleExpandedGroupMode() && groupingMode && groupingMode !== "none") {
+            // Compute the deleted session's group key (mirrors expandGroupForSession logic)
+            let deletedGroupKey;
+            if (groupingMode === "server") {
+              deletedGroupKey = deletedAcpServer || "Unknown";
+            } else if (groupingMode === "workspace") {
+              deletedGroupKey = `${deletedWorkingDir}|${deletedAcpServer}`;
+            } else if (groupingMode === "folder") {
+              deletedGroupKey = deletedWorkingDir || "Unknown";
+            }
+            if (deletedGroupKey) {
+              const sameGroupSession = remainingSessions.find((s) => {
+                let sessionGroupKey;
+                if (groupingMode === "server") {
+                  sessionGroupKey = s.acp_server || "Unknown";
+                } else if (groupingMode === "workspace") {
+                  sessionGroupKey = `${s.working_dir || ""}|${s.acp_server || ""}`;
+                } else if (groupingMode === "folder") {
+                  sessionGroupKey = s.working_dir || "Unknown";
+                }
+                return sessionGroupKey === deletedGroupKey;
+              });
+              if (sameGroupSession) {
+                nextSession = sameGroupSession;
+              }
+            }
+          }
           switchSession(nextSession.session_id);
         } else {
           // No sessions left - show empty state, let user create manually
