@@ -1,7 +1,7 @@
 // Mitto Web Interface - Chat Input Component
 // Handles message composition, image uploads, and predefined prompts
 
-const { useState, useEffect, useRef, useCallback, html } = window.preact;
+const { useState, useEffect, useRef, useCallback, useMemo, html } = window.preact;
 
 import {
   hasNativeImagePicker,
@@ -193,19 +193,70 @@ export function ChatInput({
   );
 
   const [showDropup, setShowDropup] = useState(false);
+  const [promptFilterText, setPromptFilterText] = useState("");
+  const [promptSelectedIndex, setPromptSelectedIndex] = useState(-1);
+  const promptFilterInputRef = useRef(null);
 
   // State for prompt sort mode (alphabetical or color)
   const [promptSortMode, setPromptSortMode] = useState(() =>
     getPromptSortMode(),
   );
 
+  // Compute flat ordered prompt list for keyboard navigation
+  const flatFilteredPrompts = useMemo(() => {
+    const lowerFilter = promptFilterText.toLowerCase().trim();
+    const filtered = lowerFilter
+      ? predefinedPrompts.filter((p) => {
+          const matchName = (p.name || "").toLowerCase().includes(lowerFilter);
+          const matchDesc = (p.description || "").toLowerCase().includes(lowerFilter);
+          return matchName || matchDesc;
+        })
+      : predefinedPrompts;
+
+    // Group and sort (same logic as render)
+    const grouped = {};
+    const ungrouped = [];
+    filtered.forEach((prompt) => {
+      if (prompt.group) {
+        if (!grouped[prompt.group]) grouped[prompt.group] = [];
+        grouped[prompt.group].push(prompt);
+      } else {
+        ungrouped.push(prompt);
+      }
+    });
+    Object.keys(grouped).forEach((group) => {
+      if (promptSortMode === "color") {
+        grouped[group] = sortPromptsByColor(grouped[group]);
+      } else {
+        grouped[group].sort((a, b) => a.name.localeCompare(b.name));
+      }
+    });
+    const sortedUngrouped = promptSortMode === "color"
+      ? sortPromptsByColor(ungrouped)
+      : [...ungrouped].sort((a, b) => a.name.localeCompare(b.name));
+    const sortedGroupNames = Object.keys(grouped).sort();
+
+    const flat = [];
+    sortedGroupNames.forEach((g) => grouped[g].forEach((p) => flat.push(p)));
+    sortedUngrouped.forEach((p) => flat.push(p));
+    return flat;
+  }, [predefinedPrompts, promptFilterText, promptSortMode]);
+
   // Handler for toggling the prompts dropdown
   // Calls onPromptsOpen callback when opening to trigger prompt refresh
   const handleTogglePrompts = useCallback(() => {
     const willOpen = !showDropup;
     setShowDropup(willOpen);
-    if (willOpen && onPromptsOpen) {
-      onPromptsOpen();
+    if (willOpen) {
+      setPromptFilterText("");
+      setPromptSelectedIndex(-1);
+      if (onPromptsOpen) {
+        onPromptsOpen();
+      }
+      // Auto-focus the filter input after the dropdown renders
+      setTimeout(() => {
+        promptFilterInputRef.current?.focus();
+      }, 50);
     }
   }, [showDropup, onPromptsOpen]);
 
@@ -463,7 +514,7 @@ export function ChatInput({
   const isFullyDisabled =
     disabled || noSession || isSending || isArchived || isArchivePending;
 
-  // Expose focus method via inputRef for native menu integration
+  // Expose focus and togglePrompts methods via inputRef for external control
   useEffect(() => {
     if (inputRef) {
       inputRef.current = {
@@ -472,9 +523,12 @@ export function ChatInput({
             textareaRef.current.focus();
           }
         },
+        togglePrompts: () => {
+          handleTogglePrompts();
+        },
       };
     }
-  }, [inputRef]);
+  }, [inputRef, handleTogglePrompts]);
 
   // Close dropup when clicking outside
   useEffect(() => {
@@ -2146,49 +2200,78 @@ export function ChatInput({
           hasPrompts &&
           html`
             <div
-              class="absolute bottom-full right-0 mb-2 w-64 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 max-h-80 overflow-y-auto"
+              class="absolute bottom-full right-0 mb-2 w-64 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 max-h-80 flex flex-col"
               style="box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
             >
-              <div class="py-1">
+              <!-- Filter input -->
+              <div class="px-2 pt-2 pb-1 flex-shrink-0">
+                <input
+                  ref=${promptFilterInputRef}
+                  type="text"
+                  value=${promptFilterText}
+                  onInput=${(e) => {
+                    setPromptFilterText(e.target.value);
+                    setPromptSelectedIndex(-1);
+                  }}
+                  onKeyDown=${(e) => {
+                    // Prevent the event from bubbling to the textarea
+                    e.stopPropagation();
+                    if (e.key === "Escape") {
+                      setShowDropup(false);
+                      return;
+                    }
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setPromptSelectedIndex((prev) =>
+                        Math.min(prev + 1, flatFilteredPrompts.length - 1)
+                      );
+                      return;
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setPromptSelectedIndex((prev) => Math.max(-1, prev - 1));
+                      return;
+                    }
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      if (promptSelectedIndex >= 0 && promptSelectedIndex < flatFilteredPrompts.length) {
+                        handlePredefinedPrompt(flatFilteredPrompts[promptSelectedIndex]);
+                      }
+                      return;
+                    }
+                  }}
+                  placeholder="Filter prompts..."
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="off"
+                  spellcheck=${false}
+                  class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
+                  style="caret-color: transparent;"
+                />
+              </div>
+              <div class="py-1 overflow-y-auto">
                 ${(() => {
-                  // Group prompts by their group attribute
+                  // Re-group the precomputed flat list for rendering with group headers
                   const groupedPrompts = {};
                   const ungroupedPrompts = [];
-
-                  predefinedPrompts.forEach((prompt) => {
+                  flatFilteredPrompts.forEach((prompt) => {
                     if (prompt.group) {
-                      if (!groupedPrompts[prompt.group]) {
-                        groupedPrompts[prompt.group] = [];
-                      }
+                      if (!groupedPrompts[prompt.group]) groupedPrompts[prompt.group] = [];
                       groupedPrompts[prompt.group].push(prompt);
                     } else {
                       ungroupedPrompts.push(prompt);
                     }
                   });
-
-                  // Sort prompts within each group based on sort mode
-                  Object.keys(groupedPrompts).forEach((group) => {
-                    if (promptSortMode === "color") {
-                      groupedPrompts[group] = sortPromptsByColor(
-                        groupedPrompts[group],
-                      );
-                    } else {
-                      groupedPrompts[group].sort((a, b) =>
-                        a.name.localeCompare(b.name),
-                      );
-                    }
-                  });
-
-                  // Sort ungrouped prompts based on sort mode
-                  const sortedUngrouped =
-                    promptSortMode === "color"
-                      ? sortPromptsByColor(ungroupedPrompts)
-                      : [...ungroupedPrompts].sort((a, b) =>
-                          a.name.localeCompare(b.name),
-                        );
-
-                  // Sort group names alphabetically
                   const sortedGroupNames = Object.keys(groupedPrompts).sort();
+                  const sortedUngrouped = ungroupedPrompts; // already sorted in useMemo
+
+                  // Build a lookup: prompt -> flat index for selection highlighting
+                  const promptToFlatIdx = new Map();
+                  flatFilteredPrompts.forEach((p, i) => promptToFlatIdx.set(p, i));
+
+                  const clampedIndex = flatFilteredPrompts.length === 0
+                    ? -1
+                    : Math.min(promptSelectedIndex, flatFilteredPrompts.length - 1);
 
                   // Helper to get badge info based on source
                   const getBadgeInfo = (source) => {
@@ -2213,20 +2296,32 @@ export function ChatInput({
                     }
                   };
 
-                  // Render function for a single prompt
-                  const renderPrompt = (prompt, idx) => html`
+                  // Render function for a single prompt using flat index lookup
+                  const renderPrompt = (prompt) => {
+                    const fi = promptToFlatIdx.get(prompt);
+                    const isSelected = fi === clampedIndex;
+                    const baseStyle = prompt.backgroundColor
+                      ? {
+                          backgroundColor: prompt.backgroundColor,
+                          color: getContrastColor(prompt.backgroundColor),
+                        }
+                      : {};
+                    const selectedStyle = isSelected
+                      ? {
+                          ...baseStyle,
+                          backgroundColor: baseStyle.backgroundColor || "rgba(59, 130, 246, 0.25)",
+                          boxShadow: "inset 3px 0 0 0 #3b82f6",
+                        }
+                      : baseStyle;
+                    return html`
                     <button
-                      key=${"prompt-" + idx}
+                      key=${"prompt-" + fi}
                       type="button"
                       onClick=${() => handlePredefinedPrompt(prompt)}
                       title=${prompt.description || prompt.name}
                       class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
-                      style=${prompt.backgroundColor
-                        ? {
-                            backgroundColor: prompt.backgroundColor,
-                            color: getContrastColor(prompt.backgroundColor),
-                          }
-                        : {}}
+                      style=${selectedStyle}
+                      ref=${isSelected ? (el) => el?.scrollIntoView({ block: "nearest" }) : null}
                     >
                       <svg
                         class="w-4 h-4 flex-shrink-0 opacity-60"
@@ -2252,6 +2347,7 @@ export function ChatInput({
                       </span>
                     </button>
                   `;
+                  };
 
                   return html`
                     ${sortedGroupNames.map(
@@ -2262,8 +2358,8 @@ export function ChatInput({
                           >
                             ${groupName}
                           </div>
-                          ${groupedPrompts[groupName].map((prompt, idx) =>
-                            renderPrompt(prompt, idx),
+                          ${groupedPrompts[groupName].map((prompt) =>
+                            renderPrompt(prompt),
                           )}
                         </div>
                       `,
@@ -2276,11 +2372,14 @@ export function ChatInput({
                             >
                               Other
                             </div>
-                            ${sortedUngrouped.map((prompt, idx) =>
-                              renderPrompt(prompt, idx),
+                            ${sortedUngrouped.map((prompt) =>
+                              renderPrompt(prompt),
                             )}
                           </div>
                         `
+                      : ""}
+                    ${flatFilteredPrompts.length === 0
+                      ? html`<div class="px-4 py-3 text-xs text-gray-500 text-center">No matching prompts</div>`
                       : ""}
                   `;
                 })()}

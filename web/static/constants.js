@@ -188,4 +188,10 @@ export const KEYBOARD_SHORTCUTS = [
     description: "Improve prompt (magic wand)",
     section: "Input",
   },
+  {
+    keys: "⌘/",
+    description: "Toggle prompts menu",
+    section: "Input",
+    hint: "Use Ctrl+/ on Windows/Linux",
+  },
 ];

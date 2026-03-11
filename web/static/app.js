@@ -1724,6 +1724,26 @@ function SessionList({
     return unsubscribe;
   }, []);
 
+  // Listen for programmatic group expansion changes (e.g., from swipe/keyboard navigation)
+  // When expandGroupForSession in useWebSocket.js expands a group during session switching,
+  // it dispatches mitto-expanded-groups-changed. We need to bump expandedGroupsVersion
+  // so the sidebar re-renders and shows the newly expanded group.
+  useEffect(() => {
+    const handleExpandedGroupsChanged = () => {
+      setExpandedGroupsVersion((v) => v + 1);
+    };
+    window.addEventListener(
+      "mitto-expanded-groups-changed",
+      handleExpandedGroupsChanged,
+    );
+    return () => {
+      window.removeEventListener(
+        "mitto-expanded-groups-changed",
+        handleExpandedGroupsChanged,
+      );
+    };
+  }, []);
+
   // Listen for programmatic filter tab changes (e.g., when unarchiving a session)
   useEffect(() => {
     const handleFilterTabChanged = (e) => {
@@ -3492,6 +3512,13 @@ function App() {
           e.preventDefault();
           if (!configReadonly) {
             setSettingsDialog({ isOpen: true, forceOpen: false });
+          }
+        }
+        // Ctrl+/ or Cmd+/ to toggle prompts menu (global shortcut)
+        if (key === "/") {
+          e.preventDefault();
+          if (chatInputRef.current?.togglePrompts) {
+            chatInputRef.current.togglePrompts();
           }
         }
       }
