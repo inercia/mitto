@@ -863,8 +863,8 @@ func TestChildrenTasksWait_AllReport(t *testing.T) {
 			if !report.Completed {
 				t.Errorf("Expected child %s report to be completed", childID)
 			}
-			if len(report.Report) == 0 {
-				t.Errorf("Expected non-empty report for child %s", childID)
+			if report.Report == nil {
+				t.Errorf("Expected non-nil report for child %s", childID)
 			}
 		}
 	case <-time.After(10 * time.Second):
@@ -1047,8 +1047,8 @@ func TestChildrenTasksReport_DuplicateReport(t *testing.T) {
 			t.Error("Expected completed report")
 		}
 		// The report should be the second one (overwritten)
-		if !strings.Contains(string(report.Report), `"summary":"Attempt 2"`) {
-			t.Errorf("Expected second report with summary 'Attempt 2', got: %s", string(report.Report))
+		if report.Report == nil || report.Report.Summary != "Attempt 2" {
+			t.Errorf("Expected second report with summary 'Attempt 2', got: %+v", report.Report)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for result")
@@ -1178,6 +1178,65 @@ func TestChildrenTasksReport_NoParentSession(t *testing.T) {
 	if output.Error == "" {
 		t.Error("Expected error about no parent session")
 	}
+}
+
+func TestChildrenTasksReport_SizeLimits(t *testing.T) {
+	srv, _, _, childIDs := setupParentChildSessions(t, 1)
+	ctx := context.Background()
+
+	t.Run("summary too large", func(t *testing.T) {
+		longSummary := strings.Repeat("x", maxReportSummaryBytes+1)
+		_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+			SelfID:  childIDs[0],
+			Status:  "completed",
+			Summary: longSummary,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if output.Success {
+			t.Fatal("expected failure for oversized summary")
+		}
+		if !strings.Contains(output.Error, "summary is too long") {
+			t.Errorf("expected 'summary is too long' in error, got: %s", output.Error)
+		}
+	})
+
+	t.Run("details too large", func(t *testing.T) {
+		longDetails := strings.Repeat("y", maxReportDetailsBytes+1)
+		_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+			SelfID:  childIDs[0],
+			Status:  "completed",
+			Summary: "Short summary",
+			Details: longDetails,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if output.Success {
+			t.Fatal("expected failure for oversized details")
+		}
+		if !strings.Contains(output.Error, "details is too long") {
+			t.Errorf("expected 'details is too long' in error, got: %s", output.Error)
+		}
+	})
+
+	t.Run("at exact limit succeeds", func(t *testing.T) {
+		exactSummary := strings.Repeat("s", maxReportSummaryBytes)
+		exactDetails := strings.Repeat("d", maxReportDetailsBytes)
+		_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+			SelfID:  childIDs[0],
+			Status:  "completed",
+			Summary: exactSummary,
+			Details: exactDetails,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !output.Success {
+			t.Errorf("expected success at exact limit, got error: %s", output.Error)
+		}
+	})
 }
 
 func TestChildrenTasksWait_PromptEnqueued(t *testing.T) {
@@ -1573,8 +1632,8 @@ func TestChildrenTasksWait_ChildReportsBeforeWait_SameTask(t *testing.T) {
 	if !report.Completed {
 		t.Error("Expected child report to be completed")
 	}
-	if !strings.Contains(string(report.Report), `"summary":"Pre-reported"`) {
-		t.Errorf("Expected pre-reported summary, got: %s", string(report.Report))
+	if report.Report == nil || report.Report.Summary != "Pre-reported" {
+		t.Errorf("Expected pre-reported summary, got: %+v", report.Report)
 	}
 }
 
@@ -1648,8 +1707,8 @@ func TestChildrenTasksWait_ChildReportsBeforeWait_DifferentTask(t *testing.T) {
 		if !report.Completed {
 			t.Error("Expected child report to be completed")
 		}
-		if !strings.Contains(string(report.Report), `"summary":"New task report"`) {
-			t.Errorf("Expected new task report, got: %s", string(report.Report))
+		if report.Report == nil || report.Report.Summary != "New task report" {
+			t.Errorf("Expected new task report, got: %+v", report.Report)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for result")
@@ -1712,12 +1771,12 @@ func TestChildrenTasksWait_BothReportDuringWait(t *testing.T) {
 
 		// Both reports should be present
 		report0 := result.output.Reports[childIDs[0]]
-		if !report0.Completed || !strings.Contains(string(report0.Report), `"summary":"Child 0 done"`) {
-			t.Errorf("Expected report for child[0], got: completed=%v report=%s", report0.Completed, string(report0.Report))
+		if !report0.Completed || report0.Report == nil || report0.Report.Summary != "Child 0 done" {
+			t.Errorf("Expected report for child[0], got: completed=%v report=%+v", report0.Completed, report0.Report)
 		}
 		report1 := result.output.Reports[childIDs[1]]
-		if !report1.Completed || !strings.Contains(string(report1.Report), `"summary":"Child 1 done"`) {
-			t.Errorf("Expected report for child[1], got: completed=%v report=%s", report1.Completed, string(report1.Report))
+		if !report1.Completed || report1.Report == nil || report1.Report.Summary != "Child 1 done" {
+			t.Errorf("Expected report for child[1], got: completed=%v report=%+v", report1.Completed, report1.Report)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for result")
