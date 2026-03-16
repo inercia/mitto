@@ -63,6 +63,20 @@ type SessionWSClient struct {
 	initialLoadMu   sync.Mutex
 }
 
+func hasRenderableConversationEvent(events []session.Event) bool {
+	for _, event := range events {
+		switch event.Type {
+		case session.EventTypeUserPrompt,
+			session.EventTypeAgentMessage,
+			session.EventTypeAgentThought,
+			session.EventTypeToolCall,
+			session.EventTypeError:
+			return true
+		}
+	}
+	return false
+}
+
 // handleSessionWS handles WebSocket connections for a specific session.
 // Route: {prefix}/api/sessions/{id}/ws
 func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
@@ -102,9 +116,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply security settings
-	configureWebSocketConn(conn, s.wsSecurityConfig)
-
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := s.Store()
 
@@ -114,6 +125,14 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// Create client-scoped logger with session and client context
 	clientLogger := logging.WithClient(s.logger, clientID, sessionID)
 
+	// Apply security settings, using a higher message size limit for localhost connections.
+	// The macOS app sends large prompts over localhost; external connections keep the
+	// smaller limit (default: 64KB) to bound the attack surface for remote callers.
+	wsConfig := s.wsSecurityConfig
+	if !IsExternalConnection(r) && wsConfig.LocalMaxMessageSize > 0 {
+		wsConfig.MaxMessageSize = wsConfig.LocalMaxMessageSize
+	}
+
 	// Create shared WebSocket connection wrapper.
 	// Use a larger send buffer (1024) for session connections because high-traffic
 	// sessions can generate thousands of events. Combined with graceful backpressure
@@ -121,7 +140,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// messages), this prevents sequence gaps that confuse the frontend.
 	wsConn := NewWSConn(WSConnConfig{
 		Conn:     conn,
-		Config:   s.wsSecurityConfig,
+		Config:   wsConfig,
 		Logger:   clientLogger,
 		ClientIP: clientIP,
 		Tracker:  s.connectionTracker,
@@ -663,11 +682,14 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 			return
 		}
 
-		// Use MaxSeq (highest persisted seq) not EventCount (number of events)
-		// because seq numbers can be sparse due to coalescing
+		// Use the higher of MaxSeq (highest persisted streaming seq) and EventCount
+		// (total events, including user prompts recorded via AppendEvent).
+		// AppendEvent assigns seq = EventCount (sequential), so EventCount is always a
+		// valid lower-bound on the highest persisted seq. MaxSeq tracks coalesced
+		// streaming seq which can exceed EventCount. Taking the max of both gives the
+		// true highest persisted seq regardless of which persistence path was used.
 		serverMaxSeq := meta.MaxSeq
-		if serverMaxSeq == 0 {
-			// Fallback for sessions created before MaxSeq was tracked
+		if int64(meta.EventCount) > serverMaxSeq {
 			serverMaxSeq = int64(meta.EventCount)
 		}
 
@@ -761,6 +783,84 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		// Check if there are more older events
 		if firstSeq > 1 {
 			hasMore = true
+		}
+	}
+
+	if hasMore && len(events) > 0 && !hasRenderableConversationEvent(events) {
+		searchBefore := firstSeq
+		extraLoaded := 0
+		for searchBefore > 1 && !hasRenderableConversationEvent(events) && extraLoaded < 2000 {
+			remaining := int(searchBefore - 1)
+			if remaining <= 0 {
+				break
+			}
+
+			batchSize := limit
+			if batchSize > remaining {
+				batchSize = remaining
+			}
+
+			olderEvents, readErr := c.store.ReadEventsLast(c.sessionID, batchSize, searchBefore)
+			if readErr != nil || len(olderEvents) == 0 {
+				break
+			}
+
+			events = append(olderEvents, events...)
+			extraLoaded += len(olderEvents)
+			firstSeq = olderEvents[0].Seq
+			searchBefore = firstSeq
+			hasMore = firstSeq > 1
+		}
+	}
+
+	// Guard against WebSocket 1009 "Message Too Large" errors.
+	//
+	// WKWebView (macOS / iOS) enforces a hard WebSocket receive-message size limit
+	// (~1 MB by default). Sessions with many large agent responses (code blocks,
+	// long explanations) can produce events_loaded payloads of several megabytes,
+	// which causes the client to close the connection with close code 1009.
+	// This creates a permanent failure loop: every reconnect triggers another
+	// initial load → another 1009 → the user's pending prompt is permanently lost.
+	//
+	// Fix: for non-prepend loads (initial load and sync fallback), marshal the
+	// events slice and, if the payload exceeds the limit, drop the oldest events
+	// one at a time until it fits. Dropped events remain accessible through the
+	// standard "load more" (before_seq) pagination mechanism; has_more is set to
+	// true so the client knows to offer that control.
+	//
+	// 512 KB keeps us comfortably below the 1 MB WKWebView limit even after the
+	// JSON envelope overhead (has_more, first_seq, last_seq, max_seq, …) is added.
+	const maxEventsLoadedBytes = 512 * 1024
+	if !isPrepend && len(events) > 1 {
+		payloadJSON, payloadErr := json.Marshal(events)
+		if payloadErr == nil && len(payloadJSON) > maxEventsLoadedBytes {
+			originalCount := len(events)
+			originalBytes := len(payloadJSON)
+			for len(events) > 1 {
+				events = events[1:] // drop oldest — still reachable via before_seq
+				hasMore = true
+				payloadJSON, payloadErr = json.Marshal(events)
+				if payloadErr != nil || len(payloadJSON) <= maxEventsLoadedBytes {
+					break
+				}
+			}
+			// Recompute firstSeq after trimming (lastSeq is unchanged).
+			if len(events) > 0 {
+				firstSeq = events[0].Seq
+			}
+			if c.logger != nil {
+				c.logger.Warn("events_loaded_payload_trimmed",
+					"session_id", c.sessionID,
+					"client_id", c.clientID,
+					"original_event_count", originalCount,
+					"original_payload_bytes", originalBytes,
+					"trimmed_event_count", len(events),
+					"trimmed_payload_bytes", len(payloadJSON),
+					"max_payload_bytes", maxEventsLoadedBytes,
+					"new_first_seq", firstSeq,
+					"last_seq", lastSeq,
+					"has_more", hasMore)
+			}
 		}
 	}
 
@@ -862,6 +962,20 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 					// Mark immediately to prevent concurrent checks for the same workspace.
 					c.server.sessionManager.MarkMCPChecked(workspaceUUID)
 					go c.triggerMCPAvailabilityCheck(workspaceUUID)
+				}
+				// Check if MCP tools have been fetched for this workspace
+				if !c.server.sessionManager.IsMCPToolsFetched(workspaceUUID) {
+					c.server.sessionManager.MarkMCPToolsFetched(workspaceUUID)
+					go c.triggerMCPToolsFetch(workspaceUUID)
+				} else if c.server.auxiliaryManager != nil && c.server.eventsManager != nil {
+					// Tools already fetched for this workspace — broadcast cached result
+					// via the global events WebSocket (where the frontend handler lives).
+					if cached, ok := c.server.auxiliaryManager.GetCachedMCPTools(workspaceUUID); ok && len(cached) > 0 {
+						c.server.eventsManager.Broadcast(WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+							"workspace_uuid": workspaceUUID,
+							"tools":          cached,
+						})
+					}
 				}
 			}
 		}
@@ -1150,6 +1264,10 @@ func (c *SessionWSClient) triggerMCPAvailabilityCheck(workspaceUUID string) {
 				"workspace_uuid", workspaceUUID,
 				"error", err)
 		}
+		// Clear the checked flag so the next client connection will retry.
+		if c.server != nil && c.server.sessionManager != nil {
+			c.server.sessionManager.ClearMCPChecked(workspaceUUID)
+		}
 		return
 	}
 
@@ -1169,7 +1287,72 @@ func (c *SessionWSClient) triggerMCPAvailabilityCheck(workspaceUUID string) {
 		if result.SuggestedInstructions != "" {
 			data["suggested_instructions"] = result.SuggestedInstructions
 		}
-		c.sendMessage(WSMsgTypeMCPToolsUnavailable, data)
+		// Broadcast via global events WebSocket (where the frontend handler lives).
+		if c.server != nil && c.server.eventsManager != nil {
+			c.server.eventsManager.Broadcast(WSMsgTypeMCPToolsUnavailable, data)
+		}
+	}
+}
+
+// triggerMCPToolsFetch asynchronously fetches the list of available MCP tools
+// for the given workspace. Should be called in a goroutine.
+// Called at most once per workspace per server lifetime (enforced by IsMCPToolsFetched/MarkMCPToolsFetched).
+// On success, sends mcp_tools_available to this client.
+func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
+	// Get auxiliary manager
+	if c.server == nil || c.server.auxiliaryManager == nil {
+		if c.logger != nil {
+			c.logger.Debug("mcp tools fetch: no auxiliary manager available",
+				"workspace_uuid", workspaceUUID)
+		}
+		return
+	}
+	auxMgr := c.server.auxiliaryManager
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if c.logger != nil {
+		c.logger.Debug("mcp tools fetch: starting",
+			"workspace_uuid", workspaceUUID)
+	}
+
+	tools, err := auxMgr.FetchMCPTools(ctx, workspaceUUID)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Debug("mcp tools fetch: failed",
+				"workspace_uuid", workspaceUUID,
+				"error", err)
+		}
+		// Clear the fetched flag so the next client connection will retry.
+		if c.server != nil && c.server.sessionManager != nil {
+			c.server.sessionManager.ClearMCPToolsFetched(workspaceUUID)
+		}
+		return
+	}
+
+	if c.logger != nil {
+		c.logger.Debug("mcp tools fetch: completed",
+			"workspace_uuid", workspaceUUID,
+			"tool_count", len(tools))
+	}
+
+	// If the agent returned an empty list, clear the fetched flag so the
+	// next client connection will retry (the agent may have misunderstood).
+	if len(tools) == 0 {
+		if c.server != nil && c.server.sessionManager != nil {
+			c.server.sessionManager.ClearMCPToolsFetched(workspaceUUID)
+		}
+	}
+
+	// Broadcast the tools list to ALL clients via the global events WebSocket.
+	// The frontend handler for mcp_tools_available is in the global events handler,
+	// not the per-session handler.
+	if c.server != nil && c.server.eventsManager != nil {
+		c.server.eventsManager.Broadcast(WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+			"workspace_uuid": workspaceUUID,
+			"tools":          tools,
+		})
 	}
 }
 
@@ -1608,11 +1791,9 @@ func (c *SessionWSClient) OnPromptComplete(eventCount int) {
 }
 
 // OnActionButtons is called when action buttons are extracted from the agent's response.
+// An empty slice is a valid "clear" signal and must be forwarded to all clients.
 func (c *SessionWSClient) OnActionButtons(buttons []ActionButton) {
 	c.logger.Debug("action_buttons: OnActionButtons called", "button_count", len(buttons))
-	if len(buttons) == 0 {
-		return
-	}
 	c.logger.Debug("action_buttons: sending to WebSocket",
 		"session_id", c.sessionID,
 		"button_count", len(buttons))
@@ -1741,6 +1922,8 @@ func (c *SessionWSClient) OnConfigOptionChanged(configID, value string) {
 // This notifies the WebSocket client that the session is no longer running,
 // preventing further prompts and allowing the UI to update accordingly.
 func (c *SessionWSClient) OnACPStopped(reason string) {
+	c.bgSession = nil
+
 	if c.logger != nil {
 		c.logger.Debug("ACP stopped notification sent to client",
 			"session_id", c.sessionID,

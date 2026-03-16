@@ -3319,6 +3319,7 @@ func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 // MCP tool requests with this ACP session. This enables session-aware tool behavior
 // even when the MCP client doesn't know which session it's operating in.
 // Note: requestID here is a correlation ID, not to be confused with session_id.
+
 func (bs *BackgroundSession) onMittoToolCall(requestID string) {
 	if bs.IsClosed() {
 		return

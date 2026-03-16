@@ -94,6 +94,55 @@ func validateSuggestions(suggestions []FollowUpSuggestion) []FollowUpSuggestion 
 	return valid
 }
 
+// mcpToolsResponse represents the JSON object returned by the MCP tools fetch prompt.
+// The agent returns either {"tools": [...]} or {"error": "..."}.
+type mcpToolsResponse struct {
+	Tools []MCPToolInfo `json:"tools"`
+	Error string        `json:"error"`
+}
+
+// parseMCPToolsList parses the JSON response from the MCP tools fetch.
+// Accepts either a JSON object {"tools":[...], "error":"..."} or a bare JSON array [...].
+// Returns the tools list and any error message reported by the agent.
+func parseMCPToolsList(response string) ([]MCPToolInfo, string, error) {
+	response = strings.TrimSpace(response)
+
+	// Try parsing as a JSON object {"tools": [...], "error": "..."}
+	var obj mcpToolsResponse
+	if err := json.Unmarshal([]byte(response), &obj); err == nil && (len(obj.Tools) > 0 || obj.Error != "") {
+		return obj.Tools, obj.Error, nil
+	}
+
+	// Try to find a JSON object in the response (may have surrounding text)
+	start := strings.Index(response, "{")
+	end := strings.LastIndex(response, "}")
+	if start >= 0 && end > start {
+		jsonStr := response[start : end+1]
+		if err := json.Unmarshal([]byte(jsonStr), &obj); err == nil && (len(obj.Tools) > 0 || obj.Error != "") {
+			return obj.Tools, obj.Error, nil
+		}
+	}
+
+	// Fallback: try parsing as a bare JSON array (backward compatibility)
+	var tools []MCPToolInfo
+	if err := json.Unmarshal([]byte(response), &tools); err == nil {
+		return tools, "", nil
+	}
+
+	// Try to find a JSON array in the response
+	arrStart := strings.Index(response, "[")
+	arrEnd := strings.LastIndex(response, "]")
+	if arrStart >= 0 && arrEnd > arrStart {
+		jsonStr := response[arrStart : arrEnd+1]
+		if err := json.Unmarshal([]byte(jsonStr), &tools); err == nil {
+			return tools, "", nil
+		}
+	}
+
+	// Parsing failed
+	return nil, "", fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
+}
+
 // parseMCPAvailabilityResult parses the JSON response from the MCP availability check.
 // It handles cases where the response might have extra text around the JSON.
 func parseMCPAvailabilityResult(response string) (*MCPAvailabilityResult, error) {

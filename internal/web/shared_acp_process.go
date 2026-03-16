@@ -42,6 +42,9 @@ type SharedACPProcessConfig struct {
 	ACPCwd string
 	// ACPServer is the name of the ACP server (for logging).
 	ACPServer string
+	// WorkingDir is the workspace's project directory (e.g., /Users/.../myproject).
+	// Used as the cwd for auxiliary sessions so the agent discovers MCP servers.
+	WorkingDir string
 	// Runner is an optional restricted runner for sandboxed execution.
 	Runner *runner.Runner
 	// Logger for process-level logging.
@@ -675,6 +678,15 @@ func (p *SharedACPProcess) Capabilities() *acp.AgentCapabilities {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.capabilities
+}
+
+// WorkingDir returns the workspace's project directory.
+// Falls back to ACPCwd if WorkingDir is not set.
+func (p *SharedACPProcess) WorkingDir() string {
+	if p.config.WorkingDir != "" {
+		return p.config.WorkingDir
+	}
+	return p.config.ACPCwd
 }
 
 // Close terminates the ACP process and cleans up resources.

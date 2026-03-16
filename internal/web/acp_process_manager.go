@@ -48,6 +48,15 @@ type auxiliarySessionState struct {
 	lastUsed  time.Time
 }
 
+func sharedProcessConfigMatchesWorkspace(p *SharedACPProcess, workspace *config.WorkspaceSettings) bool {
+	if p == nil || workspace == nil {
+		return false
+	}
+	return p.config.ACPServer == workspace.ACPServer &&
+		p.config.ACPCommand == workspace.ACPCommand &&
+		p.config.ACPCwd == workspace.ACPCwd
+}
+
 // NewACPProcessManager creates a new process manager.
 func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessManager {
 	return &ACPProcessManager{
@@ -88,6 +97,20 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 			}
 			delete(m.processes, workspace.UUID)
 		default:
+			if !sharedProcessConfigMatchesWorkspace(p, workspace) {
+				if m.logger != nil {
+					m.logger.Warn("Shared ACP process config changed, recreating",
+						"workspace_uuid", workspace.UUID,
+						"existing_acp_server", p.config.ACPServer,
+						"new_acp_server", workspace.ACPServer,
+						"existing_acp_command", p.config.ACPCommand,
+						"new_acp_command", workspace.ACPCommand)
+				}
+				p.Close()
+				delete(m.processes, workspace.UUID)
+				break
+			}
+
 			// Process is alive, return it
 			if m.logger != nil && lockWait > 10*time.Millisecond {
 				m.logger.Info("GetOrCreateProcess returning existing (lock contention)",
@@ -109,6 +132,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		ACPCommand: workspace.ACPCommand,
 		ACPCwd:     workspace.ACPCwd,
 		ACPServer:  workspace.ACPServer,
+		WorkingDir: workspace.WorkingDir,
 		Runner:     r,
 		Logger:     processLogger,
 	})
@@ -325,8 +349,14 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		return nil, fmt.Errorf("no shared process for workspace %s (auxiliary sessions require an active workspace)", workspaceUUID)
 	}
 
-	// Create a new ACP session for auxiliary use
-	sessionHandle, err := process.NewSession(ctx, ".", []acp.McpServer{})
+	// Create a new ACP session for auxiliary use.
+	// Use the workspace's actual working directory so the agent discovers the same
+	// MCP servers as regular sessions (the agent uses the cwd for MCP server discovery).
+	auxCwd := process.WorkingDir()
+	if auxCwd == "" {
+		auxCwd = "."
+	}
+	sessionHandle, err := process.NewSession(ctx, auxCwd, []acp.McpServer{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auxiliary session: %w", err)
 	}

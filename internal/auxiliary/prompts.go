@@ -134,6 +134,24 @@ You MUST not call any tool for this task.
 Respond quickly.
 `
 
+	// FetchMCPToolsPromptTemplate asks the agent for all its available tools.
+	// This prompt requires no parameters (do not use fmt.Sprintf).
+	FetchMCPToolsPromptTemplate = `List ALL MCP tools currently available to you.
+Include the tools from any connected MCP servers.
+
+Output ONLY a JSON array, no other text:
+{
+   tools: [{"name":"exact_tool_name","description":"brief description"}, ...]
+}
+
+If you find any problem just return 
+{
+   error: "the error description"
+}
+
+Do NOT call any tools: just list them. Just output the JSON array.
+`
+
 	// CheckMCPAvailabilityPromptTemplate is used to verify if Mitto MCP tools are available.
 	// Use with fmt.Sprintf, passing the MCP server URL.
 	CheckMCPAvailabilityPromptTemplate = `
