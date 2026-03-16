@@ -122,6 +122,10 @@ type BackgroundSession struct {
 	// Used to cache plan state in SessionManager for restoration on conversation switch.
 	onPlanStateChanged func(sessionID string, entries []PlanEntry)
 
+	// onTitleGenerated is called when a title is auto-generated for this session.
+	// Used to broadcast session_renamed events to all clients.
+	onTitleGenerated func(sessionID, title string)
+
 	// Available slash commands from the agent
 	availableCommandsMu sync.RWMutex
 	availableCommands   []AvailableCommand
@@ -156,6 +160,11 @@ type BackgroundSession struct {
 	// When an MCP tool calls Prompt(), this holds the pending prompt until the user responds
 	activePromptMu sync.Mutex
 	activePrompt   *activeUIPrompt
+
+	// sharedProcess is set when this session uses workspace-scoped process sharing.
+	// When non-nil, this session does not own the OS process — it only owns a session
+	// slot on the shared process. nil = legacy per-session process ownership.
+	sharedProcess *SharedACPProcess
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.
@@ -207,6 +216,10 @@ type BackgroundSessionConfig struct {
 	// The configID identifies which option changed, and value is the new value.
 	OnConfigOptionChanged func(sessionID string, configID, value string)
 
+	// OnTitleGenerated is called when a title is auto-generated for this session.
+	// Used to broadcast session_renamed events to all connected clients.
+	OnTitleGenerated func(sessionID, title string)
+
 	// GlobalMCPServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	// If nil, per-session MCP server is used as fallback (legacy behavior).
@@ -243,6 +256,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
+		onTitleGenerated:        cfg.OnTitleGenerated,
 		acpCommand:              cfg.ACPCommand,          // Store for restart
 		acpCwd:                  cfg.ACPCwd,              // Store for restart
 		globalMcpServer:         cfg.GlobalMCPServer,     // Global MCP server for session registration
@@ -339,13 +353,24 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			"runner_restricted", isRestricted)
 	}
 
-	// Start ACP process (no ACP session ID for new sessions)
-	if err := bs.startACPProcess(cfg.ACPCommand, cfg.ACPCwd, cfg.WorkingDir, ""); err != nil {
-		cancel()
-		if bs.recorder != nil {
-			bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
+	// Use shared process if available, otherwise start a new per-session process.
+	if cfg.SharedProcess != nil {
+		if err := bs.startSharedACPSession(cfg.SharedProcess, cfg.WorkingDir); err != nil {
+			cancel()
+			if bs.recorder != nil {
+				bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
+			}
+			return nil, err
 		}
-		return nil, err
+	} else {
+		// Start ACP process (no ACP session ID for new sessions)
+		if err := bs.startACPProcess(cfg.ACPCommand, cfg.ACPCwd, cfg.WorkingDir, ""); err != nil {
+			cancel()
+			if bs.recorder != nil {
+				bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
+			}
+			return nil, err
+		}
 	}
 
 	// Store the ACP session ID in metadata for future resumption
@@ -399,6 +424,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onStreamingStateChanged: config.OnStreamingStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
+		onTitleGenerated:        config.OnTitleGenerated,
 		acpCommand:              config.ACPCommand,          // Store for restart
 		acpCwd:                  config.ACPCwd,              // Store for restart
 		globalMcpServer:         config.GlobalMCPServer,     // Global MCP server for session registration
@@ -461,13 +487,24 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			"runner_restricted", isRestricted)
 	}
 
-	// Start ACP process, passing the ACP session ID for potential resumption
-	if err := bs.startACPProcess(config.ACPCommand, config.ACPCwd, config.WorkingDir, config.ACPSessionID); err != nil {
-		cancel()
-		if bs.recorder != nil {
-			bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
+	// Use shared process if available, otherwise start a new per-session process.
+	if config.SharedProcess != nil {
+		if err := bs.resumeSharedACPSession(config.SharedProcess, config.WorkingDir, config.ACPSessionID); err != nil {
+			cancel()
+			if bs.recorder != nil {
+				bs.recorder.Suspend()
+			}
+			return nil, err
 		}
-		return nil, err
+	} else {
+		// Start ACP process, passing the ACP session ID for potential resumption
+		if err := bs.startACPProcess(config.ACPCommand, config.ACPCwd, config.WorkingDir, config.ACPSessionID); err != nil {
+			cancel()
+			if bs.recorder != nil {
+				bs.recorder.Suspend()
+			}
+			return nil, err
+		}
 	}
 
 	// If we created a new ACP session (different from the one we tried to resume),
@@ -809,7 +846,7 @@ func (bs *BackgroundSession) Close(reason string) {
 		// recording multiple session_end events when the session is resumed
 		// after server restart. The session can be resumed later, so we
 		// don't want to mark it as permanently ended.
-		if reason == "server_shutdown" {
+		if reason == "server_shutdown" || reason == "acp_server_reconfigured" {
 			bs.recorder.Suspend()
 		} else {
 			// Build session end data with context about the session state
@@ -932,7 +969,18 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 
 // killACPProcess terminates the ACP process and cleans up resources.
 // It handles both direct execution (acpCmd) and runner-based execution.
+// In shared-process mode, it only unregisters this session from the MultiplexClient —
+// it does NOT kill the shared OS process, which is owned by the ACPProcessManager.
 func (bs *BackgroundSession) killACPProcess() {
+	if bs.sharedProcess != nil {
+		// Shared mode: we don't own the OS process.
+		// Just unregister this session so it stops receiving events.
+		if bs.acpID != "" {
+			bs.sharedProcess.UnregisterSession(acp.SessionId(bs.acpID))
+		}
+		return
+	}
+
 	// Kill the entire process group to ensure all child processes are terminated.
 	// Without this, child processes (e.g., "claude" spawned by "node claude-code-acp")
 	// survive and become orphans.
@@ -1119,11 +1167,10 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 	}
 
 	// Unregister from global MCP server before killing the old process.
-	// Without this, the re-registration during startACPProcess() fails with
-	// "session already registered" because the old registration is still present.
+	// Without this, the re-registration fails with "session already registered".
 	bs.stopSessionMcpServer()
 
-	// Kill the old process and clean up
+	// Kill the old process (per-session) or unregister from MultiplexClient (shared).
 	bs.killACPProcess()
 
 	// Close the old ACP client if it exists
@@ -1138,8 +1185,24 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 	// Record this restart attempt with reason
 	bs.recordRestart(reason)
 
-	// Start a new ACP process, attempting to resume the session
-	err := bs.startACPProcess(bs.acpCommand, bs.acpCwd, bs.workingDir, bs.acpID)
+	var err error
+	if bs.sharedProcess != nil {
+		// Shared mode: restart the shared OS process, then create a new session on it.
+		// Note: multiple sessions may call Restart() concurrently; SharedACPProcess.canRestart()
+		// is rate-limited so only one restart happens, others get the already-restarted process.
+		if restartErr := bs.sharedProcess.Restart(); restartErr != nil {
+			// Log but don't fail — the process may have been restarted by another session.
+			if bs.logger != nil {
+				bs.logger.Warn("Shared ACP process restart returned error, attempting new session anyway",
+					"session_id", bs.persistedID,
+					"error", restartErr)
+			}
+		}
+		err = bs.resumeSharedACPSession(bs.sharedProcess, bs.workingDir, bs.acpID)
+	} else {
+		// Per-session mode: start a new ACP process, attempting to resume the session.
+		err = bs.startACPProcess(bs.acpCommand, bs.acpCwd, bs.workingDir, bs.acpID)
+	}
 	if err != nil {
 		if bs.logger != nil {
 			logAttrs := []any{
@@ -1577,39 +1640,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Create web client with callbacks that route to attached client or persist.
 	// BackgroundSession implements SeqProvider, so seq is assigned at ACP receive time.
-	webClientConfig := WebClientConfig{
-		AutoApprove:          bs.autoApprove,
-		SeqProvider:          bs, // BackgroundSession implements SeqProvider
-		Logger:               bs.logger,
-		OnAgentMessage:       bs.onAgentMessage,
-		OnAgentThought:       bs.onAgentThought,
-		OnToolCall:           bs.onToolCall,
-		OnToolUpdate:         bs.onToolUpdate,
-		OnPlan:               bs.onPlan,
-		OnFileWrite:          bs.onFileWrite,
-		OnFileRead:           bs.onFileRead,
-		OnPermission:         bs.onPermission,
-		OnAvailableCommands:  bs.onAvailableCommands,
-		OnCurrentModeChanged: bs.onCurrentModeChanged,
-		OnMittoToolCall:      bs.onMittoToolCall,
-	}
-
-	// Configure file linking if enabled
-	// Web UI always uses HTTP links (file:// URLs are blocked by browsers for security)
-	// Note: IsEnabled() and IsAllowOutsideWorkspace() are safe to call on nil receivers
-	// and return sensible defaults (enabled=true, allowOutsideWorkspace=false)
-	if bs.fileLinksConfig.IsEnabled() {
-		webClientConfig.FileLinksConfig = &conversion.FileLinkerConfig{
-			WorkingDir:            bs.workingDir,
-			WorkspaceUUID:         bs.workspaceUUID, // Use UUID instead of path for security
-			Enabled:               true,
-			AllowOutsideWorkspace: bs.fileLinksConfig.IsAllowOutsideWorkspace(),
-			UseHTTPLinks:          true,         // Web UI requires HTTP links
-			APIPrefix:             bs.apiPrefix, // URL prefix for file server endpoint
-		}
-	}
-
-	bs.acpClient = NewWebClient(webClientConfig)
+	bs.acpClient = NewWebClient(bs.buildWebClientConfig())
 
 	// Wrap stdout with a JSON line filter to discard non-JSON output
 	// (e.g., ANSI escape sequences, terminal UI from crashed agents)
@@ -1767,6 +1798,186 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	return "", nil
 }
 
+// buildWebClientConfig assembles the WebClientConfig from this session's callbacks and settings.
+// Used by both the per-session and shared-process paths to create a WebClient.
+func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
+	cfg := WebClientConfig{
+		AutoApprove:          bs.autoApprove,
+		SeqProvider:          bs,
+		Logger:               bs.logger,
+		OnAgentMessage:       bs.onAgentMessage,
+		OnAgentThought:       bs.onAgentThought,
+		OnToolCall:           bs.onToolCall,
+		OnToolUpdate:         bs.onToolUpdate,
+		OnPlan:               bs.onPlan,
+		OnFileWrite:          bs.onFileWrite,
+		OnFileRead:           bs.onFileRead,
+		OnPermission:         bs.onPermission,
+		OnAvailableCommands:  bs.onAvailableCommands,
+		OnCurrentModeChanged: bs.onCurrentModeChanged,
+		OnMittoToolCall:      bs.onMittoToolCall,
+	}
+	if bs.fileLinksConfig.IsEnabled() {
+		cfg.FileLinksConfig = &conversion.FileLinkerConfig{
+			WorkingDir:            bs.workingDir,
+			WorkspaceUUID:         bs.workspaceUUID,
+			Enabled:               true,
+			AllowOutsideWorkspace: bs.fileLinksConfig.IsAllowOutsideWorkspace(),
+			UseHTTPLinks:          true,
+			APIPrefix:             bs.apiPrefix,
+		}
+	}
+	return cfg
+}
+
+// startSharedACPSession sets up this BackgroundSession to use a session on the
+// given shared ACP process instead of starting its own OS process.
+// The session is registered with the shared process's MultiplexClient so that it
+// receives only its own events.
+func (bs *BackgroundSession) startSharedACPSession(sharedProcess *SharedACPProcess, workingDir string) error {
+	bs.sharedProcess = sharedProcess
+
+	// Register with global MCP server and get the (empty) mcpServers list.
+	var caps acp.AgentCapabilities
+	if sharedCaps := sharedProcess.Capabilities(); sharedCaps != nil {
+		caps = *sharedCaps
+	}
+	mcpServers := bs.startSessionMcpServer(bs.store, caps)
+
+	// Create WebClient for stream processing (same callbacks as per-session path).
+	bs.acpClient = NewWebClient(bs.buildWebClientConfig())
+
+	// Create a session on the shared process.
+	handle, err := sharedProcess.NewSession(bs.ctx, workingDir, mcpServers)
+	if err != nil {
+		bs.stopSessionMcpServer()
+		bs.acpClient.Close()
+		bs.acpClient = nil
+		bs.sharedProcess = nil
+		return fmt.Errorf("failed to create session on shared process: %w", err)
+	}
+
+	// Register this session's WebClient callbacks with the shared MultiplexClient.
+	sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
+		OnSessionUpdate:       bs.acpClient.SessionUpdate,
+		OnReadTextFile:        bs.acpClient.ReadTextFile,
+		OnWriteTextFile:       bs.acpClient.WriteTextFile,
+		OnRequestPermission:   bs.acpClient.RequestPermission,
+		OnCreateTerminal:      bs.acpClient.CreateTerminal,
+		OnTerminalOutput:      bs.acpClient.TerminalOutput,
+		OnReleaseTerminal:     bs.acpClient.ReleaseTerminal,
+		OnWaitForTerminalExit: bs.acpClient.WaitForTerminalExit,
+		OnKillTerminalCommand: bs.acpClient.KillTerminalCommand,
+	})
+
+	bs.acpID = handle.SessionID
+	bs.agentSupportsImages = caps.PromptCapabilities.Image
+	bs.setSessionModes(handle.Modes)
+
+	// Bridge the shared process's death channel to bs.acpProcessDone.
+	// bs.acpProcessDone is a bidirectional chan; sharedProcess.ProcessDone() is receive-only.
+	// We bridge them with a goroutine so all existing select sites work unchanged.
+	done := make(chan struct{})
+	bs.acpProcessDone = done
+	bs.acpProcessDoneOnce = sync.Once{}
+	sharedDone := sharedProcess.ProcessDone()
+	go func() {
+		select {
+		case <-sharedDone:
+			bs.acpProcessDoneOnce.Do(func() { close(done) })
+		case <-bs.ctx.Done():
+		}
+	}()
+
+	if bs.logger != nil {
+		bs.logger.Info("Created ACP session on shared process",
+			"session_id", bs.persistedID,
+			"acp_session_id", bs.acpID,
+			"supports_images", bs.agentSupportsImages)
+	}
+	return nil
+}
+
+// resumeSharedACPSession sets up this BackgroundSession to use a session on the
+// given shared ACP process, trying to resume the specified ACP session ID first.
+// Falls back to creating a new session if resumption fails.
+func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProcess, workingDir, acpSessionID string) error {
+	bs.sharedProcess = sharedProcess
+
+	var caps acp.AgentCapabilities
+	if sharedCaps := sharedProcess.Capabilities(); sharedCaps != nil {
+		caps = *sharedCaps
+	}
+	mcpServers := bs.startSessionMcpServer(bs.store, caps)
+
+	bs.acpClient = NewWebClient(bs.buildWebClientConfig())
+
+	var handle *SessionHandle
+	var err error
+
+	// Try to resume an existing session if we have an ID and the agent supports it.
+	if acpSessionID != "" && caps.LoadSession {
+		handle, err = sharedProcess.LoadSession(bs.ctx, acpSessionID, workingDir, mcpServers)
+		if err != nil {
+			if bs.logger != nil {
+				bs.logger.Warn("Failed to load ACP session on shared process, creating new",
+					"acp_session_id", acpSessionID,
+					"error", err)
+			}
+		}
+	}
+
+	// Fall back to creating a new session.
+	if handle == nil {
+		handle, err = sharedProcess.NewSession(bs.ctx, workingDir, mcpServers)
+		if err != nil {
+			bs.stopSessionMcpServer()
+			bs.acpClient.Close()
+			bs.acpClient = nil
+			bs.sharedProcess = nil
+			return fmt.Errorf("failed to create session on shared process: %w", err)
+		}
+	}
+
+	sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
+		OnSessionUpdate:       bs.acpClient.SessionUpdate,
+		OnReadTextFile:        bs.acpClient.ReadTextFile,
+		OnWriteTextFile:       bs.acpClient.WriteTextFile,
+		OnRequestPermission:   bs.acpClient.RequestPermission,
+		OnCreateTerminal:      bs.acpClient.CreateTerminal,
+		OnTerminalOutput:      bs.acpClient.TerminalOutput,
+		OnReleaseTerminal:     bs.acpClient.ReleaseTerminal,
+		OnWaitForTerminalExit: bs.acpClient.WaitForTerminalExit,
+		OnKillTerminalCommand: bs.acpClient.KillTerminalCommand,
+	})
+
+	bs.acpID = handle.SessionID
+	bs.agentSupportsImages = caps.PromptCapabilities.Image
+	bs.setSessionModes(handle.Modes)
+
+	// Bridge the shared process's death channel to bs.acpProcessDone.
+	done := make(chan struct{})
+	bs.acpProcessDone = done
+	bs.acpProcessDoneOnce = sync.Once{}
+	sharedDone := sharedProcess.ProcessDone()
+	go func() {
+		select {
+		case <-sharedDone:
+			bs.acpProcessDoneOnce.Do(func() { close(done) })
+		case <-bs.ctx.Done():
+		}
+	}()
+
+	if bs.logger != nil {
+		bs.logger.Info("Resumed ACP session on shared process",
+			"session_id", bs.persistedID,
+			"acp_session_id", bs.acpID,
+			"requested_acp_session_id", acpSessionID,
+			"supports_images", bs.agentSupportsImages)
+	}
+	return nil
+}
+
 // logSessionModes logs the session modes/config options at DEBUG level.
 // This helps with debugging which modes are available from the ACP server.
 func (bs *BackgroundSession) logSessionModes(modes *acp.SessionModeState) {
@@ -1855,6 +2066,33 @@ func (bs *BackgroundSession) NeedsTitle() bool {
 	return meta.Name == ""
 }
 
+// retryTitleGenerationIfNeeded checks if the session still needs a title and
+// triggers async title generation. This is called after prompt completion to catch:
+// (1) failed initial title generation attempts (e.g., context deadline exceeded)
+// (2) prompts that arrived via paths that don't trigger title generation
+//
+//	(queue processing, MCP send_prompt, periodic prompts)
+func (bs *BackgroundSession) retryTitleGenerationIfNeeded(message string) {
+	if !bs.NeedsTitle() {
+		return
+	}
+
+	if bs.logger != nil {
+		bs.logger.Info("Session still has no title after prompt completion, retrying title generation",
+			"session_id", bs.persistedID)
+	}
+
+	GenerateAndSetTitle(TitleGenerationConfig{
+		Store:            bs.store,
+		SessionID:        bs.persistedID,
+		Message:          message,
+		Logger:           bs.logger,
+		WorkspaceUUID:    bs.workspaceUUID,
+		AuxiliaryManager: bs.auxiliaryManager,
+		OnTitleGenerated: bs.onTitleGenerated,
+	})
+}
+
 // GetWorkspaceUUID returns the workspace UUID associated with this session.
 func (bs *BackgroundSession) GetWorkspaceUUID() string {
 	return bs.workspaceUUID
@@ -1867,10 +2105,11 @@ func (bs *BackgroundSession) GetAuxiliaryManager() *auxiliary.WorkspaceAuxiliary
 
 // PromptMeta contains optional metadata about the prompt source.
 type PromptMeta struct {
-	SenderID string   // Unique identifier of the sending client (for broadcast deduplication)
-	PromptID string   // Client-generated prompt ID (for delivery confirmation)
-	ImageIDs []string // IDs of images attached to the prompt
-	FileIDs  []string // IDs of files attached to the prompt
+	SenderID   string          // Unique identifier of the sending client (for broadcast deduplication)
+	PromptID   string          // Client-generated prompt ID (for delivery confirmation)
+	ImageIDs   []string        // IDs of images attached to the prompt
+	FileIDs    []string        // IDs of files attached to the prompt
+	OnComplete func(err error) // Called when the async prompt goroutine finishes (nil = success)
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -1901,7 +2140,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	if bs.IsClosed() {
 		return &sessionError{"session is closed"}
 	}
-	if bs.acpConn == nil {
+	if bs.acpConn == nil && bs.sharedProcess == nil {
 		return &sessionError{"no ACP connection"}
 	}
 
@@ -1918,6 +2157,13 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				acpDead = true
 			default:
 				// Connection still alive
+			}
+		} else if bs.sharedProcess != nil {
+			select {
+			case <-bs.sharedProcess.Done():
+				acpDead = true
+			default:
+				// Shared connection still alive
 			}
 		} else {
 			acpDead = true // No connection at all
@@ -2252,11 +2498,17 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		// The acpProcessDone channel provides faster detection than Done() because it
 		// uses OS-level process liveness checks (signal 0) rather than waiting for
 		// pipe EOF to propagate through the JSON-RPC transport layer.
+		processDoneCh := bs.acpProcessDone // capture for goroutine
+		var connDoneCh <-chan struct{}
 		if bs.acpConn != nil {
-			processDoneCh := bs.acpProcessDone // capture for goroutine
+			connDoneCh = bs.acpConn.Done()
+		} else if bs.sharedProcess != nil {
+			connDoneCh = bs.sharedProcess.Done()
+		}
+		if connDoneCh != nil {
 			go func() {
 				select {
-				case <-bs.acpConn.Done():
+				case <-connDoneCh:
 					if bs.logger != nil {
 						bs.logger.Warn("ACP connection closed during prompt, cancelling",
 							"session_id", bs.persistedID)
@@ -2274,10 +2526,16 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			}()
 		}
 
-		promptResp, err := bs.acpConn.Prompt(promptCtx, acp.PromptRequest{
-			SessionId: acp.SessionId(bs.acpID),
-			Prompt:    finalBlocks,
-		})
+		var promptResp acp.PromptResponse
+		var err error
+		if bs.sharedProcess != nil {
+			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(bs.acpID), finalBlocks)
+		} else {
+			promptResp, err = bs.acpConn.Prompt(promptCtx, acp.PromptRequest{
+				SessionId: acp.SessionId(bs.acpID),
+				Prompt:    finalBlocks,
+			})
+		}
 
 		// Mark prompt as complete BEFORE any further processing
 		// This must happen before processNextQueuedMessage so the next message can be sent
@@ -2347,6 +2605,12 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					acpDead = true
 				default:
 				}
+			} else if bs.sharedProcess != nil {
+				select {
+				case <-bs.sharedProcess.Done():
+					acpDead = true
+				default:
+				}
 			}
 			if !acpDead && bs.acpProcessDone != nil {
 				select {
@@ -2402,6 +2666,12 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 			// Process next queued message if queue processing is enabled
 			bs.processNextQueuedMessage()
 
+			// Retry title generation if session still has no title.
+			// This catches failed initial attempts (e.g. context deadline exceeded)
+			// and prompts that arrived via paths that don't trigger title generation
+			// (queue, MCP send_prompt, periodic).
+			bs.retryTitleGenerationIfNeeded(message)
+
 			// Async follow-up analysis (non-blocking)
 			// This runs after prompt_complete so the user sees the response immediately
 			// Note: 'message' is captured from the outer function scope (the user's prompt)
@@ -2424,6 +2694,13 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					}
 				}
 			}
+		}
+
+		// Invoke OnComplete callback if set.
+		// Called after all observers have been notified and state is consistent,
+		// so the caller can accurately track the final outcome (nil = success, non-nil = failure).
+		if meta.OnComplete != nil {
+			meta.OnComplete(err)
 		}
 	}()
 
@@ -2699,6 +2976,9 @@ func (bs *BackgroundSession) Cancel() error {
 	}
 
 	// Send cancel notification to ACP agent (best effort)
+	if bs.sharedProcess != nil {
+		return bs.sharedProcess.Cancel(bs.ctx, acp.SessionId(bs.acpID))
+	}
 	if bs.acpConn == nil {
 		return nil
 	}
@@ -3474,7 +3754,7 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 		return fmt.Errorf("session is closed")
 	}
 
-	if bs.acpConn == nil {
+	if bs.acpConn == nil && bs.sharedProcess == nil {
 		return fmt.Errorf("no ACP connection")
 	}
 
@@ -3508,10 +3788,15 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 	// Determine how to set the value based on the category and API availability
 	if found.Category == ConfigOptionCategoryMode && bs.usesLegacyModes {
 		// Use legacy SetSessionMode API
-		_, err := bs.acpConn.SetSessionMode(ctx, acp.SetSessionModeRequest{
-			SessionId: acp.SessionId(bs.acpID),
-			ModeId:    acp.SessionModeId(value),
-		})
+		var err error
+		if bs.sharedProcess != nil {
+			err = bs.sharedProcess.SetSessionMode(ctx, acp.SessionId(bs.acpID), value)
+		} else {
+			_, err = bs.acpConn.SetSessionMode(ctx, acp.SetSessionModeRequest{
+				SessionId: acp.SessionId(bs.acpID),
+				ModeId:    acp.SessionModeId(value),
+			})
+		}
 		if err != nil {
 			if bs.logger != nil {
 				bs.logger.Error("Failed to set session mode",

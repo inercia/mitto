@@ -35,14 +35,21 @@ func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	return meta.Name == ""
 }
 
+const (
+	// titleMaxRetries is the maximum number of retry attempts for title generation.
+	titleMaxRetries = 2
+	// titleRetryBaseDelay is the initial delay between retry attempts.
+	titleRetryBaseDelay = 3 * time.Second
+	// titlePerAttemptTimeout is the timeout for each individual title generation attempt.
+	titlePerAttemptTimeout = 30 * time.Second
+)
+
 // GenerateAndSetTitle generates a title for a session using the workspace-scoped auxiliary session.
 // This runs asynchronously and doesn't block the caller.
+// It retries up to titleMaxRetries times with exponential backoff on transient failures.
 // The OnTitleGenerated callback is called when the title is successfully generated and saved.
 func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		if cfg.WorkspaceUUID == "" {
 			if cfg.Logger != nil {
 				cfg.Logger.Warn("Cannot generate title: session has no workspace",
@@ -59,13 +66,53 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			return
 		}
 
-		title, err := cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
-		if err != nil {
-			if cfg.Logger != nil {
-				cfg.Logger.Error("Failed to generate title",
-					"error", err,
+		var title string
+		var lastErr error
+		for attempt := 0; attempt <= titleMaxRetries; attempt++ {
+			if attempt > 0 {
+				// Check if title was set by another path while we were retrying
+				if !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
+					if cfg.Logger != nil {
+						cfg.Logger.Debug("Title already set during retry, skipping",
+							"session_id", cfg.SessionID,
+							"attempt", attempt)
+					}
+					return
+				}
+
+				delay := titleRetryBaseDelay * time.Duration(1<<(attempt-1)) // exponential: 3s, 6s
+				if cfg.Logger != nil {
+					cfg.Logger.Info("Retrying title generation",
+						"session_id", cfg.SessionID,
+						"attempt", attempt+1,
+						"delay", delay)
+				}
+				time.Sleep(delay)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), titlePerAttemptTimeout)
+			title, lastErr = cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
+			cancel()
+
+			if lastErr == nil && title != "" {
+				break
+			}
+			if lastErr != nil && cfg.Logger != nil {
+				cfg.Logger.Warn("Title generation attempt failed",
+					"error", lastErr,
 					"session_id", cfg.SessionID,
-					"workspace_uuid", cfg.WorkspaceUUID)
+					"attempt", attempt+1,
+					"max_attempts", titleMaxRetries+1)
+			}
+		}
+
+		if lastErr != nil {
+			if cfg.Logger != nil {
+				cfg.Logger.Error("Failed to generate title after all retries",
+					"error", lastErr,
+					"session_id", cfg.SessionID,
+					"workspace_uuid", cfg.WorkspaceUUID,
+					"attempts", titleMaxRetries+1)
 			}
 			return
 		}
