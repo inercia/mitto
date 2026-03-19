@@ -61,6 +61,11 @@ type SessionWSClient struct {
 	// are sent via observer callbacks before the client has loaded historical events.
 	initialLoadDone bool
 	initialLoadMu   sync.Mutex
+
+	// Guard against concurrent handleLoadEvents goroutines. TryLock is used
+	// so that a second load_events arriving while one is in-flight is silently
+	// dropped (the client will get the results from the first one).
+	loadEventsMu sync.Mutex
 }
 
 func hasRenderableConversationEvent(events []session.Event) bool {
@@ -468,7 +473,7 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handleLoadEvents(data.Limit, data.BeforeSeq, data.AfterSeq)
+		go c.handleLoadEventsAsync(data.Limit, data.BeforeSeq, data.AfterSeq)
 
 	case WSMsgTypeKeepalive:
 		var data struct {
@@ -616,7 +621,7 @@ func (c *SessionWSClient) handleSync(afterSeq int64) {
 		return
 	}
 
-	events, err := c.store.ReadEventsFrom(c.sessionID, afterSeq)
+	events, err := c.store.ReadEventsFrom(c.sessionID, afterSeq, 0)
 	if err != nil {
 		c.sendError("Failed to read session events: " + err.Error())
 		return
@@ -648,6 +653,29 @@ func (c *SessionWSClient) handleSync(afterSeq int64) {
 //
 // The server tracks lastSentSeq to prevent sending duplicates. After loading events,
 // lastSentSeq is updated to the highest seq in the response.
+
+// handleLoadEventsAsync wraps handleLoadEvents with a TryLock guard to prevent
+// concurrent executions. If another load is already in progress, this call is
+// silently dropped — the client will receive the results from the in-flight load.
+// This is safe because:
+// - c.store has its own sync.RWMutex for concurrent reads
+// - c.seqMu protects lastSentSeq
+// - c.initialLoadMu protects initialLoadDone and AddObserver
+// - c.sendMessage writes to a buffered channel (thread-safe)
+func (c *SessionWSClient) handleLoadEventsAsync(limit int, beforeSeq, afterSeq int64) {
+	if !c.loadEventsMu.TryLock() {
+		if c.logger != nil {
+			c.logger.Debug("load_events_skipped_concurrent",
+				"session_id", c.sessionID,
+				"client_id", c.clientID,
+				"reason", "another load_events is already in progress")
+		}
+		return
+	}
+	defer c.loadEventsMu.Unlock()
+	c.handleLoadEvents(limit, beforeSeq, afterSeq)
+}
+
 func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64) {
 	if c.store == nil {
 		c.sendError("Session store not available")
@@ -723,7 +751,7 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 			}
 			c.seqMu.Unlock()
 
-			events, err = c.store.ReadEventsFrom(c.sessionID, afterSeq)
+			events, err = c.store.ReadEventsFrom(c.sessionID, afterSeq, 0)
 			isPrepend = false
 
 			// Log sync request for debugging keepalive sync issues
@@ -1002,7 +1030,7 @@ func (c *SessionWSClient) syncMissedEventsDuringRegistration(lastLoadedSeq int64
 	}
 
 	// Read any events that were persisted after our initial load
-	events, err := c.store.ReadEventsFrom(c.sessionID, lastLoadedSeq)
+	events, err := c.store.ReadEventsFrom(c.sessionID, lastLoadedSeq, 0)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Debug("Failed to read missed events during registration",
