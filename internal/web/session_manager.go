@@ -122,6 +122,10 @@ type SessionManager struct {
 	// mcpCheckedWorkspaces tracks which workspaces have had MCP availability checked.
 	mcpCheckedWorkspaces   map[string]bool
 	mcpCheckedWorkspacesMu sync.RWMutex
+
+	// mcpToolsFetchedWorkspaces tracks which workspaces have had MCP tools fetched.
+	mcpToolsFetchedWorkspaces   map[string]bool
+	mcpToolsFetchedWorkspacesMu sync.RWMutex
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -142,7 +146,8 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		autoApprove:          autoApprove,
 		workspaceRCCache:     config.NewWorkspaceRCCache(30 * time.Second),
 		planState:            make(map[string][]PlanEntry),
-		mcpCheckedWorkspaces: make(map[string]bool),
+		mcpCheckedWorkspaces:      make(map[string]bool),
+		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
 }
 
@@ -178,7 +183,8 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		workspaceRCCache:     config.NewWorkspaceRCCache(30 * time.Second),
 		apiPrefix:            opts.APIPrefix,
 		planState:            make(map[string][]PlanEntry),
-		mcpCheckedWorkspaces: make(map[string]bool),
+		mcpCheckedWorkspaces:      make(map[string]bool),
+		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
 
 	for i := range opts.Workspaces {
@@ -1405,18 +1411,34 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// waiting on this session's pending resume channel. It must be called exactly once
 	// on every code path below (success or failure).
 	//
-	// Order matters: set result fields first, then close the channel (which
-	// establishes the happens-before guarantee for readers), and only then
-	// remove the entry from pendingResumes. This prevents a TOCTOU window
-	// where a new goroutine could enter ResumeSession after the delete but
-	// before pr.done is closed.
+	// Order matters: store result fields first, then delete from pendingResumes
+	// (under sm.mu), and only then close the channel.
+	//
+	// Deleting before closing ensures that by the time any waiting goroutine wakes
+	// from <-pr.done, the pendingResumes entry is already gone:
+	//
+	//   Success path: the session is already in sm.sessions (registered before
+	//   signalDone is called), so any new ResumeSession call that arrives after
+	//   the delete will find it via GetSession and return early — no duplicate.
+	//
+	//   Error path: the session is NOT in sm.sessions.  Deleting before closing
+	//   means a new goroutine can start a fresh resume immediately (rather than
+	//   spinning on the already-closed channel until the delete races through),
+	//   and callers that were waiting on pr.done will retry and coalesce onto
+	//   that fresh pendingResumes entry.
+	//
+	// The previous "close then delete" ordering caused a spin-loop on the error
+	// path: waiting goroutines woke, saw the error, their callers re-entered
+	// ResumeSession, found the stale pendingResumes entry, read from the already-
+	// closed channel, saw the error again, and kept retrying until the delete
+	// finally raced through — creating a window for inconsistent state.
 	signalDone := func(result *BackgroundSession, err error) {
 		pr.bs = result
 		pr.err = err
-		close(pr.done)
 		sm.mu.Lock()
 		delete(sm.pendingResumes, sessionID)
 		sm.mu.Unlock()
+		close(pr.done)
 	}
 
 	// Load workspace-specific conversation config and merge with global.
@@ -1964,4 +1986,26 @@ func (sm *SessionManager) ClearMCPChecked(workspaceUUID string) {
 	sm.mcpCheckedWorkspacesMu.Lock()
 	delete(sm.mcpCheckedWorkspaces, workspaceUUID)
 	sm.mcpCheckedWorkspacesMu.Unlock()
+}
+
+
+// IsMCPToolsFetched returns whether MCP tools have been fetched for the given workspace.
+func (sm *SessionManager) IsMCPToolsFetched(workspaceUUID string) bool {
+	sm.mcpToolsFetchedWorkspacesMu.RLock()
+	defer sm.mcpToolsFetchedWorkspacesMu.RUnlock()
+	return sm.mcpToolsFetchedWorkspaces[workspaceUUID]
+}
+
+// MarkMCPToolsFetched marks that MCP tools have been fetched for the given workspace.
+func (sm *SessionManager) MarkMCPToolsFetched(workspaceUUID string) {
+	sm.mcpToolsFetchedWorkspacesMu.Lock()
+	defer sm.mcpToolsFetchedWorkspacesMu.Unlock()
+	sm.mcpToolsFetchedWorkspaces[workspaceUUID] = true
+}
+
+// ClearMCPToolsFetched clears the MCP tools fetched flag for the given workspace.
+func (sm *SessionManager) ClearMCPToolsFetched(workspaceUUID string) {
+	sm.mcpToolsFetchedWorkspacesMu.Lock()
+	defer sm.mcpToolsFetchedWorkspacesMu.Unlock()
+	delete(sm.mcpToolsFetchedWorkspaces, workspaceUUID)
 }
