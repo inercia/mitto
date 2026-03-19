@@ -136,8 +136,8 @@ func TestStore_ReadEventsFrom(t *testing.T) {
 		}
 	}
 
-	// Read all events (afterSeq = 0)
-	allEvents, err := store.ReadEventsFrom("test-session-sync", 0)
+	// Read all events (afterSeq = 0, limit = 0 = unlimited)
+	allEvents, err := store.ReadEventsFrom("test-session-sync", 0, 0)
 	if err != nil {
 		t.Fatalf("ReadEventsFrom(0) failed: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestStore_ReadEventsFrom(t *testing.T) {
 	}
 
 	// Read events after seq 2 (should get events 3, 4, 5)
-	partialEvents, err := store.ReadEventsFrom("test-session-sync", 2)
+	partialEvents, err := store.ReadEventsFrom("test-session-sync", 2, 0)
 	if err != nil {
 		t.Fatalf("ReadEventsFrom(2) failed: %v", err)
 	}
@@ -158,12 +158,27 @@ func TestStore_ReadEventsFrom(t *testing.T) {
 	}
 
 	// Read events after seq 5 (should get 0 events)
-	noEvents, err := store.ReadEventsFrom("test-session-sync", 5)
+	noEvents, err := store.ReadEventsFrom("test-session-sync", 5, 0)
 	if err != nil {
 		t.Fatalf("ReadEventsFrom(5) failed: %v", err)
 	}
 	if len(noEvents) != 0 {
 		t.Errorf("ReadEventsFrom(5) got %d events, want 0", len(noEvents))
+	}
+
+	// Read events with limit (afterSeq = 0, limit = 2, should get only first 2 events)
+	limitedEvents, err := store.ReadEventsFrom("test-session-sync", 0, 2)
+	if err != nil {
+		t.Fatalf("ReadEventsFrom(0, limit=2) failed: %v", err)
+	}
+	if len(limitedEvents) != 2 {
+		t.Errorf("ReadEventsFrom(0, limit=2) got %d events, want 2", len(limitedEvents))
+	}
+	if limitedEvents[0].Seq != 1 {
+		t.Errorf("First limited event has Seq = %d, want 1", limitedEvents[0].Seq)
+	}
+	if limitedEvents[1].Seq != 2 {
+		t.Errorf("Second limited event has Seq = %d, want 2", limitedEvents[1].Seq)
 	}
 }
 
