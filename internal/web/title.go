@@ -37,11 +37,17 @@ func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 
 const (
 	// titleMaxRetries is the maximum number of retry attempts for title generation.
-	titleMaxRetries = 2
-	// titleRetryBaseDelay is the initial delay between retry attempts.
-	titleRetryBaseDelay = 3 * time.Second
-	// titlePerAttemptTimeout is the timeout for each individual title generation attempt.
-	titlePerAttemptTimeout = 30 * time.Second
+	titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
+	// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
+	titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
+	// titleSessionCreateTimeout is the timeout for the session creation phase of title generation.
+	// This is intentionally long because the ACP agent serializes RPCs — when a session/prompt
+	// is in-flight, a session/new RPC will be queued until the active prompt completes.
+	// With long Opus responses (5-15+ min), we must wait for the agent to become idle first.
+	titleSessionCreateTimeout = 3 * time.Minute
+	// titlePromptTimeout is the timeout for the actual title prompt once a session is obtained.
+	// The prompt itself is fast once the agent is free.
+	titlePromptTimeout = 30 * time.Second
 )
 
 // GenerateAndSetTitle generates a title for a session using the workspace-scoped auxiliary session.
@@ -90,7 +96,11 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				time.Sleep(delay)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), titlePerAttemptTimeout)
+			// Use titleSessionCreateTimeout for the entire call: getOrCreateAuxiliarySession
+			// calls WaitForIdle internally before NewSession, so the 3-minute budget covers
+			// waiting for the agent to finish any active prompt (the slow part).
+			// Once the session exists, the prompt itself completes in well under 30 seconds.
+			ctx, cancel := context.WithTimeout(context.Background(), titleSessionCreateTimeout)
 			title, lastErr = cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
 			cancel()
 
