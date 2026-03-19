@@ -73,7 +73,9 @@ const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Send keepalive every 5 seconds in native app
 const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Send keepalive every 10 seconds in browser
 const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
-const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
+const KEEPALIVE_MAX_MISSED_DEFAULT = 2; // Force reconnect after 2 missed keepalives
+const KEEPALIVE_MAX_MISSED_LARGE_SESSION = 4; // For sessions with 500+ events
+const LARGE_SESSION_SEQ_THRESHOLD = 500;
 
 // Sync tolerance: only request sync if client is more than N sequences behind server.
 // This avoids excessive sync requests during normal streaming where the markdown buffer
@@ -337,6 +339,20 @@ export function useWebSocket() {
   // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
   const keepaliveRef = useRef({});
 
+  // Track in-flight sync (load_events) requests per session.
+  // When a sync is pending, keepalive misses are suppressed to prevent
+  // reconnection storms during large event syncs (e.g., 790 events).
+  // { sessionId: boolean }
+  const pendingSyncRef = useRef({});
+
+  // Auto-clear timeout for pendingSyncRef to prevent indefinite suppression.
+  // If events_loaded never arrives (e.g., server error, WebSocket drop),
+  // the sync flag is cleared after SYNC_TIMEOUT_MS so keepalive miss
+  // counting resumes and triggers a reconnect.
+  // { sessionId: timeoutId }
+  const syncTimeoutRef = useRef({});
+  const SYNC_TIMEOUT_MS = 30_000;
+
   // Dedicated ref for tracking last known seq per session
   // Survives reconnections, always current, updated on every received event
   // This is the PRIMARY source for client max seq (React state is fallback)
@@ -356,6 +372,47 @@ export function useWebSocket() {
       lastKnownSeqRef.current[sessionId] = seq;
     }
   }, []);
+
+  /**
+   * Clear the in-flight sync flag for a session and cancel its auto-clear timeout.
+   * Call this when events_loaded arrives or when the WebSocket closes/errors.
+   *
+   * @param {string} sessionId - The session ID
+   */
+  const clearPendingSync = useCallback((sessionId) => {
+    if (syncTimeoutRef.current[sessionId]) {
+      clearTimeout(syncTimeoutRef.current[sessionId]);
+      delete syncTimeoutRef.current[sessionId];
+    }
+    pendingSyncRef.current[sessionId] = false;
+  }, []);
+
+  /**
+   * Set the in-flight sync flag for a session and start a 30s auto-clear timeout.
+   * If events_loaded never arrives (server error, WebSocket drop), the flag is
+   * cleared automatically so keepalive miss-counting resumes and triggers reconnect.
+   *
+   * @param {string} sessionId - The session ID
+   */
+  const setPendingSync = useCallback(
+    (sessionId) => {
+      // Cancel any existing timeout before starting a new one
+      if (syncTimeoutRef.current[sessionId]) {
+        clearTimeout(syncTimeoutRef.current[sessionId]);
+      }
+      pendingSyncRef.current[sessionId] = true;
+      syncTimeoutRef.current[sessionId] = setTimeout(() => {
+        delete syncTimeoutRef.current[sessionId];
+        if (pendingSyncRef.current[sessionId]) {
+          console.warn(
+            `[sync] Sync timeout for session ${sessionId} — clearing pendingSyncRef after ${SYNC_TIMEOUT_MS}ms`,
+          );
+          pendingSyncRef.current[sessionId] = false;
+        }
+      }, SYNC_TIMEOUT_MS);
+    },
+    [],
+  );
 
   /**
    * Check for gaps in message sequence and request missing events if needed.
@@ -1550,6 +1607,7 @@ export function useWebSocket() {
             const ws = sessionWsRefs.current[sessionId];
             if (ws && ws.readyState === WebSocket.OPEN) {
               // Request initial load (last 50 messages) - server will detect stale and fall back
+              setPendingSync(sessionId);
               ws.send(
                 JSON.stringify({
                   type: "load_events",
@@ -1577,6 +1635,7 @@ export function useWebSocket() {
               );
               const ws = sessionWsRefs.current[sessionId];
               if (ws && ws.readyState === WebSocket.OPEN) {
+                setPendingSync(sessionId);
                 ws.send(
                   JSON.stringify({
                     type: "load_events",
@@ -1840,6 +1899,8 @@ export function useWebSocket() {
             }
           }, 100);
         }
+        // Clear in-flight sync flag — events have been delivered
+        clearPendingSync(sessionId);
         break;
       }
 
@@ -2366,6 +2427,7 @@ export function useWebSocket() {
           console.log(
             `Syncing session ${sessionId} from seq ${lastSeq} (lastLoadedSeq=${session?.lastLoadedSeq}, messages=${sessionMessages.length})`,
           );
+          setPendingSync(sessionId);
           ws.send(
             JSON.stringify({
               type: "load_events",
@@ -2375,6 +2437,7 @@ export function useWebSocket() {
         } else {
           // Initial load: load last N events
           console.log(`Loading session ${sessionId} events (initial load)`);
+          setPendingSync(sessionId);
           ws.send(
             JSON.stringify({
               type: "load_events",
@@ -2407,21 +2470,35 @@ export function useWebSocket() {
 
           const keepalive = keepaliveRef.current[sessionId];
           if (keepalive?.pendingKeepalive) {
-            // Previous keepalive didn't get a response
-            keepalive.missedCount = (keepalive.missedCount || 0) + 1;
-            console.log(
-              `Keepalive missed for session ${sessionId}, count: ${keepalive.missedCount}`,
-            );
-
-            if (keepalive.missedCount >= KEEPALIVE_MAX_MISSED) {
-              // Connection is likely dead, force close to trigger reconnect
+            // If a sync (load_events) is in progress, suppress the miss count.
+            // Large syncs (hundreds of events) can block the server's readPump,
+            // delaying keepalive_ack responses. This prevents false reconnects.
+            if (pendingSyncRef.current[sessionId]) {
               console.log(
-                `Too many missed keepalives for session ${sessionId}, forcing reconnect`,
+                `Keepalive miss suppressed for session ${sessionId} (sync in progress)`,
               );
-              clearInterval(intervalId);
-              delete keepaliveRef.current[sessionId];
-              currentWs.close();
-              return;
+            } else {
+              // Previous keepalive didn't get a response
+              keepalive.missedCount = (keepalive.missedCount || 0) + 1;
+              console.log(
+                `Keepalive missed for session ${sessionId}, count: ${keepalive.missedCount}`,
+              );
+
+              const lastSeq = lastKnownSeqRef.current[sessionId] || 0;
+              const maxMissed =
+                lastSeq > LARGE_SESSION_SEQ_THRESHOLD
+                  ? KEEPALIVE_MAX_MISSED_LARGE_SESSION
+                  : KEEPALIVE_MAX_MISSED_DEFAULT;
+              if (keepalive.missedCount >= maxMissed) {
+                // Connection is likely dead, force close to trigger reconnect
+                console.log(
+                  `Too many missed keepalives for session ${sessionId}, forcing reconnect`,
+                );
+                clearInterval(intervalId);
+                delete keepaliveRef.current[sessionId];
+                currentWs.close();
+                return;
+              }
             }
           }
 
@@ -2492,6 +2569,12 @@ export function useWebSocket() {
           clearInterval(keepaliveRef.current[sessionId].intervalId);
           delete keepaliveRef.current[sessionId];
         }
+
+        // Clear any pending sync flag and its auto-clear timeout.
+        // If a load_events request was in flight when the connection dropped,
+        // events_loaded will never arrive — without this, pendingSyncRef stays true
+        // indefinitely, suppressing keepalive miss-counting after reconnection.
+        clearPendingSync(sessionId);
 
         // Only delete the ref if it still points to this WebSocket (not a newer one)
         if (sessionWsRefs.current[sessionId] === ws) {
@@ -4159,6 +4242,11 @@ export function useWebSocket() {
       for (const ws of Object.values(sessionWsRefs.current)) {
         ws.close();
       }
+      // Clear all pending sync timeouts to prevent memory leaks on unmount
+      for (const timerId of Object.values(syncTimeoutRef.current)) {
+        clearTimeout(timerId);
+      }
+      syncTimeoutRef.current = {};
     };
   }, [connectToEvents]);
 
