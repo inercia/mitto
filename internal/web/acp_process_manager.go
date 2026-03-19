@@ -356,6 +356,15 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	if auxCwd == "" {
 		auxCwd = "."
 	}
+
+	// Wait for the agent to finish any active prompts before creating the auxiliary session.
+	// The ACP agent serializes all RPCs: a session/new request will be queued behind an
+	// active session/prompt and not processed until the prompt completes. With long responses
+	// (5-15+ min), all retry attempts would time out without this guard.
+	if err := process.WaitForIdle(ctx); err != nil {
+		return nil, fmt.Errorf("waiting for agent to become idle before auxiliary session creation: %w", err)
+	}
+
 	sessionHandle, err := process.NewSession(ctx, auxCwd, []acp.McpServer{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auxiliary session: %w", err)
