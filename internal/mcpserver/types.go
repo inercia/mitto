@@ -356,6 +356,11 @@ type childReportCollector struct {
 	// Closing waitCh unblocks the waiting parent.
 	waitCh     chan struct{}   // closed when all waitingFor children have reported
 	waitingFor map[string]bool // child IDs the parent is blocking on
+
+	// Track when we first started waiting for each child (per task).
+	// Used to detect stuck children that have been waited on for too long.
+	// Reset when task_id changes.
+	firstWaitTime map[string]time.Time // child_id -> first wait start time
 }
 
 // addReport stores a child's report. Any child can report at any time.
@@ -423,6 +428,12 @@ func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan
 			}
 		}
 		c.currentTaskID = taskID
+		c.firstWaitTime = make(map[string]time.Time) // new task = reset stuck tracking
+	}
+
+	// Initialize firstWaitTime map if needed (first call ever).
+	if c.firstWaitTime == nil {
+		c.firstWaitTime = make(map[string]time.Time)
 	}
 
 	// Ensure all requested children have an entry (nil = pending if not already reported)
@@ -432,10 +443,14 @@ func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan
 		}
 	}
 
-	// Build waitingFor set
+	// Build waitingFor set and record first wait time per child.
+	now := time.Now()
 	c.waitingFor = make(map[string]bool, len(childIDs))
 	for _, id := range childIDs {
 		c.waitingFor[id] = true
+		if _, exists := c.firstWaitTime[id]; !exists {
+			c.firstWaitTime[id] = now // record when we first started waiting for this child
+		}
 	}
 
 	c.waitCh = make(chan struct{})
@@ -480,6 +495,28 @@ func (c *childReportCollector) isWaiting() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.waitCh != nil
+}
+
+// maxChildWaitDuration is the maximum cumulative time a parent may wait for a single child
+// across all retried wait calls. After this duration, the child is considered stuck and the
+// server auto-reports it so the parent AI agent stops retrying indefinitely.
+const maxChildWaitDuration = 30 * time.Minute
+
+// getStuckChildren returns the IDs of children that have been waited on (and have not yet
+// reported) for longer than maxChildWaitDuration in total across all retried wait calls.
+func (c *childReportCollector) getStuckChildren() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var stuck []string
+	now := time.Now()
+	for childID, firstWait := range c.firstWaitTime {
+		r := c.reports[childID]
+		if (r == nil || !r.Completed) && now.Sub(firstWait) > maxChildWaitDuration {
+			stuck = append(stuck, childID)
+		}
+	}
+	return stuck
 }
 
 // childReport stores the report from a single child conversation.
