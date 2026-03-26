@@ -81,6 +81,8 @@ func SetupTestServer(t *testing.T) *TestServer {
 		Debug:             true,
 		FromCLI:           true, // Don't persist workspace changes
 		MittoConfig:       mittoConfig,
+
+		DisableAuxiliaryPrewarm: true, // Avoid interference with mock ACP server
 	}
 
 	// Create web server

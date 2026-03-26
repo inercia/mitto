@@ -63,6 +63,10 @@ type Config struct {
 	// AccessLog is the configuration for security access logging.
 	// If Path is empty, access logging is disabled.
 	AccessLog AccessLogConfig
+
+	// DisableAuxiliaryPrewarm disables auxiliary session pre-warming on process creation.
+	// Used in tests to avoid interference with mock ACP servers.
+	DisableAuxiliaryPrewarm bool
 }
 
 // GetWorkspaces returns the effective list of workspaces.
@@ -254,6 +258,7 @@ func NewServer(config Config) (*Server, error) {
 
 	// Create shared ACP process manager for workspace-level process sharing
 	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
+	acpProcessMgr.DisablePrewarm = config.DisableAuxiliaryPrewarm
 	sessionMgr.SetACPProcessManager(acpProcessMgr)
 
 	// Set global conversations config for message processing
