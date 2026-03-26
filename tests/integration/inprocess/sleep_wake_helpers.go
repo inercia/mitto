@@ -198,4 +198,3 @@ func (s *SleepWakeScenario) Run(t *testing.T) *SleepWakeResult {
 
 	return result
 }
-

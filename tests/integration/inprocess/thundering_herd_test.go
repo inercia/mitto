@@ -171,4 +171,3 @@ func TestThunderingHerd_MultipleSessionsSync(t *testing.T) {
 		}
 	}
 }
-

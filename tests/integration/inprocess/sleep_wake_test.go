@@ -55,8 +55,6 @@ func TestSleepWake_Basic(t *testing.T) {
 	}
 }
 
-
-
 // TestSleepWake_Parameterized runs the sleep/wake scenario with several gap sizes.
 // In all cases the reconnecting client must receive exactly the missed events
 // (count == roundsDuring*2, all with seq > lastSeqBeforeSleep).
@@ -116,7 +114,6 @@ func TestSleepWake_Parameterized(t *testing.T) {
 		})
 	}
 }
-
 
 // TestSleepWake_ReconnectUsesCorrectAfterSeq verifies that a reconnecting client
 // sends the watermark it stored before disconnecting as the after_seq argument to
@@ -216,7 +213,6 @@ func TestSleepWake_ReconnectUsesCorrectAfterSeq(t *testing.T) {
 		t.Logf("✓ client sent after_seq=%d == lastSeqBeforeSleep", gotAfterSeq)
 	}
 }
-
 
 // TestSleepWake_MultipleReconnectCycles simulates a client reconnecting multiple
 // times (phone going in and out of coverage). Each cycle the client advances its
@@ -370,7 +366,6 @@ func TestSleepWake_MultipleReconnectCycles(t *testing.T) {
 	_ = lastSeq1
 	_ = lastSeq2
 }
-
 
 // TestSleepWake_MidStreamDisconnectReconnectAfterCompletion verifies Gap 8:
 // a client that goes offline DURING active agent streaming and reconnects AFTER

@@ -156,4 +156,3 @@ func (inj *TestEventInjector) CurrentMaxSeq() int64 {
 	}
 	return maxSeq
 }
-
