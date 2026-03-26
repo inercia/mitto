@@ -268,10 +268,23 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go client.writePump()
-	go client.readPump()
 
-	// Send connection confirmation with session info
+	// Send the `connected` message BEFORE starting readPump.
+	//
+	// The frontend sends `load_events` immediately in ws.onopen. On multi-core
+	// systems (GOMAXPROCS > 1), if readPump were started first, it could read
+	// the client's `load_events` request and dispatch handleLoadEventsAsync on
+	// another CPU core, which would enqueue `events_loaded` into the send channel
+	// *before* sendSessionConnected has a chance to enqueue `connected`. The
+	// writePump drains in FIFO order, so the client would receive `events_loaded`
+	// before `connected` — a protocol ordering violation.
+	//
+	// By enqueuing `connected` while readPump is not yet running, we guarantee
+	// it is the first message in the send channel and therefore the first message
+	// the client receives, regardless of scheduling.
 	client.sendSessionConnected(bs)
+
+	go client.readPump()
 
 	// Trigger follow-up suggestions for resumed sessions with message history
 	// This analyzes the last agent message and sends suggested responses asynchronously
@@ -371,6 +384,7 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 	// Include agent capability flags so the frontend can adapt the UI
 	if bs != nil {
 		data["agent_supports_images"] = bs.AgentSupportsImages()
+		data["workspace_uuid"] = bs.GetWorkspaceUUID()
 	}
 
 	c.sendMessage(WSMsgTypeConnected, data)
@@ -1276,7 +1290,12 @@ func (c *SessionWSClient) triggerMCPAvailabilityCheck(workspaceUUID string) {
 	}
 	auxMgr := c.server.auxiliaryManager
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Use a long timeout because the ACP agent serializes all RPCs. When the main
+	// session has an active prompt (which can last 5-15+ minutes), the auxiliary
+	// session creation (session/new) and the availability-check prompt are both
+	// queued behind it. A 2-minute timeout is routinely exceeded in practice
+	// (observed: 150-244 s RPCs). 30 minutes matches the worst-case agent runtime.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	if c.logger != nil {
@@ -1337,7 +1356,12 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	}
 	auxMgr := c.server.auxiliaryManager
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Use a long timeout because the ACP agent serializes all RPCs. When the main
+	// session has an active prompt (which can last 5-15+ minutes), the auxiliary
+	// session creation (session/new) and the tool-fetch prompt are both queued
+	// behind it. A 2-minute timeout is routinely exceeded in practice
+	// (observed: 150-244 s RPCs). 30 minutes matches the worst-case agent runtime.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	if c.logger != nil {
