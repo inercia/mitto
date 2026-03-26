@@ -30,23 +30,56 @@ Mobile browsers suspend WebSocket connections when the device sleeps. The fronte
 
 Phone sleeps -> WebSocket terminated -> Agent continues server-side -> Phone wakes -> UI shows stale messages. Connections may also enter "zombie state" (appearing open but dead).
 
-## Critical: Calculate Seq from lastKnownSeqRef, Not localStorage
+## Seq Watermark: Three-Tier Priority
+
+The highest seq known for a session is the maximum of three sources (priority order):
+
+1. **`lastKnownSeqRef`** — updated on every received event, survives WS reconnects within the same page session
+2. **`localStorage`** (`getLastSeenSeq` / `setLastSeenSeq`) — written by `updateLastKnownSeq`, survives app restarts and WKWebView page reloads
+3. **React state** (`messages` / `lastLoadedSeq`) — fallback
 
 ```javascript
-// BAD: localStorage can be stale in WKWebView
-const lastSeq = localStorage.getItem(`mitto_last_seen_seq_${sessionId}`);
-
-// OUTDATED: React state alone can be empty during reconnection
-const lastSeq = getMaxSeq(sessionsRef.current[sessionId]?.messages || []);
-
-// GOOD: Use lastKnownSeqRef (primary) with React state (fallback)
+// In ws.onopen — three-tier watermark resolution:
 const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+// Restore from localStorage on app restart (refSeq is 0 only then)
+const persistedSeq = refSeq === 0 ? getLastSeenSeq(sessionId) : 0;
+if (persistedSeq > 0) {
+  lastKnownSeqRef.current[sessionId] = persistedSeq; // populate ref
+}
 const stateSeq = Math.max(
   getMaxSeq(session?.messages || []),
   session?.lastLoadedSeq || 0,
 );
-const lastSeq = Math.max(refSeq, stateSeq);
+const lastSeq = Math.max(refSeq, persistedSeq, stateSeq);
 ```
+
+### App-restart context-load fallback
+
+When `lastSeq > 0` but no messages are in memory (app restart / WKWebView reload),
+the `ws.onopen` handler sends `{ after_seq: lastSeq }` and sets
+`needsContextLoadRef.current[sessionId] = true`.
+
+If the server returns **0 new events** (nothing happened while app was closed) and
+the session has history (`total_count > 0`), the `events_loaded` handler
+automatically issues a secondary `{ limit: 50 }` request so the conversation is
+not shown as empty:
+
+```javascript
+// In events_loaded handler — context-load fallback:
+if (
+  needsContextLoadRef.current[sessionId] &&
+  !isPrepend &&
+  newMessages.length === 0 &&
+  (currentSession?.messages?.length || 0) === 0 &&
+  totalCount > 0
+) {
+  delete needsContextLoadRef.current[sessionId];
+  ws.send(JSON.stringify({ type: "load_events", data: { limit: INITIAL_EVENTS_LIMIT } }));
+}
+```
+
+`needsContextLoadRef` is cleared by `clearPendingSync` on WebSocket close so stale flags
+never carry over to the next connection.
 
 > See [Sequence Numbers — Frontend Responsibilities](../../docs/devel/websockets/sequence-numbers.md#frontend-responsibilities) for the full pattern.
 
