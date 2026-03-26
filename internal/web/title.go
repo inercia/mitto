@@ -85,7 +85,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 					return
 				}
 
-				delay := titleRetryBaseDelay * time.Duration(1<<(attempt-1)) // exponential: 3s, 6s
+				delay := titleRetryBaseDelay * time.Duration(1<<(attempt-1)) // exponential: 30s, 60s, 120s
 				if cfg.Logger != nil {
 					cfg.Logger.Info("Retrying title generation",
 						"session_id", cfg.SessionID,
@@ -95,10 +95,10 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				time.Sleep(delay)
 			}
 
-			// Use titleSessionCreateTimeout for the entire call: getOrCreateAuxiliarySession
-			// calls WaitForIdle internally before NewSession, so the 3-minute budget covers
-			// waiting for the agent to finish any active prompt (the slow part).
-			// Once the session exists, the prompt itself completes in well under 30 seconds.
+			// Use titleSessionCreateTimeout as the overall timeout for the title generation
+			// request, covering any necessary auxiliary session setup and the prompt itself.
+			// getOrCreateAuxiliarySession calls WaitForIdle internally before NewSession,
+			// so the 20-minute budget covers waiting for the agent to finish any active prompt.
 			ctx, cancel := context.WithTimeout(context.Background(), titleSessionCreateTimeout)
 			title, lastErr = cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
 			cancel()

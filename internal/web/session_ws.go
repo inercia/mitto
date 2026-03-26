@@ -886,6 +886,24 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 					break
 				}
 			}
+			// If we are left with a single event (or small slice) that is still too
+			// large, avoid sending an oversized payload by dropping it from this
+			// response and logging the condition. The event remains reachable via
+			// pagination, but will not be sent in this batch.
+			if payloadErr == nil && len(payloadJSON) > maxEventsLoadedBytes {
+				droppedCount := len(events)
+				events = nil
+				hasMore = true
+				payloadJSON = []byte("[]")
+				if c.logger != nil {
+					c.logger.Error("events_loaded_single_event_too_large",
+						"session_id", c.sessionID,
+						"client_id", c.clientID,
+						"dropped_event_count", droppedCount,
+						"max_payload_bytes", maxEventsLoadedBytes)
+				}
+				_ = droppedCount // used only in the log above
+			}
 			// Recompute firstSeq after trimming (lastSeq is unchanged).
 			if len(events) > 0 {
 				firstSeq = events[0].Seq
