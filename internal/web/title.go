@@ -40,11 +40,13 @@ const (
 	titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
 	// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
 	titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
-	// titleSessionCreateTimeout is the timeout for the session creation phase of title generation.
-	// This is intentionally long because the ACP agent serializes RPCs — when a session/prompt
-	// is in-flight, a session/new RPC will be queued until the active prompt completes.
-	// With long Opus responses (5-15+ min), we must wait for the agent to become idle first.
-	titleSessionCreateTimeout = 3 * time.Minute
+	// titleSessionCreateTimeout is the timeout for a single title generation attempt.
+	// This covers the full round-trip: WaitForIdle (waiting for any active user prompt
+	// to complete) + the title prompt itself. Agents can take 5–20+ minutes on complex
+	// tasks, so we budget 20 minutes per attempt. With titleMaxRetries=3 the total
+	// worst-case wall time is ≈ 83 minutes, but in practice the agent is usually free
+	// within the first few attempts.
+	titleSessionCreateTimeout = 20 * time.Minute
 	// titlePromptTimeout is the timeout for the actual title prompt once a session is obtained.
 	// The prompt itself is fast once the agent is free.
 	titlePromptTimeout = 30 * time.Second
