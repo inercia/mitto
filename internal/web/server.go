@@ -258,7 +258,7 @@ func NewServer(config Config) (*Server, error) {
 
 	// Create shared ACP process manager for workspace-level process sharing
 	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
-	acpProcessMgr.DisablePrewarm = config.DisableAuxiliaryPrewarm
+	acpProcessMgr.DisableAuxiliary = config.DisableAuxiliaryPrewarm || os.Getenv("MITTO_TEST_MODE") != ""
 	sessionMgr.SetACPProcessManager(acpProcessMgr)
 
 	// Set global conversations config for message processing

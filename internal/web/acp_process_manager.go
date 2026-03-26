@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -32,9 +31,10 @@ type ACPProcessManager struct {
 	// Global context for all managed processes.
 	ctx context.Context
 
-	// DisablePrewarm disables auxiliary session pre-warming on process creation.
+	// DisableAuxiliary disables all auxiliary session features (pre-warming,
+	// MCP tools fetch, title generation, follow-up analysis).
 	// Used in tests to avoid interference with mock ACP servers.
-	DisablePrewarm bool
+	DisableAuxiliary bool
 
 	logger *slog.Logger
 }
@@ -172,7 +172,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	// has no active prompts, so WaitForIdle returns immediately. This ensures that
 	// MCP tool fetches, title generation, and follow-up analysis can all find an
 	// existing aux session and skip the slow WaitForIdle-before-NewSession path.
-	if !m.DisablePrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
+	if !m.DisableAuxiliary {
 		go m.prewarmAuxiliarySessions(workspace.UUID, processLogger)
 	}
 
@@ -290,6 +290,10 @@ func (m *ACPProcessManager) ProcessCount() int {
 // The session is created on-demand if it doesn't exist and reused for subsequent requests.
 // This implements the auxiliary.ProcessProvider interface.
 func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+	if m.DisableAuxiliary {
+		return "", fmt.Errorf("auxiliary sessions disabled")
+	}
+
 	// Check context before doing any work
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("context cancelled before auxiliary prompt: %w", err)
