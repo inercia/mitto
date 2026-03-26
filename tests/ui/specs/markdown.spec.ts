@@ -81,12 +81,82 @@ test.describe("Mermaid Diagram Rendering", () => {
     const textarea = page.locator(selectors.chatInput);
     await expect(textarea).toBeEnabled({ timeout: timeouts.appReady });
     await helpers.waitForWebSocketReady(page);
+
+    // Inject a mermaid mock directly into the page after it is ready.
+    //
+    // Why page.evaluate() instead of page.route():
+    //   page.route() intercepts at the network level and requires the browser to
+    //   make a CDN request (which Playwright then fulfils). With headless Chrome +
+    //   CSP nonces the script tag is created and the request is dispatched, but the
+    //   combination of dynamic script injection + CSP enforcement sometimes causes
+    //   the onload callback not to fire reliably in CI environments.
+    //
+    //   page.evaluate() bypasses the CDN entirely: by setting window.mermaidReady=true
+    //   BEFORE the prompt is sent, renderMermaidInContainer() (called from Message.js
+    //   useEffect) skips the CDN loading branch and calls window.mermaid.render()
+    //   directly. This is synchronous from the test's perspective and makes the
+    //   mermaid rendering deterministic.
+    //
+    // The mock satisfies the two entry points in preact-loader.js:
+    //   1. window.mermaid.initialize(config) — called after CDN load (no-op here)
+    //   2. window.mermaid.render(id, def)    — returns { svg } with parsed labels
+    //
+    // The SVG includes text nodes for every [Label] / {Label} in the definition
+    // so assertions like expect(diagramText).toContain("Start") pass correctly.
+    // Use /* eslint-disable */ to suppress lint warnings for the JS-inside-TS pattern.
+    // The evaluate callback is serialized with func.toString() and run in the browser,
+    // so we use plain JS (no TypeScript type annotations) to avoid parse errors.
+    await page.evaluate(() => {
+      /* eslint-disable */
+      // @ts-ignore
+      window.mermaid = {
+        initialize: function (config) {},
+        render: async function (id, def) {
+          // Extract node labels from mermaid syntax: [Label] and {Label}
+          var labels = [];
+          var regex = /[\[{]([^\]{}]+)[\}\]]/g;
+          var m;
+          while ((m = regex.exec(def)) !== null) {
+            labels.push(m[1].trim());
+          }
+          var textEls = labels
+            .map(function (l, i) {
+              return (
+                '<text x="10" y="' +
+                (20 + i * 25) +
+                '">' +
+                l.replace(/[<>&"]/g, "") +
+                "</text>"
+              );
+            })
+            .join("");
+          return {
+            svg:
+              '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="' +
+              (labels.length * 25 + 20) +
+              '" id="' +
+              id +
+              '"><g class="nodes">' +
+              textEls +
+              '</g><g class="edges"></g></svg>',
+          };
+        },
+      };
+      // Setting mermaidReady=true makes renderMermaidInContainer() skip the CDN
+      // request branch and call window.mermaid.render() directly.
+      // @ts-ignore
+      window.mermaidReady = true;
+      // @ts-ignore
+      window.mermaidLoading = false;
+      /* eslint-enable */
+    });
   });
 
   test("should render mermaid diagrams during streaming", async ({
     page,
     selectors,
     timeouts,
+    helpers,
   }) => {
     // Send a message that triggers the mermaid-diagram scenario
     const textarea = page.locator(selectors.chatInput);
@@ -94,9 +164,17 @@ test.describe("Mermaid Diagram Rendering", () => {
     await textarea.fill("Show mermaid test");
     await page.locator(selectors.sendButton).click();
 
-    // Wait for mermaid.js to load and render the diagram
+    // Confirm the prompt was accepted — user message should appear in the chat
+    await expect(page.locator("text=Show mermaid test")).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+
+    // Wait for streaming to complete before asserting on mermaid rendering
+    await helpers.waitForStreamingComplete(page);
+
+    // Wait for mermaid.js to load (via our CDN mock) and render the diagram.
     // The diagram should be rendered as an SVG inside a .mermaid-diagram wrapper
-    // (pre.mermaid gets replaced by div.mermaid-diagram containing SVG)
+    // (pre.mermaid gets replaced by div.mermaid-diagram containing SVG).
     const mermaidDiagram = page.locator(".mermaid-diagram");
     await expect(mermaidDiagram.first()).toBeVisible({
       timeout: timeouts.agentResponse,
@@ -107,14 +185,11 @@ test.describe("Mermaid Diagram Rendering", () => {
     await expect(svg).toBeVisible({ timeout: timeouts.shortAction });
 
     // Verify the SVG has content (nodes from the flowchart)
-    // Mermaid creates various elements including g.nodes, g.edges, etc.
     const svgContent = await svg.innerHTML();
     expect(svgContent.length).toBeGreaterThan(100); // SVG should have substantial content
 
-    // Verify the diagram contains the expected flowchart elements
-    // Look for text content from our test diagram
+    // Verify the diagram contains the expected flowchart node labels
     const diagramText = await mermaidDiagram.first().textContent();
-    // The rendered diagram should contain our node labels
     expect(diagramText).toContain("Start");
     expect(diagramText).toContain("Decision");
     expect(diagramText).toContain("End");
@@ -124,6 +199,7 @@ test.describe("Mermaid Diagram Rendering", () => {
     page,
     selectors,
     timeouts,
+    helpers,
   }) => {
     // Send a message that triggers the mermaid-diagram scenario
     const textarea = page.locator(selectors.chatInput);
@@ -131,14 +207,22 @@ test.describe("Mermaid Diagram Rendering", () => {
     await textarea.fill("Show mermaid diagram");
     await page.locator(selectors.sendButton).click();
 
-    // Wait for mermaid to render
+    // Confirm the prompt was accepted — user message should appear in the chat
+    await expect(page.locator("text=Show mermaid diagram")).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+
+    // Wait for streaming to complete before asserting on mermaid rendering
+    await helpers.waitForStreamingComplete(page);
+
+    // Wait for mermaid to render (via our CDN mock)
     const mermaidDiagram = page.locator(".mermaid-diagram");
     await expect(mermaidDiagram.first()).toBeVisible({
       timeout: timeouts.agentResponse,
     });
 
-    // The raw mermaid code block should NOT be visible
-    // (it should have been replaced by the rendered SVG)
+    // The raw mermaid code block should NOT be visible —
+    // it should have been replaced by the rendered SVG wrapper.
     const rawMermaidBlock = page.locator('pre.mermaid:not([data-mermaid-processed="true"])');
     const count = await rawMermaidBlock.count();
     expect(count).toBe(0);
