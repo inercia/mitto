@@ -47,9 +47,6 @@ const (
 	// worst-case wall time is ≈ 83 minutes, but in practice the agent is usually free
 	// within the first few attempts.
 	titleSessionCreateTimeout = 20 * time.Minute
-	// titlePromptTimeout is the timeout for the actual title prompt once a session is obtained.
-	// The prompt itself is fast once the agent is free.
-	titlePromptTimeout = 30 * time.Second
 )
 
 // GenerateAndSetTitle generates a title for a session using the workspace-scoped auxiliary session.

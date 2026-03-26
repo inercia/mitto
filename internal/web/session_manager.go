@@ -338,13 +338,6 @@ func (sm *SessionManager) resolveWorkspaceForACPLocked(workingDir, acpServer str
 	return sm.defaultWorkspace
 }
 
-// resolveWorkspaceForACP returns the workspace to use for a given directory/server pair.
-func (sm *SessionManager) resolveWorkspaceForACP(workingDir, acpServer string) *config.WorkspaceSettings {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return sm.resolveWorkspaceForACPLocked(workingDir, acpServer)
-}
-
 // GetWorkspaceByUUID returns the workspace with the given UUID.
 // Returns nil if no workspace with that UUID exists.
 func (sm *SessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {

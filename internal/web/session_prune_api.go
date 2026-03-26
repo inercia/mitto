@@ -28,6 +28,8 @@ type PruneResponse struct {
 // handleSessionPrune handles POST /api/sessions/{id}/prune
 // It prunes old events from the session, keeping the last N events.
 // The session must not be actively processing a prompt when prune is called.
+//
+//nolint:unused // Handler is staged for wiring to a route in a follow-up PR.
 func (s *Server) handleSessionPrune(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
