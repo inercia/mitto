@@ -70,6 +70,9 @@ type WorkspaceSettings struct {
 	// Only used when RestrictedRunner is not "exec".
 	// When both a .mittorc workspace config and this field exist, this field takes precedence.
 	RestrictedRunnerConfig *WorkspaceRunnerConfig `json:"restricted_runner_config,omitempty"`
+	// ACPCommandOverride is an optional user-provided command override for the ACP server.
+	// When set, this command is used instead of the one from the server configuration.
+	ACPCommandOverride string `json:"acp_command_override,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.

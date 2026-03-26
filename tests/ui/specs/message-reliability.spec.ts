@@ -607,3 +607,121 @@ test.describe("Sequence Number Tracking", () => {
   });
 });
 
+test.describe("Deduplication Across Reconnect Boundary", () => {
+  test.beforeEach(async ({ page, helpers }) => {
+    await helpers.navigateAndWait(page);
+    await helpers.clearLocalStorage(page);
+  });
+
+  test("should not show duplicate messages when replay overlaps already-seen events", async ({
+    page,
+    helpers,
+    selectors,
+  }) => {
+    // 1. Create session, send messages to establish history
+    const sessionId = await helpers.createFreshSession(page);
+    const msg1 = helpers.uniqueMessage("dedup-test-alpha");
+    const msg2 = helpers.uniqueMessage("dedup-test-beta");
+    await helpers.sendMessageAndWait(page, msg1);
+    await helpers.sendMessageAndWait(page, msg2);
+
+    // 2. Count messages currently in the DOM
+    const userMsgLocator = page.locator(selectors.userMessage);
+    const countBefore = await userMsgLocator.count();
+    expect(countBefore).toBeGreaterThanOrEqual(2);
+
+    // 3. Force client to think it's at seq=0 (simulates a large overlap on next sync)
+    await page.evaluate(
+      ({ sid }) => {
+        const debug = (window as any).__debug;
+        if (debug?._setLastKnownSeq) {
+          debug._setLastKnownSeq(sid, 0);
+        }
+      },
+      { sid: sessionId }
+    );
+
+    // 4. Trigger reconnect via visibility change: hidden → visible causes resync
+    //    with load_events(after_seq=0) = full history replay
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        value: "hidden",
+        writable: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForTimeout(200);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        value: "visible",
+        writable: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    // 5. Wait for sync to settle — poll until message count stabilises at countBefore
+    await expect.poll(
+      async () => userMsgLocator.count(),
+      { timeout: 5000 }
+    ).toBe(countBefore);
+
+    // 6. Count messages again — must NOT have doubled
+    const countAfter = await userMsgLocator.count();
+    expect(countAfter).toBe(countBefore);
+
+    // 7. Verify the specific messages are still present exactly once each
+    const allUserTexts = await userMsgLocator.allTextContents();
+    const alphaCount = allUserTexts.filter((t) => t.includes("dedup-test-alpha")).length;
+    const betaCount  = allUserTexts.filter((t) => t.includes("dedup-test-beta")).length;
+    expect(alphaCount).toBe(1);
+    expect(betaCount).toBe(1);
+  });
+
+  test("should not show duplicate agent messages when replay overlaps live stream", async ({
+    page,
+    helpers,
+    selectors,
+  }) => {
+    // Simpler variant: count total messages (user + agent) before and after forced resync
+    const sessionId = await helpers.createFreshSession(page);
+    await helpers.sendMessageAndWait(page, helpers.uniqueMessage("dedup-agent-test"));
+
+    // Count all visible messages (user + agent)
+    const allMsgLocator = page.locator(`${selectors.userMessage}, ${selectors.agentMessage}`);
+    const before = await allMsgLocator.count();
+
+    // Force from-zero replay via zeroing the watermark
+    await page.evaluate(
+      ({ sid }) => {
+        (window as any).__debug?._setLastKnownSeq?.(sid, 0);
+      },
+      { sid: sessionId }
+    );
+
+    // Visibility change approach: triggers reconnect + load_events(after_seq=0)
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        value: "hidden",
+        writable: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        value: "visible",
+        writable: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    // Wait for sync to settle — poll until count stabilises at `before`
+    await expect.poll(
+      async () => allMsgLocator.count(),
+      { timeout: 5000 }
+    ).toBe(before);
+
+    const after = await allMsgLocator.count();
+    expect(after).toBe(before);
+  });
+});

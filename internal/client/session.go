@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -84,6 +85,11 @@ type SessionCallbacks struct {
 	// OnDisconnected is called when the WebSocket connection is closed.
 	OnDisconnected func(err error)
 
+	// OnClosed is called when the server sends a WebSocket close frame.
+	// code is the WebSocket close code (e.g., 1000 normal, 1001 going away, 1011 internal error).
+	// reason is the human-readable close reason.
+	OnClosed func(code int, reason string)
+
 	// OnRawMessage is called for every WebSocket message received (for debugging).
 	// If set, this is called before any other callback.
 	OnRawMessage func(msgType string, data []byte)
@@ -112,6 +118,13 @@ type Session struct {
 
 	mu     sync.Mutex
 	closed bool
+
+	// SentMessages records all outgoing WebSocket messages (for test assertions).
+	// Only populated when recording is enabled via EnableMessageRecording().
+	SentMessages []json.RawMessage
+
+	// recordMessages controls whether outgoing messages are recorded.
+	recordMessages bool
 }
 
 // Connect establishes a WebSocket connection to a session.
@@ -232,6 +245,16 @@ func (s *Session) Keepalive(timestamp int64) error {
 	})
 }
 
+// SendKeepalive sends an application-level keepalive ping to the server.
+// clientSeq is the highest sequence number the client has seen (last_seen_seq).
+// The server responds with a keepalive_ack containing its current max_seq.
+func (s *Session) SendKeepalive(clientSeq int64) error {
+	return s.sendMessage("keepalive", map[string]interface{}{
+		"client_time":   time.Now().UnixMilli(),
+		"last_seen_seq": clientSeq,
+	})
+}
+
 // Close closes the WebSocket connection.
 func (s *Session) Close() error {
 	s.mu.Lock()
@@ -244,6 +267,53 @@ func (s *Session) Close() error {
 
 	s.cancel()
 	return s.conn.Close()
+}
+
+// EnableMessageRecording enables recording of all outgoing WebSocket messages.
+// Call this before sending any messages you want to record.
+// Recorded messages are accessible via SentMessages and GetSentMessages().
+func (s *Session) EnableMessageRecording() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordMessages = true
+}
+
+// GetSentMessages returns a copy of all recorded outgoing messages.
+func (s *Session) GetSentMessages() []json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.SentMessages) == 0 {
+		return nil
+	}
+	cp := make([]json.RawMessage, len(s.SentMessages))
+	copy(cp, s.SentMessages)
+	return cp
+}
+
+// LastLoadEventsAfterSeq returns the after_seq value from the most recently
+// recorded load_events message, or -1 if no load_events was recorded.
+// This is useful for asserting that the client synced from the correct position
+// after a reconnect.
+func (s *Session) LastLoadEventsAfterSeq() int64 {
+	msgs := s.GetSentMessages()
+
+	type outgoingMsg struct {
+		Type string `json:"type"`
+		Data struct {
+			AfterSeq int64 `json:"after_seq"`
+		} `json:"data"`
+	}
+
+	for i := len(msgs) - 1; i >= 0; i-- {
+		var m outgoingMsg
+		if err := json.Unmarshal(msgs[i], &m); err != nil {
+			continue
+		}
+		if m.Type == "load_events" {
+			return m.Data.AfterSeq
+		}
+	}
+	return -1
 }
 
 // sendMessage sends a WebSocket message.
@@ -261,6 +331,13 @@ func (s *Session) sendMessage(msgType string, data map[string]interface{}) error
 	if s.closed {
 		return fmt.Errorf("session closed")
 	}
+
+	if s.recordMessages {
+		if msgBytes, err := json.Marshal(msg); err == nil {
+			s.SentMessages = append(s.SentMessages, json.RawMessage(msgBytes))
+		}
+	}
+
 	return s.conn.WriteJSON(msg)
 }
 
@@ -288,6 +365,12 @@ func (s *Session) readLoop() {
 		var msg wsMessage
 		err := s.conn.ReadJSON(&msg)
 		if err != nil {
+			// Check if the server sent a WebSocket close frame with a specific code.
+			if closeErr, ok := err.(*websocket.CloseError); ok {
+				if s.callbacks.OnClosed != nil {
+					s.callbacks.OnClosed(closeErr.Code, closeErr.Text)
+				}
+			}
 			if s.callbacks.OnDisconnected != nil {
 				s.callbacks.OnDisconnected(err)
 			}

@@ -2684,11 +2684,13 @@ function App() {
     removeWorkspace,
     refreshWorkspaces,
     forceReconnectActiveSession,
+    reconnectAllSessionsStaggered,
     availableCommands,
     configOptions,
     setConfigOption,
     activeUIPrompt,
     sendUIPromptAnswer,
+    mcpTools,
   } = useWebSocket();
 
   const [showSidebar, setShowSidebar] = useState(false);
@@ -4484,10 +4486,11 @@ function App() {
 
     // App Did Become Active - called from native macOS when app becomes visible
     // WKWebView doesn't fire visibilitychange events, so the native app calls this
-    // to trigger WebSocket reconnection and sync any missed messages
+    // to trigger WebSocket reconnection and sync any missed messages.
+    // Uses staggered reconnect so multiple sessions don't all send load_events simultaneously.
     window.mittoAppDidBecomeActive = () => {
-      console.log("[macOS] App became active, triggering reconnect and sync");
-      forceReconnectActiveSession();
+      console.log("[macOS] App became active, triggering staggered reconnect and sync");
+      reconnectAllSessionsStaggered();
       // Also refresh session list in case there were changes
       fetchStoredSessions();
     };
@@ -4518,6 +4521,7 @@ function App() {
     navigateToPreviousSession,
     switchSession,
     forceReconnectActiveSession,
+    reconnectAllSessionsStaggered,
   ]);
 
   const handleNewSession = async (workspace = null) => {
@@ -5820,6 +5824,7 @@ function App() {
         isStreaming=${isStreaming}
         configOptions=${configOptions}
         onSetConfigOption=${setConfigOption}
+        mcpTools=${mcpTools}
       />
     </div>
   `;

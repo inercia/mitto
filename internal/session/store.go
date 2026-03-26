@@ -337,13 +337,13 @@ func (s *Store) UpdateMetadata(sessionID string, updateFn func(*Metadata)) error
 
 // ReadEvents reads all events from a session's event log.
 func (s *Store) ReadEvents(sessionID string) ([]Event, error) {
-	return s.ReadEventsFrom(sessionID, 0)
+	return s.ReadEventsFrom(sessionID, 0, 0)
 }
 
 // ReadEventsFrom reads events from a session's event log starting after the given sequence number.
 // If afterSeq is 0, all events are returned.
 // If afterSeq is 5, only events with seq > 5 are returned.
-func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64) ([]Event, error) {
+func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]Event, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -374,6 +374,10 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64) ([]Event, error
 		// Only include events after the specified sequence number
 		if event.Seq > afterSeq {
 			events = append(events, event)
+			// Stop early if we've reached the limit (0 = unlimited for backward compat)
+			if limit > 0 && len(events) >= limit {
+				break
+			}
 		}
 	}
 

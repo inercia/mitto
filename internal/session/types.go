@@ -34,7 +34,7 @@ type SessionStore interface {
 	// ReadEventsFrom reads events from a session's event log starting after the given sequence number.
 	// If afterSeq is 0, all events are returned.
 	// If afterSeq is 5, only events with seq > 5 are returned.
-	ReadEventsFrom(sessionID string, afterSeq int64) ([]Event, error)
+	ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]Event, error)
 
 	// ReadEventsLast reads the last N events from a session's event log.
 	// If beforeSeq > 0, only events with seq < beforeSeq are considered.

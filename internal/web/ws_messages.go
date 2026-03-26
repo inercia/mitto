@@ -372,6 +372,11 @@ const (
 	// Sent from frontend when user confirms running the suggested installation command.
 	// Data: { "command": string }
 	WSMsgTypeRunMCPInstallCommand = "run_mcp_install_command"
+
+	// WSMsgTypeMCPToolsAvailable notifies that MCP tools have been fetched for a workspace.
+	// Sent via the global events WebSocket when tools are successfully retrieved.
+	// Data: { "workspace_uuid": string, "tools": []MCPToolInfo }
+	WSMsgTypeMCPToolsAvailable = "mcp_tools_available"
 )
 
 // =============================================================================

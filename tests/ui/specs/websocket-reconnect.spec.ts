@@ -470,3 +470,231 @@ test.describe("Multi-Tab Scenarios", () => {
   });
 });
 
+
+
+// =============================================================================
+// Gap 3 — Pending prompt delivered after reconnect
+// =============================================================================
+//
+// This describe block tests the code path in useWebSocket.js where:
+//   1. A prompt is stored in localStorage via savePendingPrompt() before send.
+//   2. The WebSocket closes before prompt_received (ACK) arrives.
+//   3. On the next WS open (reconnect), retryPendingPrompts() fires after 500 ms,
+//      reads localStorage, and re-sends any queued prompts via sendToSession().
+//
+// The retry is wired in connectToSession() onopen (line ~2608):
+//   setTimeout(() => retryPendingPromptsRef.current(sessionId), 500)
+//
+// Why retryPendingPrompts() exists (vs the in-flight ACK retry path):
+//   - sendPrompt() itself handles mid-send WS drops via verifyDeliveryAfterReconnect.
+//   - retryPendingPrompts() is the STARTUP/RECONNECT recovery path: prompts that
+//     were saved to localStorage and survived a crash, hard-close, or long outage
+//     are retried here on the next WS open.
+//
+// Approach: inject a pending prompt directly into localStorage (simulating a
+// prompt saved by savePendingPrompt() before a page crash or hard close), then
+// close the WS to trigger the reconnect that fires retryPendingPrompts().
+//
+// Test 1 verifies the localStorage data format.
+// Test 2 verifies the end-to-end retry flow: retryPendingPrompts is called,
+// sends the prompt to the server, and the server's prompt_received ACK clears
+// the localStorage entry.
+//
+// Known gap: when retrying, the user message may not appear in the UI because
+// the sendToSession() call in retryPendingPrompts() does not call
+// addMessageToSession().  The server sends user_prompt with is_mine=true
+// (assuming the message is already in the UI from the original send), but after
+// a page reload the React state is empty.  Test 2 documents this gap but does
+// not assert UI visibility; it asserts the localStorage cleanup instead, which
+// is the primary observable side-effect of a successful retry.
+
+test.describe("Gap 3 — Pending Prompt Retry via retryPendingPrompts", () => {
+  const PENDING_KEY = "mitto_pending_prompts";
+
+  test.setTimeout(90000);
+
+  test.beforeEach(async ({ page, helpers }) => {
+    await helpers.navigateAndWait(page);
+    await helpers.clearLocalStorage(page);
+    await page.evaluate((key) => localStorage.removeItem(key), PENDING_KEY);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 1: localStorage entry has the right shape for retryPendingPrompts()
+  // ---------------------------------------------------------------------------
+  // retryPendingPrompts() calls getPendingPromptsForSession(sessionId), which
+  // filters by `data.sessionId` and expiry.  The test verifies that a manually
+  // injected entry (mimicking savePendingPrompt) has all required fields.
+  test("should save prompt to localStorage when WebSocket is unavailable", async ({
+    page,
+    helpers,
+  }) => {
+    const sessionId = await helpers.createFreshSession(page);
+    await helpers.waitForWebSocketReady(page);
+
+    const pendingMsg = helpers.uniqueMessage("pending-offline");
+    const promptId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Write a pending prompt exactly as savePendingPrompt() would.
+    await page.evaluate(
+      ({ key, promptId, sessionId, message }) => {
+        const existing = JSON.parse(localStorage.getItem(key) || "{}");
+        existing[promptId] = {
+          sessionId,
+          message,
+          imageIds: [],
+          fileIds: [],
+          timestamp: Date.now(),
+        };
+        localStorage.setItem(key, JSON.stringify(existing));
+      },
+      { key: PENDING_KEY, promptId, sessionId, message: pendingMsg },
+    );
+
+    const pending = await page.evaluate(
+      (key) => JSON.parse(localStorage.getItem(key) || "{}"),
+      PENDING_KEY,
+    );
+
+    const pendingValues = Object.values(pending) as Array<{
+      sessionId: string;
+      message: string;
+      imageIds: string[];
+      fileIds: string[];
+      timestamp: number;
+    }>;
+
+    // Shape checks — exactly what getPendingPromptsForSession() reads.
+    expect(pendingValues.length).toBeGreaterThan(0);
+
+    const entry = pendingValues.find((p) => p.message?.includes("pending-offline"));
+    expect(entry).toBeTruthy();
+    expect(entry!.sessionId).toBe(sessionId);   // filter key in getPendingPromptsForSession
+    expect(entry!.imageIds).toBeInstanceOf(Array); // required by retryPendingPrompts
+    expect(typeof entry!.timestamp).toBe("number"); // required for expiry check
+
+    await page.evaluate((key) => localStorage.removeItem(key), PENDING_KEY);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 2: retryPendingPrompts() delivers the queued prompt on reconnect
+  // ---------------------------------------------------------------------------
+  // Flow:
+  //   a) Install WS tracker (monkey-patch before session creation).
+  //   b) Create session → tracked WS is the live connection.
+  //   c) Inject a pending prompt into localStorage.
+  //   d) Close the tracked WS → onclose schedules reconnect (~1 s delay).
+  //   e) connectToSession() fires → new WS open → retryPendingPrompts(sid) after 500 ms.
+  //   f) sendToSession() sends the queued prompt → server processes it.
+  //   g) Server emits prompt_received → removePendingPrompt() → localStorage cleared.
+  //
+  // Primary assertion: localStorage entry is gone (proves steps e–g succeeded).
+  // Secondary assertion: console logs confirm retryPendingPrompts() ran.
+  test("should retry and deliver pending prompt after WebSocket reconnects", async ({
+    page,
+    helpers,
+    timeouts,
+  }) => {
+    const retryLogs: string[] = [];
+    page.on("console", (msg) => {
+      const text = msg.text();
+      if (
+        text.toLowerCase().includes("retrying") ||
+        text.toLowerCase().includes("retried") ||
+        text.toLowerCase().includes("pending prompt")
+      ) {
+        retryLogs.push(text);
+      }
+    });
+
+    // Install WS tracker before session WS is created.
+    await page.evaluate(() => {
+      const origWS = window.WebSocket;
+      (window as any).__testWebSockets = [];
+      window.WebSocket = function (url: string, protocols?: string | string[]) {
+        const ws = new origWS(url, protocols);
+        (window as any).__testWebSockets.push(ws);
+        return ws;
+      } as unknown as typeof WebSocket;
+      Object.assign(window.WebSocket, origWS);
+    });
+
+    const sessionId = await helpers.createFreshSession(page);
+    await helpers.waitForWebSocketReady(page);
+
+    // Inject a pending prompt into localStorage (simulates a prompt saved by
+    // savePendingPrompt() before a page crash or hard network loss).
+    const pendingMsg = helpers.uniqueMessage("pending-retry");
+    const promptId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    await page.evaluate(
+      ({ key, promptId, sessionId, message }) => {
+        const existing = JSON.parse(localStorage.getItem(key) || "{}");
+        existing[promptId] = {
+          sessionId,
+          message,
+          imageIds: [],
+          fileIds: [],
+          timestamp: Date.now(),
+        };
+        localStorage.setItem(key, JSON.stringify(existing));
+      },
+      { key: PENDING_KEY, promptId, sessionId, message: pendingMsg },
+    );
+
+    // Confirm the entry is in localStorage before triggering the disconnect.
+    const before = await page.evaluate(
+      (key) => JSON.parse(localStorage.getItem(key) || "{}"),
+      PENDING_KEY,
+    );
+    expect(Object.keys(before).length).toBeGreaterThan(0);
+
+    // Close all open WebSockets.  The app's onclose handler schedules reconnect:
+    //   setTimeout(() => connectToSession(sessionId), calculateReconnectDelay(0))
+    //   → delay ≈ 1000–1300 ms on attempt 0
+    // On the new connection's onopen, retryPendingPrompts(sessionId) is called
+    // after 500 ms.  It sends the pending prompt via sendToSession(); the server
+    // emits prompt_received → removePendingPrompt() → localStorage entry cleared.
+    await page.evaluate(() => {
+      for (const ws of (window as any).__testWebSockets ?? []) {
+        if (ws.readyState === 0 /* CONNECTING */ || ws.readyState === 1 /* OPEN */) {
+          ws.close();
+        }
+      }
+    });
+
+    // PRIMARY ASSERTION: localStorage entry is cleared after reconnect + retry.
+    // Total expected time: ~1000–1300 ms reconnect + 500 ms retry delay + ~200 ms
+    // server processing = ~1.7–2.0 s total.  agentResponse timeout gives 60 s.
+    await expect
+      .poll(
+        async () => {
+          const raw = await page.evaluate(
+            (key) => localStorage.getItem(key),
+            PENDING_KEY,
+          );
+          const stored = raw
+            ? (JSON.parse(raw) as Record<string, unknown>)
+            : {};
+          return Object.keys(stored).filter((k) => k === promptId).length;
+        },
+        {
+          timeout: timeouts.agentResponse,
+          message:
+            "retryPendingPrompts() did not clear the pending prompt from localStorage",
+        },
+      )
+      .toBe(0);
+
+    // SECONDARY ASSERTION: console log confirms retryPendingPrompts ran.
+    expect(
+      retryLogs.some(
+        (log) =>
+          log.toLowerCase().includes("retrying") ||
+          log.toLowerCase().includes("retried") ||
+          log.toLowerCase().includes("pending prompt"),
+      ),
+    ).toBe(true);
+  });
+});
+

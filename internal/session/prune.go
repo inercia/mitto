@@ -9,6 +9,13 @@ import (
 	"github.com/inercia/mitto/internal/logging"
 )
 
+const (
+	// DefaultPruneKeepLast is the default number of events to keep when pruning.
+	DefaultPruneKeepLast = 500
+	// MinPruneKeepLast is the minimum allowed value for keep_last in prune requests.
+	MinPruneKeepLast = 50
+)
+
 // PruneConfig holds configuration for session pruning.
 type PruneConfig struct {
 	// MaxMessages is the maximum number of messages to retain per session.
@@ -32,6 +39,14 @@ type PruneResult struct {
 	ImagesRemoved int
 	// BytesReclaimed is the approximate number of bytes freed.
 	BytesReclaimed int64
+}
+
+// PruneKeepLast prunes a session's events, keeping only the last keepLast events.
+// This is a convenience wrapper around PruneIfNeeded for the REST API.
+func (s *Store) PruneKeepLast(sessionID string, keepLast int) (*PruneResult, error) {
+	return s.PruneIfNeeded(sessionID, &PruneConfig{
+		MaxMessages: keepLast,
+	})
 }
 
 // PruneIfNeeded checks if the session exceeds configured limits and prunes if necessary.

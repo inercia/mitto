@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 )
 
@@ -15,7 +16,14 @@ const (
 	PurposeQueueTitle    = "queue-title"
 	PurposeSummary       = "summary"
 	PurposeMCPCheck      = "mcp-check"
+	PurposeMCPTools      = "mcp-tools"
 )
+
+// MCPToolInfo represents information about a single MCP tool.
+type MCPToolInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
 
 // MCPAvailabilityResult represents the result of checking MCP tool availability.
 type MCPAvailabilityResult struct {
@@ -35,6 +43,10 @@ type WorkspaceAuxiliaryManager struct {
 	// Cache for MCP availability checks per workspace
 	mcpCheckCache   map[string]*MCPAvailabilityResult
 	mcpCheckCacheMu sync.RWMutex
+
+	// Cache for MCP tools list per workspace
+	mcpToolsCache   map[string][]MCPToolInfo
+	mcpToolsCacheMu sync.RWMutex
 }
 
 // NewWorkspaceAuxiliaryManager creates a new workspace-scoped auxiliary manager.
@@ -43,6 +55,7 @@ func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger)
 		provider:      provider,
 		logger:        logger,
 		mcpCheckCache: make(map[string]*MCPAvailabilityResult),
+		mcpToolsCache: make(map[string][]MCPToolInfo),
 	}
 }
 
@@ -291,6 +304,110 @@ func (m *WorkspaceAuxiliaryManager) CheckMCPAvailability(ctx context.Context, wo
 	}
 
 	return result, nil
+}
+
+// FetchMCPTools queries the agent for its list of available tools.
+// Results are cached per workspace to avoid repeated queries.
+func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspaceUUID string) ([]MCPToolInfo, error) {
+	// Check cache first
+	m.mcpToolsCacheMu.RLock()
+	if cached, ok := m.mcpToolsCache[workspaceUUID]; ok {
+		m.mcpToolsCacheMu.RUnlock()
+		if m.logger != nil {
+			m.logger.Debug("mcp tools fetch: using cached result",
+				"workspace_uuid", workspaceUUID,
+				"tool_count", len(cached))
+		}
+		return cached, nil
+	}
+	m.mcpToolsCacheMu.RUnlock()
+
+	if m.logger != nil {
+		m.logger.Debug("mcp tools fetch: starting",
+			"workspace_uuid", workspaceUUID)
+	}
+
+	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeMCPTools, FetchMCPToolsPromptTemplate)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Debug("mcp tools fetch: request failed",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error())
+		}
+		return nil, fmt.Errorf("failed to fetch MCP tools: %w", err)
+	}
+
+	if m.logger != nil {
+		m.logger.Debug("mcp tools fetch: received response",
+			"workspace_uuid", workspaceUUID,
+			"response_length", len(response))
+	}
+
+	tools, agentError, err := parseMCPToolsList(response)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("mcp tools fetch: failed to parse response",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error(),
+				"response", truncateForLog(response, 200))
+		}
+		return nil, fmt.Errorf("failed to parse MCP tools response: %w", err)
+	}
+
+	if agentError != "" {
+		if m.logger != nil {
+			m.logger.Warn("mcp tools fetch: agent reported error",
+				"workspace_uuid", workspaceUUID,
+				"agent_error", agentError)
+		}
+		// If the agent reported an error but also returned some tools, use them.
+		// If no tools were returned, propagate the error.
+		if len(tools) == 0 {
+			return nil, fmt.Errorf("agent error: %s", agentError)
+		}
+	}
+
+	// Sort tools alphabetically by name.
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
+
+	// Only cache non-empty results.
+	if len(tools) > 0 {
+		m.mcpToolsCacheMu.Lock()
+		m.mcpToolsCache[workspaceUUID] = tools
+		m.mcpToolsCacheMu.Unlock()
+	}
+
+	if m.logger != nil {
+		m.logger.Info("MCP tools fetch completed",
+			"workspace_uuid", workspaceUUID,
+			"tool_count", len(tools))
+	}
+
+	return tools, nil
+}
+
+// ClearMCPToolsCache clears the cached MCP tools list for a workspace.
+// This can be used to force a re-fetch, for example after MCP server configuration changes.
+func (m *WorkspaceAuxiliaryManager) ClearMCPToolsCache(workspaceUUID string) {
+	m.mcpToolsCacheMu.Lock()
+	delete(m.mcpToolsCache, workspaceUUID)
+	m.mcpToolsCacheMu.Unlock()
+
+	if m.logger != nil {
+		m.logger.Debug("cleared MCP tools cache",
+			"workspace_uuid", workspaceUUID)
+	}
+}
+
+// GetCachedMCPTools returns the cached MCP tools list for a workspace without fetching.
+// Returns the cached tools and true if found, or nil and false if not cached.
+func (m *WorkspaceAuxiliaryManager) GetCachedMCPTools(workspaceUUID string) ([]MCPToolInfo, bool) {
+	m.mcpToolsCacheMu.RLock()
+	defer m.mcpToolsCacheMu.RUnlock()
+	cached, ok := m.mcpToolsCache[workspaceUUID]
+	return cached, ok
 }
 
 // ClearMCPCheckCache clears the cached MCP availability result for a workspace.

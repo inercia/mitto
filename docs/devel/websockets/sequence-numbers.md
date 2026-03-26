@@ -173,25 +173,33 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
 
 ### Frontend Responsibilities
 
-1. **Track highest received seq via `lastKnownSeqRef`**: The frontend maintains a dedicated `useRef` (`lastKnownSeqRef`) that tracks the highest received sequence number per session. This ref is updated on every received event (`agent_message`, `tool_call`, `user_prompt`, `events_loaded`, `prompt_complete`, etc.) and is the **primary source** for determining `after_seq` on reconnection.
+1. **Track highest received seq via a three-tier watermark**: The frontend determines `after_seq` from three sources in priority order (highest wins):
+
+   | Tier | Source | Scope | Survives |
+   |------|--------|-------|---------|
+   | 1 (primary) | `lastKnownSeqRef` (`useRef`) | In-memory per hook instance | WS reconnects within a page session |
+   | 2 | `localStorage` (`getLastSeenSeq`) | Browser storage | App restarts, WKWebView page reloads |
+   | 3 (fallback) | React state (`messages` / `lastLoadedSeq`) | React state | Render cycles (may be empty during reconnect) |
+
+   `updateLastKnownSeq` writes to **both** the ref and localStorage so that app restarts benefit from the correct watermark without losing historical seq information:
 
    ```javascript
-   // Dedicated ref — survives reconnections, always current
    const lastKnownSeqRef = useRef({}); // { [sessionId]: number }
 
-   // Updated on every received event:
    const updateLastKnownSeq = useCallback((sessionId, seq) => {
      if (seq && seq > (lastKnownSeqRef.current[sessionId] || 0)) {
        lastKnownSeqRef.current[sessionId] = seq;
+       // Persist to localStorage: survives app restarts and WKWebView reloads.
+       setLastSeenSeq(sessionId, seq);
      }
    }, []);
    ```
 
-   **Why not React state?** During reconnection, `sessionsRef.current[sessionId].messages` can be empty (due to React render cycle timing, stale client reset, or fast reconnects where the prior connection's `events_loaded` never arrived). The ref is synchronous, updated per-event, and survives across reconnections.
+   **Why `useRef` as primary?** During reconnection, React state can be empty (render timing, stale client reset, or fast reconnects). The ref is synchronous and updated per-event.
 
-   **Why not localStorage?** localStorage was previously used but abandoned due to stale value issues in WKWebView (iOS native app). The `useRef` approach avoids both problems.
+   **Why localStorage as second tier?** The `useRef` is reset when the JavaScript runtime restarts (app quit / WKWebView page reload). localStorage bridges these restarts. The key difference from the _old_ localStorage approach is that we now persist the **max seq ever received** (the reconnection watermark), not the user's scroll position — so the stored value is always safe to use as `after_seq`. See "App Restart Context-Load Fallback" in [Synchronization](./synchronization.md) for how empty-session edge cases are handled.
 
-   **Fallback**: React state (`getMaxSeq(session.messages)` and `session.lastLoadedSeq`) is still consulted as a safety net — the final value is `Math.max(refSeq, stateSeq)`.
+   **Fallback**: React state (`getMaxSeq(session.messages)` and `session.lastLoadedSeq`) is still consulted — the final value is `Math.max(refSeq, persistedSeq, stateSeq)`.
 
 2. **Client-side deduplication by seq**: The frontend tracks seen `seq` values and skips duplicates (M1 fix):
 
@@ -215,34 +223,48 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
    if (lastMessageSeq && seq === lastMessageSeq) return false;
    ```
 
-4. **Request sync with lastSeenSeq on reconnection**: On reconnection, the `ws.onopen` handler reads `lastKnownSeqRef` and sends `load_events` with `after_seq`:
+4. **Request sync with lastSeenSeq on reconnection**: On reconnection (and on app restart via localStorage), `ws.onopen` resolves the three-tier watermark and sends `load_events`:
 
    ```javascript
-   // In ws.onopen:
+   // In ws.onopen — three-tier watermark:
    const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+   // Restore from localStorage on app restart (refSeq is 0 only then)
+   const persistedSeq = refSeq === 0 ? getLastSeenSeq(sessionId) : 0;
+   if (persistedSeq > 0) {
+     lastKnownSeqRef.current[sessionId] = persistedSeq; // populate ref
+   }
    const stateSeq = Math.max(
      getMaxSeq(session?.messages || []),
      session?.lastLoadedSeq || 0,
    );
-   const lastSeq = Math.max(refSeq, stateSeq);
+   const lastSeq = Math.max(refSeq, persistedSeq, stateSeq);
 
    if (lastSeq > 0) {
+     // Reconnect OR app restart with stored watermark: sync only new events.
+     // When no messages are in memory (app restart), needsContextLoadRef is set
+     // so events_loaded can trigger a secondary limit:50 load if needed.
      ws.send(
        JSON.stringify({ type: "load_events", data: { after_seq: lastSeq } }),
      );
    } else {
+     // No watermark: true initial load.
      ws.send(
-       JSON.stringify({
-         type: "load_events",
-         data: { limit: INITIAL_EVENTS_LIMIT },
-       }),
+       JSON.stringify({ type: "load_events", data: { limit: INITIAL_EVENTS_LIMIT } }),
      );
    }
    ```
 
 5. **Merge with deduplication on sync**: Use `mergeMessagesWithSync()` to handle overlapping events after reconnection.
 
-6. **Reset watermark on stale client detection**: When `events_loaded` detects the client has stale state (client's max seq > server's max seq), both the seq tracker and `lastKnownSeqRef` are reset before processing fresh events from the server.
+6. **Reset watermark on stale client detection**: When `events_loaded` detects the client has stale state (client's max seq > server's max seq), both the seq tracker, `lastKnownSeqRef`, and the localStorage entry are cleared before processing fresh events from the server:
+
+   ```javascript
+   clearSeenSeqs(sessionId);              // Reset M1 seq tracker
+   delete lastKnownSeqRef.current[sessionId]; // Reset reconnection watermark
+   setLastSeenSeq(sessionId, 0);          // Clear localStorage mirror
+   ```
+
+   After the stale reset, `updateLastKnownSeq` repopulates all three tiers from the fresh events sent by the server.
 
 
 ## Pruning and Sequence Numbers
@@ -326,13 +348,15 @@ The system protects against flushing content with unmatched inline formatting ma
 
 ## Edge Cases and Fixes
 
-### H1: Stale lastSeenSeq (Historical - Now Fixed)
+### H1: Stale lastSeenSeq (Historical Chain of Fixes)
 
-**Problem**: Previously, `lastSeenSeq` was stored in localStorage and could become stale if the client disconnected during streaming.
+**Original problem**: `lastSeenSeq` was stored in localStorage keyed to the user's **scroll position**, not the max received seq. After restarting the app, `after_seq: 5` on a 400-event session caused the server to return all 395 remaining events — O(n) data transfer.
 
-**Fix (original)**: The frontend calculated `lastSeenSeq` dynamically from messages in React state using `getMaxSeq()`.
+**Fix 1**: The frontend switched to calculating `lastSeenSeq` dynamically from messages in React state using `getMaxSeq()`. This broke in edge cases where React state was empty during reconnection.
 
-**Fix (current)**: The frontend now tracks the highest received seq via `lastKnownSeqRef` (a `useRef`), updated on every event. React state is still consulted as a fallback: `lastSeq = Math.max(refSeq, stateSeq)`. See [Frontend Responsibilities](#frontend-responsibilities) for details.
+**Fix 2 (current)**: A dedicated `lastKnownSeqRef` (`useRef`) tracks the **highest seq ever received** (the reconnection watermark), updated on every event. React state is still consulted as a fallback.
+
+**Fix 3 (current, app-restart)**: `updateLastKnownSeq` now also writes to localStorage via `setLastSeenSeq`. This makes the watermark survive app restarts and WKWebView page reloads. Because the stored value is always the **max** seq (never a scroll position), `after_seq: storedSeq` is safe — the server returns only genuinely new events. An empty-session edge case (nothing happened while the app was closed) is handled by the context-load fallback; see [Synchronization — App Restart Context-Load Fallback](./synchronization.md#app-restart--wkwebview-reload-context-load-fallback).
 
 ### H2: Observer Registration Race
 
@@ -346,14 +370,15 @@ The system protects against flushing content with unmatched inline formatting ma
 
 **Fix**: The frontend tracks seen `seq` values in a sliding window and skips duplicates.
 
-**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), both the seq tracker AND `lastKnownSeqRef` for the session are reset BEFORE processing events to prevent fresh events from being rejected as duplicates:
+**Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), the seq tracker, `lastKnownSeqRef`, **and the localStorage mirror** are all reset BEFORE processing events to prevent fresh events from being rejected as duplicates:
 
 ```javascript
-clearSeenSeqs(sessionId); // Reset M1 seq tracker
+clearSeenSeqs(sessionId);              // Reset M1 seq tracker
 delete lastKnownSeqRef.current[sessionId]; // Reset reconnection watermark
+setLastSeenSeq(sessionId, 0);          // Clear localStorage mirror
 ```
 
-**Note**: On stale client detection, the implementation clears `lastKnownSeqRef` for the affected `sessionId`. After the stale reset, `lastKnownSeqRef` is repopulated from the fresh stream of events sent by the server (via `updateLastKnownSeq(sessionId, maxSeq)`), and from that point forward it again tracks the highest observed `seq` monotonically for the session.
+After the stale reset, `updateLastKnownSeq` repopulates all three tiers from the fresh events sent by the server. From that point the watermark is again accurate for future reconnects.
 
 ## Testing the Contract
 

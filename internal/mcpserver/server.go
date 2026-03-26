@@ -2731,6 +2731,18 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	// Get-or-create the persistent child report collector for this parent.
 	collector := s.getOrCreateCollector(realSessionID)
 
+	// Server-side safeguard: auto-report children that have been waited on for too long.
+	// This prevents the AI agent from retrying indefinitely when a child is stuck.
+	// We inject a synthetic "stuck" report so that startWait sees them as completed.
+	stuckChildren := collector.getStuckChildren()
+	for _, childID := range stuckChildren {
+		s.logger.Warn("Child session considered stuck after prolonged cumulative wait — auto-reporting as stuck",
+			"parent_session", realSessionID,
+			"child_session", childID,
+			"max_wait", maxChildWaitDuration)
+		collector.addReport(childID, input.TaskID, json.RawMessage(`{"status":"stuck","summary":"Child session did not report after 30 minutes of cumulative waiting. The child may be unresponsive. Consider archiving this session."}`))
+	}
+
 	// If ALL valid children are not running, return immediately with not_running status.
 	// We still register them in the collector for record-keeping.
 	if len(runningChildren) == 0 {

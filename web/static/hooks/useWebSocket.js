@@ -29,6 +29,8 @@ import {
 import {
   getLastActiveSessionId,
   setLastActiveSessionId,
+  getLastSeenSeq,
+  setLastSeenSeq,
   getSingleExpandedGroupMode,
   setGroupExpanded,
   isGroupExpanded,
@@ -73,7 +75,9 @@ const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Send keepalive every 5 seconds in native app
 const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Send keepalive every 10 seconds in browser
 const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
-const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
+const KEEPALIVE_MAX_MISSED_DEFAULT = 2; // Force reconnect after 2 missed keepalives
+const KEEPALIVE_MAX_MISSED_LARGE_SESSION = 4; // For sessions with 500+ events
+const LARGE_SESSION_SEQ_THRESHOLD = 500;
 
 // Sync tolerance: only request sync if client is more than N sequences behind server.
 // This avoids excessive sync requests during normal streaming where the markdown buffer
@@ -82,6 +86,12 @@ const KEEPALIVE_MAX_MISSED = 2; // Force reconnect after 2 missed keepalives
 // NOTE: This tolerance is only applied during active streaming. For non-streaming sessions,
 // tolerance is 0 to ensure immediate sync of final events like session_end.
 const KEEPALIVE_SYNC_TOLERANCE = 2;
+
+// Startup stagger: delay between each background session's WebSocket connection at startup/wake.
+// Prevents thundering herd where all sessions send load_events simultaneously,
+// overwhelming the server with concurrent large event replays.
+// Active session always connects first with no delay; background sessions stagger by this amount.
+const STARTUP_STAGGER_MS = 300;
 
 /**
  * Get the appropriate keepalive interval based on the runtime environment.
@@ -191,6 +201,13 @@ async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
  * Manages both global events WebSocket and per-session WebSockets
  */
 export function useWebSocket() {
+  // Initialize window.__debug for test observability.
+  // Tests can read window.__debug.lastLoadEventsAfterSeq to assert the client
+  // used its stored watermark (not 0) when sending load_events after reconnect.
+  if (typeof window !== "undefined" && !window.__debug) {
+    window.__debug = {};
+  }
+
   const [eventsConnected, setEventsConnected] = useState(false);
 
   // Multi-session state: { sessionId: { messages: [], info: {}, lastSeq: 0, isStreaming: false, ws: WebSocket } }
@@ -202,6 +219,8 @@ export function useWebSocket() {
   const [workspaces, setWorkspaces] = useState([]);
   // Available ACP servers from config
   const [acpServers, setAcpServers] = useState([]);
+  // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
+  const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
 
   // Track background session completions for toast notifications
   // { sessionId, sessionName, timestamp }
@@ -337,11 +356,45 @@ export function useWebSocket() {
   // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
   const keepaliveRef = useRef({});
 
+  // Track in-flight sync (load_events) requests per session.
+  // When a sync is pending, keepalive misses are suppressed to prevent
+  // reconnection storms during large event syncs (e.g., 790 events).
+  // { sessionId: boolean }
+  const pendingSyncRef = useRef({});
+
+  // Auto-clear timeout for pendingSyncRef to prevent indefinite suppression.
+  // If events_loaded never arrives (e.g., server error, WebSocket drop),
+  // the sync flag is cleared after SYNC_TIMEOUT_MS so keepalive miss
+  // counting resumes and triggers a reconnect.
+  // { sessionId: timeoutId }
+  const syncTimeoutRef = useRef({});
+  const SYNC_TIMEOUT_MS = 30_000;
+
+  // Track when each sync (load_events) was sent so we can log round-trip time
+  // when events_loaded arrives. Helps measure real sync latency from webview.log.
+  // { sessionId: number (Date.now()) }
+  const syncStartTimeRef = useRef({});
+
   // Dedicated ref for tracking last known seq per session
   // Survives reconnections, always current, updated on every received event
   // This is the PRIMARY source for client max seq (React state is fallback)
   // { sessionId: number }
   const lastKnownSeqRef = useRef({});
+
+  // Expose a test hook so Playwright can manipulate lastKnownSeqRef directly.
+  // Only used in test environments — harmless in production.
+  if (typeof window !== "undefined") {
+    if (!window.__debug) window.__debug = {};
+    window.__debug._setLastKnownSeq = (sessionId, seq) => {
+      lastKnownSeqRef.current[sessionId] = seq;
+    };
+  }
+
+  // Track sessions that need a historical context load after the localStorage
+  // watermark was used as after_seq and zero new events were returned.
+  // Without this, an app restart for an idle session would show an empty conversation.
+  // { sessionId: boolean }
+  const needsContextLoadRef = useRef({});
 
   /**
    * Update the last known seq for a session.
@@ -354,8 +407,81 @@ export function useWebSocket() {
   const updateLastKnownSeq = useCallback((sessionId, seq) => {
     if (seq && seq > (lastKnownSeqRef.current[sessionId] || 0)) {
       lastKnownSeqRef.current[sessionId] = seq;
+      // Persist to localStorage so that app restarts and WKWebView page reloads
+      // can start from the correct watermark instead of always requesting the
+      // last 50 events.  getLastSeenSeq/setLastSeenSeq are try/catch-safe.
+      setLastSeenSeq(sessionId, seq);
     }
   }, []);
+
+  /**
+   * Clear the in-flight sync flag for a session and cancel its auto-clear timeout.
+   * Call this when events_loaded arrives or when the WebSocket closes/errors.
+   *
+   * @param {string} sessionId - The session ID
+   */
+  const clearPendingSync = useCallback((sessionId) => {
+    if (syncTimeoutRef.current[sessionId]) {
+      clearTimeout(syncTimeoutRef.current[sessionId]);
+      delete syncTimeoutRef.current[sessionId];
+    }
+    if (pendingSyncRef.current[sessionId]) {
+      // Log round-trip time for every successful sync so webview.log captures
+      // real latency data (useful for tuning SYNC_TIMEOUT_MS).
+      const startTime = syncStartTimeRef.current[sessionId];
+      if (startTime) {
+        console.log(
+          `[sync] events_loaded for session ${sessionId} in ${Date.now() - startTime}ms`,
+        );
+      }
+      delete syncStartTimeRef.current[sessionId];
+    }
+    pendingSyncRef.current[sessionId] = false;
+    // Also discard any pending context-load flag so a WebSocket drop during the
+    // after_seq phase doesn't leave a stale flag that fires on reconnect.
+    delete needsContextLoadRef.current[sessionId];
+  }, []);
+
+  /**
+   * Set the in-flight sync flag for a session and start a 30s auto-clear timeout.
+   * If events_loaded never arrives (server error, WebSocket drop), the flag is
+   * cleared automatically and the WebSocket is force-closed to trigger an immediate
+   * reconnect — eliminating the extra 5-20s that would otherwise be wasted waiting
+   * for keepalive miss-counting to reach the threshold.
+   *
+   * @param {string} sessionId - The session ID
+   */
+  const setPendingSync = useCallback(
+    (sessionId) => {
+      // Cancel any existing timeout before starting a new one
+      if (syncTimeoutRef.current[sessionId]) {
+        clearTimeout(syncTimeoutRef.current[sessionId]);
+      }
+      pendingSyncRef.current[sessionId] = true;
+      // Record send time so clearPendingSync can log the round-trip duration.
+      syncStartTimeRef.current[sessionId] = Date.now();
+      syncTimeoutRef.current[sessionId] = setTimeout(() => {
+        delete syncTimeoutRef.current[sessionId];
+        if (pendingSyncRef.current[sessionId]) {
+          pendingSyncRef.current[sessionId] = false;
+          console.warn(
+            `[sync] Sync timeout for session ${sessionId} — events_loaded did not arrive within ${SYNC_TIMEOUT_MS}ms. Forcing reconnect.`,
+          );
+          // Force-close the WebSocket immediately instead of waiting for keepalive
+          // miss-counting to fire (which would add another 10-20s of dead time).
+          // If events_loaded took >30s, the connection is almost certainly a zombie.
+          // Use the force-reconnect pattern: delete ref BEFORE closing so that onclose
+          // does not schedule a duplicate reconnect timer on top of ours.
+          const ws = sessionWsRefs.current[sessionId];
+          if (ws) {
+            delete sessionWsRefs.current[sessionId];
+            ws.close(); // onclose will schedule reconnect via connectToSession
+          }
+        }
+      }, SYNC_TIMEOUT_MS);
+    },
+    [], // sessionWsRefs is a stable ref object — safe to close over without declaring as dep
+  );
 
   /**
    * Check for gaps in message sequence and request missing events if needed.
@@ -439,6 +565,12 @@ export function useWebSocket() {
               },
             }),
           );
+          // Export to window.__debug for Playwright test observability
+          if (typeof window !== "undefined" && window.__debug) {
+            window.__debug.lastLoadEventsAfterSeq = afterSeq;
+            window.__debug.lastLoadEventsSessionId = sessionId;
+            window.__debug.lastLoadEventsTimestamp = Date.now();
+          }
         }
         // Clear pending state after request is sent
         delete pendingGapFillRef.current[sessionId];
@@ -922,6 +1054,7 @@ export function useWebSocket() {
                   msg.data.periodic_enabled ??
                   session.info?.periodic_enabled ??
                   false,
+                workspace_uuid: msg.data.workspace_uuid ?? null,
               },
               isStreaming: msg.data.is_prompting || false,
             },
@@ -1544,18 +1677,27 @@ export function useWebSocket() {
             // This happens when mobile client reconnects after phone was sleeping,
             // or after server restart while client was offline.
             // Trigger a full reload by requesting initial events (no after_seq).
-            console.log(
-              `[keepalive] Session ${sessionId} has STALE state: client_max_seq=${clientMaxSeq} > server_max_seq=${serverMaxSeq}, triggering full reload`,
-            );
-            const ws = sessionWsRefs.current[sessionId];
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              // Request initial load (last 50 messages) - server will detect stale and fall back
-              ws.send(
-                JSON.stringify({
-                  type: "load_events",
-                  data: { limit: INITIAL_EVENTS_LIMIT },
-                }),
+            // Skip if a sync is already in-flight — the response may fix the stale
+            // state; if not, the next keepalive_ack will trigger another attempt.
+            if (pendingSyncRef.current[sessionId]) {
+              console.debug(
+                `[keepalive] Session ${sessionId} stale state detected but sync already in-flight — skipping duplicate load_events`,
               );
+            } else {
+              console.log(
+                `[keepalive] Session ${sessionId} has STALE state: client_max_seq=${clientMaxSeq} > server_max_seq=${serverMaxSeq}, triggering full reload`,
+              );
+              const ws = sessionWsRefs.current[sessionId];
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                // Request initial load (last 50 messages) - server will detect stale and fall back
+                setPendingSync(sessionId);
+                ws.send(
+                  JSON.stringify({
+                    type: "load_events",
+                    data: { limit: INITIAL_EVENTS_LIMIT },
+                  }),
+                );
+              }
             }
           } else {
             // Use tolerance only during streaming (where markdown buffer may hold unflushed content).
@@ -1572,11 +1714,21 @@ export function useWebSocket() {
                 );
                 break;
               }
+              // Skip if a sync is already in-flight. The server drops concurrent
+              // load_events via TryLock, so sending a second one is pointless.
+              // The next keepalive_ack will re-evaluate after the first completes.
+              if (pendingSyncRef.current[sessionId]) {
+                console.debug(
+                  `[keepalive] Session ${sessionId} behind by ${serverMaxSeq - clientMaxSeq} but sync already in-flight — skipping duplicate load_events`,
+                );
+                break;
+              }
               console.log(
                 `[keepalive] Session ${sessionId} is behind: client_max_seq=${clientMaxSeq}, server_max_seq=${serverMaxSeq} (tolerance=${syncTolerance}), requesting sync`,
               );
               const ws = sessionWsRefs.current[sessionId];
               if (ws && ws.readyState === WebSocket.OPEN) {
+                setPendingSync(sessionId);
                 ws.send(
                   JSON.stringify({
                     type: "load_events",
@@ -1724,8 +1876,10 @@ export function useWebSocket() {
             `[M1 fix] Resetting seq tracker for stale client (highestSeq was from stale state)`,
           );
           clearSeenSeqs(sessionId);
-          // Also reset the lastKnownSeqRef watermark
+          // Also reset the lastKnownSeqRef watermark and its localStorage mirror —
+          // the server is the source of truth after stale recovery.
           delete lastKnownSeqRef.current[sessionId];
+          setLastSeenSeq(sessionId, 0);
         }
 
         // Update last known seq from max_seq (server's authoritative max)
@@ -1840,6 +1994,48 @@ export function useWebSocket() {
             }
           }, 100);
         }
+
+        // Context-load fallback for the localStorage-watermark fast-path:
+        // When the app restarts we send after_seq=<stored_seq> instead of limit:50.
+        // If nothing happened while the app was closed (0 new events) the session
+        // would appear empty even though it has history.  Detect this and fall back
+        // to the normal initial load so the user sees recent messages.
+        if (
+          needsContextLoadRef.current[sessionId] &&
+          !isPrepend &&
+          newMessages.length === 0 &&
+          (currentSession?.messages?.length || 0) === 0 &&
+          totalCount > 0
+        ) {
+          delete needsContextLoadRef.current[sessionId];
+          console.log(
+            `[localStorage-watermark] Session ${sessionId} has ${totalCount} events on server but none new — loading context`,
+          );
+          const currentWs = sessionWsRefs.current[sessionId];
+          if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+            currentWs.send(
+              JSON.stringify({
+                type: "load_events",
+                data: { limit: INITIAL_EVENTS_LIMIT },
+              }),
+            );
+            // Export to window.__debug for Playwright test observability.
+            // Set lastLoadEventsAfterSeq=0 to signal "fallback full-history load fired"
+            // (the fallback uses limit: N with no after_seq, equivalent to after_seq=0).
+            if (typeof window !== "undefined" && window.__debug) {
+              window.__debug.lastLoadEventsAfterSeq = 0;
+              window.__debug.lastLoadEventsSessionId = sessionId;
+              window.__debug.fallbackContextLoadFired = true;
+            }
+          }
+        } else if (needsContextLoadRef.current[sessionId] && !isPrepend) {
+          // We received events (new messages) or session is genuinely empty on the
+          // server — either way, the flag is no longer needed.
+          delete needsContextLoadRef.current[sessionId];
+        }
+
+        // Clear in-flight sync flag — events have been delivered
+        clearPendingSync(sessionId);
         break;
       }
 
@@ -2349,39 +2545,73 @@ export function useWebSocket() {
         // M2: Reset reconnection attempt counter on successful connection
         delete sessionReconnectAttemptsRef.current[sessionId];
 
-        // Use the new WebSocket-only approach for loading events
-        // Calculate lastSeenSeq dynamically from messages in state (not localStorage)
-        // This avoids stale localStorage issues, especially in WKWebView
+        // Determine the highest sequence number we have confirmed for this session.
+        // Priority (highest wins):
+        //   1. lastKnownSeqRef  – updated on every received event, survives WS reconnects
+        //   2. localStorage     – written by updateLastKnownSeq, survives app restarts /
+        //                         WKWebView page reloads (safe: reads are try/catch-guarded)
+        //   3. React state      – messages / lastLoadedSeq
         const session = sessionsRef.current[sessionId];
         const sessionMessages = session?.messages || [];
-        // Get our last known seq (primary: ref, fallback: React state)
         const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+        // Restore watermark from localStorage on app restart (refSeq is 0 only then).
+        const persistedSeq = refSeq === 0 ? getLastSeenSeq(sessionId) : 0;
+        if (persistedSeq > 0) {
+          // Populate the in-memory ref so all later code sees the restored value.
+          lastKnownSeqRef.current[sessionId] = persistedSeq;
+        }
         const stateSeq = Math.max(
           getMaxSeq(sessionMessages),
           session?.lastLoadedSeq || 0,
         );
-        const lastSeq = Math.max(refSeq, stateSeq);
-        if (lastSeq > 0) {
-          // Reconnection: sync events after lastSeq
-          console.log(
-            `Syncing session ${sessionId} from seq ${lastSeq} (lastLoadedSeq=${session?.lastLoadedSeq}, messages=${sessionMessages.length})`,
-          );
-          ws.send(
-            JSON.stringify({
-              type: "load_events",
-              data: { after_seq: lastSeq },
-            }),
-          );
-        } else {
-          // Initial load: load last N events
-          console.log(`Loading session ${sessionId} events (initial load)`);
-          ws.send(
-            JSON.stringify({
-              type: "load_events",
-              data: { limit: INITIAL_EVENTS_LIMIT },
-            }),
-          );
-        }
+        const lastSeq = Math.max(refSeq, persistedSeq, stateSeq);
+        // Add a small random jitter (0–300 ms) before sending the initial load_events.
+        // When the app opens several sessions at once (e.g., 5 tabs at startup), they
+        // all call onopen within the same JS tick and hammer the server storage layer
+        // simultaneously. Spreading them out prevents the burst without any visible
+        // latency impact (300 ms is imperceptible to the user).
+        const startupJitterMs = Math.floor(Math.random() * 300);
+        setTimeout(() => {
+          // Guard: if this WebSocket was replaced by a newer one during the jitter
+          // window (e.g., a force-reconnect fired), discard this stale send.
+          if (sessionWsRefs.current[sessionId] !== ws) return;
+
+          if (lastSeq > 0) {
+            console.log(
+              `Syncing session ${sessionId} from seq ${lastSeq} (refSeq=${refSeq}, persistedSeq=${persistedSeq}, messages=${sessionMessages.length}, jitter=${startupJitterMs}ms)`,
+            );
+            // When we have a stored watermark but no messages in memory (app restart /
+            // WKWebView reload), flag this session so events_loaded can trigger a
+            // context load if the after_seq check returns zero new events.
+            if (sessionMessages.length === 0) {
+              needsContextLoadRef.current[sessionId] = true;
+            }
+            setPendingSync(sessionId);
+            ws.send(
+              JSON.stringify({
+                type: "load_events",
+                data: { after_seq: lastSeq },
+              }),
+            );
+            // Export to window.__debug for Playwright test observability.
+            // Tests assert this is > 0 to verify the localStorage watermark was used.
+            if (typeof window !== "undefined" && window.__debug) {
+              window.__debug.lastLoadEventsAfterSeq = lastSeq;
+              window.__debug.lastLoadEventsSessionId = sessionId;
+              window.__debug.lastLoadEventsTimestamp = Date.now();
+            }
+          } else {
+            // No watermark at all — true initial load, fetch the last N events.
+            console.log(`Loading session ${sessionId} events (initial load, jitter=${startupJitterMs}ms)`);
+            setPendingSync(sessionId);
+            ws.send(
+              JSON.stringify({
+                type: "load_events",
+                data: { limit: INITIAL_EVENTS_LIMIT },
+              }),
+            );
+          }
+        }, startupJitterMs);
 
         // Retry any pending prompts after a short delay to ensure connection is stable
         setTimeout(() => {
@@ -2407,21 +2637,35 @@ export function useWebSocket() {
 
           const keepalive = keepaliveRef.current[sessionId];
           if (keepalive?.pendingKeepalive) {
-            // Previous keepalive didn't get a response
-            keepalive.missedCount = (keepalive.missedCount || 0) + 1;
-            console.log(
-              `Keepalive missed for session ${sessionId}, count: ${keepalive.missedCount}`,
-            );
-
-            if (keepalive.missedCount >= KEEPALIVE_MAX_MISSED) {
-              // Connection is likely dead, force close to trigger reconnect
+            // If a sync (load_events) is in progress, suppress the miss count.
+            // Large syncs (hundreds of events) can block the server's readPump,
+            // delaying keepalive_ack responses. This prevents false reconnects.
+            if (pendingSyncRef.current[sessionId]) {
               console.log(
-                `Too many missed keepalives for session ${sessionId}, forcing reconnect`,
+                `Keepalive miss suppressed for session ${sessionId} (sync in progress)`,
               );
-              clearInterval(intervalId);
-              delete keepaliveRef.current[sessionId];
-              currentWs.close();
-              return;
+            } else {
+              // Previous keepalive didn't get a response
+              keepalive.missedCount = (keepalive.missedCount || 0) + 1;
+              console.log(
+                `Keepalive missed for session ${sessionId}, count: ${keepalive.missedCount}`,
+              );
+
+              const lastSeq = lastKnownSeqRef.current[sessionId] || 0;
+              const maxMissed =
+                lastSeq > LARGE_SESSION_SEQ_THRESHOLD
+                  ? KEEPALIVE_MAX_MISSED_LARGE_SESSION
+                  : KEEPALIVE_MAX_MISSED_DEFAULT;
+              if (keepalive.missedCount >= maxMissed) {
+                // Connection is likely dead, force close to trigger reconnect
+                console.log(
+                  `Too many missed keepalives for session ${sessionId}, forcing reconnect`,
+                );
+                clearInterval(intervalId);
+                delete keepaliveRef.current[sessionId];
+                currentWs.close();
+                return;
+              }
             }
           }
 
@@ -2492,6 +2736,12 @@ export function useWebSocket() {
           clearInterval(keepaliveRef.current[sessionId].intervalId);
           delete keepaliveRef.current[sessionId];
         }
+
+        // Clear any pending sync flag and its auto-clear timeout.
+        // If a load_events request was in flight when the connection dropped,
+        // events_loaded will never arrive — without this, pendingSyncRef stays true
+        // indefinitely, suppressing keepalive miss-counting after reconnection.
+        clearPendingSync(sessionId);
 
         // Only delete the ref if it still points to this WebSocket (not a newer one)
         if (sessionWsRefs.current[sessionId] === ws) {
@@ -3086,6 +3336,9 @@ export function useWebSocket() {
         }
         // M1 fix: Clear seen seqs for deleted session
         clearSeenSeqs(deletedId);
+        // Clear the persisted seq watermark so a future session with the same ID
+        // (unlikely but possible) starts fresh.
+        setLastSeenSeq(deletedId, 0);
         // M2: Clear reconnection attempt counter for deleted session
         delete sessionReconnectAttemptsRef.current[deletedId];
         break;
@@ -3172,6 +3425,18 @@ export function useWebSocket() {
           new CustomEvent("mitto:mcp_tools_unavailable", { detail: msg.data }),
         );
         break;
+
+      case "mcp_tools_available":
+        // Server notifies that MCP tools are available for a workspace.
+        // Store them keyed by workspace UUID so the UI can display them.
+        console.log("[MCP] Tools available for workspace:", msg.data.workspace_uuid, "count:", msg.data.tools?.length);
+        if (msg.data.workspace_uuid) {
+          setWorkspaceMcpTools((prev) => ({
+            ...prev,
+            [msg.data.workspace_uuid]: msg.data.tools || [],
+          }));
+        }
+        break;
     }
   }, []);
 
@@ -3200,6 +3465,13 @@ export function useWebSocket() {
         // Initial connection: fetch stored sessions and resume last session
         fetchStoredSessions().then((storedSessionsList) => {
           const lastSessionId = getLastActiveSessionId();
+          // Determine the target (active) session to connect first
+          const targetSessionId =
+            lastSessionId ||
+            (storedSessionsList?.length > 0
+              ? storedSessionsList[0].session_id
+              : null);
+
           if (lastSessionId) {
             // Connect to the last session from localStorage
             switchSession(lastSessionId);
@@ -3210,6 +3482,28 @@ export function useWebSocket() {
             switchSession(mostRecentSession.session_id);
           }
           // No stored sessions - show empty state, let user create manually
+
+          // Pre-connect other non-archived sessions with staggered delays.
+          // This prevents thundering herd where all sessions send load_events
+          // simultaneously, overwhelming the server with concurrent large event replays.
+          // The active session connects first (above); background sessions connect
+          // after increasing delays so their load_events requests are spread over time.
+          if (storedSessionsList && storedSessionsList.length > 1) {
+            const otherSessions = storedSessionsList.filter(
+              (s) => s.session_id !== targetSessionId && !s.archived,
+            );
+            otherSessions.forEach((session, index) => {
+              setTimeout(() => {
+                // Only connect if not already connected (guard against race conditions)
+                if (!sessionWsRefs.current[session.session_id]) {
+                  console.log(
+                    `[startup] Pre-connecting background session ${session.session_id} (stagger ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
+                  );
+                  connectToSession(session.session_id);
+                }
+              }, (index + 1) * STARTUP_STAGGER_MS);
+            });
+          }
         });
       }
     };
@@ -3269,7 +3563,7 @@ export function useWebSocket() {
     };
 
     eventsWsRef.current = socket;
-  }, [fetchStoredSessions, handleGlobalEvent, switchSession]);
+  }, [connectToSession, fetchStoredSessions, handleGlobalEvent, switchSession]);
 
   // Create a new session via REST API
   // Options: { name?: string, workingDir?: string, acpServer?: string }
@@ -3519,6 +3813,12 @@ export function useWebSocket() {
                 data: { after_seq: lastSeq },
               }),
             );
+            // Export to window.__debug for Playwright test observability (reconnect path)
+            if (typeof window !== "undefined" && window.__debug) {
+              window.__debug.lastLoadEventsAfterSeq = lastSeq;
+              window.__debug.lastLoadEventsSessionId = sessionId;
+              window.__debug.lastLoadEventsTimestamp = Date.now();
+            }
           }
 
           resolve(ws);
@@ -4159,6 +4459,11 @@ export function useWebSocket() {
       for (const ws of Object.values(sessionWsRefs.current)) {
         ws.close();
       }
+      // Clear all pending sync timeouts to prevent memory leaks on unmount
+      for (const timerId of Object.values(syncTimeoutRef.current)) {
+        clearTimeout(timerId);
+      }
+      syncTimeoutRef.current = {};
     };
   }, [connectToEvents]);
 
@@ -4219,6 +4524,44 @@ export function useWebSocket() {
       }
     }, delay);
   }, [connectToSession]);
+
+  // Reconnect all currently-connected sessions with staggering to prevent thundering herd.
+  // The active session reconnects immediately via forceReconnectActiveSession (with its existing
+  // debounce/backoff logic). Background sessions (those with open WebSockets but not active) are
+  // force-closed and reconnected with increasing delays so their load_events requests are spread
+  // over time rather than hitting the server simultaneously.
+  const reconnectAllSessionsStaggered = useCallback(() => {
+    const currentSessionId = activeSessionIdRef.current;
+
+    // Reconnect active session immediately using existing debounce logic
+    forceReconnectActiveSession();
+
+    // Stagger reconnections for background sessions to spread load_events requests
+    const backgroundIds = Object.keys(sessionWsRefs.current).filter(
+      (id) => id !== currentSessionId,
+    );
+
+    if (backgroundIds.length > 0) {
+      console.log(
+        `[stagger] Scheduling staggered reconnects for ${backgroundIds.length} background session(s)`,
+      );
+    }
+
+    backgroundIds.forEach((sessionId, index) => {
+      setTimeout(() => {
+        const existingWs = sessionWsRefs.current[sessionId];
+        if (existingWs) {
+          console.log(
+            `[stagger] Reconnecting background session ${sessionId} (delay ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
+          );
+          delete sessionWsRefs.current[sessionId];
+          existingWs.close();
+          // onclose won't reconnect non-active sessions, so reconnect manually
+          connectToSession(sessionId);
+        }
+      }, (index + 1) * STARTUP_STAGGER_MS);
+    });
+  }, [forceReconnectActiveSession, connectToSession]);
 
   // Ref to track which sessions we've already attempted to recover from inconsistent state
   // This prevents infinite loops where recovery triggers state change which triggers recovery
@@ -4341,7 +4684,7 @@ export function useWebSocket() {
                   }
                 } else {
                   setTimeout(() => {
-                    forceReconnectActiveSession();
+                    reconnectAllSessionsStaggered();
                   }, 300);
                 }
               }, 2000);
@@ -4376,12 +4719,13 @@ export function useWebSocket() {
             setActiveSessionId(null);
           }
         } else {
-          // Force reconnect the active session WebSocket
-          // This is more reliable than trying to sync over a stale connection
-          // The reconnect will trigger sync in the ws.onopen handler
-          // Use a small delay to allow the network stack to stabilize after wake
+          // Reconnect all sessions with staggering to prevent thundering herd.
+          // Active session reconnects immediately; background sessions reconnect
+          // with increasing delays so their load_events requests don't all hit
+          // the server at the same time.
+          // Use a small delay to allow the network stack to stabilize after wake.
           setTimeout(() => {
-            forceReconnectActiveSession();
+            reconnectAllSessionsStaggered();
           }, 300);
         }
       }
@@ -4391,7 +4735,7 @@ export function useWebSocket() {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [fetchStoredSessions, forceReconnectActiveSession, switchSession]);
+  }, [fetchStoredSessions, reconnectAllSessionsStaggered, switchSession]);
 
   // Clear background completion notification
   const clearBackgroundCompletion = useCallback(() => {
@@ -4455,6 +4799,13 @@ export function useWebSocket() {
     return session?.activeUIPrompt || null;
   }, [sessions, activeSessionId]);
 
+  // MCP tools for the currently active session's workspace
+  const mcpTools = useMemo(() => {
+    const uuid = sessionInfo?.workspace_uuid;
+    if (!uuid) return [];
+    return workspaceMcpTools[uuid] || [];
+  }, [sessionInfo, workspaceMcpTools]);
+
   return {
     connected: eventsConnected,
     messages,
@@ -4476,6 +4827,7 @@ export function useWebSocket() {
     isLoadingMore,
     actionButtons,
     sessionInfo,
+    mcpTools,
     activeSessionId,
     activeSessions,
     storedSessions,
@@ -4499,6 +4851,7 @@ export function useWebSocket() {
     removeWorkspace,
     refreshWorkspaces: fetchWorkspaces,
     forceReconnectActiveSession,
+    reconnectAllSessionsStaggered,
     availableCommands,
     configOptions,
     setConfigOption,

@@ -35,14 +35,26 @@ func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	return meta.Name == ""
 }
 
+const (
+	// titleMaxRetries is the maximum number of retry attempts for title generation.
+	titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
+	// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
+	titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
+	// titleSessionCreateTimeout is the timeout for a single title generation attempt.
+	// This covers the full round-trip: WaitForIdle (waiting for any active user prompt
+	// to complete) + the title prompt itself. Agents can take 5–20+ minutes on complex
+	// tasks, so we budget 20 minutes per attempt. With titleMaxRetries=3 the total
+	// worst-case wall time is ≈ 83 minutes, but in practice the agent is usually free
+	// within the first few attempts.
+	titleSessionCreateTimeout = 20 * time.Minute
+)
+
 // GenerateAndSetTitle generates a title for a session using the workspace-scoped auxiliary session.
 // This runs asynchronously and doesn't block the caller.
+// It retries up to titleMaxRetries times with exponential backoff on transient failures.
 // The OnTitleGenerated callback is called when the title is successfully generated and saved.
 func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		if cfg.WorkspaceUUID == "" {
 			if cfg.Logger != nil {
 				cfg.Logger.Warn("Cannot generate title: session has no workspace",
@@ -59,13 +71,57 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			return
 		}
 
-		title, err := cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
-		if err != nil {
-			if cfg.Logger != nil {
-				cfg.Logger.Error("Failed to generate title",
-					"error", err,
+		var title string
+		var lastErr error
+		for attempt := 0; attempt <= titleMaxRetries; attempt++ {
+			if attempt > 0 {
+				// Check if title was set by another path while we were retrying
+				if !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
+					if cfg.Logger != nil {
+						cfg.Logger.Debug("Title already set during retry, skipping",
+							"session_id", cfg.SessionID,
+							"attempt", attempt)
+					}
+					return
+				}
+
+				delay := titleRetryBaseDelay * time.Duration(1<<(attempt-1)) // exponential: 30s, 60s, 120s
+				if cfg.Logger != nil {
+					cfg.Logger.Info("Retrying title generation",
+						"session_id", cfg.SessionID,
+						"attempt", attempt+1,
+						"delay", delay)
+				}
+				time.Sleep(delay)
+			}
+
+			// Use titleSessionCreateTimeout as the overall timeout for the title generation
+			// request, covering any necessary auxiliary session setup and the prompt itself.
+			// getOrCreateAuxiliarySession calls WaitForIdle internally before NewSession,
+			// so the 20-minute budget covers waiting for the agent to finish any active prompt.
+			ctx, cancel := context.WithTimeout(context.Background(), titleSessionCreateTimeout)
+			title, lastErr = cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
+			cancel()
+
+			if lastErr == nil && title != "" {
+				break
+			}
+			if lastErr != nil && cfg.Logger != nil {
+				cfg.Logger.Warn("Title generation attempt failed",
+					"error", lastErr,
 					"session_id", cfg.SessionID,
-					"workspace_uuid", cfg.WorkspaceUUID)
+					"attempt", attempt+1,
+					"max_attempts", titleMaxRetries+1)
+			}
+		}
+
+		if lastErr != nil {
+			if cfg.Logger != nil {
+				cfg.Logger.Error("Failed to generate title after all retries",
+					"error", lastErr,
+					"session_id", cfg.SessionID,
+					"workspace_uuid", cfg.WorkspaceUUID,
+					"attempts", titleMaxRetries+1)
 			}
 			return
 		}

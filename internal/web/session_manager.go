@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -27,6 +28,12 @@ type pendingResumeResult struct {
 	done chan struct{}      // closed when the resume is complete
 	bs   *BackgroundSession // result (valid after done is closed)
 	err  error              // error  (valid after done is closed)
+}
+
+// ACPServerRenameResult summarizes persisted and restarted sessions after an ACP server rename/remap.
+type ACPServerRenameResult struct {
+	UpdatedSessionIDs   []string `json:"updated_session_ids,omitempty"`
+	RestartedSessionIDs []string `json:"restarted_session_ids,omitempty"`
 }
 
 // WorkspaceSaveFunc is a callback function called when workspaces are modified.
@@ -115,6 +122,10 @@ type SessionManager struct {
 	// mcpCheckedWorkspaces tracks which workspaces have had MCP availability checked.
 	mcpCheckedWorkspaces   map[string]bool
 	mcpCheckedWorkspacesMu sync.RWMutex
+
+	// mcpToolsFetchedWorkspaces tracks which workspaces have had MCP tools fetched.
+	mcpToolsFetchedWorkspaces   map[string]bool
+	mcpToolsFetchedWorkspacesMu sync.RWMutex
 }
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
@@ -127,15 +138,16 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		WorkingDir: "", // Will be set at session creation time
 	}
 	return &SessionManager{
-		sessions:             make(map[string]*BackgroundSession),
-		pendingResumes:       make(map[string]*pendingResumeResult),
-		workspaces:           make(map[string]*config.WorkspaceSettings),
-		logger:               logger,
-		defaultWorkspace:     defaultWS,
-		autoApprove:          autoApprove,
-		workspaceRCCache:     config.NewWorkspaceRCCache(30 * time.Second),
-		planState:            make(map[string][]PlanEntry),
-		mcpCheckedWorkspaces: make(map[string]bool),
+		sessions:                  make(map[string]*BackgroundSession),
+		pendingResumes:            make(map[string]*pendingResumeResult),
+		workspaces:                make(map[string]*config.WorkspaceSettings),
+		logger:                    logger,
+		defaultWorkspace:          defaultWS,
+		autoApprove:               autoApprove,
+		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
+		planState:                 make(map[string][]PlanEntry),
+		mcpCheckedWorkspaces:      make(map[string]bool),
+		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
 }
 
@@ -161,17 +173,18 @@ type SessionManagerOptions struct {
 // Workspaces without UUIDs will have UUIDs generated automatically.
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
-		sessions:             make(map[string]*BackgroundSession),
-		pendingResumes:       make(map[string]*pendingResumeResult),
-		workspaces:           make(map[string]*config.WorkspaceSettings),
-		logger:               opts.Logger,
-		autoApprove:          opts.AutoApprove,
-		fromCLI:              opts.FromCLI,
-		onWorkspaceSave:      opts.OnWorkspaceSave,
-		workspaceRCCache:     config.NewWorkspaceRCCache(30 * time.Second),
-		apiPrefix:            opts.APIPrefix,
-		planState:            make(map[string][]PlanEntry),
-		mcpCheckedWorkspaces: make(map[string]bool),
+		sessions:                  make(map[string]*BackgroundSession),
+		pendingResumes:            make(map[string]*pendingResumeResult),
+		workspaces:                make(map[string]*config.WorkspaceSettings),
+		logger:                    opts.Logger,
+		autoApprove:               opts.AutoApprove,
+		fromCLI:                   opts.FromCLI,
+		onWorkspaceSave:           opts.OnWorkspaceSave,
+		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
+		apiPrefix:                 opts.APIPrefix,
+		planState:                 make(map[string][]PlanEntry),
+		mcpCheckedWorkspaces:      make(map[string]bool),
+		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
 
 	for i := range opts.Workspaces {
@@ -283,6 +296,12 @@ func (sm *SessionManager) GetWorkspaceByDirAndACP(workingDir, acpServer string) 
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
+	return sm.getWorkspaceByDirAndACPLocked(workingDir, acpServer)
+}
+
+// getWorkspaceByDirAndACPLocked returns the workspace matching both directory and ACP server.
+// Caller must hold sm.mu.
+func (sm *SessionManager) getWorkspaceByDirAndACPLocked(workingDir, acpServer string) *config.WorkspaceSettings {
 	for _, ws := range sm.workspaces {
 		if ws.WorkingDir == workingDir {
 			if acpServer == "" || ws.ACPServer == acpServer {
@@ -291,6 +310,32 @@ func (sm *SessionManager) GetWorkspaceByDirAndACP(workingDir, acpServer string) 
 		}
 	}
 	return nil
+}
+
+// resolveWorkspaceForACPLocked returns the workspace to use for a given directory/server pair.
+//
+// Resolution rules:
+//   - Prefer an exact workspace match for (workingDir, acpServer)
+//   - If acpServer is empty, prefer the first workspace matching workingDir
+//   - Fall back to the default workspace only when it is compatible with the ACP server
+//     and working directory (or when those are unspecified in the default)
+//
+// Caller must hold sm.mu.
+func (sm *SessionManager) resolveWorkspaceForACPLocked(workingDir, acpServer string) *config.WorkspaceSettings {
+	if ws := sm.getWorkspaceByDirAndACPLocked(workingDir, acpServer); ws != nil {
+		return ws
+	}
+
+	if sm.defaultWorkspace == nil {
+		return nil
+	}
+	if acpServer != "" && sm.defaultWorkspace.ACPServer != acpServer {
+		return nil
+	}
+	if workingDir != "" && sm.defaultWorkspace.WorkingDir != "" && sm.defaultWorkspace.WorkingDir != workingDir {
+		return nil
+	}
+	return sm.defaultWorkspace
 }
 
 // GetWorkspaceByUUID returns the workspace with the given UUID.
@@ -655,6 +700,37 @@ func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryMa
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.auxiliaryManager = am
+}
+
+// EnsureWorkspaceProcess ensures the shared ACP process for the given workspace UUID is running,
+// starting it on demand if necessary. This allows auxiliary features (e.g. "improve prompt") to
+// work even when no user session is currently active for that workspace.
+// Returns an error if the workspace is not found or the process cannot be started.
+// The caller must NOT hold sm.mu when calling this method.
+func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
+	ws := sm.GetWorkspaceByUUID(workspaceUUID)
+	if ws == nil {
+		return fmt.Errorf("workspace %s not found", workspaceUUID)
+	}
+
+	r, err := sm.createRunner(ws.WorkingDir, ws.ACPServer, ws)
+	if err != nil {
+		// Runner creation failure is non-fatal — proceed without restriction.
+		// The process will run unrestricted, which is acceptable for short-lived
+		// auxiliary sessions that only do text processing.
+		if sm.logger != nil {
+			sm.logger.Warn("Failed to create runner for workspace auxiliary, proceeding without restriction",
+				"workspace_uuid", workspaceUUID,
+				"error", err)
+		}
+		r = nil
+	}
+
+	p := sm.getSharedProcess(ws, r)
+	if p == nil {
+		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
+	}
+	return nil
 }
 
 // getSharedProcess returns the shared ACP process for the given workspace,
@@ -1029,6 +1105,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 				})
 			}
 		},
+		OnTitleGenerated: func(sessionID, title string) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
+					"session_id": sessionID,
+					"name":       title,
+				})
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -1212,14 +1296,11 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 
 	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration
 	var acpCommand, acpCwd, acpServer, workspaceUUID string
-	// Try to find a workspace by working directory (first match)
+	// Try to find a workspace by working directory. If the session metadata later
+	// identifies a specific ACP server, this provisional choice will be replaced
+	// with the exact workspace for that server.
 	var foundWs *config.WorkspaceSettings
-	for _, ws := range sm.workspaces {
-		if ws.WorkingDir == workingDir {
-			foundWs = ws
-			break
-		}
-	}
+	foundWs = sm.getWorkspaceByDirAndACPLocked(workingDir, "")
 	if foundWs != nil {
 		acpCommand = foundWs.ACPCommand
 		acpCwd = foundWs.ACPCwd
@@ -1246,20 +1327,58 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 			if meta.ACPServer != "" {
 				acpServer = meta.ACPServer
 
+				// IMPORTANT: Re-resolve the workspace using BOTH working directory and
+				// ACP server. The provisional workspace chosen above may point to the
+				// same directory but a different ACP server, which would incorrectly
+				// reuse the wrong shared ACP process.
+				foundWs = sm.resolveWorkspaceForACPLocked(workingDir, acpServer)
+				if foundWs != nil {
+					workspaceUUID = foundWs.UUID
+					if foundWs.ACPCommand != "" {
+						acpCommand = foundWs.ACPCommand
+					}
+					if foundWs.ACPCwd != "" {
+						acpCwd = foundWs.ACPCwd
+					}
+				} else {
+					// No compatible workspace exists for this ACP server. Do NOT keep a
+					// mismatched workspace from the same directory, otherwise shared ACP
+					// process lookup can mix different agents.
+					workspaceUUID = ""
+					acpCommand = ""
+					acpCwd = ""
+					if sm.logger != nil {
+						sm.logger.Warn("No matching workspace for resumed session ACP server; disabling shared workspace resolution",
+
+							"session_id", sessionID,
+							"working_dir", workingDir,
+							"acp_server", acpServer)
+					}
+				}
+
 				// IMPORTANT: Look up the correct command for the session's ACP server.
 				// The workspace loop above may have found a different workspace (same dir,
 				// different ACP server), so we must update the command to match.
-				if sm.mittoConfig != nil {
-					if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
-						acpCommand = server.Command
-						acpCwd = server.Cwd
-						if sm.logger != nil {
-							sm.logger.Debug("Using ACP command from session metadata server",
-								"session_id", sessionID,
-								"acp_server", acpServer,
-								"acp_command", acpCommand)
+				// However, if the workspace has a user-provided command override, prefer that.
+				if foundWs == nil || foundWs.ACPCommandOverride == "" {
+					if sm.mittoConfig != nil {
+						if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+							acpCommand = server.Command
+							acpCwd = server.Cwd
+							if sm.logger != nil {
+								sm.logger.Debug("Using ACP command from session metadata server",
+									"session_id", sessionID,
+									"acp_server", acpServer,
+									"acp_command", acpCommand)
+							}
 						}
 					}
+				} else if sm.logger != nil {
+					sm.logger.Debug("Using workspace command override",
+						"session_id", sessionID,
+						"acp_server", acpServer,
+						"acp_command", acpCommand,
+						"acp_command_override", foundWs.ACPCommandOverride)
 				}
 			}
 		}
@@ -1285,18 +1404,34 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// waiting on this session's pending resume channel. It must be called exactly once
 	// on every code path below (success or failure).
 	//
-	// Order matters: set result fields first, then close the channel (which
-	// establishes the happens-before guarantee for readers), and only then
-	// remove the entry from pendingResumes. This prevents a TOCTOU window
-	// where a new goroutine could enter ResumeSession after the delete but
-	// before pr.done is closed.
+	// Order matters: store result fields first, then delete from pendingResumes
+	// (under sm.mu), and only then close the channel.
+	//
+	// Deleting before closing ensures that by the time any waiting goroutine wakes
+	// from <-pr.done, the pendingResumes entry is already gone:
+	//
+	//   Success path: the session is already in sm.sessions (registered before
+	//   signalDone is called), so any new ResumeSession call that arrives after
+	//   the delete will find it via GetSession and return early — no duplicate.
+	//
+	//   Error path: the session is NOT in sm.sessions.  Deleting before closing
+	//   means a new goroutine can start a fresh resume immediately (rather than
+	//   spinning on the already-closed channel until the delete races through),
+	//   and callers that were waiting on pr.done will retry and coalesce onto
+	//   that fresh pendingResumes entry.
+	//
+	// The previous "close then delete" ordering caused a spin-loop on the error
+	// path: waiting goroutines woke, saw the error, their callers re-entered
+	// ResumeSession, found the stale pendingResumes entry, read from the already-
+	// closed channel, saw the error again, and kept retrying until the delete
+	// finally raced through — creating a window for inconsistent state.
 	signalDone := func(result *BackgroundSession, err error) {
 		pr.bs = result
 		pr.err = err
-		close(pr.done)
 		sm.mu.Lock()
 		delete(sm.pendingResumes, sessionID)
 		sm.mu.Unlock()
+		close(pr.done)
 	}
 
 	// Load workspace-specific conversation config and merge with global.
@@ -1370,12 +1505,11 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		}
 	}
 
-	// Resolve shared ACP process for this workspace (if shared mode is enabled)
-	resumeWs := foundWs
-	if resumeWs == nil {
-		resumeWs = sm.defaultWorkspace
-	}
-	sharedProcess := sm.getSharedProcess(resumeWs, r)
+	// Resolve shared ACP process for this workspace (if shared mode is enabled).
+	// IMPORTANT: Do NOT fall back to an arbitrary default workspace here. For resumed
+	// sessions, foundWs has already been resolved against the session's ACP server.
+	// Falling back again would risk mixing different ACP servers on the same folder.
+	sharedProcess := sm.getSharedProcess(foundWs, r)
 
 	// Build available ACP servers list for this workspace folder (used in @mitto:variable substitution).
 	resumeAvailableServers := sm.buildAvailableACPServers(workingDir, acpServer)
@@ -1421,6 +1555,14 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 					"session_id": sessionID,
 					"config_id":  configID,
 					"value":      value,
+				})
+			}
+		},
+		OnTitleGenerated: func(sessionID, title string) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
+					"session_id": sessionID,
+					"name":       title,
 				})
 			}
 		},
@@ -1491,6 +1633,80 @@ func (sm *SessionManager) CloseSession(sessionID, reason string) {
 				"reason", reason)
 		}
 	}
+}
+
+// ApplyACPServerRenames updates persisted sessions that reference renamed/removed ACP servers.
+// Running sessions are closed and resumed so they reconnect with the updated ACP server.
+func (sm *SessionManager) ApplyACPServerRenames(renames map[string]string) (*ACPServerRenameResult, error) {
+	if sm == nil || sm.store == nil || len(renames) == 0 {
+		return nil, nil
+	}
+
+	normalized := make(map[string]string, len(renames))
+	for oldName, newName := range renames {
+		if oldName == "" || newName == "" || oldName == newName {
+			continue
+		}
+		normalized[oldName] = newName
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+
+	metas, err := sm.store.List()
+	if err != nil {
+		return nil, err
+	}
+
+	type restartTarget struct {
+		sessionID  string
+		name       string
+		workingDir string
+	}
+
+	result := &ACPServerRenameResult{}
+	restartTargets := make([]restartTarget, 0)
+	for _, meta := range metas {
+		newServer, ok := normalized[meta.ACPServer]
+		if !ok {
+			continue
+		}
+
+		if err := sm.store.UpdateMetadata(meta.SessionID, func(m *session.Metadata) {
+			m.ACPServer = newServer
+		}); err != nil {
+			return nil, err
+		}
+
+		result.UpdatedSessionIDs = append(result.UpdatedSessionIDs, meta.SessionID)
+		if sm.GetSession(meta.SessionID) != nil {
+			restartTargets = append(restartTargets, restartTarget{
+				sessionID:  meta.SessionID,
+				name:       meta.Name,
+				workingDir: meta.WorkingDir,
+			})
+		}
+	}
+
+	for _, target := range restartTargets {
+		sm.CloseSession(target.sessionID, "acp_server_reconfigured")
+		if _, err := sm.ResumeSession(target.sessionID, target.name, target.workingDir); err != nil {
+			if sm.logger != nil {
+				sm.logger.Error("Failed to resume session after ACP server reconfiguration",
+					"session_id", target.sessionID,
+					"working_dir", target.workingDir,
+					"error", err)
+			}
+			continue
+		}
+		result.RestartedSessionIDs = append(result.RestartedSessionIDs, target.sessionID)
+	}
+
+	if len(result.UpdatedSessionIDs) == 0 && len(result.RestartedSessionIDs) == 0 {
+		return nil, nil
+	}
+
+	return result, nil
 }
 
 // CloseSessionGracefully waits for any active response to complete before closing the session.
@@ -1763,4 +1979,25 @@ func (sm *SessionManager) ClearMCPChecked(workspaceUUID string) {
 	sm.mcpCheckedWorkspacesMu.Lock()
 	delete(sm.mcpCheckedWorkspaces, workspaceUUID)
 	sm.mcpCheckedWorkspacesMu.Unlock()
+}
+
+// IsMCPToolsFetched returns whether MCP tools have been fetched for the given workspace.
+func (sm *SessionManager) IsMCPToolsFetched(workspaceUUID string) bool {
+	sm.mcpToolsFetchedWorkspacesMu.RLock()
+	defer sm.mcpToolsFetchedWorkspacesMu.RUnlock()
+	return sm.mcpToolsFetchedWorkspaces[workspaceUUID]
+}
+
+// MarkMCPToolsFetched marks that MCP tools have been fetched for the given workspace.
+func (sm *SessionManager) MarkMCPToolsFetched(workspaceUUID string) {
+	sm.mcpToolsFetchedWorkspacesMu.Lock()
+	defer sm.mcpToolsFetchedWorkspacesMu.Unlock()
+	sm.mcpToolsFetchedWorkspaces[workspaceUUID] = true
+}
+
+// ClearMCPToolsFetched clears the MCP tools fetched flag for the given workspace.
+func (sm *SessionManager) ClearMCPToolsFetched(workspaceUUID string) {
+	sm.mcpToolsFetchedWorkspacesMu.Lock()
+	defer sm.mcpToolsFetchedWorkspacesMu.Unlock()
+	delete(sm.mcpToolsFetchedWorkspaces, workspaceUUID)
 }

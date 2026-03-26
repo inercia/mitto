@@ -248,6 +248,7 @@ export function ConversationPropertiesPanel({
   isStreaming = false,
   configOptions = [],
   onSetConfigOption,
+  mcpTools = [],
 }) {
   // Title editing state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -267,6 +268,9 @@ export function ConversationPropertiesPanel({
 
   // Periodic config state
   const [periodicConfig, setPeriodicConfig] = useState(null);
+
+  // MCP Tools collapsible state
+  const [isMcpToolsExpanded, setIsMcpToolsExpanded] = useState(false);
 
   // Advanced settings (feature flags) state
   const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
@@ -919,6 +923,43 @@ export function ConversationPropertiesPanel({
                 `}
           </div>
         </div>
+
+        <!-- MCP Tools Section (Collapsible) -->
+        ${mcpTools && mcpTools.length > 0 && html`
+          <div class="pt-4">
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-300 transition-colors"
+              style="background: transparent; border: none; padding: 0; cursor: pointer;"
+              onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}
+            >
+              <span
+                class="transition-transform ${isMcpToolsExpanded ? "" : "-rotate-90"}"
+              >
+                <${ChevronDownIcon} className="w-4 h-4" />
+              </span>
+              <span>MCP Tools</span>
+              <span class="text-xs text-slate-500">(${mcpTools.length})</span>
+            </button>
+
+            ${isMcpToolsExpanded && html`
+              <div class="mt-3 space-y-1 max-h-64 overflow-y-auto">
+                ${mcpTools.map((tool) => html`
+                  <div
+                    key=${tool.name}
+                    class="text-xs text-slate-300 bg-slate-700/50 rounded px-2 py-1"
+                    title=${tool.description || tool.name}
+                  >
+                    <span class="font-mono">${tool.name}</span>
+                    ${tool.description && html`
+                      <p class="text-slate-500 mt-0.5 truncate">${tool.description}</p>
+                    `}
+                  </div>
+                `)}
+              </div>
+            `}
+          </div>
+        `}
 
         <!-- User Data Section -->
         <div>

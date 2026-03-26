@@ -22,6 +22,11 @@ type WebSocketSecurityConfig struct {
 	// Default: 64KB
 	MaxMessageSize int64
 
+	// LocalMaxMessageSize is the maximum size of a WebSocket message for localhost connections.
+	// Localhost connections (e.g., from the macOS app) may send larger messages.
+	// If 0, MaxMessageSize is used for all connections.
+	LocalMaxMessageSize int64
+
 	// MaxConnectionsPerIP is the maximum number of concurrent WebSocket connections per IP.
 	// Default: 10
 	MaxConnectionsPerIP int
