@@ -64,10 +64,18 @@ test.describe("Markdown Rendering", () => {
 });
 
 test.describe("Mermaid Diagram Rendering", () => {
-  test.beforeEach(async ({ page, helpers, selectors, timeouts }) => {
+  // Mermaid tests need extra time: CDN load (mermaid.js) + SVG rendering can take 10-30s.
+  // The test count may also exceed the session limit; clean up before each test.
+  test.setTimeout(120_000);
+
+  test.beforeEach(async ({ page, helpers, cleanupSessions, selectors, timeouts }) => {
+    // Clean up old sessions to avoid hitting the 32-session limit which prevents
+    // fresh session creation and causes the mermaid scenario not to trigger.
+    await cleanupSessions();
+
     await helpers.navigateAndWait(page);
-    // Create a fresh session for mermaid tests to avoid interference from previous tests
-    // The mermaid scenario requires a clean session to trigger correctly
+    // Create a fresh session for mermaid tests to avoid interference from previous tests.
+    // The mermaid scenario requires a clean session to trigger correctly.
     const newButton = page.locator(selectors.newSessionButton);
     await newButton.click();
     const textarea = page.locator(selectors.chatInput);

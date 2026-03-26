@@ -39,11 +39,14 @@ test.describe("Sleep-Wake Sync", () => {
 
     // Wait for WebSocket to reconnect and send load_events
     // Poll until window.__debug is populated (jitter delay is up to 300 ms)
+    // Use lastInitialLoadEventsAfterSeq (set ONLY by the watermark-restore path)
+    // instead of lastLoadEventsAfterSeq, which may be overwritten to 0 by the
+    // fallback context load that fires immediately after the watermark-based sync.
     const afterSeqAfterReload = await expect
       .poll(
         async () => {
           return await page.evaluate(
-            () => (window as any).__debug?.lastLoadEventsAfterSeq ?? -1,
+            () => (window as any).__debug?.lastInitialLoadEventsAfterSeq ?? -1,
           );
         },
         { timeout: 10_000, intervals: [300, 500, 500, 1000] },
@@ -55,7 +58,7 @@ test.describe("Sleep-Wake Sync", () => {
 
     // Also directly assert for clearer failure messages
     const finalAfterSeq = await page.evaluate(
-      () => (window as any).__debug?.lastLoadEventsAfterSeq ?? -1,
+      () => (window as any).__debug?.lastInitialLoadEventsAfterSeq ?? -1,
     );
     expect(finalAfterSeq).toBeGreaterThan(0);
 

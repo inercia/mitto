@@ -103,7 +103,8 @@ test.describe("Long Conversation Handling", () => {
     const testRunId = Date.now();
     const numMessages = 15; // Smaller for this test
 
-    // Send messages
+    // Send messages — waitForAgentResponse waits for the stop button to hide,
+    // but may miss it if a queued exchange briefly shows then hides the button.
     for (let i = 0; i < numMessages; i++) {
       const msg = `ORDER_${testRunId}_${i}`;
       await helpers.sendMessage(page, msg);
@@ -111,6 +112,14 @@ test.describe("Long Conversation Handling", () => {
       await helpers.waitForAgentResponse(page);
       await page.waitForTimeout(100);
     }
+
+    // After all messages are "sent", some may still be processing through the queue.
+    // Wait until streaming is fully complete (stop button hidden) and all expected
+    // user messages are visible. This ensures all exchanges are persisted before reload.
+    await helpers.waitForStreamingComplete(page);
+    await expect(page.locator(selectors.userMessage)).toHaveCount(numMessages, {
+      timeout: timeouts.agentResponse,
+    });
 
     // Get message order before reload
     const getMessageOrder = async () => {
@@ -128,12 +137,20 @@ test.describe("Long Conversation Handling", () => {
     const orderBefore = await getMessageOrder();
     console.log(`Messages before reload: ${orderBefore.length}`);
 
-    // Reload the page
+    // Reload the page and wait for the fallback context load to restore messages.
+    // The app reconnects, sends load_events (with watermark), gets 0 new events,
+    // then fires a fallback load to restore the recent history.
     await page.reload();
-    await expect(page.locator(selectors.chatInput)).toBeVisible({
+    await expect(page.locator(selectors.chatInput)).toBeEnabled({
       timeout: timeouts.appReady,
     });
-    await page.waitForTimeout(2000);
+    // Wait for messages to reappear (fallback context load may take 1-2 seconds).
+    await expect
+      .poll(
+        async () => (await getMessageOrder()).length,
+        { timeout: 15_000, intervals: [500, 1000, 1000, 2000] },
+      )
+      .toBeGreaterThan(0);
 
     // Get message order after reload
     const orderAfter = await getMessageOrder();
