@@ -64,6 +64,10 @@ if afterSeq > serverMaxSeq {
 
 ### Initial Load (on WebSocket connect)
 
+The initial load path is taken only when there is **no watermark at all** (new session or
+first time this browser has connected). When a stored watermark exists in `lastKnownSeqRef`
+or localStorage the "Sync" path is used instead; see below.
+
 ```mermaid
 sequenceDiagram
     participant Client as Frontend
@@ -71,7 +75,7 @@ sequenceDiagram
     participant Handler as SessionWSClient
     participant Store as Session Store
 
-    Note over Client: WebSocket connects
+    Note over Client: No watermark (first connect ever)
     Client->>WS: load_events {limit: 50}
     WS->>Handler: handleLoadEvents(limit=50)
     Handler->>Store: ReadEventsLast(sessionID, 50, 0)
@@ -80,6 +84,7 @@ sequenceDiagram
     Handler-->>WS: events_loaded {events, has_more, first_seq, last_seq, ...}
     WS-->>Client: Receive events
     Client->>Client: Set messages (no dedup needed)
+    Client->>Client: updateLastKnownSeq → writes ref + localStorage
 ```
 
 ### Pagination (load more older events)
@@ -101,7 +106,9 @@ sequenceDiagram
     Client->>Client: Prepend messages (no dedup needed)
 ```
 
-### Sync (after reconnect)
+### Sync (after reconnect or app restart)
+
+The sync path is taken whenever a watermark is available — from `lastKnownSeqRef` (in-memory, survives WS reconnects) or from `localStorage` (`getLastSeenSeq`, survives app restarts and WKWebView reloads).
 
 ```mermaid
 sequenceDiagram
@@ -110,37 +117,72 @@ sequenceDiagram
     participant Handler as SessionWSClient
     participant Store as Session Store
 
-    Note over Client: WebSocket reconnects
-    Client->>Client: Read lastKnownSeqRef (primary) + React state (fallback)
-    Client->>Client: lastSeq = max(refSeq, stateSeq)
+    Note over Client: WebSocket connects with watermark
+    Client->>Client: refSeq = lastKnownSeqRef (in-memory)
+    Client->>Client: persistedSeq = getLastSeenSeq() if refSeq=0 (localStorage)
+    Client->>Client: stateSeq = max(messages.maxSeq, lastLoadedSeq)
+    Client->>Client: lastSeq = max(refSeq, persistedSeq, stateSeq)
     alt lastSeq > 0
         Client->>WS: load_events {after_seq: lastSeq}
         WS->>Handler: handleLoadEvents(afterSeq=lastSeq)
         Handler->>Handler: Update lastSentSeq = lastSeq
         Handler->>Store: ReadEventsFrom(sessionID, lastSeq)
         Store-->>Handler: Events with seq > lastSeq
-        Handler-->>WS: events_loaded {events, ...}
+        Handler-->>WS: events_loaded {events, total_count, ...}
         WS-->>Client: Receive events
         Client->>Client: Merge with deduplication (mergeMessagesWithSync)
-    else lastSeq = 0 (first connection)
+        Client->>Client: updateLastKnownSeq → writes ref + localStorage
+    else lastSeq = 0 (no watermark)
         Client->>WS: load_events {limit: 50}
-        WS->>Handler: handleLoadEvents(limit=50)
-        Handler->>Store: ReadEventsLast(sessionID, 50, 0)
-        Store-->>Handler: Last 50 events
-        Handler-->>WS: events_loaded {events, has_more, ...}
-        WS-->>Client: Receive events
-        Client->>Client: Set messages (initial load)
+        Note over Client,Store: (Initial load path — see above)
     end
 ```
 
-**Sequence source priority on reconnection:**
+**Sequence source priority (three-tier watermark):**
 
-The `ws.onopen` handler determines `lastSeq` using two sources:
+The `ws.onopen` handler resolves `lastSeq` from three sources, taking the maximum:
 
-1. **`lastKnownSeqRef`** (primary): A `useRef` updated on every received event. Survives reconnections, always current. Not affected by React state resets.
-2. **React state** (fallback): `Math.max(getMaxSeq(session.messages), session.lastLoadedSeq)`. May be empty/stale during reconnection but provides a safety net.
+1. **`lastKnownSeqRef`** (primary): A `useRef` updated on every received event. Survives WS reconnects within a page session. Not affected by React render cycles.
+2. **`localStorage`** (`getLastSeenSeq`): Written by `updateLastKnownSeq` alongside the ref. Survives app restarts and WKWebView page reloads. Only consulted when `lastKnownSeqRef` is 0 (indicating a fresh runtime). Always contains the **max seq ever received** — never a scroll position — so it is safe to use directly as `after_seq`.
+3. **React state** (fallback): `Math.max(getMaxSeq(session.messages), session.lastLoadedSeq)`. May be empty during reconnection but provides a safety net.
 
-The final value is `Math.max(refSeq, stateSeq)`. If both are 0, this is a first connection and the initial-load path is used.
+The final value is `Math.max(refSeq, persistedSeq, stateSeq)`. If all three are 0, the initial-load path is used.
+
+### App Restart / WKWebView Reload (context-load fallback)
+
+When the app restarts (or WKWebView reloads the page), `lastKnownSeqRef` is empty but `localStorage` retains the last watermark. The sync path sends `{ after_seq: storedSeq }`. Two outcomes are possible:
+
+**Case A — new events arrived while the app was closed:**
+
+The server returns those events. The session shows only the new events. The user can scroll up to trigger pagination and load earlier context. No extra request is needed.
+
+**Case B — nothing happened while the app was closed (common):**
+
+```mermaid
+sequenceDiagram
+    participant Client as Frontend
+    participant WS as Session WebSocket
+    participant Store as Session Store
+
+    Note over Client: App restart, localStorage watermark = 200
+    Note over Client: No messages in memory
+    Client->>Client: needsContextLoadRef[sessionId] = true
+    Client->>WS: load_events {after_seq: 200}
+    WS->>Store: ReadEventsFrom(sessionID, 200)
+    Store-->>WS: 0 events (nothing new), total_count=200
+    WS-->>Client: events_loaded {events:[], total_count:200}
+    Note over Client: 0 events, session empty, total_count>0 → context fallback
+    Client->>Client: delete needsContextLoadRef[sessionId]
+    Client->>WS: load_events {limit: 50}
+    WS->>Store: ReadEventsLast(sessionID, 50)
+    Store-->>WS: Last 50 events
+    WS-->>Client: events_loaded {events: [...50 events...]}
+    Client->>Client: Set messages (conversation restored)
+```
+
+Without this fallback the user would see an empty conversation even though the session has history. The `needsContextLoadRef` flag is set only when `sessionMessages.length === 0` at the time of `ws.onopen`, ensuring the fallback never fires during normal mid-session reconnects (which have messages in memory).
+
+`needsContextLoadRef` is cleared by `clearPendingSync` on WebSocket close so a WS drop during the `after_seq` phase never leaves a stale flag for the next connection.
 
 ## Deduplication Strategy
 
