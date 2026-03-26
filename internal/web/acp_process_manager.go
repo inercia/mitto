@@ -82,7 +82,6 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 
 	lockStart := time.Now()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	lockWait := time.Since(lockStart)
 
 	// Check if process already exists and is alive
@@ -112,6 +111,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 			}
 
 			// Process is alive, return it
+			m.mu.Unlock()
 			if m.logger != nil && lockWait > 10*time.Millisecond {
 				m.logger.Info("GetOrCreateProcess returning existing (lock contention)",
 					"workspace_uuid", workspace.UUID,
@@ -139,6 +139,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	createDuration := time.Since(createStart)
 
 	if err != nil {
+		m.mu.Unlock()
 		if m.logger != nil {
 			m.logger.Warn("GetOrCreateProcess failed to create process",
 				"workspace_uuid", workspace.UUID,
@@ -150,6 +151,9 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	}
 
 	m.processes[workspace.UUID] = p
+	// Release lock before pre-warming: prewarmAuxiliarySessions calls GetProcess
+	// which also acquires m.mu, so the lock must be released first.
+	m.mu.Unlock()
 
 	if m.logger != nil {
 		m.logger.Info("Created shared ACP process for workspace",
@@ -158,6 +162,12 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 			"lock_wait_ms", lockWait.Milliseconds(),
 			"create_process_ms", createDuration.Milliseconds())
 	}
+
+	// Pre-warm auxiliary sessions while the agent is idle. A freshly started process
+	// has no active prompts, so WaitForIdle returns immediately. This ensures that
+	// MCP tool fetches, title generation, and follow-up analysis can all find an
+	// existing aux session and skip the slow WaitForIdle-before-NewSession path.
+	go m.prewarmAuxiliarySessions(workspace.UUID, processLogger)
 
 	return p, nil
 }
@@ -309,6 +319,17 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	process := m.GetProcess(workspaceUUID)
 	if process == nil {
 		return "", fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
+	}
+
+	// Wait for any active prompts to complete before sending the auxiliary prompt.
+	// The ACP agent serializes all RPCs: an active session/prompt from the main session
+	// will block any auxiliary session/prompt until it completes. For new sessions,
+	// WaitForIdle is already called inside getOrCreateAuxiliarySession before session/new.
+	// For existing sessions (the common reuse case), we must also wait here, otherwise
+	// process.Prompt blocks opaquely inside the ACP SDK — with no way to cancel cleanly
+	// and with the same shared context that is already counting down toward its deadline.
+	if err := process.WaitForIdle(ctx); err != nil {
+		return "", fmt.Errorf("waiting for agent to become idle before auxiliary prompt: %w", err)
 	}
 
 	// Reset the response buffer
@@ -483,4 +504,48 @@ func (m *ACPProcessManager) CleanupStaleAuxiliarySessions(maxIdleTime time.Durat
 	}
 
 	return len(staleKeys)
+}
+
+// prewarmAuxiliarySessions eagerly creates auxiliary sessions for the most commonly used
+// purposes right after a workspace process starts, while the agent is still idle.
+//
+// A freshly started ACP process has zero active prompts, so WaitForIdle returns
+// immediately inside getOrCreateAuxiliarySession. This one-time upfront cost
+// eliminates the slow WaitForIdle-before-NewSession path that all later callers
+// (MCP tool fetch, title generation, follow-up analysis) would otherwise hit when the
+// agent is busy with a user prompt.
+//
+// Run in a goroutine after releasing the ACPProcessManager lock.
+func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logger *slog.Logger) {
+	// Use a short timeout: the agent should be idle immediately after process creation.
+	// 30 seconds is generous; in practice session creation completes in < 1 second.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	purposes := []string{
+		auxiliary.PurposeMCPCheck,
+		auxiliary.PurposeMCPTools,
+		auxiliary.PurposeTitleGen,
+		auxiliary.PurposeFollowUp,
+	}
+
+	for _, purpose := range purposes {
+		if ctx.Err() != nil {
+			break
+		}
+		if _, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, purpose); err != nil {
+			if logger != nil {
+				logger.Debug("auxiliary session pre-warm failed",
+					"workspace_uuid", workspaceUUID,
+					"purpose", purpose,
+					"error", err)
+			}
+		} else {
+			if logger != nil {
+				logger.Debug("auxiliary session pre-warmed",
+					"workspace_uuid", workspaceUUID,
+					"purpose", purpose)
+			}
+		}
+	}
 }

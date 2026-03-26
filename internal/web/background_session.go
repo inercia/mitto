@@ -1340,9 +1340,16 @@ func (c *stderrCollector) Write(p []byte) (n int, err error) {
 		return len(p), nil
 	}
 
-	// Log at debug level as it comes in
+	// Log at debug level as it comes in, suppressing harmless protocol noise.
+	// The acp-go-sdk sends $/cancel_request (JSON-RPC LSP-style) which ACP agents
+	// don't support; their "Method not found" rejection written to stderr is expected
+	// and can be safely ignored. The SDK-level error log for this is already suppressed
+	// in logging.go; this suppresses the agent-side stderr counterpart.
 	if c.logger != nil && len(p) > 0 {
-		c.logger.Debug("agent stderr", "output", string(p))
+		output := string(p)
+		if !strings.Contains(output, "$/cancel_request") {
+			c.logger.Debug("agent stderr", "output", output)
+		}
 	}
 
 	// Append to buffer, keeping only the last maxSize bytes
@@ -2712,8 +2719,11 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 // to observers via OnActionButtons. This is non-blocking and runs in a goroutine.
 // userPrompt provides context about what the user asked.
 func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage string) {
-	// Create a timeout context for the analysis
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Use a generous timeout: PromptAuxiliary calls WaitForIdle before sending the
+	// follow-up prompt, and another aux operation (e.g. MCP tool fetch) may be
+	// in-flight at the same time — keeping activePrompts > 0 for tens of seconds.
+	// 5 minutes is ample for those concurrent aux ops to finish.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// Check if session is still valid before starting

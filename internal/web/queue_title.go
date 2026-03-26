@@ -96,7 +96,9 @@ func (w *QueueTitleWorker) run() {
 
 // processRequest generates a title for a single queued message.
 func (w *QueueTitleWorker) processRequest(req QueueTitleRequest) {
-	ctx, cancel := context.WithTimeout(w.ctx, 30*time.Second)
+	// Use a generous timeout: PromptAuxiliary calls WaitForIdle before the prompt,
+	// and concurrent aux operations may hold activePrompts > 0 for tens of seconds.
+	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Minute)
 	defer cancel()
 
 	// Get workspace UUID for this session

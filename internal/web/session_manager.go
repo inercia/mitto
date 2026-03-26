@@ -138,14 +138,14 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		WorkingDir: "", // Will be set at session creation time
 	}
 	return &SessionManager{
-		sessions:             make(map[string]*BackgroundSession),
-		pendingResumes:       make(map[string]*pendingResumeResult),
-		workspaces:           make(map[string]*config.WorkspaceSettings),
-		logger:               logger,
-		defaultWorkspace:     defaultWS,
-		autoApprove:          autoApprove,
-		workspaceRCCache:     config.NewWorkspaceRCCache(30 * time.Second),
-		planState:            make(map[string][]PlanEntry),
+		sessions:                  make(map[string]*BackgroundSession),
+		pendingResumes:            make(map[string]*pendingResumeResult),
+		workspaces:                make(map[string]*config.WorkspaceSettings),
+		logger:                    logger,
+		defaultWorkspace:          defaultWS,
+		autoApprove:               autoApprove,
+		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
+		planState:                 make(map[string][]PlanEntry),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
@@ -173,16 +173,16 @@ type SessionManagerOptions struct {
 // Workspaces without UUIDs will have UUIDs generated automatically.
 func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 	sm := &SessionManager{
-		sessions:             make(map[string]*BackgroundSession),
-		pendingResumes:       make(map[string]*pendingResumeResult),
-		workspaces:           make(map[string]*config.WorkspaceSettings),
-		logger:               opts.Logger,
-		autoApprove:          opts.AutoApprove,
-		fromCLI:              opts.FromCLI,
-		onWorkspaceSave:      opts.OnWorkspaceSave,
-		workspaceRCCache:     config.NewWorkspaceRCCache(30 * time.Second),
-		apiPrefix:            opts.APIPrefix,
-		planState:            make(map[string][]PlanEntry),
+		sessions:                  make(map[string]*BackgroundSession),
+		pendingResumes:            make(map[string]*pendingResumeResult),
+		workspaces:                make(map[string]*config.WorkspaceSettings),
+		logger:                    opts.Logger,
+		autoApprove:               opts.AutoApprove,
+		fromCLI:                   opts.FromCLI,
+		onWorkspaceSave:           opts.OnWorkspaceSave,
+		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
+		apiPrefix:                 opts.APIPrefix,
+		planState:                 make(map[string][]PlanEntry),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
@@ -1987,7 +1987,6 @@ func (sm *SessionManager) ClearMCPChecked(workspaceUUID string) {
 	delete(sm.mcpCheckedWorkspaces, workspaceUUID)
 	sm.mcpCheckedWorkspacesMu.Unlock()
 }
-
 
 // IsMCPToolsFetched returns whether MCP tools have been fetched for the given workspace.
 func (sm *SessionManager) IsMCPToolsFetched(workspaceUUID string) bool {
