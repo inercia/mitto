@@ -2691,6 +2691,7 @@ function App() {
     activeUIPrompt,
     sendUIPromptAnswer,
     mcpTools,
+    requiredToolsStatus,
   } = useWebSocket();
 
   const [showSidebar, setShowSidebar] = useState(false);
@@ -2823,12 +2824,24 @@ function App() {
       return allowedServers.includes(currentAcpServerType);
     };
 
+    // Helper to check if a prompt's required tools are satisfied
+    // If required_tools is empty, the prompt is always shown
+    // Otherwise, ALL patterns must be satisfied (true in requiredToolsStatus)
+    const isRequiredToolsSatisfied = (prompt) => {
+      if (!prompt.required_tools || prompt.required_tools.trim() === "") {
+        return true; // No tool requirements
+      }
+      const patterns = prompt.required_tools.split(",").map((s) => s.trim()).filter(Boolean);
+      if (patterns.length === 0) return true;
+      return patterns.every((p) => requiredToolsStatus[p] === true);
+    };
+
     // Build a map of prompt names to prompts, with workspace prompts having highest priority
     const promptMap = new Map();
 
-    // First add global prompts (lowest priority), filtered by ACP server
+    // First add global prompts (lowest priority), filtered by ACP server AND required tools
     for (const p of globalPrompts) {
-      if (isAllowedForACP(p)) {
+      if (isAllowedForACP(p) && isRequiredToolsSatisfied(p)) {
         promptMap.set(p.name, { ...p, source: "global" });
       }
     }
@@ -2840,7 +2853,7 @@ function App() {
       );
       if (server?.prompts?.length > 0) {
         for (const p of server.prompts) {
-          if (isAllowedForACP(p)) {
+          if (isAllowedForACP(p) && isRequiredToolsSatisfied(p)) {
             promptMap.set(p.name, { ...p, source: "server" });
           }
         }
@@ -2848,9 +2861,9 @@ function App() {
     }
 
     // Finally add workspace prompts (highest priority - override others with same name)
-    // Workspace prompts are also filtered by ACP server
+    // Workspace prompts are also filtered by ACP server AND required tools
     for (const p of workspacePrompts) {
-      if (isAllowedForACP(p)) {
+      if (isAllowedForACP(p) && isRequiredToolsSatisfied(p)) {
         promptMap.set(p.name, { ...p, source: "workspace" });
       }
     }
@@ -2877,6 +2890,7 @@ function App() {
     sessionInfo?.acp_server,
     acpServersWithPrompts,
     workspacePrompts,
+    requiredToolsStatus,
   ]);
 
   // Initialize CSRF protection and UI preferences on mount
