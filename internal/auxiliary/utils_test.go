@@ -5,6 +5,49 @@ import (
 	"testing"
 )
 
+func TestParseRequiredToolsCheck_ValidJSON(t *testing.T) {
+	input := `{"patterns": {"jira_*": true, "slack_*": false}}`
+	got, err := parseRequiredToolsCheck(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]bool{"jira_*": true, "slack_*": false}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestParseRequiredToolsCheck_JSONWithSurroundingText(t *testing.T) {
+	input := `Here is the result: {"patterns": {"jira_*": true}} - done`
+	got, err := parseRequiredToolsCheck(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]bool{"jira_*": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestParseRequiredToolsCheck_InvalidJSON(t *testing.T) {
+	input := `not valid json at all`
+	_, err := parseRequiredToolsCheck(input)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestParseRequiredToolsCheck_EmptyPatterns(t *testing.T) {
+	input := `{"patterns": {}}`
+	got, err := parseRequiredToolsCheck(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map, got %v", got)
+	}
+}
+
 func TestTrimQuotes(t *testing.T) {
 	tests := []struct {
 		name  string

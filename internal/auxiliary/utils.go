@@ -167,3 +167,33 @@ func parseMCPAvailabilityResult(response string) (*MCPAvailabilityResult, error)
 	// Parsing failed
 	return nil, fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
 }
+
+// requiredToolsCheckResponse represents the JSON response from the required tools check.
+type requiredToolsCheckResponse struct {
+	Patterns map[string]bool `json:"patterns"`
+}
+
+// parseRequiredToolsCheck parses the JSON response from the required tools pattern check.
+// It handles cases where the response might have extra text around the JSON.
+func parseRequiredToolsCheck(response string) (map[string]bool, error) {
+	response = strings.TrimSpace(response)
+
+	// Try direct parsing first
+	var result requiredToolsCheckResponse
+	if err := json.Unmarshal([]byte(response), &result); err == nil && result.Patterns != nil {
+		return result.Patterns, nil
+	}
+
+	// Try to find JSON object in the response
+	start := strings.Index(response, "{")
+	end := strings.LastIndex(response, "}")
+	if start >= 0 && end > start {
+		jsonStr := response[start : end+1]
+		if err := json.Unmarshal([]byte(jsonStr), &result); err == nil && result.Patterns != nil {
+			return result.Patterns, nil
+		}
+	}
+
+	// Parsing failed
+	return nil, fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
+}

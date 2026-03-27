@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -47,15 +48,21 @@ type WorkspaceAuxiliaryManager struct {
 	// Cache for MCP tools list per workspace
 	mcpToolsCache   map[string][]MCPToolInfo
 	mcpToolsCacheMu sync.RWMutex
+
+	// Cache for required tools pattern check results per workspace.
+	// Maps workspace UUID → pattern → available (true/false).
+	requiredToolsCache   map[string]map[string]bool
+	requiredToolsCacheMu sync.RWMutex
 }
 
 // NewWorkspaceAuxiliaryManager creates a new workspace-scoped auxiliary manager.
 func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger) *WorkspaceAuxiliaryManager {
 	return &WorkspaceAuxiliaryManager{
-		provider:      provider,
-		logger:        logger,
-		mcpCheckCache: make(map[string]*MCPAvailabilityResult),
-		mcpToolsCache: make(map[string][]MCPToolInfo),
+		provider:           provider,
+		logger:             logger,
+		mcpCheckCache:      make(map[string]*MCPAvailabilityResult),
+		mcpToolsCache:      make(map[string][]MCPToolInfo),
+		requiredToolsCache: make(map[string]map[string]bool),
 	}
 }
 
@@ -419,6 +426,120 @@ func (m *WorkspaceAuxiliaryManager) ClearMCPCheckCache(workspaceUUID string) {
 
 	if m.logger != nil {
 		m.logger.Debug("cleared MCP check cache",
+			"workspace_uuid", workspaceUUID)
+	}
+}
+
+// CheckRequiredToolPatterns checks if the agent has tools matching the given patterns.
+// This sends a targeted query to the PurposeMCPTools auxiliary session (reusing it from FetchMCPTools).
+// Results are NOT cached automatically — use MergeRequiredToolsStatus to update the cache.
+// The patterns parameter should be a list of tool name patterns (e.g., ["jira_*", "slack_*"]).
+func (m *WorkspaceAuxiliaryManager) CheckRequiredToolPatterns(ctx context.Context, workspaceUUID string, patterns []string) (map[string]bool, error) {
+	if len(patterns) == 0 {
+		return map[string]bool{}, nil
+	}
+
+	patternsStr := strings.Join(patterns, ", ")
+
+	if m.logger != nil {
+		m.logger.Debug("required tools check: starting",
+			"workspace_uuid", workspaceUUID,
+			"patterns", patternsStr)
+	}
+
+	prompt := fmt.Sprintf(CheckRequiredToolsPromptTemplate, patternsStr)
+
+	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeMCPTools, prompt)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Debug("required tools check: request failed",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error())
+		}
+		return nil, fmt.Errorf("failed to check required tools: %w", err)
+	}
+
+	if m.logger != nil {
+		m.logger.Debug("required tools check: received response",
+			"workspace_uuid", workspaceUUID,
+			"response_length", len(response),
+			"response", truncateForLog(response, 300))
+	}
+
+	result, err := parseRequiredToolsCheck(response)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("required tools check: failed to parse response",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error(),
+				"response", truncateForLog(response, 200))
+		}
+		return nil, fmt.Errorf("failed to parse required tools response: %w", err)
+	}
+
+	if m.logger != nil {
+		m.logger.Info("Required tools check completed",
+			"workspace_uuid", workspaceUUID,
+			"patterns_checked", len(patterns),
+			"result", result)
+	}
+
+	return result, nil
+}
+
+// MergeRequiredToolsStatus merges new pattern check results into the cache.
+// Only upgrades patterns to true — never downgrades a true to false.
+// This allows progressive discovery as MCP servers become available.
+func (m *WorkspaceAuxiliaryManager) MergeRequiredToolsStatus(workspaceUUID string, results map[string]bool) {
+	m.requiredToolsCacheMu.Lock()
+	defer m.requiredToolsCacheMu.Unlock()
+
+	existing, ok := m.requiredToolsCache[workspaceUUID]
+	if !ok {
+		existing = make(map[string]bool)
+		m.requiredToolsCache[workspaceUUID] = existing
+	}
+
+	for pattern, available := range results {
+		if available || !existing[pattern] {
+			// Only upgrade: set to true, or set initial value
+			existing[pattern] = available
+		}
+	}
+
+	if m.logger != nil {
+		m.logger.Debug("merged required tools status",
+			"workspace_uuid", workspaceUUID,
+			"merged_count", len(results),
+			"total_cached", len(existing))
+	}
+}
+
+// GetCachedRequiredToolsStatus returns the cached required tools pattern status for a workspace.
+// Returns the cached map and true if found, or nil and false if not cached.
+func (m *WorkspaceAuxiliaryManager) GetCachedRequiredToolsStatus(workspaceUUID string) (map[string]bool, bool) {
+	m.requiredToolsCacheMu.RLock()
+	defer m.requiredToolsCacheMu.RUnlock()
+	cached, ok := m.requiredToolsCache[workspaceUUID]
+	if !ok {
+		return nil, false
+	}
+	// Return a copy to prevent concurrent map access
+	result := make(map[string]bool, len(cached))
+	for k, v := range cached {
+		result[k] = v
+	}
+	return result, true
+}
+
+// ClearRequiredToolsCache clears the cached required tools status for a workspace.
+func (m *WorkspaceAuxiliaryManager) ClearRequiredToolsCache(workspaceUUID string) {
+	m.requiredToolsCacheMu.Lock()
+	delete(m.requiredToolsCache, workspaceUUID)
+	m.requiredToolsCacheMu.Unlock()
+
+	if m.logger != nil {
+		m.logger.Debug("cleared required tools cache",
 			"workspace_uuid", workspaceUUID)
 	}
 }
