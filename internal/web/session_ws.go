@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -1422,6 +1423,194 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 		c.server.eventsManager.Broadcast(WSMsgTypeMCPToolsAvailable, map[string]interface{}{
 			"workspace_uuid": workspaceUUID,
 			"tools":          tools,
+		})
+	}
+
+	// After broadcasting tools, check required tool patterns from prompts.
+	go c.checkRequiredToolPatterns(workspaceUUID, tools)
+}
+
+// checkRequiredToolPatterns collects required_tools patterns from all prompts,
+// checks them against the initial tools list, and retries unsatisfied patterns
+// with exponential backoff. MCP tools from external servers can take time to appear
+// (e.g., external Python programs), so retries are essential.
+//
+// Flow:
+//  1. Collect all required_tools patterns from global + workspace prompts
+//  2. Local match: check patterns against the initial fetched tools list
+//  3. For unsatisfied patterns: query the auxiliary session (targeted check)
+//  4. Broadcast results
+//  5. Retry unsatisfied patterns with backoff: 30s, 60s, 120s
+func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initialTools []auxiliary.MCPToolInfo) {
+	// Collect all required_tools patterns from prompts
+	patterns := c.collectRequiredToolPatterns()
+	if len(patterns) == 0 {
+		if c.logger != nil {
+			c.logger.Debug("required tools check: no patterns found in prompts",
+				"workspace_uuid", workspaceUUID)
+		}
+		return
+	}
+
+	if c.logger != nil {
+		c.logger.Debug("required tools check: starting",
+			"workspace_uuid", workspaceUUID,
+			"pattern_count", len(patterns),
+			"patterns", patterns)
+	}
+
+	// Phase 1: Local match against initially fetched tools
+	satisfied := make(map[string]bool)
+	for _, pattern := range patterns {
+		for _, tool := range initialTools {
+			if config.MatchToolPattern(pattern, tool.Name) {
+				satisfied[pattern] = true
+				break
+			}
+		}
+		if !satisfied[pattern] {
+			satisfied[pattern] = false
+		}
+	}
+
+	// Broadcast initial status
+	c.broadcastRequiredToolsStatus(workspaceUUID, satisfied)
+
+	// Check if all patterns are already satisfied
+	unsatisfied := c.getUnsatisfiedPatterns(satisfied)
+	if len(unsatisfied) == 0 {
+		if c.logger != nil {
+			c.logger.Debug("required tools check: all patterns satisfied from initial tools",
+				"workspace_uuid", workspaceUUID)
+		}
+		return
+	}
+
+	// Phase 2: Query auxiliary session for unsatisfied patterns, with retry
+	retryDelays := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
+
+	for attempt, delay := range retryDelays {
+		if c.logger != nil {
+			c.logger.Debug("required tools check: waiting before retry",
+				"workspace_uuid", workspaceUUID,
+				"attempt", attempt+1,
+				"delay", delay,
+				"unsatisfied_count", len(unsatisfied))
+		}
+
+		// Wait before retry
+		select {
+		case <-time.After(delay):
+		case <-c.ctx.Done():
+			// Client disconnected
+			return
+		}
+
+		// Check auxiliary manager is available
+		if c.server == nil || c.server.auxiliaryManager == nil {
+			return
+		}
+
+		// Query the agent about unsatisfied patterns
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		result, err := c.server.auxiliaryManager.CheckRequiredToolPatterns(ctx, workspaceUUID, unsatisfied)
+		cancel()
+
+		if err != nil {
+			if c.logger != nil {
+				c.logger.Debug("required tools check: query failed",
+					"workspace_uuid", workspaceUUID,
+					"attempt", attempt+1,
+					"error", err)
+			}
+			continue
+		}
+
+		// Merge results (only upgrade to true)
+		for pattern, available := range result {
+			if available {
+				satisfied[pattern] = true
+			}
+		}
+
+		// Update cache
+		c.server.auxiliaryManager.MergeRequiredToolsStatus(workspaceUUID, satisfied)
+
+		// Broadcast updated status
+		c.broadcastRequiredToolsStatus(workspaceUUID, satisfied)
+
+		// Check if all satisfied now
+		unsatisfied = c.getUnsatisfiedPatterns(satisfied)
+		if len(unsatisfied) == 0 {
+			if c.logger != nil {
+				c.logger.Info("required tools check: all patterns satisfied",
+					"workspace_uuid", workspaceUUID,
+					"attempt", attempt+1)
+			}
+			return
+		}
+	}
+
+	if c.logger != nil {
+		c.logger.Info("required tools check: some patterns still unsatisfied after all retries",
+			"workspace_uuid", workspaceUUID,
+			"unsatisfied", unsatisfied)
+	}
+}
+
+// collectRequiredToolPatterns collects all unique required_tools patterns from all prompt sources.
+func (c *SessionWSClient) collectRequiredToolPatterns() []string {
+	if c.server == nil {
+		return nil
+	}
+
+	var allPatterns []string
+	seen := make(map[string]bool)
+	addPatterns := func(patterns []string) {
+		for _, p := range patterns {
+			if !seen[p] {
+				seen[p] = true
+				allPatterns = append(allPatterns, p)
+			}
+		}
+	}
+
+	// Global prompts from cache
+	if c.server.config.PromptsCache != nil {
+		if prompts, err := c.server.config.PromptsCache.Get(); err == nil {
+			addPatterns(config.CollectRequiredToolPatterns(prompts))
+		}
+	}
+
+	// Workspace prompts (if we have a background session with working dir)
+	if c.bgSession != nil {
+		workingDir := c.bgSession.GetWorkingDir()
+		if workingDir != "" && c.server.sessionManager != nil {
+			wsPrompts := c.server.sessionManager.GetWorkspacePrompts(workingDir)
+			addPatterns(config.CollectRequiredToolPatternsFromWebPrompts(wsPrompts))
+		}
+	}
+
+	return allPatterns
+}
+
+// getUnsatisfiedPatterns returns patterns that are not yet satisfied (false or missing).
+func (c *SessionWSClient) getUnsatisfiedPatterns(satisfied map[string]bool) []string {
+	var unsatisfied []string
+	for pattern, available := range satisfied {
+		if !available {
+			unsatisfied = append(unsatisfied, pattern)
+		}
+	}
+	return unsatisfied
+}
+
+// broadcastRequiredToolsStatus broadcasts the required tools pattern status to all clients.
+func (c *SessionWSClient) broadcastRequiredToolsStatus(workspaceUUID string, patterns map[string]bool) {
+	if c.server != nil && c.server.eventsManager != nil {
+		c.server.eventsManager.Broadcast(WSMsgTypeRequiredToolsStatus, map[string]interface{}{
+			"workspace_uuid": workspaceUUID,
+			"patterns":       patterns,
 		})
 	}
 }
