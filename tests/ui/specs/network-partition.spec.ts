@@ -14,6 +14,10 @@ import { test, expect } from "../fixtures/test-fixtures";
  */
 
 test.describe("Network Partition Recovery", () => {
+  test.skip(
+    ({ browserName }) => browserName !== "chromium",
+    "CDP (newCDPSession) is only available in Chromium"
+  );
   test.setTimeout(90000);
 
   test.beforeEach(async ({ page, helpers }) => {

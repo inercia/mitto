@@ -24,8 +24,6 @@ func connectAndWaitForSessionGone(t *testing.T, ts *TestServer, sessionID string
 	t.Helper()
 
 	gone := make(chan sessionGoneData, 1)
-	var mu sync.Mutex
-	_ = mu
 
 	callbacks := client.SessionCallbacks{
 		OnRawMessage: func(msgType string, data []byte) {

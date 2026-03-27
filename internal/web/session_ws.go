@@ -1498,11 +1498,19 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 				"unsatisfied_count", len(unsatisfied))
 		}
 
-		// Wait before retry
+		// Wait before retry; use NewTimer so we can stop it promptly on disconnect.
+		timer := time.NewTimer(delay)
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
+			// delay elapsed, proceed to retry
 		case <-c.ctx.Done():
-			// Client disconnected
+			// Client disconnected; stop and drain timer to avoid leaking it.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			return
 		}
 
@@ -1511,8 +1519,9 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 			return
 		}
 
-		// Query the agent about unsatisfied patterns
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		// Query the agent about unsatisfied patterns.
+		// Derive from c.ctx so the query is cancelled if the client disconnects.
+		ctx, cancel := context.WithTimeout(c.ctx, 5*time.Minute)
 		result, err := c.server.auxiliaryManager.CheckRequiredToolPatterns(ctx, workspaceUUID, unsatisfied)
 		cancel()
 
@@ -1532,9 +1541,6 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 				satisfied[pattern] = true
 			}
 		}
-
-		// Update cache
-		c.server.auxiliaryManager.MergeRequiredToolsStatus(workspaceUUID, satisfied)
 
 		// Broadcast updated status
 		c.broadcastRequiredToolsStatus(workspaceUUID, satisfied)
