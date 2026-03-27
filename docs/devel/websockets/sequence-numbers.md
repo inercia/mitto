@@ -146,16 +146,16 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
 
 ### Contract Summary
 
-| Property                  | Guarantee                                                                 |
-| ------------------------- | ------------------------------------------------------------------------- |
-| **Server Authority**      | Server's sequence numbers are authoritative; client defers on mismatch    |
-| **Uniqueness**            | Each event in a session has a unique `seq` (except coalescing chunks)     |
-| **Monotonicity**          | `seq` values are strictly increasing within a session                     |
-| **Assignment Time**       | `seq` is assigned when the event is received from ACP, not at persistence |
-| **Immediate Persistence** | Events are persisted immediately with their pre-assigned `seq` values     |
-| **Coalescing**            | Multiple chunks of the same logical message share the same `seq`          |
+| Property                  | Guarantee                                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Server Authority**      | Server's sequence numbers are authoritative; client defers on mismatch                                                                                  |
+| **Uniqueness**            | Each event in a session has a unique `seq` (except coalescing chunks)                                                                                   |
+| **Monotonicity**          | `seq` values are strictly increasing within a session                                                                                                   |
+| **Assignment Time**       | `seq` is assigned when the event is received from ACP, not at persistence                                                                               |
+| **Immediate Persistence** | Events are persisted immediately with their pre-assigned `seq` values                                                                                   |
+| **Coalescing**            | Multiple chunks of the same logical message share the same `seq`                                                                                        |
 | **No Gaps**               | `seq` values are contiguous within a persistence cycle; pruning may renumber on-disk events, creating a transient gap between on-disk and in-memory seq |
-| **No Reuse**              | Once assigned, a `seq` is never reused in the streaming context; pruning renumbers on-disk events for compaction |
+| **No Reuse**              | Once assigned, a `seq` is never reused in the streaming context; pruning renumbers on-disk events for compaction                                        |
 
 ### Backend Responsibilities
 
@@ -175,11 +175,11 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
 
 1. **Track highest received seq via a three-tier watermark**: The frontend determines `after_seq` from three sources in priority order (highest wins):
 
-   | Tier | Source | Scope | Survives |
-   |------|--------|-------|---------|
-   | 1 (primary) | `lastKnownSeqRef` (`useRef`) | In-memory per hook instance | WS reconnects within a page session |
-   | 2 | `localStorage` (`getLastSeenSeq`) | Browser storage | App restarts, WKWebView page reloads |
-   | 3 (fallback) | React state (`messages` / `lastLoadedSeq`) | React state | Render cycles (may be empty during reconnect) |
+   | Tier         | Source                                     | Scope                       | Survives                                      |
+   | ------------ | ------------------------------------------ | --------------------------- | --------------------------------------------- |
+   | 1 (primary)  | `lastKnownSeqRef` (`useRef`)               | In-memory per hook instance | WS reconnects within a page session           |
+   | 2            | `localStorage` (`getLastSeenSeq`)          | Browser storage             | App restarts, WKWebView page reloads          |
+   | 3 (fallback) | React state (`messages` / `lastLoadedSeq`) | React state                 | Render cycles (may be empty during reconnect) |
 
    `updateLastKnownSeq` writes to **both** the ref and localStorage so that app restarts benefit from the correct watermark without losing historical seq information:
 
@@ -249,7 +249,10 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
    } else {
      // No watermark: true initial load.
      ws.send(
-       JSON.stringify({ type: "load_events", data: { limit: INITIAL_EVENTS_LIMIT } }),
+       JSON.stringify({
+         type: "load_events",
+         data: { limit: INITIAL_EVENTS_LIMIT },
+       }),
      );
    }
    ```
@@ -259,13 +262,12 @@ When the client detects `clientLastSeq > serverLastSeq`, it must:
 6. **Reset watermark on stale client detection**: When `events_loaded` detects the client has stale state (client's max seq > server's max seq), both the seq tracker, `lastKnownSeqRef`, and the localStorage entry are cleared before processing fresh events from the server:
 
    ```javascript
-   clearSeenSeqs(sessionId);              // Reset M1 seq tracker
+   clearSeenSeqs(sessionId); // Reset M1 seq tracker
    delete lastKnownSeqRef.current[sessionId]; // Reset reconnection watermark
-   setLastSeenSeq(sessionId, 0);          // Clear localStorage mirror
+   setLastSeenSeq(sessionId, 0); // Clear localStorage mirror
    ```
 
    After the stale reset, `updateLastKnownSeq` repopulates all three tiers from the fresh events sent by the server.
-
 
 ## Pruning and Sequence Numbers
 
@@ -278,6 +280,7 @@ Session pruning (`PruneIfNeeded`) removes oldest events to stay within size/coun
 ### Transient Inconsistency
 
 After pruning during active streaming:
+
 - On-disk events: seq 1..N (renumbered)
 - Next streaming event: seq M (where M >> N, from the old counter)
 - `RecordEvent` logs a `seq_mismatch_on_persist` DEBUG warning (expected, harmless)
@@ -287,6 +290,7 @@ This inconsistency resolves on session restart, when `refreshNextSeq()` reads th
 ### Reconnection After Pruning
 
 If a client reconnects with `after_seq: M` (where M > N, the renumbered max):
+
 - `ReadEventsFrom(sessionID, M)` returns empty (no events with seq > M on disk)
 - New streaming events (seq M+1, M+2...) will be delivered via the observer pattern
 - The keepalive sync mechanism (`max_seq` piggybacking) ensures clients eventually catch up
@@ -373,9 +377,9 @@ The system protects against flushing content with unmatched inline formatting ma
 **Stale Client Reset (M1 fix)**: When `isStaleClient` is detected in `events_loaded` (i.e., `clientLastSeq > serverLastSeq`), the seq tracker, `lastKnownSeqRef`, **and the localStorage mirror** are all reset BEFORE processing events to prevent fresh events from being rejected as duplicates:
 
 ```javascript
-clearSeenSeqs(sessionId);              // Reset M1 seq tracker
+clearSeenSeqs(sessionId); // Reset M1 seq tracker
 delete lastKnownSeqRef.current[sessionId]; // Reset reconnection watermark
-setLastSeenSeq(sessionId, 0);          // Clear localStorage mirror
+setLastSeenSeq(sessionId, 0); // Clear localStorage mirror
 ```
 
 After the stale reset, `updateLastKnownSeq` repopulates all three tiers from the fresh events sent by the server. From that point the watermark is again accurate for future reconnects.

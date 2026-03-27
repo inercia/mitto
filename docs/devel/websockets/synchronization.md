@@ -344,7 +344,7 @@ const isConnectionHealthy = (sessionId) => {
 const refSeq = lastKnownSeqRef.current[sessionId] || 0;
 const stateSeq = Math.max(
   getMaxSeq(session.messages),
-  session.lastLoadedSeq || 0
+  session.lastLoadedSeq || 0,
 );
 const clientMaxSeq = Math.max(refSeq, stateSeq);
 ```
@@ -523,11 +523,11 @@ Slow path: wait up to 100ms for buffer space
            → timeout: close connection (force client reconnect)
 ```
 
-| Outcome             | What Happens                                                             | Client Sees   |
-| ------------------- | ------------------------------------------------------------------------ | ------------- |
-| Buffer has space    | Message enqueued immediately (fast path)                                 | Normal        |
-| Buffer drains in <100ms | Backpressure absorbed, message enqueued after brief wait             | Normal        |
-| Buffer stays full   | Connection closed via `conn.Close()` — client forced to reconnect       | Code 1006     |
+| Outcome                 | What Happens                                                      | Client Sees |
+| ----------------------- | ----------------------------------------------------------------- | ----------- |
+| Buffer has space        | Message enqueued immediately (fast path)                          | Normal      |
+| Buffer drains in <100ms | Backpressure absorbed, message enqueued after brief wait          | Normal      |
+| Buffer stays full       | Connection closed via `conn.Close()` — client forced to reconnect | Code 1006   |
 
 **Design rationale:** Silent message drops caused unrecoverable sequence gaps — the client had no way to know a message was lost. By closing the connection instead, the client's reconnection flow kicks in: it sends `load_events` with `after_seq` and catches up from persisted events. The 100ms timeout absorbs short bursts (e.g., rapid tool call updates) without prematurely disconnecting clients.
 

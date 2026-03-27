@@ -95,8 +95,18 @@ All input is JSON. The format depends on the `input` setting:
   "acp_server": "claude-code",
   "workspace_uuid": "d4e5f6a7-...",
   "available_acp_servers": [
-    { "name": "auggie",      "type": "auggie",      "tags": ["coding"], "current": false },
-    { "name": "claude-code", "type": "claude-code", "tags": ["coding"], "current": true  }
+    {
+      "name": "auggie",
+      "type": "auggie",
+      "tags": ["coding"],
+      "current": false
+    },
+    {
+      "name": "claude-code",
+      "type": "claude-code",
+      "tags": ["coding"],
+      "current": true
+    }
   ]
 }
 ```
@@ -114,12 +124,22 @@ All input is JSON. The format depends on the `input` setting:
   "acp_server": "claude-code",
   "workspace_uuid": "d4e5f6a7-...",
   "available_acp_servers": [
-    { "name": "auggie",      "type": "auggie",      "tags": ["coding"], "current": false },
-    { "name": "claude-code", "type": "claude-code", "tags": ["coding"], "current": true  }
+    {
+      "name": "auggie",
+      "type": "auggie",
+      "tags": ["coding"],
+      "current": false
+    },
+    {
+      "name": "claude-code",
+      "type": "claude-code",
+      "tags": ["coding"],
+      "current": true
+    }
   ],
   "history": [
-    { "role": "user",      "content": "Previous question" },
-    { "role": "assistant", "content": "Previous answer"   }
+    { "role": "user", "content": "Previous question" },
+    { "role": "assistant", "content": "Previous answer" }
   ]
 }
 ```
@@ -194,19 +214,19 @@ base64-encoded automatically.
 
 The following environment variables are automatically set for all processors:
 
-| Variable                        | Description                                      | Example                                                  |
-| ------------------------------- | ------------------------------------------------ | -------------------------------------------------------- |
-| `MITTO_SESSION_ID`              | Current session ID                               | `20260131-143052-a1b2c3d4`                               |
-| `MITTO_WORKING_DIR`             | Session working directory                        | `/Users/me/myproject`                                    |
-| `MITTO_IS_FIRST_MESSAGE`        | Whether this is the first message                | `true` or `false`                                        |
-| `MITTO_PROCESSORS_DIR`          | Path to the processors directory                 | `~/Library/Application Support/Mitto/processors`         |
-| `MITTO_PROCESSOR_FILE`          | Path to the current processor's YAML file        | `.../processors/my-processor.yaml`                       |
-| `MITTO_PROCESSOR_DIR`           | Directory containing the current processor file  | `.../processors`                                         |
-| `MITTO_PARENT_SESSION_ID`       | Parent conversation ID (empty if root)           | `20260130-100000-aabbccdd`                               |
-| `MITTO_SESSION_NAME`            | Conversation title/name                          | `Fix login bug`                                          |
-| `MITTO_ACP_SERVER`              | Active ACP server name                           | `claude-code`                                            |
-| `MITTO_WORKSPACE_UUID`          | Workspace identifier                             | `d4e5f6a7-b8c9-...`                                      |
-| `MITTO_AVAILABLE_ACP_SERVERS`   | JSON array of servers with workspaces for this folder | `[{"name":"auggie","tags":["coding"],"current":false},…]` |
+| Variable                      | Description                                           | Example                                                   |
+| ----------------------------- | ----------------------------------------------------- | --------------------------------------------------------- |
+| `MITTO_SESSION_ID`            | Current session ID                                    | `20260131-143052-a1b2c3d4`                                |
+| `MITTO_WORKING_DIR`           | Session working directory                             | `/Users/me/myproject`                                     |
+| `MITTO_IS_FIRST_MESSAGE`      | Whether this is the first message                     | `true` or `false`                                         |
+| `MITTO_PROCESSORS_DIR`        | Path to the processors directory                      | `~/Library/Application Support/Mitto/processors`          |
+| `MITTO_PROCESSOR_FILE`        | Path to the current processor's YAML file             | `.../processors/my-processor.yaml`                        |
+| `MITTO_PROCESSOR_DIR`         | Directory containing the current processor file       | `.../processors`                                          |
+| `MITTO_PARENT_SESSION_ID`     | Parent conversation ID (empty if root)                | `20260130-100000-aabbccdd`                                |
+| `MITTO_SESSION_NAME`          | Conversation title/name                               | `Fix login bug`                                           |
+| `MITTO_ACP_SERVER`            | Active ACP server name                                | `claude-code`                                             |
+| `MITTO_WORKSPACE_UUID`        | Workspace identifier                                  | `d4e5f6a7-b8c9-...`                                       |
+| `MITTO_AVAILABLE_ACP_SERVERS` | JSON array of servers with workspaces for this folder | `[{"name":"auggie","tags":["coding"],"current":false},…]` |
 
 ## Variable Substitution
 
@@ -224,15 +244,15 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 
 ### Available Variables
 
-| Placeholder                   | Replaced with                                                                 |
-| ----------------------------- | ----------------------------------------------------------------------------- |
-| `@mitto:session_id`              | Current session ID                                                            |
-| `@mitto:parent_session_id`       | Parent conversation ID; empty string if this is a root session                |
-| `@mitto:session_name`            | Conversation title/name; empty string if not yet set                          |
-| `@mitto:working_dir`             | Session working directory                                                     |
-| `@mitto:acp_server`              | Active ACP server name (e.g. `claude-code`)                                  |
-| `@mitto:workspace_uuid`          | Workspace UUID                                                                |
-| `@mitto:available_acp_servers`   | Human-readable list of ACP servers with workspaces for this folder — see below |
+| Placeholder                    | Replaced with                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| `@mitto:session_id`            | Current session ID                                                             |
+| `@mitto:parent_session_id`     | Parent conversation ID; empty string if this is a root session                 |
+| `@mitto:session_name`          | Conversation title/name; empty string if not yet set                           |
+| `@mitto:working_dir`           | Session working directory                                                      |
+| `@mitto:acp_server`            | Active ACP server name (e.g. `claude-code`)                                    |
+| `@mitto:workspace_uuid`        | Workspace UUID                                                                 |
+| `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
 
 ### `@mitto:available_acp_servers` format
 
@@ -381,13 +401,13 @@ Processors that timeout or exit with non-zero status are treated as errors.
 
 ## Comparison with Declarative Processors
 
-| Feature        | Declarative Processors     | Command Processors                           |
-| -------------- | -------------------------- | -------------------------------------------- |
-| Configuration  | YAML in config files       | YAML files in processors directory           |
-| Transformation | Static text prepend/append | Dynamic via external commands                |
-| Input          | None                       | JSON via stdin                               |
-| Output         | None                       | JSON via stdout                              |
-| Use case       | Simple prompts, reminders  | Complex transformations, external data       |
+| Feature        | Declarative Processors     | Command Processors                     |
+| -------------- | -------------------------- | -------------------------------------- |
+| Configuration  | YAML in config files       | YAML files in processors directory     |
+| Transformation | Static text prepend/append | Dynamic via external commands          |
+| Input          | None                       | JSON via stdin                         |
+| Output         | None                       | JSON via stdout                        |
+| Use case       | Simple prompts, reminders  | Complex transformations, external data |
 
 Both declarative processors and command processors can be used together. Declarative
 processors are applied first, then command processors.

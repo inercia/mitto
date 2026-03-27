@@ -27,12 +27,12 @@ internal/runner/
 
 ### Key Types
 
-| Type | File | Purpose |
-|------|------|---------|
-| `Runner` | `runner.go` | Wraps `grrunner.Runner`, holds resolved config and fallback info |
-| `ResolvedConfig` | `runner.go` | Fully resolved runner type + restrictions after hierarchy merge |
-| `FallbackInfo` | `runner.go` | Records when fallback occurred: requested type, actual type, reason |
-| `VariableResolver` | `variables.go` | Resolves `$WORKSPACE`, `$HOME`, etc. in restriction paths |
+| Type               | File           | Purpose                                                             |
+| ------------------ | -------------- | ------------------------------------------------------------------- |
+| `Runner`           | `runner.go`    | Wraps `grrunner.Runner`, holds resolved config and fallback info    |
+| `ResolvedConfig`   | `runner.go`    | Fully resolved runner type + restrictions after hierarchy merge     |
+| `FallbackInfo`     | `runner.go`    | Records when fallback occurred: requested type, actual type, reason |
+| `VariableResolver` | `variables.go` | Resolves `$WORKSPACE`, `$HOME`, etc. in restriction paths           |
 
 ### Data Flow
 
@@ -52,12 +52,12 @@ graph TD
 
 ## Runner Types
 
-| Type | Platform | Enforcement | Binary |
-|------|----------|-------------|--------|
-| `exec` | All | None (direct execution) | — |
-| `sandbox-exec` | macOS | Apple Sandbox profiles | `sandbox-exec` |
-| `firejail` | Linux | Firejail namespace isolation | `firejail` |
-| `docker` | All (Docker required) | Container isolation | `docker` |
+| Type           | Platform              | Enforcement                  | Binary         |
+| -------------- | --------------------- | ---------------------------- | -------------- |
+| `exec`         | All                   | None (direct execution)      | —              |
+| `sandbox-exec` | macOS                 | Apple Sandbox profiles       | `sandbox-exec` |
+| `firejail`     | Linux                 | Firejail namespace isolation | `firejail`     |
+| `docker`       | All (Docker required) | Container isolation          | `docker`       |
 
 Type conversion from config string to `grrunner.Type`:
 
@@ -111,12 +111,13 @@ type DockerRestrictions struct {
 
 ### Merge Strategies
 
-| Strategy | Behavior |
-|----------|----------|
+| Strategy           | Behavior                                                                                              |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
 | `extend` (default) | Merge with parent: override scalars, append unique folder entries, Docker config overrides completely |
-| `replace` | Ignore parent config entirely, use only this level's restrictions |
+| `replace`          | Ignore parent config entirely, use only this level's restrictions                                     |
 
 The merge logic in `MergeRestrictions()`:
+
 - `AllowNetworking`: overridden if non-nil
 - Folder lists (`AllowReadFolders`, `AllowWriteFolders`): deduplicated union
 - `Docker`: replaced entirely if non-nil in override
@@ -131,13 +132,13 @@ Given global `sandbox-exec` config with `allow_networking: true` and `allow_read
 
 Paths in restrictions support runtime variables resolved when the runner is created (per-session).
 
-| Variable | Source | Example |
-|----------|--------|---------|
-| `$WORKSPACE` / `${WORKSPACE}` | Workspace directory passed to `NewRunner` | `/Users/user/project` |
-| `$HOME` / `${HOME}` | `os.UserHomeDir()` | `/Users/user` |
-| `$MITTO_DIR` / `${MITTO_DIR}` | `appdir.Dir()` | `~/Library/Application Support/Mitto` |
-| `$USER` / `${USER}` | `$USER` env var (falls back to `$USERNAME`) | `user` |
-| `$TMPDIR` / `${TMPDIR}` | `os.TempDir()` | `/tmp` |
+| Variable                      | Source                                      | Example                               |
+| ----------------------------- | ------------------------------------------- | ------------------------------------- |
+| `$WORKSPACE` / `${WORKSPACE}` | Workspace directory passed to `NewRunner`   | `/Users/user/project`                 |
+| `$HOME` / `${HOME}`           | `os.UserHomeDir()`                          | `/Users/user`                         |
+| `$MITTO_DIR` / `${MITTO_DIR}` | `appdir.Dir()`                              | `~/Library/Application Support/Mitto` |
+| `$USER` / `${USER}`           | `$USER` env var (falls back to `$USERNAME`) | `user`                                |
+| `$TMPDIR` / `${TMPDIR}`       | `os.TempDir()`                              | `/tmp`                                |
 
 Also supports `~/` prefix expansion to home directory.
 
@@ -208,6 +209,7 @@ Runner creation has two fallback checkpoints:
 2. **Implicit requirements** — `r.CheckImplicitRequirements()` fails (e.g., `firejail` binary not in PATH)
 
 Both cases:
+
 - Log a warning with the requested type and error
 - Store a `FallbackInfo` struct on the `Runner`
 - Fall back to `exec` runner (no restrictions)
@@ -270,12 +272,12 @@ go test -tags integration ./internal/runner/...
 
 ## Known Limitations
 
-| Limitation | Details |
-|-----------|---------|
-| **MCP server compatibility** | Restricted runners can break MCP access. Agents may not reach MCP executables, configs, or network endpoints. Use `exec` if MCP servers are needed, or carefully allow required paths. |
-| **cwd not supported** | Restricted runners ignore the `cwd` parameter. Use `$WORKSPACE` in folder allowlists instead. |
-| **Platform-specific runners** | `sandbox-exec` is macOS-only, `firejail` is Linux-only. Automatic fallback to `exec` if unavailable. |
-| **Docker requires pre-installed agent** | The agent binary must exist in the Docker image. Workspace is auto-mounted at the same path. |
+| Limitation                              | Details                                                                                                                                                                                |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **MCP server compatibility**            | Restricted runners can break MCP access. Agents may not reach MCP executables, configs, or network endpoints. Use `exec` if MCP servers are needed, or carefully allow required paths. |
+| **cwd not supported**                   | Restricted runners ignore the `cwd` parameter. Use `$WORKSPACE` in folder allowlists instead.                                                                                          |
+| **Platform-specific runners**           | `sandbox-exec` is macOS-only, `firejail` is Linux-only. Automatic fallback to `exec` if unavailable.                                                                                   |
+| **Docker requires pre-installed agent** | The agent binary must exist in the Docker image. Workspace is auto-mounted at the same path.                                                                                           |
 
 ## References
 

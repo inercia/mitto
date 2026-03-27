@@ -319,12 +319,12 @@ Send a progress inquiry to multiple child conversations and block until all repo
 
 This tool enables parent-child task coordination: a parent spawns children via `mitto_conversation_new`, then later calls this tool to ask all children for a status report and wait for their responses.
 
-| Parameter         | Type     | Required | Description                                                                  |
-| ----------------- | -------- | -------- | ---------------------------------------------------------------------------- |
-| `self_id`         | string   | Yes      | Parent session ID (your session)                                             |
-| `children_list`   | string[] | Yes      | List of child conversation IDs to query                                      |
-| `prompt`          | string   | No       | Custom prompt to send. If empty/omitted, no message is sent (wait-only mode) |
-| `timeout_seconds` | int      | No       | Timeout in seconds (default: 600 / 10 min)                                   |
+| Parameter         | Type     | Required | Description                                                                                                                                                  |
+| ----------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `self_id`         | string   | Yes      | Parent session ID (your session)                                                                                                                             |
+| `children_list`   | string[] | Yes      | List of child conversation IDs to query                                                                                                                      |
+| `prompt`          | string   | No       | Custom prompt to send. If empty/omitted, no message is sent (wait-only mode)                                                                                 |
+| `timeout_seconds` | int      | No       | Timeout in seconds (default: 600 / 10 min)                                                                                                                   |
 | `task_id`         | string   | No       | Task identifier to scope reports. Same task_id across retries preserves already-received reports. A new task_id clears stale reports from the previous task. |
 
 Returns:
@@ -388,12 +388,12 @@ Retry after timeout (same task_id preserves CHILD_A's report):
 
 Report results back to a waiting parent conversation. Called by child conversations in response to a `mitto_children_tasks_wait` inquiry from their parent. No special flag required.
 
-| Parameter | Type   | Required | Description                                       |
-| --------- | ------ | -------- | ------------------------------------------------- |
-| `self_id` | string | Yes      | Child session ID (your session)                   |
-| `status`  | string | Yes      | Status: e.g. "completed", "in_progress", "failed" |
-| `summary` | string | Yes      | Brief summary of findings/progress                |
-| `details` | string | No       | Optional detailed information                     |
+| Parameter | Type   | Required | Description                                                                                                                      |
+| --------- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `self_id` | string | Yes      | Child session ID (your session)                                                                                                  |
+| `status`  | string | Yes      | Status: e.g. "completed", "in_progress", "failed"                                                                                |
+| `summary` | string | Yes      | Brief summary of findings/progress                                                                                               |
+| `details` | string | No       | Optional detailed information                                                                                                    |
 | `task_id` | string | No       | Task identifier matching the parent's wait call. Include this if the parent provided a `task_id` in `mitto_children_tasks_wait`. |
 
 Returns:
