@@ -264,4 +264,3 @@ func TestObserverRegistrationRace_EventsDuringLoadEvents(t *testing.T) {
 		t.Log("Warning: Client B received no streamed seqs (observer may be idle or no concurrent prompts completed)")
 	}
 }
-

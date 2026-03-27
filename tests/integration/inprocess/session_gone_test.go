@@ -167,5 +167,3 @@ func TestSessionGone_NegativeCacheFastPath(t *testing.T) {
 	// 5. Both connections succeeded and returned session_gone — negative cache is working.
 	t.Log("Both clients received session_gone — negative cache circuit breaker verified")
 }
-
-

@@ -210,4 +210,3 @@ func TestKeepalive_GapDetectionAndSync(t *testing.T) {
 			len(seqs), seqs[0], seqs[len(seqs)-1])
 	}
 }
-

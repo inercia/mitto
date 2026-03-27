@@ -214,4 +214,3 @@ func seqsFromEvents(events []client.SyncEvent) []int64 {
 	}
 	return seqs
 }
-

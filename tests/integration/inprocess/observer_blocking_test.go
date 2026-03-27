@@ -208,4 +208,3 @@ func TestObserverBlocking_SlowClientDoesNotDegradeOthers(t *testing.T) {
 	_, _, readErr := rawConn.ReadMessage()
 	t.Logf("Client A read after test: %v (connection closed or timed out – expected)", readErr)
 }
-

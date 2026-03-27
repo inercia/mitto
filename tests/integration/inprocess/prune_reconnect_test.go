@@ -66,9 +66,9 @@ func TestPruneReconnect_StaleAfterSeqAfterPruning(t *testing.T) {
 
 	// ── Phase 2: Connect Client A, load events, then disconnect ───────────────
 	var (
-		mu             sync.Mutex
-		eventsLoadedA  bool
-		loadedCountA   int
+		mu            sync.Mutex
+		eventsLoadedA bool
+		loadedCountA  int
 	)
 
 	sessA, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
@@ -136,7 +136,6 @@ func TestPruneReconnect_StaleAfterSeqAfterPruning(t *testing.T) {
 	}
 	t.Logf("After pruning: EventCount=%d, MaxSeq=%d (staleAfterSeq=%d)",
 		meta.EventCount, meta.MaxSeq, staleAfterSeq)
-
 
 	// ── Phase 5: Reconnect Client B with stale after_seq ─────────────────────
 	// All on-disk events have been renumbered to seq 1..5.  Loading with
