@@ -58,7 +58,11 @@ func TestWebSocketConnection(t *testing.T) {
 	}
 
 	// Wait for connection event
-	time.Sleep(500 * time.Millisecond)
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return connected
+	}, "OnConnected callback called")
 
 	mu.Lock()
 	if !connected {
@@ -83,7 +87,7 @@ func TestWebSocketConnection(t *testing.T) {
 		t.Errorf("Close failed: %v", err)
 	}
 
-	// Wait for disconnect event
+	// Wait for disconnect event (may not fire on clean close)
 	time.Sleep(200 * time.Millisecond)
 
 	mu.Lock()

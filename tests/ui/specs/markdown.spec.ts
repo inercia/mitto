@@ -110,8 +110,8 @@ test.describe("Mermaid Diagram Rendering", () => {
       /* eslint-disable */
       // @ts-ignore
       window.mermaid = {
-        initialize: function (config) {},
-        render: async function (id, def) {
+        initialize: function (config: any) {},
+        render: async function (id: any, def: any) {
           // Extract node labels from mermaid syntax: [Label] and {Label}
           var labels = [];
           var regex = /[\[{]([^\]{}]+)[\}\]]/g;

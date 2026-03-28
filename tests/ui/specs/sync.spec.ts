@@ -93,21 +93,25 @@ test.describe("Session Sync", () => {
     expect(consoleLogs[0]).toContain("App became visible");
   });
 
-  // Skip: This test is flaky because both sessions get the same auto-generated title
-  // from the mock agent's response, making it impossible to reliably identify which
-  // session to switch back to. The underlying functionality works correctly.
-  // TODO: Fix by using session IDs instead of titles for switching, or by configuring
-  // the mock agent to return unique titles per session.
+  // Skipped: Flaky when run with other tests due to leftover sessions in shared test environment.
+  // Passes reliably in isolation. Needs per-test session isolation (clean slate).
   test.skip("should handle session switch after sync", async ({
     page,
     helpers,
     selectors,
     timeouts,
   }) => {
-    // Send a message in the first session
+    // Send a message in the first session and wait for it to complete
     const firstMessage = helpers.uniqueMessage("First session");
-    await helpers.sendMessage(page, firstMessage);
-    await helpers.waitForUserMessage(page, firstMessage);
+    await helpers.sendMessageAndWait(page, firstMessage);
+
+    // Capture the first session ID before switching — we'll use it to navigate back
+    const firstSessionId = await page.evaluate(() =>
+      localStorage.getItem("mitto_last_session_id")
+    );
+    if (!firstSessionId) {
+      throw new Error("Could not capture first session ID from localStorage");
+    }
 
     // Create a new session
     await page.locator(selectors.newSessionButton).click();
@@ -118,10 +122,9 @@ test.describe("Session Sync", () => {
     // Additional wait for WebSocket connection to stabilize
     await page.waitForTimeout(500);
 
-    // Send a message in the second session
+    // Send a message in the second session and wait for it to complete
     const secondMessage = helpers.uniqueMessage("Second session");
-    await helpers.sendMessage(page, secondMessage);
-    await helpers.waitForUserMessage(page, secondMessage);
+    await helpers.sendMessageAndWait(page, secondMessage);
 
     // Simulate visibility change
     await page.evaluate(() => {
@@ -149,15 +152,9 @@ test.describe("Session Sync", () => {
       timeout: timeouts.shortAction,
     });
 
-    // Switch back to first session by finding the session that contains the first message
-    // The session list shows a preview of the last message, so we can find it by the message content
-    // Since the first message was sent, the session should show "First session" in its preview
-    const firstSessionItem = page.locator(selectors.sessionsList).filter({
-      hasText: "First session",
-    });
-    await firstSessionItem.first().click();
-    // Wait for session to load and WebSocket to connect
-    await page.waitForTimeout(1000);
+    // Switch back to first session using its session ID (reliable, title-independent)
+    // navigateToSession uses the data-session-id attribute on session list items
+    await helpers.navigateToSession(page, firstSessionId);
 
     // Should see the first message (use .first() to handle multiple matches)
     await expect(page.locator(`text=${firstMessage}`).first()).toBeVisible({

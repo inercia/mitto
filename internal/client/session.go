@@ -82,6 +82,9 @@ type SessionCallbacks struct {
 	// reason indicates why the session was stopped (e.g., "archived", "archived_timeout").
 	OnACPStopped func(reason string)
 
+	// OnSessionGone is called when the session has been deleted from the server.
+	OnSessionGone func(sessionID string)
+
 	// OnDisconnected is called when the WebSocket connection is closed.
 	OnDisconnected func(err error)
 
@@ -567,6 +570,14 @@ func (s *Session) handleMessage(msg wsMessage) {
 		}
 		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnACPStopped != nil {
 			s.callbacks.OnACPStopped(data.Reason)
+		}
+
+	case "session_gone":
+		var data struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnSessionGone != nil {
+			s.callbacks.OnSessionGone(data.SessionID)
 		}
 	}
 }

@@ -269,6 +269,7 @@ type Scenario struct {
 
 type Response struct {
 	Trigger Trigger  `json:"trigger"`
+	DelayMs int      `json:"delay_ms,omitempty"` // Delay before sending any response actions (milliseconds)
 	Actions []Action `json:"actions"`
 }
 

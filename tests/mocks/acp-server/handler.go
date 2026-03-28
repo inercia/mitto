@@ -200,9 +200,18 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 		return s.sendResponse(req.ID, PromptResponse{StopReason: "end_turn"})
 	}
 
-	// Find matching scenario
-	actions := s.findMatchingActions(message)
-	if len(actions) == 0 {
+	// Find matching scenario response
+	matched := s.findMatchingResponse(message)
+	var actions []Action
+	if matched != nil {
+		// Apply response-level delay before sending any actions.
+		// This allows fixtures to simulate "slow to start" agents, e.g. to test
+		// client disconnection mid-stream or timeout behaviours.
+		if matched.DelayMs > 0 {
+			time.Sleep(time.Duration(matched.DelayMs) * time.Millisecond)
+		}
+		actions = matched.Actions
+	} else {
 		// Default response
 		actions = []Action{
 			{
@@ -232,9 +241,10 @@ func (s *MockACPServer) handleShutdown(req JSONRPCRequest) error {
 	return s.sendResponse(req.ID, nil)
 }
 
-func (s *MockACPServer) findMatchingActions(message string) []Action {
+func (s *MockACPServer) findMatchingResponse(message string) *Response {
 	for _, scenario := range s.scenarios {
-		for _, resp := range scenario.Responses {
+		for i := range scenario.Responses {
+			resp := &scenario.Responses[i]
 			if resp.Trigger.Type == "prompt" {
 				re, err := regexp.Compile(resp.Trigger.Pattern)
 				if err != nil {
@@ -243,7 +253,7 @@ func (s *MockACPServer) findMatchingActions(message string) []Action {
 				}
 				if re.MatchString(message) {
 					s.log("Matched scenario: %s", scenario.Name)
-					return resp.Actions
+					return resp
 				}
 			}
 		}

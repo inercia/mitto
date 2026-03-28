@@ -113,11 +113,7 @@ test.describe("Queue", () => {
    * 5. EXPECTED: The queued message should appear in the conversation
    * 6. BUG: The queued message is NOT visible in the conversation
    */
-  // TODO: This test is currently failing due to a bug where queued messages'
-  // user_prompt events are not properly rendered in the conversation UI.
-  // The queued message IS sent (agent responds to it), but the user message
-  // itself doesn't appear in the chat. This needs investigation.
-  test.skip("queued message should appear in conversation after being sent", async ({
+  test("queued message should appear in conversation after being sent", async ({
     page,
     selectors,
     helpers,
@@ -197,10 +193,7 @@ test.describe("Queue", () => {
     expect(count).toBeGreaterThanOrEqual(2);
   });
 
-  // TODO: This test is currently failing due to a bug where queued messages'
-  // user_prompt events are not properly rendered in the conversation UI.
-  // See the skipped tests above for details.
-  test.skip("queued message via API should appear in conversation", async ({
+  test("queued message via API should appear in conversation", async ({
     page,
     selectors,
     helpers,

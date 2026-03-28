@@ -71,8 +71,15 @@ func TestPruneReconnect_StaleAfterSeqAfterPruning(t *testing.T) {
 		loadedCountA  int
 	)
 
+	var (
+		mu2connectedA sync.Mutex
+		connectedA    bool
+	)
 	sessA, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
+			mu2connectedA.Lock()
+			connectedA = true
+			mu2connectedA.Unlock()
 			t.Logf("Client A connected: clientID=%s", clientID)
 		},
 		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
@@ -87,7 +94,11 @@ func TestPruneReconnect_StaleAfterSeqAfterPruning(t *testing.T) {
 		t.Fatalf("Client A Connect failed: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, 5*time.Second, func() bool {
+		mu2connectedA.Lock()
+		defer mu2connectedA.Unlock()
+		return connectedA
+	}, "Client A connected")
 
 	if err := sessA.LoadEvents(100, 0, 0); err != nil {
 		t.Fatalf("Client A LoadEvents failed: %v", err)
@@ -144,6 +155,7 @@ func TestPruneReconnect_StaleAfterSeqAfterPruning(t *testing.T) {
 	// (not hang or error) so the client knows the replay is complete.
 	var (
 		mu2             sync.Mutex
+		connectedB      bool
 		eventsLoadedB   bool
 		loadedCountB    int
 		promptCompleteB int32
@@ -151,6 +163,9 @@ func TestPruneReconnect_StaleAfterSeqAfterPruning(t *testing.T) {
 
 	sessB, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
+			mu2.Lock()
+			connectedB = true
+			mu2.Unlock()
 			t.Logf("Client B reconnected: clientID=%s", clientID)
 		},
 		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
@@ -170,7 +185,11 @@ func TestPruneReconnect_StaleAfterSeqAfterPruning(t *testing.T) {
 	}
 	defer sessB.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, 5*time.Second, func() bool {
+		mu2.Lock()
+		defer mu2.Unlock()
+		return connectedB
+	}, "Client B connected")
 
 	// Send load_events with the stale after_seq — expect 0 events back.
 	if err := sessB.LoadEvents(100, staleAfterSeq, 0); err != nil {

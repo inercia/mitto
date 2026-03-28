@@ -336,8 +336,12 @@ func TestConcurrentPromptsFromTwoClients(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Wait for agent responses
-	time.Sleep(3 * time.Second)
+	// Wait for at least one client to receive agent messages (replaces 3-second sleep)
+	waitFor(t, 15*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return client1AgentMessages > 0 || client2AgentMessages > 0
+	}, "at least one client receives agent messages")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -691,8 +695,17 @@ func TestMultipleClientsSeeSameEvents(t *testing.T) {
 		t.Log("Timeout waiting for agent message")
 	}
 
-	// Give time for all events to propagate to all clients
-	time.Sleep(1 * time.Second)
+	// Wait for at least one client to receive events (replaces 1-second sleep)
+	waitFor(t, 10*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, count := range eventCounts {
+			if count > 0 {
+				return true
+			}
+		}
+		return false
+	}, "at least one client receives events")
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -240,6 +240,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isUserDataRequest := len(parts) > 1 && parts[1] == "user-data"
 	isPeriodicRequest := len(parts) > 1 && parts[1] == "periodic"
 	isSettingsRequest := len(parts) > 1 && parts[1] == "settings"
+	isPruneRequest := len(parts) > 1 && parts[1] == "prune"
 
 	// Handle WebSocket upgrade for per-session connections
 	if isWSRequest {
@@ -300,6 +301,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// Handle advanced settings operations
 	if isSettingsRequest {
 		s.handleSessionSettings(w, r, sessionID)
+		return
+	}
+
+	// Handle prune operations
+	if isPruneRequest {
+		s.handleSessionPrune(w, r, sessionID)
 		return
 	}
 
