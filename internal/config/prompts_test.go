@@ -488,6 +488,156 @@ func TestIsSpecificToACP(t *testing.T) {
 	}
 }
 
+func TestMatchToolPattern(t *testing.T) {
+	tests := []struct {
+		name     string
+		pattern  string
+		toolName string
+		want     bool
+	}{
+		{"exact match", "exact_tool", "exact_tool", true},
+		{"exact no match", "exact_tool", "other_tool", false},
+		{"wildcard suffix match", "jira_*", "jira_search", true},
+		{"wildcard suffix match 2", "jira_*", "jira_get_issue", true},
+		{"wildcard suffix no match", "jira_*", "slack_post_message", false},
+		{"wildcard prefix match", "*_search", "jira_search", true},
+		{"wildcard prefix no match", "*_search", "jira_get_issue", false},
+		{"wildcard middle match", "jira_*_search", "jira_advanced_search", true},
+		{"wildcard middle no match", "jira_*_search", "jira_get_issue", false},
+		{"case insensitive pattern", "JIRA_*", "jira_search", true},
+		{"case insensitive tool", "jira_*", "JIRA_SEARCH", true},
+		{"empty pattern", "", "jira_search", false},
+		{"empty tool", "jira_*", "", false},
+		{"both empty", "", "", false},
+		{"star only matches all", "*", "anything", true},
+		{"star only matches empty-ish", "*", "a", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchToolPattern(tt.pattern, tt.toolName)
+			if got != tt.want {
+				t.Errorf("MatchToolPattern(%q, %q) = %v, want %v", tt.pattern, tt.toolName, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCollectRequiredToolPatterns(t *testing.T) {
+	prompts := []*PromptFile{
+		{Name: "P1", RequiredTools: "jira_*,slack_*"},
+		{Name: "P2", RequiredTools: "jira_*,github_*"},
+		{Name: "P3", RequiredTools: ""},
+		{Name: "P4", RequiredTools: "slack_*"},
+	}
+
+	patterns := CollectRequiredToolPatterns(prompts)
+
+	// Should have jira_*, slack_*, github_* (deduplicated)
+	if len(patterns) != 3 {
+		t.Errorf("CollectRequiredToolPatterns returned %d patterns, want 3: %v", len(patterns), patterns)
+	}
+
+	seen := make(map[string]bool)
+	for _, p := range patterns {
+		seen[p] = true
+	}
+
+	for _, expected := range []string{"jira_*", "slack_*", "github_*"} {
+		if !seen[expected] {
+			t.Errorf("CollectRequiredToolPatterns missing pattern %q", expected)
+		}
+	}
+}
+
+func TestCollectRequiredToolPatterns_Empty(t *testing.T) {
+	// All prompts have no required tools
+	prompts := []*PromptFile{
+		{Name: "P1", RequiredTools: ""},
+		{Name: "P2"},
+	}
+	patterns := CollectRequiredToolPatterns(prompts)
+	if len(patterns) != 0 {
+		t.Errorf("CollectRequiredToolPatterns with no required tools returned %v, want empty", patterns)
+	}
+
+	// Nil slice
+	patterns = CollectRequiredToolPatterns(nil)
+	if len(patterns) != 0 {
+		t.Errorf("CollectRequiredToolPatterns(nil) returned %v, want empty", patterns)
+	}
+}
+
+func TestAreRequiredToolsSatisfied(t *testing.T) {
+	satisfied := map[string]bool{
+		"jira_*":  true,
+		"slack_*": true,
+	}
+
+	tests := []struct {
+		name          string
+		requiredTools string
+		satisfiedMap  map[string]bool
+		want          bool
+	}{
+		{"empty required tools", "", satisfied, true},
+		{"all satisfied", "jira_*,slack_*", satisfied, true},
+		{"some not satisfied", "jira_*,github_*", satisfied, false},
+		{"none satisfied", "github_*", satisfied, false},
+		{"empty patterns map", "jira_*", map[string]bool{}, false},
+		{"whitespace in patterns", " jira_* , slack_* ", satisfied, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AreRequiredToolsSatisfied(tt.requiredTools, tt.satisfiedMap)
+			if got != tt.want {
+				t.Errorf("AreRequiredToolsSatisfied(%q, %v) = %v, want %v", tt.requiredTools, tt.satisfiedMap, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParsePromptFile_WithRequiredTools(t *testing.T) {
+	data := []byte(`---
+name: "Jira Prompt"
+required_tools: "jira_*,slack_*"
+---
+
+This prompt requires Jira and Slack tools.
+`)
+
+	prompt, err := ParsePromptFile("jira-prompt.md", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Name != "Jira Prompt" {
+		t.Errorf("Name = %q, want %q", prompt.Name, "Jira Prompt")
+	}
+	if prompt.RequiredTools != "jira_*,slack_*" {
+		t.Errorf("RequiredTools = %q, want %q", prompt.RequiredTools, "jira_*,slack_*")
+	}
+}
+
+func TestToWebPrompt_IncludesRequiredTools(t *testing.T) {
+	prompt := &PromptFile{
+		Name:          "Test",
+		Content:       "Content here",
+		ACPs:          "auggie",
+		RequiredTools: "jira_*,slack_*",
+	}
+
+	wp := prompt.ToWebPrompt()
+
+	if wp.RequiredTools != "jira_*,slack_*" {
+		t.Errorf("WebPrompt.RequiredTools = %q, want %q", wp.RequiredTools, "jira_*,slack_*")
+	}
+	if wp.Source != PromptSourceFile {
+		t.Errorf("WebPrompt.Source = %q, want %q", wp.Source, PromptSourceFile)
+	}
+}
+
 func TestFilterPromptsSpecificToACP(t *testing.T) {
 	prompts := []*PromptFile{
 		{Name: "All ACPs", ACPs: ""},

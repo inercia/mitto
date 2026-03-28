@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -421,6 +422,62 @@ func (m *WorkspaceAuxiliaryManager) ClearMCPCheckCache(workspaceUUID string) {
 		m.logger.Debug("cleared MCP check cache",
 			"workspace_uuid", workspaceUUID)
 	}
+}
+
+// CheckRequiredToolPatterns checks if the agent has tools matching the given patterns.
+// This sends a targeted query to the PurposeMCPTools auxiliary session (reusing it from FetchMCPTools).
+// The patterns parameter should be a list of tool name patterns (e.g., ["jira_*", "slack_*"]).
+func (m *WorkspaceAuxiliaryManager) CheckRequiredToolPatterns(ctx context.Context, workspaceUUID string, patterns []string) (map[string]bool, error) {
+	if len(patterns) == 0 {
+		return map[string]bool{}, nil
+	}
+
+	patternsStr := strings.Join(patterns, ", ")
+
+	if m.logger != nil {
+		m.logger.Debug("required tools check: starting",
+			"workspace_uuid", workspaceUUID,
+			"patterns", patternsStr)
+	}
+
+	prompt := fmt.Sprintf(CheckRequiredToolsPromptTemplate, patternsStr)
+
+	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeMCPTools, prompt)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Debug("required tools check: request failed",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error())
+		}
+		return nil, fmt.Errorf("failed to check required tools: %w", err)
+	}
+
+	if m.logger != nil {
+		m.logger.Debug("required tools check: received response",
+			"workspace_uuid", workspaceUUID,
+			"response_length", len(response),
+			"response", truncateForLog(response, 300))
+	}
+
+	result, err := parseRequiredToolsCheck(response)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("required tools check: failed to parse response",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error(),
+				"response", truncateForLog(response, 200))
+		}
+		return nil, fmt.Errorf("failed to parse required tools response: %w", err)
+	}
+
+	if m.logger != nil {
+		m.logger.Info("Required tools check completed",
+			"workspace_uuid", workspaceUUID,
+			"patterns_checked", len(patterns),
+			"result", result)
+	}
+
+	return result, nil
 }
 
 // Close closes all auxiliary sessions managed by this manager.

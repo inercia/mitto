@@ -40,13 +40,13 @@ conversations:
 
 ### Processor Fields
 
-| Field      | Values             | Description                                       |
-| ---------- | ------------------ | ------------------------------------------------- |
-| `when`     | `first`            | Apply only to the first message in a conversation |
-|            | `all`              | Apply to every message                            |
-|            | `all-except-first` | Apply to all messages except the first            |
-| `position` | `prepend`          | Insert text before the user's message             |
-|            | `append`           | Insert text after the user's message              |
+| Field      | Values             | Description                                                                                        |
+| ---------- | ------------------ | -------------------------------------------------------------------------------------------------- |
+| `when`     | `first`            | Apply only to the first message in a conversation                                                  |
+|            | `all`              | Apply to every message                                                                             |
+|            | `all-except-first` | Apply to all messages except the first                                                             |
+| `position` | `prepend`          | Insert text before the user's message                                                              |
+|            | `append`           | Insert text after the user's message                                                               |
 | `text`     | string             | The text to insert (supports multi-line YAML); supports `@mitto:variable` substitution (see below) |
 
 ## Variable Substitution in Processor Text
@@ -57,15 +57,15 @@ The `text` field of a declarative processor (and any text produced by [command p
 
 ### Available Variables
 
-| Placeholder                   | Value                                                                         |
-| ----------------------------- | ----------------------------------------------------------------------------- |
-| `@mitto:session_id`              | Current session ID                                                            |
-| `@mitto:parent_session_id`       | Parent conversation ID; empty string if this is a root session                |
-| `@mitto:session_name`            | Conversation title/name; empty string if not yet set                          |
-| `@mitto:working_dir`             | Session working directory                                                     |
-| `@mitto:acp_server`              | Active ACP server name (e.g. `claude-code`)                                  |
-| `@mitto:workspace_uuid`          | Workspace UUID                                                                |
-| `@mitto:available_acp_servers`   | Comma-separated list of ACP servers with workspaces for this folder (see below) |
+| Placeholder                    | Value                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------- |
+| `@mitto:session_id`            | Current session ID                                                              |
+| `@mitto:parent_session_id`     | Parent conversation ID; empty string if this is a root session                  |
+| `@mitto:session_name`          | Conversation title/name; empty string if not yet set                            |
+| `@mitto:working_dir`           | Session working directory                                                       |
+| `@mitto:acp_server`            | Active ACP server name (e.g. `claude-code`)                                     |
+| `@mitto:workspace_uuid`        | Workspace UUID                                                                  |
+| `@mitto:available_acp_servers` | Comma-separated list of ACP servers with workspaces for this folder (see below) |
 
 ### `@mitto:available_acp_servers` format
 
@@ -99,7 +99,6 @@ conversations:
           Agent: @mitto:acp_server
 
           ---
-
 ```
 
 Show the user which other agents are available for the same project:
@@ -115,7 +114,6 @@ conversations:
           Other agents available for this project: @mitto:available_acp_servers
 
           ---
-
 ```
 
 ## Examples

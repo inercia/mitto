@@ -392,6 +392,14 @@ test.describe("Pending Send Recovery", () => {
       }
     });
 
+    // Wait for any in-flight exchanges from previous tests to complete.
+    // The previous test in this describe block may leave the session streaming,
+    // which would cause this prompt to be queued. The stop button hides when the
+    // session becomes idle; if it's already hidden, this returns immediately.
+    await expect(page.locator(selectors.stopButton)).toBeHidden({
+      timeout: timeouts.agentResponse,
+    });
+
     // Type and send message
     await textarea.fill(testMessage);
     await sendButton.click();
@@ -407,17 +415,21 @@ test.describe("Pending Send Recovery", () => {
       timeout: timeouts.shortAction,
     });
 
-    // Check console logs for the confirmation message
+    // The user_prompt WebSocket event arrives asynchronously after the prompt is
+    // processed. Poll until the confirmation log appears.
     // Either "Own prompt confirmed:" (is_mine=true) or
     // "Own prompt confirmed (after reconnect):" (is_mine=false but prompt_id matched)
-    const hasConfirmation = consoleLogs.some(
-      (log) =>
-        log.includes("Own prompt confirmed:") ||
-        log.includes("Own prompt confirmed (after reconnect):"),
-    );
-
-    // At least one confirmation should have been logged
-    expect(hasConfirmation).toBe(true);
+    await expect
+      .poll(
+        () =>
+          consoleLogs.some(
+            (log) =>
+              log.includes("Own prompt confirmed:") ||
+              log.includes("Own prompt confirmed (after reconnect):"),
+          ),
+        { timeout: 5000, intervals: [100, 200, 500, 1000] },
+      )
+      .toBe(true);
   });
 });
 

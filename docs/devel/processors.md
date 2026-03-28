@@ -52,18 +52,18 @@ Declarative processors are simple text insertion rules defined in configuration 
 
 Defined at two levels, merged at runtime:
 
-| Level         | Source                         | Scope               |
-|---------------|--------------------------------|----------------------|
-| **Global**    | `~/.mittorc` or `config.yaml`  | All workspaces       |
-| **Workspace** | `<project>/.mittorc`           | Single workspace     |
+| Level         | Source                        | Scope            |
+| ------------- | ----------------------------- | ---------------- |
+| **Global**    | `~/.mittorc` or `config.yaml` | All workspaces   |
+| **Workspace** | `<project>/.mittorc`          | Single workspace |
 
 ```yaml
 conversations:
   processing:
-    override: false  # true = replace global processors entirely
+    override: false # true = replace global processors entirely
     processors:
-      - when: first            # first | all | all-except-first
-        position: prepend      # prepend | append
+      - when: first # first | all | all-except-first
+        position: prepend # prepend | append
         text: "System prompt.\n\n"
 ```
 
@@ -86,11 +86,11 @@ Each processor is checked with `ShouldApply(isFirstMessage)` and applied with `A
 
 ### Key Types
 
-| Type                      | Package           | Purpose                                    |
-|---------------------------|-------------------|--------------------------------------------|
-| `MessageProcessor`        | `internal/config` | Single prepend/append rule                 |
-| `ConversationProcessing`  | `internal/config` | Processor list + override flag             |
-| `ConversationsConfig`     | `internal/config` | Top-level config (processors + queue + ...) |
+| Type                     | Package           | Purpose                                     |
+| ------------------------ | ----------------- | ------------------------------------------- |
+| `MessageProcessor`       | `internal/config` | Single prepend/append rule                  |
+| `ConversationProcessing` | `internal/config` | Processor list + override flag              |
+| `ConversationsConfig`    | `internal/config` | Top-level config (processors + queue + ...) |
 
 ## Stage 2: Command Processors
 
@@ -105,13 +105,13 @@ name: code-context
 description: Adds project context from a script
 when: first
 command: ./gather-context.sh
-input: message        # message | conversation | none
-output: prepend       # transform | prepend | append | discard
-priority: 50          # Lower = runs first (default: 100)
+input: message # message | conversation | none
+output: prepend # transform | prepend | append | discard
+priority: 50 # Lower = runs first (default: 100)
 timeout: 5s
-working_dir: session  # session | hook
-on_error: skip        # skip | fail
-workspaces:           # Optional: limit to specific projects
+working_dir: session # session | hook
+on_error: skip # skip | fail
+workspaces: # Optional: limit to specific projects
   - /path/to/project
 ```
 
@@ -144,6 +144,7 @@ sequenceDiagram
 ### Input/Output Protocol
 
 **Input** (JSON on stdin, `input: message`):
+
 ```json
 {
   "message": "user's message",
@@ -155,8 +156,18 @@ sequenceDiagram
   "acp_server": "claude-code",
   "workspace_uuid": "d4e5f6a7-...",
   "available_acp_servers": [
-    { "name": "auggie",      "type": "auggie",      "tags": ["coding"], "current": false },
-    { "name": "claude-code", "type": "claude-code", "tags": ["coding"], "current": true  }
+    {
+      "name": "auggie",
+      "type": "auggie",
+      "tags": ["coding"],
+      "current": false
+    },
+    {
+      "name": "claude-code",
+      "type": "claude-code",
+      "tags": ["coding"],
+      "current": true
+    }
   ]
 }
 ```
@@ -164,15 +175,17 @@ sequenceDiagram
 When `input: conversation`, the object additionally includes a `"history"` array of `{"role","content"}` objects.
 
 **Output** (JSON on stdout):
+
 ```json
 {
-  "message": "replaced message",        // For output: transform
-  "text": "text to prepend or append",   // For output: prepend/append
-  "attachments": [                        // Optional file attachments
-    {"type": "image", "path": "./diagram.png", "mime_type": "image/png"}
+  "message": "replaced message", // For output: transform
+  "text": "text to prepend or append", // For output: prepend/append
+  "attachments": [
+    // Optional file attachments
+    { "type": "image", "path": "./diagram.png", "mime_type": "image/png" }
   ],
-  "error": "",                           // Non-empty = hook failed
-  "metadata": {}                         // Optional logging data
+  "error": "", // Non-empty = hook failed
+  "metadata": {} // Optional logging data
 }
 ```
 
@@ -180,19 +193,19 @@ When `input: conversation`, the object additionally includes a `"history"` array
 
 Command processors receive these environment variables:
 
-| Variable                          | Value                                                   |
-|-----------------------------------|---------------------------------------------------------|
-| `MITTO_SESSION_ID`                | Current session ID                                      |
-| `MITTO_WORKING_DIR`               | Session working directory                               |
-| `MITTO_IS_FIRST_MESSAGE`          | `"true"` or `"false"`                                  |
-| `MITTO_PROCESSORS_DIR`            | Processors directory path                               |
-| `MITTO_PROCESSOR_FILE`            | This processor's YAML file path                         |
-| `MITTO_PROCESSOR_DIR`             | Directory containing the processor file                 |
-| `MITTO_PARENT_SESSION_ID`         | Parent conversation ID (empty if root session)          |
-| `MITTO_SESSION_NAME`              | Conversation title/name                                 |
-| `MITTO_ACP_SERVER`                | Active ACP server name (e.g. `claude-code`)            |
-| `MITTO_WORKSPACE_UUID`            | Workspace UUID                                          |
-| `MITTO_AVAILABLE_ACP_SERVERS`     | JSON array of servers with workspaces for this folder; `[]` when none |
+| Variable                      | Value                                                                 |
+| ----------------------------- | --------------------------------------------------------------------- |
+| `MITTO_SESSION_ID`            | Current session ID                                                    |
+| `MITTO_WORKING_DIR`           | Session working directory                                             |
+| `MITTO_IS_FIRST_MESSAGE`      | `"true"` or `"false"`                                                 |
+| `MITTO_PROCESSORS_DIR`        | Processors directory path                                             |
+| `MITTO_PROCESSOR_FILE`        | This processor's YAML file path                                       |
+| `MITTO_PROCESSOR_DIR`         | Directory containing the processor file                               |
+| `MITTO_PARENT_SESSION_ID`     | Parent conversation ID (empty if root session)                        |
+| `MITTO_SESSION_NAME`          | Conversation title/name                                               |
+| `MITTO_ACP_SERVER`            | Active ACP server name (e.g. `claude-code`)                           |
+| `MITTO_WORKSPACE_UUID`        | Workspace UUID                                                        |
+| `MITTO_AVAILABLE_ACP_SERVERS` | JSON array of servers with workspaces for this folder; `[]` when none |
 
 #### Examples
 
@@ -225,7 +238,7 @@ when: first
 command: ./gather-context.sh
 output: prepend
 priority: 10
-working_dir: hook   # resolve command relative to the YAML file
+working_dir: hook # resolve command relative to the YAML file
 ```
 
 **A processor that loads helper scripts from its own directory:**
@@ -239,15 +252,15 @@ source "$MITTO_PROCESSOR_DIR/helpers.sh"
 
 ### Key Types
 
-| Type              | File           | Purpose                                    |
-|-------------------|----------------|--------------------------------------------|
-| `Processor`       | `types.go`     | Processor definition (parsed from YAML)    |
-| `Manager`         | `apply.go`     | High-level load + apply interface          |
-| `Loader`          | `loader.go`    | Discovers and parses processor YAML files  |
-| `Executor`        | `executor.go`  | Runs a single processor as subprocess      |
-| `ProcessorInput`  | `input.go`     | Context sent to processor stdin            |
-| `ProcessorOutput` | `input.go`     | Parsed result from processor stdout        |
-| `Attachment`      | `input.go`     | File attachment from processor             |
+| Type              | File          | Purpose                                   |
+| ----------------- | ------------- | ----------------------------------------- |
+| `Processor`       | `types.go`    | Processor definition (parsed from YAML)   |
+| `Manager`         | `apply.go`    | High-level load + apply interface         |
+| `Loader`          | `loader.go`   | Discovers and parses processor YAML files |
+| `Executor`        | `executor.go` | Runs a single processor as subprocess     |
+| `ProcessorInput`  | `input.go`    | Context sent to processor stdin           |
+| `ProcessorOutput` | `input.go`    | Parsed result from processor stdout       |
+| `Attachment`      | `input.go`    | File attachment from processor            |
 
 ## Variable Substitution
 
@@ -261,14 +274,14 @@ This is consistent with the existing `@namespace:value` convention used by proce
 
 ### Available Variables
 
-| Variable                    | Value                                                         |
-|-----------------------------|---------------------------------------------------------------|
-| `@mitto:session_id`            | Current session ID                                            |
-| `@mitto:parent_session_id`     | Parent conversation ID (empty if root session)                |
-| `@mitto:session_name`          | Conversation title/name (empty if not yet set)                |
-| `@mitto:working_dir`           | Session working directory                                     |
-| `@mitto:acp_server`            | ACP server name (e.g., `"claude-code"`)                      |
-| `@mitto:workspace_uuid`        | Workspace identifier                                          |
+| Variable                       | Value                                                            |
+| ------------------------------ | ---------------------------------------------------------------- |
+| `@mitto:session_id`            | Current session ID                                               |
+| `@mitto:parent_session_id`     | Parent conversation ID (empty if root session)                   |
+| `@mitto:session_name`          | Conversation title/name (empty if not yet set)                   |
+| `@mitto:working_dir`           | Session working directory                                        |
+| `@mitto:acp_server`            | ACP server name (e.g., `"claude-code"`)                          |
+| `@mitto:workspace_uuid`        | Workspace identifier                                             |
 | `@mitto:available_acp_servers` | ACP servers with workspaces for the session's folder — see below |
 
 ### `@mitto:available_acp_servers` detail
@@ -280,16 +293,19 @@ name [tag1, tag2] (current), name2 [tag3]
 ```
 
 Each entry contains:
+
 - **name** — ACP server identifier
 - **[tags]** — optional tag list in brackets (omitted if the server has no tags)
 - **(current)** — appended to the active server's entry
 
 Example output with two servers configured for the same folder:
+
 ```
 auggie [coding, ai-assistant] (current), claude-code [coding, fast-model]
 ```
 
 The full structured data (including `type` field) is also available:
+
 - As a JSON array in the `available_acp_servers` field of the JSON stdin payload sent to command processors
 - As a JSON array in the `MITTO_AVAILABLE_ACP_SERVERS` environment variable (set to `[]` when no servers are available)
 
@@ -366,4 +382,3 @@ The CLI (`internal/cmd/cli.go`) follows the same pattern in both `runOnceMode()`
 - **Resumed sessions**: `isFirstPrompt = false` (first-only processors won't fire)
 - **CLI once mode**: Always `isFirst = true` (single message)
 - **CLI interactive**: Tracks `isFirstMessage` boolean, flipped after first send
-

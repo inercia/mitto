@@ -86,6 +86,10 @@ type WebPrompt struct {
 	// Example: "auggie, claude-code" means only show this prompt for those ACP servers.
 	// This is included so the frontend can filter prompts client-side.
 	ACPs string `json:"acps,omitempty"`
+	// RequiredTools is an optional comma-separated list of tool name patterns required for this prompt.
+	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
+	// Sent to frontend so it can filter prompts based on tool availability.
+	RequiredTools string `json:"required_tools,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.

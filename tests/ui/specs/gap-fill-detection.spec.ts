@@ -40,14 +40,15 @@ test.describe("Real-Time Gap Fill Detection", () => {
       if (msg.text().includes("[gap-fill]")) gapFillLogs.push(msg.text());
     });
 
-    // 4. Manipulate lastKnownSeq to simulate the client missed events
-    //    _setLastKnownSeq(sessionId, 0) → client thinks it's at seq 0
+    // 4. Manipulate both lastKnownSeq and clientMaxSeq to simulate the client
+    //    having missed all events (clientMaxSeq=0 → any max_seq > 0 triggers gap fill).
+    //    _setLastKnownSeq lowers the ref; _setClientMaxSeq overrides the combined
+    //    clientMaxSeq computation (which includes React state) so the gap is detected.
     await page.evaluate(
       ({ sid }) => {
         const debug = (window as any).__debug;
-        if (debug?._setLastKnownSeq) {
-          debug._setLastKnownSeq(sid, 0);
-        }
+        if (debug?._setLastKnownSeq) debug._setLastKnownSeq(sid, 0);
+        if (debug?._setClientMaxSeq) debug._setClientMaxSeq(sid, 0);
       },
       { sid: sessionId }
     );

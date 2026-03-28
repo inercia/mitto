@@ -65,11 +65,11 @@ if !result.ReceivedCorrectEvents {
 
 **SleepWakeResult fields:**
 
-| Field | Meaning |
-|-------|---------|
-| `LastSeqBeforeSleep` | Highest seq in store after pre-sleep injection |
-| `LastSeqAfterSleep`  | Highest seq after during-sleep injection |
-| `EventsAfterReconnect` | Events returned by `load_events` on reconnect |
+| Field                   | Meaning                                                                  |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `LastSeqBeforeSleep`    | Highest seq in store after pre-sleep injection                           |
+| `LastSeqAfterSleep`     | Highest seq after during-sleep injection                                 |
+| `EventsAfterReconnect`  | Events returned by `load_events` on reconnect                            |
 | `ReceivedCorrectEvents` | `true` iff count == RoundsDuringSleep×2 and all seq > LastSeqBeforeSleep |
 
 ### client.Session: EnableMessageRecording / LastLoadEventsAfterSeq
@@ -87,7 +87,7 @@ afterSeq := sess.LastLoadEventsAfterSeq() // returns lastKnownSeq
 assert.Equal(t, lastKnownSeq, afterSeq)
 ```
 
-### window.__debug (Playwright)
+### window.\_\_debug (Playwright)
 
 The frontend exposes runtime state for Playwright assertions:
 
@@ -102,19 +102,19 @@ expect(debug.afterSeq).toEqual(debug.lastKnownSeq); // correct watermark on reco
 
 ## Test Gap Coverage
 
-| Gap | Test(s) | Status |
-|-----|---------|--------|
-| Long offline period with many events | `TestSleepWake_Basic` | ✅ Covered |
-| Precise watermark verification (after_seq) | `client.Session.LastLoadEventsAfterSeq` helper | ✅ Covered |
-| Thundering herd at startup | `TestThunderingHerd_MultipleSessionsSync` | ✅ Covered |
-| Multiple simultaneous cold-start loads | `TestThunderingHerd_MultipleSessionsSync` | ✅ Covered |
-| Late joiner sees full history | `TestMultiClientSync_LateJoinerSeesHistory` | ✅ Covered |
-| No duplicate messages on reconnect | `TestMultiClientSync_NoDuplicateMessages` | ✅ Covered |
-| Stale after_seq recovery (too-high watermark) | `TestMultiClientSync_StaleSyncRecovery` | ✅ Covered |
-| lastKnownSeq persistence (browser) | `tests/ui/specs/sleep-wake-sync.spec.ts` | ✅ Covered |
-| after_seq wire assertion (browser) | `tests/ui/specs/sleep-wake-sync.spec.ts` | ✅ Covered |
-| True zombie connection (conn open, no load_events) | Not yet covered | ⚠️ Planned |
-| has_more pagination (> limit events) | Partially via large injection counts | ⚠️ Partial |
+| Gap                                                | Test(s)                                        | Status     |
+| -------------------------------------------------- | ---------------------------------------------- | ---------- |
+| Long offline period with many events               | `TestSleepWake_Basic`                          | ✅ Covered |
+| Precise watermark verification (after_seq)         | `client.Session.LastLoadEventsAfterSeq` helper | ✅ Covered |
+| Thundering herd at startup                         | `TestThunderingHerd_MultipleSessionsSync`      | ✅ Covered |
+| Multiple simultaneous cold-start loads             | `TestThunderingHerd_MultipleSessionsSync`      | ✅ Covered |
+| Late joiner sees full history                      | `TestMultiClientSync_LateJoinerSeesHistory`    | ✅ Covered |
+| No duplicate messages on reconnect                 | `TestMultiClientSync_NoDuplicateMessages`      | ✅ Covered |
+| Stale after_seq recovery (too-high watermark)      | `TestMultiClientSync_StaleSyncRecovery`        | ✅ Covered |
+| lastKnownSeq persistence (browser)                 | `tests/ui/specs/sleep-wake-sync.spec.ts`       | ✅ Covered |
+| after_seq wire assertion (browser)                 | `tests/ui/specs/sleep-wake-sync.spec.ts`       | ✅ Covered |
+| True zombie connection (conn open, no load_events) | Not yet covered                                | ⚠️ Planned |
+| has_more pagination (> limit events)               | Partially via large injection counts           | ⚠️ Partial |
 
 ---
 
@@ -157,4 +157,3 @@ npx playwright test specs/sleep-wake-sync.spec.ts
 - **Session initialization event (+1 offset):** Every newly created session receives one
   initialization event before any injection. `InjectMixed(20)` therefore starts at seq 2.
   Assertions use `>= roundsPerSess*2` rather than exact equality to tolerate this offset.
-

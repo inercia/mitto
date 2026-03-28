@@ -46,6 +46,13 @@ type PromptFile struct {
 	// Example: "acps: auggie, claude-code" means only show this prompt for those ACP servers.
 	ACPs string `yaml:"acps,omitempty" json:"-"`
 
+	// RequiredTools is an optional comma-separated list of tool name patterns required for this prompt.
+	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
+	// If specified, the prompt is only shown when all required tool patterns are satisfied
+	// (at least one matching tool exists for each pattern).
+	// If empty, the prompt is always shown (no tool requirements).
+	RequiredTools string `yaml:"required_tools,omitempty" json:"-"`
+
 	// Enabled controls whether the prompt is active. Defaults to true if not specified.
 	Enabled *bool `yaml:"enabled,omitempty" json:"-"`
 
@@ -121,6 +128,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Group:           p.Group,
 		Source:          PromptSourceFile,
 		ACPs:            p.ACPs,
+		RequiredTools:   p.RequiredTools,
 	}
 }
 
@@ -344,6 +352,110 @@ func GetPromptsDirModTime(dir string) time.Time {
 	})
 
 	return latest
+}
+
+// MatchToolPattern checks if a tool name matches a pattern.
+// Patterns support * as a wildcard that matches any sequence of characters.
+// Examples: "jira_*" matches "jira_search", "jira_get_issue"
+//
+//	"slack_*" matches "slack_post_message"
+//	"exact_tool" matches only "exact_tool"
+func MatchToolPattern(pattern, toolName string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	toolName = strings.ToLower(strings.TrimSpace(toolName))
+
+	if pattern == "" || toolName == "" {
+		return false
+	}
+
+	// No wildcard - exact match
+	if !strings.Contains(pattern, "*") {
+		return pattern == toolName
+	}
+
+	// Split on * and check parts match in order
+	parts := strings.Split(pattern, "*")
+	remaining := toolName
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(remaining, part)
+		if idx < 0 {
+			return false
+		}
+		// First part must match at the start (if pattern doesn't start with *)
+		if i == 0 && idx != 0 {
+			return false
+		}
+		remaining = remaining[idx+len(part):]
+	}
+	// If pattern doesn't end with *, remaining must be empty
+	if !strings.HasSuffix(pattern, "*") && remaining != "" {
+		return false
+	}
+	return true
+}
+
+// CollectRequiredToolPatterns extracts all unique required tool patterns from a list of prompts.
+// Returns a deduplicated list of individual patterns (each prompt's required_tools is comma-separated).
+func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
+	seen := make(map[string]bool)
+	var patterns []string
+
+	for _, p := range prompts {
+		if p.RequiredTools == "" {
+			continue
+		}
+		for _, pattern := range strings.Split(p.RequiredTools, ",") {
+			pattern = strings.TrimSpace(pattern)
+			if pattern != "" && !seen[pattern] {
+				seen[pattern] = true
+				patterns = append(patterns, pattern)
+			}
+		}
+	}
+	return patterns
+}
+
+// CollectRequiredToolPatternsFromWebPrompts extracts all unique required tool patterns from WebPrompts.
+func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
+	seen := make(map[string]bool)
+	var patterns []string
+
+	for _, p := range prompts {
+		if p.RequiredTools == "" {
+			continue
+		}
+		for _, pattern := range strings.Split(p.RequiredTools, ",") {
+			pattern = strings.TrimSpace(pattern)
+			if pattern != "" && !seen[pattern] {
+				seen[pattern] = true
+				patterns = append(patterns, pattern)
+			}
+		}
+	}
+	return patterns
+}
+
+// AreRequiredToolsSatisfied checks if all required tool patterns for a prompt are satisfied.
+// satisfiedPatterns maps pattern strings to their availability status.
+// Returns true if the prompt has no required_tools or all patterns are satisfied.
+func AreRequiredToolsSatisfied(requiredTools string, satisfiedPatterns map[string]bool) bool {
+	if requiredTools == "" {
+		return true
+	}
+
+	for _, pattern := range strings.Split(requiredTools, ",") {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if !satisfiedPatterns[pattern] {
+			return false
+		}
+	}
+	return true
 }
 
 // init registers a custom YAML unmarshaler for handling the enabled field.

@@ -221,6 +221,8 @@ export function useWebSocket() {
   const [acpServers, setAcpServers] = useState([]);
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
+  // Required tools pattern status per workspace UUID: { [workspaceUUID]: { [pattern]: bool } }
+  const [workspaceRequiredToolsStatus, setWorkspaceRequiredToolsStatus] = useState({});
 
   // Track background session completions for toast notifications
   // { sessionId, sessionName, timestamp }
@@ -381,12 +383,24 @@ export function useWebSocket() {
   // { sessionId: number }
   const lastKnownSeqRef = useRef({});
 
-  // Expose a test hook so Playwright can manipulate lastKnownSeqRef directly.
+  // Expose test hooks so Playwright can manipulate internal state directly.
   // Only used in test environments — harmless in production.
   if (typeof window !== "undefined") {
     if (!window.__debug) window.__debug = {};
     window.__debug._setLastKnownSeq = (sessionId, seq) => {
       lastKnownSeqRef.current[sessionId] = seq;
+    };
+    // _setClientMaxSeq overrides the clientMaxSeq computation in checkAndFillGap.
+    // This allows tests to force a gap by setting clientMaxSeq=0, which makes any
+    // incoming message with max_seq > 0 trigger a gap fill.
+    if (!window.__debug._clientMaxSeqOverrides) {
+      window.__debug._clientMaxSeqOverrides = {};
+    }
+    window.__debug._setClientMaxSeq = (sessionId, seq) => {
+      window.__debug._clientMaxSeqOverrides[sessionId] = seq;
+    };
+    window.__debug._clearClientMaxSeq = (sessionId) => {
+      delete window.__debug._clientMaxSeqOverrides[sessionId];
     };
   }
 
@@ -505,13 +519,22 @@ export function useWebSocket() {
       if (!session) return;
 
       // Get our last known seq (primary: ref, fallback: React state)
-      const refSeq = lastKnownSeqRef.current[sessionId] || 0;
-      const sessionMessages = session.messages || [];
-      const stateSeq = Math.max(
-        getMaxSeq(sessionMessages),
-        session.lastLoadedSeq || 0,
-      );
-      const clientMaxSeq = Math.max(refSeq, stateSeq);
+      // Allow test override via window.__debug._clientMaxSeqOverrides to simulate gaps.
+      const clientMaxSeqOverride =
+        typeof window !== "undefined" &&
+        window.__debug?._clientMaxSeqOverrides?.[sessionId];
+      let clientMaxSeq;
+      if (clientMaxSeqOverride !== undefined && clientMaxSeqOverride >= 0) {
+        clientMaxSeq = clientMaxSeqOverride;
+      } else {
+        const refSeq = lastKnownSeqRef.current[sessionId] || 0;
+        const sessionMessages = session.messages || [];
+        const stateSeq = Math.max(
+          getMaxSeq(sessionMessages),
+          session.lastLoadedSeq || 0,
+        );
+        clientMaxSeq = Math.max(refSeq, stateSeq);
+      }
 
       // If client has stale state (client > server), don't try to fill gaps
       // This will be handled by the stale detection in keepalive or events_loaded
@@ -519,11 +542,17 @@ export function useWebSocket() {
         return;
       }
 
-      // Check if there's a gap: server has more events than we know about
-      // We use a threshold of 1 to avoid false positives from out-of-order delivery
-      // (the current message with msgSeq is being processed, so we should have msgSeq - 1)
-      const expectedSeq = msgSeq ? msgSeq : clientMaxSeq + 1;
-      const gap = maxSeq - expectedSeq;
+      // Check if there's a gap: server has events beyond what the client knows about.
+      // expectedSeq is clientMaxSeq+1 — the next event the client expects.
+      // If max_seq > clientMaxSeq, the server has events 1..N that we don't have.
+      // Using clientMaxSeq (not msgSeq) ensures we detect backward gaps too:
+      // e.g., client missed events 1-5 and receives event 6 with max_seq=6.
+      // gap = maxSeq - (clientMaxSeq + 1) = number of events beyond the next expected.
+      // Example: clientMaxSeq=4, maxSeq=5 → gap=0 (next event is 5, no gap).
+      //          clientMaxSeq=4, maxSeq=6 → gap=1 (event 6 exists, need to fetch).
+      //          clientMaxSeq=0, maxSeq=5 → gap=4 (test: all events missing, fetch all).
+      const expectedSeq = clientMaxSeq + 1;
+      const gap = maxSeq - expectedSeq; // same as: maxSeq - clientMaxSeq - 1
 
       if (gap <= 0) {
         // No gap, or we're ahead (stale) - nothing to do
@@ -2597,6 +2626,11 @@ export function useWebSocket() {
             // Tests assert this is > 0 to verify the localStorage watermark was used.
             if (typeof window !== "undefined" && window.__debug) {
               window.__debug.lastLoadEventsAfterSeq = lastSeq;
+              // lastInitialLoadEventsAfterSeq is ONLY set here (watermark restore path)
+              // and is NOT overwritten by the fallback context load. This allows tests
+              // to reliably assert the watermark was used, even when the fallback fires
+              // immediately after and resets lastLoadEventsAfterSeq to 0.
+              window.__debug.lastInitialLoadEventsAfterSeq = lastSeq;
               window.__debug.lastLoadEventsSessionId = sessionId;
               window.__debug.lastLoadEventsTimestamp = Date.now();
             }
@@ -3435,6 +3469,29 @@ export function useWebSocket() {
             ...prev,
             [msg.data.workspace_uuid]: msg.data.tools || [],
           }));
+        }
+        break;
+
+      case "required_tools_status":
+        // Server notifies about required tool pattern availability for a workspace.
+        // Sent progressively as retries discover newly-available tools.
+        // Merge results: only upgrade false→true, never downgrade true→false.
+        console.log("[MCP] Required tools status for workspace:", msg.data.workspace_uuid, "patterns:", msg.data.patterns);
+        if (msg.data.workspace_uuid && msg.data.patterns) {
+          setWorkspaceRequiredToolsStatus((prev) => {
+            const existing = prev[msg.data.workspace_uuid] || {};
+            const merged = { ...existing };
+            for (const [pattern, available] of Object.entries(msg.data.patterns)) {
+              // Only upgrade to true, never downgrade
+              if (available || !(pattern in merged)) {
+                merged[pattern] = available;
+              }
+            }
+            return {
+              ...prev,
+              [msg.data.workspace_uuid]: merged,
+            };
+          });
         }
         break;
     }
@@ -4806,6 +4863,13 @@ export function useWebSocket() {
     return workspaceMcpTools[uuid] || [];
   }, [sessionInfo, workspaceMcpTools]);
 
+  // Required tools pattern status for the currently active session's workspace
+  const requiredToolsStatus = useMemo(() => {
+    const uuid = sessionInfo?.workspace_uuid;
+    if (!uuid) return {};
+    return workspaceRequiredToolsStatus[uuid] || {};
+  }, [sessionInfo, workspaceRequiredToolsStatus]);
+
   return {
     connected: eventsConnected,
     messages,
@@ -4828,6 +4892,7 @@ export function useWebSocket() {
     actionButtons,
     sessionInfo,
     mcpTools,
+    requiredToolsStatus,
     activeSessionId,
     activeSessions,
     storedSessions,
