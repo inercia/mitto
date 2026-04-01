@@ -53,3 +53,5 @@ export {
 } from "./csrf.js";
 
 export { getApiPrefix, apiUrl, wsUrl } from "./api.js";
+
+export { fetchConfig, invalidateConfigCache } from "./configCache.js";

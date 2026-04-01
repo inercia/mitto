@@ -80,6 +80,8 @@ import {
   setFilterTab,
   getFilterTabGrouping,
   cycleFilterTabGrouping,
+  fetchConfig,
+  invalidateConfigCache,
 } from "./utils/index.js";
 
 // Import hooks
@@ -3575,8 +3577,7 @@ function App() {
 
   // Fetch config on mount to get predefined prompts, UI theme, and check for workspaces
   useEffect(() => {
-    authFetch(apiUrl("/api/config"))
-      .then((res) => res.json())
+    fetchConfig()
       .then((config) => {
         // Load global prompts from top-level prompts
         if (config?.prompts) {
@@ -3841,14 +3842,9 @@ function App() {
         fetchWorkspacePrompts(sessionInfo.working_dir, true);
       }
 
-      // Refresh global prompts
+      // Refresh global prompts (force-bypass cache since files changed on disk)
       const acpServer = sessionInfo?.acp_server;
-      const url = acpServer
-        ? apiUrl(`/api/config?acp_server=${encodeURIComponent(acpServer)}`)
-        : apiUrl("/api/config");
-
-      authFetch(url)
-        .then((res) => res.json())
+      fetchConfig(acpServer || null, /* force */ true)
         .then((config) => {
           if (config?.prompts) {
             setGlobalPrompts(config.prompts);
@@ -3878,9 +3874,8 @@ function App() {
     // Skip if ACP server hasn't changed or isn't set yet
     if (!acpServer || acpServer === globalPromptsACPServer) return;
 
-    // Fetch global prompts filtered by ACP server
-    authFetch(apiUrl(`/api/config?acp_server=${encodeURIComponent(acpServer)}`))
-      .then((res) => res.json())
+    // Fetch global prompts filtered by ACP server (uses cache when fresh)
+    fetchConfig(acpServer)
       .then((config) => {
         if (config?.prompts) {
           setGlobalPrompts(config.prompts);
@@ -4198,7 +4193,7 @@ function App() {
       maxScroll * SCROLL_THRESHOLD_PERCENT,
     );
     const atBottom = container.scrollTop >= maxScroll - threshold;
-    console.log("[scroll] checkIfAtBottom:", {
+    if (window.__debug?.scroll) console.log("[scroll] checkIfAtBottom:", {
       scrollTop: container.scrollTop,
       scrollHeight: container.scrollHeight,
       clientHeight: container.clientHeight,
@@ -4230,7 +4225,7 @@ function App() {
 
     const handleScroll = (source = "scroll") => {
       const atBottom = checkIfAtBottom();
-      console.log(`[scroll] handleScroll(${source}):`, { atBottom });
+      if (window.__debug?.scroll) console.log(`[scroll] handleScroll(${source}):`, { atBottom });
       setIsUserAtBottom(atBottom);
       // Clear new messages indicator when user scrolls to bottom
       if (atBottom) {
@@ -4274,7 +4269,7 @@ function App() {
       container.style.scrollBehavior = "auto";
       const beforeScrollTop = container.scrollTop;
       container.scrollTop = container.scrollHeight; // scrollHeight = visual bottom
-      console.log("[scroll] scrollToBottomInstant:", {
+      if (window.__debug?.scroll) console.log("[scroll] scrollToBottomInstant:", {
         beforeScrollTop,
         afterScrollTop: container.scrollTop,
         scrollHeight: container.scrollHeight,
@@ -4320,7 +4315,7 @@ function App() {
     if (prevIsLoadingMoreRef.current && !isLoadingMore) {
       // Load more just completed - set flag to skip auto-scroll for prepended content
       justLoadedMoreRef.current = true;
-      console.log("[Scroll] Load more completed, will skip auto-scroll");
+      if (window.__debug?.scroll) console.log("[Scroll] Load more completed, will skip auto-scroll");
 
       // Restore scroll position to maintain visual position after prepend
       // The new content was added above, so we need to offset scrollTop by the height difference
@@ -4336,7 +4331,7 @@ function App() {
         const heightDiff = newScrollHeight - savedMetrics.scrollHeight;
         const newScrollTop = savedMetrics.scrollTop + heightDiff;
         container.scrollTop = newScrollTop;
-        console.log("[Scroll] Restored scroll position after prepend:", {
+        if (window.__debug?.scroll) console.log("[Scroll] Restored scroll position after prepend:", {
           oldScrollHeight: savedMetrics.scrollHeight,
           newScrollHeight,
           heightDiff,
@@ -4370,7 +4365,7 @@ function App() {
     // Skip auto-scroll if we just loaded older messages (prepend)
     // The useInfiniteScroll hook handles scroll position restoration for this case
     if (justLoadedMoreRef.current) {
-      console.log("[Scroll] Skipping auto-scroll - just loaded older messages");
+      if (window.__debug?.scroll) console.log("[Scroll] Skipping auto-scroll - just loaded older messages");
       justLoadedMoreRef.current = false;
       prevMessagesLengthRef.current = currentLength;
       return;
@@ -5018,14 +5013,9 @@ function App() {
       fetchWorkspacePrompts(sessionInfo.working_dir, false);
     }
 
-    // Refresh global prompts (checks for new/modified prompt files)
+    // Refresh global prompts (uses cache when fresh)
     const acpServer = sessionInfo?.acp_server;
-    const url = acpServer
-      ? apiUrl(`/api/config?acp_server=${encodeURIComponent(acpServer)}`)
-      : apiUrl("/api/config");
-
-    authFetch(url)
-      .then((res) => res.json())
+    fetchConfig(acpServer || null)
       .then((config) => {
         if (config?.prompts) {
           setGlobalPrompts(config.prompts);
@@ -5195,11 +5185,11 @@ function App() {
         onSave=${async () => {
           // Refresh workspaces after saving
           refreshWorkspaces();
-          // Reload config to update prompts and UI settings
+          // Reload config to update prompts and UI settings (invalidate cache first)
+          invalidateConfigCache();
           try {
-            const res = await authFetch(apiUrl("/api/config"));
-            if (res.ok) {
-              const config = await res.json();
+            const config = await fetchConfig();
+            if (config) {
               // Reload global prompts (use empty array if not present)
               setGlobalPrompts(config?.prompts || []);
               // Reload ACP servers with their per-server prompts
