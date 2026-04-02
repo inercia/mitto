@@ -5,7 +5,8 @@ import { test, expect } from "../fixtures/test-fixtures";
  *
  * These tests verify that file links are handled correctly:
  * - HTML files should open directly in a new browser tab (rendered)
- * - Other files should open in the syntax-highlighted viewer
+ * - All other files (including markdown) should open in the unified viewer
+ * - The unified viewer handles both code (syntax-highlighted) and markdown (rendered prose)
  */
 
 test.describe("File Link Handling", () => {
@@ -122,7 +123,7 @@ test.describe("File Link Handling", () => {
     await expect(page).toHaveTitle("Test HTML Page");
   });
 
-  test("Markdown files should include render=html in the link URL", async ({
+  test("Markdown files should open in the unified viewer", async ({
     page,
     context,
   }) => {
@@ -132,15 +133,14 @@ test.describe("File Link Handling", () => {
     const workspaceUUID = data.workspaces?.[0]?.uuid;
     expect(workspaceUUID).toBeTruthy();
 
-    // Inject a test link for a Markdown file (simulating what the file link detection produces)
+    // Inject a test link for a Markdown file
     await page.evaluate((wsUUID) => {
       const testDiv = document.createElement("div");
       testDiv.id = "test-file-links";
       testDiv.style.cssText =
         "position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); background: #333; padding: 20px; border-radius: 8px; z-index: 9999;";
-      // This is the URL format that file link detection should produce for Markdown files
       testDiv.innerHTML = `
-        <a id="md-file-link" href="/mitto/api/files?ws=${wsUUID}&path=README.md&render=html" class="file-link" style="color: #4af;">Markdown File</a>
+        <a id="md-file-link" href="/mitto/api/files?ws=${wsUUID}&path=README.md" class="file-link" style="color: #4af;">Markdown File</a>
       `;
       document.body.appendChild(testDiv);
     }, workspaceUUID);
@@ -154,22 +154,31 @@ test.describe("File Link Handling", () => {
     // Wait for the new page to load
     await newPage.waitForLoadState("domcontentloaded");
 
-    // Verify the URL contains render=html
+    // Verify the URL is the unified viewer page
     const url = newPage.url();
-    expect(url).toContain("/api/files?");
+    expect(url).toContain("viewer.html");
     expect(url).toContain("path=README.md");
-    expect(url).toContain("render=html");
-    expect(url).not.toContain("viewer.html");
+
+    // Verify the viewer page loaded with the file path
+    await expect(newPage.locator("#filePath")).toBeVisible();
+    await expect(newPage.locator("#filePath")).toContainText("README.md");
 
     // Verify the Markdown is rendered as HTML (should contain h1 header)
     // README.md contains "# Project Alpha"
     await expect(newPage.locator("h1")).toBeVisible();
     await expect(newPage.locator("h1")).toContainText("Project Alpha");
 
+    // Verify the markdown is displayed in the article container (not code block)
+    await expect(newPage.locator("#markdownContent")).toBeVisible();
+
+    // Verify font size buttons are hidden for markdown mode
+    await expect(newPage.locator("#decreaseFontBtn")).toBeHidden();
+    await expect(newPage.locator("#increaseFontBtn")).toBeHidden();
+
     await newPage.close();
   });
 
-  test("Markdown files without render=html should have it added automatically (backward compatibility)", async ({
+  test("Markdown files with render=html param should also open in viewer (backward compatibility)", async ({
     page,
     context,
   }) => {
@@ -179,16 +188,15 @@ test.describe("File Link Handling", () => {
     const workspaceUUID = data.workspaces?.[0]?.uuid;
     expect(workspaceUUID).toBeTruthy();
 
-    // Inject a test link for a Markdown file WITHOUT render=html
-    // (simulating an old recording that predates the render=html feature)
+    // Inject a test link for a Markdown file WITH render=html
+    // (old recordings may have links with this parameter from before the unified viewer)
     await page.evaluate((wsUUID) => {
       const testDiv = document.createElement("div");
       testDiv.id = "test-file-links";
       testDiv.style.cssText =
         "position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); background: #333; padding: 20px; border-radius: 8px; z-index: 9999;";
-      // Old URL format without render=html
       testDiv.innerHTML = `
-        <a id="old-md-file-link" href="/mitto/api/files?ws=${wsUUID}&path=README.md" class="file-link" style="color: #4af;">Old Markdown Link</a>
+        <a id="old-md-file-link" href="/mitto/api/files?ws=${wsUUID}&path=README.md&render=html" class="file-link" style="color: #4af;">Old Markdown Link</a>
       `;
       document.body.appendChild(testDiv);
     }, workspaceUUID);
@@ -202,22 +210,20 @@ test.describe("File Link Handling", () => {
     // Wait for the new page to load
     await newPage.waitForLoadState("domcontentloaded");
 
-    // Verify the URL had render=html added automatically
+    // Verify it opens in the unified viewer (not directly)
     const url = newPage.url();
-    expect(url).toContain("/api/files?");
+    expect(url).toContain("viewer.html");
     expect(url).toContain("path=README.md");
-    expect(url).toContain("render=html");
-    expect(url).not.toContain("viewer.html");
 
-    // Verify the Markdown is rendered as HTML (should contain h1 header)
-    // README.md contains "# Project Alpha"
+    // Verify the viewer page loaded and renders markdown
+    await expect(newPage.locator("#filePath")).toBeVisible();
     await expect(newPage.locator("h1")).toBeVisible();
     await expect(newPage.locator("h1")).toContainText("Project Alpha");
 
     await newPage.close();
   });
 
-  test("Markdown API endpoint with render=html returns rendered HTML", async ({
+  test("Markdown API endpoint with render=html returns HTML fragment", async ({
     page,
   }) => {
     // Get the workspace UUID from the API
@@ -226,20 +232,28 @@ test.describe("File Link Handling", () => {
     const workspaceUUID = data.workspaces?.[0]?.uuid;
     expect(workspaceUUID).toBeTruthy();
 
-    // Navigate directly to the Markdown file via API with render=html
-    await page.goto(
+    // Fetch the rendered markdown directly via API
+    const apiResponse = await page.request.get(
       `/mitto/api/files?ws=${workspaceUUID}&path=README.md&render=html`
     );
 
-    // Verify the content is rendered as HTML (not raw Markdown)
-    // README.md contains "# Project Alpha" which should become <h1>Project Alpha</h1>
-    await expect(page.locator("h1")).toBeVisible();
-    await expect(page.locator("h1")).toContainText("Project Alpha");
+    expect(apiResponse.ok()).toBeTruthy();
+    expect(apiResponse.headers()["content-type"]).toContain("text/html");
 
-    // Also check that a bullet point list is rendered as HTML
-    // README.md contains "- `main.go` - Entry point" which should become <li>
-    await expect(page.locator("li").first()).toBeVisible();
-    await expect(page.locator("li").first()).toContainText("main.go");
+    // Verify no-cache headers are set
+    expect(apiResponse.headers()["cache-control"]).toContain("no-cache");
+
+    const body = await apiResponse.text();
+
+    // The response should be an HTML fragment (not a full document)
+    expect(body).not.toContain("<!DOCTYPE html>");
+    expect(body).not.toContain("<html");
+
+    // But it should contain rendered markdown content
+    expect(body).toContain("Project Alpha");
+    expect(body).toContain("<h1");
+    expect(body).toContain("<li");
+    expect(body).toContain("main.go");
   });
 
   test("Old links without API prefix should be fixed (backward compatibility)", async ({

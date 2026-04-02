@@ -442,7 +442,7 @@ func main() {
 			render:         "html",
 			expectedStatus: http.StatusOK,
 			checkHTML:      true,
-			checkContains:  []string{"<!DOCTYPE html>", "<h1", "Test Document", "<strong>bold</strong>", "<em>italic</em>"},
+			checkContains:  []string{"<h1", "Test Document", "<strong>bold</strong>", "<em>italic</em>"},
 		},
 		{
 			name:           "render .markdown extension",
@@ -450,7 +450,7 @@ func main() {
 			render:         "html",
 			expectedStatus: http.StatusOK,
 			checkHTML:      true,
-			checkContains:  []string{"<!DOCTYPE html>", "<h1", "README"},
+			checkContains:  []string{"<h1", "README"},
 		},
 		{
 			name:           "raw markdown without render param",
@@ -552,10 +552,12 @@ func TestFileServer_MarkdownRenderingSecurityHeaders(t *testing.T) {
 	// with a nonce for the inline script in the rendered markdown.
 	// Here we just verify the handler doesn't error without the middleware.
 
-	// Verify the HTML contains the nonce placeholder (will be replaced by middleware)
+	// The rendered markdown is now an HTML fragment (no full document wrapper),
+	// so it no longer contains {{CSP_NONCE}} placeholders or inline scripts.
+	// Just verify the response contains rendered HTML content.
 	body := w.Body.String()
-	if !strings.Contains(body, "{{CSP_NONCE}}") {
-		t.Error("Expected rendered HTML to contain {{CSP_NONCE}} placeholder for middleware injection")
+	if !strings.Contains(body, "<h1") {
+		t.Error("Expected rendered HTML fragment to contain heading markup")
 	}
 }
 
@@ -605,6 +607,10 @@ func TestFileServer_MarkdownRenderingCodeHighlighting(t *testing.T) {
 }
 
 func TestFileServer_MarkdownRenderingDarkLightMode(t *testing.T) {
+	// The rendered markdown is now an HTML fragment served for the unified viewer
+	// (viewer.html) to embed. Theming (CSS variables, dark/light mode) is handled
+	// by viewer.html, not by the backend response. This test now verifies that the
+	// fragment is valid rendered HTML content.
 	tmpDir := t.TempDir()
 
 	mdFile := filepath.Join(tmpDir, "theme.md")
@@ -635,14 +641,12 @@ func TestFileServer_MarkdownRenderingDarkLightMode(t *testing.T) {
 
 	body := w.Body.String()
 
-	// Check that CSS variables are defined for theming
-	if !contains(body, ":root") {
-		t.Error("Expected :root CSS variables for theming")
+	// Verify the fragment contains rendered heading
+	if !contains(body, "<h1") {
+		t.Error("Expected rendered HTML to contain heading element")
 	}
-
-	// Check that prefers-color-scheme media query is present for light mode
-	if !contains(body, "prefers-color-scheme: light") {
-		t.Error("Expected prefers-color-scheme media query for light mode support")
+	if !contains(body, "Theme Test") {
+		t.Error("Expected rendered HTML to contain heading text")
 	}
 }
 

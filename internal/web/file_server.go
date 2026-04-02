@@ -2,8 +2,6 @@
 package web
 
 import (
-	"fmt"
-	"html"
 	"io"
 	"log/slog"
 	"mime"
@@ -180,6 +178,12 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 
 	// Set security headers
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	// Disable caching — workspace files change frequently and Cloudflare (or
+	// other reverse-proxies) would otherwise serve stale content.
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 
 	// For HTML files, use a more permissive CSP to allow the content to render properly
 	// with its own styles and scripts. For other files, use strict CSP.
@@ -370,6 +374,12 @@ func (fs *FileServer) ServeFileContent(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	// Disable caching — raw workspace files change frequently.
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	w.Write(content)
 }
 
@@ -386,7 +396,7 @@ func mustOpen(path string) io.Reader {
 const maxMarkdownRenderSize = 10 * 1024 * 1024
 
 // serveRenderedMarkdown reads a markdown file, converts it to HTML, and serves
-// it as a complete HTML document with styling.
+// it as an HTML fragment for the unified viewer to embed.
 func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, displayPath string) {
 	// Read markdown content
 	content, err := os.ReadFile(realPath)
@@ -412,177 +422,14 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 		return
 	}
 
-	// Wrap in complete HTML document
-	fullHTML := wrapMarkdownHTML(htmlContent, displayPath)
-
-	// Set headers
-	// Note: CSP header is set by cspNonceMiddleware which replaces {{CSP_NONCE}} in the HTML
+	// Set headers — return as HTML fragment for the unified viewer to embed
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
-	w.Write([]byte(fullHTML))
-}
+	// Disable caching — rendered markdown reflects live file content.
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 
-// wrapMarkdownHTML wraps rendered markdown content in a complete HTML document
-// with styling that supports both light and dark modes.
-func wrapMarkdownHTML(content, filename string) string {
-	title := html.EscapeString(filepath.Base(filename))
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>%s - Mitto</title>
-    <style>
-        :root {
-            --bg: #0d1117;
-            --text: #c9d1d9;
-            --text-muted: #8b949e;
-            --border: #30363d;
-            --code-bg: #161b22;
-            --link: #58a6ff;
-            --header-border: #21262d;
-        }
-        @media (prefers-color-scheme: light) {
-            :root {
-                --bg: #ffffff;
-                --text: #24292f;
-                --text-muted: #57606a;
-                --border: #d0d7de;
-                --code-bg: #f6f8fa;
-                --link: #0969da;
-                --header-border: #d0d7de;
-            }
-        }
-        * { box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            line-height: 1.6;
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 2rem 2rem 4rem;
-        }
-        h1, h2, h3, h4, h5, h6 { margin: 1.5em 0 0.5em; font-weight: 600; color: var(--text); }
-        h1 { font-size: 2em; border-bottom: 1px solid var(--header-border); padding-bottom: 0.3em; }
-        h2 { font-size: 1.5em; border-bottom: 1px solid var(--header-border); padding-bottom: 0.3em; }
-        h3 { font-size: 1.25em; }
-        p { margin: 1em 0; }
-        a { color: var(--link); text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        code {
-            font-family: "SF Mono", SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-            font-size: 0.875em;
-            background: var(--code-bg);
-            padding: 0.2em 0.4em;
-            border-radius: 6px;
-        }
-        pre {
-            background: var(--code-bg);
-            padding: 1rem;
-            overflow-x: auto;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            line-height: 1.5;
-        }
-        pre code { padding: 0; background: none; font-size: 0.85em; }
-        blockquote {
-            margin: 1em 0;
-            padding: 0.5em 1em;
-            border-left: 4px solid var(--border);
-            color: var(--text-muted);
-            background: var(--code-bg);
-        }
-        ul, ol { margin: 1em 0; padding-left: 2em; }
-        li { margin: 0.25em 0; }
-        table { border-collapse: collapse; width: 100%%; margin: 1em 0; }
-        th, td { border: 1px solid var(--border); padding: 0.5em 1em; text-align: left; }
-        th { background: var(--code-bg); font-weight: 600; }
-        hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
-        img { max-width: 100%%; }
-        /* Syntax highlighting - monokai-inspired for dark, github-inspired for light */
-        .chroma { background: var(--code-bg); }
-        .chroma .k, .chroma .kc, .chroma .kd, .chroma .kn, .chroma .kp, .chroma .kr { color: #ff79c6; }
-        .chroma .n, .chroma .na, .chroma .nb, .chroma .nc, .chroma .no, .chroma .nd { color: #50fa7b; }
-        .chroma .s, .chroma .sa, .chroma .sb, .chroma .sc, .chroma .dl, .chroma .sd, .chroma .s2, .chroma .se, .chroma .sh, .chroma .si, .chroma .sx, .chroma .sr, .chroma .s1, .chroma .ss { color: #f1fa8c; }
-        .chroma .m, .chroma .mb, .chroma .mf, .chroma .mh, .chroma .mi, .chroma .il, .chroma .mo { color: #bd93f9; }
-        .chroma .c, .chroma .ch, .chroma .cm, .chroma .c1, .chroma .cs, .chroma .cp, .chroma .cpf { color: #6272a4; font-style: italic; }
-        @media (prefers-color-scheme: light) {
-            .chroma .k, .chroma .kc, .chroma .kd, .chroma .kn, .chroma .kp, .chroma .kr { color: #d73a49; }
-            .chroma .n, .chroma .na, .chroma .nb, .chroma .nc, .chroma .no, .chroma .nd { color: #6f42c1; }
-            .chroma .s, .chroma .sa, .chroma .sb, .chroma .sc, .chroma .dl, .chroma .sd, .chroma .s2, .chroma .se, .chroma .sh, .chroma .si, .chroma .sx, .chroma .sr, .chroma .s1, .chroma .ss { color: #032f62; }
-            .chroma .m, .chroma .mb, .chroma .mf, .chroma .mh, .chroma .mi, .chroma .il, .chroma .mo { color: #005cc5; }
-            .chroma .c, .chroma .ch, .chroma .cm, .chroma .c1, .chroma .cs, .chroma .cp, .chroma .cpf { color: #6a737d; }
-        }
-        /* Mermaid diagram styling */
-        .mermaid-diagram {
-            display: flex;
-            justify-content: center;
-            margin: 1em 0;
-            overflow-x: auto;
-        }
-        .mermaid-diagram svg {
-            max-width: 100%%;
-        }
-        pre.mermaid {
-            text-align: center;
-            background: transparent;
-            border: none;
-            padding: 0;
-        }
-        .mermaid-error {
-            color: var(--text-muted);
-            font-style: italic;
-        }
-    </style>
-</head>
-<body>
-    <article>%s</article>
-    <script type="module" nonce="{{CSP_NONCE}}">
-        // Check if there are any mermaid blocks to render
-        const mermaidBlocks = document.querySelectorAll('pre.mermaid');
-        if (mermaidBlocks.length > 0) {
-            // Dynamically load and initialize Mermaid.js
-            const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
-            script.onload = function() {
-                // Detect theme
-                const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-                const theme = isDark ? 'dark' : 'default';
-
-                // Initialize Mermaid
-                mermaid.initialize({
-                    startOnLoad: false,
-                    theme: theme,
-                    securityLevel: 'strict',
-                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
-                });
-
-                // Render each mermaid block
-                mermaidBlocks.forEach(async (block, index) => {
-                    try {
-                        const diagramDef = block.textContent || '';
-                        if (!diagramDef.trim()) return;
-
-                        const { svg } = await mermaid.render('mermaid-' + index, diagramDef);
-                        const wrapper = document.createElement('div');
-                        wrapper.className = 'mermaid-diagram';
-                        wrapper.innerHTML = svg;
-                        block.replaceWith(wrapper);
-                    } catch (err) {
-                        console.error('Failed to render mermaid diagram:', err);
-                        block.classList.add('mermaid-error');
-                        block.textContent = '⚠️ Failed to render diagram: ' + err.message;
-                    }
-                });
-            };
-            script.onerror = function(err) {
-                console.error('Failed to load Mermaid.js:', err);
-            };
-            document.head.appendChild(script);
-        }
-    </script>
-</body>
-</html>`, title, content)
+	w.Write([]byte(htmlContent))
 }

@@ -149,18 +149,15 @@ import {
 
 /**
  * Determines if a file link should open directly (browser renders it) or in the viewer.
- * HTML files and Markdown files should open directly since the browser/server renders them.
- * Other files should open in the syntax-highlighted viewer.
+ * Only HTML files open directly since the browser renders them natively.
+ * All other files (including markdown) open in the unified viewer.
  * @param {string} href - The file API URL (e.g., /mitto/api/files?ws=...&path=...)
  * @returns {boolean} True if the file should open directly, false if it should open in viewer
  */
 function shouldOpenFileDirectly(href) {
   try {
-    // Parse the URL to extract the path parameter
     const url = new URL(href, window.location.origin);
     const path = url.searchParams.get("path") || "";
-
-    // Get file extension
     const ext = path.split(".").pop()?.toLowerCase() || "";
 
     // HTML files should always open directly (browser renders them)
@@ -168,13 +165,7 @@ function shouldOpenFileDirectly(href) {
       return true;
     }
 
-    // Markdown files should always open directly (server renders them as HTML)
-    // The render=html parameter will be added if not present
-    if (ext === "md" || ext === "markdown") {
-      return true;
-    }
-
-    // All other files should open in the viewer (syntax highlighting)
+    // All other files (including markdown) open in the unified viewer
     return false;
   } catch (e) {
     console.error("[Mitto] Error checking file type:", e);
@@ -225,35 +216,19 @@ document.addEventListener("click", (e) => {
       }
     } else {
       // Web browser - determine how to open the file
-      // HTML files and Markdown files should open directly (browser/server renders them)
-      // Other files should open in the syntax-highlighted viewer
       const shouldOpenDirectly = shouldOpenFileDirectly(href);
       if (shouldOpenDirectly) {
-        // Open directly via API - browser will render HTML/Markdown
+        // Open directly via API - browser will render HTML
         // Fix old links missing API prefix
         const apiPrefix = getAPIPrefix();
         let finalUrl = href;
         if (apiPrefix && !href.includes(apiPrefix)) {
-          // Old link without prefix - add the current prefix
           finalUrl = finalUrl.replace("/api/files?", apiPrefix + "/api/files?");
           console.log("[Mitto] Fixed old API link:", href, "->", finalUrl);
         }
-        // Ensure markdown files have render=html parameter for proper rendering
-        // (old recordings may have links without this parameter)
-        const url = new URL(finalUrl, window.location.origin);
-        const path = url.searchParams.get("path") || "";
-        const ext = path.split(".").pop()?.toLowerCase() || "";
-        if (
-          (ext === "md" || ext === "markdown") &&
-          url.searchParams.get("render") !== "html"
-        ) {
-          url.searchParams.set("render", "html");
-          finalUrl = url.toString();
-          console.log("[Mitto] Added render=html for markdown file:", finalUrl);
-        }
         window.open(finalUrl, "_blank", "noopener,noreferrer");
       } else {
-        // Open in viewer page with syntax highlighting
+        // Open in unified viewer page (handles code + markdown)
         const viewerUrl = convertHTTPFileURLToViewer(href);
         console.log("[Mitto] Converted to viewer URL:", viewerUrl);
         if (viewerUrl) {
