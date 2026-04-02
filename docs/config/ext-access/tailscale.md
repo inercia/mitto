@@ -40,6 +40,16 @@ purpose-built HTTP tunnel solutions. For latency-sensitive use, consider
 
 ## Security Considerations
 
-- You can restrict access to your Tailnet only (no public exposure)
+> **Warning:** Tailscale Funnel exposes your Mitto instance to the public internet.
+> Automated bots continuously scan for open services and will find yours within
+> minutes. You will see credential stuffing attempts, path probing, and vulnerability
+> scans in your access logs. Always enable strong authentication (`web.auth.simple`
+> with a non-guessable password) and consider enabling Mitto's
+> [scanner defense](scanner-defense.md) to automatically block malicious IPs.
+
+- You can restrict access to your Tailnet only (no public exposure) — this avoids
+  the bot problem entirely but limits access to your Tailscale devices
 - ACLs control who can access the funnel
 - No additional Mitto authentication required if restricted to trusted users
+- If using public Funnel, always configure `web.auth` — without it, anyone on the
+  internet can access your AI agent
