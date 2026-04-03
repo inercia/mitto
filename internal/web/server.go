@@ -302,6 +302,30 @@ func NewServer(config Config) (*Server, error) {
 		securityCfg = config.MittoConfig.Web.Security
 	}
 
+	// Auto-detect tunnel mode: when hooks.up is configured, a tunnel proxy
+	// (e.g., cloudflared, ngrok) connects from localhost. Automatically add
+	// 127.0.0.1 as a trusted proxy so the defense middleware can extract the
+	// real client IP from forwarded headers. Without this, every tunnel user
+	// would need to manually configure trusted_proxies.
+	hasTunnelHook := config.MittoConfig != nil && config.MittoConfig.Web.Hooks.Up.Command != ""
+	if hasTunnelHook {
+		if securityCfg == nil {
+			securityCfg = &configPkg.WebSecurity{}
+		}
+		// Add localhost as trusted proxy if not already present
+		hasLocalhost := false
+		for _, p := range securityCfg.TrustedProxies {
+			if p == "127.0.0.1" || p == "127.0.0.0/8" || p == "::1" {
+				hasLocalhost = true
+				break
+			}
+		}
+		if !hasLocalhost {
+			securityCfg.TrustedProxies = append(securityCfg.TrustedProxies, "127.0.0.1")
+			logger.Info("Tunnel hook detected, auto-added localhost as trusted proxy")
+		}
+	}
+
 	// Initialize trusted proxy checker
 	var proxyChecker *TrustedProxyChecker
 	if securityCfg != nil && len(securityCfg.TrustedProxies) > 0 {
@@ -379,6 +403,20 @@ func NewServer(config Config) (*Server, error) {
 	}
 	if shouldEnableScannerDefense(webConfig) {
 		defenseConfig := configToDefenseConfig(getScannerDefenseConfig(webConfig), true)
+
+		// When a tunnel hook is configured, increase rate limits if the user
+		// hasn't explicitly set them. Tunnel proxies (cloudflared, ngrok) forward
+		// all browser requests through a single origin, so a page load generating
+		// ~30 requests can easily exceed the default 100 req/min limit.
+		if hasTunnelHook {
+			explicitCfg := getScannerDefenseConfig(webConfig)
+			if explicitCfg == nil || explicitCfg.RateLimit == 0 {
+				defenseConfig.RateLimit = 500 // 5x default for tunnel traffic
+				logger.Info("Tunnel hook detected, increased scanner defense rate limit",
+					"rate_limit", defenseConfig.RateLimit)
+			}
+		}
+
 		var err error
 		scannerDefense, err = defense.New(defenseConfig, logger)
 		if err != nil {
