@@ -95,10 +95,24 @@ func (tpc *TrustedProxyChecker) GetClientIP(r *http.Request) string {
 		return directIP
 	}
 
-	// Connection is from a trusted proxy - check forwarded headers
-	// Check X-Forwarded-For header (may contain multiple IPs)
+	// Connection is from a trusted proxy — check forwarded headers.
+	// Priority order: Cf-Connecting-IP (Cloudflare), X-Real-IP (nginx),
+	// X-Forwarded-For (generic). Cf-Connecting-IP is the most reliable
+	// because Cloudflare always sets it to the true client IP and it
+	// cannot be spoofed through Cloudflare's edge.
+
+	// Check Cf-Connecting-IP (set by Cloudflare edge — most reliable)
+	if cfIP := r.Header.Get("Cf-Connecting-IP"); cfIP != "" {
+		return strings.TrimSpace(cfIP)
+	}
+
+	// Check X-Real-IP (typically set by nginx)
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+
+	// Check X-Forwarded-For (may contain multiple IPs — take the first)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP (original client)
 		parts := strings.Split(xff, ",")
 		if len(parts) > 0 {
 			clientIP := strings.TrimSpace(parts[0])
@@ -106,11 +120,6 @@ func (tpc *TrustedProxyChecker) GetClientIP(r *http.Request) string {
 				return clientIP
 			}
 		}
-	}
-
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
 	}
 
 	// Fall back to direct IP

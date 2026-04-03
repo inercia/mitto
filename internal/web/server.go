@@ -312,16 +312,26 @@ func NewServer(config Config) (*Server, error) {
 		if securityCfg == nil {
 			securityCfg = &configPkg.WebSecurity{}
 		}
-		// Add localhost as trusted proxy if not already present
-		hasLocalhost := false
+		// Add localhost (both IPv4 and IPv6) as trusted proxy if not already
+		// present. cloudflared may connect via either [::1] or 127.0.0.1
+		// depending on the OS and how "localhost" resolves.
+		hasIPv4 := false
+		hasIPv6 := false
 		for _, p := range securityCfg.TrustedProxies {
-			if p == "127.0.0.1" || p == "127.0.0.0/8" || p == "::1" {
-				hasLocalhost = true
-				break
+			if p == "127.0.0.1" || p == "127.0.0.0/8" {
+				hasIPv4 = true
+			}
+			if p == "::1" {
+				hasIPv6 = true
 			}
 		}
-		if !hasLocalhost {
+		if !hasIPv4 {
 			securityCfg.TrustedProxies = append(securityCfg.TrustedProxies, "127.0.0.1")
+		}
+		if !hasIPv6 {
+			securityCfg.TrustedProxies = append(securityCfg.TrustedProxies, "::1")
+		}
+		if !hasIPv4 || !hasIPv6 {
 			logger.Info("Tunnel hook detected, auto-added localhost as trusted proxy")
 		}
 	}
