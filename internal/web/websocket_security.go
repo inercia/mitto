@@ -28,7 +28,10 @@ type WebSocketSecurityConfig struct {
 	LocalMaxMessageSize int64
 
 	// MaxConnectionsPerIP is the maximum number of concurrent WebSocket connections per IP.
-	// Default: 10
+	// Each open conversation needs one WebSocket, plus one for global events.
+	// With Cloudflare/reverse proxy setups, all connections from a user share the
+	// same real IP, so this must accommodate the typical number of open conversations.
+	// Default: 50
 	MaxConnectionsPerIP int
 
 	// PongWait is the time to wait for a pong response.
@@ -50,7 +53,7 @@ func DefaultWebSocketSecurityConfig() WebSocketSecurityConfig {
 	return WebSocketSecurityConfig{
 		AllowedOrigins:      nil,       // Same-origin only by default
 		MaxMessageSize:      64 * 1024, // 64KB
-		MaxConnectionsPerIP: 10,
+		MaxConnectionsPerIP: 50,
 		PongWait:            60 * time.Second,
 		PingPeriod:          54 * time.Second,
 		WriteWait:           10 * time.Second,

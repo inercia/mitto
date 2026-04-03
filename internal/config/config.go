@@ -188,7 +188,7 @@ type WebSecurity struct {
 	RateLimitBurst int `json:"rate_limit_burst,omitempty"`
 
 	// MaxWSConnectionsPerIP is the maximum number of concurrent WebSocket connections per IP.
-	// Default: 10
+	// Default: 50
 	MaxWSConnectionsPerIP int `json:"max_ws_connections_per_ip,omitempty"`
 
 	// MaxWSMessageSize is the maximum size of a WebSocket message in bytes.
