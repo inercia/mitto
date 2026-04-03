@@ -37,6 +37,10 @@ type ConfigSaveRequest struct {
 				Username string `json:"username"`
 				Password string `json:"password"`
 			} `json:"simple,omitempty"`
+			Cloudflare *struct {
+				TeamDomain string `json:"team_domain"`
+				Audience   string `json:"audience"`
+			} `json:"cloudflare,omitempty"`
 		} `json:"auth,omitempty"`
 		Hooks     *configPkg.WebHooks        `json:"hooks,omitempty"`
 		AccessLog *configPkg.AccessLogConfig `json:"access_log,omitempty"`
@@ -400,24 +404,43 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 	newWebConfig.ExternalPort = req.Web.ExternalPort
 
 	// Update auth settings
-	if req.Web.Auth != nil && req.Web.Auth.Simple != nil {
-		password := req.Web.Auth.Simple.Password
+	hasSimple := req.Web.Auth != nil && req.Web.Auth.Simple != nil
+	hasCloudflare := req.Web.Auth != nil && req.Web.Auth.Cloudflare != nil
 
-		// On platforms with secure storage, store password in Keychain
-		// and omit it from settings.json
-		if secrets.IsSupported() {
-			if err := secrets.SetExternalAccessPassword(password); err != nil {
-				return nil, fmt.Errorf("failed to store password in secure storage: %w", err)
+	if hasSimple || hasCloudflare {
+		newWebConfig.Auth = &configPkg.WebAuth{}
+
+		// Simple auth (username/password)
+		if hasSimple {
+			password := req.Web.Auth.Simple.Password
+
+			// On platforms with secure storage, store password in Keychain
+			// and omit it from settings.json
+			if secrets.IsSupported() {
+				if err := secrets.SetExternalAccessPassword(password); err != nil {
+					return nil, fmt.Errorf("failed to store password in secure storage: %w", err)
+				}
+				// Omit password from settings.json when stored in Keychain
+				password = ""
 			}
-			// Omit password from settings.json when stored in Keychain
-			password = ""
-		}
 
-		newWebConfig.Auth = &configPkg.WebAuth{
-			Simple: &configPkg.SimpleAuth{
+			newWebConfig.Auth.Simple = &configPkg.SimpleAuth{
 				Username: req.Web.Auth.Simple.Username,
 				Password: password, // Empty when stored in Keychain
-			},
+			}
+		} else {
+			// Clean up stored password when simple auth is disabled
+			if secrets.IsSupported() {
+				_ = secrets.DeleteExternalAccessPassword()
+			}
+		}
+
+		// Cloudflare Access auth
+		if hasCloudflare {
+			newWebConfig.Auth.Cloudflare = &configPkg.CloudflareAuth{
+				TeamDomain: req.Web.Auth.Cloudflare.TeamDomain,
+				Audience:   req.Web.Auth.Cloudflare.Audience,
+			}
 		}
 	} else {
 		newWebConfig.Auth = nil

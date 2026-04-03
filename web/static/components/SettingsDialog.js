@@ -1005,6 +1005,9 @@ export function SettingsDialog({
   const [authEnabled, setAuthEnabled] = useState(false);
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [cfEnabled, setCfEnabled] = useState(false);
+  const [cfTeamDomain, setCfTeamDomain] = useState("");
+  const [cfAudience, setCfAudience] = useState("");
   const [externalPort, setExternalPort] = useState(""); // Empty string = random port
   const [currentExternalPort, setCurrentExternalPort] = useState(null); // Currently running external port
   const [externalEnabled, setExternalEnabled] = useState(false); // Is external listener currently running
@@ -1452,18 +1455,24 @@ export function SettingsDialog({
       setOrphanedWorkspaces(orphaned);
 
       // Load auth settings - check if external access is enabled
-      // External access is enabled if auth is configured OR host is 0.0.0.0
-      const hasAuth = config.web?.auth?.simple;
+      // External access is enabled if any auth is configured OR host is 0.0.0.0
+      const hasSimpleAuth = config.web?.auth?.simple;
+      const hasCfAuth = config.web?.auth?.cloudflare;
       const isExternalHost = config.web?.host === "0.0.0.0";
-      if (hasAuth || isExternalHost) {
+      if (hasSimpleAuth || hasCfAuth || isExternalHost) {
         setAuthEnabled(true);
-        setAuthUsername(config.web?.auth?.simple?.username || "");
-        setAuthPassword(config.web?.auth?.simple?.password || "");
       } else {
         setAuthEnabled(false);
-        setAuthUsername("");
-        setAuthPassword("");
       }
+
+      // Simple auth
+      setAuthUsername(config.web?.auth?.simple?.username || "");
+      setAuthPassword(config.web?.auth?.simple?.password || "");
+
+      // Cloudflare auth
+      setCfEnabled(!!hasCfAuth);
+      setCfTeamDomain(config.web?.auth?.cloudflare?.team_domain || "");
+      setCfAudience(config.web?.auth?.cloudflare?.audience || "");
 
       // Load external port setting (0 or empty = random)
       const extPort = config.web?.external_port;
@@ -1609,7 +1618,7 @@ export function SettingsDialog({
       return;
     }
 
-    if (authEnabled) {
+    if (authEnabled && authUsername.trim()) {
       const usernameError = validateUsername(authUsername);
       if (usernameError) {
         setError(usernameError);
@@ -1623,6 +1632,28 @@ export function SettingsDialog({
         return;
       }
     }
+    if (cfEnabled) {
+      if (!cfTeamDomain.trim()) {
+        setError("Cloudflare Access: Team domain is required");
+        setActiveTab("web");
+        return;
+      }
+      if (cfTeamDomain.includes("://")) {
+        setError("Cloudflare Access: Team domain should be a domain name, not a URL");
+        setActiveTab("web");
+        return;
+      }
+      if (!cfAudience.trim()) {
+        setError("Cloudflare Access: Audience tag is required");
+        setActiveTab("web");
+        return;
+      }
+    }
+    if (authEnabled && !authUsername.trim() && !cfEnabled) {
+      setError("External access requires at least one authentication method (username/password or Cloudflare Access)");
+      setActiveTab("web");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -1634,10 +1665,22 @@ export function SettingsDialog({
         external_port: externalPort ? parseInt(externalPort, 10) : 0,
         auth: authEnabled
           ? {
-              simple: {
-                username: authUsername.trim(),
-                password: authPassword.trim(),
-              },
+              ...(authUsername.trim()
+                ? {
+                    simple: {
+                      username: authUsername.trim(),
+                      password: authPassword.trim(),
+                    },
+                  }
+                : {}),
+              ...(cfEnabled
+                ? {
+                    cloudflare: {
+                      team_domain: cfTeamDomain.trim(),
+                      audience: cfAudience.trim(),
+                    },
+                  }
+                : {}),
             }
           : null,
       };
@@ -4197,39 +4240,10 @@ export function SettingsDialog({
 
                         ${authEnabled &&
                         html`
+                          <!-- Port and status -->
                           <div
                             class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
                           >
-                            <!-- Username and Password in same row -->
-                            <div class="flex items-center gap-4">
-                              <div class="flex items-center gap-2">
-                                <label class="text-sm text-gray-400"
-                                  >Username</label
-                                >
-                                <input
-                                  type="text"
-                                  value=${authUsername}
-                                  onInput=${(e) =>
-                                    setAuthUsername(e.target.value)}
-                                  placeholder="admin"
-                                  class="w-28 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                />
-                              </div>
-                              <div class="flex items-center gap-2">
-                                <label class="text-sm text-gray-400"
-                                  >Password</label
-                                >
-                                <input
-                                  type="password"
-                                  value=${authPassword}
-                                  onInput=${(e) =>
-                                    setAuthPassword(e.target.value)}
-                                  placeholder="••••••••"
-                                  class="w-28 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                />
-                              </div>
-                            </div>
-                            <!-- Port setting -->
                             <div class="flex items-center gap-2">
                               <label class="text-sm text-gray-400">Port</label>
                               <input
@@ -4246,7 +4260,6 @@ export function SettingsDialog({
                                 >(leave empty for random)</span
                               >
                             </div>
-                            <!-- Status indicator -->
                             ${externalEnabled &&
                             currentExternalPort &&
                             html`
@@ -4255,6 +4268,134 @@ export function SettingsDialog({
                                 ${currentExternalPort}
                               </div>
                             `}
+                          </div>
+
+                          <!-- Authentication Methods -->
+                          <div class="space-y-3">
+                            <h5 class="text-sm font-medium text-gray-400">
+                              Authentication
+                            </h5>
+                            <p class="text-xs text-gray-500">
+                              At least one authentication method is required for
+                              external access.
+                            </p>
+
+                            <!-- Simple Auth (Username/Password) -->
+                            <div
+                              class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
+                            >
+                              <label class="flex items-center gap-3 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked=${!!authUsername.trim()}
+                                  onChange=${(e) => {
+                                    if (!e.target.checked) {
+                                      setAuthUsername("");
+                                      setAuthPassword("");
+                                    } else {
+                                      setAuthUsername(authUsername || "admin");
+                                    }
+                                  }}
+                                  class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                />
+                                <div>
+                                  <div class="font-medium text-sm">
+                                    Username / Password
+                                  </div>
+                                  <div class="text-xs text-gray-500">
+                                    Simple credentials for login
+                                  </div>
+                                </div>
+                              </label>
+                              ${authUsername.trim() &&
+                              html`
+                                <div class="flex items-center gap-4 pl-7">
+                                  <div class="flex items-center gap-2">
+                                    <label class="text-sm text-gray-400"
+                                      >Username</label
+                                    >
+                                    <input
+                                      type="text"
+                                      value=${authUsername}
+                                      onInput=${(e) =>
+                                        setAuthUsername(e.target.value)}
+                                      placeholder="admin"
+                                      class="w-28 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                  </div>
+                                  <div class="flex items-center gap-2">
+                                    <label class="text-sm text-gray-400"
+                                      >Password</label
+                                    >
+                                    <input
+                                      type="password"
+                                      value=${authPassword}
+                                      onInput=${(e) =>
+                                        setAuthPassword(e.target.value)}
+                                      placeholder="••••••••"
+                                      class="w-28 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                  </div>
+                                </div>
+                              `}
+                            </div>
+
+                            <!-- Cloudflare Access Auth -->
+                            <div
+                              class="p-4 bg-slate-700/20 rounded-lg border border-slate-600/50 space-y-3"
+                            >
+                              <label class="flex items-center gap-3 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked=${cfEnabled}
+                                  onChange=${(e) =>
+                                    setCfEnabled(e.target.checked)}
+                                  class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                />
+                                <div>
+                                  <div class="font-medium text-sm">
+                                    Cloudflare Access
+                                  </div>
+                                  <div class="text-xs text-gray-500">
+                                    SSO/OAuth via Cloudflare Access JWT
+                                    validation
+                                  </div>
+                                </div>
+                              </label>
+                              ${cfEnabled &&
+                              html`
+                                <div class="space-y-2 pl-7">
+                                  <div class="flex items-center gap-2">
+                                    <label
+                                      class="text-sm text-gray-400 w-28"
+                                      >Team Domain</label
+                                    >
+                                    <input
+                                      type="text"
+                                      value=${cfTeamDomain}
+                                      onInput=${(e) =>
+                                        setCfTeamDomain(e.target.value)}
+                                      placeholder="yourteam.cloudflareaccess.com"
+                                      class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                  </div>
+                                  <div class="flex items-center gap-2">
+                                    <label
+                                      class="text-sm text-gray-400 w-28"
+                                      >Audience</label
+                                    >
+                                    <input
+                                      type="text"
+                                      value=${cfAudience}
+                                      onInput=${(e) =>
+                                        setCfAudience(e.target.value)}
+                                      placeholder="Application AUD tag"
+                                      class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                    />
+                                  </div>
+                                </div>
+                              `}
+                            </div>
                           </div>
 
                           <!-- Lifecycle Hooks -->
