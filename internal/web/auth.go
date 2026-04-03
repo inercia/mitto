@@ -482,25 +482,11 @@ func parseClientIP(addr string) net.IP {
 	return net.ParseIP(addr)
 }
 
-// getClientIP extracts the client IP from the request.
-// It checks X-Forwarded-For and X-Real-IP headers first (for reverse proxies),
-// then falls back to RemoteAddr.
+// getClientIP extracts the client IP from the request using only RemoteAddr.
+// It does NOT trust X-Forwarded-For or X-Real-IP headers because those can be
+// spoofed by any client. Use getClientIPWithProxyCheck() instead, which only
+// trusts forwarded headers from configured trusted proxies.
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (may contain multiple IPs)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP (original client)
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
-		}
-	}
-
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-
-	// Fall back to RemoteAddr
 	return r.RemoteAddr
 }
 

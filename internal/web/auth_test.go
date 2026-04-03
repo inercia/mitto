@@ -375,6 +375,9 @@ func TestParseClientIP(t *testing.T) {
 }
 
 func TestGetClientIP(t *testing.T) {
+	// getClientIP now only uses RemoteAddr — never trusts forwarded headers.
+	// Forwarded headers are only trusted via getClientIPWithProxyCheck()
+	// when the request comes from a configured trusted proxy.
 	tests := []struct {
 		name       string
 		remoteAddr string
@@ -388,31 +391,31 @@ func TestGetClientIP(t *testing.T) {
 			want:       "192.168.1.1:12345",
 		},
 		{
-			name:       "X-Forwarded-For single",
+			name:       "ignores X-Forwarded-For",
 			remoteAddr: "10.0.0.1:12345",
 			headers:    map[string]string{"X-Forwarded-For": "203.0.113.50"},
-			want:       "203.0.113.50",
+			want:       "10.0.0.1:12345",
 		},
 		{
-			name:       "X-Forwarded-For multiple",
+			name:       "ignores X-Forwarded-For multiple",
 			remoteAddr: "10.0.0.1:12345",
 			headers:    map[string]string{"X-Forwarded-For": "203.0.113.50, 70.41.3.18, 150.172.238.178"},
-			want:       "203.0.113.50",
+			want:       "10.0.0.1:12345",
 		},
 		{
-			name:       "X-Real-IP",
+			name:       "ignores X-Real-IP",
 			remoteAddr: "10.0.0.1:12345",
 			headers:    map[string]string{"X-Real-IP": "203.0.113.100"},
-			want:       "203.0.113.100",
+			want:       "10.0.0.1:12345",
 		},
 		{
-			name:       "X-Forwarded-For takes precedence",
+			name:       "ignores all forwarded headers",
 			remoteAddr: "10.0.0.1:12345",
 			headers: map[string]string{
 				"X-Forwarded-For": "203.0.113.50",
 				"X-Real-IP":       "203.0.113.100",
 			},
-			want: "203.0.113.50",
+			want: "10.0.0.1:12345",
 		},
 	}
 
