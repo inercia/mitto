@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -27,13 +26,6 @@ type WebSocketSecurityConfig struct {
 	// If 0, MaxMessageSize is used for all connections.
 	LocalMaxMessageSize int64
 
-	// MaxConnectionsPerIP is the maximum number of concurrent WebSocket connections per IP.
-	// Each open conversation needs one WebSocket, plus one for global events.
-	// With Cloudflare/reverse proxy setups, all connections from a user share the
-	// same real IP, so this must accommodate the typical number of open conversations.
-	// Default: 50
-	MaxConnectionsPerIP int
-
 	// PongWait is the time to wait for a pong response.
 	// Default: 60 seconds
 	PongWait time.Duration
@@ -51,74 +43,12 @@ type WebSocketSecurityConfig struct {
 // DefaultWebSocketSecurityConfig returns sensible defaults.
 func DefaultWebSocketSecurityConfig() WebSocketSecurityConfig {
 	return WebSocketSecurityConfig{
-		AllowedOrigins:      nil,       // Same-origin only by default
-		MaxMessageSize:      64 * 1024, // 64KB
-		MaxConnectionsPerIP: 50,
-		PongWait:            60 * time.Second,
-		PingPeriod:          54 * time.Second,
-		WriteWait:           10 * time.Second,
+		AllowedOrigins: nil,       // Same-origin only by default
+		MaxMessageSize: 64 * 1024, // 64KB
+		PongWait:       60 * time.Second,
+		PingPeriod:     54 * time.Second,
+		WriteWait:      10 * time.Second,
 	}
-}
-
-// ConnectionTracker tracks WebSocket connections per IP.
-type ConnectionTracker struct {
-	mu          sync.RWMutex
-	connections map[string]int
-	maxPerIP    int
-}
-
-// NewConnectionTracker creates a new connection tracker.
-func NewConnectionTracker(maxPerIP int) *ConnectionTracker {
-	return &ConnectionTracker{
-		connections: make(map[string]int),
-		maxPerIP:    maxPerIP,
-	}
-}
-
-// TryAdd attempts to add a connection for the given IP.
-// Returns true if the connection is allowed, false if the limit is exceeded.
-func (ct *ConnectionTracker) TryAdd(ip string) bool {
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
-
-	current := ct.connections[ip]
-	if current >= ct.maxPerIP {
-		return false
-	}
-	ct.connections[ip] = current + 1
-	return true
-}
-
-// Remove decrements the connection count for the given IP.
-func (ct *ConnectionTracker) Remove(ip string) {
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
-
-	current := ct.connections[ip]
-	if current <= 1 {
-		delete(ct.connections, ip)
-	} else {
-		ct.connections[ip] = current - 1
-	}
-}
-
-// Count returns the current connection count for an IP.
-func (ct *ConnectionTracker) Count(ip string) int {
-	ct.mu.RLock()
-	defer ct.mu.RUnlock()
-	return ct.connections[ip]
-}
-
-// TotalConnections returns the total number of tracked connections.
-func (ct *ConnectionTracker) TotalConnections() int {
-	ct.mu.RLock()
-	defer ct.mu.RUnlock()
-
-	total := 0
-	for _, count := range ct.connections {
-		total += count
-	}
-	return total
 }
 
 // OriginCheckLogger is a function that logs origin check details.

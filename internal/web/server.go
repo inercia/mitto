@@ -142,10 +142,9 @@ type Server struct {
 	csrfManager *CSRFManager
 
 	// Security components
-	rateLimiter       *GeneralRateLimiter
-	connectionTracker *ConnectionTracker
-	wsSecurityConfig  WebSocketSecurityConfig
-	proxyChecker      *TrustedProxyChecker
+	rateLimiter      *GeneralRateLimiter
+	wsSecurityConfig WebSocketSecurityConfig
+	proxyChecker     *TrustedProxyChecker
 
 	// External access listener management
 	externalListener   net.Listener
@@ -362,16 +361,10 @@ func NewServer(config Config) (*Server, error) {
 		if len(securityCfg.AllowedOrigins) > 0 {
 			wsSecurityConfig.AllowedOrigins = securityCfg.AllowedOrigins
 		}
-		if securityCfg.MaxWSConnectionsPerIP > 0 {
-			wsSecurityConfig.MaxConnectionsPerIP = securityCfg.MaxWSConnectionsPerIP
-		}
 		if securityCfg.MaxWSMessageSize > 0 {
 			wsSecurityConfig.MaxMessageSize = securityCfg.MaxWSMessageSize
 		}
 	}
-
-	// Initialize connection tracker
-	connectionTracker := NewConnectionTracker(wsSecurityConfig.MaxConnectionsPerIP)
 
 	// Initialize CSRF manager
 	csrfMgr := NewCSRFManager()
@@ -451,7 +444,6 @@ func NewServer(config Config) (*Server, error) {
 		authManager:          authMgr,
 		csrfManager:          csrfMgr,
 		rateLimiter:          rateLimiter,
-		connectionTracker:    connectionTracker,
 		wsSecurityConfig:     wsSecurityConfig,
 		proxyChecker:         proxyChecker,
 		accessLogger:         accessLogger,

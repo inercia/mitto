@@ -99,23 +99,10 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	sessionID := parts[0]
 	clientIP := getClientIPWithProxyCheck(r)
 
-	// Check connection limit per IP
-	if s.connectionTracker != nil && !s.connectionTracker.TryAdd(clientIP) {
-		if s.logger != nil {
-			s.logger.Warn("Session WebSocket rejected: too many connections",
-				"client_ip", clientIP, "session_id", sessionID)
-		}
-		http.Error(w, "Too many connections", http.StatusTooManyRequests)
-		return
-	}
-
 	// Use secure upgrader with compression for external connections
 	secureUpgrader := s.getSecureUpgraderForRequest(r)
 	conn, err := secureUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		if s.connectionTracker != nil {
-			s.connectionTracker.Remove(clientIP)
-		}
 		if s.logger != nil {
 			s.logger.Error("Session WebSocket upgrade failed", "error", err, "session_id", sessionID)
 		}
@@ -149,7 +136,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		Config:   wsConfig,
 		Logger:   clientLogger,
 		ClientIP: clientIP,
-		Tracker:  s.connectionTracker,
 		SendSize: 1024,
 	})
 
@@ -405,8 +391,6 @@ func (c *SessionWSClient) readPump() {
 		if c.bgSession != nil {
 			c.bgSession.RemoveObserver(c)
 		}
-		// Release connection slot via WSConn
-		c.wsConn.ReleaseConnectionSlot()
 		// Note: Don't close c.store - it's owned by the server and shared across handlers
 		c.wsConn.Close()
 		if c.logger != nil {

@@ -187,10 +187,6 @@ type WebSecurity struct {
 	// Default: 20
 	RateLimitBurst int `json:"rate_limit_burst,omitempty"`
 
-	// MaxWSConnectionsPerIP is the maximum number of concurrent WebSocket connections per IP.
-	// Default: 50
-	MaxWSConnectionsPerIP int `json:"max_ws_connections_per_ip,omitempty"`
-
 	// MaxWSMessageSize is the maximum size of a WebSocket message in bytes.
 	// Default: 65536 (64KB)
 	MaxWSMessageSize int64 `json:"max_ws_message_size,omitempty"`
@@ -994,12 +990,11 @@ type rawConfig struct {
 			} `yaml:"allow"`
 		} `yaml:"auth"`
 		Security *struct {
-			TrustedProxies        []string `yaml:"trusted_proxies"`
-			AllowedOrigins        []string `yaml:"allowed_origins"`
-			RateLimitRPS          float64  `yaml:"rate_limit_rps"`
-			RateLimitBurst        int      `yaml:"rate_limit_burst"`
-			MaxWSConnectionsPerIP int      `yaml:"max_ws_connections_per_ip"`
-			MaxWSMessageSize      int64    `yaml:"max_ws_message_size"`
+			TrustedProxies   []string `yaml:"trusted_proxies"`
+			AllowedOrigins   []string `yaml:"allowed_origins"`
+			RateLimitRPS     float64  `yaml:"rate_limit_rps"`
+			RateLimitBurst   int      `yaml:"rate_limit_burst"`
+			MaxWSMessageSize int64    `yaml:"max_ws_message_size"`
 		} `yaml:"security"`
 	} `yaml:"web"`
 	UI *struct {
@@ -1216,12 +1211,11 @@ func Parse(data []byte) (*Config, error) {
 	// Populate security config
 	if raw.Web.Security != nil {
 		cfg.Web.Security = &WebSecurity{
-			TrustedProxies:        raw.Web.Security.TrustedProxies,
-			AllowedOrigins:        raw.Web.Security.AllowedOrigins,
-			RateLimitRPS:          raw.Web.Security.RateLimitRPS,
-			RateLimitBurst:        raw.Web.Security.RateLimitBurst,
-			MaxWSConnectionsPerIP: raw.Web.Security.MaxWSConnectionsPerIP,
-			MaxWSMessageSize:      raw.Web.Security.MaxWSMessageSize,
+			TrustedProxies:   raw.Web.Security.TrustedProxies,
+			AllowedOrigins:   raw.Web.Security.AllowedOrigins,
+			RateLimitRPS:     raw.Web.Security.RateLimitRPS,
+			RateLimitBurst:   raw.Web.Security.RateLimitBurst,
+			MaxWSMessageSize: raw.Web.Security.MaxWSMessageSize,
 		}
 	}
 
