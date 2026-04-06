@@ -169,3 +169,8 @@ test-results/
 # Playwright CLI testing artifacts
 .playwright-cli/
 .claude/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
