@@ -114,6 +114,20 @@ type Processor struct {
 	// Workspaces limits the processor to specific workspace paths. Empty means all.
 	Workspaces []string `yaml:"workspaces,omitempty" json:"workspaces,omitempty"`
 
+	// EnabledWhen is an optional CEL expression that determines whether this processor applies.
+	// Uses the same CEL context as prompt enabledWhen expressions (acp.*, session.*, parent.*,
+	// children.*, workspace.*, tools.*). If empty, the processor always applies (subject to
+	// other filters). If the expression evaluates to false, the processor is skipped.
+	// Example: 'acp.tags.exists(t, t == "reasoning")' — only apply for reasoning models.
+	EnabledWhen string `yaml:"enabledWhen,omitempty" json:"enabled_when,omitempty"`
+
+	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for
+	// this processor. Patterns support * as wildcard (e.g., "jira_*,mitto_conversation_*").
+	// If specified, the processor only applies when all required tool patterns are satisfied
+	// (at least one matching tool exists for each pattern).
+	// If empty, the processor always applies (no tool requirements).
+	EnabledWhenMCP string `yaml:"enabledWhenMCP,omitempty" json:"enabled_when_mcp,omitempty"`
+
 	// FilePath is the path to the processor's YAML file (set internally).
 	FilePath string `yaml:"-" json:"-"`
 	// HookDir is the directory containing the processor file (set internally).

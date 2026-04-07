@@ -76,6 +76,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		hook           *Processor
 		isFirstMessage bool
 		workingDir     string
+		input          *ProcessorInput
 		expected       bool
 	}{
 		{
@@ -134,12 +135,156 @@ func TestProcessorShouldApply(t *testing.T) {
 			workingDir:     "/other",
 			expected:       false,
 		},
+		{
+			name: "enabledWhen CEL matches acp.name",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `acp.name == "auggie-opus"`},
+			input: &ProcessorInput{
+				ACPServer: "auggie-opus",
+				AvailableACPServers: []AvailableACPServer{
+					{Name: "auggie-opus", Type: "auggie", Current: true},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhen CEL acp.name no match",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `acp.name == "auggie-opus"`},
+			input: &ProcessorInput{
+				ACPServer: "auggie-fast",
+				AvailableACPServers: []AvailableACPServer{
+					{Name: "auggie-fast", Type: "auggie", Current: true},
+				},
+			},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
+			name: "enabledWhen CEL matches acp.tags",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
+			input: &ProcessorInput{
+				ACPServer: "auggie-opus",
+				AvailableACPServers: []AvailableACPServer{
+					{Name: "auggie-opus", Type: "auggie", Tags: []string{"reasoning", "slow"}, Current: true},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhen CEL tags no match",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
+			input: &ProcessorInput{
+				ACPServer: "auggie-fast",
+				AvailableACPServers: []AvailableACPServer{
+					{Name: "auggie-fast", Type: "auggie", Tags: []string{"coding", "fast"}, Current: true},
+				},
+			},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
+			name: "enabledWhen CEL children.exists",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.exists`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Sub task"},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name:           "enabledWhen CEL children.exists false",
+			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.exists`},
+			input:          &ProcessorInput{},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
+			name: "enabledWhen CEL invalid expression fails open",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `!!!invalid`},
+			input: &ProcessorInput{
+				ACPServer: "test",
+			},
+			isFirstMessage: true,
+			expected:       true, // fail-open
+		},
+		{
+			name:           "enabledWhen empty means all",
+			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhen: ""},
+			input:          &ProcessorInput{ACPServer: "anything"},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhenMCP all patterns satisfied",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: "mitto_*, jira_*"},
+			input: &ProcessorInput{
+				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list", "jira_search"},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhenMCP some patterns not satisfied",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: "mitto_*, slack_*"},
+			input: &ProcessorInput{
+				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
+			},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
+			name:           "enabledWhenMCP no tools available",
+			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: "mitto_*"},
+			input:          &ProcessorInput{MCPToolNames: []string{}},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
+			name: "enabledWhenMCP empty means all",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: ""},
+			input: &ProcessorInput{
+				MCPToolNames: []string{"anything"},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhenMCP exact tool match",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: "mitto_conversation_new"},
+			input: &ProcessorInput{
+				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhen CEL tools.hasPattern",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("mitto_*")`},
+			input: &ProcessorInput{
+				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhen CEL tools.hasPattern no match",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("slack_*")`},
+			input: &ProcessorInput{
+				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
+			},
+			isFirstMessage: true,
+			expected:       false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.hook.ShouldApply(tt.isFirstMessage, tt.workingDir); got != tt.expected {
-				t.Errorf("ShouldApply() = %v, want %v", got, tt.expected)
+			got, reason := tt.hook.ShouldApply(tt.isFirstMessage, tt.workingDir, tt.input)
+			if got != tt.expected {
+				t.Errorf("ShouldApply() = %v (reason=%s), want %v", got, reason, tt.expected)
 			}
 		})
 	}

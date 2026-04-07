@@ -29,20 +29,39 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 		logger = slog.Default()
 	}
 
+	logger.Debug("processor pipeline starting",
+		"total_processors", len(procs),
+		"is_first_message", input.IsFirstMessage,
+		"acp_server", input.ACPServer,
+		"session_id", input.SessionID,
+	)
+
 	executor := NewExecutor(processorsDir, logger)
 	result := &ProcessorResult{Message: input.Message}
+	applied := 0
+	skipped := 0
 
 	for _, proc := range procs {
 		// Check if processor should apply
-		if !proc.ShouldApply(input.IsFirstMessage, input.WorkingDir) {
+		shouldApply, skipReason := proc.ShouldApply(input.IsFirstMessage, input.WorkingDir, input)
+		if !shouldApply {
+			skipped++
+			logger.Debug("processor skipped",
+				"name", proc.Name,
+				"reason", string(skipReason),
+				"when", proc.When,
+				"priority", proc.GetPriority(),
+			)
 			continue
 		}
 
+		applied++
 		logger.Debug("applying processor",
 			"name", proc.Name,
 			"when", proc.When,
 			"mode", map[bool]string{true: "text", false: "command"}[proc.IsTextMode()],
 			"position", proc.GetPosition(),
+			"priority", proc.GetPriority(),
 		)
 
 		// Text-mode: directly prepend or append the static text (no external command).
@@ -139,6 +158,14 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			"output_type", proc.GetOutput(),
 		)
 	}
+
+	logger.Debug("processor pipeline complete",
+		"total", len(procs),
+		"applied", applied,
+		"skipped", skipped,
+		"attachments", len(result.Attachments),
+		"message_length", len(result.Message),
+	)
 
 	return result, nil
 }

@@ -19,3 +19,12 @@ var BuiltinPromptsFS embed.FS
 
 // BuiltinPromptsDir is the path within the embedded filesystem where prompts are stored.
 const BuiltinPromptsDir = "prompts/builtin"
+
+// BuiltinProcessorsFS contains the embedded builtin processors directory.
+// These processors are deployed to MITTO_DIR/processors/builtin/ on first run.
+//
+//go:embed processors/builtin/*.yaml
+var BuiltinProcessorsFS embed.FS
+
+// BuiltinProcessorsDir is the path within the embedded filesystem where processors are stored.
+const BuiltinProcessorsDir = "processors/builtin"

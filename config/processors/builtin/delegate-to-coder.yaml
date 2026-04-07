@@ -1,0 +1,46 @@
+# Builtin processor: suggests delegating coding tasks to faster models.
+#
+# This processor activates only for ACP servers tagged with "reasoning" or whose
+# name contains keywords associated with premium reasoning models. It uses a CEL
+# expression for flexible matching.
+#
+# To activate this processor, tag your premium ACP servers with "reasoning" in
+# your mitto config, or rename them to include a keyword like "opus", "o3", etc.
+#
+# Uses the same CEL context as prompt enabledWhen expressions.
+# Also requires mitto_conversation_* MCP tools to be available (enabledWhenMCP).
+name: delegate-to-coder
+description: "Suggests delegating coding tasks to a faster model when using a premium reasoning model"
+enabled: true
+when: first
+position: append
+priority: 90
+enabledWhen: >-
+  acp.tags.exists(t, t == "reasoning")
+  || acp.tags.exists(t, t == "thinking")
+  || acp.name.contains("opus")
+  || acp.name.contains("o3")
+  || acp.name.contains("deep-research")
+  || acp.name.contains("codex")
+text: |
+  ---
+  [Multi-Agent Delegation Guidance]
+  You are running on a premium reasoning model (@mitto:acp_server).
+  Your session ID is: @mitto:session_id
+
+  For tasks that involve extensive coding changes (writing code, refactoring,
+  fixing bugs, running tests), consider delegating the implementation to a
+  faster/cheaper model instead of doing it yourself.
+
+  Your role as a reasoning model is best suited for: planning, architecture decisions,
+  code review, complex debugging analysis, and coordinating work across sessions.
+  Delegate easier tasks to a faster model when possible.
+
+  Available agents for this workspace: @mitto:available_acp_servers
+  Existing child sessions: @mitto:children
+
+  Choose one of the existing children if seems suitable, otherwise create new children.
+
+  Use `mitto_conversation_new` for creating new child conversations, or
+  `mitto_conversation_send_prompt` for sending instructions to an existing child,
+  and you should use your session ID as self_id in all the mitto_* MCP tools.
