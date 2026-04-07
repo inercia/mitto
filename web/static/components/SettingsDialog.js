@@ -8,6 +8,8 @@ import {
   hasNativeFolderPicker,
   pickFolder,
   openExternalURL,
+  fetchConfig,
+  invalidateConfigCache,
 } from "../utils/index.js";
 import { setPromptSortMode as savePromptSortMode } from "../utils/storage.js";
 
@@ -143,6 +145,120 @@ function FolderListEditor({
           Add folder
         </button>
       </div>
+    </div>
+  `;
+}
+
+/**
+ * AutoChildrenEditor — edit list of auto-created child conversations.
+ * When a new top-level conversation is created in this workspace,
+ * these child conversations will be auto-created with it.
+ */
+function AutoChildrenEditor({
+  children,
+  workspaces,
+  currentWorkspaceUUID,
+  onChange,
+  getBasename,
+}) {
+  const addChild = () =>
+    onChange([...(children || []), { title: "", target_workspace_uuid: "" }]);
+  const removeChild = (idx) =>
+    onChange((children || []).filter((_, i) => i !== idx));
+  const updateChild = (idx, field, value) => {
+    const updated = [...(children || [])];
+    updated[idx] = { ...updated[idx], [field]: value };
+    onChange(updated);
+  };
+
+  // Filter out current workspace (can't be its own child) and show only workspaces with same working_dir
+  const currentWs = workspaces.find((ws) => ws.uuid === currentWorkspaceUUID);
+  const targetOptions = workspaces.filter(
+    (ws) =>
+      ws.uuid !== currentWorkspaceUUID &&
+      currentWs &&
+      ws.working_dir === currentWs.working_dir,
+  );
+
+  const maxChildren = 5;
+  const canAdd = (children || []).length < maxChildren;
+
+  return html`
+    <div class="space-y-2">
+      <div class="flex items-center justify-between">
+        <label class="text-sm text-gray-400">Auto-Create Children</label>
+        ${canAdd
+          ? html`
+              <button
+                type="button"
+                onClick=${addChild}
+                class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
+              >
+                + Add Child
+              </button>
+            `
+          : html`
+              <span class="text-xs text-gray-500">Max ${maxChildren} children</span>
+            `}
+      </div>
+      <p class="text-xs text-gray-500">
+        These conversations are auto-created when a new top-level conversation
+        starts. They are deleted when the parent is deleted.
+      </p>
+      ${(children || []).length === 0
+        ? html`
+            <div class="text-xs text-gray-500 italic py-2">
+              No auto-children configured.
+            </div>
+          `
+        : html`
+            <div class="space-y-2">
+              ${(children || []).map(
+                (child, idx) => html`
+                  <div
+                    key=${idx}
+                    class="flex items-center gap-2 p-2 bg-slate-700/30 rounded border border-slate-600/50"
+                  >
+                    <input
+                      type="text"
+                      value=${child.title || ""}
+                      placeholder="Child title"
+                      onInput=${(e) => updateChild(idx, "title", e.target.value)}
+                      class="flex-1 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <select
+                      value=${child.target_workspace_uuid || ""}
+                      onChange=${(e) =>
+                        updateChild(
+                          idx,
+                          "target_workspace_uuid",
+                          e.target.value,
+                        )}
+                      class="px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">Same workspace</option>
+                      ${targetOptions.map(
+                        (ws) => html`
+                          <option value=${ws.uuid}>
+                            ${ws.name || ws.acp_server}
+                            (${getBasename(ws.working_dir)})
+                          </option>
+                        `,
+                      )}
+                    </select>
+                    <button
+                      type="button"
+                      onClick=${() => removeChild(idx)}
+                      class="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                      title="Remove child"
+                    >
+                      <${TrashIcon} className="w-4 h-4" />
+                    </button>
+                  </div>
+                `,
+              )}
+            </div>
+          `}
     </div>
   `;
 }
@@ -395,6 +511,7 @@ function RunnerRestrictionsEditor({
 function WorkspaceEditForm({
   workspace,
   acpServers,
+  allWorkspaces,
   supportedRunners,
   getWorkspaceVisualInfo,
   getBasename,
@@ -412,6 +529,9 @@ function WorkspaceEditForm({
   const [runner, setRunner] = useState(workspace.restricted_runner || "exec");
   const [autoApprove, setAutoApprove] = useState(
     workspace.auto_approve === true,
+  );
+  const [autoChildren, setAutoChildren] = useState(
+    workspace.auto_children || [],
   );
   // Per-workspace runner restriction overrides (null = no overrides)
   const [runnerConfig, setRunnerConfig] = useState(
@@ -460,6 +580,7 @@ function WorkspaceEditForm({
       // Only include runner config for non-exec runners
       restricted_runner_config: runner !== "exec" ? runnerConfig : undefined,
       auto_approve: autoApprove || undefined, // undefined to omit if false
+      auto_children: autoChildren.length > 0 ? autoChildren : undefined,
     });
   };
 
@@ -571,6 +692,17 @@ function WorkspaceEditForm({
           />
           <span class="text-xs text-gray-500">Code and color for badge</span>
         </div>
+      </div>
+
+      <!-- Auto-Children Section -->
+      <div class="pt-3 border-t border-slate-600/30">
+        <${AutoChildrenEditor}
+          children=${autoChildren}
+          workspaces=${allWorkspaces}
+          currentWorkspaceUUID=${workspace.uuid}
+          onChange=${setAutoChildren}
+          getBasename=${getBasename}
+        />
       </div>
 
       <!-- Actions -->
@@ -1005,6 +1137,9 @@ export function SettingsDialog({
   const [authEnabled, setAuthEnabled] = useState(false);
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  // Track whether the password was loaded from an existing config (sanitized by backend).
+  // When true, the user hasn't changed it and we should skip client-side validation.
+  const [authPasswordUnchanged, setAuthPasswordUnchanged] = useState(false);
   const [cfEnabled, setCfEnabled] = useState(false);
   const [cfTeamDomain, setCfTeamDomain] = useState("");
   const [cfAudience, setCfAudience] = useState("");
@@ -1310,11 +1445,8 @@ export function SettingsDialog({
   // Save prompts order to settings.json immediately
   const savePromptsOrder = async (newPrompts) => {
     try {
-      // Get current config first
-      const configRes = await fetch(apiUrl("/api/config"), {
-        credentials: "same-origin",
-      });
-      const config = await configRes.json();
+      // Get current config first (cached read is fine for this read-before-write)
+      const config = await fetchConfig();
 
       // Build the config object with updated prompts
       const webConfig = {
@@ -1342,6 +1474,8 @@ export function SettingsDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(saveConfig),
       });
+      // Config changed on disk — invalidate cache so next read is fresh.
+      invalidateConfigCache();
     } catch (err) {
       console.error("Failed to save prompts order:", err);
     }
@@ -1397,12 +1531,12 @@ export function SettingsDialog({
     setLoading(true);
     setError("");
     try {
-      // Fetch config and external status in parallel
-      const [configRes, externalStatusRes] = await Promise.all([
-        fetch(apiUrl("/api/config"), { credentials: "same-origin" }),
+      // Fetch config and external status in parallel.
+      // force=true ensures the settings dialog always shows the latest saved config.
+      const [config, externalStatusRes] = await Promise.all([
+        fetchConfig(null, /* force */ true),
         fetch(apiUrl("/api/external-status"), { credentials: "same-origin" }),
       ]);
-      const config = await configRes.json();
 
       // Load external status
       if (externalStatusRes.ok) {
@@ -1466,8 +1600,13 @@ export function SettingsDialog({
       }
 
       // Simple auth
-      setAuthUsername(config.web?.auth?.simple?.username || "");
-      setAuthPassword(config.web?.auth?.simple?.password || "");
+      const loadedUsername = config.web?.auth?.simple?.username || "";
+      const loadedPassword = config.web?.auth?.simple?.password || "";
+      setAuthUsername(loadedUsername);
+      setAuthPassword(loadedPassword);
+      // Backend sanitizes the password (sends empty string) for security.
+      // Track this so we can skip validation and preserve the existing password on save.
+      setAuthPasswordUnchanged(!!loadedUsername && !loadedPassword);
 
       // Cloudflare auth
       setCfEnabled(!!hasCfAuth);
@@ -1625,11 +1764,15 @@ export function SettingsDialog({
         setActiveTab("web");
         return;
       }
-      const passwordError = validatePassword(authPassword);
-      if (passwordError) {
-        setError(passwordError);
-        setActiveTab("web");
-        return;
+      // Skip password validation if the password hasn't been changed from the
+      // sanitized empty value loaded from the backend (existing password is preserved server-side).
+      if (!authPasswordUnchanged) {
+        const passwordError = validatePassword(authPassword);
+        if (passwordError) {
+          setError(passwordError);
+          setActiveTab("web");
+          return;
+        }
       }
     }
     if (cfEnabled) {
@@ -1669,7 +1812,11 @@ export function SettingsDialog({
                 ? {
                     simple: {
                       username: authUsername.trim(),
-                      password: authPassword.trim(),
+                      // When password is unchanged (loaded empty from sanitized config),
+                      // send empty string so backend preserves the existing password.
+                      password: authPasswordUnchanged
+                        ? ""
+                        : authPassword.trim(),
                     },
                   }
                 : {}),
@@ -1831,6 +1978,9 @@ export function SettingsDialog({
       if (!res.ok) {
         throw new Error(result.error || "Failed to save configuration");
       }
+
+      // Config changed on disk — invalidate cache so next read is fresh.
+      invalidateConfigCache();
 
       // Update the global sound and notification setting flags
       if (isMacApp) {
@@ -2146,6 +2296,7 @@ export function SettingsDialog({
               restricted_runner: updates.restricted_runner,
               restricted_runner_config: updates.restricted_runner_config,
               auto_approve: updates.auto_approve,
+              auto_children: updates.auto_children,
             }
           : ws,
       ),
@@ -2703,6 +2854,7 @@ export function SettingsDialog({
                                                 <${WorkspaceEditForm}
                                                   workspace=${ws}
                                                   acpServers=${acpServers}
+                                                  allWorkspaces=${workspaces}
                                                   supportedRunners=${supportedRunners}
                                                   getWorkspaceVisualInfo=${getWorkspaceVisualInfo}
                                                   getBasename=${getBasename}
@@ -4200,6 +4352,54 @@ export function SettingsDialog({
                           </div>
                         </div>
                       `}
+
+                      <!-- Message Display -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Message Display
+                        </h4>
+                        <label
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${actionButtonsEnabled}
+                            onChange=${(e) =>
+                              setActionButtonsEnabled(e.target.checked)}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                          />
+                          <div class="flex-1">
+                            <div class="font-medium text-sm">
+                              Follow-up Suggestions
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Analyze agent responses to suggest clickable
+                              follow-up options (uses auxiliary conversation)
+                            </div>
+                          </div>
+                        </label>
+                        <label
+                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${externalImagesEnabled}
+                            onChange=${(e) =>
+                              setExternalImagesEnabled(e.target.checked)}
+                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                          />
+                          <div class="flex-1">
+                            <div class="font-medium text-sm">
+                              Allow External Images
+                            </div>
+                            <div class="text-xs text-gray-500">
+                              Load images from external HTTPS sources in
+                              messages (requires restart, may expose your IP to
+                              external servers)
+                            </div>
+                          </div>
+                        </label>
+                      </div>
                     </div>
                   `}
 
@@ -4330,9 +4530,13 @@ export function SettingsDialog({
                                     <input
                                       type="password"
                                       value=${authPassword}
-                                      onInput=${(e) =>
-                                        setAuthPassword(e.target.value)}
-                                      placeholder="••••••••"
+                                      onInput=${(e) => {
+                                        setAuthPassword(e.target.value);
+                                        setAuthPasswordUnchanged(false);
+                                      }}
+                                      placeholder=${authPasswordUnchanged
+                                        ? "••••••••"
+                                        : "Enter password"}
                                       class="w-28 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                     />
                                   </div>
@@ -4908,53 +5112,6 @@ export function SettingsDialog({
                         </div>
                       `}
 
-                      <!-- Advanced Settings -->
-                      <div class="space-y-3 pt-4 border-t border-slate-700/50">
-                        <h4 class="text-sm font-medium text-gray-300">
-                          Advanced
-                        </h4>
-                        <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${actionButtonsEnabled}
-                            onChange=${(e) =>
-                              setActionButtonsEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                          />
-                          <div class="flex-1">
-                            <div class="font-medium text-sm">
-                              Follow-up Suggestions
-                            </div>
-                            <div class="text-xs text-gray-500">
-                              Analyze agent responses to suggest clickable
-                              follow-up options (uses auxiliary conversation)
-                            </div>
-                          </div>
-                        </label>
-                        <label
-                          class="flex items-center gap-3 p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 cursor-pointer hover:bg-slate-700/30 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${externalImagesEnabled}
-                            onChange=${(e) =>
-                              setExternalImagesEnabled(e.target.checked)}
-                            class="w-5 h-5 rounded bg-slate-700 border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                          />
-                          <div class="flex-1">
-                            <div class="font-medium text-sm">
-                              Allow External Images
-                            </div>
-                            <div class="text-xs text-gray-500">
-                              Load images from external HTTPS sources in
-                              messages (requires restart, may expose your IP to
-                              external servers)
-                            </div>
-                          </div>
-                        </label>
-                      </div>
                     </div>
                   `}
                 `}

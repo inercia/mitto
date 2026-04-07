@@ -60,6 +60,8 @@ import {
   calculateReconnectDelay,
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
+  isReconnectLimitReached,
+  checkSessionExists,
 } from "../utils/websocket.js";
 
 // Time threshold (in ms) for considering the session potentially stale
@@ -93,6 +95,41 @@ const KEEPALIVE_SYNC_TOLERANCE = 2;
 // Active session always connects first with no delay; background sessions stagger by this amount.
 const STARTUP_STAGGER_MS = 300;
 
+// Debounce window for reconnectAllSessionsStaggered (ms).
+// Multiple macOS activation sources (NSWorkspaceDidWakeNotification,
+// NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
+// 4–10 seconds apart for the same wake/focus event.  Collapsing these into a
+// single staggered reconnect prevents duplicate background-session timers from
+// firing concurrently and accumulating observers on BackgroundSession.
+const STAGGERED_RECONNECT_DEBOUNCE_MS = 5000;
+
+// Maximum session age for automatic WebSocket reconnection.
+// Sessions whose IDs indicate creation more than this many milliseconds ago
+// will not be automatically reconnected after a WebSocket close.
+// Session IDs encode the creation timestamp (YYYYMMDD-HHMMSS-xxxxxxxx), so
+// this check requires no server round-trip and works even offline.
+// 30 days is generous: any session untouched for a month is effectively dead.
+const SESSION_MAX_RECONNECT_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/**
+ * Parse the creation age (in milliseconds) from a session ID.
+ * Session IDs follow the format: YYYYMMDD-HHMMSS-xxxxxxxx (UTC).
+ * Returns the number of milliseconds since creation, or null if the ID
+ * format is not recognized (so the caller can treat unknown IDs as fresh).
+ *
+ * @param {string} sessionId - The session ID to inspect
+ * @returns {number|null} Age in milliseconds, or null if unparseable
+ */
+function getSessionAgeMs(sessionId) {
+  if (!sessionId) return null;
+  const m = sessionId.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-/);
+  if (!m) return null;
+  const createdAt = new Date(
+    Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]),
+  );
+  return Date.now() - createdAt.getTime();
+}
+
 /**
  * Get the appropriate keepalive interval based on the runtime environment.
  * Native macOS app uses a shorter interval for faster sync detection.
@@ -104,34 +141,59 @@ function getKeepaliveInterval() {
     : KEEPALIVE_INTERVAL_BROWSER_MS;
 }
 
+// In-flight Promise for auth-check deduplication.
+// When several WebSocket sessions reconnect simultaneously they each call
+// checkAuthOrRedirect().  Without deduplication every session fires its own
+// raw GET /api/config, creating a mini fetching storm on every reconnect event.
+// Sharing a single in-flight Promise collapses N concurrent calls into one
+// HTTP round-trip.  The Promise resolves to { status, ok } (plain values, not
+// the Response object) so it can safely be awaited by multiple callers.
+let _authCheckInflight = null;
+
 /**
  * Quick authentication check before WebSocket reconnection.
  * If auth is invalid (401), redirects to login page and never returns.
  * For network errors or server errors, returns true to allow reconnection to proceed
  * (the WebSocket reconnect will handle retries with exponential backoff).
  *
+ * Concurrent callers share a single in-flight HTTP request to avoid a fetch
+ * storm when multiple sessions reconnect at the same time.
+ *
  * @returns {Promise<boolean>} Always returns true. On 401, redirects and never returns.
  *                             Network/server errors also return true to allow reconnection.
  */
 async function checkAuthOrRedirect() {
-  try {
-    // Quick auth check using the config endpoint
-    const response = await fetch(apiUrl("/api/config"), {
+  // Deduplicate: if an auth check is already in-flight, share that Promise
+  // rather than firing a fresh HTTP request for each concurrent caller.
+  if (!_authCheckInflight) {
+    _authCheckInflight = fetch(apiUrl("/api/config"), {
       credentials: "same-origin",
-    });
-    checkAuth(response); // This will redirect if 401
+    })
+      .then((res) => ({ status: res.status, ok: res.ok }))
+      .finally(() => {
+        _authCheckInflight = null;
+      });
+  }
+  try {
+    const { status, ok } = await _authCheckInflight;
 
-    // If we got here, auth is valid (200) or there's a server error (5xx)
-    // Either way, let reconnection proceed - the WebSocket will retry with backoff
-    if (!response.ok) {
+    if (status === 401) {
+      // Session expired — redirect to login and stall forever.
+      console.warn("Session expired or invalid, redirecting to login...");
+      redirectToLogin();
+      return new Promise(() => {});
+    }
+    // If we got here, auth is valid (200) or there's a server error (5xx).
+    // Either way, let reconnection proceed — the WebSocket will retry with backoff.
+    if (!ok) {
       console.warn(
-        `Auth check returned status ${response.status}, allowing reconnection to proceed`,
+        `Auth check returned status ${status}, allowing reconnection to proceed`,
       );
     }
     return true;
   } catch (err) {
-    // Network error - let reconnection proceed
-    // The WebSocket reconnection will naturally retry with exponential backoff
+    // Network error - let reconnection proceed.
+    // The WebSocket reconnection will naturally retry with exponential backoff.
     console.warn(
       "Auth check network error, allowing reconnection to proceed:",
       err.message,
@@ -353,6 +415,16 @@ export function useWebSocket() {
 
   // Track last force-reconnect time per session to debounce duplicate reconnects
   const reconnectDebounceRef = useRef(createReconnectDebounceTracker());
+
+  // Track pending staggered background-session reconnect timers.
+  // Cancelled and replaced whenever reconnectAllSessionsStaggered fires again,
+  // preventing a second call from scheduling a duplicate set of timers on top
+  // of timers from the first call (which causes observer accumulation).
+  const staggeredBackgroundTimersRef = useRef({});
+
+  // Timestamp (ms) of the last accepted reconnectAllSessionsStaggered call.
+  // Zero means the function has never been called.
+  const lastStaggeredReconnectRef = useRef(0);
 
   // Keepalive tracking for detecting zombie connections
   // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
@@ -2806,6 +2878,81 @@ export function useWebSocket() {
           activeSessionIdRef.current === sessionId &&
           !sessionWsRefs.current[sessionId]
         ) {
+          // --- Stale-session guard: don't reconnect permanently dead sessions ---
+          //
+          // 1. Age check: session IDs encode their creation timestamp
+          //    (YYYYMMDD-HHMMSS-xxxxxxxx). Sessions older than
+          //    SESSION_MAX_RECONNECT_AGE_MS are almost certainly dead on the
+          //    server (the server only keeps sessions alive while the binary is
+          //    running; after a restart old sessions are gone). Reconnecting them
+          //    only causes the readyState: 3 CLOSED log-spam that triggered this fix.
+          //
+          // 2. Attempt cap (isReconnectLimitReached from utils/websocket.js):
+          //    even for recent sessions, if we have repeatedly failed to
+          //    reconnect (e.g. server is down), stop after the canonical
+          //    MAX_SESSION_RECONNECT_ATTEMPTS limit so we don't loop forever.
+          //    The counter resets on the next successful onopen, and is cleared
+          //    when the user explicitly switches to this session (switchSession).
+
+          const sessionAgeMs = getSessionAgeMs(sessionId);
+          const isTooOld =
+            sessionAgeMs !== null &&
+            sessionAgeMs > SESSION_MAX_RECONNECT_AGE_MS;
+
+          const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
+          // isReconnectLimitReached is exported from utils/websocket.js and
+          // uses the canonical MAX_SESSION_RECONNECT_ATTEMPTS = 15 constant.
+          const exceededMaxAttempts = isReconnectLimitReached(attempt);
+
+          if (isTooOld) {
+            console.warn(
+              `[reconnect] Giving up on session ${sessionId}: ` +
+                `session is ~${Math.round(sessionAgeMs / 86400000)} days old ` +
+                `(max age for auto-reconnect is ${SESSION_MAX_RECONNECT_AGE_MS / 86400000} days)`,
+            );
+            setSessions((prev) => {
+              const session = prev[sessionId];
+              if (!session) return prev;
+              const messages = limitMessages([
+                ...session.messages,
+                {
+                  role: ROLE_ERROR,
+                  text: "⚠️ This session is too old to reconnect automatically. Please create a new conversation.",
+                  timestamp: Date.now(),
+                },
+              ]);
+              return {
+                ...prev,
+                [sessionId]: { ...session, messages, isStreaming: false },
+              };
+            });
+            return;
+          }
+
+          if (exceededMaxAttempts) {
+            console.warn(
+              `[reconnect] Giving up on session ${sessionId}: ` +
+                `exceeded ${attempt} consecutive reconnect attempts (limit: isReconnectLimitReached)`,
+            );
+            setSessions((prev) => {
+              const session = prev[sessionId];
+              if (!session) return prev;
+              const messages = limitMessages([
+                ...session.messages,
+                {
+                  role: ROLE_ERROR,
+                  text: "⚠️ Could not reconnect to this session after multiple attempts. Refresh the page to try again.",
+                  timestamp: Date.now(),
+                },
+              ]);
+              return {
+                ...prev,
+                [sessionId]: { ...session, messages, isStreaming: false },
+              };
+            });
+            return;
+          }
+
           // Guard: if forceReconnectActiveSession (or a prior onclose) already scheduled
           // a reconnect timer, don't add a second one. The existing timer will fire with
           // the correct backoff delay.
@@ -2815,7 +2962,6 @@ export function useWebSocket() {
             );
           } else {
             // M2: Use exponential backoff for reconnection
-            const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
             const delay = calculateReconnectDelay(attempt);
             console.log(
               `Scheduling reconnect for session ${sessionId} (attempt ${attempt + 1}, delay ${delay}ms)`,
@@ -2948,6 +3094,10 @@ export function useWebSocket() {
   // so the conversation opens already positioned at the latest message.
   const switchSession = useCallback(
     async (sessionId) => {
+      // Reset the reconnect attempt counter so that a user-initiated session
+      // switch always gets a fresh set of reconnect attempts, even if we
+      // previously gave up on this session due to MAX_SESSION_RECONNECT_ATTEMPTS.
+      delete sessionReconnectAttemptsRef.current[sessionId];
 
       // Use sessionsRef to get current sessions state and avoid stale closures
       const currentSessions = sessionsRef.current;
@@ -4521,6 +4671,11 @@ export function useWebSocket() {
         clearTimeout(timerId);
       }
       syncTimeoutRef.current = {};
+      // Clear pending staggered background-session reconnect timers
+      for (const timerId of Object.values(staggeredBackgroundTimersRef.current)) {
+        clearTimeout(timerId);
+      }
+      staggeredBackgroundTimersRef.current = {};
     };
   }, [connectToEvents]);
 
@@ -4587,11 +4742,51 @@ export function useWebSocket() {
   // debounce/backoff logic). Background sessions (those with open WebSockets but not active) are
   // force-closed and reconnected with increasing delays so their load_events requests are spread
   // over time rather than hitting the server simultaneously.
+  //
+  // Debounce: multiple macOS activation events (NSWorkspaceDidWakeNotification,
+  // NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
+  // 4–10 s apart for the same wake/focus event.  Without a debounce each call
+  // schedules a new set of background-session timers; when two sets fire they
+  // both close-then-reconnect the same WebSocket, and because server-side teardown
+  // is async the old observer is still registered when the new one is added —
+  // causing the observer count to climb to 3+ per session.
+  //
+  // Two-layer protection:
+  //   1. Leading-edge debounce: suppress calls within STAGGERED_RECONNECT_DEBOUNCE_MS
+  //      of the last accepted call (handles 4–5 s pairs).
+  //   2. Timer cancellation: cancel any still-pending background-session timers from
+  //      a previous call before scheduling new ones (handles 6–10 s pairs where the
+  //      debounce window has expired but the previous timers haven't fired yet).
   const reconnectAllSessionsStaggered = useCallback(() => {
+    // Layer 1: leading-edge debounce.
+    const now = Date.now();
+    const elapsed = now - lastStaggeredReconnectRef.current;
+    if (lastStaggeredReconnectRef.current > 0 && elapsed < STAGGERED_RECONNECT_DEBOUNCE_MS) {
+      console.debug(
+        `[stagger] Skipping duplicate staggered reconnect (${elapsed}ms since last, debounce=${STAGGERED_RECONNECT_DEBOUNCE_MS}ms)`,
+      );
+      return;
+    }
+    lastStaggeredReconnectRef.current = now;
+
     const currentSessionId = activeSessionIdRef.current;
 
     // Reconnect active session immediately using existing debounce logic
     forceReconnectActiveSession();
+
+    // Layer 2: cancel any still-pending background-session timers from a prior call
+    // before scheduling a new batch.  This prevents two sets of timers from both
+    // firing and reconnecting the same background session concurrently.
+    const pendingCount = Object.keys(staggeredBackgroundTimersRef.current).length;
+    if (pendingCount > 0) {
+      console.debug(
+        `[stagger] Cancelling ${pendingCount} pending background timer(s) from previous call`,
+      );
+      for (const timerId of Object.values(staggeredBackgroundTimersRef.current)) {
+        clearTimeout(timerId);
+      }
+      staggeredBackgroundTimersRef.current = {};
+    }
 
     // Stagger reconnections for background sessions to spread load_events requests
     const backgroundIds = Object.keys(sessionWsRefs.current).filter(
@@ -4605,7 +4800,10 @@ export function useWebSocket() {
     }
 
     backgroundIds.forEach((sessionId, index) => {
-      setTimeout(() => {
+      const timerId = setTimeout(() => {
+        // Remove our own entry now that we're executing
+        delete staggeredBackgroundTimersRef.current[sessionId];
+
         const existingWs = sessionWsRefs.current[sessionId];
         if (existingWs) {
           console.log(
@@ -4617,6 +4815,9 @@ export function useWebSocket() {
           connectToSession(sessionId);
         }
       }, (index + 1) * STARTUP_STAGGER_MS);
+
+      // Track timer so it can be cancelled if another call arrives before it fires
+      staggeredBackgroundTimersRef.current[sessionId] = timerId;
     });
   }, [forceReconnectActiveSession, connectToSession]);
 
