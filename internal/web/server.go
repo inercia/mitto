@@ -260,6 +260,17 @@ func NewServer(config Config) (*Server, error) {
 	acpProcessMgr.DisableAuxiliary = config.DisableAuxiliaryPrewarm || os.Getenv("MITTO_TEST_MODE") != ""
 	sessionMgr.SetACPProcessManager(acpProcessMgr)
 
+	// Start ACP process garbage collector to clean up idle sessions and processes.
+	// The GC periodically checks for sessions with no observers, no active prompts,
+	// and no pending work, and stops shared ACP processes that have no active sessions.
+	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
+		acpProcessMgr.StartGC(GCConfig{}, func() map[string][]SessionInfo {
+			return sessionMgr.GetSessionInfoByWorkspace()
+		}, func(sessionID string) {
+			sessionMgr.CloseIdleSession(sessionID)
+		})
+	}
+
 	// Set global conversations config for message processing
 	if config.MittoConfig != nil {
 		sessionMgr.SetGlobalConversations(config.MittoConfig.Conversations)

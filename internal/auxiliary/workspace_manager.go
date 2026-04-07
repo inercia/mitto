@@ -15,7 +15,6 @@ const (
 	PurposeFollowUp      = "follow-up"
 	PurposeImprovePrompt = "improve-prompt"
 	PurposeQueueTitle    = "queue-title"
-	PurposeSummary       = "summary"
 	PurposeMCPCheck      = "mcp-check"
 	PurposeMCPTools      = "mcp-tools"
 )
@@ -193,48 +192,6 @@ func (m *WorkspaceAuxiliaryManager) AnalyzeFollowUpQuestions(ctx context.Context
 	}
 
 	return suggestions, nil
-}
-
-// GenerateConversationSummary generates a summary of a conversation based on its content.
-// The conversationContent should be a formatted string containing the conversation history.
-// Returns a concise summary or an error.
-func (m *WorkspaceAuxiliaryManager) GenerateConversationSummary(ctx context.Context, workspaceUUID, conversationContent string) (string, error) {
-	// Truncate very long content to avoid overwhelming the prompt
-	const maxContentLen = 8000
-	truncatedContent := conversationContent
-	if len(truncatedContent) > maxContentLen {
-		truncatedContent = truncatedContent[:maxContentLen-3] + "..."
-	}
-
-	prompt := fmt.Sprintf(GenerateConversationSummaryPromptTemplate, truncatedContent)
-
-	if m.logger != nil {
-		m.logger.Debug("auxiliary summary: sending request",
-			"workspace_uuid", workspaceUUID,
-			"content_length", len(truncatedContent),
-			"truncated", len(conversationContent) > maxContentLen,
-		)
-	}
-
-	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeSummary, prompt)
-	if err != nil {
-		if m.logger != nil {
-			m.logger.Debug("auxiliary summary: request failed",
-				"workspace_uuid", workspaceUUID,
-				"error", err.Error(),
-			)
-		}
-		return "", fmt.Errorf("failed to generate conversation summary: %w", err)
-	}
-
-	if m.logger != nil {
-		m.logger.Debug("auxiliary summary: received response",
-			"workspace_uuid", workspaceUUID,
-			"response_length", len(response),
-		)
-	}
-
-	return trimQuotes(response), nil
 }
 
 // CheckMCPAvailability checks if Mitto MCP tools are available in the workspace's ACP server.
@@ -440,7 +397,7 @@ func (m *WorkspaceAuxiliaryManager) CheckRequiredToolPatterns(ctx context.Contex
 			"patterns", patternsStr)
 	}
 
-	prompt := fmt.Sprintf(CheckRequiredToolsPromptTemplate, patternsStr)
+	prompt := fmt.Sprintf(CheckEnabledWhenMCPPromptTemplate, patternsStr)
 
 	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeMCPTools, prompt)
 	if err != nil {
@@ -459,7 +416,7 @@ func (m *WorkspaceAuxiliaryManager) CheckRequiredToolPatterns(ctx context.Contex
 			"response", truncateForLog(response, 300))
 	}
 
-	result, err := parseRequiredToolsCheck(response)
+	result, err := parseEnabledWhenMCPCheck(response)
 	if err != nil {
 		if m.logger != nil {
 			m.logger.Warn("required tools check: failed to parse response",

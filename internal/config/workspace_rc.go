@@ -59,8 +59,9 @@ type rawWorkspaceRC struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
-		ACPs            string `yaml:"acps"`
+		EnabledWhenACP  string `yaml:"enabledWhenACP"`
 		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -163,7 +164,8 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 				BackgroundColor: p.BackgroundColor,
 				Description:     p.Description,
 				Group:           p.Group,
-				ACPs:            p.ACPs,
+				EnabledWhenACP:  p.EnabledWhenACP,
+				EnabledWhen:     p.EnabledWhen,
 			})
 		}
 	}

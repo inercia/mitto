@@ -81,15 +81,19 @@ type WebPrompt struct {
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
 	Source PromptSource `json:"source,omitempty"`
-	// ACPs is an optional comma-separated list of ACP server names this prompt applies to.
+	// EnabledWhenACP is an optional comma-separated list of ACP server names this prompt applies to.
 	// If empty, the prompt works with all ACP servers.
 	// Example: "auggie, claude-code" means only show this prompt for those ACP servers.
 	// This is included so the frontend can filter prompts client-side.
-	ACPs string `json:"acps,omitempty"`
-	// RequiredTools is an optional comma-separated list of tool name patterns required for this prompt.
+	EnabledWhenACP string `json:"enabledWhenACP,omitempty"`
+	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for this prompt.
 	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
 	// Sent to frontend so it can filter prompts based on tool availability.
-	RequiredTools string `json:"required_tools,omitempty"`
+	EnabledWhenMCP string `json:"enabledWhenMCP,omitempty"`
+	// EnabledWhen is an optional CEL expression for conditional visibility.
+	// Sent to frontend for display purposes (e.g., showing why prompt is hidden).
+	// Actual filtering happens server-side.
+	EnabledWhen string `json:"enabledWhen,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -937,8 +941,9 @@ type rawACPServerConfig struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
-		ACPs            string `yaml:"acps"`
+		EnabledWhenACP  string `yaml:"enabledWhenACP"`
 		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 }
@@ -953,8 +958,9 @@ type rawConfig struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
-		ACPs            string `yaml:"acps"`
+		EnabledWhenACP  string `yaml:"enabledWhenACP"`
 		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -1139,7 +1145,8 @@ func Parse(data []byte) (*Config, error) {
 					BackgroundColor: p.BackgroundColor,
 					Description:     p.Description,
 					Group:           p.Group,
-					ACPs:            p.ACPs,
+					EnabledWhenACP:  p.EnabledWhenACP,
+					EnabledWhen:     p.EnabledWhen,
 				})
 			}
 			cfg.ACPServers = append(cfg.ACPServers, acpServer)
@@ -1166,7 +1173,8 @@ func Parse(data []byte) (*Config, error) {
 			BackgroundColor: p.BackgroundColor,
 			Description:     p.Description,
 			Group:           p.Group,
-			ACPs:            p.ACPs,
+			EnabledWhenACP:  p.EnabledWhenACP,
+			EnabledWhen:     p.EnabledWhen,
 		})
 	}
 

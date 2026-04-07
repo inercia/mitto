@@ -101,6 +101,18 @@ like auggie, claude-code, and others that implement ACP.`,
 			}
 		}
 
+		// Deploy builtin processors on first run
+		if builtinProcessorsDir, bpErr := appdir.BuiltinProcessorsDir(); bpErr != nil {
+			slog.Warn("Failed to get builtin processors directory", "error", bpErr)
+		} else {
+			deployed, deployErr := embeddedconfig.EnsureBuiltinProcessors(builtinProcessorsDir)
+			if deployErr != nil {
+				slog.Warn("Failed to deploy builtin processors", "error", deployErr)
+			} else if deployed {
+				slog.Info("Deployed builtin processors", "dir", builtinProcessorsDir)
+			}
+		}
+
 		// Load configuration using the hierarchy:
 		// 1. --config flag (explicit path) takes highest priority
 		// 2. RC file (~/.mittorc) if it exists

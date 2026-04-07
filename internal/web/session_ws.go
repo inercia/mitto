@@ -174,12 +174,33 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// staleSessionThreshold is the age beyond which a WebSocket connection to a
+	// session is flagged in the log for investigation.  A very old session whose
+	// WebSocket upgrade is unusually slow can exhaust file descriptors or consume
+	// disproportionate memory when its event history is replayed.
+	const staleSessionThreshold = 30 * 24 * time.Hour // 30 days
+
 	// If no running session, try to resume it (unless archived)
 	if bs == nil && store != nil {
 		// Check if session exists in store
 		meta, err := store.GetMetadata(sessionID)
 		switch err {
 		case nil:
+			// Stale-session detection: warn when a WebSocket connects to a session
+			// that has not been active for a long time.  245-second upgrade times
+			// observed in the access log were all associated with sessions many
+			// months old whose large event histories caused slow disk I/O during
+			// the subsequent load_events replay.
+			if age := time.Since(meta.CreatedAt); age > staleSessionThreshold {
+				if clientLogger != nil {
+					clientLogger.Warn("WebSocket connecting to stale session",
+						"session_id", sessionID,
+						"age_days", int(age.Hours()/24),
+						"event_count", meta.EventCount,
+					)
+				}
+			}
+
 			// Don't resume archived sessions - they should remain read-only
 			// without an ACP connection. Users can still view history.
 			if meta.Archived {
@@ -1414,19 +1435,19 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	go c.checkRequiredToolPatterns(workspaceUUID, tools)
 }
 
-// checkRequiredToolPatterns collects required_tools patterns from all prompts,
+// checkRequiredToolPatterns collects enabledWhenMCP patterns from all prompts,
 // checks them against the initial tools list, and retries unsatisfied patterns
 // with exponential backoff. MCP tools from external servers can take time to appear
 // (e.g., external Python programs), so retries are essential.
 //
 // Flow:
-//  1. Collect all required_tools patterns from global + workspace prompts
+//  1. Collect all enabledWhenMCP patterns from global + workspace prompts
 //  2. Local match: check patterns against the initial fetched tools list
 //  3. For unsatisfied patterns: query the auxiliary session (targeted check)
 //  4. Broadcast results
 //  5. Retry unsatisfied patterns with backoff: 30s, 60s, 120s
 func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initialTools []auxiliary.MCPToolInfo) {
-	// Collect all required_tools patterns from prompts
+	// Collect all enabledWhenMCP patterns from prompts
 	patterns := c.collectRequiredToolPatterns()
 	if len(patterns) == 0 {
 		if c.logger != nil {
@@ -1458,7 +1479,7 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 	}
 
 	// Broadcast initial status
-	c.broadcastRequiredToolsStatus(workspaceUUID, satisfied)
+	c.broadcastEnabledWhenMCPStatus(workspaceUUID, satisfied)
 
 	// Check if all patterns are already satisfied
 	unsatisfied := c.getUnsatisfiedPatterns(satisfied)
@@ -1527,7 +1548,7 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 		}
 
 		// Broadcast updated status
-		c.broadcastRequiredToolsStatus(workspaceUUID, satisfied)
+		c.broadcastEnabledWhenMCPStatus(workspaceUUID, satisfied)
 
 		// Check if all satisfied now
 		unsatisfied = c.getUnsatisfiedPatterns(satisfied)
@@ -1548,7 +1569,7 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 	}
 }
 
-// collectRequiredToolPatterns collects all unique required_tools patterns from all prompt sources.
+// collectRequiredToolPatterns collects all unique enabledWhenMCP patterns from all prompt sources.
 func (c *SessionWSClient) collectRequiredToolPatterns() []string {
 	if c.server == nil {
 		return nil
@@ -1595,10 +1616,10 @@ func (c *SessionWSClient) getUnsatisfiedPatterns(satisfied map[string]bool) []st
 	return unsatisfied
 }
 
-// broadcastRequiredToolsStatus broadcasts the required tools pattern status to all clients.
-func (c *SessionWSClient) broadcastRequiredToolsStatus(workspaceUUID string, patterns map[string]bool) {
+// broadcastEnabledWhenMCPStatus broadcasts the required tools pattern status to all clients.
+func (c *SessionWSClient) broadcastEnabledWhenMCPStatus(workspaceUUID string, patterns map[string]bool) {
 	if c.server != nil && c.server.eventsManager != nil {
-		c.server.eventsManager.Broadcast(WSMsgTypeRequiredToolsStatus, map[string]interface{}{
+		c.server.eventsManager.Broadcast(WSMsgTypeEnabledWhenMCPStatus, map[string]interface{}{
 			"workspace_uuid": workspaceUUID,
 			"patterns":       patterns,
 		})

@@ -92,8 +92,14 @@ func (s *Server) StartExternalListener(port int) (int, error) {
 
 	// Create a separate HTTP server for external connections that marks all requests
 	// as external. This ensures auth is required even for localhost connections.
+	// Timeouts are set to handle bursts of concurrent requests from tunnel proxies
+	// (e.g., cloudflared) which forward many browser requests simultaneously.
 	externalServer := &http.Server{
-		Handler: ExternalConnectionMiddleware(s.httpServer.Handler),
+		Handler:        ExternalConnectionMiddleware(s.httpServer.Handler),
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   60 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
 	s.externalHTTPServer = externalServer
 

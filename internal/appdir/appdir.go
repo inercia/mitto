@@ -40,6 +40,9 @@ const (
 	// BuiltinPromptsDirName is the name of the builtin prompts subdirectory.
 	BuiltinPromptsDirName = "builtin"
 
+	// BuiltinProcessorsDirName is the name of the builtin processors subdirectory.
+	BuiltinProcessorsDirName = "builtin"
+
 	// WorkspaceConfigDirName is the name of the workspace-specific config directory.
 	// This directory is located at the root of a workspace (e.g., $WORKSPACE/.mitto/).
 	WorkspaceConfigDirName = ".mitto"
@@ -275,6 +278,16 @@ func ProcessorsDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, ProcessorsDirName), nil
+}
+
+// BuiltinProcessorsDir returns the full path to the builtin processors directory.
+// This directory contains processors that are deployed from the embedded filesystem.
+func BuiltinProcessorsDir() (string, error) {
+	processorsDir, err := ProcessorsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(processorsDir, BuiltinProcessorsDirName), nil
 }
 
 // PromptsDir returns the full path to the prompts directory.

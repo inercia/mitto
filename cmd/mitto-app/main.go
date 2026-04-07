@@ -289,6 +289,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	webview "github.com/webview/webview_go"
@@ -318,6 +319,20 @@ var (
 	globalServer   *web.Server
 	globalServerMu sync.Mutex
 )
+
+// appActivateDebounce is the minimum interval between two consecutive app-activation
+// events that will each trigger a full staggered reconnect.  Multiple macOS notification
+// sources (applicationDidBecomeActive:, NSWorkspaceScreensDidWakeNotification,
+// NSWorkspaceDidWakeNotification) can fire within milliseconds of each other for the
+// same wake/focus event.  Events arriving within this window are silently dropped.
+const appActivateDebounce = 2 * time.Second
+
+// lastAppActiveMu guards lastAppActiveTime.
+var lastAppActiveMu sync.Mutex
+
+// lastAppActiveTime records when the last accepted app-activation event was dispatched
+// to the frontend.  Zero value means no event has been dispatched yet.
+var lastAppActiveTime time.Time
 
 //export goMenuActionCallback
 func goMenuActionCallback(action *C.char) {
@@ -398,6 +413,31 @@ func goQuitCallback() {
 
 //export goAppDidBecomeActiveCallback
 func goAppDidBecomeActiveCallback() {
+	// Debounce rapid-fire duplicate activations.
+	//
+	// Three macOS notification sources all call this function and can fire within
+	// milliseconds of each other for the same wake/focus event:
+	//   • applicationDidBecomeActive:            (menu_darwin.m)
+	//   • NSWorkspaceScreensDidWakeNotification  (power_darwin.m)
+	//   • NSWorkspaceDidWakeNotification         (power_darwin.m)
+	//
+	// Without a gate, each duplicate causes a full staggered reconnect of all
+	// background sessions even though the per-session debounce protects the active
+	// session.  We suppress any event that arrives within appActivateDebounce of the
+	// last accepted one.
+	lastAppActiveMu.Lock()
+	now := time.Now()
+	elapsed := now.Sub(lastAppActiveTime)
+	if !lastAppActiveTime.IsZero() && elapsed < appActivateDebounce {
+		lastAppActiveMu.Unlock()
+		slog.Debug("[Mitto] goAppDidBecomeActiveCallback: debounced (too soon after last activation)",
+			"elapsed_ms", elapsed.Milliseconds(),
+			"debounce_ms", appActivateDebounce.Milliseconds())
+		return
+	}
+	lastAppActiveTime = now
+	lastAppActiveMu.Unlock()
+
 	globalWebViewMu.Lock()
 	w := globalWebView
 	globalWebViewMu.Unlock()
@@ -916,6 +956,19 @@ func run() error {
 			slog.Warn("Failed to deploy builtin prompts", "error", err)
 		} else if deployed {
 			slog.Info("Deployed builtin prompts", "dir", builtinPromptsDir)
+		}
+	}
+
+	// Deploy builtin processors on first run
+	builtinProcessorsDir, err := appdir.BuiltinProcessorsDir()
+	if err != nil {
+		slog.Warn("Failed to get builtin processors directory", "error", err)
+	} else {
+		deployed, err := embeddedconfig.EnsureBuiltinProcessors(builtinProcessorsDir)
+		if err != nil {
+			slog.Warn("Failed to deploy builtin processors", "error", err)
+		} else if deployed {
+			slog.Info("Deployed builtin processors", "dir", builtinProcessorsDir)
 		}
 	}
 
