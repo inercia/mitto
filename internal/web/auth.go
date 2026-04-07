@@ -977,6 +977,25 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		"x_forwarded_for", r.Header.Get("X-Forwarded-For"),
 	)
 
+	// Split-IP anomaly detection (informational — does not block the request).
+	//
+	// The CSRF token issued by GET /api/csrf-token embeds a fingerprint of the IP that
+	// fetched the auth page.  If the login POST arrives from a different IP we log a
+	// warning because it may indicate:
+	//   • Credential stuffing through a rotating proxy (attacker rotates exit-IP between
+	//     fetching the page and submitting credentials).
+	//   • A compromised token being reused from a different machine.
+	// It can also occur legitimately (mobile network handoff, VPN/NAT changes) so we
+	// only log — never block — on this signal alone.
+	if cookie, err := r.Cookie(csrfCookieName); err == nil {
+		if !VerifyIPFromToken(cookie.Value, ipKey) {
+			logger.Warn("Split-IP login detected: CSRF token IP fingerprint mismatch",
+				"login_ip", ipKey,
+				"user_agent", r.Header.Get("User-Agent"),
+			)
+		}
+	}
+
 	// Check if IP is rate limited BEFORE processing the request
 	// This prevents timing attacks and reduces server load
 	if blocked, remaining := a.rateLimiter.IsBlocked(ipKey); blocked {

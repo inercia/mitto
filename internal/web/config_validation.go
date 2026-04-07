@@ -25,6 +25,15 @@ func (s *Server) writeConfigError(w http.ResponseWriter, err *configValidationEr
 	}
 }
 
+// hasExistingSimpleAuth returns true if the server already has simple auth configured
+// with a non-empty password (either in config or in secure storage).
+func (s *Server) hasExistingSimpleAuth() bool {
+	if s.config.MittoConfig == nil || s.config.MittoConfig.Web.Auth == nil || s.config.MittoConfig.Web.Auth.Simple == nil {
+		return false
+	}
+	return s.config.MittoConfig.Web.Auth.Simple.Username != ""
+}
+
 // validateConfigRequest validates the basic structure of a ConfigSaveRequest.
 // Returns nil if valid, or a configValidationError if invalid.
 func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidationError {
@@ -92,10 +101,16 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 				Message:    errMsg,
 			}
 		}
-		if errMsg := ValidatePassword(req.Web.Auth.Simple.Password); errMsg != "" {
-			return &configValidationError{
-				StatusCode: http.StatusBadRequest,
-				Message:    errMsg,
+		// Skip password validation when the password is empty and auth is already configured.
+		// The frontend sends an empty password when the user hasn't changed it (the backend
+		// sanitizes the password before sending config to the client for security).
+		// In this case, the existing password will be preserved in buildNewSettings.
+		if req.Web.Auth.Simple.Password != "" || !s.hasExistingSimpleAuth() {
+			if errMsg := ValidatePassword(req.Web.Auth.Simple.Password); errMsg != "" {
+				return &configValidationError{
+					StatusCode: http.StatusBadRequest,
+					Message:    errMsg,
+				}
 			}
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	configPkg "github.com/inercia/mitto/internal/config"
@@ -49,6 +50,57 @@ type ConfigSaveRequest struct {
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
 	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
 	Permissions   *configPkg.PermissionsConfig   `json:"permissions,omitempty"`
+}
+
+// sensitiveEnvKeyPatterns contains lowercase substrings that flag an env var key as sensitive.
+var sensitiveEnvKeyPatterns = []string{
+	"secret", "password", "passwd", "token", "api_key", "apikey",
+	"private_key", "credentials", "access_key", "auth_key",
+}
+
+// isSensitiveEnvKey returns true when the env var key name suggests it holds a secret.
+func isSensitiveEnvKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, pat := range sensitiveEnvKeyPatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeEnvVars returns a shallow copy of env with sensitive values replaced by "***".
+// This prevents API keys and tokens from leaking through the config endpoint.
+func sanitizeEnvVars(env map[string]string) map[string]string {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		if isSensitiveEnvKey(k) {
+			out[k] = "***"
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// sanitizeWebConfig returns a deep copy of WebConfig with the auth password redacted.
+// The password must never be sent to the client — not even to an authenticated user —
+// because it could be exfiltrated via XSS, screen-sharing, or developer tools.
+func sanitizeWebConfig(cfg configPkg.WebConfig) configPkg.WebConfig {
+	sanitized := cfg
+	if cfg.Auth != nil {
+		authCopy := *cfg.Auth
+		if cfg.Auth.Simple != nil {
+			simpleCopy := *cfg.Auth.Simple
+			simpleCopy.Password = "" // Never return the password to the client
+			authCopy.Simple = &simpleCopy
+		}
+		sanitized.Auth = &authCopy
+	}
+	return sanitized
 }
 
 // handleConfig handles GET and POST /api/config.
@@ -96,7 +148,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.config.MittoConfig != nil {
-		response["web"] = s.config.MittoConfig.Web
+		// SECURITY: Sanitize web config to remove sensitive fields (auth password) before
+		// sending to the client.  Even authenticated users must not receive the password
+		// because it could be exfiltrated through XSS, dev-tools inspection, or screen-sharing.
+		response["web"] = sanitizeWebConfig(s.config.MittoConfig.Web)
 		response["ui"] = s.config.MittoConfig.UI
 		response["session"] = s.config.MittoConfig.Session
 		response["conversations"] = s.config.MittoConfig.Conversations
@@ -132,8 +187,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 				"command":      srv.Command,
 				"source":       string(srv.Source), // Include source for frontend read-only indication
 				"auto_approve": srv.AutoApprove,    // Include auto-approve setting for permissions
-				"env":          srv.Env,            // Include environment variables
-				"tags":         srv.Tags,           // Include categorization tags
+				// SECURITY: mask values of keys that look like API keys / tokens / secrets.
+				"env":  sanitizeEnvVars(srv.Env),
+				"tags": srv.Tags, // Include categorization tags
 			}
 
 			// Include type if specified (for prompt matching)
@@ -379,11 +435,24 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			// They are managed via prompt files with acps: field
 		}
 
-		// Preserve Cwd and RestrictedRunners from existing server if present
-		// These fields are not exposed in the UI but should not be lost on save
+		// Preserve Cwd and RestrictedRunners from existing server if present.
+		// These fields are not exposed in the UI but should not be lost on save.
+		//
+		// Also restore any env var values that were masked ("***") in the GET /api/config
+		// response — the client cannot know the real value so it echoes the mask back.
+		// Replacing "***" with the original keeps the secret intact.
 		if existing, ok := existingServers[srv.Name]; ok {
 			newServer.Cwd = existing.Cwd
 			newServer.RestrictedRunners = existing.RestrictedRunners
+			if len(newServer.Env) > 0 && len(existing.Env) > 0 {
+				for k, v := range newServer.Env {
+					if v == "***" {
+						if orig, found := existing.Env[k]; found {
+							newServer.Env[k] = orig
+						}
+					}
+				}
+			}
 		}
 
 		newACPServers = append(newACPServers, newServer)
@@ -413,6 +482,13 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		// Simple auth (username/password)
 		if hasSimple {
 			password := req.Web.Auth.Simple.Password
+
+			// If the password is empty, preserve the existing password.
+			// The frontend sends an empty password when the user hasn't changed it
+			// (the backend sanitizes the password before sending config to the client).
+			if password == "" && s.hasExistingSimpleAuth() {
+				password = s.config.MittoConfig.Web.Auth.Simple.Password
+			}
 
 			// On platforms with secure storage, store password in Keychain
 			// and omit it from settings.json
@@ -528,10 +604,15 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	// This is needed because settings may have an empty password when Keychain is used
 	runtimeWebConfig := settings.Web
 	if newAuthEnabled && req.Web.Auth != nil && req.Web.Auth.Simple != nil {
+		password := req.Web.Auth.Simple.Password
+		// If request password is empty, preserve the existing runtime password
+		if password == "" && oldAuthEnabled && s.config.MittoConfig.Web.Auth.Simple != nil {
+			password = s.config.MittoConfig.Web.Auth.Simple.Password
+		}
 		runtimeWebConfig.Auth = &configPkg.WebAuth{
 			Simple: &configPkg.SimpleAuth{
 				Username: req.Web.Auth.Simple.Username,
-				Password: req.Web.Auth.Simple.Password, // Use original password for runtime
+				Password: password,
 			},
 		}
 	}
@@ -557,18 +638,10 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 
 	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
 	for i, ws := range req.Workspaces {
-		newWorkspaces[i] = configPkg.WorkspaceSettings{
-			UUID:                   ws.UUID,
-			ACPServer:              ws.ACPServer,
-			ACPCommand:             acpCommandMap[ws.ACPServer],
-			WorkingDir:             ws.WorkingDir,
-			RestrictedRunner:       ws.RestrictedRunner,
-			RestrictedRunnerConfig: ws.RestrictedRunnerConfig,
-			Name:                   ws.Name,
-			Color:                  ws.Color,
-			Code:                   ws.Code,
-			AutoApprove:            ws.AutoApprove,
-		}
+		// Copy the full workspace from the request and resolve the ACP command
+		// from the server map (since the frontend may not have the latest command).
+		newWorkspaces[i] = ws
+		newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
 	}
 	s.sessionManager.SetWorkspaces(newWorkspaces)
 	s.config.Workspaces = newWorkspaces
