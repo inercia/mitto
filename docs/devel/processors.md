@@ -379,6 +379,6 @@ The CLI (`internal/cmd/cli.go`) follows the same pattern in both `runOnceMode()`
 ### First-Message Tracking
 
 - **New sessions**: `isFirstPrompt = true`, set to `false` after first prompt
-- **Resumed sessions**: `isFirstPrompt = false` (first-only processors won't fire)
+- **Resumed sessions**: `isFirstPrompt = true` (context re-injected after restart/unarchive since agent process is fresh)
 - **CLI once mode**: Always `isFirst = true` (single message)
 - **CLI interactive**: Tracks `isFirstMessage` boolean, flipped after first send

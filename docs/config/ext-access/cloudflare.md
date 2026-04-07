@@ -290,9 +290,9 @@ Traditional username/password login. No Cloudflare JWT validation.
 
 #### 1. Create a Cloudflare Access application
 
-1. Go to [Cloudflare One](https://one.dash.cloudflare.com/) → **Access** → **Applications**
+1. Go to [Cloudflare One](https://dash.cloudflare.com/) → **Access Control** → **Applications**
 2. Click **Add an application** → **Self-hosted**
-3. Set the **Application domain** to your tunnel hostname (e.g., `mitto.yourdomain.com`)
+3. Set the **Publish hostname** to your tunnel hostname (e.g., `mitto.yourdomain.com`)
 4. Configure an **Access policy** — for example:
    - **Allow** emails ending in `@yourdomain.com`
    - **Allow** specific email addresses

@@ -18,6 +18,7 @@ topic.
 | ---------------------- | ------------------------------------ | -------------------------------------------- |
 | 🤖 **ACP Servers**     | [acp.md](acp.md)                     | Claude Code, Auggie, GitHub Copilot setup    |
 | 📁 **Workspace**       | [web/workspace.md](web/workspace.md) | Project-specific `.mittorc` files            |
+| 👥 **Auto-Children**   | [web/auto-children.md](web/auto-children.md) | Auto-spawn helper conversations        |
 | 🌐 **External Access** | [ext-access.md](ext-access.md)       | Tailscale, ngrok, Cloudflare tunneling setup |
 
 ### Common Configuration (All Platforms)

@@ -230,17 +230,55 @@ Provide specific suggestions with code examples where applicable.
 
 ### Front-matter Fields
 
-| Field             | Required | Type     | Description                                                     |
-| ----------------- | -------- | -------- | --------------------------------------------------------------- |
-| `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename. |
-| `description`     | No       | string   | Tooltip text shown on hover                                     |
-| `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                    |
-| `icon`            | No       | string   | Icon identifier (reserved for future use)                       |
-| `tags`            | No       | string[] | Categorization tags (reserved for future use)                   |
-| `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`           |
+| Field             | Required | Type     | Description                                                        |
+| ----------------- | -------- | -------- | ------------------------------------------------------------------ |
+| `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.    |
+| `description`     | No       | string   | Tooltip text shown on hover                                        |
+| `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                       |
+| `icon`            | No       | string   | Icon identifier (reserved for future use)                          |
+| `tags`            | No       | string[] | Categorization tags (reserved for future use)                      |
+| `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`              |
+| `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
+| `enabledWhenACP`  | No       | string   | Comma-separated ACP server names where this prompt appears         |
+| `enabledWhenMCP`  | No       | string   | Glob pattern for MCP tools required for this prompt to appear      |
 
 \*If `name` is not specified, it's derived from the filename (e.g., `code-review.md` →
 "code-review").
+
+### Conditional Enablement Overview
+
+Mitto provides a family of `enabled*` fields for controlling when prompts appear:
+
+| Field            | Type   | Evaluated | Use Case                                    |
+| ---------------- | ------ | --------- | ------------------------------------------- |
+| `enabled`        | bool   | At load   | Permanently disable a prompt                |
+| `enabledWhen`    | CEL    | At display| Dynamic conditions based on session context |
+| `enabledWhenACP` | string | At display| Restrict to specific AI agents              |
+| `enabledWhenMCP` | string | At display| Require specific MCP tools to be available  |
+
+**Evaluation order:** If `enabled: false`, the prompt is never loaded. Otherwise, all
+three `enabledWhen*` conditions must be satisfied for the prompt to appear.
+
+**Example: Comprehensive prompt configuration**
+
+```yaml
+---
+name: "JIRA: start work"
+description: "Pick a JIRA ticket and spawn parallel conversations"
+group: "JIRA"
+backgroundColor: "#BBDEFB"
+enabled: true
+enabledWhen: "!session.isChild"
+enabledWhenACP: "auggie, claude-code"
+enabledWhenMCP: "jira_*, mitto_conversation_*"
+---
+```
+
+This prompt:
+- Is enabled (not permanently disabled)
+- Only appears in parent conversations (not children)
+- Only appears when using Auggie or Claude Code
+- Only appears when both JIRA and Mitto MCP tools are available
 
 ### Multi-line Prompts
 
@@ -279,6 +317,249 @@ Fix any linting errors in the current file.
 ```
 
 If saved as `fix-lint.md`, this creates a prompt named "fix-lint".
+
+## enabledWhen: Conditional Enablement
+
+The `enabledWhen` field allows you to conditionally show or hide prompts based on the
+current conversation context using [CEL (Common Expression Language)](https://github.com/google/cel-go)
+expressions.
+
+### Basic Syntax
+
+```yaml
+---
+name: "Create Minions"
+description: "Break work into parallel tasks"
+enabledWhen: "!session.isChild"
+---
+```
+
+When `enabledWhen` evaluates to `true`, the prompt is visible. When it evaluates to
+`false`, the prompt is hidden. If the expression is invalid or evaluation fails, the
+prompt is shown (fail-open behavior for safety).
+
+### Available Context Variables
+
+#### ACP Server Context (`acp.*`)
+
+Information about the AI agent (ACP server) used in the current conversation.
+
+| Variable          | Type       | Description                                      |
+| ----------------- | ---------- | ------------------------------------------------ |
+| `acp.name`        | string     | ACP server name (e.g., `"Claude Code"`)          |
+| `acp.type`        | string     | Server type (e.g., `"claude"`, `"auggie"`)       |
+| `acp.tags`        | list[str]  | Server tags (e.g., `["coding", "fast"]`)         |
+| `acp.autoApprove` | bool       | Whether auto-approve is enabled                  |
+
+#### Workspace Context (`workspace.*`)
+
+Information about the current workspace.
+
+| Variable           | Type   | Description                                      |
+| ------------------ | ------ | ------------------------------------------------ |
+| `workspace.uuid`   | string | Unique workspace identifier                      |
+| `workspace.folder` | string | Workspace directory path                         |
+| `workspace.name`   | string | Display name (if configured)                     |
+
+#### Session Context (`session.*`)
+
+Information about the current conversation/session.
+
+| Variable              | Type   | Description                                      |
+| --------------------- | ------ | ------------------------------------------------ |
+| `session.id`          | string | Session identifier                               |
+| `session.name`        | string | Session display name                             |
+| `session.isChild`     | bool   | `true` if this is a child conversation           |
+| `session.isAutoChild` | bool   | `true` if created automatically by parent        |
+| `session.parentId`    | string | Parent session ID (empty if not a child)         |
+
+#### Parent Context (`parent.*`)
+
+Information about the parent conversation (only meaningful for child sessions).
+
+| Variable           | Type   | Description                                      |
+| ------------------ | ------ | ------------------------------------------------ |
+| `parent.exists`    | bool   | `true` if parent session exists                  |
+| `parent.name`      | string | Parent session name                              |
+| `parent.acpServer` | string | ACP server used by parent                        |
+
+#### Children Context (`children.*`)
+
+Information about child conversations spawned from this session.
+
+| Variable              | Type       | Description                                |
+| --------------------- | ---------- | ------------------------------------------ |
+| `children.count`      | int        | Number of direct child sessions            |
+| `children.exists`     | bool       | `true` if has at least one child           |
+| `children.names`      | list[str]  | List of child session names                |
+| `children.acpServers` | list[str]  | List of ACP servers used by children       |
+
+#### MCP Tools Context (`tools.*`)
+
+Information about available MCP tools. Note: Tool information may not be available
+immediately when a session starts.
+
+| Variable          | Type       | Description                                      |
+| ----------------- | ---------- | ------------------------------------------------ |
+| `tools.available` | bool       | `true` if tool list has been loaded              |
+| `tools.names`     | list[str]  | List of available tool names                     |
+
+**Custom function:**
+
+| Function                   | Returns | Description                                 |
+| -------------------------- | ------- | ------------------------------------------- |
+| `tools.hasPattern(glob)`   | bool    | `true` if any tool matches the glob pattern |
+
+The glob pattern supports `*` (any characters) and `?` (single character).
+
+### CEL Expression Examples
+
+#### Session Hierarchy
+
+```yaml
+# Only show in parent conversations (not in children)
+enabledWhen: "!session.isChild"
+
+# Only show in child conversations
+enabledWhen: "session.isChild"
+
+# Only show in manually-created child conversations
+enabledWhen: "session.isChild && !session.isAutoChild"
+
+# Show only if this session has spawned children
+enabledWhen: "children.exists"
+
+# Show only if this session has no children
+enabledWhen: "children.count == 0"
+```
+
+#### ACP Server Filtering
+
+```yaml
+# Only for Claude-based servers
+enabledWhen: 'acp.name.startsWith("Claude")'
+
+# Only for servers tagged with "coding"
+enabledWhen: '"coding" in acp.tags'
+
+# Only for fast models
+enabledWhen: '"fast" in acp.tags || "quick" in acp.tags'
+
+# Only when auto-approve is disabled
+enabledWhen: "!acp.autoApprove"
+```
+
+#### MCP Tool Requirements
+
+```yaml
+# Only show if GitHub tools are available
+enabledWhen: 'tools.hasPattern("github_*")'
+
+# Only show if Jira tools are available
+enabledWhen: 'tools.hasPattern("jira_*")'
+
+# Only show if any database tool is available
+enabledWhen: 'tools.hasPattern("*_database_*") || tools.hasPattern("*_sql_*")'
+
+# Only when tools have been loaded
+enabledWhen: "tools.available"
+```
+
+#### Combined Conditions
+
+```yaml
+# Coordinator prompt: only in parent sessions with coding servers
+enabledWhen: '!session.isChild && "coding" in acp.tags'
+
+# Report-to-parent prompt: only in children with existing parent
+enabledWhen: "session.isChild && parent.exists"
+
+# GitHub PR prompt: only with GitHub tools and not in child sessions
+enabledWhen: '!session.isChild && tools.hasPattern("github_*")'
+
+# Complex workspace check
+enabledWhen: 'workspace.folder.contains("my-project") && "fast" in acp.tags'
+```
+
+#### Real-World Examples from Builtin Prompts
+
+These examples are from Mitto's built-in prompts:
+
+```yaml
+# "Create minions" - Spawn parallel worker conversations
+# Only in parent conversations, requires Mitto MCP tools
+enabledWhen: "!session.isChild"
+enabledWhenMCP: mitto_conversation_*
+
+# "Report to parent" - Send status back to parent
+# Only in child conversations that have a parent
+enabledWhen: "session.isChild && parent.exists"
+
+# "Continue work in child" - Resume work in existing child
+# Only when the session has spawned children
+enabledWhen: "children.exists"
+
+# "JIRA: start work" - Pick a ticket and spawn workers
+# Only in parent conversations, requires both JIRA and Mitto tools
+enabledWhen: "!session.isChild"
+enabledWhenMCP: jira_*, mitto_conversation_*
+
+# "Improve Augment rules" - Update .augment/rules
+# Only when using Auggie (not Claude Code or other agents)
+enabledWhenACP: auggie
+
+# "Handoff to new conversation" - Continue in a new session
+# Only in parent conversations, requires Mitto tools
+enabledWhen: "!session.isChild"
+enabledWhenMCP: mitto_conversation_*
+```
+
+### CEL Language Reference
+
+CEL is a simple expression language designed for evaluation. Key features:
+
+**Operators:**
+- Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Logical: `&&` (and), `||` (or), `!` (not)
+- Membership: `in` (e.g., `"tag" in acp.tags`)
+- Ternary: `condition ? value_if_true : value_if_false`
+
+**String functions:**
+- `str.startsWith(prefix)` - Check prefix
+- `str.endsWith(suffix)` - Check suffix
+- `str.contains(substring)` - Check substring
+- `str.matches(regex)` - Regex matching
+- `str.size()` - String length
+
+**List functions:**
+- `list.size()` - List length
+- `value in list` - Membership check
+- `list.exists(x, condition)` - Any element matches
+- `list.all(x, condition)` - All elements match
+
+**Examples:**
+```cel
+// String operations
+acp.name.startsWith("Claude")
+workspace.folder.contains("/projects/")
+
+// List operations
+acp.tags.size() > 0
+acp.tags.exists(t, t == "coding")
+children.names.all(n, n.startsWith("Worker"))
+
+// Ternary
+children.count > 5 ? true : acp.autoApprove
+```
+
+For full CEL documentation, see the [CEL Language Definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md).
+
+### Error Handling
+
+- **Invalid expression syntax**: Prompt is shown (fail-open), warning logged
+- **Evaluation error**: Prompt is shown (fail-open), warning logged
+- **Missing context**: Default values used (empty strings, false booleans, zero counts)
+- **Tools not yet loaded**: `tools.available` is `false`, `tools.names` is empty
 
 ## Priority and Override Behavior
 

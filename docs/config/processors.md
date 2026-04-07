@@ -16,6 +16,26 @@ Processors are loaded from YAML files in the `MITTO_DIR/processors/` directory:
 
 The processors directory is created automatically when Mitto starts.
 
+## Builtin Processors
+
+Mitto ships with builtin processors that are automatically deployed to `MITTO_DIR/processors/builtin/` on first run. Like builtin prompts, they are embedded in the binary and kept in sync — if a new version of Mitto ships updated builtins, they are automatically updated on startup (content-based comparison).
+
+### Included Builtin Processors
+
+| Processor | Description | When | Enabled |
+|-----------|-------------|------|---------|
+| `session-context` | Injects session identity, parent/child relationships, and available agents into the first message | `first` | Yes |
+| `delegate-to-coder` | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | Yes (only activates for matching ACP servers) |
+
+### Managing Builtin Processors
+
+- **Disable**: Edit the YAML file and set `enabled: false`, or move it to `processors/builtin/disabled/`
+- **Override**: Create a processor with higher priority in `processors/` (outside `builtin/`)
+- **Force update**: Run `mitto processors update-builtin` to overwrite local modifications with the embedded versions
+- **Dry run**: Run `mitto processors update-builtin --dry-run` to preview changes
+
+> **Note:** User-created processors in `MITTO_DIR/processors/` (outside `builtin/`) are never modified by automatic updates.
+
 ## Processor Configuration Schema
 
 Each YAML file in the processors directory defines one processor:
@@ -49,7 +69,36 @@ environment:
 workspaces:
   - /path/to/project1
   - /path/to/project2
+
+# CEL expression for conditional activation (empty = always apply)
+# Same context as prompt enabledWhen: acp.*, session.*, parent.*, children.*, workspace.*, tools.*
+enabledWhen: 'acp.tags.exists(t, t == "reasoning")'
+
+# MCP tool patterns required for this processor (empty = no requirements)
+# Comma-separated glob patterns; ALL patterns must be satisfied (AND logic)
+enabledWhenMCP: "mitto_conversation_*, jira_*"
 ```
+
+### Conditional Enablement
+
+Processors support the same family of `enabled*` fields as prompts:
+
+| Field            | Type   | Use Case                                    |
+| ---------------- | ------ | ------------------------------------------- |
+| `enabled`        | bool   | Permanently disable a processor             |
+| `enabledWhen`    | CEL    | Dynamic conditions based on session context |
+| `enabledWhenMCP` | string | Require specific MCP tools to be available  |
+
+**Evaluation order:** If `enabled: false`, the processor is never loaded. Otherwise,
+both `enabledWhen` and `enabledWhenMCP` conditions must be satisfied.
+
+**CEL context** — Same variables as prompt `enabledWhen`:
+- `acp.name`, `acp.type`, `acp.tags`, `acp.autoApprove`
+- `session.id`, `session.name`, `session.isChild`, `session.parentId`
+- `parent.exists`, `parent.name`, `parent.acpServer`
+- `children.count`, `children.exists`, `children.names`, `children.acpServers`
+- `workspace.uuid`, `workspace.folder`, `workspace.name`
+- `tools.available`, `tools.names`, `tools.hasPattern("glob_*")`
 
 ## Command Resolution
 
@@ -91,6 +140,7 @@ All input is JSON. The format depends on the `input` setting:
   "session_id": "20260131-143052-a1b2c3d4",
   "working_dir": "/path/to/project",
   "parent_session_id": "",
+  "parent_session_name": "",
   "session_name": "Fix login bug",
   "acp_server": "claude-code",
   "workspace_uuid": "d4e5f6a7-...",
@@ -106,6 +156,13 @@ All input is JSON. The format depends on the `input` setting:
       "type": "claude-code",
       "tags": ["coding"],
       "current": true
+    }
+  ],
+  "child_sessions": [
+    {
+      "id": "20260131-143100-e5f6a7b8",
+      "name": "Sub task",
+      "acp_server": "auggie"
     }
   ]
 }
@@ -223,10 +280,12 @@ The following environment variables are automatically set for all processors:
 | `MITTO_PROCESSOR_FILE`        | Path to the current processor's YAML file             | `.../processors/my-processor.yaml`                        |
 | `MITTO_PROCESSOR_DIR`         | Directory containing the current processor file       | `.../processors`                                          |
 | `MITTO_PARENT_SESSION_ID`     | Parent conversation ID (empty if root)                | `20260130-100000-aabbccdd`                                |
+| `MITTO_PARENT_SESSION_NAME`   | Parent conversation title/name (empty if no parent)   | `Fix login bug`                                           |
 | `MITTO_SESSION_NAME`          | Conversation title/name                               | `Fix login bug`                                           |
 | `MITTO_ACP_SERVER`            | Active ACP server name                                | `claude-code`                                             |
 | `MITTO_WORKSPACE_UUID`        | Workspace identifier                                  | `d4e5f6a7-b8c9-...`                                       |
 | `MITTO_AVAILABLE_ACP_SERVERS` | JSON array of servers with workspaces for this folder | `[{"name":"auggie","tags":["coding"],"current":false},…]` |
+| `MITTO_CHILD_SESSIONS`        | JSON array of child sessions                          | `[{"id":"20260131-...","name":"Sub task","acp_server":"claude-code"},…]` |
 
 ## Variable Substitution
 
@@ -248,11 +307,13 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 | ------------------------------ | ------------------------------------------------------------------------------ |
 | `@mitto:session_id`            | Current session ID                                                             |
 | `@mitto:parent_session_id`     | Parent conversation ID; empty string if this is a root session                 |
+| `@mitto:parent`                | Parent session formatted as `id (name)` or just `id` if unnamed; empty if root |
 | `@mitto:session_name`          | Conversation title/name; empty string if not yet set                           |
 | `@mitto:working_dir`           | Session working directory                                                      |
 | `@mitto:acp_server`            | Active ACP server name (e.g. `claude-code`)                                    |
 | `@mitto:workspace_uuid`        | Workspace UUID                                                                 |
 | `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
+| `@mitto:children`              | Human-readable list of child sessions — see below                              |
 
 ### `@mitto:available_acp_servers` format
 
@@ -272,6 +333,37 @@ auggie [coding, ai-assistant] (current), claude-code [coding, fast-model]
 ```
 
 The same data is also available as a structured JSON array via the `available_acp_servers` field in stdin and the `MITTO_AVAILABLE_ACP_SERVERS` environment variable (see above).
+
+### `@mitto:children` format
+
+Produces a comma-separated list of direct child sessions. Each entry follows the pattern:
+
+```
+id (name) [acp-server]
+```
+
+- **`(name)`** — omitted when the child session has no name/title yet
+- **`[acp-server]`** — omitted when the child has no ACP server set
+
+Example with two children:
+
+```
+20260407-120000-a1b2c3d4 (Research task) [claude-code], 20260407-120100-e5f6a7b8 (Test runner) [auggie]
+```
+
+The same data is also available as a structured JSON array via the `child_sessions` field in stdin and the `MITTO_CHILD_SESSIONS` environment variable (see above).
+
+### `@mitto:parent` format
+
+Produces a formatted reference to the parent session:
+
+```
+id (name)
+```
+
+- If the parent has a name: `20260407-100000-aabbccdd (Main session)`
+- If the parent has no name: `20260407-100000-aabbccdd`
+- If there is no parent (root session): empty string
 
 ### Example: inject session context into a prepended text
 
@@ -298,7 +390,7 @@ output: prepend
 - **Unknown variables** — `@mitto:unknown` is left verbatim in the message
 - **Empty values** — e.g. `@mitto:parent_session_id` when there is no parent → replaced with empty string
 - **Fast path** — if the assembled message contains no `@mitto:`, the substitution pass is skipped entirely
-- **CLI mode** — `@mitto:session_id`, `@mitto:parent_session_id`, `@mitto:session_name`, `@mitto:acp_server`, `@mitto:workspace_uuid`, and `@mitto:available_acp_servers` all substitute to empty string; `@mitto:working_dir` substitutes to the CLI working directory
+- **CLI mode** — `@mitto:session_id`, `@mitto:parent_session_id`, `@mitto:parent`, `@mitto:session_name`, `@mitto:acp_server`, `@mitto:workspace_uuid`, `@mitto:available_acp_servers`, and `@mitto:children` all substitute to empty string; `@mitto:working_dir` substitutes to the CLI working directory
 
 ## Examples
 
