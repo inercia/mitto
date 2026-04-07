@@ -396,7 +396,12 @@ func mustOpen(path string) io.Reader {
 const maxMarkdownRenderSize = 10 * 1024 * 1024
 
 // serveRenderedMarkdown reads a markdown file, converts it to HTML, and serves
-// it as an HTML fragment for the unified viewer to embed.
+// it as a self-contained HTML page.
+//
+// The response is a full HTML document with embedded styles and mermaid.js support.
+// This allows the page to render correctly both when:
+//   - Viewed directly in a browser (navigating to the render=html URL)
+//   - Embedded by viewer.html (which extracts the <article> content)
 func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, displayPath string) {
 	// Read markdown content
 	content, err := os.ReadFile(realPath)
@@ -422,7 +427,7 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 		return
 	}
 
-	// Set headers — return as HTML fragment for the unified viewer to embed
+	// Set headers
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
@@ -431,5 +436,85 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
 
+	// Wrap in a full HTML document so it renders correctly when viewed directly.
+	// The viewer.html extracts <article> content when it detects a full HTML doc.
+	w.Write([]byte(renderedMarkdownPagePrefix))
 	w.Write([]byte(htmlContent))
+	w.Write([]byte(renderedMarkdownPageSuffix))
 }
+
+// renderedMarkdownPagePrefix is the HTML preamble for server-rendered markdown pages.
+// It includes minimal CSS for readable markdown and a mermaid.js loader script.
+const renderedMarkdownPagePrefix = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0d1117; --text: #e6edf3; --link: #58a6ff;
+    --border: #30363d; --surface: #161b22; --muted: #8b949e;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #ffffff; --text: #24292f; --link: #0969da;
+      --border: #d0d7de; --surface: #f6f8fa; --muted: #57606a;
+    }
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.6; max-width: 900px; margin: 0 auto; padding: 2rem;
+    color: var(--text); background: var(--bg);
+  }
+  a { color: var(--link); }
+  h1, h2, h3 { border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+  pre { background: var(--surface); padding: 1rem; overflow-x: auto; border-radius: 6px; border: 1px solid var(--border); }
+  code { font-family: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, monospace; font-size: 0.9em; }
+  :not(pre) > code { background: var(--surface); padding: 0.2em 0.4em; border-radius: 3px; }
+  blockquote { border-left: 4px solid var(--border); margin: 0; padding: 0 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid var(--border); padding: 0.5em 1em; }
+  th { background: var(--surface); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
+  img { max-width: 100%; }
+  .mermaid-diagram { display: flex; justify-content: center; margin: 1em 0; overflow-x: auto; }
+  .mermaid-diagram svg { max-width: 100%; }
+</style>
+</head>
+<body>
+<article>
+`
+
+// renderedMarkdownPageSuffix closes the HTML document and includes a mermaid.js
+// loader that detects <pre class="mermaid"> blocks and renders them as SVG diagrams.
+const renderedMarkdownPageSuffix = `
+</article>
+<script nonce="{{CSP_NONCE}}">
+(function() {
+  var blocks = document.querySelectorAll('pre.mermaid');
+  if (blocks.length === 0) return;
+  var nonce = document.currentScript && document.currentScript.nonce || '';
+  var s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+  if (nonce) s.setAttribute('nonce', nonce);
+  s.onload = async function() {
+    var isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default', securityLevel: 'strict' });
+    for (var i = 0; i < blocks.length; i++) {
+      try {
+        var r = await mermaid.render('mermaid-' + i, blocks[i].textContent || '');
+        var d = document.createElement('div');
+        d.className = 'mermaid-diagram';
+        d.innerHTML = r.svg;
+        blocks[i].replaceWith(d);
+      } catch (e) { console.error('Mermaid render error:', e); }
+    }
+  };
+  s.onerror = function() { console.error('Failed to load mermaid.js'); };
+  document.head.appendChild(s);
+})();
+</script>
+</body>
+</html>`

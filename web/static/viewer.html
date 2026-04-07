@@ -278,7 +278,7 @@
           </svg>
           Download
         </button>
-        <button class="btn" id="closeBtn" title="Close viewer" onclick="window.close()">
+        <button class="btn" id="closeBtn" title="Close viewer">
           <svg viewBox="0 0 16 16" fill="currentColor">
             <path
               d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"
@@ -313,6 +313,18 @@
     ></script>
 
     <script nonce="{{CSP_NONCE}}">
+      // Capture the CSP nonce from this script element for dynamically created scripts.
+      // Must be done synchronously before any await, as document.currentScript
+      // becomes null after the script finishes synchronous execution.
+      // IMPORTANT: Use the .nonce property, NOT getAttribute('nonce').
+      // In Chrome 61+ and Firefox, getAttribute('nonce') returns '' for security
+      // (to prevent XSS from reading nonces). The .nonce property returns the real value.
+      const scriptNonce = document.currentScript?.nonce || '';
+
+      // Set up close button (must use JS event listener instead of inline onclick,
+      // because inline event handlers are blocked by nonce-based CSP)
+      document.getElementById("closeBtn").addEventListener("click", () => window.close());
+
       // Parse URL parameters - support both new format (ws=UUID) and legacy (workspace=path)
       const params = new URLSearchParams(window.location.search);
       const workspaceUUID = params.get("ws");
@@ -495,18 +507,39 @@
             if (mermaidBlocks.length > 0) {
               const script = document.createElement('script');
               script.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
-              script.onload = function() {
+              // Attach the CSP nonce so the dynamically created script is allowed
+              // by nonce-based Content Security Policy
+              if (scriptNonce) script.setAttribute('nonce', scriptNonce);
+              script.onerror = (err) => {
+                console.error('Failed to load mermaid.js from CDN:', err);
+                // Show visual error on each mermaid block so users know rendering failed
+                mermaidBlocks.forEach((block) => {
+                  const notice = document.createElement('div');
+                  notice.style.cssText = 'color: var(--text-secondary, #888); font-size: 0.85em; padding: 4px 8px; border-bottom: 1px solid var(--border-color, #333);';
+                  notice.textContent = '⚠️ Mermaid diagram could not be rendered (failed to load library)';
+                  block.parentNode.insertBefore(notice, block);
+                });
+              };
+              script.onload = async function() {
                 const isDark = document.body.classList.contains('light') ? false : true;
                 mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default', securityLevel: 'strict' });
-                mermaidBlocks.forEach(async (block, index) => {
+                // Use for...of to properly serialize async mermaid.render() calls
+                // (forEach with async doesn't await — renders would race each other)
+                for (const [index, block] of Array.from(mermaidBlocks).entries()) {
                   try {
                     const { svg } = await mermaid.render('mermaid-' + index, block.textContent || '');
                     const wrapper = document.createElement('div');
                     wrapper.className = 'mermaid-diagram';
                     wrapper.innerHTML = svg;
                     block.replaceWith(wrapper);
-                  } catch (err) { console.error('Failed to render mermaid:', err); }
-                });
+                  } catch (err) {
+                    console.error('Failed to render mermaid diagram:', err);
+                    const notice = document.createElement('div');
+                    notice.style.cssText = 'color: var(--text-secondary, #888); font-size: 0.85em; padding: 4px 8px;';
+                    notice.textContent = '⚠️ Mermaid diagram could not be rendered: ' + (err.message || err);
+                    block.parentNode.insertBefore(notice, block);
+                  }
+                }
               };
               document.head.appendChild(script);
             }
