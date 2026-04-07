@@ -372,6 +372,103 @@ func TestMermaidWithSanitization(t *testing.T) {
 	}
 }
 
+// TestMermaidWithFrontmatter verifies that mermaid blocks are correctly produced
+// even when the markdown file has YAML frontmatter (common in Hugo/Jekyll blogs).
+// Goldmark doesn't strip frontmatter — it renders --- as <hr> — but this should
+// not interfere with code fence parsing for later mermaid blocks.
+func TestMermaidWithFrontmatter(t *testing.T) {
+	converter := DefaultConverter()
+
+	markdown := `---
+title: "Test Post"
+description: "A test post with mermaid diagrams"
+date: 2026-04-01
+tags:
+  - ai
+  - agents
+---
+
+# Architecture
+
+## System Overview
+
+` + "```mermaid\n" +
+		`graph TD
+    A[Client] --> B{API Gateway}
+    B -->|REST| C[Service Layer]
+    B -->|WebSocket| D[Event Handler]
+    C --> E[Database]
+    D --> E
+` + "```\n" +
+		`
+## Components
+
+- **Client** - Web frontend
+- **API Gateway** - Request routing
+
+` + "```mermaid\n" +
+		`flowchart LR
+    user["User"] --> gw["Gateway"]
+    gw --> svc["Service"]
+` + "```\n"
+
+	result, err := converter.Convert(markdown)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	t.Logf("Output HTML:\n%s", result)
+
+	// Both mermaid blocks should produce <pre class="mermaid">
+	count := strings.Count(result, `class="mermaid"`)
+	if count != 2 {
+		t.Errorf("Expected 2 mermaid blocks with class=\"mermaid\", got %d.\nHTML:\n%s", count, result)
+	}
+
+	// Code fence markers should NOT appear in the output
+	if strings.Contains(result, "```") {
+		t.Errorf("Code fence markers should not appear in HTML output, got:\n%s", result)
+	}
+
+	// The mermaid diagram content should be inside <pre> elements
+	if !strings.Contains(result, "A[Client]") || !strings.Contains(result, "user[") {
+		t.Errorf("Expected mermaid content to be preserved, got:\n%s", result)
+	}
+
+	// Headings should still render correctly
+	if !strings.Contains(result, "<h1") || !strings.Contains(result, "Architecture") {
+		t.Errorf("Expected h1 heading, got:\n%s", result)
+	}
+}
+
+// TestMermaidWithStrayFence documents what happens when a markdown file has a
+// stray triple-backtick fence. The stray ``` acts as an opening fence, causing
+// all subsequent content (including mermaid blocks) to be treated as a code block.
+// This is correct goldmark behavior — the markdown source is malformed.
+func TestMermaidWithStrayFence(t *testing.T) {
+	converter := DefaultConverter()
+
+	markdown := "# Title\n\n" +
+		"```mermaid\nflowchart LR\n    A --> B\n```\n\n\n" +
+		"```\n\n" + // STRAY closing fence — goldmark treats this as opening a new code block
+		"More text\n\n" +
+		"```mermaid\nflowchart LR\n    C --> D\n```\n"
+
+	result, err := converter.Convert(markdown)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	t.Logf("Output HTML:\n%s", result)
+
+	// Only the FIRST mermaid block should be parsed as <pre class="mermaid">.
+	// The second one is swallowed by the stray fence's code block.
+	count := strings.Count(result, `class="mermaid"`)
+	if count != 1 {
+		t.Errorf("Expected exactly 1 mermaid block (stray fence breaks the second), got %d.\nHTML:\n%s", count, result)
+	}
+}
+
 // TestCodeBlocksWithLanguageIdentifiers tests that fenced code blocks with
 // various language identifiers are rendered correctly.
 // This is a regression test for: https://github.com/inercia/mitto/issues/22

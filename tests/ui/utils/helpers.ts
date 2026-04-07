@@ -272,6 +272,14 @@ export async function navigateAndEnsureSession(page: Page): Promise<void> {
   await page.goto("/");
   await waitForAppReady(page);
   await ensureActiveSession(page);
+  // Always wait for WebSocket readiness after navigation, even when reusing an
+  // existing session. ensureActiveSession only calls waitForWebSocketReady when
+  // creating a NEW session; for existing sessions the WebSocket reconnects after
+  // page.goto but events_loaded may not have arrived yet when the test starts.
+  // Without this extra wait, the stop-button check can pass prematurely (the
+  // button is hidden by default before events_loaded sets is_prompting), causing
+  // the test to send a prompt while a previous agent response is still streaming.
+  await waitForWebSocketReady(page);
 }
 
 /**
