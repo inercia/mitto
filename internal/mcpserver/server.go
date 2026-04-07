@@ -11,14 +11,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -62,13 +60,12 @@ type Server struct {
 	stdioSession *mcp.ServerSession
 	stdioDone    chan struct{}
 
-	mu               sync.RWMutex
-	store            *session.Store
-	config           *config.Config
-	sessionManager   SessionManager
-	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
-	running          bool
-	shutdown         bool
+	mu             sync.RWMutex
+	store          *session.Store
+	config         *config.Config
+	sessionManager SessionManager
+	running        bool
+	shutdown       bool
 
 	// Session registry for session-scoped tools.
 	// Maps session_id -> registeredSession for routing UI prompts and checking permissions.
@@ -126,8 +123,6 @@ type Dependencies struct {
 	Config *config.Config
 	// SessionManager is optional - provides info about running sessions
 	SessionManager SessionManager
-	// AuxiliaryManager is optional - provides workspace-scoped auxiliary operations
-	AuxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
 }
 
 // SessionManager interface for checking session status and managing sessions.
@@ -926,15 +921,6 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
 			selfIDNote,
 	}, s.handleConversationStart)
-
-	// mitto_conversation_get_summary - Get a summary of a conversation
-	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_conversation_get_summary",
-		Description: "Generate a summary of a specific conversation (by conversation_id) using AI analysis. " +
-			"The summary includes main topics discussed, key decisions, actions taken, and pending items. " +
-			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
-			selfIDNote,
-	}, s.handleGetConversationSummary)
 
 	// mitto_conversation_get - Get properties of a specific conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
@@ -1852,167 +1838,6 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	}
 
 	return nil, output, nil
-}
-
-// GetConversationSummaryInput is the input for mitto_get_conversation_summary tool.
-type GetConversationSummaryInput struct {
-	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
-	ConversationID string `json:"conversation_id"` // Target conversation ID to summarize
-}
-
-// GetConversationSummaryOutput is the output for mitto_get_conversation_summary tool.
-type GetConversationSummaryOutput struct {
-	Success      bool   `json:"success"`
-	Summary      string `json:"summary,omitempty"`
-	MessageCount int    `json:"message_count,omitempty"` // Number of messages analyzed
-	Error        string `json:"error,omitempty"`
-}
-
-func (s *Server) handleGetConversationSummary(ctx context.Context, req *mcp.CallToolRequest, input GetConversationSummaryInput) (*mcp.CallToolResult, GetConversationSummaryOutput, error) {
-	// Validate self_id
-	if input.SelfID == "" {
-		return nil, GetConversationSummaryOutput{Success: false, Error: "self_id is required"}, nil
-	}
-
-	// Validate conversation_id
-	if input.ConversationID == "" {
-		return nil, GetConversationSummaryOutput{Success: false, Error: "conversation_id is required"}, nil
-	}
-
-	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
-	if realSessionID == "" {
-		return nil, GetConversationSummaryOutput{
-			Success: false,
-			Error: fmt.Sprintf("session not found: the self_id '%s' could not be resolved",
-				input.SelfID),
-		}, nil
-	}
-
-	// Check if source session is registered
-	reg := s.getSession(realSessionID)
-	if reg == nil {
-		return nil, GetConversationSummaryOutput{Success: false, Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
-	}
-
-	s.mu.RLock()
-	store := s.store
-	s.mu.RUnlock()
-
-	if store == nil {
-		return nil, GetConversationSummaryOutput{Success: false, Error: "session store not available"}, nil
-	}
-
-	// Check if the target conversation exists
-	_, err := store.GetMetadata(input.ConversationID)
-	if err != nil {
-		return nil, GetConversationSummaryOutput{
-			Success: false,
-			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
-		}, nil
-	}
-
-	// Read events from the conversation
-	events, err := store.ReadEvents(input.ConversationID)
-	if err != nil {
-		return nil, GetConversationSummaryOutput{
-			Success: false,
-			Error:   fmt.Sprintf("failed to read conversation events: %v", err),
-		}, nil
-	}
-
-	// Format conversation content for the summary
-	conversationContent := formatConversationForSummary(events)
-
-	// Count meaningful messages (user prompts + agent messages)
-	messageCount := 0
-	for _, e := range events {
-		if e.Type == session.EventTypeUserPrompt || e.Type == session.EventTypeAgentMessage {
-			messageCount++
-		}
-	}
-
-	if messageCount == 0 {
-		return nil, GetConversationSummaryOutput{
-			Success:      true,
-			Summary:      "This conversation has no messages yet.",
-			MessageCount: 0,
-		}, nil
-	}
-
-	// Generate summary using workspace-scoped auxiliary session
-	// TODO: Get workspace UUID from session metadata when it's added
-	// For now, we'll return an error if auxiliary manager is not available
-	s.mu.RLock()
-	auxMgr := s.auxiliaryManager
-	s.mu.RUnlock()
-
-	if auxMgr == nil {
-		return nil, GetConversationSummaryOutput{
-			Success: false,
-			Error:   "conversation summary generation not available (auxiliary manager not configured)",
-		}, nil
-	}
-
-	// Use a placeholder workspace UUID for now
-	// TODO: Get actual workspace UUID from session metadata
-	workspaceUUID := "default"
-	summary, err := auxMgr.GenerateConversationSummary(ctx, workspaceUUID, conversationContent)
-	if err != nil {
-		return nil, GetConversationSummaryOutput{
-			Success: false,
-			Error:   fmt.Sprintf("failed to generate summary: %v", err),
-		}, nil
-	}
-
-	s.logger.Info("Generated conversation summary",
-		"source_session", realSessionID,
-		"target_conversation", input.ConversationID,
-		"message_count", messageCount,
-		"summary_length", len(summary))
-
-	return nil, GetConversationSummaryOutput{
-		Success:      true,
-		Summary:      summary,
-		MessageCount: messageCount,
-	}, nil
-}
-
-// formatConversationForSummary formats conversation events into a readable format for summarization.
-func formatConversationForSummary(events []session.Event) string {
-	var sb strings.Builder
-
-	for _, e := range events {
-		switch e.Type {
-		case session.EventTypeUserPrompt:
-			if data, ok := e.Data.(map[string]interface{}); ok {
-				if msg, ok := data["message"].(string); ok {
-					sb.WriteString("USER: ")
-					sb.WriteString(msg)
-					sb.WriteString("\n\n")
-				}
-			}
-		case session.EventTypeAgentMessage:
-			if data, ok := e.Data.(map[string]interface{}); ok {
-				// The field is "html" in JSON but contains the agent's message
-				if html, ok := data["html"].(string); ok {
-					sb.WriteString("ASSISTANT: ")
-					sb.WriteString(html)
-					sb.WriteString("\n\n")
-				}
-			}
-		case session.EventTypeToolCall:
-			if data, ok := e.Data.(map[string]interface{}); ok {
-				if name, ok := data["name"].(string); ok {
-					sb.WriteString("[Tool call: ")
-					sb.WriteString(name)
-					sb.WriteString("]\n\n")
-				}
-			}
-		}
-	}
-
-	return sb.String()
 }
 
 // GetConversationInput is the input for mitto_get_conversation tool.
