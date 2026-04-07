@@ -11,7 +11,7 @@ func TestACPProcessManager_GetOrCreateProcess_RequiresWorkspace(t *testing.T) {
 	m := NewACPProcessManager(context.Background(), nil)
 	defer m.Close()
 
-	_, err := m.GetOrCreateProcess(nil, nil)
+	_, err := m.GetOrCreateProcess(nil, nil, false)
 	if err == nil {
 		t.Fatal("expected error for nil workspace")
 	}
@@ -21,7 +21,7 @@ func TestACPProcessManager_GetOrCreateProcess_RequiresUUID(t *testing.T) {
 	m := NewACPProcessManager(context.Background(), nil)
 	defer m.Close()
 
-	_, err := m.GetOrCreateProcess(&config.WorkspaceSettings{}, nil)
+	_, err := m.GetOrCreateProcess(&config.WorkspaceSettings{}, nil, false)
 	if err == nil {
 		t.Fatal("expected error for empty UUID")
 	}
