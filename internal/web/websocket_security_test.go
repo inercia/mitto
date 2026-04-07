@@ -144,5 +144,3 @@ func TestOriginChecker_AllowAll(t *testing.T) {
 		})
 	}
 }
-
-
