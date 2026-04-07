@@ -2615,6 +2615,51 @@ func TestFormatACPError(t *testing.T) {
 			contains: "internal error",
 		},
 		{
+			// -32603 without the word "details" previously fell through to the raw error;
+			// now it should always return a user-friendly message.
+			name:     "generic internal error without details keyword",
+			errMsg:   `{"code":-32603,"message":"Internal error","data":{"reason":"unknown"}}`,
+			contains: "internal error",
+		},
+		// --- HTTP 413 / context-too-large ---
+		{
+			// ACP SDK forwards the upstream 413 HTTP status inside the JSON-RPC error data.
+			name:     "HTTP 413 status in error string",
+			errMsg:   `{"code":-32603,"message":"Internal error","data":{"status":413,"message":"Context too large for model"}}`,
+			contains: "too large",
+		},
+		{
+			name:     "context too large phrase",
+			errMsg:   "context too large for model",
+			contains: "too large",
+		},
+		{
+			name:     "context_too_long API code",
+			errMsg:   "error: context_too_long — the prompt exceeds the model limit",
+			contains: "too large",
+		},
+		{
+			name:     "context_length_exceeded API code",
+			errMsg:   "context_length_exceeded: maximum tokens reached",
+			contains: "too large",
+		},
+		{
+			name:     "context window is full",
+			errMsg:   "Context window is full. Please start a new conversation.",
+			contains: "too large",
+		},
+		{
+			name:     "prompt is too long",
+			errMsg:   "prompt is too long for the model",
+			contains: "too large",
+		},
+		{
+			name:     "maximum context length",
+			errMsg:   "This model's maximum context length is 200000 tokens",
+			contains: "too large",
+		},
+		// ---
+		{
 			name:     "unknown error",
 			errMsg:   "some unknown error occurred",
 			contains: "Prompt failed: some unknown error occurred",
@@ -2661,6 +2706,66 @@ func (e *testError) Error() string {
 // containsIgnoreCase checks if s contains substr (case-insensitive)
 func containsIgnoreCase(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+func TestIsContextTooLargeError(t *testing.T) {
+	tests := []struct {
+		name     string
+		errMsg   string
+		wantTrue bool
+	}{
+		{name: "nil", errMsg: "", wantTrue: false},
+		{name: "HTTP 413 status in JSON-RPC data", errMsg: `{"code":-32603,"message":"Internal error","data":{"status":413}}`, wantTrue: true},
+		{name: "bare 413 digit", errMsg: "upstream returned 413", wantTrue: true},
+		{name: "context too large phrase", errMsg: "context too large for model", wantTrue: true},
+		{name: "context_too_long API code", errMsg: "error: context_too_long", wantTrue: true},
+		{name: "context_length_exceeded API code", errMsg: "context_length_exceeded", wantTrue: true},
+		{name: "context window is full", errMsg: "Context window is full", wantTrue: true},
+		{name: "prompt is too long", errMsg: "prompt is too long", wantTrue: true},
+		{name: "maximum context length", errMsg: "maximum context length exceeded", wantTrue: true},
+		{name: "rate limit is not context too large", errMsg: "rate limit exceeded", wantTrue: false},
+		{name: "generic internal error", errMsg: `{"code":-32603,"message":"Internal error","data":{"details":"unknown"}}`, wantTrue: false},
+		{name: "unrelated error", errMsg: "some other error", wantTrue: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var err error
+			if tt.errMsg != "" {
+				err = &testError{msg: tt.errMsg}
+			}
+			got := isContextTooLargeError(err)
+			if got != tt.wantTrue {
+				t.Errorf("isContextTooLargeError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
+			}
+		})
+	}
+}
+
+func TestIsRateLimitError(t *testing.T) {
+	tests := []struct {
+		name     string
+		errMsg   string
+		wantTrue bool
+	}{
+		{name: "nil", errMsg: "", wantTrue: false},
+		{name: "rate limit phrase", errMsg: "rate limit exceeded", wantTrue: true},
+		{name: "too many requests phrase", errMsg: "too many requests", wantTrue: true},
+		{name: "Rate Limit capitalized", errMsg: "Rate Limit reached", wantTrue: true},
+		{name: "context too large is not rate limit", errMsg: "context too large for model", wantTrue: false},
+		{name: "generic error is not rate limit", errMsg: "some other error", wantTrue: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var err error
+			if tt.errMsg != "" {
+				err = &testError{msg: tt.errMsg}
+			}
+			got := isRateLimitError(err)
+			if got != tt.wantTrue {
+				t.Errorf("isRateLimitError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
+			}
+		})
+	}
 }
 
 // --- Config Options Tests ---

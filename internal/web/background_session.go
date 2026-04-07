@@ -134,12 +134,13 @@ type BackgroundSession struct {
 	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
 	// To prevent infinite restart loops, we limit restarts to MaxACPRestarts within
 	// ACPRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
-	acpCommand     string          // Command used to start ACP process (for restart)
-	acpCwd         string          // Working directory for ACP process (for restart)
-	restartCount   int             // Number of restarts in current window
-	restartTimes   []time.Time     // Timestamps of recent restarts (for rate limiting)
-	restartReasons []RestartReason // Reasons for recent restarts (parallel to restartTimes)
-	restartMu      sync.Mutex      // Protects restart tracking fields
+	acpCommand        string          // Command used to start ACP process (for restart)
+	acpCwd            string          // Working directory for ACP process (for restart)
+	restartCount      int             // Total number of restarts across the session lifetime
+	restartTimes      []time.Time     // Timestamps of recent restarts (for rate limiting)
+	restartReasons    []RestartReason // Reasons for recent restarts (parallel to restartTimes)
+	permanentlyFailed bool            // Circuit breaker: true when ACP cannot be restarted (permanent error or lifetime cap hit)
+	restartMu         sync.Mutex      // Protects restart tracking fields (restartCount, restartTimes, restartReasons, permanentlyFailed)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -414,7 +415,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		store:                   config.Store,
 		processorManager:        config.ProcessorManager,
 		workingDir:              config.WorkingDir,
-		isFirstPrompt:           false, // Resumed session = first prompt already sent
+		isFirstPrompt:           true, // Treat first prompt after resume as "first" for processors (re-inject context)
 		queueConfig:             config.QueueConfig,
 		actionButtonsConfig:     config.ActionButtonsConfig,
 		fileLinksConfig:         config.FileLinksConfig,
@@ -1022,6 +1023,31 @@ func (bs *BackgroundSession) canRestartACP() bool {
 	bs.restartMu.Lock()
 	defer bs.restartMu.Unlock()
 
+	// Circuit breaker: a permanent error (or lifetime cap) has already tripped this flag.
+	// Once set, no further restart attempts are made — the sliding window is irrelevant.
+	if bs.permanentlyFailed {
+		if bs.logger != nil {
+			bs.logger.Debug("canRestartACP: permanently failed, circuit breaker open",
+				"session_id", bs.persistedID,
+				"total_restarts", bs.restartCount)
+		}
+		return false
+	}
+
+	// Lifetime cap: even for transient errors, don't restart more than MaxACPTotalRestarts
+	// times in total. This prevents infinite retry cycles where the sliding window keeps
+	// resetting every ACPRestartWindow (e.g. dead pipe, repeatedly failing cold-start).
+	if bs.restartCount >= MaxACPTotalRestarts {
+		bs.permanentlyFailed = true
+		if bs.logger != nil {
+			bs.logger.Warn("canRestartACP: lifetime restart cap reached, circuit breaker opened",
+				"session_id", bs.persistedID,
+				"total_restarts", bs.restartCount,
+				"max_total_restarts", MaxACPTotalRestarts)
+		}
+		return false
+	}
+
 	now := time.Now()
 	cutoff := now.Add(-ACPRestartWindow)
 
@@ -1204,6 +1230,21 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 		err = bs.startACPProcess(bs.acpCommand, bs.acpCwd, bs.workingDir, bs.acpID)
 	}
 	if err != nil {
+		// If the restart failed with a permanent (non-retryable) error, trip the circuit
+		// breaker so canRestartACP() returns false immediately on all future calls.
+		// This prevents the sliding-window timer from resetting and allowing further
+		// futile retry cycles (e.g. "write |1: file already closed" pipe errors).
+		if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
+			bs.restartMu.Lock()
+			bs.permanentlyFailed = true
+			bs.restartMu.Unlock()
+			if bs.logger != nil {
+				bs.logger.Warn("ACP restart returned permanent error, circuit breaker opened",
+					"session_id", bs.persistedID,
+					"error_class", classified.Class.String(),
+					"user_message", classified.UserMessage)
+			}
+		}
 		if bs.logger != nil {
 			logAttrs := []any{
 				"session_id", bs.persistedID,
@@ -2405,24 +2446,56 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	// Fetch session metadata for @mitto:variable substitution.
 	// Done unconditionally so substitution works even with no processors configured.
 	// Best-effort: unavailable fields substitute to "".
-	var sessionName, acpServer, parentSessionID string
+	var sessionName, acpServer, parentSessionID, parentSessionName string
+	var childSessions []processors.ChildSession
 	if bs.store != nil && bs.persistedID != "" {
 		if sessionMeta, metaErr := bs.store.GetMetadata(bs.persistedID); metaErr == nil {
 			sessionName = sessionMeta.Name
 			acpServer = sessionMeta.ACPServer
 			parentSessionID = sessionMeta.ParentSessionID
 		}
+		// Resolve parent session name for @mitto:parent variable
+		if parentSessionID != "" {
+			if parentMeta, parentErr := bs.store.GetMetadata(parentSessionID); parentErr == nil {
+				parentSessionName = parentMeta.Name
+			}
+		}
+		// Resolve child sessions for @mitto:children variable
+		if children, childErr := bs.store.ListChildSessions(bs.persistedID); childErr == nil {
+			for _, child := range children {
+				childSessions = append(childSessions, processors.ChildSession{
+					ID:          child.SessionID,
+					Name:        child.Name,
+					ACPServer:   child.ACPServer,
+					IsAutoChild: child.IsAutoChild,
+				})
+			}
+		}
 	}
+	// Get cached MCP tool names for enabledWhenMCP and tools.* CEL context
+	var mcpToolNames []string
+	if bs.auxiliaryManager != nil && bs.workspaceUUID != "" {
+		if tools, ok := bs.auxiliaryManager.GetCachedMCPTools(bs.workspaceUUID); ok {
+			mcpToolNames = make([]string, len(tools))
+			for i, tool := range tools {
+				mcpToolNames[i] = tool.Name
+			}
+		}
+	}
+
 	processorInput := &processors.ProcessorInput{
 		Message:             message,
 		IsFirstMessage:      isFirst,
 		SessionID:           bs.persistedID,
 		WorkingDir:          bs.workingDir,
 		ParentSessionID:     parentSessionID,
+		ParentSessionName:   parentSessionName,
 		SessionName:         sessionName,
 		ACPServer:           acpServer,
 		WorkspaceUUID:       bs.workspaceUUID,
 		AvailableACPServers: bs.availableACPServers,
+		ChildSessions:       childSessions,
+		MCPToolNames:        mcpToolNames,
 	}
 
 	if bs.processorManager != nil {
@@ -2657,6 +2730,21 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				bs.notifyObservers(func(o SessionObserver) {
 					o.OnError(userFriendlyErr)
 				})
+
+				// Advance the queue for transient errors where the ACP process is
+				// still healthy.  Skip queue processing for errors that indicate a
+				// hard capacity or rate limit — sending the next queued message
+				// immediately would cause the same failure again, creating a cascade
+				// that drains the queue while showing a stream of identical errors.
+				//
+				// Context-too-large (413): all queued messages will fail until the
+				//   user starts a fresh conversation — stop the queue.
+				// Rate-limit: the API will reject the next message too — stop the
+				//   queue; the keepalive-driven TryProcessQueuedMessage will retry
+				//   once the session becomes idle and the delay has elapsed.
+				if !isContextTooLargeError(err) && !isRateLimitError(err) {
+					bs.processNextQueuedMessage()
+				}
 			}
 		} else {
 			if bs.logger != nil {
@@ -2721,7 +2809,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage string) {
 	// Use a generous timeout: PromptAuxiliary calls WaitForIdle before sending the
 	// follow-up prompt, and another aux operation (e.g. MCP tool fetch) may be
-	// in-flight at the same time — keeping activePrompts > 0 for tens of seconds.
+	// in-flight at the same time — keeping activeRPCs > 0 for tens of seconds.
 	// 5 minutes is ample for those concurrent aux ops to finish.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -3869,6 +3957,41 @@ func (bs *BackgroundSession) persistConfigValue(configID, value string) {
 	// Future: For other config options, store in a ConfigValues map
 }
 
+// isContextTooLargeError returns true if the error indicates the AI model
+// rejected the prompt because the conversation context is too large (HTTP 413
+// or an equivalent model-specific error phrase).
+//
+// The ACP server forwards HTTP 413 responses as JSON-RPC -32603 "Internal error"
+// messages, so the numeric status code or the model-specific phrase may appear
+// anywhere in the error string.  We keep the list of patterns here (rather than
+// inlining them in formatACPError) so that the queue-advancement logic can reuse
+// the same predicate without duplicating strings.
+func isContextTooLargeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	errMsgLower := strings.ToLower(errMsg)
+	return strings.Contains(errMsg, "413") ||
+		strings.Contains(errMsgLower, "context too large") ||
+		strings.Contains(errMsgLower, "context_too_long") ||
+		strings.Contains(errMsgLower, "context_length_exceeded") ||
+		strings.Contains(errMsgLower, "context window is full") ||
+		strings.Contains(errMsgLower, "prompt is too long") ||
+		strings.Contains(errMsgLower, "maximum context length") ||
+		strings.Contains(errMsgLower, "context too large for model")
+}
+
+// isRateLimitError returns true if the error indicates the upstream API is
+// rate-limiting the session.
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsgLower := strings.ToLower(err.Error())
+	return strings.Contains(errMsgLower, "rate limit") || strings.Contains(errMsgLower, "too many requests")
+}
+
 // formatACPError transforms ACP errors into user-friendly messages.
 // It detects common error patterns and provides actionable guidance.
 func formatACPError(err error) string {
@@ -3884,6 +4007,13 @@ func formatACPError(err error) string {
 		strings.Contains(errMsg, "control request timed out") {
 		return "The AI agent's internal connection to the CLI timed out. " +
 			"This usually means the CLI subprocess crashed. The agent will attempt to restart automatically."
+	}
+
+	// HTTP 413 / context-too-large errors from the AI model.
+	// Checked before the generic -32603 catch-all so users get an actionable message.
+	if isContextTooLargeError(err) {
+		return "⚠️ The conversation context is too large for the model. " +
+			"Please start a new conversation. You can ask the agent to summarize the key points first if needed."
 	}
 
 	// Timeout errors from ACP server (tool execution took too long)
@@ -3908,17 +4038,17 @@ func formatACPError(err error) string {
 	}
 
 	// Rate limiting
-	if strings.Contains(errMsg, "rate limit") || strings.Contains(errMsg, "too many requests") {
+	if isRateLimitError(err) {
 		return "Rate limit reached. Please wait a moment before sending another message."
 	}
 
-	// Generic JSON-RPC internal error with details
+	// Generic JSON-RPC internal error (-32603).
+	// Previously this required "details" to be present in the message; without it the
+	// raw JSON-RPC error string was shown to the user. Now we always return a
+	// user-friendly message whenever the -32603 code is detected.
 	if strings.Contains(errMsg, "-32603") && strings.Contains(errMsg, "Internal error") {
-		// Extract any details if present
-		if strings.Contains(errMsg, "details") {
-			return "The AI agent encountered an internal error. Please try again, " +
-				"or simplify your request if the problem persists."
-		}
+		return "The AI agent encountered an internal error. Please try again, " +
+			"or simplify your request if the problem persists."
 	}
 
 	// Default: return original error with prefix
