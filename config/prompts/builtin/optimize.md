@@ -5,19 +5,13 @@ group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 
-<investigate_before_answering>
 Read relevant code paths thoroughly. Identify actual bottlenecks based on code
 structure — do not guess. Read multiple files in parallel.
-</investigate_before_answering>
 
-<task>
 Analyze for performance issues. Propose a prioritized plan and wait for approval.
-</task>
 
-<scope>
 Focus on measurable performance improvements. Do not refactor for style unless it
 directly contributes to the performance gain.
-</scope>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -34,8 +28,6 @@ If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:
 
 ---
 
-<instructions>
-
 ### 1. Analyze Performance
 
 Profile first — identify actual bottlenecks:
@@ -50,7 +42,7 @@ Profile first — identify actual bottlenecks:
 
 ### 2. Propose Plan
 
-<output_format>
+
 
 | Priority | Category | Location | Issue | Fix | Impact | Effort | Tradeoffs |
 |----------|----------|----------|-------|-----|--------|--------|-----------|
@@ -58,7 +50,7 @@ Profile first — identify actual bottlenecks:
 
 Priority: 1=clear bottleneck, 2=noticeable improvement, 3=minor.
 
-</output_format>
+
 
 ### 3. Wait for Approval
 
@@ -73,13 +65,19 @@ Per item: implement, verify (tests), measure if possible, report.
 
 For optimizations spanning 3+ files, algorithm rewrites, concurrency additions, or multiple parallelizable items, delegate to Mitto child conversations.
 
+**Session context for delegation:**
+
+Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
+
 **Choosing the right ACP server:**
 
-1. Available ACP servers: `@mitto:available_acp_servers`. Your session ID is `@mitto:session_id`.
-2. Match server tags to task:
+1. Match server tags to task:
    - Well-defined optimizations (buffering, memoization) → prefer `"coding"`/`"fast"` servers
    - Complex optimizations (concurrency redesign, algorithmic tradeoffs) → prefer `"reasoning"`/`"planning"` servers
    - No match → server marked `(current)`, then first available
+2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
 3. `mitto_conversation_new(self_id: "@mitto:session_id")` with full context, constraints, and reporting directive
 4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<short task description>", timeout_seconds: 600)`
 5. Review results, verify correctness, check tradeoffs
@@ -99,9 +97,8 @@ For optimizations spanning 3+ files, algorithm rewrites, concurrency additions, 
 - Item #N: Skipped per user request
 ```
 
-</instructions>
+## Guidelines
 
-<rules>
 - Propose before implementing; wait for approval
 - Profile before optimizing — focus on actual bottlenecks, not guesses
 - Document tradeoffs (memory vs speed, complexity vs performance)
@@ -110,4 +107,3 @@ For optimizations spanning 3+ files, algorithm rewrites, concurrency additions, 
 - For significant optimizations, consider delegating to child conversations
 - Match ACP server to task: coding agents for clear optimizations, reasoning agents for complex redesigns
 - Max 4 parallel child conversations
-</rules>

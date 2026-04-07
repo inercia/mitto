@@ -3,8 +3,15 @@ name: "JIRA: start work"
 description: "Pick a JIRA ticket from the active sprint and spawn parallel Mitto conversations to implement it"
 backgroundColor: "#BBDEFB"
 group: "JIRA"
-requiresMcpTools: jira_*, mitto_conversation_*
+enabledWhen: "!session.isChild"
+enabledWhenMCP: jira_*, mitto_conversation_*
 ---
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
 
 # JIRA: Start Work on a Ticket
 
@@ -68,7 +75,7 @@ Use `mitto_ui_ask_yes_no_mitto` to show the plan summary to the user and ask: "D
 
 For each work item in the approved plan:
 
-1. Call `mitto_conversation_new_mitto` with:
+1. Call `mitto_conversation_new_mitto` with `self_id: "@mitto:session_id"` and:
    - `title`: the work item title prefixed with the JIRA ticket key (e.g., `"CGW-1234 · Add database migration"`)
    - `acp_server`: use `"Auggie (Sonnet 4.6)"` unless the task is particularly complex, in which case use `"Auggie (Opus 4.6)"`
    - `initial_prompt`: a **self-contained** prompt that includes:
@@ -81,5 +88,5 @@ For each work item in the approved plan:
 
 2. Do **not** wait for each conversation to complete before spawning the next — spawn all conversations in parallel.
 
-3. After all conversations are spawned, use `mitto_children_tasks_wait_mitto` to wait for all of them to report back, then summarise results to the user.
+3. After all conversations are spawned, use `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "<ticket-key>", timeout_seconds: 600)` to wait for all of them to report back, then summarise results to the user.
 

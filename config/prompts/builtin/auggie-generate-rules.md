@@ -2,19 +2,19 @@
 name: "Generate rules"
 description: "Analyze workspace and generate comprehensive Augment rules files"
 group: "Agents & Mitto"
-acps: auggie
+enabledWhenACP: auggie
 backgroundColor: "#1b0bc693"
 ---
 
-<task>
+
 Analyze this workspace and generate `.augment/rules` files for effective future AI interactions.
-</task>
+
 
 <efficiency>
 Read multiple files in parallel (configs, entry points, tests).
 </efficiency>
 
-<instructions>
+
 
 ## Step 1: Explore the Project
 
@@ -65,12 +65,10 @@ Content...
 2. Generate each file (<200 lines)
 3. Cross-reference between files
 
-</instructions>
+## Guidelines
 
-<rules>
 - Focus on patterns that help AI assistants write better code
 - Prioritize actionable guidance over exhaustive documentation
 - Include anti-pattern examples
 - Reference existing repo docs rather than duplicating
 - If `.augment/rules/` exists, enhance rather than replace
-</rules>

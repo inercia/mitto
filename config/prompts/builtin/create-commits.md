@@ -5,9 +5,7 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
-<task>
 Create Git commits for changes in this repository with proper organization and messages.
-</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -20,8 +18,6 @@ If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:
 
 ---
 
-<instructions>
-
 ### 0. Prerequisites
 
 **Formatting:** Run project formatters. Report any files modified and include in commit analysis.
@@ -30,17 +26,18 @@ If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:
 - If not run recently: warn user, ask to proceed or run tests first
 - If failing: warn user, ask to fix or proceed
 
-### 1. Check Branch
+### 1. Ensure Feature Branch
 
 ```bash
 git branch --show-current
 ```
 
-If on protected branch (`main`, `master`, `develop`):
-- Warn user
-- **With Mitto UI**: `mitto_ui_options_buttons` → "Create feature branch / Continue on current"
+If on `main`/`master`/protected branch:
+- Check recent branch naming: `git branch -r --sort=-committerdate | head -20`
+- Suggest branch name following detected convention (based on the changes to commit)
+- **With Mitto UI**: `mitto_ui_options_buttons` → "Create feature branch / Continue on current branch"
 - **Without**: Ask in conversation
-- If creating branch, suggest name based on changes
+- If confirmed: `git checkout -b <branch-name>`
 
 If on feature branch: fetch and rebase on target branch (usually "main").
 
@@ -53,14 +50,10 @@ If on feature branch: fetch and rebase on target branch (usually "main").
 
 ### 3. Propose Commits
 
-<output_format>
-
 SEQUENCE | COMMIT MESSAGE | FILES | REASON
 
 Use conventional prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
 Files can use wildcards (`*.md`, `docs/*`). Order logically.
-
-</output_format>
 
 ### 4. Wait for Approval
 
@@ -75,10 +68,8 @@ Per commit: `git add <files>` → `git commit -m "<message>"`. Report results.
 
 If you discovered project conventions or the user corrected assumptions, update Agent rules/memories (with user approval).
 
-</instructions>
+## Guidelines
 
-<rules>
 - Respect `.gitignore`
 - Skip empty commits
 - Handle binary/large files appropriately
-</rules>

@@ -3,12 +3,12 @@ name: "Create minions"
 description: "Break down a complex problem into parallel tasks, coordinate workers, and iterate until solved"
 group: "Work flow"
 backgroundColor: "#FFF9C4"
+enabledWhen: "!session.isChild"
+enabledWhenMCP: mitto_conversation_*
 ---
 
-<task>
 Decompose the current problem into parallel subtasks, dispatch to child conversations,
 collect results, and iterate until solved.
-</task>
 
 ## Prerequisites: Check for Mitto MCP Server
 
@@ -25,8 +25,6 @@ This prompt requires Mitto's MCP server tools.
 If any are missing, **stop** and show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp. Do not proceed.
 
 ---
-
-<instructions>
 
 ## Overview
 
@@ -48,6 +46,8 @@ Track throughout: overall goal, completed subtasks and outcomes, open items, ite
 2. Available ACP servers for this workspace: `@mitto:available_acp_servers`
    Note each server's name, tags (e.g., `[coding, fast]`), and the `(current)` marker.
 3. `mitto_conversation_get_summary(self_id: "@mitto:session_id", conversation_id: "@mitto:session_id")` → current work context
+4. Existing child conversations: `@mitto:children`
+   If relevant children already exist, consider reusing them instead of creating new ones.
 
 ## Phase 2: Decompose the Problem
 
@@ -110,6 +110,7 @@ Inform user: "Waiting for child tasks (iteration N)... Monitor in Conversations 
 ## Phase 6: Synthesize and Evaluate
 
 ### 1. Categorize results
+
 - **Succeeded**: `completed: true`, status `"completed"`
 - **Partial**: `completed: true`, status `"partial"`
 - **Failed**: `completed: true`, status `"failed"`
@@ -117,6 +118,7 @@ Inform user: "Waiting for child tasks (iteration N)... Monitor in Conversations 
 - **Not running**: `status: "not_running"`
 
 ### 2. Cross-report synthesis
+
 - Merge discoveries and new information
 - Check consistency (conflicts, overlapping changes?)
 - Identify gaps no child addressed
@@ -124,6 +126,7 @@ Inform user: "Waiting for child tasks (iteration N)... Monitor in Conversations 
 - Evaluate follow-up suggestions
 
 ### 3. Assess progress
+
 1. Problem fully solved?
 2. Progress made, more work needed?
 3. Problem different than expected (re-decompose)?
@@ -131,19 +134,17 @@ Inform user: "Waiting for child tasks (iteration N)... Monitor in Conversations 
 
 ### 4. Present status
 
-<output_format>
-
 ```markdown
 ## Iteration <N> Results
 
 ### Completed
-- **<Task>**: <summary> | Files: <modified>
+- ****: <summary> | Files: <modified>
 
 ### Partially Completed
-- **<Task>**: <summary> | Remaining: <what's left>
+- ****: <summary> | Remaining: <what's left>
 
 ### Failed
-- **<Task>**: <error>
+- ****: <error>
 
 ### Discoveries / Open Questions
 - ...
@@ -151,8 +152,6 @@ Inform user: "Waiting for child tasks (iteration N)... Monitor in Conversations 
 ### Overall Assessment
 <synthesis>
 ```
-
-</output_format>
 
 ### 5. Clean up finished children
 
@@ -209,9 +208,8 @@ Then dispatch (Phase 4) → wait (Phase 5) → synthesize (Phase 6) → repeat i
 - <specific follow-ups>
 ```
 
-</instructions>
+## Guidelines
 
-<rules>
 - Max 4 parallel tasks per iteration
 - Tasks must be truly independent — no shared file modifications
 - Each child prompt must be self-contained with full context
@@ -224,4 +222,3 @@ Then dispatch (Phase 4) → wait (Phase 5) → synthesize (Phase 6) → repeat i
 - Accumulate context across iterations — new children should know prior results
 - Act as orchestrator, not worker
 - Clean up child conversations after reviewing results
-</rules>

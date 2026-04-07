@@ -3,7 +3,7 @@ name: "JIRA: status ONE in-progress"
 description: "Pick one in-progress ticket relevant to this repo and fact-check its implementation status"
 backgroundColor: "#FFF9C4"
 group: "JIRA"
-requiresMcpTools: jira_*
+enabledWhenMCP: jira_*
 ---
 
 # JIRA: Status Check — One In-Progress Ticket

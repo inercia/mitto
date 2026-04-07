@@ -5,20 +5,14 @@ group: "Development"
 backgroundColor: "#FFECB3"
 ---
 
-<investigate_before_answering>
 Read the spec file thoroughly. Explore the codebase for current architecture,
 patterns, and reusable utilities. Do not speculate — read relevant files first.
-</investigate_before_answering>
 
-<task>
 Read the spec, design the architecture, and create a detailed implementation plan
 broken into small iterative steps.
-</task>
 
-<scope>
 Only plan and implement what the spec requires. Keep solutions simple. No extra
 features, abstractions, or defensive coding beyond what's specified.
-</scope>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -30,8 +24,6 @@ features, abstractions, or defensive coding beyond what's specified.
 If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
 
 ---
-
-<instructions>
 
 ## Phase 1: Understand the Spec
 
@@ -57,14 +49,14 @@ Break into small iterative steps:
 2. Break each into smaller steps
 3. Ensure steps are: small enough for safe testing, large enough for progress, properly ordered
 
-<output_format>
+
 
 | # | Description | Files/Components | Dependencies | Verification |
 |---|-------------|------------------|--------------|--------------|
 | 1 | ... | ... | None | ... |
 | 2 | ... | ... | Step 1 | ... |
 
-</output_format>
+
 
 Each step should be independently testable. Include test writing in each step, not as a separate phase. Prefer working software at every step.
 
@@ -80,5 +72,3 @@ Present plan, wait for approval.
 Once approved, per step: implement → write/update tests → verify → report → next.
 
 If issues arise that affect the plan, stop and discuss before continuing.
-
-</instructions>

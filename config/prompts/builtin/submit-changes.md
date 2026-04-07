@@ -5,9 +5,9 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
-<task>
+
 Submit current work by preparing, committing (if needed), and pushing changes to a pull request.
-</task>
+
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -19,8 +19,6 @@ Submit current work by preparing, committing (if needed), and pushing changes to
 If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
 
 ---
-
-<instructions>
 
 ### 1. Check for Uncommitted Changes
 
@@ -84,6 +82,7 @@ If behind: inform user to rebase first (use "Rebase changes" prompt), then stop.
 ### 5. Create or Update PR
 
 **No existing PR:**
+
 ```bash
 git push -u <push-remote> <branch-name>
 gh pr create --fill --base <target-branch>    # GitHub
@@ -101,11 +100,9 @@ Provide PR/MR URL.
 
 If during this session you discovered project conventions, patterns, or preferences (or the user corrected assumptions), update Agent rules/memories. Ask user before modifying rules files.
 
-</instructions>
+
 
 ## Summary Report
-
-<output_format>
 
 ✅ Changes Submitted
 📋 Status:
@@ -115,9 +112,8 @@ If during this session you discovered project conventions, patterns, or preferen
 🔗 PR: <pr-url>
 📝 Rules Updated: [Yes - added X | No updates needed]
 
-</output_format>
+## Guidelines
 
-<rules>
 - Detect correct remote via PR or ask user — do not assume
 - Distinguish target vs push remote: push to `origin`, PR targets `upstream` in fork workflows
 - Use `--force-with-lease` when force pushing
@@ -126,4 +122,3 @@ If during this session you discovered project conventions, patterns, or preferen
 - Stop if uncommitted changes exist — do not auto-commit
 - Use rebase, not merge, for updating branches
 - Document learnings in rules only with user approval
-</rules>

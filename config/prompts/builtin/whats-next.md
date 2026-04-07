@@ -5,13 +5,9 @@ group: "Work flow"
 backgroundColor: "#BBDEFB"
 ---
 
-<investigate_before_answering>
 Review current state: read relevant files, check git status and recent changes.
-</investigate_before_answering>
 
-<task>
 Analyze progress and suggest next steps.
-</task>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -21,8 +17,6 @@ If missing, show instructions for Mitto's MCP server at http://127.0.0.1:5757/mc
 
 ---
 
-<instructions>
-
 ### Review
 
 1. **Completed**: What we've accomplished
@@ -31,17 +25,11 @@ If missing, show instructions for Mitto's MCP server at http://127.0.0.1:5757/mc
 
 ### Suggest Next Steps
 
-<output_format>
-
 | Priority | Task | Reason | Effort |
 |----------|------|--------|--------|
 | 1 | ... | ... | Small/Medium/Large |
-
-</output_format>
 
 Consider: dependencies, risk (tackle risky items early), value (high-impact first), blockers.
 
 **With Mitto UI**: `mitto_ui_ask_yes_no` → "Proceed with top priority task?"
 **Without**: Ask in conversation.
-
-</instructions>

@@ -3,8 +3,13 @@ name: "JIRA: decompose"
 description: "Break a JIRA ticket into sub-tickets and create them automatically"
 backgroundColor: "#E1BEE7"
 group: "JIRA"
-requiresMcpTools: jira_*
+enabledWhen: "!session.isChild"
+enabledWhenMCP: jira_*
 ---
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
 # JIRA: Decompose a Ticket into Sub-Tickets
 

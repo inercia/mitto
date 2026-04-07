@@ -5,9 +5,9 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
-<task>
+
 Rebase the current branch onto the target branch, resolving conflicts and pushing the result.
-</task>
+
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -20,8 +20,6 @@ Rebase the current branch onto the target branch, resolving conflicts and pushin
 If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
 
 ---
-
-<instructions>
 
 ### 1. Check Repository Status
 
@@ -81,6 +79,7 @@ Otherwise: `git rebase <target-remote>/<target-branch>`
 ### 5. Conflict Resolution
 
 Per conflicting file:
+
 1. Identify: `git diff --name-only --diff-filter=U`
 2. Examine both sides
 3. Analyze: incoming vs. ours, same logical area?
@@ -109,9 +108,8 @@ git push --force-with-lease origin <current-branch>
 
 In fork workflows: push to `origin` (your fork), not `upstream`.
 
-</instructions>
+## Guidelines
 
-<rules>
 - Protect uncommitted changes — no work should be lost
 - Detect the correct remote and confirm with user
 - Ask when uncertain about any decision
@@ -122,4 +120,3 @@ In fork workflows: push to `origin` (your fork), not `upstream`.
 - Preserve commit messages and authorship
 - Ask rather than guess on conflict resolution
 - Remind user that collaborators may need to reset local branches after push
-</rules>

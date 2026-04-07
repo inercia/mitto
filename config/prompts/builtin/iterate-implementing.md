@@ -5,20 +5,12 @@ group: "Development"
 backgroundColor: "#BBDEFB"
 ---
 
-<investigate_before_answering>
 Read the state file and relevant source files first. Do not speculate about
 code you haven't opened.
-</investigate_before_answering>
 
-<task>
 Continue implementing features using a state file to track progress across iterations.
-</task>
 
-<scope>
 Only implement what's in the spec. No extra features or abstractions.
-</scope>
-
-<instructions>
 
 # Preparation
 
@@ -45,5 +37,3 @@ Template:
 6. Update state file
 
 Once complete, verify against original problem description.
-
-</instructions>

@@ -5,19 +5,13 @@ group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 
-<investigate_before_answering>
 Read the code thoroughly: current structure, callers, dependents. Read multiple
 files in parallel. Do not speculate about code you haven't opened.
-</investigate_before_answering>
 
-<task>
 Analyze and propose a prioritized list of refactoring improvements.
 Propose a plan and wait for approval.
-</task>
 
-<scope>
 Preserve external behavior. One type of change at a time. No new features.
-</scope>
 
 ## Prerequisites: Check for Mitto MCP Server (Optional)
 
@@ -34,8 +28,6 @@ If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:
 
 ---
 
-<instructions>
-
 ### 1. Analyze
 
 | Area | What to Look For |
@@ -49,16 +41,12 @@ If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:
 
 ### 2. Propose Plan
 
-<output_format>
-
 | Priority | Category | Location | Issue | Change | Benefit | Effort |
 |----------|----------|----------|-------|--------|---------|--------|
 | 1 | Structure | `path/file` | Related fns scattered | Group into module | Better organization | Medium |
 
 Priority: 1=significant maintainability gain, 2=noticeable quality improvement, 3=minor.
 Effort: Small (low risk), Medium (some risk), Large (higher risk).
-
-</output_format>
 
 ### 3. Wait for Approval
 
@@ -73,13 +61,19 @@ Per item: make one type of change, run tests, preserve external behavior, report
 
 For refactorings spanning 3+ files, module extraction, or multiple parallelizable items, delegate to Mitto child conversations.
 
+**Session context for delegation:**
+
+Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
+
 **Choosing the right ACP server:**
 
-1. Available ACP servers: `@mitto:available_acp_servers`. Your session ID is `@mitto:session_id`.
-2. Match server tags to task:
+1. Match server tags to task:
    - Mechanical restructuring (renames, moves, obvious extractions) → prefer `"coding"`/`"fast"` servers
    - Complex decompositions, architectural decisions → prefer `"reasoning"`/`"planning"` servers
    - No match → server marked `(current)`, then first available
+2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
 3. `mitto_conversation_new(self_id: "@mitto:session_id")` with full context, constraints (preserve behavior, no new features), and reporting directive
 4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<short task description>", timeout_seconds: 600)`
 5. Review results, verify behavior preserved, run tests
@@ -99,9 +93,8 @@ For refactorings spanning 3+ files, module extraction, or multiple parallelizabl
 - Item #N: Skipped per user request
 ```
 
-</instructions>
+## Guidelines
 
-<rules>
 - Propose before implementing; wait for approval
 - Preserve external behavior
 - One type of change at a time
@@ -110,4 +103,3 @@ For refactorings spanning 3+ files, module extraction, or multiple parallelizabl
 - For significant refactorings, consider delegating to child conversations
 - Match ACP server to task: coding agents for mechanical changes, reasoning agents for complex decompositions
 - Max 4 parallel child conversations
-</rules>

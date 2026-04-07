@@ -2,16 +2,12 @@
 name: "Improve rules"
 description: "Update Augment rules based on recent conversations and code changes"
 group: "Agents & Mitto"
-acps: auggie
+enabledWhenACP: auggie
 backgroundColor: "#1b0bc693"
 ---
 
-<task>
 Review and update `.augment/rules` based on insights and lessons from recent
 conversations and code changes.
-</task>
-
-<instructions>
 
 ## Update Content
 
@@ -41,9 +37,5 @@ Consider splitting large files into focused, scope-specific files:
 
 Goal: focused rules files loaded only when their topic is relevant.
 
-</instructions>
-
-<rules>
 - Preserve existing valid content — only add or update
 - Be cautious with uncertain changes
-</rules>
