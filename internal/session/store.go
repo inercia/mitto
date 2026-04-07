@@ -486,6 +486,146 @@ func (s *Store) List() ([]Metadata, error) {
 	return sessions, nil
 }
 
+// FindAutoChildrenRecursive returns all auto-child session IDs recursively.
+// Used by the web layer to close ACP processes before deletion.
+func (s *Store) FindAutoChildrenRecursive(sessionID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	return s.findAutoChildrenRecursive(sessionID, make(map[string]bool))
+}
+
+func (s *Store) findAutoChildrenRecursive(sessionID string, visited map[string]bool) ([]string, error) {
+	if visited[sessionID] {
+		return nil, nil // Prevent cycles
+	}
+	visited[sessionID] = true
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		childID := entry.Name()
+		meta, err := s.readMetadata(childID)
+		if err != nil {
+			continue
+		}
+		if meta.ParentSessionID == sessionID && meta.IsAutoChild {
+			result = append(result, childID)
+			// Recurse to find grandchildren
+			grandchildren, _ := s.findAutoChildrenRecursive(childID, visited)
+			result = append(result, grandchildren...)
+		}
+	}
+	return result, nil
+}
+
+// ListChildSessions returns all sessions that have the given parentID as their ParentSessionID.
+// Returns direct children only (not grandchildren).
+// Returns empty slice if no children exist.
+func (s *Store) ListChildSessions(parentID string) ([]Metadata, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	children := []Metadata{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		sessionID := entry.Name()
+		meta, err := s.readMetadata(sessionID)
+		if err != nil {
+			continue // Skip sessions with unreadable metadata
+		}
+		if meta.ParentSessionID == parentID {
+			children = append(children, meta)
+		}
+	}
+	return children, nil
+}
+
+// CountChildSessions returns the count of direct child sessions.
+// More efficient than ListChildSessions when only the count is needed.
+func (s *Store) CountChildSessions(parentID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return 0, ErrStoreClosed
+	}
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		sessionID := entry.Name()
+		meta, err := s.readMetadata(sessionID)
+		if err != nil {
+			continue
+		}
+		if meta.ParentSessionID == parentID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// HasChildSessions returns true if the session has at least one child.
+// More efficient than CountChildSessions when only existence check is needed.
+func (s *Store) HasChildSessions(parentID string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return false, ErrStoreClosed
+	}
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return false, err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		sessionID := entry.Name()
+		meta, err := s.readMetadata(sessionID)
+		if err != nil {
+			continue
+		}
+		if meta.ParentSessionID == parentID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Delete removes a session and all its data from local storage.
 //
 // Note: This only deletes the local session data (events, metadata).
@@ -496,8 +636,8 @@ func (s *Store) List() ([]Metadata, error) {
 // or via server-specific expiration policies).
 //
 // If the session being deleted is a parent session (has child sessions),
-// this method will clear the ParentSessionID field in all child sessions
-// to prevent orphaned references.
+// auto-children (IsAutoChild=true) are cascade deleted while MCP-children
+// (IsAutoChild=false) are orphaned (ParentSessionID cleared).
 func (s *Store) Delete(sessionID string) error {
 	log := logging.Session()
 	s.mu.Lock()
@@ -512,10 +652,10 @@ func (s *Store) Delete(sessionID string) error {
 		return ErrSessionNotFound
 	}
 
-	// Before deleting, find and clean up any child sessions that reference this parent
-	// This prevents orphaned parent references
-	if err := s.clearParentReferenceInChildren(sessionID); err != nil {
-		log.Error("failed to clear parent references in child sessions", "error", err, "session_id", sessionID)
+	// Before deleting, find and clean up any child sessions that reference this parent.
+	// Auto-children are cascade deleted; MCP-children are orphaned.
+	if _, err := s.handleChildSessionsOnParentDelete(sessionID, nil); err != nil {
+		log.Error("failed to handle child sessions on parent delete", "error", err, "session_id", sessionID)
 		// Continue with deletion even if cleanup fails - we don't want to block deletion
 	}
 
@@ -540,21 +680,32 @@ func (s *Store) Exists(sessionID string) bool {
 	return err == nil
 }
 
-// clearParentReferenceInChildren finds all sessions that have the given sessionID
-// as their parent and clears the ParentSessionID field.
-// This is called when deleting a parent session to prevent orphaned references.
+// handleChildSessionsOnParentDelete processes child sessions when parent is deleted.
+// - Auto-children (IsAutoChild=true) are CASCADE DELETED (recursively)
+// - MCP-children (IsAutoChild=false) are ORPHANED (ParentSessionID cleared)
+// Returns the list of auto-child IDs that were deleted.
 // Note: This method assumes the caller holds s.mu.Lock().
-func (s *Store) clearParentReferenceInChildren(parentSessionID string) error {
+func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visited map[string]bool) ([]string, error) {
 	log := logging.Session()
+
+	if visited == nil {
+		visited = make(map[string]bool)
+	}
+	if visited[parentSessionID] {
+		log.Warn("Circular reference detected in session hierarchy", "session_id", parentSessionID)
+		return nil, nil
+	}
+	visited[parentSessionID] = true
 
 	// Read all session directories
 	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
-		return fmt.Errorf("failed to read sessions directory: %w", err)
+		return nil, fmt.Errorf("failed to read sessions directory: %w", err)
 	}
 
+	var deletedIDs []string
 	var updateErrors []error
-	var updatedCount int
+	var orphanedCount int
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -562,52 +713,63 @@ func (s *Store) clearParentReferenceInChildren(parentSessionID string) error {
 		}
 
 		sessionID := entry.Name()
-		// Skip the session being deleted
 		if sessionID == parentSessionID {
 			continue
 		}
 
-		// Read metadata
 		meta, err := s.readMetadata(sessionID)
 		if err != nil {
-			// Skip sessions with invalid metadata
 			continue
 		}
 
 		// Check if this session has the parent we're deleting
 		if meta.ParentSessionID == parentSessionID {
-			// Clear the parent reference - this child is now a root session.
-			// Since children inherit the parent's flags, and the MCP handler
-			// prevents children from starting conversations via the ParentSessionID
-			// check (not flags), clearing the parent reference is all that's needed
-			// to allow orphaned children to start new conversations.
-			meta.ParentSessionID = ""
-			meta.UpdatedAt = time.Now()
+			if meta.IsAutoChild {
+				// CASCADE DELETE: Recursively delete auto-children
+				// First, handle this child's children
+				grandchildDeleted, _ := s.handleChildSessionsOnParentDelete(sessionID, visited)
+				deletedIDs = append(deletedIDs, grandchildDeleted...)
 
-			// Write updated metadata
-			if err := s.writeMetadata(meta); err != nil {
-				updateErrors = append(updateErrors, fmt.Errorf("failed to update session %s: %w", sessionID, err))
-				continue
+				// Now delete this auto-child
+				sessionDir := s.sessionDir(sessionID)
+				if err := os.RemoveAll(sessionDir); err != nil {
+					updateErrors = append(updateErrors, fmt.Errorf("failed to delete auto-child %s: %w", sessionID, err))
+					continue
+				}
+				deletedIDs = append(deletedIDs, sessionID)
+				log.Info("Cascade deleted auto-child session",
+					"parent_session_id", parentSessionID,
+					"deleted_session_id", sessionID,
+					"session_name", meta.Name)
+			} else {
+				// ORPHAN: Clear parent reference for MCP-created children
+				meta.ParentSessionID = ""
+				meta.UpdatedAt = time.Now()
+				if err := s.writeMetadata(meta); err != nil {
+					updateErrors = append(updateErrors, fmt.Errorf("failed to orphan session %s: %w", sessionID, err))
+					continue
+				}
+				orphanedCount++
+				log.Info("Orphaned MCP-child session",
+					"parent_session_id", parentSessionID,
+					"orphaned_session_id", sessionID)
 			}
-
-			updatedCount++
-			log.Debug("cleared parent reference in child session",
-				"child_session_id", sessionID,
-				"parent_session_id", parentSessionID)
 		}
 	}
 
-	if updatedCount > 0 {
-		log.Info("cleared parent references in child sessions",
-			"parent_session_id", parentSessionID,
-			"updated_count", updatedCount)
-	}
-
 	if len(updateErrors) > 0 {
-		return fmt.Errorf("encountered %d errors while clearing parent references", len(updateErrors))
+		log.Error("Errors during child session cleanup",
+			"parent_session_id", parentSessionID,
+			"error_count", len(updateErrors),
+			"errors", updateErrors)
 	}
 
-	return nil
+	log.Debug("Processed child sessions on parent delete",
+		"parent_session_id", parentSessionID,
+		"auto_children_deleted", len(deletedIDs),
+		"mcp_children_orphaned", orphanedCount)
+
+	return deletedIDs, nil
 }
 
 // CountSessions returns the number of stored sessions.
