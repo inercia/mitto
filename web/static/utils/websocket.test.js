@@ -1323,4 +1323,16 @@ describe("isTerminalSessionError", () => {
     expect(isTerminalSessionError("session expired")).toBe(false);
     expect(isTerminalSessionError("not found")).toBe(false);
   });
+
+  test('returns true for "session is closed" errors', () => {
+    expect(isTerminalSessionError("Failed to send prompt: session is closed")).toBe(true);
+    expect(isTerminalSessionError("session is closed")).toBe(true);
+    expect(isTerminalSessionError("SESSION IS CLOSED")).toBe(true);
+  });
+
+  test('returns true for "session not running" errors', () => {
+    expect(isTerminalSessionError("Session not running. Create or resume the session")).toBe(true);
+    expect(isTerminalSessionError("session not running")).toBe(true);
+    expect(isTerminalSessionError("SESSION NOT RUNNING")).toBe(true);
+  });
 });

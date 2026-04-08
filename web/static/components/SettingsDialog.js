@@ -1148,6 +1148,7 @@ export function SettingsDialog({
   const [externalEnabled, setExternalEnabled] = useState(false); // Is external listener currently running
   const [hookUpCommand, setHookUpCommand] = useState("");
   const [hookDownCommand, setHookDownCommand] = useState("");
+  const [hookExternalAddress, setHookExternalAddress] = useState("");
 
   // Access log setting (enabled by default)
   const [accessLogEnabled, setAccessLogEnabled] = useState(true);
@@ -1620,6 +1621,7 @@ export function SettingsDialog({
       // Load hook settings
       setHookUpCommand(config.web?.hooks?.up?.command || "");
       setHookDownCommand(config.web?.hooks?.down?.command || "");
+      setHookExternalAddress(config.web?.hooks?.external_address || "");
 
       // Load access log setting (enabled by default)
       setAccessLogEnabled(config.web?.access_log?.enabled !== false);
@@ -1838,13 +1840,16 @@ export function SettingsDialog({
       };
 
       // Add hooks if configured
-      if (hookUpCommand.trim() || hookDownCommand.trim()) {
+      if (hookUpCommand.trim() || hookDownCommand.trim() || hookExternalAddress.trim()) {
         webConfig.hooks = {};
         if (hookUpCommand.trim()) {
           webConfig.hooks.up = { command: hookUpCommand.trim() };
         }
         if (hookDownCommand.trim()) {
           webConfig.hooks.down = { command: hookDownCommand.trim() };
+        }
+        if (hookExternalAddress.trim()) {
+          webConfig.hooks.external_address = hookExternalAddress.trim();
         }
       }
 
@@ -4649,6 +4654,23 @@ export function SettingsDialog({
                                 class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                               />
                             </div>
+                            <div class="flex items-center gap-2 mt-2">
+                              <label class="text-sm text-gray-400 w-12"
+                                >URL</label
+                              >
+                              <input
+                                type="text"
+                                value=${hookExternalAddress}
+                                onInput=${(e) =>
+                                  setHookExternalAddress(e.target.value)}
+                                placeholder="e.g., https://mitto.example.com"
+                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                              />
+                            </div>
+                            <p class="text-xs text-gray-600 mt-1">
+                              If set, Mitto monitors this URL and restarts
+                              hooks if unreachable.
+                            </p>
                           </div>
                         `}
                       </div>
