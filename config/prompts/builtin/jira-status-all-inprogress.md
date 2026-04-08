@@ -3,7 +3,7 @@ name: "JIRA: status ALL in-progress"
 description: "Fact-check implementation status for all in-progress sprint tickets relevant to this repo"
 backgroundColor: "#FFE0B2"
 group: "JIRA"
-requiresMcpTools: jira_*
+enabledWhenMCP: jira_*
 ---
 
 # JIRA: Status Check — All In-Progress Tickets

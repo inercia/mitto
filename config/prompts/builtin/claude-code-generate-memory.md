@@ -2,19 +2,19 @@
 name: "Generate memory"
 description: "Analyze workspace and generate comprehensive Claude Code memory files"
 group: "Agents & Mitto"
-acps: claude-code
+enabledWhenACP: claude-code
 backgroundColor: "#1b0bc693"
 ---
 
-<task>
+
 Analyze this workspace and generate Claude Code memory files for effective future AI interactions.
-</task>
+
 
 <efficiency>
 Read multiple files in parallel (configs, entry points, tests).
 </efficiency>
 
-<instructions>
+
 
 ## Step 1: Explore the Project
 
@@ -36,7 +36,7 @@ Brief description.
 ## Build & Test Commands
 - `<command>` - description
 ## Code Style
-- <rules>
+- 
 ## Architecture
 - <structure>
 ```
@@ -81,13 +81,11 @@ Rules without `paths` load unconditionally.
 3. Generate topic-specific rules if needed
 4. Keep files <200 lines each
 
-</instructions>
+## Guidelines
 
-<rules>
 - Focus on patterns that help AI assistants write better code
 - Prioritize actionable guidance over exhaustive documentation
 - Include anti-pattern examples
 - Reference existing repo docs rather than duplicating
 - If `CLAUDE.md` exists, enhance rather than replace
 - Use `CLAUDE.local.md` for personal preferences (not committed)
-</rules>

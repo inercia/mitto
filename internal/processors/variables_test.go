@@ -163,6 +163,124 @@ func TestSubstituteVariables(t *testing.T) {
 	}
 }
 
+func TestSubstituteVariables_Parent(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		input    *ProcessorInput
+		expected string
+	}{
+		{
+			name:    "parent with name",
+			message: "parent: @mitto:parent",
+			input: &ProcessorInput{
+				ParentSessionID:   "20260407-100000-aabbccdd",
+				ParentSessionName: "Main session",
+			},
+			expected: "parent: 20260407-100000-aabbccdd (Main session)",
+		},
+		{
+			name:    "parent without name",
+			message: "parent: @mitto:parent",
+			input: &ProcessorInput{
+				ParentSessionID: "20260407-100000-aabbccdd",
+			},
+			expected: "parent: 20260407-100000-aabbccdd",
+		},
+		{
+			name:     "no parent",
+			message:  "parent: @mitto:parent",
+			input:    &ProcessorInput{},
+			expected: "parent: ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubstituteVariables(tt.message, tt.input)
+			if got != tt.expected {
+				t.Errorf("SubstituteVariables(%q) = %q, want %q", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSubstituteVariables_Children(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		input    *ProcessorInput
+		expected string
+	}{
+		{
+			name:     "no children",
+			message:  "children: @mitto:children",
+			input:    &ProcessorInput{},
+			expected: "children: ",
+		},
+		{
+			name:    "single child with name and server",
+			message: "@mitto:children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "sess-1", Name: "Research", ACPServer: "claude-code"},
+				},
+			},
+			expected: "sess-1 (Research) [claude-code]",
+		},
+		{
+			name:    "child without name",
+			message: "@mitto:children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "sess-1", ACPServer: "auggie"},
+				},
+			},
+			expected: "sess-1 [auggie]",
+		},
+		{
+			name:    "child without server",
+			message: "@mitto:children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "sess-1", Name: "Test"},
+				},
+			},
+			expected: "sess-1 (Test)",
+		},
+		{
+			name:    "multiple children",
+			message: "@mitto:children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "sess-1", Name: "Research", ACPServer: "claude-code"},
+					{ID: "sess-2", Name: "Tests", ACPServer: "auggie"},
+				},
+			},
+			expected: "sess-1 (Research) [claude-code], sess-2 (Tests) [auggie]",
+		},
+		{
+			name:    "child with bare id only",
+			message: "@mitto:children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "sess-1"},
+				},
+			},
+			expected: "sess-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubstituteVariables(tt.message, tt.input)
+			if got != tt.expected {
+				t.Errorf("SubstituteVariables(%q) = %q, want %q", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestFormatAvailableACPServers(t *testing.T) {
 	tests := []struct {
 		name     string

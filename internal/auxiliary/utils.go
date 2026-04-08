@@ -35,11 +35,34 @@ func truncateForLog(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// stripMarkdownFences removes markdown code fences from a string.
+// Handles ```json ... ``` and ``` ... ``` patterns.
+// Returns the original string unchanged if no valid fence pair is found.
+// This is used to tolerate agents that wrap JSON responses in markdown code blocks.
+func stripMarkdownFences(s string) string {
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	// Find the end of the opening fence line (may include a language hint like "json")
+	newlineIdx := strings.Index(s, "\n")
+	if newlineIdx < 0 {
+		return s // No newline after opening fence — not a valid fenced block
+	}
+	rest := s[newlineIdx+1:]
+	// Find the closing fence
+	closeIdx := strings.LastIndex(rest, "```")
+	if closeIdx < 0 {
+		return s // No closing fence found
+	}
+	return strings.TrimSpace(rest[:closeIdx])
+}
+
 // parseFollowUpSuggestions parses the JSON response from the auxiliary conversation.
 // It handles cases where the response might have extra text around the JSON.
 // Returns an empty slice if parsing fails (this is not considered an error).
 func parseFollowUpSuggestions(response string) []FollowUpSuggestion {
 	response = strings.TrimSpace(response)
+	response = stripMarkdownFences(response)
 
 	// Try direct parsing first
 	var suggestions []FollowUpSuggestion
@@ -106,6 +129,7 @@ type mcpToolsResponse struct {
 // Returns the tools list and any error message reported by the agent.
 func parseMCPToolsList(response string) ([]MCPToolInfo, string, error) {
 	response = strings.TrimSpace(response)
+	response = stripMarkdownFences(response)
 
 	// Try parsing as a JSON object {"tools": [...], "error": "..."}
 	var obj mcpToolsResponse
@@ -147,6 +171,7 @@ func parseMCPToolsList(response string) ([]MCPToolInfo, string, error) {
 // It handles cases where the response might have extra text around the JSON.
 func parseMCPAvailabilityResult(response string) (*MCPAvailabilityResult, error) {
 	response = strings.TrimSpace(response)
+	response = stripMarkdownFences(response)
 
 	// Try direct parsing first
 	var result MCPAvailabilityResult
@@ -173,10 +198,11 @@ type requiredToolsCheckResponse struct {
 	Patterns map[string]bool `json:"patterns"`
 }
 
-// parseRequiredToolsCheck parses the JSON response from the required tools pattern check.
+// parseEnabledWhenMCPCheck parses the JSON response from the required tools pattern check.
 // It handles cases where the response might have extra text around the JSON.
-func parseRequiredToolsCheck(response string) (map[string]bool, error) {
+func parseEnabledWhenMCPCheck(response string) (map[string]bool, error) {
 	response = strings.TrimSpace(response)
+	response = stripMarkdownFences(response)
 
 	// Try direct parsing first
 	var result requiredToolsCheckResponse

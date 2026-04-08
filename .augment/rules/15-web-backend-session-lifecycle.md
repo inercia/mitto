@@ -144,18 +144,52 @@ type ACPClassifiedError struct {
 }
 ```
 
-### Restart Rate Limiting
+### Restart Rate Limiting & Circuit Breaker
 
 Both code paths use shared constants from `acp_error_classification.go`:
 
-| Constant            | Value   | Purpose                                    |
-| ------------------- | ------- | ------------------------------------------ |
-| `MaxACPRestarts`    | 3       | Max restarts within the window             |
-| `ACPRestartWindow`  | 5 min   | Sliding window for counting restarts       |
-| `ACPRestartBaseDelay` | 3s    | Initial backoff (longer than start-retry)  |
-| `ACPRestartMaxDelay`  | 30s   | Backoff cap                                |
+| Constant               | Value   | Purpose                                                     |
+| ---------------------- | ------- | ----------------------------------------------------------- |
+| `MaxACPRestarts`       | 3       | Max restarts within the sliding window                      |
+| `MaxACPTotalRestarts`  | 10      | **Lifetime cap** — trips the circuit breaker permanently    |
+| `ACPRestartWindow`     | 5 min   | Sliding window for counting recent restarts                 |
+| `ACPRestartBaseDelay`  | 3s      | Initial backoff (longer than start-retry)                   |
+| `ACPRestartMaxDelay`   | 30s     | Backoff cap                                                 |
 
 Backoff progression: 3s → 6s → 12s → 24s → 30s (capped). The longer base delay (vs 500ms for start-retries) gives the system time to recover from conditions like notification queue overflow.
+
+### Circuit Breaker (`permanentlyFailed`)
+
+`BackgroundSession` has a `permanentlyFailed bool` field (protected by `restartMu`) that acts as a true circuit breaker:
+
+- Set by `canRestartACP()` when `restartCount >= MaxACPTotalRestarts`
+- Set by `restartACPProcess()` when `startACPProcess` returns a non-retryable `ACPClassifiedError`
+- Once `true`, `canRestartACP()` returns `false` immediately on every future call — the sliding window is never consulted
+
+**Why the sliding window alone is insufficient:** After 3 failures in a window, `canRestartACP()` returns `false`. But 5 minutes later, old timestamps expire and it returns `true` again. Dead sessions (e.g. closed pipes) would retry every ~5 minutes forever. The `permanentlyFailed` flag prevents this.
+
+```go
+// canRestartACP checks circuit breaker FIRST, then the sliding window:
+if bs.permanentlyFailed {
+    return false  // Circuit breaker open — no more retries
+}
+if bs.restartCount >= MaxACPTotalRestarts {
+    bs.permanentlyFailed = true
+    return false  // Lifetime cap hit — open circuit breaker
+}
+// ... sliding window check (MaxACPRestarts within ACPRestartWindow)
+```
+
+```go
+// restartACPProcess sets permanentlyFailed on permanent errors:
+if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
+    bs.permanentlyFailed = true  // Trip circuit breaker
+}
+```
+
+### Permanent Error Pattern: "file already closed"
+
+The OS error `"write |1: file already closed"` (Go pipe write-end closed) is classified as **permanent** in `permanentErrorPatterns`. This catches dead-pipe sessions where the ACP stdin pipe was permanently destroyed after subprocess exit — retrying the same process start will never succeed.
 
 ### Restart Telemetry
 

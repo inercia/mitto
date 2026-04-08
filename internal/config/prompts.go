@@ -41,20 +41,28 @@ type PromptFile struct {
 	// Tags is an optional list of categorization tags for future use.
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 
-	// ACPs is an optional comma-separated list of ACP server names this prompt applies to.
+	// EnabledWhenACP is an optional comma-separated list of ACP server names this prompt applies to.
 	// If empty, the prompt works with all ACP servers.
-	// Example: "acps: auggie, claude-code" means only show this prompt for those ACP servers.
-	ACPs string `yaml:"acps,omitempty" json:"-"`
+	// Example: "enabledWhenACP: auggie, claude-code" means only show this prompt for those ACP servers.
+	// Legacy key "acps" is also supported for backward compatibility.
+	EnabledWhenACP string `yaml:"enabledWhenACP,omitempty" json:"-"`
 
-	// RequiredTools is an optional comma-separated list of tool name patterns required for this prompt.
+	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for this prompt.
 	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
 	// If specified, the prompt is only shown when all required tool patterns are satisfied
 	// (at least one matching tool exists for each pattern).
 	// If empty, the prompt is always shown (no tool requirements).
-	RequiredTools string `yaml:"required_tools,omitempty" json:"-"`
+	EnabledWhenMCP string `yaml:"enabledWhenMCP,omitempty" json:"-"`
 
 	// Enabled controls whether the prompt is active. Defaults to true if not specified.
 	Enabled *bool `yaml:"enabled,omitempty" json:"-"`
+
+	// EnabledWhen is an optional CEL expression that determines when this prompt is visible.
+	// If empty, the prompt is always visible.
+	// If the expression evaluates to true, the prompt is visible; otherwise hidden.
+	// Available context: acp.*, workspace.*, session.*, parent.*, children.*, tools.*
+	// Example: "!session.isChild" hides the prompt in child conversations.
+	EnabledWhen string `yaml:"enabledWhen,omitempty" json:"-"`
 
 	// Content is the markdown body after the front-matter.
 	Content string `json:"prompt"`
@@ -74,7 +82,7 @@ func (p *PromptFile) IsEnabled() bool {
 // The ACPs field is a comma-separated list of ACP server names.
 func (p *PromptFile) IsAllowedForACP(acpServer string) bool {
 	// Empty ACPs means allowed for all
-	if p.ACPs == "" {
+	if p.EnabledWhenACP == "" {
 		return true
 	}
 
@@ -84,7 +92,7 @@ func (p *PromptFile) IsAllowedForACP(acpServer string) bool {
 	}
 
 	// Parse comma-separated list and check for match
-	for _, acp := range strings.Split(p.ACPs, ",") {
+	for _, acp := range strings.Split(p.EnabledWhenACP, ",") {
 		acp = strings.TrimSpace(acp)
 		if strings.EqualFold(acp, acpServer) {
 			return true
@@ -98,7 +106,7 @@ func (p *PromptFile) IsAllowedForACP(acpServer string) bool {
 // This is used to show ACP-specific prompts in the server settings UI.
 func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
 	// Empty ACPs means generic prompt, not specific to any ACP
-	if p.ACPs == "" {
+	if p.EnabledWhenACP == "" {
 		return false
 	}
 
@@ -108,7 +116,7 @@ func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
 	}
 
 	// Parse comma-separated list and check for match
-	for _, acp := range strings.Split(p.ACPs, ",") {
+	for _, acp := range strings.Split(p.EnabledWhenACP, ",") {
 		acp = strings.TrimSpace(acp)
 		if strings.EqualFold(acp, acpServer) {
 			return true
@@ -127,8 +135,37 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Description:     p.Description,
 		Group:           p.Group,
 		Source:          PromptSourceFile,
-		ACPs:            p.ACPs,
-		RequiredTools:   p.RequiredTools,
+		EnabledWhenACP:  p.EnabledWhenACP,
+		EnabledWhenMCP:  p.EnabledWhenMCP,
+		EnabledWhen:     p.EnabledWhen,
+	}
+}
+
+// HasVisibilityCondition returns true if the prompt has a enabledWhen expression.
+func (p *PromptFile) HasVisibilityCondition() bool {
+	return strings.TrimSpace(p.EnabledWhen) != ""
+}
+
+// promptLegacyFields holds fields from legacy prompt YAML keys for backward compatibility.
+// These field names were used before the rename to enabledWhenACP / enabledWhenMCP.
+type promptLegacyFields struct {
+	ACPs          string `yaml:"acps"`
+	RequiredTools string `yaml:"required_tools"`
+}
+
+// migratePromptLegacyFields copies legacy field values into the current field names
+// if the current fields are empty. This provides backward compatibility for existing
+// prompt files that still use the old YAML keys "acps" and "required_tools".
+func migratePromptLegacyFields(p *PromptFile, frontMatterData []byte) {
+	var legacy promptLegacyFields
+	if err := yaml.Unmarshal(frontMatterData, &legacy); err != nil {
+		return
+	}
+	if p.EnabledWhenACP == "" && legacy.ACPs != "" {
+		p.EnabledWhenACP = legacy.ACPs
+	}
+	if p.EnabledWhenMCP == "" && legacy.RequiredTools != "" {
+		p.EnabledWhenMCP = legacy.RequiredTools
 	}
 }
 
@@ -178,9 +215,14 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 		if frontMatterEnd > 0 {
 			// Extract and parse front-matter
 			frontMatter := strings.Join(lines[1:frontMatterEnd], "\n")
-			if err := yaml.Unmarshal([]byte(frontMatter), prompt); err != nil {
+			frontMatterBytes := []byte(frontMatter)
+			if err := yaml.Unmarshal(frontMatterBytes, prompt); err != nil {
 				return nil, fmt.Errorf("failed to parse front-matter in %s: %w", path, err)
 			}
+
+			// Apply legacy field name migrations for backward compatibility.
+			// Handles "acps" → EnabledWhenACP and "required_tools" → EnabledWhenMCP.
+			migratePromptLegacyFields(prompt, frontMatterBytes)
 
 			// Extract content after front-matter
 			if frontMatterEnd+1 < len(lines) {
@@ -398,16 +440,16 @@ func MatchToolPattern(pattern, toolName string) bool {
 }
 
 // CollectRequiredToolPatterns extracts all unique required tool patterns from a list of prompts.
-// Returns a deduplicated list of individual patterns (each prompt's required_tools is comma-separated).
+// Returns a deduplicated list of individual patterns (each prompt's enabledWhenMCP is comma-separated).
 func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 	seen := make(map[string]bool)
 	var patterns []string
 
 	for _, p := range prompts {
-		if p.RequiredTools == "" {
+		if p.EnabledWhenMCP == "" {
 			continue
 		}
-		for _, pattern := range strings.Split(p.RequiredTools, ",") {
+		for _, pattern := range strings.Split(p.EnabledWhenMCP, ",") {
 			pattern = strings.TrimSpace(pattern)
 			if pattern != "" && !seen[pattern] {
 				seen[pattern] = true
@@ -424,10 +466,10 @@ func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 	var patterns []string
 
 	for _, p := range prompts {
-		if p.RequiredTools == "" {
+		if p.EnabledWhenMCP == "" {
 			continue
 		}
-		for _, pattern := range strings.Split(p.RequiredTools, ",") {
+		for _, pattern := range strings.Split(p.EnabledWhenMCP, ",") {
 			pattern = strings.TrimSpace(pattern)
 			if pattern != "" && !seen[pattern] {
 				seen[pattern] = true
@@ -438,10 +480,10 @@ func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 	return patterns
 }
 
-// AreRequiredToolsSatisfied checks if all required tool patterns for a prompt are satisfied.
+// AreEnabledWhenMCPSatisfied checks if all required tool patterns for a prompt are satisfied.
 // satisfiedPatterns maps pattern strings to their availability status.
-// Returns true if the prompt has no required_tools or all patterns are satisfied.
-func AreRequiredToolsSatisfied(requiredTools string, satisfiedPatterns map[string]bool) bool {
+// Returns true if the prompt has no enabledWhenMCP or all patterns are satisfied.
+func AreEnabledWhenMCPSatisfied(requiredTools string, satisfiedPatterns map[string]bool) bool {
 	if requiredTools == "" {
 		return true
 	}

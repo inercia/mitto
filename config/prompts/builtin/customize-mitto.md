@@ -5,17 +5,11 @@ group: "Agents & Mitto"
 backgroundColor: "#B3E5FC"
 ---
 
-<task>
 Set up Mitto configuration for this project: create `.mitto` directory structure,
 analyze the project, and create customized prompt overrides tailored to its
 technologies and workflows.
-</task>
 
-<efficiency>
 Read multiple configuration files in parallel (Makefile, package.json, go.mod, CI configs).
-</efficiency>
-
-<instructions>
 
 ## Step 1: Create Directory Structure
 
@@ -68,11 +62,7 @@ description: "Run the test suite and report results"
 backgroundColor: "#FFE0B2"
 ---
 
-<task>
 Run the project's test suite using the Makefile targets.
-</task>
-
-<instructions>
 
 ### 1. Run Tests
 
@@ -92,8 +82,6 @@ If tests fail:
 
 ### 3. Summary Table
 
-<output_format>
-
 | Test Suite | Command | Passed | Failed | Status |
 |------------|---------|--------|--------|--------|
 | Go Unit | `make test-go` | 45 | 0 | ✅ |
@@ -102,13 +90,13 @@ If tests fail:
 | UI (Playwright) | `make test-ui` | 15 | 0 | ✅ |
 | **Total** | | **80** | **1** | ❌ |
 
-</output_format>
+
 
 ### 4. Unresolved Failures
 
 Per failure: **Test Suite**, **Test**, **Error**, **Cause**, **Suggested fix**
 
-</instructions>
+
 ```
 
 #### 2. `add-tests.md`
@@ -120,15 +108,9 @@ description: "Write comprehensive tests for new or modified code"
 backgroundColor: "#FFE0B2"
 ---
 
-<investigate_before_answering>
 Read the modified code and existing test files to understand testing conventions.
-</investigate_before_answering>
 
-<task>
 Write comprehensive tests following this project's conventions.
-</task>
-
-<instructions>
 
 ### Frameworks
 
@@ -189,7 +171,6 @@ describe('functionName', () => {
 
 Run appropriate suite: `make test-go`, `make test-js`, `make test-integration`, or `make test-ui`.
 
-</instructions>
 ```
 
 #### 3. `fix-ci.md`
@@ -201,19 +182,12 @@ description: "Diagnose and fix CI pipeline failures"
 backgroundColor: "#B2DFDB"
 ---
 
-<investigate_before_answering>
 Check CI status and read failure logs before making changes.
-</investigate_before_answering>
 
-<task>
 Diagnose and fix GitHub Actions CI failures for the current branch.
-</task>
 
-<scope>
 Only fix CI-failing issues. Keep changes minimal.
-</scope>
 
-<instructions>
 
 ### 1. Check GitHub CLI
 
@@ -261,13 +235,10 @@ gh run view <run-id> --log-failed
 gh run watch
 ```
 
-</instructions>
-
-<rules>
 - Run `make test-ci` locally before pushing
 - Get user approval before modifying workflow files or dependencies
 - Group related fixes in a single commit
-</rules>
+
 ```
 
 #### 4. `cleanup-code.md`
@@ -279,16 +250,10 @@ description: "Remove dead code, unused imports, and outdated documentation"
 backgroundColor: "#E8F5E9"
 ---
 
-<investigate_before_answering>
 Read relevant code and search for references before proposing cleanup.
 Read multiple files in parallel.
-</investigate_before_answering>
 
-<task>
 Analyze for cleanup opportunities. Propose a plan and wait for approval.
-</task>
-
-<instructions>
 
 ### 1. Analyze
 
@@ -311,13 +276,13 @@ grep -r "^\s*//" internal/ cmd/ web/static/ | grep -v "^\s*// " | head -20
 
 ### 2. Propose Plan
 
-<output_format>
+
 
 | Priority | Category | Location | Description | Risk | Effort |
 |----------|----------|----------|-------------|------|--------|
 | 1 | Dead Code | `internal/pkg/file.go` | Remove unused `oldHelper()` | Low | Small |
 
-</output_format>
+
 
 ### 3. Wait for Approval
 
@@ -331,15 +296,14 @@ Per item: make change, run checks (`make test-go`/`make test-js`/`make fmt lint`
 
 Report changes made, verification status, skipped items.
 
-</instructions>
+## Guidelines
 
-<rules>
 - Propose before removing; wait for approval
 - Run tests after changes: `make test-go` or `make test-js`
 - Run `make fmt` for Go code
 - Be conservative with exported APIs
 - Update related docs when removing code
-</rules>
+
 ```
 
 ### Optional Customizations
@@ -372,5 +336,3 @@ After setup:
 ### How Overrides Work
 
 Mitto searches: `.mitto/prompts/` first, then `MITTO_DIR/prompts/builtin/`. Same-name files override builtins.
-
-</instructions>

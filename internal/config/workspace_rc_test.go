@@ -224,6 +224,43 @@ prompts:
 	}
 }
 
+func TestParseWorkspaceRC_ProcessorsDirs(t *testing.T) {
+	yaml := `
+processors_dirs:
+  - ".processors"
+  - "team/shared-processors"
+prompts:
+  - name: "Test"
+    text: "test prompt"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC error: %v", err)
+	}
+	if len(rc.ProcessorsDirs) != 2 {
+		t.Fatalf("ProcessorsDirs count = %d, want 2", len(rc.ProcessorsDirs))
+	}
+	if rc.ProcessorsDirs[0] != ".processors" {
+		t.Errorf("ProcessorsDirs[0] = %q, want %q", rc.ProcessorsDirs[0], ".processors")
+	}
+	if rc.ProcessorsDirs[1] != "team/shared-processors" {
+		t.Errorf("ProcessorsDirs[1] = %q, want %q", rc.ProcessorsDirs[1], "team/shared-processors")
+	}
+}
+
+func TestParseWorkspaceRC_EmptyProcessorsDirs(t *testing.T) {
+	yaml := `
+processors_dirs: []
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC error: %v", err)
+	}
+	if len(rc.ProcessorsDirs) != 0 {
+		t.Errorf("ProcessorsDirs count = %d, want 0", len(rc.ProcessorsDirs))
+	}
+}
+
 func TestLoadWorkspaceRC_NonexistentFile(t *testing.T) {
 	rc, err := LoadWorkspaceRC("/nonexistent/path/to/workspace")
 	if err != nil {

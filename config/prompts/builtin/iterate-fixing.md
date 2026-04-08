@@ -5,25 +5,17 @@ group: "Development"
 backgroundColor: "#BBDEFB"
 ---
 
-<investigate_before_answering>
 Read the state file and relevant source files first. Do not speculate about
 code you haven't opened.
-</investigate_before_answering>
 
-<task>
 Continue fixing problems using a state file to track progress across iterations.
-</task>
 
-<scope>
 Only fix identified problems. Keep changes minimal and focused on root causes.
-</scope>
 
-<solution_quality>
 Fix root causes, not symptoms. Ensure fixes work for all valid inputs. Report
 deeper design issues rather than applying narrow workarounds.
-</solution_quality>
 
-<instructions>
+
 
 # Preparation
 
@@ -50,5 +42,3 @@ Template:
 6. Update state file
 
 Once fully fixed, verify against original problem description.
-
-</instructions>

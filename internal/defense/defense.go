@@ -115,10 +115,17 @@ func (d *ScannerDefense) blockIP(ip, reason string) {
 		requestCount = stats.TotalRequests
 	}
 
-	// Double block duration for suspicious path scanners — these are definitively
-	// malicious actors probing for vulnerabilities (/.env, /.git, /wp-admin, etc.)
+	// Scale block duration based on severity:
+	// - Rate limiting: use 10 minutes — legitimate users can trigger this
+	//   easily (page load = ~30 requests, a few fast reloads = blocked).
+	// - High error rate: use configured duration (default 7 days).
+	// - Suspicious paths: double the configured duration — definitively
+	//   malicious actors probing for vulnerabilities (/.env, /.git, etc.)
 	blockDuration := d.config.BlockDuration
-	if reason == "suspicious_paths" {
+	switch reason {
+	case "rate_limit_exceeded":
+		blockDuration = 10 * time.Minute
+	case "suspicious_paths":
 		blockDuration *= 2
 	}
 

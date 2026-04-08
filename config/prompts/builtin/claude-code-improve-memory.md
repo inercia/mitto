@@ -2,15 +2,11 @@
 name: "Improve memory"
 description: "Update Claude Code memory files based on recent conversations"
 group: "Agents & Mitto"
-acps: claude-code
+enabledWhenACP: claude-code
 backgroundColor: "#1b0bc693"
 ---
 
-<task>
 Update Claude Code memory files based on insights from recent conversations and code changes.
-</task>
-
-<instructions>
 
 ## Memory File Locations
 
@@ -36,5 +32,3 @@ Update Claude Code memory files based on insights from recent conversations and 
   - Consolidate overlapping sections
   - Keep examples concise but illustrative
   - Prioritize high-value patterns over exhaustive coverage
-
-</instructions>

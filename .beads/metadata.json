@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "mitto",
+  "project_id": "c79cf6cb-25e0-49b0-9bb0-9276e0c77c1e"
+}

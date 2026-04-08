@@ -134,7 +134,7 @@ func TestToWebPrompt(t *testing.T) {
 		BackgroundColor: "#FF0000",
 		Description:     "Test description",
 		Group:           "Testing",
-		ACPs:            "auggie, claude-code",
+		EnabledWhenACP:  "auggie, claude-code",
 	}
 
 	wp := prompt.ToWebPrompt()
@@ -159,8 +159,8 @@ func TestToWebPrompt(t *testing.T) {
 		t.Errorf("WebPrompt.Source = %q, want %q", wp.Source, PromptSourceFile)
 	}
 	// ACPs field should be included for client-side filtering
-	if wp.ACPs != "auggie, claude-code" {
-		t.Errorf("WebPrompt.ACPs = %q, want %q", wp.ACPs, "auggie, claude-code")
+	if wp.EnabledWhenACP != "auggie, claude-code" {
+		t.Errorf("WebPrompt.EnabledWhenACP = %q, want %q", wp.EnabledWhenACP, "auggie, claude-code")
 	}
 }
 
@@ -285,7 +285,7 @@ func TestPromptsToWebPrompts_Empty(t *testing.T) {
 func TestParsePromptFile_WithACPs(t *testing.T) {
 	data := []byte(`---
 name: "Claude Only Prompt"
-acps: "claude-code"
+enabledWhenACP: "claude-code"
 ---
 
 This prompt is only for Claude Code.
@@ -299,15 +299,15 @@ This prompt is only for Claude Code.
 	if prompt.Name != "Claude Only Prompt" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Claude Only Prompt")
 	}
-	if prompt.ACPs != "claude-code" {
-		t.Errorf("ACPs = %q, want %q", prompt.ACPs, "claude-code")
+	if prompt.EnabledWhenACP != "claude-code" {
+		t.Errorf("ACPs = %q, want %q", prompt.EnabledWhenACP, "claude-code")
 	}
 }
 
 func TestParsePromptFile_WithMultipleACPs(t *testing.T) {
 	data := []byte(`---
 name: "Multi ACP Prompt"
-acps: "auggie, claude-code, custom-acp"
+enabledWhenACP: "auggie, claude-code, custom-acp"
 ---
 
 This prompt works with multiple ACPs.
@@ -318,8 +318,8 @@ This prompt works with multiple ACPs.
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	if prompt.ACPs != "auggie, claude-code, custom-acp" {
-		t.Errorf("ACPs = %q, want %q", prompt.ACPs, "auggie, claude-code, custom-acp")
+	if prompt.EnabledWhenACP != "auggie, claude-code, custom-acp" {
+		t.Errorf("ACPs = %q, want %q", prompt.EnabledWhenACP, "auggie, claude-code, custom-acp")
 	}
 }
 
@@ -351,7 +351,7 @@ This is a test prompt with a group.
 }
 
 func TestIsAllowedForACP_EmptyACPs(t *testing.T) {
-	prompt := &PromptFile{Name: "Test", ACPs: ""}
+	prompt := &PromptFile{Name: "Test", EnabledWhenACP: ""}
 
 	// Empty ACPs means allowed for all
 	if !prompt.IsAllowedForACP("auggie") {
@@ -366,7 +366,7 @@ func TestIsAllowedForACP_EmptyACPs(t *testing.T) {
 }
 
 func TestIsAllowedForACP_SingleACP(t *testing.T) {
-	prompt := &PromptFile{Name: "Test", ACPs: "claude-code"}
+	prompt := &PromptFile{Name: "Test", EnabledWhenACP: "claude-code"}
 
 	if !prompt.IsAllowedForACP("claude-code") {
 		t.Error("IsAllowedForACP('claude-code') = false, want true")
@@ -381,7 +381,7 @@ func TestIsAllowedForACP_SingleACP(t *testing.T) {
 }
 
 func TestIsAllowedForACP_MultipleACPs(t *testing.T) {
-	prompt := &PromptFile{Name: "Test", ACPs: "auggie, claude-code, custom-acp"}
+	prompt := &PromptFile{Name: "Test", EnabledWhenACP: "auggie, claude-code, custom-acp"}
 
 	if !prompt.IsAllowedForACP("auggie") {
 		t.Error("IsAllowedForACP('auggie') = false, want true")
@@ -398,7 +398,7 @@ func TestIsAllowedForACP_MultipleACPs(t *testing.T) {
 }
 
 func TestIsAllowedForACP_CaseInsensitive(t *testing.T) {
-	prompt := &PromptFile{Name: "Test", ACPs: "Claude-Code"}
+	prompt := &PromptFile{Name: "Test", EnabledWhenACP: "Claude-Code"}
 
 	if !prompt.IsAllowedForACP("claude-code") {
 		t.Error("IsAllowedForACP('claude-code') = false, want true (case insensitive)")
@@ -410,10 +410,10 @@ func TestIsAllowedForACP_CaseInsensitive(t *testing.T) {
 
 func TestFilterPromptsByACP(t *testing.T) {
 	prompts := []*PromptFile{
-		{Name: "All ACPs", ACPs: ""},
-		{Name: "Claude Only", ACPs: "claude-code"},
-		{Name: "Auggie Only", ACPs: "auggie"},
-		{Name: "Both", ACPs: "claude-code, auggie"},
+		{Name: "All ACPs", EnabledWhenACP: ""},
+		{Name: "Claude Only", EnabledWhenACP: "claude-code"},
+		{Name: "Auggie Only", EnabledWhenACP: "auggie"},
+		{Name: "Both", EnabledWhenACP: "claude-code, auggie"},
 	}
 
 	// Filter for auggie
@@ -479,7 +479,7 @@ func TestIsSpecificToACP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &PromptFile{ACPs: tt.acps}
+			p := &PromptFile{EnabledWhenACP: tt.acps}
 			got := p.IsSpecificToACP(tt.acpServer)
 			if got != tt.want {
 				t.Errorf("IsSpecificToACP(%q) = %v, want %v", tt.acpServer, got, tt.want)
@@ -525,10 +525,10 @@ func TestMatchToolPattern(t *testing.T) {
 
 func TestCollectRequiredToolPatterns(t *testing.T) {
 	prompts := []*PromptFile{
-		{Name: "P1", RequiredTools: "jira_*,slack_*"},
-		{Name: "P2", RequiredTools: "jira_*,github_*"},
-		{Name: "P3", RequiredTools: ""},
-		{Name: "P4", RequiredTools: "slack_*"},
+		{Name: "P1", EnabledWhenMCP: "jira_*,slack_*"},
+		{Name: "P2", EnabledWhenMCP: "jira_*,github_*"},
+		{Name: "P3", EnabledWhenMCP: ""},
+		{Name: "P4", EnabledWhenMCP: "slack_*"},
 	}
 
 	patterns := CollectRequiredToolPatterns(prompts)
@@ -553,7 +553,7 @@ func TestCollectRequiredToolPatterns(t *testing.T) {
 func TestCollectRequiredToolPatterns_Empty(t *testing.T) {
 	// All prompts have no required tools
 	prompts := []*PromptFile{
-		{Name: "P1", RequiredTools: ""},
+		{Name: "P1", EnabledWhenMCP: ""},
 		{Name: "P2"},
 	}
 	patterns := CollectRequiredToolPatterns(prompts)
@@ -568,7 +568,7 @@ func TestCollectRequiredToolPatterns_Empty(t *testing.T) {
 	}
 }
 
-func TestAreRequiredToolsSatisfied(t *testing.T) {
+func TestAreEnabledWhenMCPSatisfied(t *testing.T) {
 	satisfied := map[string]bool{
 		"jira_*":  true,
 		"slack_*": true,
@@ -590,18 +590,18 @@ func TestAreRequiredToolsSatisfied(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AreRequiredToolsSatisfied(tt.requiredTools, tt.satisfiedMap)
+			got := AreEnabledWhenMCPSatisfied(tt.requiredTools, tt.satisfiedMap)
 			if got != tt.want {
-				t.Errorf("AreRequiredToolsSatisfied(%q, %v) = %v, want %v", tt.requiredTools, tt.satisfiedMap, got, tt.want)
+				t.Errorf("AreEnabledWhenMCPSatisfied(%q, %v) = %v, want %v", tt.requiredTools, tt.satisfiedMap, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestParsePromptFile_WithRequiredTools(t *testing.T) {
+func TestParsePromptFile_WithEnabledWhenMCP(t *testing.T) {
 	data := []byte(`---
 name: "Jira Prompt"
-required_tools: "jira_*,slack_*"
+enabledWhenMCP: "jira_*,slack_*"
 ---
 
 This prompt requires Jira and Slack tools.
@@ -615,23 +615,23 @@ This prompt requires Jira and Slack tools.
 	if prompt.Name != "Jira Prompt" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Jira Prompt")
 	}
-	if prompt.RequiredTools != "jira_*,slack_*" {
-		t.Errorf("RequiredTools = %q, want %q", prompt.RequiredTools, "jira_*,slack_*")
+	if prompt.EnabledWhenMCP != "jira_*,slack_*" {
+		t.Errorf("EnabledWhenMCP = %q, want %q", prompt.EnabledWhenMCP, "jira_*,slack_*")
 	}
 }
 
-func TestToWebPrompt_IncludesRequiredTools(t *testing.T) {
+func TestToWebPrompt_IncludesEnabledWhenMCP(t *testing.T) {
 	prompt := &PromptFile{
-		Name:          "Test",
-		Content:       "Content here",
-		ACPs:          "auggie",
-		RequiredTools: "jira_*,slack_*",
+		Name:           "Test",
+		Content:        "Content here",
+		EnabledWhenACP: "auggie",
+		EnabledWhenMCP: "jira_*,slack_*",
 	}
 
 	wp := prompt.ToWebPrompt()
 
-	if wp.RequiredTools != "jira_*,slack_*" {
-		t.Errorf("WebPrompt.RequiredTools = %q, want %q", wp.RequiredTools, "jira_*,slack_*")
+	if wp.EnabledWhenMCP != "jira_*,slack_*" {
+		t.Errorf("WebPrompt.EnabledWhenMCP = %q, want %q", wp.EnabledWhenMCP, "jira_*,slack_*")
 	}
 	if wp.Source != PromptSourceFile {
 		t.Errorf("WebPrompt.Source = %q, want %q", wp.Source, PromptSourceFile)
@@ -640,10 +640,10 @@ func TestToWebPrompt_IncludesRequiredTools(t *testing.T) {
 
 func TestFilterPromptsSpecificToACP(t *testing.T) {
 	prompts := []*PromptFile{
-		{Name: "All ACPs", ACPs: ""},
-		{Name: "Claude Only", ACPs: "claude-code"},
-		{Name: "Auggie Only", ACPs: "auggie"},
-		{Name: "Both", ACPs: "claude-code, auggie"},
+		{Name: "All ACPs", EnabledWhenACP: ""},
+		{Name: "Claude Only", EnabledWhenACP: "claude-code"},
+		{Name: "Auggie Only", EnabledWhenACP: "auggie"},
+		{Name: "Both", EnabledWhenACP: "claude-code, auggie"},
 	}
 
 	// Filter for auggie - should only get prompts with explicit acps: field

@@ -5,20 +5,12 @@ group: "Testing"
 backgroundColor: "#FFE0B2"
 ---
 
-<investigate_before_answering>
 Read the modified code and existing test files to understand testing conventions.
-</investigate_before_answering>
 
-<task>
 Write comprehensive tests for the code we created or modified.
-</task>
 
-<scope>
 Test code that was actually changed. Verify real behavior, not implementation
 details. Use general assertions, not hard-coded values.
-</scope>
-
-<instructions>
 
 ### Coverage:
 
@@ -41,5 +33,3 @@ details. Use general assertions, not hard-coded values.
 
 - Run tests, verify they pass
 - Check coverage of new/modified code
-
-</instructions>

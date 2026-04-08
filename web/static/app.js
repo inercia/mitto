@@ -149,18 +149,15 @@ import {
 
 /**
  * Determines if a file link should open directly (browser renders it) or in the viewer.
- * HTML files and Markdown files should open directly since the browser/server renders them.
- * Other files should open in the syntax-highlighted viewer.
+ * Only HTML files open directly since the browser renders them natively.
+ * All other files (including markdown) open in the unified viewer.
  * @param {string} href - The file API URL (e.g., /mitto/api/files?ws=...&path=...)
  * @returns {boolean} True if the file should open directly, false if it should open in viewer
  */
 function shouldOpenFileDirectly(href) {
   try {
-    // Parse the URL to extract the path parameter
     const url = new URL(href, window.location.origin);
     const path = url.searchParams.get("path") || "";
-
-    // Get file extension
     const ext = path.split(".").pop()?.toLowerCase() || "";
 
     // HTML files should always open directly (browser renders them)
@@ -168,13 +165,7 @@ function shouldOpenFileDirectly(href) {
       return true;
     }
 
-    // Markdown files should always open directly (server renders them as HTML)
-    // The render=html parameter will be added if not present
-    if (ext === "md" || ext === "markdown") {
-      return true;
-    }
-
-    // All other files should open in the viewer (syntax highlighting)
+    // All other files (including markdown) open in the unified viewer
     return false;
   } catch (e) {
     console.error("[Mitto] Error checking file type:", e);
@@ -225,35 +216,19 @@ document.addEventListener("click", (e) => {
       }
     } else {
       // Web browser - determine how to open the file
-      // HTML files and Markdown files should open directly (browser/server renders them)
-      // Other files should open in the syntax-highlighted viewer
       const shouldOpenDirectly = shouldOpenFileDirectly(href);
       if (shouldOpenDirectly) {
-        // Open directly via API - browser will render HTML/Markdown
+        // Open directly via API - browser will render HTML
         // Fix old links missing API prefix
         const apiPrefix = getAPIPrefix();
         let finalUrl = href;
         if (apiPrefix && !href.includes(apiPrefix)) {
-          // Old link without prefix - add the current prefix
           finalUrl = finalUrl.replace("/api/files?", apiPrefix + "/api/files?");
           console.log("[Mitto] Fixed old API link:", href, "->", finalUrl);
         }
-        // Ensure markdown files have render=html parameter for proper rendering
-        // (old recordings may have links without this parameter)
-        const url = new URL(finalUrl, window.location.origin);
-        const path = url.searchParams.get("path") || "";
-        const ext = path.split(".").pop()?.toLowerCase() || "";
-        if (
-          (ext === "md" || ext === "markdown") &&
-          url.searchParams.get("render") !== "html"
-        ) {
-          url.searchParams.set("render", "html");
-          finalUrl = url.toString();
-          console.log("[Mitto] Added render=html for markdown file:", finalUrl);
-        }
         window.open(finalUrl, "_blank", "noopener,noreferrer");
       } else {
-        // Open in viewer page with syntax highlighting
+        // Open in unified viewer page (handles code + markdown)
         const viewerUrl = convertHTTPFileURLToViewer(href);
         console.log("[Mitto] Converted to viewer URL:", viewerUrl);
         if (viewerUrl) {
@@ -411,7 +386,9 @@ function WorkspacePill({
     displayName: wsDisplayName,
   } = getWorkspaceVisualInfo(path, customColor, customCode, customName);
   // Display ACP server name if available, otherwise fall back to workspace display name (unless hideAcpServer)
-  const displayName = hideAcpServer ? wsDisplayName : (acpServer || wsDisplayName);
+  const displayName = hideAcpServer
+    ? wsDisplayName
+    : acpServer || wsDisplayName;
 
   const handleClick = (e) => {
     if (!clickable) return;
@@ -435,7 +412,8 @@ function WorkspacePill({
       title=${clickable ? `Click to open: ${path}` : path}
       onClick=${handleClick}
     >
-      ${!hideAbbreviation && html`<span class="font-bold">${abbreviation}</span>`}
+      ${!hideAbbreviation &&
+      html`<span class="font-bold">${abbreviation}</span>`}
       <span class="truncate max-w-[80px]">${displayName}</span>
     </div>
   `;
@@ -721,7 +699,9 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
           const displayName = ws.name || getBasename(ws.working_dir);
           const matchName = displayName.toLowerCase().includes(lowerFilter);
           const matchPath = ws.working_dir.toLowerCase().includes(lowerFilter);
-          const matchServer = (ws.acp_server || "").toLowerCase().includes(lowerFilter);
+          const matchServer = (ws.acp_server || "")
+            .toLowerCase()
+            .includes(lowerFilter);
           return matchName || matchPath || matchServer;
         });
 
@@ -860,76 +840,91 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
                   No workspaces match your filter.
                 </div>
               `
-            : filteredGroups.map(({ workingDir, label, workspaces: wsArray }) => {
-                // Auto-expand folders when filtering is active
-                const isExpanded = filterText.trim() ? true : (expandedFolders[workingDir] !== false);
-                const showGroupHeader = filteredGroups.length > 1;
+            : filteredGroups.map(
+                ({ workingDir, label, workspaces: wsArray }) => {
+                  // Auto-expand folders when filtering is active
+                  const isExpanded = filterText.trim()
+                    ? true
+                    : expandedFolders[workingDir] !== false;
+                  const showGroupHeader = filteredGroups.length > 1;
 
-                return html`
-                  <div key=${workingDir} class="space-y-1">
-                    ${showGroupHeader &&
-                    html`
-                      <button
-                        onClick=${() => toggleFolder(workingDir)}
-                        class="w-full px-2 py-1 text-left text-xs text-gray-400 hover:text-gray-300 hover:bg-slate-700/30 rounded transition-colors flex items-center gap-2"
-                      >
-                        <span class="font-mono">${isExpanded ? "▼" : "▶"}</span>
-                        <span class="truncate" title=${workingDir}>
-                          ${label}
-                        </span>
-                        <span class="text-gray-500">(${wsArray.length})</span>
-                      </button>
-                    `}
-                    ${isExpanded &&
-                    wsArray.map((ws) => {
-                      const currentIndex = globalIndex++;
-                      return html`
+                  return html`
+                    <div key=${workingDir} class="space-y-1">
+                      ${showGroupHeader &&
+                      html`
                         <button
-                          key=${ws.working_dir + "|" + ws.acp_server}
-                          onClick=${() => onSelect(ws)}
-                          class="w-full p-3 text-left rounded-lg bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center gap-3 ${showGroupHeader
-                            ? "ml-4"
-                            : ""}"
+                          onClick=${() => toggleFolder(workingDir)}
+                          class="w-full px-2 py-1 text-left text-xs text-gray-400 hover:text-gray-300 hover:bg-slate-700/30 rounded transition-colors flex items-center gap-2"
                         >
-                          <div
-                            class="w-8 h-8 flex-shrink-0 ${currentIndex <
-                            WORKSPACE_FILTER_THRESHOLD
-                              ? "flex items-center justify-center rounded-lg bg-slate-600 text-gray-300 font-mono text-sm"
+                          <span class="font-mono"
+                            >${isExpanded ? "▼" : "▶"}</span
+                          >
+                          <span class="truncate" title=${workingDir}>
+                            ${label}
+                          </span>
+                          <span class="text-gray-500">(${wsArray.length})</span>
+                        </button>
+                      `}
+                      ${isExpanded &&
+                      wsArray.map((ws) => {
+                        const currentIndex = globalIndex++;
+                        return html`
+                          <button
+                            key=${ws.working_dir + "|" + ws.acp_server}
+                            onClick=${() => onSelect(ws)}
+                            class="w-full p-3 text-left rounded-lg bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center gap-3 ${showGroupHeader
+                              ? "ml-4"
                               : ""}"
                           >
-                            ${currentIndex < WORKSPACE_FILTER_THRESHOLD
-                              ? currentIndex + 1
-                              : ""}
-                          </div>
-                          <${WorkspaceBadge}
-                            path=${ws.working_dir}
-                            customColor=${ws.color}
-                            customCode=${ws.code}
-                            size="lg"
-                          />
-                          <div class="flex-1 min-w-0">
-                            ${(!showGroupHeader || (ws.name && ws.name !== label)) && html`
-                              <div class="text-sm font-medium">
-                                ${ws.name || getBasename(ws.working_dir)}
-                              </div>
-                            `}
-                            ${ws.acp_server && html`
-                              <div class="${showGroupHeader && (!ws.name || ws.name === label) ? "text-sm font-medium" : "text-xs text-blue-400"}">
-                                ${ws.acp_server}
-                              </div>
-                            `}
-                            ${!showGroupHeader && html`
-                              <div class="text-xs text-gray-500 truncate">
-                                ${ws.working_dir}
-                              </div>
-                            `}
-                          </div>
-                        </button>
-                      `;
-                    })}
-                  </div>
-                `;
-              })}
+                            <div
+                              class="w-8 h-8 flex-shrink-0 ${currentIndex <
+                              WORKSPACE_FILTER_THRESHOLD
+                                ? "flex items-center justify-center rounded-lg bg-slate-600 text-gray-300 font-mono text-sm"
+                                : ""}"
+                            >
+                              ${currentIndex < WORKSPACE_FILTER_THRESHOLD
+                                ? currentIndex + 1
+                                : ""}
+                            </div>
+                            <${WorkspaceBadge}
+                              path=${ws.working_dir}
+                              customColor=${ws.color}
+                              customCode=${ws.code}
+                              size="lg"
+                            />
+                            <div class="flex-1 min-w-0">
+                              ${(!showGroupHeader ||
+                                (ws.name && ws.name !== label)) &&
+                              html`
+                                <div class="text-sm font-medium">
+                                  ${ws.name || getBasename(ws.working_dir)}
+                                </div>
+                              `}
+                              ${ws.acp_server &&
+                              html`
+                                <div
+                                  class="${showGroupHeader &&
+                                  (!ws.name || ws.name === label)
+                                    ? "text-sm font-medium"
+                                    : "text-xs text-blue-400"}"
+                                >
+                                  ${ws.acp_server}
+                                </div>
+                              `}
+                              ${!showGroupHeader &&
+                              html`
+                                <div class="text-xs text-gray-500 truncate">
+                                  ${ws.working_dir}
+                                </div>
+                              `}
+                            </div>
+                          </button>
+                        `;
+                      })}
+                    </div>
+                  `;
+                },
+              )}
         </div>
         <div class="flex justify-end mt-4">
           <button
@@ -1087,7 +1082,9 @@ function getPeriodicProgressStyle({ nextScheduledAt, frequency, isLight }) {
   const isUrgent = remaining < PERIODIC_PROGRESS_URGENT_THRESHOLD;
 
   // Get the appropriate color
-  const elapsedColor = isUrgent ? themeColors.urgentElapsed : themeColors.elapsed;
+  const elapsedColor = isUrgent
+    ? themeColors.urgentElapsed
+    : themeColors.elapsed;
   const remainingColor = themeColors.remaining;
 
   // Create the gradient - progress goes left to right
@@ -1295,7 +1292,9 @@ function SessionItem({
         } else {
           relativeTime = `${minutes}m`;
         }
-        parts.push(`Next run: ${nextDate.toLocaleString()} (in ${relativeTime})`);
+        parts.push(
+          `Next run: ${nextDate.toLocaleString()} (in ${relativeTime})`,
+        );
       }
     }
 
@@ -1437,7 +1436,9 @@ function SessionItem({
         <!-- Swipe action background (revealed when swiping left) -->
         <!-- Shows Archive (amber) for regular/periodic tabs, Delete (red) for archived tab -->
         <div
-          class="absolute inset-0 ${isSwipeToDelete ? "bg-red-600" : "bg-amber-600"} flex items-center justify-end pr-6 transition-opacity"
+          class="absolute inset-0 ${isSwipeToDelete
+            ? "bg-red-600"
+            : "bg-amber-600"} flex items-center justify-end pr-6 transition-opacity"
           style="opacity: ${isRevealed || absOffset > 20 ? 1 : 0}"
         >
           <button
@@ -1446,7 +1447,9 @@ function SessionItem({
               e.stopPropagation();
               triggerAction();
             }}
-            class="p-3 rounded-full ${isSwipeToDelete ? "bg-red-700 hover:bg-red-800" : "bg-amber-700 hover:bg-amber-800"} transition-colors"
+            class="p-3 rounded-full ${isSwipeToDelete
+              ? "bg-red-700 hover:bg-red-800"
+              : "bg-amber-700 hover:bg-amber-800"} transition-colors"
             title=${isSwipeToDelete ? "Delete" : "Archive"}
           >
             ${isSwipeToDelete
@@ -1462,7 +1465,11 @@ function SessionItem({
           onMouseLeave=${() => setShowActions(false)}
           class="p-3 cursor-pointer hover:bg-slate-700/50 relative bg-mitto-sidebar overflow-hidden ${isActive
             ? "bg-blue-900/30 border-l-2 border-l-blue-500"
-            : ""} ${isSwiping ? "" : "transition-transform duration-200"} ${extraLeftPadding} ${isNew ? "session-item-new" : ""}"
+            : ""} ${isSwiping
+            ? ""
+            : "transition-transform duration-200"} ${extraLeftPadding} ${isNew
+            ? "session-item-new"
+            : ""}"
           style="transform: translateX(${swipeOffset}px);"
           title=${buildTooltip()}
           data-session-id=${session.session_id}
@@ -1476,157 +1483,167 @@ function SessionItem({
               ></div>`
             : ""}
           <div class="relative z-10">
-        <!-- Top row: status indicator, title, and workspace pill -->
-        <div class="flex items-start gap-2">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2">
-              ${hasChildren
-                ? html`
-                    <button
-                      class="expand-toggle-button flex-shrink-0 p-0.5 text-gray-500 hover:text-white transition-colors"
-                      onClick=${(e) => {
-                        e.stopPropagation();
-                        if (onToggleExpand) onToggleExpand();
-                      }}
-                      title=${isExpanded
-                        ? "Collapse children"
-                        : "Expand children"}
+            <!-- Top row: status indicator, title, and workspace pill -->
+            <div class="flex items-start gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  ${hasChildren
+                    ? html`
+                        <button
+                          class="expand-toggle-button flex-shrink-0 p-0.5 text-gray-500 hover:text-white transition-colors"
+                          onClick=${(e) => {
+                            e.stopPropagation();
+                            if (onToggleExpand) onToggleExpand();
+                          }}
+                          title=${isExpanded
+                            ? "Collapse children"
+                            : "Expand children"}
+                        >
+                          <span
+                            class="expand-toggle-icon ${isExpanded
+                              ? ""
+                              : "expand-toggle-icon--collapsed"}"
+                          >
+                            <${ChevronDownIcon} className="w-3 h-3" />
+                          </span>
+                        </button>
+                      `
+                    : null}
+                  ${
+                    // Spawned indicator removed - visual hierarchy from indentation makes parent-child relationships clear
+                    false
+                      ? html`
+                          <span
+                            class="spawned-indicator flex-shrink-0"
+                            title="Spawned from another conversation"
+                            >↳</span
+                          >
+                        `
+                      : null
+                  }
+                  ${isStreaming || hasChildStreaming
+                    ? html`
+                        <span
+                          class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
+                            ? "child-streaming-indicator"
+                            : "streaming-indicator"}"
+                          title=${hasChildStreaming
+                            ? "Child conversation responding..."
+                            : "Receiving response..."}
+                        ></span>
+                      `
+                    : isActiveSession
+                      ? html`
+                          <span
+                            class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
+                          ></span>
+                        `
+                      : null}
+                  <span class="text-sm font-medium truncate"
+                    >${displayName}</span
+                  >
+                  ${childCount > 0 &&
+                  html`
+                    <span
+                      class="child-count-badge flex-shrink-0"
+                      title="${childCount} spawned conversation${childCount > 1
+                        ? "s"
+                        : ""}"
+                      >+${childCount}</span
                     >
-                      <span
-                        class="expand-toggle-icon ${isExpanded
-                          ? ""
-                          : "expand-toggle-icon--collapsed"}"
-                      >
-                        <${ChevronDownIcon} className="w-3 h-3" />
-                      </span>
-                    </button>
-                  `
-                : null}
-              ${
-                // Spawned indicator removed - visual hierarchy from indentation makes parent-child relationships clear
-                false
-                ? html`
-                    <span
-                      class="spawned-indicator flex-shrink-0"
-                      title="Spawned from another conversation"
-                    >↳</span>
-                  `
-                : null}
-              ${isStreaming || hasChildStreaming
-                ? html`
-                    <span
-                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
-                        ? "child-streaming-indicator"
-                        : "streaming-indicator"}"
-                      title=${hasChildStreaming ? "Child conversation responding..." : "Receiving response..."}
-                    ></span>
-                  `
-                : isActiveSession
-                  ? html`
-                      <span
-                        class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
-                      ></span>
-                    `
-                  : null}
-              <span class="text-sm font-medium truncate">${displayName}</span>
-              ${childCount > 0 && html`
-                <span
-                  class="child-count-badge flex-shrink-0"
-                  title="${childCount} spawned conversation${childCount > 1 ? 's' : ''}"
-                >+${childCount}</span>
+                  `}
+                </div>
+              </div>
+              ${workingDir &&
+              !hideBadge &&
+              html`
+                <${WorkspacePill}
+                  path=${workingDir}
+                  customColor=${workspaceColor}
+                  customCode=${workspaceCode}
+                  customName=${workspaceName}
+                  acpServer=${acpServer}
+                  clickable=${badgeClickEnabled}
+                  onBadgeClick=${onBadgeClick}
+                  hideAbbreviation=${badgeHideAbbreviation}
+                  hideAcpServer=${badgeHideAcpServer}
+                />
               `}
             </div>
+            <!-- Bottom row: saved/stored badge and action buttons -->
+            <div class="flex items-center justify-between mt-1">
+              <div class="flex items-center gap-2">
+                ${session.isActive
+                  ? html`
+                      <span class="text-gray-500" title="Session is auto-saved">
+                        <${SaveIcon} className="w-3 h-3" />
+                      </span>
+                    `
+                  : html`
+                      <span
+                        class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
+                        >stored</span
+                      >
+                    `}
+              </div>
+              <div
+                class="flex items-center gap-1 ${showActions
+                  ? "opacity-100"
+                  : "opacity-0"} transition-opacity flex-shrink-0"
+              >
+                <button
+                  onClick=${canArchive ? handleArchive : undefined}
+                  disabled=${!canArchive}
+                  class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
+                    ? "opacity-50 cursor-not-allowed text-gray-500"
+                    : isArchived
+                      ? "hover:bg-slate-600 text-gray-500"
+                      : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
+                  title="${!canArchive
+                    ? archiveBlockedReason
+                    : isArchived
+                      ? "Unarchive"
+                      : "Archive"}"
+                >
+                  ${isArchived
+                    ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
+                    : html`<${ArchiveIcon} className="w-4 h-4" />`}
+                </button>
+                <button
+                  onClick=${handleRename}
+                  class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
+                  title="Properties"
+                >
+                  <${EditIcon} className="w-4 h-4" />
+                </button>
+                ${!isArchived &&
+                html`<button
+                  onClick=${handleTogglePeriodic}
+                  class="p-1.5 ${isPeriodicEnabled
+                    ? "bg-white hover:bg-gray-100 dark:bg-slate-600 dark:hover:bg-slate-500"
+                    : "bg-slate-700 hover:bg-slate-600"} rounded transition-colors ${isPeriodicEnabled
+                    ? "text-blue-600 dark:text-blue-400"
+                    : "text-gray-300 hover:text-white"}"
+                  title="${isPeriodicEnabled
+                    ? "Periodic enabled - click to disable"
+                    : "Periodic disabled - click to enable"}"
+                >
+                  ${isPeriodicEnabled
+                    ? html`<${PeriodicFilledIcon} className="w-4 h-4" />`
+                    : html`<${PeriodicIcon} className="w-4 h-4" />`}
+                </button>`}
+                <button
+                  onClick=${handleDelete}
+                  class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
+                  title="Delete"
+                >
+                  <${TrashIcon} className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           </div>
-          ${workingDir &&
-          !hideBadge &&
-          html`
-            <${WorkspacePill}
-              path=${workingDir}
-              customColor=${workspaceColor}
-              customCode=${workspaceCode}
-              customName=${workspaceName}
-              acpServer=${acpServer}
-              clickable=${badgeClickEnabled}
-              onBadgeClick=${onBadgeClick}
-              hideAbbreviation=${badgeHideAbbreviation}
-              hideAcpServer=${badgeHideAcpServer}
-            />
-          `}
-        </div>
-        <!-- Bottom row: saved/stored badge and action buttons -->
-        <div class="flex items-center justify-between mt-1">
-          <div class="flex items-center gap-2">
-            ${session.isActive
-              ? html`
-                  <span class="text-gray-500" title="Session is auto-saved">
-                    <${SaveIcon} className="w-3 h-3" />
-                  </span>
-                `
-              : html`
-                  <span
-                    class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
-                    >stored</span
-                  >
-                `}
-          </div>
-          <div
-            class="flex items-center gap-1 ${showActions
-              ? "opacity-100"
-              : "opacity-0"} transition-opacity flex-shrink-0"
-          >
-            <button
-              onClick=${canArchive ? handleArchive : undefined}
-              disabled=${!canArchive}
-              class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
-                ? "opacity-50 cursor-not-allowed text-gray-500"
-                : isArchived
-                  ? "hover:bg-slate-600 text-gray-500"
-                  : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
-              title="${!canArchive
-                ? archiveBlockedReason
-                : isArchived
-                  ? "Unarchive"
-                  : "Archive"}"
-            >
-              ${isArchived
-                ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
-                : html`<${ArchiveIcon} className="w-4 h-4" />`}
-            </button>
-            <button
-              onClick=${handleRename}
-              class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
-              title="Properties"
-            >
-              <${EditIcon} className="w-4 h-4" />
-            </button>
-            ${!isArchived &&
-            html`<button
-              onClick=${handleTogglePeriodic}
-              class="p-1.5 ${isPeriodicEnabled
-                ? "bg-white hover:bg-gray-100 dark:bg-slate-600 dark:hover:bg-slate-500"
-                : "bg-slate-700 hover:bg-slate-600"} rounded transition-colors ${isPeriodicEnabled
-                ? "text-blue-600 dark:text-blue-400"
-                : "text-gray-300 hover:text-white"}"
-              title="${isPeriodicEnabled
-                ? "Periodic enabled - click to disable"
-                : "Periodic disabled - click to enable"}"
-            >
-              ${isPeriodicEnabled
-                ? html`<${PeriodicFilledIcon} className="w-4 h-4" />`
-                : html`<${PeriodicIcon} className="w-4 h-4" />`}
-            </button>`}
-            <button
-              onClick=${handleDelete}
-              class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
-              title="Delete"
-            >
-              <${TrashIcon} className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
         </div>
       </div>
-    </div>
     <//>
   `;
 }
@@ -1662,7 +1679,7 @@ function SessionList({
   // Combine active and stored sessions using shared helper function
   const allSessions = useMemo(
     () => computeAllSessions(activeSessions, storedSessions),
-    [activeSessions, storedSessions]
+    [activeSessions, storedSessions],
   );
 
   const isLight = theme === "light";
@@ -1780,27 +1797,24 @@ function SessionList({
   }, [filterTab]);
 
   // Handle group expand/collapse toggle
-  const handleToggleGroup = useCallback(
-    (groupKey, allGroupKeys = []) => {
-      const currentlyExpanded = isGroupExpanded(groupKey);
-      const willExpand = !currentlyExpanded;
+  const handleToggleGroup = useCallback((groupKey, allGroupKeys = []) => {
+    const currentlyExpanded = isGroupExpanded(groupKey);
+    const willExpand = !currentlyExpanded;
 
-      // In accordion mode, collapse all other groups when expanding
-      if (willExpand && getSingleExpandedGroupMode()) {
-        // Use provided allGroupKeys to collapse all other groups
-        // (needed because getExpandedGroups only tracks explicitly set groups)
-        for (const key of allGroupKeys) {
-          if (key !== groupKey && isGroupExpanded(key)) {
-            setGroupExpanded(key, false);
-          }
+    // In accordion mode, collapse all other groups when expanding
+    if (willExpand && getSingleExpandedGroupMode()) {
+      // Use provided allGroupKeys to collapse all other groups
+      // (needed because getExpandedGroups only tracks explicitly set groups)
+      for (const key of allGroupKeys) {
+        if (key !== groupKey && isGroupExpanded(key)) {
+          setGroupExpanded(key, false);
         }
       }
+    }
 
-      setGroupExpanded(groupKey, willExpand);
-      setExpandedGroupsVersion((v) => v + 1); // Force re-render
-    },
-    [],
-  );
+    setGroupExpanded(groupKey, willExpand);
+    setExpandedGroupsVersion((v) => v + 1); // Force re-render
+  }, []);
 
   // Get grouping icon based on current mode
   const getGroupingIcon = () => {
@@ -1852,25 +1866,26 @@ function SessionList({
   };
 
   // Separate sessions by category for tab counts
-  const { regularSessions, periodicSessions, archivedSessions } = useMemo(() => {
-    const regular = [];
-    const periodic = [];
-    const archived = [];
-    allSessions.forEach((session) => {
-      if (session.archived) {
-        archived.push(session);
-      } else if (session.periodic_enabled) {
-        periodic.push(session);
-      } else {
-        regular.push(session);
-      }
-    });
-    return {
-      regularSessions: regular,
-      periodicSessions: periodic,
-      archivedSessions: archived,
-    };
-  }, [allSessions]);
+  const { regularSessions, periodicSessions, archivedSessions } =
+    useMemo(() => {
+      const regular = [];
+      const periodic = [];
+      const archived = [];
+      allSessions.forEach((session) => {
+        if (session.archived) {
+          archived.push(session);
+        } else if (session.periodic_enabled) {
+          periodic.push(session);
+        } else {
+          regular.push(session);
+        }
+      });
+      return {
+        regularSessions: regular,
+        periodicSessions: periodic,
+        archivedSessions: archived,
+      };
+    }, [allSessions]);
 
   // Get sessions to display based on active filter tab
   const filteredSessions = useMemo(() => {
@@ -1909,7 +1924,7 @@ function SessionList({
   // Structural fingerprint tracking for groupedSessions optimization
   // Prevents expensive buildSessionTree rebuilds when only non-structural properties change
   // (e.g., isStreaming, message content during tool_update events)
-  const prevSessionFingerprint = useRef('');
+  const prevSessionFingerprint = useRef("");
   const prevGroupedSessions = useRef(null);
 
   // Group sessions based on current mode (uses filtered sessions)
@@ -1924,11 +1939,18 @@ function SessionList({
 
     // Compute structural fingerprint: only session IDs, parent IDs, and working dirs matter for tree structure
     // This avoids expensive buildSessionTree rebuilds when only isStreaming or message content changes
-    const fingerprint = filteredSessions.map(s =>
-      `${s.session_id}|${s.parent_session_id || ''}|${s.working_dir || ''}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ''}`
-    ).sort().join('\n');
+    const fingerprint = filteredSessions
+      .map(
+        (s) =>
+          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ""}`,
+      )
+      .sort()
+      .join("\n");
 
-    if (fingerprint === prevSessionFingerprint.current && prevGroupedSessions.current) {
+    if (
+      fingerprint === prevSessionFingerprint.current &&
+      prevGroupedSessions.current
+    ) {
       return prevGroupedSessions.current;
     }
     prevSessionFingerprint.current = fingerprint;
@@ -1938,9 +1960,7 @@ function SessionList({
     const getSessionInfo = (session) => {
       return {
         workingDir:
-          session.working_dir ||
-          getGlobalWorkingDir(session.session_id) ||
-          "",
+          session.working_dir || getGlobalWorkingDir(session.session_id) || "",
         acpServer: session.acp_server || "",
       };
     };
@@ -1952,7 +1972,7 @@ function SessionList({
 
       // All known session IDs across all tabs (conversations + periodic + archived)
       // Used by buildSessionTree to distinguish "parent in another tab" from "parent truly missing"
-      const allKnownSessionIds = new Set(allSessions.map(s => s.session_id));
+      const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
 
       // Helper to get parent_session_id from session
       // parent_session_id is already merged by computeAllSessions() in lib.js
@@ -1980,7 +2000,10 @@ function SessionList({
           const { allSessions: folderSessions } = folder;
 
           // Build parent-child tree using utility function
-          const { rootSessions, childrenMap, orphans } = buildSessionTree(folderSessions, allKnownSessionIds);
+          const { rootSessions, childrenMap, orphans } = buildSessionTree(
+            folderSessions,
+            allKnownSessionIds,
+          );
 
           // Attach children array to each parent session
           const parents = rootSessions.map((parent) => ({
@@ -2231,7 +2254,9 @@ function SessionList({
         const sessionCount = group.sessions.length;
         // Check if any session in this group is actively streaming
         // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
-        const hasStreamingSession = group.sessions.some((s) => streamingMap.has(s.session_id));
+        const hasStreamingSession = group.sessions.some((s) =>
+          streamingMap.has(s.session_id),
+        );
         // Get workspace info for badge display (workspace mode only)
         const workspace =
           groupingMode === "workspace" && group.workingDir
@@ -2294,12 +2319,18 @@ function SessionList({
             </div>
             ${expanded &&
             group.sessions.map((session) =>
-              renderSessionItem({ ...session, isStreaming: streamingMap.has(session.session_id) }, {
-                // In workspace grouping, hide entire badge (both abbreviation and ACP server are in group header)
-                hideBadge: groupingMode === "workspace",
-                // In server grouping, hide the ACP server name (redundant with group header)
-                badgeHideAcpServer: groupingMode === "server",
-              }),
+              renderSessionItem(
+                {
+                  ...session,
+                  isStreaming: streamingMap.has(session.session_id),
+                },
+                {
+                  // In workspace grouping, hide entire badge (both abbreviation and ACP server are in group header)
+                  hideBadge: groupingMode === "workspace",
+                  // In server grouping, hide the ACP server name (redundant with group header)
+                  badgeHideAcpServer: groupingMode === "server",
+                },
+              ),
             )}
           </div>
         `;
@@ -2336,7 +2367,8 @@ function SessionList({
       return sessions.some(
         (s) =>
           streamingMap.has(s.session_id) ||
-          (s.children && s.children.some((c) => streamingMap.has(c.session_id))),
+          (s.children &&
+            s.children.some((c) => streamingMap.has(c.session_id))),
       );
     };
 
@@ -2354,7 +2386,9 @@ function SessionList({
               onClick=${() => handleToggleGroup(folder.key, allGroupKeys)}
             >
               <span
-                class="transition-transform ${folderExpanded ? "" : "-rotate-90"}"
+                class="transition-transform ${folderExpanded
+                  ? ""
+                  : "-rotate-90"}"
               >
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
@@ -2385,28 +2419,38 @@ function SessionList({
                 : false;
               // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
               const hasChildStreaming =
-                hasChildren && session.children.some((c) => streamingMap.has(c.session_id));
+                hasChildren &&
+                session.children.some((c) => streamingMap.has(c.session_id));
 
               return html`
                 <div
                   key=${session.session_id}
-                  class="parent-session-group ${hasChildren ? "has-children" : ""}"
+                  class="parent-session-group ${hasChildren
+                    ? "has-children"
+                    : ""}"
                 >
                   <!-- Parent/regular session - render with expand/collapse integrated into SessionItem -->
-                  ${renderSessionItem({ ...session, isStreaming: streamingMap.has(session.session_id) }, {
-                    hideBadge: false, // Show badge to display ACP server
-                    badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
-                    badgeHideAcpServer: false, // Show ACP server badge
-                    isSpawned: !hasChildren && !!session._parentId, // Mark as spawned if it's an orphan (no children)
-                    childCount: hasChildren ? session.children.length : 0,
-                    hasChildStreaming: hasChildren && !childrenExpanded && hasChildStreaming,
-                    // Pass expand/collapse props for parent sessions with children
-                    hasChildren: hasChildren,
-                    isExpanded: childrenExpanded,
-                    onToggleExpand: hasChildren
-                      ? () => handleToggleGroup(parentKey, allGroupKeys)
-                      : null,
-                  })}
+                  ${renderSessionItem(
+                    {
+                      ...session,
+                      isStreaming: streamingMap.has(session.session_id),
+                    },
+                    {
+                      hideBadge: false, // Show badge to display ACP server
+                      badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
+                      badgeHideAcpServer: false, // Show ACP server badge
+                      isSpawned: !hasChildren && !!session._parentId, // Mark as spawned if it's an orphan (no children)
+                      childCount: hasChildren ? session.children.length : 0,
+                      hasChildStreaming:
+                        hasChildren && !childrenExpanded && hasChildStreaming,
+                      // Pass expand/collapse props for parent sessions with children
+                      hasChildren: hasChildren,
+                      isExpanded: childrenExpanded,
+                      onToggleExpand: hasChildren
+                        ? () => handleToggleGroup(parentKey, allGroupKeys)
+                        : null,
+                    },
+                  )}
 
                   <!-- Level 3: Child sessions (animated container) -->
                   ${hasChildren &&
@@ -2416,16 +2460,23 @@ function SessionList({
                         ? "session-children--expanded"
                         : ""}"
                     >
-                      ${session.children.map((child) =>
-                        html`<div class="session-item--child">
-                          ${renderSessionItem({ ...child, isStreaming: streamingMap.has(child.session_id) }, {
-                            hideBadge: false, // Show badge to display ACP server
-                            badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
-                            badgeHideAcpServer: false, // Show ACP server badge
-                            isSpawned: true, // Mark as spawned/child
-                            extraLeftPadding: "pl-8", // Indent child sessions
-                          })}
-                        </div>`,
+                      ${session.children.map(
+                        (child) =>
+                          html`<div class="session-item--child">
+                            ${renderSessionItem(
+                              {
+                                ...child,
+                                isStreaming: streamingMap.has(child.session_id),
+                              },
+                              {
+                                hideBadge: false, // Show badge to display ACP server
+                                badgeHideAbbreviation: true, // Hide workspace abbreviation (already in folder header)
+                                badgeHideAcpServer: false, // Show ACP server badge
+                                isSpawned: true, // Mark as spawned/child
+                                extraLeftPadding: "pl-8", // Indent child sessions
+                              },
+                            )}
+                          </div>`,
                       )}
                     </div>
                   `}
@@ -2658,6 +2709,7 @@ function App() {
     archiveSession,
     removeSession,
     isStreaming,
+    isRunning,
     hasMoreMessages,
     hasReachedLimit,
     isLoadingMore,
@@ -2807,7 +2859,9 @@ function App() {
       (s) => s.name === currentAcpServerName,
     );
     // Use type if specified, otherwise fall back to name (consistent with backend behavior)
-    const currentAcpServerType = (currentServerConfig?.type || currentAcpServerName).toLowerCase();
+    const currentAcpServerType = (
+      currentServerConfig?.type || currentAcpServerName
+    ).toLowerCase();
 
     // Helper to check if a prompt is allowed for the current ACP server type
     // If acps is empty, the prompt is allowed for all servers
@@ -2833,7 +2887,10 @@ function App() {
       if (!prompt.required_tools || prompt.required_tools.trim() === "") {
         return true; // No tool requirements
       }
-      const patterns = prompt.required_tools.split(",").map((s) => s.trim()).filter(Boolean);
+      const patterns = prompt.required_tools
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
       if (patterns.length === 0) return true;
       return patterns.every((p) => requiredToolsStatus[p] === true);
     };
@@ -3249,7 +3306,10 @@ function App() {
           (s) => s.session_id === session.session_id,
         );
         return session.acp_server || storedSession?.acp_server || "Unknown";
-      } else if (groupingModeForNav === "workspace" || groupingModeForNav === "folder") {
+      } else if (
+        groupingModeForNav === "workspace" ||
+        groupingModeForNav === "folder"
+      ) {
         // workspace and folder modes - group by working_dir|acp_server
         // In folder mode, this returns the subgroup key (sessions are in subgroups, not folders directly)
         const storedSession = storedSessions.find(
@@ -3276,7 +3336,10 @@ function App() {
           (s) => s.session_id === session.session_id,
         );
         return session.acp_server || storedSession?.acp_server || "Unknown";
-      } else if (groupingModeForNav === "workspace" || groupingModeForNav === "folder") {
+      } else if (
+        groupingModeForNav === "workspace" ||
+        groupingModeForNav === "folder"
+      ) {
         const storedSession = storedSessions.find(
           (s) => s.session_id === session.session_id,
         );
@@ -3792,15 +3855,16 @@ function App() {
   }, [sessionInfo?.working_dir, workspacePromptsDir, fetchWorkspacePrompts]);
 
   // Set current workspace for file URL conversion (used in web browser mode)
+  // Use workspace_uuid directly from sessionInfo (sent by backend in 'connected' message)
+  // instead of looking it up by working_dir, which fails when multiple workspaces
+  // exist for the same directory (different ACP servers).
   useEffect(() => {
     const workingDir = sessionInfo?.working_dir;
+    const workspaceUUID = sessionInfo?.workspace_uuid;
     if (workingDir) {
-      // Find the workspace UUID from the workspaces list
-      const workspace = workspaces.find((ws) => ws.working_dir === workingDir);
-      const workspaceUUID = workspace?.uuid;
       setCurrentWorkspace(workingDir, workspaceUUID);
     }
-  }, [sessionInfo?.working_dir, workspaces]);
+  }, [sessionInfo?.working_dir, sessionInfo?.workspace_uuid]);
 
   // Periodic refresh of workspace prompts (every 30 seconds)
   // Uses conditional requests to avoid unnecessary data transfer
@@ -4193,14 +4257,15 @@ function App() {
       maxScroll * SCROLL_THRESHOLD_PERCENT,
     );
     const atBottom = container.scrollTop >= maxScroll - threshold;
-    if (window.__debug?.scroll) console.log("[scroll] checkIfAtBottom:", {
-      scrollTop: container.scrollTop,
-      scrollHeight: container.scrollHeight,
-      clientHeight: container.clientHeight,
-      maxScroll,
-      threshold,
-      atBottom,
-    });
+    if (window.__debug?.scroll)
+      console.log("[scroll] checkIfAtBottom:", {
+        scrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+        clientHeight: container.clientHeight,
+        maxScroll,
+        threshold,
+        atBottom,
+      });
     return atBottom;
   }, []);
 
@@ -4225,7 +4290,8 @@ function App() {
 
     const handleScroll = (source = "scroll") => {
       const atBottom = checkIfAtBottom();
-      if (window.__debug?.scroll) console.log(`[scroll] handleScroll(${source}):`, { atBottom });
+      if (window.__debug?.scroll)
+        console.log(`[scroll] handleScroll(${source}):`, { atBottom });
       setIsUserAtBottom(atBottom);
       // Clear new messages indicator when user scrolls to bottom
       if (atBottom) {
@@ -4269,12 +4335,13 @@ function App() {
       container.style.scrollBehavior = "auto";
       const beforeScrollTop = container.scrollTop;
       container.scrollTop = container.scrollHeight; // scrollHeight = visual bottom
-      if (window.__debug?.scroll) console.log("[scroll] scrollToBottomInstant:", {
-        beforeScrollTop,
-        afterScrollTop: container.scrollTop,
-        scrollHeight: container.scrollHeight,
-        clientHeight: container.clientHeight,
-      });
+      if (window.__debug?.scroll)
+        console.log("[scroll] scrollToBottomInstant:", {
+          beforeScrollTop,
+          afterScrollTop: container.scrollTop,
+          scrollHeight: container.scrollHeight,
+          clientHeight: container.clientHeight,
+        });
       // Restore original behavior after the scroll completes
       container.style.scrollBehavior = originalBehavior;
       // Explicitly set state since scroll event may not fire if position doesn't change
@@ -4315,7 +4382,8 @@ function App() {
     if (prevIsLoadingMoreRef.current && !isLoadingMore) {
       // Load more just completed - set flag to skip auto-scroll for prepended content
       justLoadedMoreRef.current = true;
-      if (window.__debug?.scroll) console.log("[Scroll] Load more completed, will skip auto-scroll");
+      if (window.__debug?.scroll)
+        console.log("[Scroll] Load more completed, will skip auto-scroll");
 
       // Restore scroll position to maintain visual position after prepend
       // The new content was added above, so we need to offset scrollTop by the height difference
@@ -4331,13 +4399,14 @@ function App() {
         const heightDiff = newScrollHeight - savedMetrics.scrollHeight;
         const newScrollTop = savedMetrics.scrollTop + heightDiff;
         container.scrollTop = newScrollTop;
-        if (window.__debug?.scroll) console.log("[Scroll] Restored scroll position after prepend:", {
-          oldScrollHeight: savedMetrics.scrollHeight,
-          newScrollHeight,
-          heightDiff,
-          oldScrollTop: savedMetrics.scrollTop,
-          newScrollTop,
-        });
+        if (window.__debug?.scroll)
+          console.log("[Scroll] Restored scroll position after prepend:", {
+            oldScrollHeight: savedMetrics.scrollHeight,
+            newScrollHeight,
+            heightDiff,
+            oldScrollTop: savedMetrics.scrollTop,
+            newScrollTop,
+          });
 
         // Restore original scroll behavior after the instant scroll
         container.style.scrollBehavior = originalBehavior;
@@ -4365,7 +4434,10 @@ function App() {
     // Skip auto-scroll if we just loaded older messages (prepend)
     // The useInfiniteScroll hook handles scroll position restoration for this case
     if (justLoadedMoreRef.current) {
-      if (window.__debug?.scroll) console.log("[Scroll] Skipping auto-scroll - just loaded older messages");
+      if (window.__debug?.scroll)
+        console.log(
+          "[Scroll] Skipping auto-scroll - just loaded older messages",
+        );
       justLoadedMoreRef.current = false;
       prevMessagesLengthRef.current = currentLength;
       return;
@@ -4498,7 +4570,9 @@ function App() {
     // to trigger WebSocket reconnection and sync any missed messages.
     // Uses staggered reconnect so multiple sessions don't all send load_events simultaneously.
     window.mittoAppDidBecomeActive = () => {
-      console.log("[macOS] App became active, triggering staggered reconnect and sync");
+      console.log(
+        "[macOS] App became active, triggering staggered reconnect and sync",
+      );
       reconnectAllSessionsStaggered();
       // Also refresh session list in case there were changes
       fetchStoredSessions();
@@ -5360,12 +5434,12 @@ function App() {
       html`
         <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
           <div
-            class="flex flex-col gap-1 px-4 py-3 bg-red-600 text-white rounded-lg shadow-lg max-w-md"
+            class="flex flex-col gap-1 px-4 py-3 bg-amber-600 text-white rounded-lg shadow-lg max-w-md"
           >
             <div class="flex items-center gap-2">
-              <span class="text-lg">❌</span>
+              <span class="text-lg">⏳</span>
               <span class="text-sm font-medium"
-                >ACP Server Failed to Start</span
+                >AI Agent Starting...</span
               >
               <button
                 onClick=${() => setAcpStartFailedError(null)}
@@ -5376,8 +5450,8 @@ function App() {
               </button>
             </div>
             <div class="text-xs opacity-90 ml-7">
-              <div class="text-white/70 break-words">
-                ${acpStartFailedError.error}
+              <div class="text-white/70">
+                The AI agent is still starting up. This may take a few seconds. Please wait...
               </div>
             </div>
           </div>
@@ -5394,8 +5468,7 @@ function App() {
             <div class="flex items-center gap-2">
               <span class="text-lg">🚫</span>
               <span class="text-sm font-semibold"
-                >${acpPermanentError.user_message ||
-                "ACP Server Error"}</span
+                >${acpPermanentError.user_message || "ACP Server Error"}</span
               >
               <button
                 onClick=${() => setAcpPermanentError(null)}
@@ -5407,9 +5480,7 @@ function App() {
             </div>
             ${acpPermanentError.user_guidance &&
             html`
-              <div
-                class="text-xs bg-red-800/50 rounded px-3 py-2 ml-7"
-              >
+              <div class="text-xs bg-red-800/50 rounded px-3 py-2 ml-7">
                 <div class="font-medium mb-1">How to fix:</div>
                 <div class="text-white/90">
                   ${acpPermanentError.user_guidance}
@@ -5636,7 +5707,7 @@ function App() {
               html`
                 <div class="flex items-center justify-center h-full">
                   <div class="text-center text-gray-400">
-                    <div class="text-6xl mb-6">💬</div>
+                    <img src="./favicon.png" alt="Mitto" class="w-24 h-24 mb-6 opacity-30 mx-auto" />
                     <p class="text-2xl font-medium text-gray-300 mb-4">
                       Welcome to Mitto
                     </p>
@@ -5680,6 +5751,20 @@ function App() {
                     html`
                       <p class="text-sm mt-6 text-yellow-500">
                         Connecting to server...
+                      </p>
+                    `}
+                    ${connected &&
+                    activeSessionId &&
+                    sessionInfo &&
+                    !sessionInfo.acp_ready &&
+                    html`
+                      <p
+                        class="text-sm mt-6 text-yellow-500 flex items-center gap-2"
+                      >
+                        <span
+                          class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
+                        ></span>
+                        Connecting to AI agent...
                       </p>
                     `}
                   </div>
@@ -5769,6 +5854,24 @@ function App() {
         </div>
         <!-- End of messages wrapper -->
 
+        <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
+        <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
+        ${connected &&
+        activeSessionId &&
+        sessionInfo &&
+        !sessionInfo.acp_ready &&
+        messages.length > 0 &&
+        html`
+          <div
+            class="flex items-center justify-center gap-2 py-2 text-sm text-yellow-500"
+          >
+            <span
+              class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
+            ></span>
+            Reconnecting to AI agent...
+          </div>
+        `}
+
         <!-- Input Area Container (relative for QueueDropdown positioning) -->
         <div class="relative flex-shrink-0">
           <!-- Queue Dropdown (floating overlay above input) -->
@@ -5790,6 +5893,7 @@ function App() {
             onCancel=${cancelPrompt}
             disabled=${!connected || !activeSessionId}
             isStreaming=${isStreaming}
+            isRunning=${isRunning}
             isReadOnly=${sessionInfo?.isReadOnly}
             isArchived=${sessionInfo?.archived || false}
             predefinedPrompts=${predefinedPrompts}
@@ -5809,6 +5913,7 @@ function App() {
             availableCommands=${availableCommands}
             periodicEnabled=${sessionInfo?.periodic_enabled || false}
             agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
+            acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
             activeUIPrompt=${activeUIPrompt}
             onUIPromptAnswer=${(requestId, optionId, label) =>
               sendUIPromptAnswer(activeSessionId, requestId, optionId, label)}

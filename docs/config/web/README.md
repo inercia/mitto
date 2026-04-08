@@ -191,7 +191,6 @@ web:
 ```yaml
 web:
   security:
-    max_ws_connections_per_ip: 10 # Default: 10
     max_ws_message_size: 65536 # Default: 64KB
 ```
 

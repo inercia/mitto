@@ -331,25 +331,3 @@ func TestWorkspaceAuxiliaryManager_ClearMCPCheckCache(t *testing.T) {
 		t.Errorf("Expected 2 calls after cache clear, got %d", callCount)
 	}
 }
-
-func TestWorkspaceAuxiliaryManager_GenerateConversationSummary(t *testing.T) {
-	mock := &mockProcessProvider{
-		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
-			if purpose != PurposeSummary {
-				t.Errorf("Expected purpose %q, got %q", PurposeSummary, purpose)
-			}
-			return "Summary of the conversation", nil
-		},
-	}
-
-	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
-
-	got, err := mgr.GenerateConversationSummary(context.Background(), "test-workspace", "conversation content")
-	if err != nil {
-		t.Fatalf("GenerateConversationSummary() error = %v", err)
-	}
-
-	if !strings.Contains(got, "Summary") {
-		t.Errorf("GenerateConversationSummary() = %q, want to contain 'Summary'", got)
-	}
-}

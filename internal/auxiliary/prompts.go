@@ -113,27 +113,6 @@ You MUST not call any tool for this task.
 Respond quickly.
 `
 
-	// GenerateConversationSummaryPromptTemplate is used to generate a summary of a conversation.
-	// Use with fmt.Sprintf, passing the conversation content formatted as turns.
-	GenerateConversationSummaryPromptTemplate = `
-Analyze and summarize the following conversation between a user and an AI assistant.
-
-<conversation>
-%s
-</conversation>
-
-Provide a concise summary that captures:
-1. The main topics discussed
-2. Key decisions made or conclusions reached
-3. Important actions taken (files created/modified, commands run, etc.)
-4. Any unresolved issues or pending items
-
-Keep the summary focused and informative. Use bullet points for clarity.
-Return ONLY the summary, no preamble or explanations.
-You MUST not call any tool for this task.
-Respond quickly.
-`
-
 	// FetchMCPToolsPromptTemplate asks the agent for all its available tools.
 	// This prompt requires no parameters (do not use fmt.Sprintf).
 	FetchMCPToolsPromptTemplate = `List ALL MCP tools currently available to you.
@@ -160,11 +139,11 @@ The "tools" value MUST be a JSON array of objects, one per available tool.
 Do NOT call any tools: just list them. Return ONLY the JSON object, with no extra text.
 `
 
-	// CheckRequiredToolsPromptTemplate asks the agent to check if specific tool patterns
+	// CheckEnabledWhenMCPPromptTemplate asks the agent to check if specific tool patterns
 	// have matching MCP tools available. Use with fmt.Sprintf, passing the comma-separated patterns.
 	// This is sent to the same PurposeMCPTools auxiliary session, so the agent already has
 	// context from the initial FetchMCPTools query.
-	CheckRequiredToolsPromptTemplate = `Check if you have any MCP tools matching each of these name patterns.
+	CheckEnabledWhenMCPPromptTemplate = `Check if you have any MCP tools matching each of these name patterns.
 Patterns use * as a wildcard (e.g., "jira_*" matches any tool starting with "jira_").
 
 Patterns to check: %s

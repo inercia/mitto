@@ -26,9 +26,6 @@ type WSConn struct {
 	config   WebSocketSecurityConfig
 	logger   *slog.Logger
 	clientIP string
-
-	// Connection tracking for cleanup
-	tracker *ConnectionTracker
 }
 
 // WSConnConfig contains configuration for creating a new WSConn.
@@ -37,7 +34,6 @@ type WSConnConfig struct {
 	Config   WebSocketSecurityConfig
 	Logger   *slog.Logger
 	ClientIP string
-	Tracker  *ConnectionTracker
 	SendSize int // Size of send channel buffer (default: 256)
 }
 
@@ -57,7 +53,6 @@ func NewWSConn(cfg WSConnConfig) *WSConn {
 		config:   cfg.Config,
 		logger:   cfg.Logger,
 		clientIP: cfg.ClientIP,
-		tracker:  cfg.Tracker,
 	}
 }
 
@@ -137,11 +132,14 @@ func (w *WSConn) Close() error {
 	return w.conn.Close()
 }
 
-// ReleaseConnectionSlot releases the connection slot from the tracker.
-// Should be called during cleanup.
-func (w *WSConn) ReleaseConnectionSlot() {
-	if w.tracker != nil && w.clientIP != "" {
-		w.tracker.Remove(w.clientIP)
+// ResetReadDeadline resets the read deadline to PongWait from now.
+// This MUST be called before starting readPump if the WebSocket connection
+// was idle for longer than PongWait (e.g., while waiting for ACP session
+// resumption), otherwise ReadMessage() will fail immediately with a
+// deadline-exceeded error.
+func (w *WSConn) ResetReadDeadline() {
+	if w.config.PongWait > 0 {
+		w.conn.SetReadDeadline(time.Now().Add(w.config.PongWait))
 	}
 }
 

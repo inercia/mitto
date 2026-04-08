@@ -343,16 +343,14 @@ func TestScannerDefense_SuspiciousPathsDoubleBlockDuration(t *testing.T) {
 	}
 }
 
-func TestScannerDefense_RateLimitNormalBlockDuration(t *testing.T) {
+func TestScannerDefense_RateLimitShortBlockDuration(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	blockDuration := 1 * time.Hour
 
 	config := Config{
 		Enabled:       true,
 		RateLimit:     1,
 		RateWindow:    time.Minute,
-		BlockDuration: blockDuration,
+		BlockDuration: 7 * 24 * time.Hour, // configured duration (used for other reasons)
 		Whitelist:     []string{"127.0.0.0/8"},
 	}
 
@@ -381,15 +379,18 @@ func TestScannerDefense_RateLimitNormalBlockDuration(t *testing.T) {
 		t.Fatal("Expected to find block entry")
 	}
 
-	// Verify reason is NOT suspicious_paths
-	if entry.Reason == "suspicious_paths" {
-		t.Error("Expected reason to NOT be 'suspicious_paths'")
+	// Verify reason is rate_limit_exceeded
+	if entry.Reason != "rate_limit_exceeded" {
+		t.Errorf("Expected reason 'rate_limit_exceeded', got %q", entry.Reason)
 	}
 
-	// Verify block duration is normal (NOT doubled)
+	// Rate limit blocks should use a short duration (10 minutes), NOT the
+	// configured BlockDuration. Legitimate users can trigger rate limits
+	// easily (page loads, rapid refreshes through tunnels).
+	expectedDuration := 10 * time.Minute
 	actualDuration := entry.ExpiresAt.Sub(entry.BlockedAt)
 	tolerance := 1 * time.Second
-	if actualDuration < blockDuration-tolerance || actualDuration > blockDuration+tolerance {
-		t.Errorf("Expected block duration ~%v (1x), got %v", blockDuration, actualDuration)
+	if actualDuration < expectedDuration-tolerance || actualDuration > expectedDuration+tolerance {
+		t.Errorf("Expected rate limit block duration ~%v, got %v", expectedDuration, actualDuration)
 	}
 }

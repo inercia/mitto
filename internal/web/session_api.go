@@ -606,12 +606,6 @@ func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteSession handles DELETE /api/sessions/{id}
 func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
-	// First, close any running background session for this ID
-	// This stops the ACP process and cleans up resources
-	if s.sessionManager != nil {
-		s.sessionManager.CloseSession(sessionID, "deleted")
-	}
-
 	// Use the server's session store (owned by the server, not closed by this handler)
 	store := s.Store()
 	if store == nil {
@@ -619,6 +613,24 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		return
 	}
 
+	// Find auto-children BEFORE deletion (they will be cascade-deleted by store.Delete)
+	// We need their IDs to close their ACP processes and broadcast deletions
+	autoChildIDs, err := store.FindAutoChildrenRecursive(sessionID)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("Failed to find auto-children for deletion",
+			"session_id", sessionID,
+			"error", err)
+	}
+
+	// Close ACP processes for parent and all auto-children
+	if s.sessionManager != nil {
+		s.sessionManager.CloseSession(sessionID, "deleted")
+		for _, childID := range autoChildIDs {
+			s.sessionManager.CloseSession(childID, "parent_deleted")
+		}
+	}
+
+	// Delete from store (cascade-deletes auto-children, orphans MCP-children)
 	if err := store.Delete(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
 			http.Error(w, "Session not found", http.StatusNotFound)
@@ -631,8 +643,17 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		return
 	}
 
-	// Broadcast the deletion to all connected WebSocket clients
+	// Broadcast deletions to all connected WebSocket clients
 	s.BroadcastSessionDeleted(sessionID)
+	for _, childID := range autoChildIDs {
+		s.BroadcastSessionDeleted(childID)
+	}
+
+	if s.logger != nil && len(autoChildIDs) > 0 {
+		s.logger.Info("Deleted session with auto-children",
+			"session_id", sessionID,
+			"auto_children_deleted", len(autoChildIDs))
+	}
 
 	writeNoContent(w)
 }
@@ -894,6 +915,14 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 	// Merge: inline prompts override dir prompts by name
 	prompts := config.MergePrompts(nil, dirPrompts, inlinePrompts)
 
+	// Filter by enabled expressions if session context is available
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID != "" {
+		if visCtx := s.buildPromptEnabledContext(sessionID); visCtx != nil {
+			prompts = s.filterPromptsByEnabled(prompts, visCtx)
+		}
+	}
+
 	if s.logger != nil {
 		s.logger.Debug("Returning workspace prompts",
 			"working_dir", workingDir,
@@ -903,13 +932,154 @@ func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) 
 			"dir_prompt_count", len(dirPrompts),
 			"inline_prompt_count", len(inlinePrompts),
 			"prompts_dirs", workspacePromptsDirs,
-			"last_modified", lastModified)
+			"last_modified", lastModified,
+			"session_id", sessionID,
+			"enabled_evaluated", sessionID != "")
 	}
 
 	writeJSONOK(w, map[string]interface{}{
-		"prompts":     prompts,
-		"working_dir": workingDir,
+		"prompts":           prompts,
+		"working_dir":       workingDir,
+		"enabled_evaluated": sessionID != "",
 	})
+}
+
+// buildPromptEnabledContext creates a CEL evaluation context for the given session.
+// Returns nil if session doesn't exist or context cannot be built.
+func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabledContext {
+	store := s.Store()
+	if store == nil || sessionID == "" {
+		return nil
+	}
+
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		return nil
+	}
+
+	ctx := &config.PromptEnabledContext{}
+
+	// Session context
+	ctx.Session.ID = meta.SessionID
+	ctx.Session.Name = meta.Name
+	ctx.Session.IsChild = meta.ParentSessionID != ""
+	ctx.Session.IsAutoChild = meta.IsAutoChild
+	ctx.Session.ParentID = meta.ParentSessionID
+
+	// Parent context (if this is a child)
+	if meta.ParentSessionID != "" {
+		parentMeta, err := store.GetMetadata(meta.ParentSessionID)
+		if err == nil {
+			ctx.Parent.Exists = true
+			ctx.Parent.Name = parentMeta.Name
+			ctx.Parent.ACPServer = parentMeta.ACPServer
+		}
+	}
+
+	// Children context
+	children, err := store.ListChildSessions(sessionID)
+	if err == nil {
+		ctx.Children.Count = len(children)
+		ctx.Children.Exists = len(children) > 0
+		for _, child := range children {
+			ctx.Children.Names = append(ctx.Children.Names, child.Name)
+			ctx.Children.ACPServers = append(ctx.Children.ACPServers, child.ACPServer)
+		}
+	}
+
+	// ACP context from session metadata
+	ctx.ACP.Name = meta.ACPServer
+	if s.config.MittoConfig != nil {
+		if srv, err := s.config.MittoConfig.GetServer(meta.ACPServer); err == nil {
+			ctx.ACP.Type = srv.GetType()
+			ctx.ACP.Tags = srv.Tags
+			ctx.ACP.AutoApprove = srv.AutoApprove
+		}
+	}
+
+	// Workspace context
+	ctx.Workspace.Folder = meta.WorkingDir
+	if ws := s.sessionManager.GetWorkspace(meta.WorkingDir); ws != nil {
+		ctx.Workspace.UUID = ws.UUID
+		ctx.Workspace.Name = ws.Name
+	}
+
+	// Tools context - get from auxiliary manager if available
+	// (This may be empty if tools haven't been fetched yet)
+	if s.auxiliaryManager != nil && ctx.Workspace.UUID != "" {
+		if tools, ok := s.auxiliaryManager.GetCachedMCPTools(ctx.Workspace.UUID); ok {
+			ctx.Tools.Available = true
+			for _, tool := range tools {
+				ctx.Tools.Names = append(ctx.Tools.Names, tool.Name)
+			}
+		}
+	}
+
+	return ctx
+}
+
+// filterPromptsByEnabled filters prompts using their enabledWhen CEL expressions.
+// Prompts without enabledWhen are always included.
+// Prompts with invalid expressions are included (fail-open for safety).
+func (s *Server) filterPromptsByEnabled(prompts []config.WebPrompt, ctx *config.PromptEnabledContext) []config.WebPrompt {
+	if ctx == nil {
+		return prompts // No context, return all prompts
+	}
+
+	evaluator := config.GetCELEvaluator()
+	if evaluator == nil {
+		if s.logger != nil {
+			s.logger.Warn("CEL evaluator not available, returning all prompts")
+		}
+		return prompts
+	}
+
+	var filtered []config.WebPrompt
+	for _, p := range prompts {
+		if p.EnabledWhen == "" {
+			// No expression — always include
+			filtered = append(filtered, p)
+			continue
+		}
+
+		// Compile the expression (cached)
+		compiled, err := evaluator.Compile(p.EnabledWhen)
+		if err != nil {
+			// Invalid expression - include prompt (fail-open)
+			if s.logger != nil {
+				s.logger.Warn("Invalid enabledWhen expression",
+					"prompt", p.Name,
+					"expression", p.EnabledWhen,
+					"error", err)
+			}
+			filtered = append(filtered, p)
+			continue
+		}
+
+		// Evaluate the expression
+		visible, err := evaluator.Evaluate(compiled, ctx)
+		if err != nil {
+			// Evaluation error - include prompt (fail-open)
+			if s.logger != nil {
+				s.logger.Warn("Failed to evaluate enabledWhen",
+					"prompt", p.Name,
+					"expression", p.EnabledWhen,
+					"error", err)
+			}
+			filtered = append(filtered, p)
+			continue
+		}
+
+		if visible {
+			filtered = append(filtered, p)
+		} else if s.logger != nil {
+			s.logger.Debug("Prompt hidden by enabledWhen expression",
+				"prompt", p.Name,
+				"expression", p.EnabledWhen)
+		}
+	}
+
+	return filtered
 }
 
 // loadPromptsFromDirs loads prompts from a list of directories.

@@ -82,6 +82,14 @@ type SessionCallbacks struct {
 	// reason indicates why the session was stopped (e.g., "archived", "archived_timeout").
 	OnACPStopped func(reason string)
 
+	// OnACPStarted is called when the ACP connection for this session becomes ready.
+	// This is fired after successful ACP initialization (including after restarts).
+	OnACPStarted func()
+
+	// OnConnectedFull is called with the full connected message data (including acp_ready).
+	// This is separate from OnConnected for backward compatibility.
+	OnConnectedFull func(data map[string]interface{})
+
 	// OnSessionGone is called when the session has been deleted from the server.
 	OnSessionGone func(sessionID string)
 
@@ -406,6 +414,12 @@ func (s *Session) handleMessage(msg wsMessage) {
 				s.callbacks.OnConnected(data.SessionID, data.ClientID, data.ACPServer)
 			}
 		}
+		if s.callbacks.OnConnectedFull != nil {
+			var rawData map[string]interface{}
+			if json.Unmarshal(msg.Data, &rawData) == nil {
+				s.callbacks.OnConnectedFull(rawData)
+			}
+		}
 
 	case "agent_message":
 		var data struct {
@@ -570,6 +584,11 @@ func (s *Session) handleMessage(msg wsMessage) {
 		}
 		if json.Unmarshal(msg.Data, &data) == nil && s.callbacks.OnACPStopped != nil {
 			s.callbacks.OnACPStopped(data.Reason)
+		}
+
+	case "acp_started":
+		if s.callbacks.OnACPStarted != nil {
+			s.callbacks.OnACPStarted()
 		}
 
 	case "session_gone":

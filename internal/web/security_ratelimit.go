@@ -100,11 +100,9 @@ func (rl *GeneralRateLimiter) Middleware(next http.Handler) http.Handler {
 		// are long-lived (minutes to hours), so the initial HTTP upgrade is a
 		// one-time event per session — not a repeated request pattern that warrants
 		// rate limiting. During startup the frontend opens all sessions simultaneously,
-		// which can easily exhaust the burst budget.
-		//
-		// Abuse protection for WebSocket connections is provided by ConnectionTracker
-		// (max_ws_connections_per_ip), which enforces a hard cap on concurrent
-		// connections per IP. That is the appropriate defence for long-lived connections.
+		// which can easily exhaust the burst budget. WebSocket connections are already
+		// protected by the authentication middleware which rejects unauthenticated
+		// upgrade requests before they reach this point.
 		if r.Header.Get("Upgrade") == "websocket" {
 			next.ServeHTTP(w, r)
 			return

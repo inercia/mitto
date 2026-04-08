@@ -227,6 +227,76 @@ When a client attempts to connect to a session that no longer exists, the server
 > **📖 Full details:** See [Synchronization — Circuit Breaker](websockets/synchronization.md#circuit-breaker-terminal-session-errors)
 > and [Protocol Spec — session_gone](websockets/protocol-spec.md#session_gone--terminal-session-no-longer-exists).
 
+## Auto-Children
+
+The **auto-children** feature automatically creates child conversations when a new top-level conversation is started in a workspace. See [Auto-Children Configuration](../config/web/auto-children.md) for usage.
+
+### IsAutoChild Field
+
+`session.Metadata` has an `IsAutoChild` flag that distinguishes auto-children from MCP-created children:
+
+```go
+type Metadata struct {
+    // ...
+    ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session ID
+    IsAutoChild     bool   `json:"is_auto_child,omitempty"`     // Created via auto_children config
+}
+```
+
+Both auto-children and MCP-created children have a `ParentSessionID`, but only auto-children have `IsAutoChild: true`. This distinction controls deletion behavior.
+
+### Cascade Delete vs. Orphan
+
+`store.Delete()` calls `handleChildSessionsOnParentDelete()` before removing the session:
+
+| Child type                    | On parent delete        |
+| ----------------------------- | ----------------------- |
+| Auto-child (`IsAutoChild=true`) | **Cascade deleted** (recursively) |
+| MCP-child (`IsAutoChild=false`) | **Orphaned** (`ParentSessionID` cleared) |
+
+### createAutoChildren() Flow
+
+`SessionManager.createAutoChildren()` in `session_manager.go`:
+
+1. Resolves each `AutoChild` entry to a `WorkspaceSettings` (via `target_workspace_uuid`)
+2. Generates a new `SessionID` for each child
+3. Creates `session.Metadata` with `IsAutoChild: true` and `ParentSessionID` set
+4. Calls `store.Create(childMeta)` to persist to disk
+5. Calls `ResumeSession()` to start the ACP subprocess
+6. Broadcasts `session_created` to all WebSocket clients
+
+Children inherit the **parent's working directory**, not the target workspace's directory.
+
+### ACP Cleanup on Delete
+
+`handleDeleteSession()` in `session_api.go`:
+
+```
+1. FindAutoChildrenRecursive(sessionID) → collect all auto-child IDs
+2. CloseSession() for parent and each auto-child (stop ACP processes)
+3. store.Delete(sessionID) → cascade-deletes auto-children, orphans MCP-children
+4. BroadcastSessionDeleted() for parent and each auto-child
+```
+
+```mermaid
+sequenceDiagram
+    participant API as REST API
+    participant SM as SessionManager
+    participant Store as session.Store
+    participant WS as WebSocket Clients
+
+    API->>Store: FindAutoChildrenRecursive(parentID)
+    Store-->>API: [childID1, childID2]
+    API->>SM: CloseSession(parentID, "deleted")
+    API->>SM: CloseSession(childID1, "parent_deleted")
+    API->>SM: CloseSession(childID2, "parent_deleted")
+    API->>Store: Delete(parentID)
+    Note over Store: Cascade-deletes auto-children,<br/>orphans MCP-children
+    API->>WS: BroadcastSessionDeleted(parentID)
+    API->>WS: BroadcastSessionDeleted(childID1)
+    API->>WS: BroadcastSessionDeleted(childID2)
+```
+
 ## Message Queue
 
 Each session has an optional message queue that allows users to queue messages while the agent

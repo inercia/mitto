@@ -70,23 +70,10 @@ func (m *GlobalEventsManager) ClientCount() int {
 func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 	clientIP := getClientIPWithProxyCheck(r)
 
-	// Check connection limit per IP
-	if s.connectionTracker != nil && !s.connectionTracker.TryAdd(clientIP) {
-		if s.logger != nil {
-			s.logger.Warn("Global events WebSocket rejected: too many connections",
-				"client_ip", clientIP)
-		}
-		http.Error(w, "Too many connections", http.StatusTooManyRequests)
-		return
-	}
-
 	// Use secure upgrader with compression for external connections
 	secureUpgrader := s.getSecureUpgraderForRequest(r)
 	conn, err := secureUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		if s.connectionTracker != nil {
-			s.connectionTracker.Remove(clientIP)
-		}
 		if s.logger != nil {
 			s.logger.Error("Global events WebSocket upgrade failed", "error", err)
 		}
@@ -101,7 +88,6 @@ func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 		Config:   s.wsSecurityConfig,
 		Logger:   s.logger,
 		ClientIP: clientIP,
-		Tracker:  s.connectionTracker,
 		SendSize: 64,
 	})
 
@@ -128,7 +114,6 @@ func (c *GlobalEventsClient) readPump() {
 	defer func() {
 		c.server.eventsManager.Unregister(c)
 		c.cancel()
-		c.wsConn.ReleaseConnectionSlot()
 		c.wsConn.Close()
 	}()
 

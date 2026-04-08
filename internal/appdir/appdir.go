@@ -40,6 +40,9 @@ const (
 	// BuiltinPromptsDirName is the name of the builtin prompts subdirectory.
 	BuiltinPromptsDirName = "builtin"
 
+	// BuiltinProcessorsDirName is the name of the builtin processors subdirectory.
+	BuiltinProcessorsDirName = "builtin"
+
 	// WorkspaceConfigDirName is the name of the workspace-specific config directory.
 	// This directory is located at the root of a workspace (e.g., $WORKSPACE/.mitto/).
 	WorkspaceConfigDirName = ".mitto"
@@ -277,6 +280,16 @@ func ProcessorsDir() (string, error) {
 	return filepath.Join(dir, ProcessorsDirName), nil
 }
 
+// BuiltinProcessorsDir returns the full path to the builtin processors directory.
+// This directory contains processors that are deployed from the embedded filesystem.
+func BuiltinProcessorsDir() (string, error) {
+	processorsDir, err := ProcessorsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(processorsDir, BuiltinProcessorsDirName), nil
+}
+
 // PromptsDir returns the full path to the prompts directory.
 // This directory contains global prompt files in markdown format with YAML front-matter.
 func PromptsDir() (string, error) {
@@ -302,6 +315,13 @@ func BuiltinPromptsDir() (string, error) {
 // when a workspace is active, without requiring explicit configuration in .mittorc.
 func WorkspacePromptsDir(workspaceRoot string) string {
 	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, PromptsDirName)
+}
+
+// WorkspaceProcessorsDir returns the full path to the default workspace processors directory.
+// This is $WORKSPACE/.mitto/processors/ and is automatically searched for processors
+// when a workspace is active, without requiring explicit configuration in .mittorc.
+func WorkspaceProcessorsDir(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, ProcessorsDirName)
 }
 
 // AuthSessionsPath returns the full path to the auth_sessions.json file.

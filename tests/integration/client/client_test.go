@@ -541,6 +541,12 @@ func TestEventOrder_InterleavedToolCalls(t *testing.T) {
 		t.Fatal("Timeout waiting for prompt completion")
 	}
 
+	// Allow any in-flight events to be delivered through the pipeline.
+	// prompt_complete arrives via the same channel as event callbacks, but the
+	// BackgroundSession's observer notifications run in a separate goroutine from
+	// the MultiplexClient's session_update dispatcher, so a brief settle is needed.
+	time.Sleep(200 * time.Millisecond)
+
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -654,6 +660,10 @@ func TestEventOrder_MessageBeforeSecondToolCall(t *testing.T) {
 		t.Fatal("Timeout waiting for prompt completion")
 	}
 
+	// Allow any in-flight events to be delivered through the pipeline.
+	// See TestEventOrder_InterleavedToolCalls for rationale.
+	time.Sleep(200 * time.Millisecond)
+
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -723,6 +733,11 @@ func TestEventCompleteness_AllEventTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PromptAndWait failed: %v", err)
 	}
+
+	// Allow any in-flight events to settle before asserting.
+	// PromptAndWait returns on prompt_complete, but observer goroutines may still
+	// be delivering preceding events through the pipeline.
+	time.Sleep(200 * time.Millisecond)
 
 	// Verify we got all expected event types
 	if len(result.Messages) == 0 {

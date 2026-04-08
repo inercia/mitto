@@ -417,7 +417,22 @@ func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan
 	defer c.mu.Unlock()
 
 	// Only clear reports when the task changes. Same task = preserve existing reports.
-	if taskID != c.currentTaskID {
+	if c.currentTaskID == "" {
+		// First wait ever. Adopt the new task ID.
+		// If a task_id is specified, filter out proactive reports that don't match
+		// (child reported with a different task_id before parent started waiting).
+		if taskID != "" {
+			for id, r := range c.reports {
+				if r != nil && r.Completed && r.TaskID != taskID {
+					delete(c.reports, id)
+				}
+			}
+		}
+		c.currentTaskID = taskID
+		if c.firstWaitTime == nil {
+			c.firstWaitTime = make(map[string]time.Time)
+		}
+	} else if taskID != c.currentTaskID {
 		// New task: clear all reports, but preserve any that were already
 		// filed with the new taskID (child reported before parent started waiting).
 		oldReports := c.reports

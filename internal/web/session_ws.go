@@ -99,23 +99,10 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	sessionID := parts[0]
 	clientIP := getClientIPWithProxyCheck(r)
 
-	// Check connection limit per IP
-	if s.connectionTracker != nil && !s.connectionTracker.TryAdd(clientIP) {
-		if s.logger != nil {
-			s.logger.Warn("Session WebSocket rejected: too many connections",
-				"client_ip", clientIP, "session_id", sessionID)
-		}
-		http.Error(w, "Too many connections", http.StatusTooManyRequests)
-		return
-	}
-
 	// Use secure upgrader with compression for external connections
 	secureUpgrader := s.getSecureUpgraderForRequest(r)
 	conn, err := secureUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		if s.connectionTracker != nil {
-			s.connectionTracker.Remove(clientIP)
-		}
 		if s.logger != nil {
 			s.logger.Error("Session WebSocket upgrade failed", "error", err, "session_id", sessionID)
 		}
@@ -149,7 +136,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		Config:   wsConfig,
 		Logger:   clientLogger,
 		ClientIP: clientIP,
-		Tracker:  s.connectionTracker,
 		SendSize: 1024,
 	})
 
@@ -166,7 +152,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	// Try to get existing background session first
 	bs := s.sessionManager.GetSession(sessionID)
-	wasResumed := false // Track if we resumed the session (vs already running)
 
 	// Circuit breaker fast path: if session is known to not exist (negative cache hit),
 	// send session_gone immediately without hitting the filesystem.
@@ -188,12 +173,33 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// staleSessionThreshold is the age beyond which a WebSocket connection to a
+	// session is flagged in the log for investigation.  A very old session whose
+	// WebSocket upgrade is unusually slow can exhaust file descriptors or consume
+	// disproportionate memory when its event history is replayed.
+	const staleSessionThreshold = 30 * 24 * time.Hour // 30 days
+
 	// If no running session, try to resume it (unless archived)
 	if bs == nil && store != nil {
 		// Check if session exists in store
 		meta, err := store.GetMetadata(sessionID)
 		switch err {
 		case nil:
+			// Stale-session detection: warn when a WebSocket connects to a session
+			// that has not been active for a long time.  245-second upgrade times
+			// observed in the access log were all associated with sessions many
+			// months old whose large event histories caused slow disk I/O during
+			// the subsequent load_events replay.
+			if age := time.Since(meta.CreatedAt); age > staleSessionThreshold {
+				if clientLogger != nil {
+					clientLogger.Warn("WebSocket connecting to stale session",
+						"session_id", sessionID,
+						"age_days", int(age.Hours()/24),
+						"event_count", meta.EventCount,
+					)
+				}
+			}
+
 			// Don't resume archived sessions - they should remain read-only
 			// without an ACP connection. Users can still view history.
 			if meta.Archived {
@@ -202,30 +208,42 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						"session_id", sessionID)
 				}
 			} else {
-				// Session exists in store and is not archived, resume it
+				// Session exists in store and is not archived.
+				// Resume ACP asynchronously to avoid blocking the WebSocket handler.
+				// The frontend will receive `connected` immediately with is_running=false,
+				// and `acp_started` when the ACP process is ready. Events from events.jsonl
+				// can be served via load_events before ACP is up.
 				cwd := meta.WorkingDir
 				if cwd == "" {
 					cwd, _ = os.Getwd()
 				}
-				bs, err = s.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
-				if err != nil {
-					if clientLogger != nil {
-						clientLogger.Error("Failed to resume session", "error", err)
+				sessionName := meta.Name
+				go func() {
+					resumedBS, err := s.sessionManager.ResumeSession(sessionID, sessionName, cwd)
+					if err != nil {
+						if clientLogger != nil {
+							clientLogger.Error("Failed to resume session (async)", "error", err)
+						}
+						s.BroadcastACPStartFailed(sessionID, err, "")
+						return
 					}
-					// Broadcast ACP start failure to all clients
-					s.BroadcastACPStartFailed(sessionID, err, "")
-					// Continue without a running session - client can still view history
-				} else {
-					wasResumed = true
-					// Invalidate negative cache in case this session was previously cached as not found
+					// Invalidate negative cache
 					if s.negativeSessionCache != nil {
 						s.negativeSessionCache.Remove(sessionID)
 					}
 					if clientLogger != nil {
-						clientLogger.Debug("Resumed session for WebSocket client",
-							"acp_id", bs.GetACPID())
+						clientLogger.Debug("Resumed session for WebSocket client (async)",
+							"acp_id", resumedBS.GetACPID())
 					}
-				}
+					// Attach to all WebSocket clients watching this session.
+					// Use the same pattern as unarchive: tryAttachToSession handles
+					// observer registration and sends acp_started notification.
+					client.tryAttachToSession()
+					// Broadcast to global events so all clients (including other browsers) learn about it
+					s.BroadcastACPStarted(sessionID)
+					// Trigger follow-up suggestions for resumed sessions
+					resumedBS.TriggerFollowUpSuggestions()
+				}()
 			}
 		case session.ErrSessionNotFound:
 			// Session truly doesn't exist in memory or store — send session_gone and close.
@@ -285,13 +303,13 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// the client receives, regardless of scheduling.
 	client.sendSessionConnected(bs)
 
-	go client.readPump()
+	// Reset the read deadline before starting readPump. The initial deadline was set
+	// at WebSocket upgrade time (in configureWebSocketConn). If ResumeSession blocked
+	// for longer than PongWait (60s), the deadline has already expired and ReadMessage()
+	// would fail immediately. This refresh ensures readPump starts with a fresh deadline.
+	client.wsConn.ResetReadDeadline()
 
-	// Trigger follow-up suggestions for resumed sessions with message history
-	// This analyzes the last agent message and sends suggested responses asynchronously
-	if wasResumed && bs != nil {
-		bs.TriggerFollowUpSuggestions()
-	}
+	go client.readPump()
 }
 
 func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
@@ -386,6 +404,7 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 	if bs != nil {
 		data["agent_supports_images"] = bs.AgentSupportsImages()
 		data["workspace_uuid"] = bs.GetWorkspaceUUID()
+		data["acp_ready"] = bs.IsACPReady()
 	}
 
 	c.sendMessage(WSMsgTypeConnected, data)
@@ -405,8 +424,6 @@ func (c *SessionWSClient) readPump() {
 		if c.bgSession != nil {
 			c.bgSession.RemoveObserver(c)
 		}
-		// Release connection slot via WSConn
-		c.wsConn.ReleaseConnectionSlot()
 		// Note: Don't close c.store - it's owned by the server and shared across handlers
 		c.wsConn.Close()
 		if c.logger != nil {
@@ -534,7 +551,7 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, 
 	}
 
 	if c.bgSession == nil {
-		c.sendPromptError("Session not running. Create or resume the session first.", promptID)
+		c.sendPromptError("The AI agent for this conversation is not connected. It may still be starting up — please wait a moment and try again.", promptID)
 		return
 	}
 
@@ -1430,19 +1447,19 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	go c.checkRequiredToolPatterns(workspaceUUID, tools)
 }
 
-// checkRequiredToolPatterns collects required_tools patterns from all prompts,
+// checkRequiredToolPatterns collects enabledWhenMCP patterns from all prompts,
 // checks them against the initial tools list, and retries unsatisfied patterns
 // with exponential backoff. MCP tools from external servers can take time to appear
 // (e.g., external Python programs), so retries are essential.
 //
 // Flow:
-//  1. Collect all required_tools patterns from global + workspace prompts
+//  1. Collect all enabledWhenMCP patterns from global + workspace prompts
 //  2. Local match: check patterns against the initial fetched tools list
 //  3. For unsatisfied patterns: query the auxiliary session (targeted check)
 //  4. Broadcast results
 //  5. Retry unsatisfied patterns with backoff: 30s, 60s, 120s
 func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initialTools []auxiliary.MCPToolInfo) {
-	// Collect all required_tools patterns from prompts
+	// Collect all enabledWhenMCP patterns from prompts
 	patterns := c.collectRequiredToolPatterns()
 	if len(patterns) == 0 {
 		if c.logger != nil {
@@ -1474,7 +1491,7 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 	}
 
 	// Broadcast initial status
-	c.broadcastRequiredToolsStatus(workspaceUUID, satisfied)
+	c.broadcastEnabledWhenMCPStatus(workspaceUUID, satisfied)
 
 	// Check if all patterns are already satisfied
 	unsatisfied := c.getUnsatisfiedPatterns(satisfied)
@@ -1543,7 +1560,7 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 		}
 
 		// Broadcast updated status
-		c.broadcastRequiredToolsStatus(workspaceUUID, satisfied)
+		c.broadcastEnabledWhenMCPStatus(workspaceUUID, satisfied)
 
 		// Check if all satisfied now
 		unsatisfied = c.getUnsatisfiedPatterns(satisfied)
@@ -1564,7 +1581,7 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 	}
 }
 
-// collectRequiredToolPatterns collects all unique required_tools patterns from all prompt sources.
+// collectRequiredToolPatterns collects all unique enabledWhenMCP patterns from all prompt sources.
 func (c *SessionWSClient) collectRequiredToolPatterns() []string {
 	if c.server == nil {
 		return nil
@@ -1611,10 +1628,10 @@ func (c *SessionWSClient) getUnsatisfiedPatterns(satisfied map[string]bool) []st
 	return unsatisfied
 }
 
-// broadcastRequiredToolsStatus broadcasts the required tools pattern status to all clients.
-func (c *SessionWSClient) broadcastRequiredToolsStatus(workspaceUUID string, patterns map[string]bool) {
+// broadcastEnabledWhenMCPStatus broadcasts the required tools pattern status to all clients.
+func (c *SessionWSClient) broadcastEnabledWhenMCPStatus(workspaceUUID string, patterns map[string]bool) {
 	if c.server != nil && c.server.eventsManager != nil {
-		c.server.eventsManager.Broadcast(WSMsgTypeRequiredToolsStatus, map[string]interface{}{
+		c.server.eventsManager.Broadcast(WSMsgTypeEnabledWhenMCPStatus, map[string]interface{}{
 			"workspace_uuid": workspaceUUID,
 			"patterns":       patterns,
 		})
@@ -2180,6 +2197,19 @@ func (c *SessionWSClient) OnConfigOptionChanged(configID, value string) {
 		"session_id": c.sessionID,
 		"config_id":  configID,
 		"value":      value,
+	})
+}
+
+// OnACPStarted is called when the ACP connection for this session becomes ready.
+// This notifies the WebSocket client that the session is now running and ready for prompts.
+func (c *SessionWSClient) OnACPStarted() {
+	if c.logger != nil {
+		c.logger.Debug("ACP started notification sent to client",
+			"session_id", c.sessionID,
+			"client_id", c.clientID)
+	}
+	c.sendMessage(WSMsgTypeACPStarted, map[string]interface{}{
+		"session_id": c.sessionID,
 	})
 }
 

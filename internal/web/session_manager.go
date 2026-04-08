@@ -1,12 +1,16 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"path/filepath"
+
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
@@ -354,6 +358,99 @@ func (sm *SessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSetti
 	return nil
 }
 
+// createAutoChildren creates child sessions for a newly created parent session.
+// Only called for top-level sessions (conversations created without a parent).
+// Children are created asynchronously; failures are logged but don't fail parent creation.
+func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, workspace *config.WorkspaceSettings) {
+	if workspace == nil || len(workspace.AutoChildren) == 0 {
+		return
+	}
+
+	parentID := parentBS.GetSessionID()
+	parentWorkingDir := parentBS.GetWorkingDir()
+
+	if sm.logger != nil {
+		sm.logger.Info("Creating auto-children for new session",
+			"parent_session_id", parentID,
+			"auto_children_count", len(workspace.AutoChildren))
+	}
+
+	store := sm.store
+	if store == nil {
+		if sm.logger != nil {
+			sm.logger.Error("Cannot create auto-children: store not available",
+				"parent_session_id", parentID)
+		}
+		return
+	}
+
+	for _, child := range workspace.AutoChildren {
+		// Resolve target workspace
+		targetWS := workspace // default: same workspace
+		if child.TargetWorkspaceUUID != "" {
+			targetWS = sm.GetWorkspaceByUUID(child.TargetWorkspaceUUID)
+			if targetWS == nil {
+				if sm.logger != nil {
+					sm.logger.Warn("Auto-child target workspace not found",
+						"parent_session_id", parentID,
+						"child_title", child.Title,
+						"target_uuid", child.TargetWorkspaceUUID)
+				}
+				continue
+			}
+		}
+
+		// Generate new session ID
+		childID := session.GenerateSessionID()
+
+		// Create child session metadata
+		childMeta := session.Metadata{
+			SessionID:       childID,
+			Name:            child.Title,
+			ACPServer:       targetWS.ACPServer,
+			WorkingDir:      parentWorkingDir, // Inherit parent's working dir
+			ParentSessionID: parentID,         // Mark as child
+			IsAutoChild:     true,             // Cascade delete with parent
+		}
+
+		// Create via store
+		if err := store.Create(childMeta); err != nil {
+			if sm.logger != nil {
+				sm.logger.Error("Failed to create auto-child session",
+					"parent_session_id", parentID,
+					"child_title", child.Title,
+					"error", err)
+			}
+			continue
+		}
+
+		// Resume the child session (start ACP process)
+		childBS, err := sm.ResumeSession(childID, child.Title, parentWorkingDir)
+		if err != nil {
+			if sm.logger != nil {
+				sm.logger.Error("Failed to start auto-child ACP process",
+					"parent_session_id", parentID,
+					"child_session_id", childID,
+					"error", err)
+			}
+			// Session was created but ACP failed - it can be resumed later
+			continue
+		}
+
+		// Broadcast creation to all connected clients
+		sm.BroadcastSessionCreated(childID, child.Title, targetWS.ACPServer, parentWorkingDir, parentID)
+
+		if sm.logger != nil {
+			sm.logger.Info("Auto-created child conversation",
+				"parent_session_id", parentID,
+				"child_session_id", childID,
+				"child_title", child.Title,
+				"child_acp_server", targetWS.ACPServer,
+				"child_is_running", childBS != nil)
+		}
+	}
+}
+
 // GetWorkspacesForFolder returns all workspace configurations for the given folder.
 // Multiple workspaces may share the same folder with different ACP servers
 // (e.g., same project folder with Claude Code and Auggie).
@@ -507,6 +604,52 @@ func (sm *SessionManager) GetWorkspacePromptsDirs(workingDir string) []string {
 	}
 
 	return rc.PromptsDirs
+}
+
+// GetWorkspaceProcessorsDirs returns the processors_dirs defined in the workspace's .mittorc file.
+// Returns nil if no .mittorc exists or if it has no processors_dirs section.
+func (sm *SessionManager) GetWorkspaceProcessorsDirs(workingDir string) []string {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return nil
+	}
+
+	rc, err := sm.workspaceRCCache.Get(workingDir)
+	if err != nil {
+		return nil
+	}
+
+	if rc == nil {
+		return nil
+	}
+
+	return rc.ProcessorsDirs
+}
+
+// loadWorkspaceProcessors clones the processor manager with workspace-specific
+// processors loaded from .mitto/processors/ and any processors_dirs in .mittorc.
+// Returns the original manager if no workspace processors are found.
+func (sm *SessionManager) loadWorkspaceProcessors(procMgr *processors.Manager, workingDir string) *processors.Manager {
+	if procMgr == nil || workingDir == "" {
+		return procMgr
+	}
+
+	var dirs []string
+
+	// 1. Default .mitto/processors/ directory (lowest priority among workspace dirs)
+	defaultDir := appdir.WorkspaceProcessorsDir(workingDir)
+	dirs = append(dirs, defaultDir)
+
+	// 2. Additional processors_dirs from .mittorc (higher priority)
+	if extraDirs := sm.GetWorkspaceProcessorsDirs(workingDir); len(extraDirs) > 0 {
+		for _, dir := range extraDirs {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(workingDir, dir)
+			}
+			dirs = append(dirs, dir)
+		}
+	}
+
+	return procMgr.CloneWithDirProcessors(dirs, sm.logger)
 }
 
 // GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
@@ -745,7 +888,7 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 		return nil
 	}
 
-	process, err := pm.GetOrCreateProcess(workspace, r)
+	process, err := pm.GetOrCreateProcess(workspace, r, true)
 	if err != nil {
 		if sm.logger != nil {
 			sm.logger.Warn("Failed to get shared ACP process, falling back to per-session",
@@ -969,6 +1112,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		procMgr = procMgr.CloneWithTextProcessors(textProcs, 0)
 	}
 
+	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
+	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
+
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
 	if workspaceConv != nil && workspaceConv.Queue != nil {
@@ -1159,6 +1305,13 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 			"reason":         runnerFallbackInfo.Reason,
 		})
 	}
+
+	// Auto-create children for top-level sessions.
+	// Run in goroutine to not block the parent session creation response.
+	go sm.createAutoChildren(bs, effectiveWs)
+
+	// Trigger early MCP tools fetch to warm the cache before the first message.
+	sm.ensureMCPToolsFetch(workspaceUUID)
 
 	return bs, nil
 }
@@ -1449,6 +1602,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		procMgr = procMgr.CloneWithTextProcessors(textProcs, 0)
 	}
 
+	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
+	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
+
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
 	if workspaceConv != nil && workspaceConv.Queue != nil {
@@ -1602,6 +1758,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 			"working_dir", workingDir,
 			"total_sessions", len(sm.sessions))
 	}
+
+	// Trigger early MCP tools fetch to warm the cache before the first message.
+	sm.ensureMCPToolsFetch(workspaceUUID)
 
 	signalDone(bs, nil)
 	return bs, nil
@@ -1773,6 +1932,7 @@ func (sm *SessionManager) CloseAll(reason string) {
 
 	// Close the shared ACP process manager after all sessions are closed
 	if pm != nil {
+		pm.StopGC() // Stop GC before closing processes
 		pm.Close()
 	}
 
@@ -1959,6 +2119,73 @@ func (sm *SessionManager) GetWorkspaceUUIDForSession(sessionID string) string {
 	return ""
 }
 
+// GetSessionInfoByWorkspace returns session info grouped by workspace UUID.
+// Used by the ACP process GC to determine which processes are still needed.
+// The caller must NOT hold sm.mu when calling this method.
+func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	result := make(map[string][]SessionInfo)
+	for _, bs := range sm.sessions {
+		uuid := bs.GetWorkspaceUUID()
+		if uuid == "" {
+			continue
+		}
+
+		var nextPeriodic *time.Time
+		if sm.store != nil {
+			if p, err := sm.store.Periodic(bs.GetSessionID()).Get(); err == nil && p.Enabled {
+				nextPeriodic = p.NextScheduledAt
+			}
+		}
+
+		var queueLen int
+		if sm.store != nil {
+			queueLen, _ = sm.store.Queue(bs.GetSessionID()).Len()
+		}
+
+		result[uuid] = append(result[uuid], SessionInfo{
+			SessionID:             bs.GetSessionID(),
+			WorkspaceUUID:         uuid,
+			IsPrompting:           bs.IsPrompting(),
+			HasObservers:          bs.HasObservers(),
+			QueueLength:           queueLen,
+			NextPeriodicAt:        nextPeriodic,
+			ResumedAt:             bs.StartedAt(),
+			LastObserverRemovedAt: bs.LastObserverRemovedAt(),
+		})
+	}
+	return result
+}
+
+// CloseIdleSession closes a session that the GC has determined is idle,
+// removing it from the manager and releasing its resources.
+// Safe to call concurrently; no-op if the session is not found.
+// The caller must NOT hold sm.mu when calling this method.
+func (sm *SessionManager) CloseIdleSession(sessionID string) {
+	sm.mu.Lock()
+	bs, exists := sm.sessions[sessionID]
+	if !exists {
+		sm.mu.Unlock()
+		return
+	}
+	delete(sm.sessions, sessionID)
+	sm.mu.Unlock()
+
+	// Clear cached plan state when session is closed
+	sm.ClearCachedPlanState(sessionID)
+
+	if bs != nil {
+		if sm.logger != nil {
+			sm.logger.Info("Closing idle session (GC)",
+				"session_id", sessionID,
+				"workspace_uuid", bs.GetWorkspaceUUID())
+		}
+		bs.Close("gc_idle")
+	}
+}
+
 // IsMCPChecked returns whether MCP availability has been checked for a workspace.
 func (sm *SessionManager) IsMCPChecked(workspaceUUID string) bool {
 	sm.mcpCheckedWorkspacesMu.RLock()
@@ -2000,4 +2227,71 @@ func (sm *SessionManager) ClearMCPToolsFetched(workspaceUUID string) {
 	sm.mcpToolsFetchedWorkspacesMu.Lock()
 	defer sm.mcpToolsFetchedWorkspacesMu.Unlock()
 	delete(sm.mcpToolsFetchedWorkspaces, workspaceUUID)
+}
+
+// ensureMCPToolsFetch triggers an asynchronous MCP tools fetch for the given workspace
+// if not already fetched. This warms the cache so that processor enabledWhenMCP checks
+// have tool names available by the time the first message is processed.
+// Safe to call multiple times — only the first call for a workspace triggers the fetch.
+func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {
+	if workspaceUUID == "" {
+		return
+	}
+	if sm.IsMCPToolsFetched(workspaceUUID) {
+		return
+	}
+	sm.MarkMCPToolsFetched(workspaceUUID)
+
+	// Read auxiliaryManager and eventsManager under lock.
+	sm.mu.RLock()
+	auxMgr := sm.auxiliaryManager
+	evtMgr := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if auxMgr == nil {
+		return
+	}
+
+	go func() {
+		// Use a long timeout — auxiliary RPCs can be queued behind active prompts.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		if sm.logger != nil {
+			sm.logger.Debug("early MCP tools fetch: starting",
+				"workspace_uuid", workspaceUUID)
+		}
+
+		tools, err := auxMgr.FetchMCPTools(ctx, workspaceUUID)
+		if err != nil {
+			if sm.logger != nil {
+				sm.logger.Debug("early MCP tools fetch: failed",
+					"workspace_uuid", workspaceUUID,
+					"error", err)
+			}
+			// Clear the fetched flag so the WebSocket fallback can retry.
+			sm.ClearMCPToolsFetched(workspaceUUID)
+			return
+		}
+
+		if sm.logger != nil {
+			sm.logger.Debug("early MCP tools fetch: completed",
+				"workspace_uuid", workspaceUUID,
+				"tool_count", len(tools))
+		}
+
+		// If empty result, clear flag so next connection retries.
+		if len(tools) == 0 {
+			sm.ClearMCPToolsFetched(workspaceUUID)
+			return
+		}
+
+		// Broadcast to frontend (same as triggerMCPToolsFetch in session_ws.go).
+		if evtMgr != nil {
+			evtMgr.Broadcast(WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+				"workspace_uuid": workspaceUUID,
+				"tools":          tools,
+			})
+		}
+	}()
 }

@@ -54,42 +54,66 @@ func TestTrustedProxyChecker_GetClientIP_NoProxies(t *testing.T) {
 }
 
 func TestTrustedProxyChecker_GetClientIP_TrustedProxy(t *testing.T) {
-	checker := NewTrustedProxyChecker([]string{"10.0.0.0/8"})
+	checker := NewTrustedProxyChecker([]string{"10.0.0.0/8", "127.0.0.1", "::1"})
 
 	tests := []struct {
 		name       string
 		remoteAddr string
-		xff        string
-		xri        string
+		headers    map[string]string
 		wantIP     string
 	}{
 		{
-			name:       "trusted proxy with XFF",
+			name:       "Cf-Connecting-IP takes priority",
 			remoteAddr: "10.1.2.3:8080",
-			xff:        "203.0.113.50, 10.1.2.3",
-			xri:        "",
+			headers: map[string]string{
+				"Cf-Connecting-IP": "203.0.113.99",
+				"X-Forwarded-For":  "203.0.113.50",
+				"X-Real-IP":        "203.0.113.51",
+			},
+			wantIP: "203.0.113.99",
+		},
+		{
+			name:       "X-Real-IP when no Cf-Connecting-IP",
+			remoteAddr: "10.1.2.3:8080",
+			headers: map[string]string{
+				"X-Real-IP":       "203.0.113.50",
+				"X-Forwarded-For": "203.0.113.51, 10.1.2.3",
+			},
+			wantIP: "203.0.113.50",
+		},
+		{
+			name:       "X-Forwarded-For as fallback",
+			remoteAddr: "10.1.2.3:8080",
+			headers:    map[string]string{"X-Forwarded-For": "203.0.113.50, 10.1.2.3"},
 			wantIP:     "203.0.113.50",
 		},
 		{
-			name:       "trusted proxy with X-Real-IP",
-			remoteAddr: "10.1.2.3:8080",
-			xff:        "",
-			xri:        "203.0.113.50",
-			wantIP:     "203.0.113.50",
-		},
-		{
-			name:       "untrusted proxy - ignore headers",
+			name:       "untrusted proxy - ignore all headers",
 			remoteAddr: "192.168.1.1:8080",
-			xff:        "203.0.113.50",
-			xri:        "203.0.113.51",
-			wantIP:     "192.168.1.1:8080",
+			headers: map[string]string{
+				"Cf-Connecting-IP": "203.0.113.99",
+				"X-Forwarded-For":  "203.0.113.50",
+				"X-Real-IP":        "203.0.113.51",
+			},
+			wantIP: "192.168.1.1:8080",
 		},
 		{
-			name:       "trusted proxy no headers",
+			name:       "trusted proxy no headers - direct IP",
 			remoteAddr: "10.1.2.3:8080",
-			xff:        "",
-			xri:        "",
+			headers:    nil,
 			wantIP:     "10.1.2.3:8080",
+		},
+		{
+			name:       "IPv6 loopback trusted (cloudflared)",
+			remoteAddr: "[::1]:54321",
+			headers:    map[string]string{"Cf-Connecting-IP": "207.188.191.36"},
+			wantIP:     "207.188.191.36",
+		},
+		{
+			name:       "IPv4 loopback trusted",
+			remoteAddr: "127.0.0.1:54321",
+			headers:    map[string]string{"Cf-Connecting-IP": "207.188.191.36"},
+			wantIP:     "207.188.191.36",
 		},
 	}
 
@@ -97,11 +121,8 @@ func TestTrustedProxyChecker_GetClientIP_TrustedProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/", nil)
 			req.RemoteAddr = tt.remoteAddr
-			if tt.xff != "" {
-				req.Header.Set("X-Forwarded-For", tt.xff)
-			}
-			if tt.xri != "" {
-				req.Header.Set("X-Real-IP", tt.xri)
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
 			}
 
 			got := checker.GetClientIP(req)

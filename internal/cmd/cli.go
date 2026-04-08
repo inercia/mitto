@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -142,13 +143,28 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	// Merge text-mode processors from config into the unified pipeline.
 	// Text-mode processors use priority 0 so they run before command-mode processors (priority 100).
 	var workspaceConv *config.ConversationsConfig
-	if workspaceRC, err := config.LoadWorkspaceRC(workDir); err == nil && workspaceRC != nil {
-		workspaceConv = workspaceRC.Conversations
+	var workspaceRC *config.WorkspaceRC
+	if rc, err := config.LoadWorkspaceRC(workDir); err == nil && rc != nil {
+		workspaceRC = rc
+		workspaceConv = rc.Conversations
 	}
 	if textProcs := config.MergeProcessors(cfg.Conversations, workspaceConv); len(textProcs) > 0 {
 		// CLI is single-threaded, so direct mutation is safe (no need for CloneWithTextProcessors).
 		procMgr.AddTextProcessors(textProcs, 0)
 	}
+
+	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
+	var wsDirs []string
+	wsDirs = append(wsDirs, appdir.WorkspaceProcessorsDir(workDir))
+	if workspaceRC != nil {
+		for _, dir := range workspaceRC.ProcessorsDirs {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(workDir, dir)
+			}
+			wsDirs = append(wsDirs, dir)
+		}
+	}
+	procMgr = procMgr.CloneWithDirProcessors(wsDirs, nil)
 
 	// Run in once mode or interactive mode
 	if isOnceMode {

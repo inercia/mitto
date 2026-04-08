@@ -5,26 +5,7 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
-<task>
 Address all review comments on the current pull request with thoughtful responses and code changes.
-</task>
-
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Note**: Works without Mitto's MCP server, but provides a better experience with it.
-
-**Optional tools:**
-- `mitto_ui_ask_yes_no`
-- `mitto_conversation_new`
-- `mitto_children_tasks_wait`
-- `mitto_children_tasks_report`
-- `mitto_conversation_delete`
-
-If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
-
----
-
-<instructions>
 
 ### 1. Identify the PR/MR
 
@@ -67,13 +48,13 @@ Ask me for confirmation if any question arises.
 2. Identify dependencies (some fixes resolve multiple comments)
 3. Prioritize: blocking first, related changes together, independent in parallel
 
-<output_format>
+
 
 | Comment | Type | Validity | Priority | Action |
 |---------|------|----------|----------|--------|
 | ...     | ...  | ...      | ...      | ...    |
 
-</output_format>
+
 
 **With Mitto UI**: `mitto_ui_ask_yes_no` → "Does this analysis look correct?"
 **Without**: Ask in conversation for confirmation.
@@ -92,8 +73,12 @@ For fixes requiring **significant work** (3+ files, substantial new code, risky 
 
 **How to delegate (requires Mitto MCP tools):**
 
-1. Your session ID is `@mitto:session_id`. Available ACP servers: `@mitto:available_acp_servers`
-2. Select ACP server: prefer `"coding"`/`"fast"` tagged servers for implementation tasks. Fallback: current server (marked `(current)` in the list above).
+Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
+
+1. Select ACP server: prefer `"coding"`/`"fast"` tagged servers for implementation tasks. Fallback: current server (marked `(current)` in the list above).
+2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
 3. `mitto_conversation_new(self_id: "@mitto:session_id")`:
    ```
    title: "PR fix: <description>"
@@ -108,7 +93,7 @@ For fixes requiring **significant work** (3+ files, substantial new code, risky 
      (Get your own self_id by calling mitto_conversation_get_current(self_id: "init").)
    acp_server: <selected server>
    ```
-4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", children_list, task_id: "<short task description>", timeout_seconds: 600)`
+4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", children_list: [...], task_id: "<short task description>", timeout_seconds: 600)`
 5. Review results, verify changes, run tests
 6. `mitto_conversation_delete` for completed children
 7. Commit combined changes
@@ -144,7 +129,7 @@ glab mr update --ready                                       # GitLab
 
 ### 10. Summary Report
 
-<output_format>
+
 
 ```console
 ✅ PR Review Comments Addressed
@@ -161,11 +146,8 @@ glab mr update --ready                                       # GitLab
 🔗 PR: <pr-url>
 ```
 
-</output_format>
+## Guidelines
 
-</instructions>
-
-<rules>
 - Consider all feedback carefully — reviewers may have context you're missing
 - Respond to every comment
 - Provide evidence when disagreeing (code, docs, benchmarks)
@@ -177,4 +159,3 @@ glab mr update --ready                                       # GitLab
 - When delegating, prefer `"coding"`/`"fast"` tagged ACP servers
 - Max 4 parallel child conversations
 - In fork workflows, push to `origin`, not `upstream`
-</rules>

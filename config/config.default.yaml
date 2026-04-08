@@ -98,9 +98,6 @@ web:
   #   rate_limit_rps: 10        # Requests per second (default: 10)
   #   rate_limit_burst: 20      # Maximum burst size (default: 20)
   #
-  #   # WebSocket connection limits (per IP)
-  #   max_ws_connections_per_ip: 10  # Default: 10
-  #
   #   # Maximum WebSocket message size in bytes
   #   max_ws_message_size: 65536     # Default: 64KB
 

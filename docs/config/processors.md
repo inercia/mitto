@@ -1,8 +1,12 @@
-# Command Processors Configuration
+# Processors Configuration
 
-Mitto supports external command-based processors that can dynamically transform messages
-before sending them to the ACP server. Processors execute arbitrary commands that receive
-message context as JSON input and produce transformed output.
+Mitto supports processors that transform messages before sending them to the ACP
+server. There are two modes:
+
+- **Text-mode** — Inject static text (with optional variable substitution) into messages. No external commands needed.
+- **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output.
+
+Both modes are configured via YAML files and share the same triggering, priority, and conditional enablement features.
 
 > **Note:** The old `hooks/` directory name is still supported for backward compatibility.
 
@@ -16,15 +20,169 @@ Processors are loaded from YAML files in the `MITTO_DIR/processors/` directory:
 
 The processors directory is created automatically when Mitto starts.
 
-## Processor Configuration Schema
+### Workspace-Local Processors
 
-Each YAML file in the processors directory defines one processor:
+In addition to the global processors directory, Mitto automatically loads processors
+from the workspace directory at `$WORKSPACE/.mitto/processors/`. This allows
+per-project processor configuration that travels with the repository.
+
+Additional workspace processor directories can be configured via `.mittorc`:
+
+```yaml
+processors_dirs:
+  - ".processors"
+  - "team/shared-processors"
+```
+
+Paths are relative to the workspace root. Absolute paths are also supported.
+
+**Merge behavior:**
+
+1. Global processors from `MITTO_DIR/processors/` are loaded first
+2. Inline text-mode processors from `.mittorc` `conversations.processing.processors` are merged
+3. Workspace processors from `.mitto/processors/` are merged
+4. Additional directories from `processors_dirs` are merged last (highest override priority)
+
+When a workspace processor has the **same `name`** as a global processor, the workspace
+version overrides the global one. All processors are sorted by priority after merging.
+
+Use `mitto processors list --dir .mitto/processors` to preview how workspace processors
+merge with global ones.
+
+## Builtin Processors
+
+Mitto ships with builtin processors that are automatically deployed to `MITTO_DIR/processors/builtin/` on first run. Like builtin prompts, they are embedded in the binary and kept in sync — if a new version of Mitto ships updated builtins, they are automatically updated on startup (content-based comparison).
+
+### Included Builtin Processors
+
+| Processor | Description | When | Enabled |
+|-----------|-------------|------|---------|
+| `session-context` | Injects session identity, parent/child relationships, and available agents into the first message | `first` | Yes |
+| `check-mcp-tools` | Checks if Mitto MCP tools are available and suggests installation if missing | `first` | Yes |
+| `delegate-to-coder` | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | Yes (only activates for matching ACP servers) |
+
+### Managing Builtin Processors
+
+- **Disable**: Edit the YAML file and set `enabled: false`, or move it to `processors/builtin/disabled/`
+- **Override**: Create a processor with higher priority in `processors/` (outside `builtin/`)
+- **Force update**: Run `mitto processors update-builtin` to overwrite local modifications with the embedded versions
+- **Dry run**: Run `mitto processors update-builtin --dry-run` to preview changes
+
+> **Note:** User-created processors in `MITTO_DIR/processors/` (outside `builtin/`) are never modified by automatic updates.
+
+## Text-Mode Processors (Static Content)
+
+Text-mode processors inject static text into messages without executing any external command.
+They use the `text` field instead of `command`. This is the simplest way to add context,
+reminders, or instructions to conversations.
+
+### Basic Structure
+
+```yaml
+name: my-reminder
+description: "Adds a coding reminder to every message"
+when: all
+position: append
+priority: 100
+text: |
+  ---
+  Remember: always write tests for new code.
+  Follow the project's existing patterns and conventions.
+```
+
+### Examples
+
+#### Inject project context on first message
+
+```yaml
+name: project-context
+description: "Adds project context to the first message"
+when: first
+position: prepend
+priority: 20
+text: |
+  [Project Context]
+  This is the Acme API project. It uses Go 1.22, PostgreSQL, and follows
+  clean architecture patterns. All handlers are in internal/api/.
+  Run tests with: make test
+  ---
+```
+
+#### Add safety reminders to every message
+
+```yaml
+name: safety-reminder
+description: "Reminds the agent about safe practices"
+when: all
+position: append
+priority: 200
+text: |
+  ---
+  IMPORTANT: Do not modify files outside the project directory.
+  Do not commit or push without explicit user approval.
+```
+
+#### Inject session identity with variable substitution
+
+Text-mode processors support `@mitto:variable` placeholders that are replaced with
+live session values (see [Variable Substitution](#variable-substitution) below).
+
+```yaml
+name: session-context
+description: "Injects session identity and context"
+when: first
+position: prepend
+priority: 10
+rerun:
+  afterTime: 30m
+  afterSentMsgs: 20
+text: |
+  [Session Context]
+  Session: @mitto:session_id (@mitto:session_name)
+  Agent: @mitto:acp_server
+  Working Directory: @mitto:working_dir
+  Parent: @mitto:parent
+  Children: @mitto:children
+  Available Agents: @mitto:available_acp_servers
+  ---
+```
+
+#### Conditional text for specific models
+
+```yaml
+name: reasoning-guidance
+description: "Delegation guidance for premium reasoning models"
+when: first
+position: append
+priority: 90
+enabledWhen: 'acp.tags.exists(t, t == "reasoning")'
+text: |
+  ---
+  You are running on a premium reasoning model. For tasks that involve
+  extensive coding changes, consider delegating to a faster model.
+```
+
+## Command-Mode Processors (Dynamic Content)
+
+Command-mode processors execute external commands to dynamically generate or transform
+message content. They use the `command` field and communicate via JSON on stdin/stdout.
+
+## Full Configuration Schema
+
+Each YAML file in the processors directory defines one processor. Use **either** `text` (text-mode)
+or `command` (command-mode) — not both.
 
 ```yaml
 # Required fields
-name: my-processor # Human-readable identifier
-command: /path/to/script.sh # Command to execute (see Command Resolution)
-when: first # "first", "all", or "all-except-first"
+name: my-processor             # Human-readable identifier
+when: first                    # "first", "all", or "all-except-first"
+
+# --- Text-mode (use ONE of the two modes) ---
+text: |                        # Static text to inject (no command needed)
+  Your static content here.
+
+# --- Command-mode (use ONE of the two modes) ---
+command: /path/to/script.sh    # Command to execute (see Command Resolution)
 
 # Optional fields
 description: "Adds context" # Description of what the processor does
@@ -45,15 +203,73 @@ on_error: skip # "skip" or "fail" (default: skip)
 environment:
   MY_VAR: "value"
 
-# Workspace filtering (empty = all workspaces)
-workspaces:
-  - /path/to/project1
-  - /path/to/project2
+# CEL expression for conditional activation (empty = always apply)
+# Same context as prompt enabledWhen: acp.*, session.*, parent.*, children.*, workspace.*, tools.*
+enabledWhen: 'acp.tags.exists(t, t == "reasoning")'
+
+# MCP tool patterns required for this processor (empty = no requirements)
+# Comma-separated glob patterns; ALL patterns must be satisfied (AND logic)
+enabledWhenMCP: "mitto_conversation_*, jira_*"
+
+# Automatic re-run for "when: first" processors (refreshes context periodically)
+rerun:
+  afterTime: 30m     # re-run after 30 minutes since last run
+  afterSentMsgs: 20  # re-run after 20 user messages since last run
 ```
 
-## Command Resolution
+### Conditional Enablement
 
-The `command` field supports:
+Processors support the same family of `enabled*` fields as prompts:
+
+| Field            | Type   | Use Case                                    |
+| ---------------- | ------ | ------------------------------------------- |
+| `enabled`        | bool   | Permanently disable a processor             |
+| `enabledWhen`    | CEL    | Dynamic conditions based on session context |
+| `enabledWhenMCP` | string | Require specific MCP tools to be available  |
+
+**Evaluation order:** If `enabled: false`, the processor is never loaded. Otherwise,
+both `enabledWhen` and `enabledWhenMCP` conditions must be satisfied.
+
+**CEL context** — Same variables as prompt `enabledWhen`:
+
+- `acp.name`, `acp.type`, `acp.tags`, `acp.autoApprove`
+- `session.id`, `session.name`, `session.isChild`, `session.parentId`
+- `parent.exists`, `parent.name`, `parent.acpServer`
+- `children.count`, `children.exists`, `children.names`, `children.acpServers`
+- `workspace.uuid`, `workspace.folder`, `workspace.name`
+- `tools.available`, `tools.names`, `tools.hasPattern("glob_*")`
+
+
+### Automatic Re-run (`rerun`)
+
+Processors with `when: first` normally fire only once (on the first message after session
+start or resume). The `rerun` field allows them to fire again periodically, refreshing
+context for the LLM.
+
+```yaml
+when: first
+rerun:
+  afterTime: 30m      # re-run after 30 minutes since last run
+  afterSentMsgs: 20   # re-run after 20 user messages since last run
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `afterTime` | duration | Time since last run (`"10m"`, `"1h"`, `"30s"`, `"2h30m"`) |
+| `afterSentMsgs` | int | Number of user messages sent since last run |
+
+If both are set, whichever threshold is reached first triggers the re-run.
+
+Rerun state is tracked **in memory only** — not persisted across restarts. This is
+correct because `isFirstPrompt = true` on session resume already handles the restart case.
+
+> **Note:** `rerun` is only valid with `when: first`. The loader rejects processors that
+> combine `rerun` with other `when` values.
+
+
+## Command Resolution (Command-Mode Only)
+
+The `command` field in command-mode processors supports:
 
 1. **Absolute paths**: `/usr/local/bin/my-processor`
 2. **Relative paths**: `./script.sh` (resolved relative to the processor file's directory)
@@ -78,7 +294,7 @@ command: ./git-context.sh # Resolved to processors/git-context.sh
 when: first
 ```
 
-## Input Format (stdin)
+## Input Format — Command-Mode (stdin)
 
 All input is JSON. The format depends on the `input` setting:
 
@@ -91,6 +307,7 @@ All input is JSON. The format depends on the `input` setting:
   "session_id": "20260131-143052-a1b2c3d4",
   "working_dir": "/path/to/project",
   "parent_session_id": "",
+  "parent_session_name": "",
   "session_name": "Fix login bug",
   "acp_server": "claude-code",
   "workspace_uuid": "d4e5f6a7-...",
@@ -106,6 +323,13 @@ All input is JSON. The format depends on the `input` setting:
       "type": "claude-code",
       "tags": ["coding"],
       "current": true
+    }
+  ],
+  "child_sessions": [
+    {
+      "id": "20260131-143100-e5f6a7b8",
+      "name": "Sub task",
+      "acp_server": "auggie"
     }
   ]
 }
@@ -148,7 +372,7 @@ All input is JSON. The format depends on the `input` setting:
 
 No stdin is provided (useful for side-effect-only processors).
 
-## Output Format (stdout)
+## Output Format — Command-Mode (stdout)
 
 All output must be JSON. The format depends on the `output` setting:
 
@@ -223,10 +447,12 @@ The following environment variables are automatically set for all processors:
 | `MITTO_PROCESSOR_FILE`        | Path to the current processor's YAML file             | `.../processors/my-processor.yaml`                        |
 | `MITTO_PROCESSOR_DIR`         | Directory containing the current processor file       | `.../processors`                                          |
 | `MITTO_PARENT_SESSION_ID`     | Parent conversation ID (empty if root)                | `20260130-100000-aabbccdd`                                |
+| `MITTO_PARENT_SESSION_NAME`   | Parent conversation title/name (empty if no parent)   | `Fix login bug`                                           |
 | `MITTO_SESSION_NAME`          | Conversation title/name                               | `Fix login bug`                                           |
 | `MITTO_ACP_SERVER`            | Active ACP server name                                | `claude-code`                                             |
 | `MITTO_WORKSPACE_UUID`        | Workspace identifier                                  | `d4e5f6a7-b8c9-...`                                       |
 | `MITTO_AVAILABLE_ACP_SERVERS` | JSON array of servers with workspaces for this folder | `[{"name":"auggie","tags":["coding"],"current":false},…]` |
+| `MITTO_CHILD_SESSIONS`        | JSON array of child sessions                          | `[{"id":"20260131-...","name":"Sub task","acp_server":"claude-code"},…]` |
 
 ## Variable Substitution
 
@@ -248,11 +474,13 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 | ------------------------------ | ------------------------------------------------------------------------------ |
 | `@mitto:session_id`            | Current session ID                                                             |
 | `@mitto:parent_session_id`     | Parent conversation ID; empty string if this is a root session                 |
+| `@mitto:parent`                | Parent session formatted as `id (name)` or just `id` if unnamed; empty if root |
 | `@mitto:session_name`          | Conversation title/name; empty string if not yet set                           |
 | `@mitto:working_dir`           | Session working directory                                                      |
 | `@mitto:acp_server`            | Active ACP server name (e.g. `claude-code`)                                    |
 | `@mitto:workspace_uuid`        | Workspace UUID                                                                 |
 | `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
+| `@mitto:children`              | Human-readable list of child sessions — see below                              |
 
 ### `@mitto:available_acp_servers` format
 
@@ -272,6 +500,37 @@ auggie [coding, ai-assistant] (current), claude-code [coding, fast-model]
 ```
 
 The same data is also available as a structured JSON array via the `available_acp_servers` field in stdin and the `MITTO_AVAILABLE_ACP_SERVERS` environment variable (see above).
+
+### `@mitto:children` format
+
+Produces a comma-separated list of direct child sessions. Each entry follows the pattern:
+
+```
+id (name) [acp-server]
+```
+
+- **`(name)`** — omitted when the child session has no name/title yet
+- **`[acp-server]`** — omitted when the child has no ACP server set
+
+Example with two children:
+
+```
+20260407-120000-a1b2c3d4 (Research task) [claude-code], 20260407-120100-e5f6a7b8 (Test runner) [auggie]
+```
+
+The same data is also available as a structured JSON array via the `child_sessions` field in stdin and the `MITTO_CHILD_SESSIONS` environment variable (see above).
+
+### `@mitto:parent` format
+
+Produces a formatted reference to the parent session:
+
+```
+id (name)
+```
+
+- If the parent has a name: `20260407-100000-aabbccdd (Main session)`
+- If the parent has no name: `20260407-100000-aabbccdd`
+- If there is no parent (root session): empty string
 
 ### Example: inject session context into a prepended text
 
@@ -298,9 +557,9 @@ output: prepend
 - **Unknown variables** — `@mitto:unknown` is left verbatim in the message
 - **Empty values** — e.g. `@mitto:parent_session_id` when there is no parent → replaced with empty string
 - **Fast path** — if the assembled message contains no `@mitto:`, the substitution pass is skipped entirely
-- **CLI mode** — `@mitto:session_id`, `@mitto:parent_session_id`, `@mitto:session_name`, `@mitto:acp_server`, `@mitto:workspace_uuid`, and `@mitto:available_acp_servers` all substitute to empty string; `@mitto:working_dir` substitutes to the CLI working directory
+- **CLI mode** — `@mitto:session_id`, `@mitto:parent_session_id`, `@mitto:parent`, `@mitto:session_name`, `@mitto:acp_server`, `@mitto:workspace_uuid`, `@mitto:available_acp_servers`, and `@mitto:children` all substitute to empty string; `@mitto:working_dir` substitutes to the CLI working directory
 
-## Examples
+## Command-Mode Examples
 
 ### Git Context Processor
 
@@ -349,7 +608,10 @@ output: transform
 
 ### Project Rules Processor
 
-Add project-specific rules for certain workspaces:
+> **Tip:** The examples below use command-mode. For simpler static content injection,
+> consider using [text-mode processors](#text-mode-processors-static-content) instead.
+
+Add project-specific rules for certain workspaces using CEL or workspace-local processors:
 
 ```yaml
 # processors/project-rules.yaml
@@ -362,9 +624,11 @@ args:
 input: none
 output: prepend
 on_error: skip
-workspaces:
-  - /path/to/my-project
+enabledWhen: 'workspace.folder.startsWith("/path/to/my-project")'
 ```
+
+Alternatively, place the processor in `$workspace/.mitto/processors/` to scope it
+automatically to that workspace.
 
 ## Disabling Processors
 
@@ -399,15 +663,16 @@ Within the same priority, order is undefined.
 
 Processors that timeout or exit with non-zero status are treated as errors.
 
-## Comparison with Declarative Processors
+## Text-Mode vs Command-Mode Comparison
 
-| Feature        | Declarative Processors     | Command Processors                     |
-| -------------- | -------------------------- | -------------------------------------- |
-| Configuration  | YAML in config files       | YAML files in processors directory     |
-| Transformation | Static text prepend/append | Dynamic via external commands          |
-| Input          | None                       | JSON via stdin                         |
-| Output         | None                       | JSON via stdout                        |
-| Use case       | Simple prompts, reminders  | Complex transformations, external data |
+| Feature        | Text-Mode                    | Command-Mode                           |
+| -------------- | ---------------------------- | -------------------------------------- |
+| Configuration  | `text` field in YAML         | `command` field + external script      |
+| Content        | Static text (with variables) | Dynamic via external commands          |
+| Input          | None (text is inline)        | JSON via stdin                         |
+| Output         | None (text is inline)        | JSON via stdout                        |
+| Use case       | Context, reminders, rules    | Complex transformations, external data |
+| Dependencies   | None                         | External script or binary              |
 
-Both declarative processors and command processors can be used together. Declarative
-processors are applied first, then command processors.
+Both modes share the same triggering (`when`), positioning (`position`), priority,
+conditional enablement (`enabledWhen`, `enabledWhenMCP`), re-run, and error handling features.

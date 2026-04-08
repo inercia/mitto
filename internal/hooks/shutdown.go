@@ -33,6 +33,9 @@ type ShutdownManager struct {
 	downHook config.WebHook
 	port     int
 
+	// Health monitor (optional) — stopped during shutdown before hook cleanup
+	healthMonitor *HealthMonitor
+
 	// Optional callback to terminate UI event loop (e.g., WebView.Terminate)
 	onTerminateUI func()
 }
@@ -43,6 +46,13 @@ func NewShutdownManager() *ShutdownManager {
 	return &ShutdownManager{
 		done: make(chan struct{}),
 	}
+}
+
+// SetHealthMonitor sets the health monitor to be stopped during shutdown.
+func (sm *ShutdownManager) SetHealthMonitor(m *HealthMonitor) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.healthMonitor = m
 }
 
 // SetHooks configures the up and down hooks for the shutdown manager.
@@ -116,7 +126,14 @@ func (sm *ShutdownManager) doShutdown(reason string) {
 	cleanups := make([]ShutdownFunc, len(sm.cleanups))
 	copy(cleanups, sm.cleanups)
 	terminateUI := sm.onTerminateUI
+	healthMonitor := sm.healthMonitor
 	sm.mu.Unlock()
+
+	// Step 0: Stop health monitor to prevent restart during shutdown
+	if healthMonitor != nil {
+		logger.Debug("Stopping health monitor")
+		healthMonitor.Stop()
+	}
 
 	// Step 1: Stop the up hook process (if running)
 	if upHook != nil {

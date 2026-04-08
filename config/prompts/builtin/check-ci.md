@@ -5,11 +5,7 @@ group: "CI"
 backgroundColor: "#BBDEFB"
 ---
 
-<task>
 Check CI pipeline status for the current branch and report.
-</task>
-
-<instructions>
 
 ### 1. Detect CI System
 
@@ -43,8 +39,6 @@ glab ci status                              # GitLab
 
 ### 4. Report
 
-<output_format>
-
 ```console
 📊 CI Status Report for branch: <branch>
 
@@ -54,8 +48,6 @@ glab ci status                              # GitLab
 
 Overall Status: ✅ All passing / ⚠️ Some failing
 ```
-
-</output_format>
 
 ### 5. If Passing
 
@@ -72,13 +64,11 @@ Per failure: type (test/build/lint/dependency/infrastructure), job, error, file/
 - Passing: proceed with merge/development
 - Failing: use "Fix CI" prompt, re-run for flaky tests, wait for infra issues
 
-</instructions>
+## Guidelines
 
-<rules>
 - Report clearly and concisely
 - Categorize failures by type
 - This is read-only — do not modify code or CI config
 - Suggest "Fix CI" prompt for automated fixes
 - Note flaky or infrastructure-related failures explicitly
 - Include timing information
-</rules>

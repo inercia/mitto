@@ -166,9 +166,16 @@ conversations:
         ---
 ````
 
+## Auto-Created Children
+
+Workspaces can automatically spawn child conversations when a new top-level conversation is created. This is configured via the **workspaces.json** file (or through Settings > Workspaces in the UI) using the `auto_children` field — not in `.mittorc`.
+
+See **[Auto-Create Children Conversations](auto-children.md)** for full configuration details and the "smart model + fast helpers" pattern.
+
 ## Related Documentation
 
 - [Configuration Overview](../overview.md) - Global configuration options
 - [Conversation Processing](../conversations.md) - Detailed processor documentation
 - [Web Interface Configuration](README.md) - Web server and prompts settings
+- [Auto-Create Children](auto-children.md) - Automatically spawn helper conversations
 - [macOS App Configuration](../mac/README.md) - Desktop app settings

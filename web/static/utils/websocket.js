@@ -305,7 +305,11 @@ export function clearSeqWatermark(watermark, sessionId) {
 export function isTerminalSessionError(message) {
   if (!message) return false;
   const lower = message.toLowerCase();
-  return lower.includes("session not found");
+  return (
+    lower.includes("session not found") ||
+    lower.includes("session is closed") ||
+    lower.includes("session not running")
+  );
 }
 
 // Export constants for testing

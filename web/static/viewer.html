@@ -193,6 +193,60 @@
           transform: rotate(360deg);
         }
       }
+
+      /* Markdown styles */
+      .markdown-body {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 2rem;
+        line-height: 1.6;
+      }
+      .markdown-body h1, .markdown-body h2, .markdown-body h3,
+      .markdown-body h4, .markdown-body h5, .markdown-body h6 {
+        margin: 1.5em 0 0.5em;
+        font-weight: 600;
+      }
+      .markdown-body h1 { font-size: 2em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; }
+      .markdown-body h2 { font-size: 1.5em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; }
+      .markdown-body h3 { font-size: 1.25em; }
+      .markdown-body p { margin: 1em 0; }
+      .markdown-body a { color: #58a6ff; text-decoration: none; }
+      .light .markdown-body a { color: #0969da; }
+      .markdown-body a:hover { text-decoration: underline; }
+      .markdown-body code {
+        font-family: "SF Mono", SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 0.875em;
+        background: var(--header-bg);
+        padding: 0.2em 0.4em;
+        border-radius: 6px;
+      }
+      .markdown-body pre {
+        background: var(--header-bg);
+        padding: 1rem;
+        overflow-x: auto;
+        border-radius: 6px;
+        border: 1px solid var(--border-color);
+        line-height: 1.5;
+      }
+      .markdown-body pre code { padding: 0; background: none; font-size: 0.85em; }
+      .markdown-body blockquote {
+        margin: 1em 0;
+        padding: 0.5em 1em;
+        border-left: 4px solid var(--border-color);
+        color: var(--text-secondary);
+        background: var(--header-bg);
+      }
+      .markdown-body ul, .markdown-body ol { margin: 1em 0; padding-left: 2em; }
+      .markdown-body li { margin: 0.25em 0; }
+      .markdown-body table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+      .markdown-body th, .markdown-body td { border: 1px solid var(--border-color); padding: 0.5em 1em; text-align: left; }
+      .markdown-body th { background: var(--header-bg); font-weight: 600; }
+      .markdown-body hr { border: none; border-top: 1px solid var(--border-color); margin: 2em 0; }
+      .markdown-body img { max-width: 100%; }
+
+      /* Mermaid diagram styles */
+      .mermaid-diagram { display: flex; justify-content: center; margin: 1em 0; overflow-x: auto; }
+      .mermaid-diagram svg { max-width: 100%; }
     </style>
   </head>
   <body>
@@ -224,6 +278,14 @@
           </svg>
           Download
         </button>
+        <button class="btn" id="closeBtn" title="Close viewer">
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <path
+              d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"
+            />
+          </svg>
+          Close
+        </button>
       </div>
     </div>
 
@@ -236,6 +298,7 @@
         <span id="errorMessage">Failed to load file</span>
       </div>
       <pre id="codeBlock" style="display: none"><code id="code"></code></pre>
+      <article id="markdownContent" class="markdown-body" style="display: none"></article>
     </div>
 
     <!-- Highlight.js -->
@@ -250,6 +313,18 @@
     ></script>
 
     <script nonce="{{CSP_NONCE}}">
+      // Capture the CSP nonce from this script element for dynamically created scripts.
+      // Must be done synchronously before any await, as document.currentScript
+      // becomes null after the script finishes synchronous execution.
+      // IMPORTANT: Use the .nonce property, NOT getAttribute('nonce').
+      // In Chrome 61+ and Firefox, getAttribute('nonce') returns '' for security
+      // (to prevent XSS from reading nonces). The .nonce property returns the real value.
+      const scriptNonce = document.currentScript?.nonce || '';
+
+      // Set up close button (must use JS event listener instead of inline onclick,
+      // because inline event handlers are blocked by nonce-based CSP)
+      document.getElementById("closeBtn").addEventListener("click", () => window.close());
+
       // Parse URL parameters - support both new format (ws=UUID) and legacy (workspace=path)
       const params = new URLSearchParams(window.location.search);
       const workspaceUUID = params.get("ws");
@@ -384,6 +459,92 @@
             );
           }
 
+          const ext = path.split(".").pop().toLowerCase();
+          const isMarkdown = (ext === "md" || ext === "markdown");
+
+          if (isMarkdown) {
+            // For markdown: fetch server-rendered HTML
+            const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
+            const renderResponse = await fetch(renderUrl);
+            if (!renderResponse.ok) throw new Error(`HTTP ${renderResponse.status}`);
+            let htmlContent = await renderResponse.text();
+
+            // Handle both full HTML doc and fragment responses
+            if (htmlContent.trimStart().startsWith("<!DOCTYPE") || htmlContent.trimStart().toLowerCase().startsWith("<html")) {
+              const parser = new DOMParser();
+              const doc = parser.parseFromString(htmlContent, "text/html");
+              const article = doc.querySelector("article");
+              htmlContent = article ? article.innerHTML : doc.body.innerHTML;
+            }
+
+            // Show markdown content, hide code block
+            const markdownEl = document.getElementById("markdownContent");
+            markdownEl.innerHTML = htmlContent;
+            markdownEl.style.display = "block";
+            document.getElementById("loading").style.display = "none";
+
+            // Hide font size buttons (not relevant for markdown)
+            document.getElementById("decreaseFontBtn").style.display = "none";
+            document.getElementById("increaseFontBtn").style.display = "none";
+
+            // Update file size from the raw content
+            const rawContent = await response.text();
+            document.getElementById("fileSize").textContent = formatSize(new Blob([rawContent]).size);
+
+            // Set up download with raw markdown content
+            document.getElementById("downloadBtn").onclick = () => {
+              const blob = new Blob([rawContent], { type: "text/plain" });
+              const dlUrl = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = dlUrl;
+              a.download = path.split("/").pop();
+              a.click();
+              URL.revokeObjectURL(dlUrl);
+            };
+
+            // Handle mermaid diagrams
+            const mermaidBlocks = document.querySelectorAll('#markdownContent pre.mermaid');
+            if (mermaidBlocks.length > 0) {
+              const script = document.createElement('script');
+              script.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+              // Attach the CSP nonce so the dynamically created script is allowed
+              // by nonce-based Content Security Policy
+              if (scriptNonce) script.setAttribute('nonce', scriptNonce);
+              script.onerror = (err) => {
+                console.error('Failed to load mermaid.js from CDN:', err);
+                // Show visual error on each mermaid block so users know rendering failed
+                mermaidBlocks.forEach((block) => {
+                  const notice = document.createElement('div');
+                  notice.style.cssText = 'color: var(--text-secondary, #888); font-size: 0.85em; padding: 4px 8px; border-bottom: 1px solid var(--border-color, #333);';
+                  notice.textContent = '⚠️ Mermaid diagram could not be rendered (failed to load library)';
+                  block.parentNode.insertBefore(notice, block);
+                });
+              };
+              script.onload = async function() {
+                const isDark = document.body.classList.contains('light') ? false : true;
+                mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default', securityLevel: 'strict' });
+                // Use for...of to properly serialize async mermaid.render() calls
+                // (forEach with async doesn't await — renders would race each other)
+                for (const [index, block] of Array.from(mermaidBlocks).entries()) {
+                  try {
+                    const { svg } = await mermaid.render('mermaid-' + index, block.textContent || '');
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'mermaid-diagram';
+                    wrapper.innerHTML = svg;
+                    block.replaceWith(wrapper);
+                  } catch (err) {
+                    console.error('Failed to render mermaid diagram:', err);
+                    const notice = document.createElement('div');
+                    notice.style.cssText = 'color: var(--text-secondary, #888); font-size: 0.85em; padding: 4px 8px;';
+                    notice.textContent = '⚠️ Mermaid diagram could not be rendered: ' + (err.message || err);
+                    block.parentNode.insertBefore(notice, block);
+                  }
+                }
+              };
+              document.head.appendChild(script);
+            }
+          } else {
+          // Existing code viewer logic
           const content = await response.text();
 
           // Update file size
@@ -487,6 +648,7 @@
             a.click();
             URL.revokeObjectURL(url);
           };
+          } // end else (code viewer)
         } catch (err) {
           showError(err.message);
         }

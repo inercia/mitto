@@ -113,61 +113,13 @@ func TestWSConn_SendRaw_Backpressure(t *testing.T) {
 	}
 }
 
-func TestWSConn_ReleaseConnectionSlot(t *testing.T) {
-	tracker := NewConnectionTracker(10)
-	clientIP := "192.168.1.1"
-
-	// Add a connection
-	if !tracker.TryAdd(clientIP) {
-		t.Fatal("TryAdd should succeed")
-	}
-
-	w := &WSConn{
-		tracker:  tracker,
-		clientIP: clientIP,
-	}
-
-	// Release should remove from tracker
-	w.ReleaseConnectionSlot()
-
-	// Should be able to add again
-	if !tracker.TryAdd(clientIP) {
-		t.Error("TryAdd should succeed after ReleaseConnectionSlot")
-	}
-}
-
-func TestWSConn_ReleaseConnectionSlot_NilTracker(t *testing.T) {
-	w := &WSConn{
-		tracker:  nil,
-		clientIP: "192.168.1.1",
-	}
-
-	// Should not panic with nil tracker
-	w.ReleaseConnectionSlot()
-}
-
-func TestWSConn_ReleaseConnectionSlot_EmptyClientIP(t *testing.T) {
-	tracker := NewConnectionTracker(10)
-
-	w := &WSConn{
-		tracker:  tracker,
-		clientIP: "",
-	}
-
-	// Should not panic with empty client IP
-	w.ReleaseConnectionSlot()
-}
-
 func TestWSConnConfig_Fields(t *testing.T) {
 	// Test that WSConnConfig fields are properly defined
-	tracker := NewConnectionTracker(10)
-
 	cfg := WSConnConfig{
 		Conn:     nil,
 		Config:   DefaultWebSocketSecurityConfig(),
 		Logger:   nil,
 		ClientIP: "192.168.1.1",
-		Tracker:  tracker,
 		SendSize: 128,
 	}
 
@@ -176,9 +128,6 @@ func TestWSConnConfig_Fields(t *testing.T) {
 	}
 	if cfg.SendSize != 128 {
 		t.Error("SendSize not set correctly")
-	}
-	if cfg.Tracker != tracker {
-		t.Error("Tracker not set correctly")
 	}
 }
 

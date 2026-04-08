@@ -24,6 +24,8 @@ type ProcessorInput struct {
 	// Session metadata for variable substitution
 	// ParentSessionID is the parent conversation ID (empty if this is a root session).
 	ParentSessionID string `json:"parent_session_id,omitempty"`
+	// ParentSessionName is the parent conversation title/name (empty if no parent or name not set).
+	ParentSessionName string `json:"parent_session_name,omitempty"`
 	// SessionName is the conversation title/name.
 	SessionName string `json:"session_name,omitempty"`
 	// ACPServer is the ACP server name (e.g., "claude-code").
@@ -34,6 +36,13 @@ type ProcessorInput struct {
 	// session's working directory. Mirrors the data reported by the MCP tool.
 	// Each entry includes the server name, type, tags, and whether it is the current server.
 	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
+	// ChildSessions lists direct child sessions of the current session.
+	// Each entry includes the session ID, name, and ACP server.
+	ChildSessions []ChildSession `json:"child_sessions,omitempty"`
+	// MCPToolNames is the list of MCP tool names available in the current workspace.
+	// Used for enabledWhenMCP pattern matching and tools.* CEL context.
+	// May be empty if tools haven't been fetched yet.
+	MCPToolNames []string `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.
@@ -47,6 +56,18 @@ type AvailableACPServer struct {
 	Tags []string `json:"tags,omitempty"`
 	// Current is true if this is the active ACP server for the session.
 	Current bool `json:"current,omitempty"`
+}
+
+// ChildSession describes a direct child session of the current session.
+type ChildSession struct {
+	// ID is the child session identifier.
+	ID string `json:"id"`
+	// Name is the child session title/name (may be empty if not yet set).
+	Name string `json:"name,omitempty"`
+	// ACPServer is the ACP server name used by the child session.
+	ACPServer string `json:"acp_server,omitempty"`
+	// IsAutoChild indicates the child was auto-created with the parent.
+	IsAutoChild bool `json:"is_auto_child,omitempty"`
 }
 
 // HistoryEntry represents a single turn in the conversation history.

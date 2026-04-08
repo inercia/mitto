@@ -1,0 +1,25 @@
+# Builtin processor: injects session identity and context into the first message.
+# This helps the AI agent understand its session context, parent/child relationships,
+# and which ACP servers are available for the current workspace.
+#
+# Uses text-mode (no external command) with @mitto:* template variables that are
+# substituted at runtime with live session values.
+name: session-context
+description: "Injects session identity and context into the first message"
+enabled: true
+when: first
+position: prepend
+priority: 10
+rerun:
+  afterTime: 30m
+  afterSentMsgs: 20
+text: |
+  [Session Context]
+  Session: @mitto:session_id (@mitto:session_name)
+  Agent: @mitto:acp_server
+  Working Directory: @mitto:working_dir
+  Parent: @mitto:parent
+  Children: @mitto:children
+  Available Agents: @mitto:available_acp_servers
+  ---
+

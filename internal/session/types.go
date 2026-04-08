@@ -50,6 +50,15 @@ type SessionStore interface {
 	// List returns metadata for all sessions.
 	List() ([]Metadata, error)
 
+	// ListChildSessions returns all direct children of the given parent session.
+	ListChildSessions(parentID string) ([]Metadata, error)
+
+	// CountChildSessions returns the count of direct child sessions.
+	CountChildSessions(parentID string) (int, error)
+
+	// HasChildSessions returns true if the session has at least one child.
+	HasChildSessions(parentID string) (bool, error)
+
 	// Delete removes a session and all its data.
 	Delete(sessionID string) error
 
@@ -214,6 +223,11 @@ type Metadata struct {
 	CurrentModeID     string          `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
 	AdvancedSettings  map[string]bool `json:"advanced_settings,omitempty"` // Per-session feature flags (flag name → enabled)
 	ParentSessionID   string          `json:"parent_session_id,omitempty"` // Session ID that created this session via MCP (prevents infinite recursion)
+	// IsAutoChild indicates this session was auto-created with its parent
+	// (via auto_children workspace config). Auto-children are cascade-deleted
+	// when their parent is deleted. MCP-created children (this field is false)
+	// are orphaned instead (ParentSessionID cleared).
+	IsAutoChild bool `json:"is_auto_child,omitempty"`
 }
 
 // LockStatus represents the current activity status of a locked session.

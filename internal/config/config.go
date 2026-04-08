@@ -81,15 +81,19 @@ type WebPrompt struct {
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
 	Source PromptSource `json:"source,omitempty"`
-	// ACPs is an optional comma-separated list of ACP server names this prompt applies to.
+	// EnabledWhenACP is an optional comma-separated list of ACP server names this prompt applies to.
 	// If empty, the prompt works with all ACP servers.
 	// Example: "auggie, claude-code" means only show this prompt for those ACP servers.
 	// This is included so the frontend can filter prompts client-side.
-	ACPs string `json:"acps,omitempty"`
-	// RequiredTools is an optional comma-separated list of tool name patterns required for this prompt.
+	EnabledWhenACP string `json:"enabledWhenACP,omitempty"`
+	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for this prompt.
 	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
 	// Sent to frontend so it can filter prompts based on tool availability.
-	RequiredTools string `json:"required_tools,omitempty"`
+	EnabledWhenMCP string `json:"enabledWhenMCP,omitempty"`
+	// EnabledWhen is an optional CEL expression for conditional visibility.
+	// Sent to frontend for display purposes (e.g., showing why prompt is hidden).
+	// Actual filtering happens server-side.
+	EnabledWhen string `json:"enabledWhen,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -107,6 +111,10 @@ type WebHooks struct {
 	Up WebHook `json:"up,omitempty"`
 	// Down is executed right before the web server shuts down
 	Down WebHook `json:"down,omitempty"`
+	// ExternalAddress is an optional URL to health-check periodically.
+	// When set, Mitto will restart the hooks (stop → wait → start) if the
+	// address becomes unreachable.
+	ExternalAddress string `json:"external_address,omitempty"`
 }
 
 // SimpleAuth represents simple username/password authentication.
@@ -186,10 +194,6 @@ type WebSecurity struct {
 	// RateLimitBurst is the maximum burst size for rate limiting.
 	// Default: 20
 	RateLimitBurst int `json:"rate_limit_burst,omitempty"`
-
-	// MaxWSConnectionsPerIP is the maximum number of concurrent WebSocket connections per IP.
-	// Default: 10
-	MaxWSConnectionsPerIP int `json:"max_ws_connections_per_ip,omitempty"`
 
 	// MaxWSMessageSize is the maximum size of a WebSocket message in bytes.
 	// Default: 65536 (64KB)
@@ -941,8 +945,9 @@ type rawACPServerConfig struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
-		ACPs            string `yaml:"acps"`
+		EnabledWhenACP  string `yaml:"enabledWhenACP"`
 		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 }
@@ -957,8 +962,9 @@ type rawConfig struct {
 		BackgroundColor string `yaml:"backgroundColor"`
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
-		ACPs            string `yaml:"acps"`
+		EnabledWhenACP  string `yaml:"enabledWhenACP"`
 		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -978,6 +984,7 @@ type rawConfig struct {
 				Command string `yaml:"command"`
 				Name    string `yaml:"name"`
 			} `yaml:"down"`
+			ExternalAddress string `yaml:"external_address"`
 		} `yaml:"hooks"`
 		Auth *struct {
 			Simple *struct {
@@ -994,12 +1001,11 @@ type rawConfig struct {
 			} `yaml:"allow"`
 		} `yaml:"auth"`
 		Security *struct {
-			TrustedProxies        []string `yaml:"trusted_proxies"`
-			AllowedOrigins        []string `yaml:"allowed_origins"`
-			RateLimitRPS          float64  `yaml:"rate_limit_rps"`
-			RateLimitBurst        int      `yaml:"rate_limit_burst"`
-			MaxWSConnectionsPerIP int      `yaml:"max_ws_connections_per_ip"`
-			MaxWSMessageSize      int64    `yaml:"max_ws_message_size"`
+			TrustedProxies   []string `yaml:"trusted_proxies"`
+			AllowedOrigins   []string `yaml:"allowed_origins"`
+			RateLimitRPS     float64  `yaml:"rate_limit_rps"`
+			RateLimitBurst   int      `yaml:"rate_limit_burst"`
+			MaxWSMessageSize int64    `yaml:"max_ws_message_size"`
 		} `yaml:"security"`
 	} `yaml:"web"`
 	UI *struct {
@@ -1144,7 +1150,8 @@ func Parse(data []byte) (*Config, error) {
 					BackgroundColor: p.BackgroundColor,
 					Description:     p.Description,
 					Group:           p.Group,
-					ACPs:            p.ACPs,
+					EnabledWhenACP:  p.EnabledWhenACP,
+					EnabledWhen:     p.EnabledWhen,
 				})
 			}
 			cfg.ACPServers = append(cfg.ACPServers, acpServer)
@@ -1171,7 +1178,8 @@ func Parse(data []byte) (*Config, error) {
 			BackgroundColor: p.BackgroundColor,
 			Description:     p.Description,
 			Group:           p.Group,
-			ACPs:            p.ACPs,
+			EnabledWhenACP:  p.EnabledWhenACP,
+			EnabledWhen:     p.EnabledWhen,
 		})
 	}
 
@@ -1189,6 +1197,7 @@ func Parse(data []byte) (*Config, error) {
 	cfg.Web.Hooks.Up.Name = raw.Web.Hooks.Up.Name
 	cfg.Web.Hooks.Down.Command = raw.Web.Hooks.Down.Command
 	cfg.Web.Hooks.Down.Name = raw.Web.Hooks.Down.Name
+	cfg.Web.Hooks.ExternalAddress = raw.Web.Hooks.ExternalAddress
 
 	// Populate auth config
 	if raw.Web.Auth != nil {
@@ -1216,12 +1225,11 @@ func Parse(data []byte) (*Config, error) {
 	// Populate security config
 	if raw.Web.Security != nil {
 		cfg.Web.Security = &WebSecurity{
-			TrustedProxies:        raw.Web.Security.TrustedProxies,
-			AllowedOrigins:        raw.Web.Security.AllowedOrigins,
-			RateLimitRPS:          raw.Web.Security.RateLimitRPS,
-			RateLimitBurst:        raw.Web.Security.RateLimitBurst,
-			MaxWSConnectionsPerIP: raw.Web.Security.MaxWSConnectionsPerIP,
-			MaxWSMessageSize:      raw.Web.Security.MaxWSMessageSize,
+			TrustedProxies:   raw.Web.Security.TrustedProxies,
+			AllowedOrigins:   raw.Web.Security.AllowedOrigins,
+			RateLimitRPS:     raw.Web.Security.RateLimitRPS,
+			RateLimitBurst:   raw.Web.Security.RateLimitBurst,
+			MaxWSMessageSize: raw.Web.Security.MaxWSMessageSize,
 		}
 	}
 

@@ -5,26 +5,16 @@ group: "CI"
 backgroundColor: "#B2DFDB"
 ---
 
-<investigate_before_answering>
 Check CI status and read failure logs before making changes. Do not speculate —
 read the logs and relevant source files.
-</investigate_before_answering>
 
-<task>
 Diagnose and fix CI pipeline failures for the current branch.
-</task>
 
-<scope>
 Only fix CI-failing issues. Keep changes minimal.
-</scope>
 
-<solution_quality>
 Fix root causes, not symptoms. If a test fails, fix the code or test based on
 which is actually wrong — no hard-coded workarounds. Report flawed tests/requirements
 rather than working around them.
-</solution_quality>
-
-<instructions>
 
 ### 1. Detect CI System
 
@@ -66,6 +56,7 @@ glab ci view --log                    # GitLab
 ```
 
 Per failure:
+
 1. Quote exact error from logs
 2. Diagnose root cause: test failure, build error, lint/format, dependency, config/environment
 
@@ -87,12 +78,10 @@ If CI still fails, run this prompt again.
 
 Suggest user commit and push the changes.
 
-</instructions>
+## Guidelines
 
-<rules>
 - Check CI status before attempting fixes
 - Get user approval before modifying CI config or dependencies
 - Report flaky tests as flaky rather than retrying blindly
 - Note infrastructure-related failures explicitly
 - Group related fixes in a single commit
-</rules>

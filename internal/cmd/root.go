@@ -46,8 +46,8 @@ like auggie, claude-code, and others that implement ACP.`,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config loading for commands that don't need it
-		// (help, completion, prompts management commands, and mcp proxy mode)
-		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && cmd.Parent().Name() == "prompts" {
+		// (help, completion, prompts and processors management commands, and mcp proxy mode)
+		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors") {
 			return nil
 		}
 
@@ -98,6 +98,18 @@ like auggie, claude-code, and others that implement ACP.`,
 				slog.Warn("Failed to deploy builtin prompts", "error", deployErr)
 			} else if deployed {
 				slog.Info("Deployed builtin prompts", "dir", builtinPromptsDir)
+			}
+		}
+
+		// Deploy builtin processors on first run
+		if builtinProcessorsDir, bpErr := appdir.BuiltinProcessorsDir(); bpErr != nil {
+			slog.Warn("Failed to get builtin processors directory", "error", bpErr)
+		} else {
+			deployed, deployErr := embeddedconfig.EnsureBuiltinProcessors(builtinProcessorsDir)
+			if deployErr != nil {
+				slog.Warn("Failed to deploy builtin processors", "error", deployErr)
+			} else if deployed {
+				slog.Info("Deployed builtin processors", "dir", builtinProcessorsDir)
 			}
 		}
 

@@ -2,9 +2,11 @@ package web
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"strings"
 
 	"github.com/inercia/mitto/internal/logging"
 )
@@ -21,6 +23,15 @@ const (
 
 	// csrfTokenDuration is how long a CSRF token cookie is valid (7 days)
 	csrfTokenDuration = 7 * 24 * 60 * 60 // seconds
+
+	// csrfIPHashSep separates the random token from its embedded IP fingerprint.
+	// Using "." keeps the cookie value URL-safe; it is not a valid hex character,
+	// so it cannot appear in the base token portion (which is pure hex).
+	csrfIPHashSep = "."
+
+	// csrfIPHashLen is the number of bytes taken from the SHA-256 digest for the IP fingerprint.
+	// 8 bytes (16 hex chars) provides ample collision resistance for anomaly detection.
+	csrfIPHashLen = 8
 )
 
 // CSRFManager manages CSRF protection using the double-submit cookie pattern.
@@ -46,13 +57,52 @@ func (c *CSRFManager) Close() {
 	// No cleanup needed - stateless design
 }
 
-// GenerateToken creates a new random CSRF token.
+// GenerateToken creates a new random CSRF token (64 hex chars, no IP suffix).
 func (c *CSRFManager) GenerateToken() (string, error) {
 	bytes := make([]byte, csrfTokenLength)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+// embedIPInToken appends a non-reversible IP fingerprint to a bare CSRF token.
+//
+// Format: {64-char-hex-token}.{16-char-hex-sha256-prefix(token+ip)}
+//
+// The fingerprint lets the server detect split-IP login patterns (the token was
+// issued to one IP and then the POST arrives from a different IP) without storing
+// any server-side state.  Because the fingerprint is derived from both the random
+// token and the IP, an attacker cannot forge a valid fingerprint for a new IP
+// without knowing the original token value.
+func embedIPInToken(token, ip string) string {
+	if ip == "" {
+		return token
+	}
+	h := sha256.New()
+	h.Write([]byte(token))
+	h.Write([]byte(ip))
+	return token + csrfIPHashSep + hex.EncodeToString(h.Sum(nil)[:csrfIPHashLen])
+}
+
+// VerifyIPFromToken returns true when the IP fingerprint embedded in tokenValue matches ip.
+//
+// Returns true (no anomaly) when tokenValue has no embedded fingerprint — this handles
+// tokens that were issued before this feature was deployed (graceful degradation).
+func VerifyIPFromToken(tokenValue, ip string) bool {
+	idx := strings.LastIndex(tokenValue, csrfIPHashSep)
+	if idx < 0 {
+		return true // Old format — no IP fingerprint to check
+	}
+	base := tokenValue[:idx]
+	if len(base) != csrfTokenLength*2 { // each byte → 2 hex chars
+		return true // Unexpected format — skip check to avoid false positives
+	}
+	storedHash := tokenValue[idx+1:]
+	expected := embedIPInToken(base, ip)
+	expectedHash := expected[idx+1:]
+	// Constant-time compare to prevent timing-based IP enumeration
+	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(expectedHash)) == 1
 }
 
 // SetCSRFCookie sets the CSRF token cookie on the response.
@@ -105,10 +155,16 @@ func (c *CSRFManager) HandleCSRFToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set cookie so subsequent requests can use it
-	c.SetCSRFCookie(w, r, token)
+	// Embed the issuing IP as a fingerprint so that HandleLogin can detect
+	// split-IP anomalies (auth page loaded from one IP, POST from another).
+	// The double-submit cookie pattern (cookie == header) is unchanged because
+	// both the cookie and the JavaScript-read header value carry the same full
+	// string (token + "." + ip-hash).
+	ip := getClientIPWithProxyCheck(r)
+	tokenWithIP := embedIPInToken(token, ip)
 
-	writeJSONOK(w, map[string]string{"token": token})
+	c.SetCSRFCookie(w, r, tokenWithIP)
+	writeJSONOK(w, map[string]string{"token": tokenWithIP})
 }
 
 // isStateChangingMethod returns true for HTTP methods that change state.

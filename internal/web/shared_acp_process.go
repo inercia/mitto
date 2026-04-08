@@ -95,10 +95,13 @@ type SharedACPProcess struct {
 	ctx       context.Context
 	ctxCancel context.CancelFunc
 
-	// activePrompts tracks the number of in-flight session/prompt RPCs on this process.
-	// The ACP agent serializes all RPCs, so auxiliary session/new calls are queued behind
-	// any active prompt. WaitForIdle polls this counter before creating auxiliary sessions.
-	activePrompts atomic.Int32
+	// activeRPCs tracks the number of in-flight RPCs on this process (session/prompt,
+	// session/load, and session/new). The ACP agent serializes all RPCs, so auxiliary
+	// session/new calls are queued behind any active RPC. WaitForIdle polls this counter
+	// before creating auxiliary sessions. The GC also checks this before stopping an
+	// idle process to avoid killing the pipe under an in-flight LoadSession (which can
+	// take 70+ seconds).
+	activeRPCs atomic.Int32
 
 	// Restart tracking
 	restartMu    sync.Mutex
@@ -471,6 +474,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 // NewSession creates a new ACP session on this shared process.
 func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
+	p.activeRPCs.Add(1)
+	defer p.activeRPCs.Add(-1)
+
 	totalStart := time.Now()
 
 	p.mu.RLock()
@@ -527,6 +533,9 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 
 // LoadSession attempts to load/resume an existing ACP session.
 func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
+	p.activeRPCs.Add(1)
+	defer p.activeRPCs.Add(-1)
+
 	totalStart := time.Now()
 
 	p.mu.RLock()
@@ -601,8 +610,8 @@ func (p *SharedACPProcess) ProcessDone() <-chan struct{} {
 
 // Prompt sends a prompt to a specific session on this shared process.
 func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, content []acp.ContentBlock) (acp.PromptResponse, error) {
-	p.activePrompts.Add(1)
-	defer p.activePrompts.Add(-1)
+	p.activeRPCs.Add(1)
+	defer p.activeRPCs.Add(-1)
 
 	p.mu.RLock()
 	conn := p.conn
@@ -618,11 +627,12 @@ func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, 
 	})
 }
 
-// WaitForIdle blocks until no prompts are active on this process, or ctx is cancelled.
+// WaitForIdle blocks until no RPCs are active on this process, or ctx is cancelled.
 // The ACP agent serializes all RPCs, so callers should wait for idle before issuing
-// session/new requests to avoid long queuing delays behind an active session/prompt.
+// session/new requests to avoid long queuing delays behind an active session/prompt,
+// session/load, or another session/new.
 func (p *SharedACPProcess) WaitForIdle(ctx context.Context) error {
-	if p.activePrompts.Load() == 0 {
+	if p.activeRPCs.Load() == 0 {
 		return nil
 	}
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -632,11 +642,18 @@ func (p *SharedACPProcess) WaitForIdle(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if p.activePrompts.Load() == 0 {
+			if p.activeRPCs.Load() == 0 {
 				return nil
 			}
 		}
 	}
+}
+
+// ActiveRPCs returns the number of in-flight RPCs on this process (session/prompt,
+// session/load, and session/new). Used by the GC to avoid killing the process
+// while it is actively serving requests.
+func (p *SharedACPProcess) ActiveRPCs() int32 {
+	return p.activeRPCs.Load()
 }
 
 // Cancel cancels the current operation for a specific session.

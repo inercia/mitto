@@ -248,7 +248,6 @@ func (s *MockACPServer) findMatchingResponse(message string) *Response {
 			if resp.Trigger.Type == "prompt" {
 				re, err := regexp.Compile(resp.Trigger.Pattern)
 				if err != nil {
-					s.log("Invalid pattern %s: %v", resp.Trigger.Pattern, err)
 					continue
 				}
 				if re.MatchString(message) {
@@ -258,6 +257,7 @@ func (s *MockACPServer) findMatchingResponse(message string) *Response {
 			}
 		}
 	}
+	s.log("No matching scenario found")
 	return nil
 }
 

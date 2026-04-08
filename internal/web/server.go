@@ -15,6 +15,7 @@ import (
 	"github.com/inercia/mitto/internal/auxiliary"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/defense"
+	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
@@ -142,10 +143,9 @@ type Server struct {
 	csrfManager *CSRFManager
 
 	// Security components
-	rateLimiter       *GeneralRateLimiter
-	connectionTracker *ConnectionTracker
-	wsSecurityConfig  WebSocketSecurityConfig
-	proxyChecker      *TrustedProxyChecker
+	rateLimiter      *GeneralRateLimiter
+	wsSecurityConfig WebSocketSecurityConfig
+	proxyChecker     *TrustedProxyChecker
 
 	// External access listener management
 	externalListener   net.Listener
@@ -180,6 +180,13 @@ type Server struct {
 	// Negative session cache for circuit-breaking "Session not found" error storms.
 	// Caches session IDs known to not exist, preventing repeated filesystem lookups.
 	negativeSessionCache *NegativeSessionCache
+
+	// Health monitor for external address reachability checking
+	healthMonitor          *hooks.HealthMonitor
+	healthMonitorMu        sync.Mutex
+	hookPort               int                        // Port used for hook commands
+	onHookProcessChanged   func(*hooks.Process)       // Callback to update shutdown manager when hooks restart
+	onHealthMonitorChanged func(*hooks.HealthMonitor) // Callback to update shutdown manager when health monitor changes
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -261,6 +268,17 @@ func NewServer(config Config) (*Server, error) {
 	acpProcessMgr.DisableAuxiliary = config.DisableAuxiliaryPrewarm || os.Getenv("MITTO_TEST_MODE") != ""
 	sessionMgr.SetACPProcessManager(acpProcessMgr)
 
+	// Start ACP process garbage collector to clean up idle sessions and processes.
+	// The GC periodically checks for sessions with no observers, no active prompts,
+	// and no pending work, and stops shared ACP processes that have no active sessions.
+	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
+		acpProcessMgr.StartGC(GCConfig{}, func() map[string][]SessionInfo {
+			return sessionMgr.GetSessionInfoByWorkspace()
+		}, func(sessionID string) {
+			sessionMgr.CloseIdleSession(sessionID)
+		})
+	}
+
 	// Set global conversations config for message processing
 	if config.MittoConfig != nil {
 		sessionMgr.SetGlobalConversations(config.MittoConfig.Conversations)
@@ -302,6 +320,40 @@ func NewServer(config Config) (*Server, error) {
 		securityCfg = config.MittoConfig.Web.Security
 	}
 
+	// Auto-detect tunnel mode: when hooks.up is configured, a tunnel proxy
+	// (e.g., cloudflared, ngrok) connects from localhost. Automatically add
+	// 127.0.0.1 as a trusted proxy so the defense middleware can extract the
+	// real client IP from forwarded headers. Without this, every tunnel user
+	// would need to manually configure trusted_proxies.
+	hasTunnelHook := config.MittoConfig != nil && config.MittoConfig.Web.Hooks.Up.Command != ""
+	if hasTunnelHook {
+		if securityCfg == nil {
+			securityCfg = &configPkg.WebSecurity{}
+		}
+		// Add localhost (both IPv4 and IPv6) as trusted proxy if not already
+		// present. cloudflared may connect via either [::1] or 127.0.0.1
+		// depending on the OS and how "localhost" resolves.
+		hasIPv4 := false
+		hasIPv6 := false
+		for _, p := range securityCfg.TrustedProxies {
+			if p == "127.0.0.1" || p == "127.0.0.0/8" {
+				hasIPv4 = true
+			}
+			if p == "::1" {
+				hasIPv6 = true
+			}
+		}
+		if !hasIPv4 {
+			securityCfg.TrustedProxies = append(securityCfg.TrustedProxies, "127.0.0.1")
+		}
+		if !hasIPv6 {
+			securityCfg.TrustedProxies = append(securityCfg.TrustedProxies, "::1")
+		}
+		if !hasIPv4 || !hasIPv6 {
+			logger.Info("Tunnel hook detected, auto-added localhost as trusted proxy")
+		}
+	}
+
 	// Initialize trusted proxy checker
 	var proxyChecker *TrustedProxyChecker
 	if securityCfg != nil && len(securityCfg.TrustedProxies) > 0 {
@@ -328,16 +380,10 @@ func NewServer(config Config) (*Server, error) {
 		if len(securityCfg.AllowedOrigins) > 0 {
 			wsSecurityConfig.AllowedOrigins = securityCfg.AllowedOrigins
 		}
-		if securityCfg.MaxWSConnectionsPerIP > 0 {
-			wsSecurityConfig.MaxConnectionsPerIP = securityCfg.MaxWSConnectionsPerIP
-		}
 		if securityCfg.MaxWSMessageSize > 0 {
 			wsSecurityConfig.MaxMessageSize = securityCfg.MaxWSMessageSize
 		}
 	}
-
-	// Initialize connection tracker
-	connectionTracker := NewConnectionTracker(wsSecurityConfig.MaxConnectionsPerIP)
 
 	// Initialize CSRF manager
 	csrfMgr := NewCSRFManager()
@@ -379,6 +425,20 @@ func NewServer(config Config) (*Server, error) {
 	}
 	if shouldEnableScannerDefense(webConfig) {
 		defenseConfig := configToDefenseConfig(getScannerDefenseConfig(webConfig), true)
+
+		// When a tunnel hook is configured, increase rate limits if the user
+		// hasn't explicitly set them. Tunnel proxies (cloudflared, ngrok) forward
+		// all browser requests through a single origin, so a page load generating
+		// ~30 requests can easily exceed the default 100 req/min limit.
+		if hasTunnelHook {
+			explicitCfg := getScannerDefenseConfig(webConfig)
+			if explicitCfg == nil || explicitCfg.RateLimit == 0 {
+				defenseConfig.RateLimit = 500 // 5x default for tunnel traffic
+				logger.Info("Tunnel hook detected, increased scanner defense rate limit",
+					"rate_limit", defenseConfig.RateLimit)
+			}
+		}
+
 		var err error
 		scannerDefense, err = defense.New(defenseConfig, logger)
 		if err != nil {
@@ -403,7 +463,6 @@ func NewServer(config Config) (*Server, error) {
 		authManager:          authMgr,
 		csrfManager:          csrfMgr,
 		rateLimiter:          rateLimiter,
-		connectionTracker:    connectionTracker,
 		wsSecurityConfig:     wsSecurityConfig,
 		proxyChecker:         proxyChecker,
 		accessLogger:         accessLogger,
@@ -703,6 +762,14 @@ func (s *Server) Shutdown() error {
 	if s.accessLogger != nil {
 		s.accessLogger.Close()
 	}
+
+	// Stop health monitor
+	s.healthMonitorMu.Lock()
+	if s.healthMonitor != nil {
+		s.healthMonitor.Stop()
+		s.healthMonitor = nil
+	}
+	s.healthMonitorMu.Unlock()
 
 	// Stop MCP debug server
 	if s.mcpServer != nil {
@@ -1072,6 +1139,85 @@ func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string)
 	if s.logger != nil {
 		s.logger.Warn("Broadcast hook failed", "name", name, "exit_code", exitCode, "error", errorMsg,
 			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastHookRestarted notifies all connected clients that lifecycle hooks were restarted
+// due to an external address health check failure.
+func (s *Server) BroadcastHookRestarted(attempt int) {
+	s.eventsManager.Broadcast("hook_restarted", map[string]interface{}{
+		"attempt": attempt,
+	})
+
+	if s.logger != nil {
+		s.logger.Info("Broadcast hook restarted",
+			"attempt", attempt,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// SetHealthMonitorDeps provides dependencies needed for dynamic health monitor management.
+// This is called by the startup code to enable the server to manage the health monitor
+// lifecycle when configuration changes.
+func (s *Server) SetHealthMonitorDeps(hookPort int, onHookProcessChanged func(*hooks.Process), onHealthMonitorChanged func(*hooks.HealthMonitor)) {
+	s.healthMonitorMu.Lock()
+	defer s.healthMonitorMu.Unlock()
+	s.hookPort = hookPort
+	s.onHookProcessChanged = onHookProcessChanged
+	s.onHealthMonitorChanged = onHealthMonitorChanged
+}
+
+// SetHealthMonitor sets the current health monitor reference.
+// Called by startup code to register the initially-created health monitor.
+func (s *Server) SetHealthMonitor(m *hooks.HealthMonitor) {
+	s.healthMonitorMu.Lock()
+	defer s.healthMonitorMu.Unlock()
+	s.healthMonitor = m
+}
+
+// updateHealthMonitor starts, stops, or restarts the health monitor based on the
+// current hooks configuration. Called when configuration changes at runtime.
+func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
+	s.healthMonitorMu.Lock()
+	defer s.healthMonitorMu.Unlock()
+
+	// Stop existing monitor if running
+	if s.healthMonitor != nil {
+		if s.logger != nil {
+			s.logger.Info("Stopping existing health monitor")
+		}
+		s.healthMonitor.Stop()
+		s.healthMonitor = nil
+	}
+
+	// Start new monitor if external address is configured and up hook exists
+	if hooksConfig.ExternalAddress != "" && hooksConfig.Up.Command != "" && s.hookPort > 0 {
+		m := hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
+			Address:  hooksConfig.ExternalAddress,
+			UpHook:   hooksConfig.Up,
+			DownHook: hooksConfig.Down,
+			Port:     s.hookPort,
+			OnFailure: func(failure hooks.HookFailure) {
+				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+			},
+			OnRestart: func(attempt int) {
+				s.BroadcastHookRestarted(attempt)
+			},
+			SetUpHook: s.onHookProcessChanged,
+		})
+		m.Start()
+		s.healthMonitor = m
+
+		if s.logger != nil {
+			s.logger.Info("Health monitor started for external address",
+				"address", hooksConfig.ExternalAddress,
+			)
+		}
+	}
+
+	// Notify shutdown manager about the current monitor state
+	if s.onHealthMonitorChanged != nil {
+		s.onHealthMonitorChanged(s.healthMonitor)
 	}
 }
 

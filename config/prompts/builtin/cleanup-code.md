@@ -5,31 +5,10 @@ group: "Code Quality"
 backgroundColor: "#C8E6C9"
 ---
 
-<investigate_before_answering>
 Read relevant code and search for references before proposing cleanup.
 Read multiple files in parallel. Do not speculate — verify by searching.
-</investigate_before_answering>
 
-<task>
 Analyze for cleanup opportunities. Propose a plan and wait for approval.
-</task>
-
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Note**: Works without Mitto's MCP server, but provides a better experience with it.
-
-**Optional tools:**
-- `mitto_ui_options_buttons`
-- `mitto_conversation_new`
-- `mitto_children_tasks_wait`
-- `mitto_children_tasks_report`
-- `mitto_conversation_delete`
-
-If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
-
----
-
-<instructions>
 
 ### 1. Analyze
 
@@ -59,7 +38,7 @@ Look for: unexported functions never called, exported functions with no referenc
 
 ### 2. Propose Plan
 
-<output_format>
+
 
 | Priority | Category | Location | Description | Risk | Effort |
 |----------|----------|----------|-------------|------|--------|
@@ -68,7 +47,7 @@ Look for: unexported functions never called, exported functions with no referenc
 Priority: 1=clear dead code, 2=likely unused, 3=needs verification.
 Risk: Low=clearly unused, Medium=verify first, High=public API.
 
-</output_format>
+
 
 ### 3. Wait for Approval
 
@@ -83,13 +62,19 @@ Per item: make change, verify (linter, tests), report.
 
 For cleanup spanning 3+ files, module restructuring, or multiple parallelizable items, delegate to Mitto child conversations.
 
+**Session context for delegation:**
+
+Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
+
 **Choosing the right ACP server:**
 
-1. Available ACP servers: `@mitto:available_acp_servers`. Your session ID is `@mitto:session_id`.
-2. Match server tags to task:
+1. Match server tags to task:
    - Well-defined removals → prefer `"coding"`/`"fast"` servers
    - Complex refactors, ambiguous decisions → prefer `"reasoning"`/`"planning"` servers
    - No match → server marked `(current)`, then first available
+2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
 3. `mitto_conversation_new(self_id: "@mitto:session_id")` with full context, constraints, and reporting directive
 4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<short task description>", timeout_seconds: 600)`
 5. Review results, verify changes, run tests
@@ -109,9 +94,8 @@ For cleanup spanning 3+ files, module restructuring, or multiple parallelizable 
 - Item #N: Skipped per user request
 ```
 
-</instructions>
+## Guidelines
 
-<rules>
 - Propose before removing; wait for approval
 - Search for references before declaring code unused
 - Rely on version control for recovery
@@ -121,4 +105,3 @@ For cleanup spanning 3+ files, module restructuring, or multiple parallelizable 
 - For significant cleanup, consider delegating to child conversations
 - Match ACP server to task: coding agents for clear removals, reasoning agents for complex refactors
 - Max 4 parallel child conversations
-</rules>

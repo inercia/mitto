@@ -127,6 +127,11 @@ type SessionObserver interface {
 	// Observers should update their state to prevent further prompts.
 	OnACPStopped(reason string)
 
+	// OnACPStarted is called when the ACP connection for this session becomes ready.
+	// This is fired after successful ACP initialization (including after restarts).
+	// Observers can use this to update their UI state and enable prompt input.
+	OnACPStarted()
+
 	// OnUIPrompt is called when an MCP tool requests user input via the UI.
 	// The observer should display the prompt with the specified options and
 	// respond by calling HandleUIPromptAnswer on the BackgroundSession.

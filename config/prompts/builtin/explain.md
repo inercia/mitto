@@ -5,17 +5,11 @@ group: "Documentation"
 backgroundColor: "#E1BEE7"
 ---
 
-<investigate_before_answering>
 Before explaining, read the actual code or files being discussed. Base your
 explanation on the real implementation, not assumptions. If multiple files are
 involved, read them in parallel to build context faster.
-</investigate_before_answering>
 
-<task>
 Explain the code or concept we just discussed.
-</task>
-
-<instructions>
 
 ### Structure your explanation:
 
@@ -27,5 +21,3 @@ Explain the code or concept we just discussed.
 6. **Dependencies**: What this relies on, what relies on it
 
 Use concrete examples from the code. Define jargon when you use it.
-
-</instructions>

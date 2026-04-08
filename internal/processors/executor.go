@@ -106,6 +106,14 @@ func (e *Executor) buildEnvironment(proc *Processor, input *ProcessorInput) []st
 		}
 	}
 
+	// Encode child sessions as JSON for the environment variable.
+	childSessionsJSON := "[]"
+	if len(input.ChildSessions) > 0 {
+		if data, err := json.Marshal(input.ChildSessions); err == nil {
+			childSessionsJSON = string(data)
+		}
+	}
+
 	// Add Mitto-specific variables
 	mittoEnv := map[string]string{
 		"MITTO_SESSION_ID":            input.SessionID,
@@ -118,10 +126,12 @@ func (e *Executor) buildEnvironment(proc *Processor, input *ProcessorInput) []st
 		"MITTO_HOOK_FILE":             proc.FilePath,   // legacy alias
 		"MITTO_HOOK_DIR":              proc.HookDir,    // legacy alias
 		"MITTO_PARENT_SESSION_ID":     input.ParentSessionID,
+		"MITTO_PARENT_SESSION_NAME":   input.ParentSessionName,
 		"MITTO_SESSION_NAME":          input.SessionName,
 		"MITTO_ACP_SERVER":            input.ACPServer,
 		"MITTO_WORKSPACE_UUID":        input.WorkspaceUUID,
 		"MITTO_AVAILABLE_ACP_SERVERS": availableServersJSON,
+		"MITTO_CHILD_SESSIONS":        childSessionsJSON,
 	}
 
 	for k, v := range mittoEnv {
@@ -146,20 +156,24 @@ func (e *Executor) prepareInput(proc *Processor, input *ProcessorInput) ([]byte,
 			SessionID           string               `json:"session_id"`
 			WorkingDir          string               `json:"working_dir"`
 			ParentSessionID     string               `json:"parent_session_id,omitempty"`
+			ParentSessionName   string               `json:"parent_session_name,omitempty"`
 			SessionName         string               `json:"session_name,omitempty"`
 			ACPServer           string               `json:"acp_server,omitempty"`
 			WorkspaceUUID       string               `json:"workspace_uuid,omitempty"`
 			AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
+			ChildSessions       []ChildSession       `json:"child_sessions,omitempty"`
 		}{
 			Message:             input.Message,
 			IsFirstMessage:      input.IsFirstMessage,
 			SessionID:           input.SessionID,
 			WorkingDir:          input.WorkingDir,
 			ParentSessionID:     input.ParentSessionID,
+			ParentSessionName:   input.ParentSessionName,
 			SessionName:         input.SessionName,
 			ACPServer:           input.ACPServer,
 			WorkspaceUUID:       input.WorkspaceUUID,
 			AvailableACPServers: input.AvailableACPServers,
+			ChildSessions:       input.ChildSessions,
 		}
 		return json.Marshal(msgInput)
 	}

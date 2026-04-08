@@ -15,6 +15,13 @@ const (
 	// If this limit is exceeded, the user must manually restart the session.
 	MaxACPRestarts = 3
 
+	// MaxACPTotalRestarts is the absolute lifetime cap on ACP restart attempts for a single
+	// BackgroundSession. Once this many restarts have been recorded (across all sliding windows),
+	// the session is marked as permanently failed and no further restart attempts are made.
+	// This prevents dead sessions from retrying indefinitely after the sliding window resets.
+	// Value: 10 (~3 windows × 3 restarts per window + 1 spare).
+	MaxACPTotalRestarts = 10
+
 	// ACPRestartWindow is the time window for counting restart attempts.
 	// Restarts older than this are not counted toward the limit.
 	ACPRestartWindow = 5 * time.Minute
@@ -161,6 +168,15 @@ var permanentErrorPatterns = []errorPattern{
 		substrings:   []string{"empty ACP command"},
 		userMessage:  "No ACP command configured",
 		userGuidance: "Configure an ACP command in workspace settings.",
+	},
+	{
+		// "write |1: file already closed" — the OS-level write end of the ACP stdin pipe
+		// has been closed (e.g. the subprocess exited and cleanup ran). This is a permanent
+		// OS-level condition: the pipe descriptor cannot be reopened. Retrying the same
+		// process start will keep hitting this error until the session is re-created.
+		substrings:   []string{"file already closed"},
+		userMessage:  "The ACP process pipe was permanently closed",
+		userGuidance: "Archive and re-open this conversation to get a fresh ACP connection.",
 	},
 }
 

@@ -192,10 +192,12 @@ func (b *Blocklist) Load(path string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Only load non-expired entries
+	// Only load non-expired entries, and skip whitelisted IPs.
+	// The whitelist may have changed since the blocklist was persisted
+	// (e.g., user added their IP, or trusted proxies were auto-configured).
 	now := time.Now()
 	for _, entry := range entries {
-		if now.Before(entry.ExpiresAt) {
+		if now.Before(entry.ExpiresAt) && !b.isWhitelisted(entry.IP) {
 			b.entries[entry.IP] = entry
 		}
 	}

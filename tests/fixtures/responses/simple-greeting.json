@@ -5,7 +5,7 @@
     {
       "trigger": {
         "type": "prompt",
-        "pattern": "(?i)(hello|hi|hey)"
+        "pattern": "(?i)(^|\\n)(hello|hi|hey)([!., \\n]|$)"
       },
       "actions": [
         {

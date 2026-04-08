@@ -474,6 +474,237 @@ func TestStore_RecordEvent_MultipleEvents(t *testing.T) {
 	}
 }
 
+func TestStore_ListChildSessions_NoChildren(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	parent := Metadata{SessionID: "parent-1", ACPServer: "test", WorkingDir: "/test"}
+	if err := store.Create(parent); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	children, err := store.ListChildSessions("parent-1")
+	if err != nil {
+		t.Fatalf("ListChildSessions failed: %v", err)
+	}
+	if len(children) != 0 {
+		t.Errorf("expected 0 children, got %d", len(children))
+	}
+	// Must be a non-nil slice
+	if children == nil {
+		t.Error("ListChildSessions should return empty slice, not nil")
+	}
+}
+
+func TestStore_ListChildSessions_MultipleChildren(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	parent := Metadata{SessionID: "parent-2", ACPServer: "test", WorkingDir: "/test"}
+	if err := store.Create(parent); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		child := Metadata{
+			SessionID:       "child-2-" + string(rune('a'-1+i)),
+			ACPServer:       "test",
+			WorkingDir:      "/test",
+			ParentSessionID: "parent-2",
+		}
+		if err := store.Create(child); err != nil {
+			t.Fatalf("Create child %d failed: %v", i, err)
+		}
+	}
+
+	// Also create an unrelated session
+	other := Metadata{SessionID: "other-2", ACPServer: "test", WorkingDir: "/test"}
+	if err := store.Create(other); err != nil {
+		t.Fatalf("Create other session failed: %v", err)
+	}
+
+	children, err := store.ListChildSessions("parent-2")
+	if err != nil {
+		t.Fatalf("ListChildSessions failed: %v", err)
+	}
+	if len(children) != 3 {
+		t.Errorf("expected 3 children, got %d", len(children))
+	}
+	for _, c := range children {
+		if c.ParentSessionID != "parent-2" {
+			t.Errorf("child %q has wrong parent %q", c.SessionID, c.ParentSessionID)
+		}
+	}
+}
+
+func TestStore_ListChildSessions_GrandchildrenNotReturned(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	parent := Metadata{SessionID: "parent-3", ACPServer: "test", WorkingDir: "/test"}
+	if err := store.Create(parent); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	child := Metadata{
+		SessionID:       "child-3",
+		ACPServer:       "test",
+		WorkingDir:      "/test",
+		ParentSessionID: "parent-3",
+	}
+	if err := store.Create(child); err != nil {
+		t.Fatalf("Create child failed: %v", err)
+	}
+
+	grandchild := Metadata{
+		SessionID:       "grandchild-3",
+		ACPServer:       "test",
+		WorkingDir:      "/test",
+		ParentSessionID: "child-3",
+	}
+	if err := store.Create(grandchild); err != nil {
+		t.Fatalf("Create grandchild failed: %v", err)
+	}
+
+	// Parent should only see its direct child
+	parentChildren, err := store.ListChildSessions("parent-3")
+	if err != nil {
+		t.Fatalf("ListChildSessions(parent) failed: %v", err)
+	}
+	if len(parentChildren) != 1 {
+		t.Errorf("parent: expected 1 direct child, got %d", len(parentChildren))
+	}
+	if len(parentChildren) > 0 && parentChildren[0].SessionID != "child-3" {
+		t.Errorf("parent's child should be child-3, got %q", parentChildren[0].SessionID)
+	}
+
+	// Child should only see grandchild
+	childChildren, err := store.ListChildSessions("child-3")
+	if err != nil {
+		t.Fatalf("ListChildSessions(child) failed: %v", err)
+	}
+	if len(childChildren) != 1 {
+		t.Errorf("child: expected 1 direct child, got %d", len(childChildren))
+	}
+}
+
+func TestStore_CountChildSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	parent := Metadata{SessionID: "parent-count", ACPServer: "test", WorkingDir: "/test"}
+	if err := store.Create(parent); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	// No children initially
+	count, err := store.CountChildSessions("parent-count")
+	if err != nil {
+		t.Fatalf("CountChildSessions failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected count=0, got %d", count)
+	}
+
+	// Add children
+	for i := 1; i <= 4; i++ {
+		child := Metadata{
+			SessionID:       "count-child-" + string(rune('a'-1+i)),
+			ACPServer:       "test",
+			WorkingDir:      "/test",
+			ParentSessionID: "parent-count",
+		}
+		if err := store.Create(child); err != nil {
+			t.Fatalf("Create child %d failed: %v", i, err)
+		}
+	}
+
+	count, err = store.CountChildSessions("parent-count")
+	if err != nil {
+		t.Fatalf("CountChildSessions failed: %v", err)
+	}
+	if count != 4 {
+		t.Errorf("expected count=4, got %d", count)
+	}
+}
+
+func TestStore_HasChildSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	parent := Metadata{SessionID: "parent-has", ACPServer: "test", WorkingDir: "/test"}
+	if err := store.Create(parent); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	// No children initially
+	has, err := store.HasChildSessions("parent-has")
+	if err != nil {
+		t.Fatalf("HasChildSessions failed: %v", err)
+	}
+	if has {
+		t.Error("expected HasChildSessions=false with no children")
+	}
+
+	// Add one child
+	child := Metadata{
+		SessionID:       "has-child-1",
+		ACPServer:       "test",
+		WorkingDir:      "/test",
+		ParentSessionID: "parent-has",
+	}
+	if err := store.Create(child); err != nil {
+		t.Fatalf("Create child failed: %v", err)
+	}
+
+	has, err = store.HasChildSessions("parent-has")
+	if err != nil {
+		t.Fatalf("HasChildSessions failed: %v", err)
+	}
+	if !has {
+		t.Error("expected HasChildSessions=true after adding child")
+	}
+}
+
+func TestStore_ChildSessions_ClosedStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	if _, err := store.ListChildSessions("any"); err != ErrStoreClosed {
+		t.Errorf("ListChildSessions on closed store: want ErrStoreClosed, got %v", err)
+	}
+	if _, err := store.CountChildSessions("any"); err != ErrStoreClosed {
+		t.Errorf("CountChildSessions on closed store: want ErrStoreClosed, got %v", err)
+	}
+	if _, err := store.HasChildSessions("any"); err != ErrStoreClosed {
+		t.Errorf("HasChildSessions on closed store: want ErrStoreClosed, got %v", err)
+	}
+}
+
 func TestStore_AdvancedSettings(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)

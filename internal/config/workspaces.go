@@ -9,6 +9,9 @@ import (
 	"github.com/inercia/mitto/internal/fileutil"
 )
 
+// MaxAutoChildren is the maximum number of auto-children allowed per workspace.
+const MaxAutoChildren = 5
+
 // Valid runner types supported by go-restricted-runner
 const (
 	RunnerTypeExec        = "exec"
@@ -30,6 +33,15 @@ var ValidRunnerTypes = []string{
 type WorkspacesFile struct {
 	// Workspaces is the list of configured workspaces
 	Workspaces []WorkspaceSettings `json:"workspaces"`
+}
+
+// AutoChild defines a child conversation to auto-create when a new parent is created.
+type AutoChild struct {
+	// Title is the name/title for the child conversation (required)
+	Title string `json:"title"`
+	// TargetWorkspaceUUID is the UUID of the workspace to use for the child.
+	// If empty, uses the parent's workspace.
+	TargetWorkspaceUUID string `json:"target_workspace_uuid,omitempty"`
 }
 
 // WorkspaceSettings is the JSON representation of a workspace.
@@ -73,6 +85,10 @@ type WorkspaceSettings struct {
 	// ACPCommandOverride is an optional user-provided command override for the ACP server.
 	// When set, this command is used instead of the one from the server configuration.
 	ACPCommandOverride string `json:"acp_command_override,omitempty"`
+	// AutoChildren defines child conversations to auto-create when a top-level
+	// conversation is created in this workspace. Only applies to conversations
+	// without a parent (to prevent infinite recursion). Maximum 5 children.
+	AutoChildren []AutoChild `json:"auto_children,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.
@@ -125,6 +141,37 @@ func (w *WorkspaceSettings) ValidateRestrictedRunner() error {
 	}
 
 	return fmt.Errorf("invalid restricted_runner %q: must be one of %v", w.RestrictedRunner, ValidRunnerTypes)
+}
+
+// ValidateAutoChildren validates the auto-children configuration.
+// Returns errors for invalid entries. Pass allWorkspaces to validate target UUIDs.
+func (w *WorkspaceSettings) ValidateAutoChildren(allWorkspaces []WorkspaceSettings) []error {
+	var errs []error
+	if len(w.AutoChildren) > MaxAutoChildren {
+		errs = append(errs, fmt.Errorf("auto_children: maximum %d children allowed, got %d", MaxAutoChildren, len(w.AutoChildren)))
+	}
+	for i, child := range w.AutoChildren {
+		if child.Title == "" {
+			errs = append(errs, fmt.Errorf("auto_children[%d]: title is required", i))
+		}
+		if child.TargetWorkspaceUUID != "" {
+			found := false
+			for _, ws := range allWorkspaces {
+				if ws.UUID == child.TargetWorkspaceUUID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				errs = append(errs, fmt.Errorf("auto_children[%d]: target workspace UUID %q not found", i, child.TargetWorkspaceUUID))
+			}
+		}
+		// Prevent self-reference
+		if child.TargetWorkspaceUUID == w.UUID {
+			errs = append(errs, fmt.Errorf("auto_children[%d]: cannot target own workspace", i))
+		}
+	}
+	return errs
 }
 
 // LoadWorkspaces loads workspaces from the Mitto data directory.

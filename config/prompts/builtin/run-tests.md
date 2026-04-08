@@ -5,11 +5,7 @@ group: "Testing"
 backgroundColor: "#FFE0B2"
 ---
 
-<task>
 Run the project's test suite and report results.
-</task>
-
-<instructions>
 
 ### 1. Discover and Run
 
@@ -24,12 +20,13 @@ Run all tests or tests related to recent changes.
 Pass: report success.
 
 Fail:
+
 - Simple failures (typos, missing imports): fix immediately, re-run, repeat
 - Complex failures: report for manual review
 
 ### 3. Summary
 
-<output_format>
+
 
 | Test Group | Passed | Failed | Skipped | Status |
 |------------|--------|--------|---------|--------|
@@ -37,10 +34,8 @@ Fail:
 | integration| 12     | 1      | 0       | ❌     |
 | **Total**  | **57** | **1**  | **2**   | ❌     |
 
-</output_format>
+
 
 ### 4. Unresolved Failures
 
 Per failure: **Test**, **Error**, **Cause**, **Suggested fix**
-
-</instructions>
