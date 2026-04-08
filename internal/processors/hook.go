@@ -84,33 +84,19 @@ type SkipReason string
 const (
 	SkipReasonNone            SkipReason = ""
 	SkipReasonDisabled        SkipReason = "disabled"
-	SkipReasonWorkspace       SkipReason = "workspace_filter"
 	SkipReasonEnabledWhen     SkipReason = "enabledWhen_false"
 	SkipReasonEnabledWhenMCP  SkipReason = "enabledWhenMCP_unsatisfied"
 	SkipReasonWhenFirst       SkipReason = "when=first_not_first_message"
 	SkipReasonWhenExceptFirst SkipReason = "when=all-except-first_is_first_message"
 	SkipReasonWhenUnknown     SkipReason = "unknown_when_condition"
+	SkipReasonRerunNotDue     SkipReason = "rerun_not_due"
 )
 
 // ShouldApply returns true if the processor should apply given the message context.
 // When it returns false, the SkipReason describes why.
-func (h *Processor) ShouldApply(isFirstMessage bool, workingDir string, input *ProcessorInput) (bool, SkipReason) {
+func (h *Processor) ShouldApply(isFirstMessage bool, input *ProcessorInput) (bool, SkipReason) {
 	if !h.IsEnabled() {
 		return false, SkipReasonDisabled
-	}
-
-	// Check workspace filter
-	if len(h.Workspaces) > 0 {
-		matched := false
-		for _, ws := range h.Workspaces {
-			if ws == workingDir || strings.HasPrefix(workingDir, ws+string(filepath.Separator)) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false, SkipReasonWorkspace
-		}
 	}
 
 	// Check CEL expression (enabledWhen)

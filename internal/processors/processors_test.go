@@ -2,8 +2,10 @@ package processors
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,7 +77,6 @@ func TestProcessorShouldApply(t *testing.T) {
 		name           string
 		hook           *Processor
 		isFirstMessage bool
-		workingDir     string
 		input          *ProcessorInput
 		expected       bool
 	}{
@@ -120,20 +121,6 @@ func TestProcessorShouldApply(t *testing.T) {
 			hook:           &Processor{When: config.ProcessorWhenAllExceptFirst},
 			isFirstMessage: false,
 			expected:       true,
-		},
-		{
-			name:           "workspace filter match",
-			hook:           &Processor{When: config.ProcessorWhenAll, Workspaces: []string{"/project"}},
-			isFirstMessage: true,
-			workingDir:     "/project",
-			expected:       true,
-		},
-		{
-			name:           "workspace filter no match",
-			hook:           &Processor{When: config.ProcessorWhenAll, Workspaces: []string{"/project"}},
-			isFirstMessage: true,
-			workingDir:     "/other",
-			expected:       false,
 		},
 		{
 			name: "enabledWhen CEL matches acp.name",
@@ -282,13 +269,154 @@ func TestProcessorShouldApply(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, reason := tt.hook.ShouldApply(tt.isFirstMessage, tt.workingDir, tt.input)
+			got, reason := tt.hook.ShouldApply(tt.isFirstMessage, tt.input)
 			if got != tt.expected {
 				t.Errorf("ShouldApply() = %v (reason=%s), want %v", got, reason, tt.expected)
 			}
 		})
 	}
 }
+
+func TestManagerApply_RerunAfterTime(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "ctx.yaml", `
+name: context-injector
+enabled: true
+when: first
+position: prepend
+text: "[context]"
+rerun:
+  afterTime: 50ms
+`)
+
+	mgr := NewManager(dir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// First message — should apply
+	input := &ProcessorInput{Message: "msg1", IsFirstMessage: true}
+	result, err := mgr.Apply(ctx, input)
+	if err != nil {
+		t.Fatalf("Apply 1: %v", err)
+	}
+	if !strings.Contains(result.Message, "[context]") {
+		t.Errorf("first apply should prepend context, got %q", result.Message)
+	}
+
+	// Second message (not first) — should NOT apply (rerun not due)
+	input2 := &ProcessorInput{Message: "msg2", IsFirstMessage: false}
+	result2, err := mgr.Apply(ctx, input2)
+	if err != nil {
+		t.Fatalf("Apply 2: %v", err)
+	}
+	if strings.Contains(result2.Message, "[context]") {
+		t.Errorf("second apply should NOT have context yet, got %q", result2.Message)
+	}
+
+	// Wait for rerun threshold
+	time.Sleep(60 * time.Millisecond)
+
+	// Third message — should re-apply (time threshold reached)
+	input3 := &ProcessorInput{Message: "msg3", IsFirstMessage: false}
+	result3, err := mgr.Apply(ctx, input3)
+	if err != nil {
+		t.Fatalf("Apply 3: %v", err)
+	}
+	if !strings.Contains(result3.Message, "[context]") {
+		t.Errorf("third apply should have context (rerun), got %q", result3.Message)
+	}
+}
+
+func TestManagerApply_RerunAfterMsgs(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "ctx.yaml", `
+name: context-injector
+enabled: true
+when: first
+position: prepend
+text: "[context]"
+rerun:
+  afterSentMsgs: 3
+`)
+
+	mgr := NewManager(dir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Message 1 (first) — applies
+	input := &ProcessorInput{Message: "msg1", IsFirstMessage: true}
+	result, _ := mgr.Apply(ctx, input)
+	if !strings.Contains(result.Message, "[context]") {
+		t.Fatalf("first apply should prepend context")
+	}
+
+	// Messages 2-4 — should NOT apply (counter: 1, 2, 3)
+	for i := 2; i <= 4; i++ {
+		inp := &ProcessorInput{Message: fmt.Sprintf("msg%d", i), IsFirstMessage: false}
+		res, _ := mgr.Apply(ctx, inp)
+		if i < 5 && strings.Contains(res.Message, "[context]") {
+			t.Errorf("msg%d should NOT have context, got %q", i, res.Message)
+		}
+	}
+
+	// Message 5 — should re-apply (3 messages since last run)
+	input5 := &ProcessorInput{Message: "msg5", IsFirstMessage: false}
+	result5, _ := mgr.Apply(ctx, input5)
+	if !strings.Contains(result5.Message, "[context]") {
+		t.Errorf("msg5 should have context (rerun after 3 msgs), got %q", result5.Message)
+	}
+}
+
+func TestRerunConfig_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *RerunConfig
+		wantErr bool
+	}{
+		{name: "nil config", cfg: nil, wantErr: false},
+		{name: "valid time", cfg: &RerunConfig{AfterTime: "10m"}, wantErr: false},
+		{name: "valid msgs", cfg: &RerunConfig{AfterSentMsgs: 5}, wantErr: false},
+		{name: "both set", cfg: &RerunConfig{AfterTime: "1h", AfterSentMsgs: 20}, wantErr: false},
+		{name: "invalid time", cfg: &RerunConfig{AfterTime: "invalid"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoader_RerunOnlyWithFirst(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "bad.yaml", `
+name: bad-rerun
+enabled: true
+when: all
+text: "test"
+rerun:
+  afterTime: 10m
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load should not return error (skips bad files), got: %v", err)
+	}
+	// The bad processor should have been skipped
+	if len(procs) != 0 {
+		t.Errorf("expected 0 processors (bad rerun config skipped), got %d", len(procs))
+	}
+}
+
 
 func TestResolveCommand(t *testing.T) {
 	h := &Processor{
@@ -1230,4 +1358,188 @@ func containsHelper(s, substr string) bool {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+
+func TestCloneWithDirProcessors(t *testing.T) {
+	// Create global processors directory with one processor
+	globalDir := t.TempDir()
+	writeYAML(t, globalDir, "global.yaml", `
+name: global-proc
+enabled: true
+when: all
+position: prepend
+text: "global"
+`)
+
+	// Create workspace processors directory with another processor
+	wsDir := t.TempDir()
+	writeYAML(t, wsDir, "workspace.yaml", `
+name: ws-proc
+enabled: true
+when: all
+position: append
+text: "workspace"
+`)
+
+	// Load global manager
+	mgr := NewManager(globalDir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Clone with workspace processors
+	cloned := mgr.CloneWithDirProcessors([]string{wsDir}, nil)
+
+	// Should have both processors
+	procs := cloned.Processors()
+	if len(procs) != 2 {
+		t.Fatalf("expected 2 processors, got %d", len(procs))
+	}
+
+	names := make(map[string]bool)
+	for _, p := range procs {
+		names[p.Name] = true
+	}
+	if !names["global-proc"] {
+		t.Error("missing global-proc")
+	}
+	if !names["ws-proc"] {
+		t.Error("missing ws-proc")
+	}
+}
+
+func TestCloneWithDirProcessors_Override(t *testing.T) {
+	// Create global processor
+	globalDir := t.TempDir()
+	writeYAML(t, globalDir, "shared.yaml", `
+name: shared
+enabled: true
+when: all
+position: prepend
+text: "global version"
+`)
+
+	// Create workspace processor with same name (should override)
+	wsDir := t.TempDir()
+	writeYAML(t, wsDir, "shared.yaml", `
+name: shared
+enabled: true
+when: all
+position: append
+text: "workspace version"
+`)
+
+	mgr := NewManager(globalDir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	cloned := mgr.CloneWithDirProcessors([]string{wsDir}, nil)
+	procs := cloned.Processors()
+
+	if len(procs) != 1 {
+		t.Fatalf("expected 1 processor after override, got %d", len(procs))
+	}
+	if procs[0].Text != "workspace version" {
+		t.Errorf("expected workspace version, got %q", procs[0].Text)
+	}
+	if procs[0].GetPosition() != "append" {
+		t.Errorf("expected append position from workspace override, got %q", procs[0].GetPosition())
+	}
+}
+
+func TestCloneWithDirProcessors_NonexistentDir(t *testing.T) {
+	globalDir := t.TempDir()
+	writeYAML(t, globalDir, "global.yaml", `
+name: global-proc
+enabled: true
+when: all
+text: "global"
+`)
+
+	mgr := NewManager(globalDir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Non-existent directory should be silently ignored
+	cloned := mgr.CloneWithDirProcessors([]string{"/nonexistent/path"}, nil)
+	procs := cloned.Processors()
+
+	if len(procs) != 1 {
+		t.Fatalf("expected 1 processor, got %d", len(procs))
+	}
+	if procs[0].Name != "global-proc" {
+		t.Errorf("expected global-proc, got %q", procs[0].Name)
+	}
+}
+
+func TestCloneWithDirProcessors_Priority(t *testing.T) {
+	globalDir := t.TempDir()
+	writeYAML(t, globalDir, "high.yaml", `
+name: high-priority
+enabled: true
+when: all
+priority: 50
+text: "high"
+`)
+
+	wsDir := t.TempDir()
+	writeYAML(t, wsDir, "low.yaml", `
+name: low-priority
+enabled: true
+when: all
+priority: 10
+text: "low"
+`)
+
+	mgr := NewManager(globalDir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	cloned := mgr.CloneWithDirProcessors([]string{wsDir}, nil)
+	procs := cloned.Processors()
+
+	if len(procs) != 2 {
+		t.Fatalf("expected 2 processors, got %d", len(procs))
+	}
+
+	// Should be sorted by priority: low(10) before high(50)
+	if procs[0].Name != "low-priority" {
+		t.Errorf("expected low-priority first, got %q", procs[0].Name)
+	}
+	if procs[1].Name != "high-priority" {
+		t.Errorf("expected high-priority second, got %q", procs[1].Name)
+	}
+}
+
+func TestCloneWithDirProcessors_EmptyDirs(t *testing.T) {
+	globalDir := t.TempDir()
+	writeYAML(t, globalDir, "global.yaml", `
+name: global
+enabled: true
+when: all
+text: "global"
+`)
+
+	mgr := NewManager(globalDir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Empty dirs list should return the same manager
+	result := mgr.CloneWithDirProcessors([]string{}, nil)
+	if result != mgr {
+		t.Error("expected same manager for empty dirs")
+	}
+}
+
+func writeYAML(t *testing.T, dir, filename, content string) {
+	t.Helper()
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", path, err)
+	}
 }

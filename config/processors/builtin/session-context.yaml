@@ -10,6 +10,9 @@ enabled: true
 when: first
 position: prepend
 priority: 10
+rerun:
+  afterTime: 30m
+  afterSentMsgs: 20
 text: |
   [Session Context]
   Session: @mitto:session_id (@mitto:session_name)

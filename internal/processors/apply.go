@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 )
@@ -43,7 +44,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 
 	for _, proc := range procs {
 		// Check if processor should apply
-		shouldApply, skipReason := proc.ShouldApply(input.IsFirstMessage, input.WorkingDir, input)
+		shouldApply, skipReason := proc.ShouldApply(input.IsFirstMessage, input)
 		if !shouldApply {
 			skipped++
 			logger.Debug("processor skipped",
@@ -175,6 +176,18 @@ type Manager struct {
 	processorsDir string
 	processors    []*Processor
 	logger        *slog.Logger
+
+	// rerunState tracks per-processor run state for rerun logic.
+	// Keyed by processor name. Only populated for processors with rerun config.
+	// In-memory only — not persisted across restarts (isFirstPrompt=true on resume
+	// handles restart case).
+	rerunState map[string]*processorRunState
+}
+
+// processorRunState tracks when a processor last ran, for rerun scheduling.
+type processorRunState struct {
+	lastRunTime   time.Time
+	messagesSince int
 }
 
 // NewManager creates a new processor manager.
@@ -185,6 +198,7 @@ func NewManager(processorsDir string, logger *slog.Logger) *Manager {
 	return &Manager{
 		processorsDir: processorsDir,
 		logger:        logger,
+		rerunState:    make(map[string]*processorRunState),
 	}
 }
 
@@ -224,9 +238,79 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 		processorsDir: m.processorsDir,
 		logger:        m.logger,
 		processors:    make([]*Processor, len(m.processors)),
+		rerunState:    make(map[string]*processorRunState),
 	}
 	copy(clone.processors, m.processors)
 	clone.AddTextProcessors(procs, priority)
+	return clone
+}
+
+// CloneWithDirProcessors returns a shallow copy of the Manager with processors
+// loaded from additional directories merged in. Processors from later directories
+// override earlier ones with the same name. The original Manager is not modified.
+// Non-existent directories are silently ignored.
+func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Manager {
+	if len(dirs) == 0 {
+		return m
+	}
+	if logger == nil {
+		logger = m.logger
+	}
+
+	clone := &Manager{
+		processorsDir: m.processorsDir,
+		logger:        logger,
+		processors:    make([]*Processor, len(m.processors)),
+		rerunState:    make(map[string]*processorRunState),
+	}
+	copy(clone.processors, m.processors)
+
+	seen := make(map[string]bool)
+	for _, p := range clone.processors {
+		if p.Name != "" {
+			seen[p.Name] = true
+		}
+	}
+
+	for _, dir := range dirs {
+		loader := NewLoader(dir, logger)
+		procs, err := loader.Load()
+		if err != nil {
+			logger.Debug("Skipping workspace processors directory", "dir", dir, "error", err)
+			continue
+		}
+		if len(procs) == 0 {
+			continue
+		}
+
+		logger.Debug("Loaded workspace processors", "dir", dir, "count", len(procs))
+		for _, p := range procs {
+			if p.Name != "" && seen[p.Name] {
+				// Workspace processor overrides global with same name
+				for i, existing := range clone.processors {
+					if existing.Name == p.Name {
+						logger.Debug("Workspace processor overrides global",
+							"name", p.Name,
+							"dir", dir,
+							"overridden_file", existing.FilePath,
+						)
+						clone.processors[i] = p
+						break
+					}
+				}
+			} else {
+				clone.processors = append(clone.processors, p)
+				if p.Name != "" {
+					seen[p.Name] = true
+				}
+			}
+		}
+	}
+
+	sort.SliceStable(clone.processors, func(i, j int) bool {
+		return clone.processors[i].GetPriority() < clone.processors[j].GetPriority()
+	})
+
 	return clone
 }
 
@@ -247,9 +331,210 @@ func (m *Manager) Processors() []*Processor {
 }
 
 // Apply applies all applicable processors to a message.
+// Handles rerun logic for "when: first" processors: if a processor has a rerun config,
+// it tracks when the processor last ran and re-fires it when a threshold is reached.
 // Returns the processor result containing the transformed message and any attachments.
 func (m *Manager) Apply(ctx context.Context, input *ProcessorInput) (*ProcessorResult, error) {
-	return ApplyProcessors(ctx, m.processors, input, m.processorsDir, m.logger)
+	// Pre-pass: check rerun eligibility for when:first processors.
+	// We temporarily override isFirstMessage for processors that are due for re-run.
+	rerunOverrides := m.checkRerunEligibility(input)
+
+	// Save and patch isFirstMessage if needed
+	origIsFirst := input.IsFirstMessage
+	defer func() { input.IsFirstMessage = origIsFirst }()
+
+	if len(rerunOverrides) > 0 {
+		// We apply the processors one at a time to handle per-processor overrides.
+		return m.applyWithRerun(ctx, input, origIsFirst, rerunOverrides)
+	}
+
+	result, err := ApplyProcessors(ctx, m.processors, input, m.processorsDir, m.logger)
+
+	// Post-pass: update rerun state for all processors
+	m.updateRerunState(input.IsFirstMessage)
+
+	return result, err
+}
+
+// checkRerunEligibility checks which "when: first" processors with rerun config
+// are due for re-run. Returns a set of processor names that should be re-triggered.
+func (m *Manager) checkRerunEligibility(input *ProcessorInput) map[string]bool {
+	if input.IsFirstMessage {
+		return nil // First message — all "when: first" processors will fire naturally
+	}
+
+	overrides := make(map[string]bool)
+	now := time.Now()
+
+	for _, proc := range m.processors {
+		if proc.When != config.ProcessorWhenFirst || proc.Rerun == nil || proc.Name == "" {
+			continue
+		}
+
+		state, exists := m.rerunState[proc.Name]
+		if !exists {
+			continue // Never ran yet — will be handled by isFirstMessage
+		}
+
+		rerun := proc.Rerun
+		// Check time threshold
+		if rerun.GetAfterDuration() > 0 && now.Sub(state.lastRunTime) >= rerun.GetAfterDuration() {
+			m.logger.Debug("processor rerun triggered by time",
+				"name", proc.Name,
+				"elapsed", now.Sub(state.lastRunTime).String(),
+				"threshold", rerun.AfterTime,
+			)
+			overrides[proc.Name] = true
+			continue
+		}
+
+		// Check message count threshold
+		if rerun.AfterSentMsgs > 0 && state.messagesSince >= rerun.AfterSentMsgs {
+			m.logger.Debug("processor rerun triggered by message count",
+				"name", proc.Name,
+				"messages_since", state.messagesSince,
+				"threshold", rerun.AfterSentMsgs,
+			)
+			overrides[proc.Name] = true
+		}
+	}
+
+	return overrides
+}
+
+// applyWithRerun applies processors individually, overriding isFirstMessage for
+// processors that are due for re-run.
+func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, origIsFirst bool, rerunOverrides map[string]bool) (*ProcessorResult, error) {
+	result := &ProcessorResult{Message: input.Message}
+
+	m.logger.Debug("processor pipeline starting (with rerun)",
+		"total_processors", len(m.processors),
+		"is_first_message", origIsFirst,
+		"rerun_count", len(rerunOverrides),
+	)
+
+	executor := NewExecutor(m.processorsDir, m.logger)
+	applied := 0
+	skipped := 0
+
+	for _, proc := range m.processors {
+		// Determine effective isFirstMessage for this processor
+		effectiveIsFirst := origIsFirst
+		if rerunOverrides[proc.Name] {
+			effectiveIsFirst = true
+		}
+
+		input.IsFirstMessage = effectiveIsFirst
+		shouldApply, skipReason := proc.ShouldApply(effectiveIsFirst, input)
+		if !shouldApply {
+			skipped++
+			m.logger.Debug("processor skipped",
+				"name", proc.Name,
+				"reason", string(skipReason),
+				"when", proc.When,
+				"priority", proc.GetPriority(),
+			)
+			continue
+		}
+
+		applied++
+		m.logger.Debug("applying processor",
+			"name", proc.Name,
+			"when", proc.When,
+			"mode", map[bool]string{true: "text", false: "command"}[proc.IsTextMode()],
+			"position", proc.GetPosition(),
+			"priority", proc.GetPriority(),
+			"is_rerun", rerunOverrides[proc.Name],
+		)
+
+		// Text-mode: directly prepend or append the static text (no external command).
+		if proc.IsTextMode() {
+			text := SubstituteVariables(proc.Text, input)
+			switch proc.GetPosition() {
+			case config.ProcessorPositionPrepend:
+				result.Message = text + result.Message
+			case config.ProcessorPositionAppend:
+				result.Message = result.Message + text
+			}
+			input.Message = result.Message
+		} else {
+			// Command-mode: execute external command
+			procInput := &ProcessorInput{
+				Message:             result.Message,
+				IsFirstMessage:      input.IsFirstMessage,
+				SessionID:           input.SessionID,
+				WorkingDir:          input.WorkingDir,
+				History:             input.History,
+				ParentSessionID:     input.ParentSessionID,
+				ParentSessionName:   input.ParentSessionName,
+				SessionName:         input.SessionName,
+				ACPServer:           input.ACPServer,
+				WorkspaceUUID:       input.WorkspaceUUID,
+				AvailableACPServers: input.AvailableACPServers,
+				ChildSessions:       input.ChildSessions,
+			}
+			output, err := executor.Execute(ctx, proc, procInput)
+			if err != nil {
+				if proc.GetOnError() == ErrorFail {
+					return nil, fmt.Errorf("processor %s failed: %w", proc.Name, err)
+				}
+				m.logger.Warn("processor failed, skipping",
+					"name", proc.Name, "error", err)
+				continue
+			}
+			result.Message = output.Message
+			if len(output.Attachments) > 0 {
+				result.Attachments = append(result.Attachments, output.Attachments...)
+			}
+			input.Message = output.Message
+		}
+
+		// Record run for rerun tracking
+		if proc.Name != "" && proc.Rerun != nil {
+			m.rerunState[proc.Name] = &processorRunState{
+				lastRunTime:   time.Now(),
+				messagesSince: 0,
+			}
+		}
+	}
+
+	// Increment message counters for all rerun-tracked processors that didn't fire
+	m.updateRerunState(origIsFirst)
+
+	m.logger.Debug("processor pipeline complete (with rerun)",
+		"total", len(m.processors),
+		"applied", applied,
+		"skipped", skipped,
+	)
+
+	return result, nil
+}
+
+// updateRerunState updates the rerun state after each Apply call.
+// For processors that ran (isFirstMessage was true and they applied), the state
+// was already reset in the apply loop. For all other rerun-tracked processors,
+// increment the message counter.
+func (m *Manager) updateRerunState(wasFirstMessage bool) {
+	for _, proc := range m.processors {
+		if proc.When != config.ProcessorWhenFirst || proc.Rerun == nil || proc.Name == "" {
+			continue
+		}
+
+		state, exists := m.rerunState[proc.Name]
+		if !exists {
+			if wasFirstMessage {
+				// First time running — initialize state
+				m.rerunState[proc.Name] = &processorRunState{
+					lastRunTime:   time.Now(),
+					messagesSince: 0,
+				}
+			}
+			continue
+		}
+
+		// Increment message counter (for processors that didn't fire this round)
+		state.messagesSince++
+	}
 }
 
 // ProcessorsDir returns the processors directory path.

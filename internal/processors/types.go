@@ -111,8 +111,12 @@ type Processor struct {
 	// OnError defines error handling: "skip" or "fail". Default: "skip".
 	OnError ErrorHandling `yaml:"on_error,omitempty" json:"on_error,omitempty"`
 
-	// Workspaces limits the processor to specific workspace paths. Empty means all.
-	Workspaces []string `yaml:"workspaces,omitempty" json:"workspaces,omitempty"`
+	// Rerun configures automatic re-run for "when: first" processors.
+	// Allows a first-only processor to fire again after a time interval or message count,
+	// refreshing context for the LLM. Only used with when: first.
+	// If both AfterTime and AfterSentMsgs are set, whichever threshold is reached first
+	// triggers the re-run.
+	Rerun *RerunConfig `yaml:"rerun,omitempty" json:"rerun,omitempty"`
 
 	// EnabledWhen is an optional CEL expression that determines whether this processor applies.
 	// Uses the same CEL context as prompt enabledWhen expressions (acp.*, session.*, parent.*,
@@ -132,6 +136,43 @@ type Processor struct {
 	FilePath string `yaml:"-" json:"-"`
 	// HookDir is the directory containing the processor file (set internally).
 	HookDir string `yaml:"-" json:"-"`
+}
+
+// RerunConfig configures automatic re-run for "when: first" processors.
+type RerunConfig struct {
+	// AfterTime is the duration after which the processor should re-run.
+	// Supports Go duration strings: "10m", "1h", "30s", "2h30m".
+	AfterTime string `yaml:"afterTime,omitempty" json:"after_time,omitempty"`
+	// AfterSentMsgs is the number of user messages sent since the last run
+	// after which the processor should re-run.
+	AfterSentMsgs int `yaml:"afterSentMsgs,omitempty" json:"after_sent_msgs,omitempty"`
+
+	// parsedDuration is the parsed duration from AfterTime (set during validation).
+	parsedDuration time.Duration
+}
+
+// GetAfterDuration returns the parsed duration for AfterTime.
+// Returns 0 if AfterTime is empty or not yet parsed.
+func (r *RerunConfig) GetAfterDuration() time.Duration {
+	if r == nil {
+		return 0
+	}
+	return r.parsedDuration
+}
+
+// Validate parses and validates the RerunConfig fields.
+func (r *RerunConfig) Validate() error {
+	if r == nil {
+		return nil
+	}
+	if r.AfterTime != "" {
+		d, err := time.ParseDuration(r.AfterTime)
+		if err != nil {
+			return err
+		}
+		r.parsedDuration = d
+	}
+	return nil
 }
 
 // IsTextMode returns true if this processor operates in text-mode.

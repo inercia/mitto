@@ -143,6 +143,16 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 		return nil, fmt.Errorf("processor 'when' is required")
 	}
 
+	// Validate rerun config
+	if proc.Rerun != nil {
+		if proc.When != "first" {
+			return nil, fmt.Errorf("'rerun' is only supported with 'when: first', got 'when: %s'", proc.When)
+		}
+		if err := proc.Rerun.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid rerun config: %w", err)
+		}
+	}
+
 	// Set internal fields
 	proc.FilePath = path
 	proc.HookDir = filepath.Dir(path)
