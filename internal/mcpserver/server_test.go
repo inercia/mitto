@@ -2,9 +2,11 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -3157,5 +3159,503 @@ func TestChildrenTasksWait_TimeoutWithSessionUnregistered(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
+	}
+}
+
+// =============================================================================
+// Auto-Resume Stored Sessions Tests
+// =============================================================================
+
+// mockBackgroundSessionForAutoResume is a minimal BackgroundSession for auto-resume tests.
+type mockBackgroundSessionForAutoResume struct {
+	tryProcessCalled atomic.Bool
+}
+
+func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                         { return false }
+func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                        { return 0 }
+func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                  { return 0 }
+func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool { return true }
+func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
+	m.tryProcessCalled.Store(true)
+	return false
+}
+
+// mockSessionManagerForAutoResume implements SessionManager where GetSession returns nil
+// for stored sessions, and ResumeSession makes the session available.
+type mockSessionManagerForAutoResume struct {
+	mu           sync.Mutex
+	sessions     map[string]BackgroundSession // initially empty for stored sessions
+	resumeCalls  []resumeCall
+	resumeErr    error                        // if set, ResumeSession returns this error
+	resumeResult BackgroundSession            // returned by ResumeSession on success
+	// onResume is called after a successful resume to allow registering the session
+	// with the MCP server's internal registry (simulating the real flow).
+	onResume func(sessionID string)
+}
+
+type resumeCall struct {
+	sessionID   string
+	sessionName string
+	workingDir  string
+}
+
+func (m *mockSessionManagerForAutoResume) GetSession(sessionID string) BackgroundSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	bs, ok := m.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	return bs
+}
+
+func (m *mockSessionManagerForAutoResume) ListRunningSessions() []string { return nil }
+func (m *mockSessionManagerForAutoResume) CloseSessionGracefully(string, string, time.Duration) bool {
+	return true
+}
+func (m *mockSessionManagerForAutoResume) CloseSession(string, string) {}
+
+func (m *mockSessionManagerForAutoResume) ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error) {
+	m.mu.Lock()
+	m.resumeCalls = append(m.resumeCalls, resumeCall{sessionID, sessionName, workingDir})
+	if m.resumeErr != nil {
+		m.mu.Unlock()
+		return nil, m.resumeErr
+	}
+	// Simulate resume: add the session to the map so GetSession finds it
+	bs := m.resumeResult
+	if bs != nil {
+		m.sessions[sessionID] = bs
+	}
+	onResume := m.onResume
+	m.mu.Unlock()
+	// Call onResume outside lock to allow it to call srv.RegisterSession
+	if onResume != nil {
+		onResume(sessionID)
+	}
+	return bs, nil
+}
+
+func (m *mockSessionManagerForAutoResume) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionCreated(string, string, string, string, string) {
+}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool) {}
+
+func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	// Create source (parent) session
+	parentID := session.GenerateSessionID()
+	parentMeta := session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	// Create target (child) session - this is "stored" (not running)
+	childID := session.GenerateSessionID()
+	childMeta := session.Metadata{
+		SessionID:       childID,
+		Name:            "Stored Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}
+	if err := store.Create(childMeta); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Create mock BS that will be "resumed"
+	mockBS := &mockBackgroundSessionForAutoResume{}
+
+	// Create mock session manager: GetSession returns nil initially (stored),
+	// ResumeSession succeeds and makes it available
+	sm := &mockSessionManagerForAutoResume{
+		sessions:     map[string]BackgroundSession{
+			parentID: &mockBackgroundSessionForAutoResume{}, // parent is running
+			// childID NOT in map — simulates stored session
+		},
+		resumeResult: mockBS,
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Register parent session
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	// Send prompt to stored child
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Prompt:         "Hello stored child",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+
+	// Verify ResumeSession was called with correct params
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if len(sm.resumeCalls) != 1 {
+		t.Fatalf("Expected 1 ResumeSession call, got %d", len(sm.resumeCalls))
+	}
+	call := sm.resumeCalls[0]
+	if call.sessionID != childID {
+		t.Errorf("Expected ResumeSession for %s, got %s", childID, call.sessionID)
+	}
+	if call.sessionName != "Stored Child" {
+		t.Errorf("Expected session name 'Stored Child', got '%s'", call.sessionName)
+	}
+
+	// Verify message was added to queue
+	queueLen, _ := store.Queue(childID).Len()
+	if queueLen != 1 {
+		t.Errorf("Expected 1 message in queue, got %d", queueLen)
+	}
+}
+
+func TestSendPrompt_DoesNotResumeArchivedSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	parentMeta := session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	// Create an archived target session
+	childID := session.GenerateSessionID()
+	childMeta := session.Metadata{
+		SessionID:       childID,
+		Name:            "Archived Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+		Archived:        true,
+	}
+	if err := store.Create(childMeta); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	sm := &mockSessionManagerForAutoResume{
+		sessions: map[string]BackgroundSession{
+			parentID: &mockBackgroundSessionForAutoResume{},
+		},
+		resumeResult: &mockBackgroundSessionForAutoResume{},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Prompt:         "Hello archived child",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	// Prompt queuing should still succeed (message goes to queue)
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+
+	// Verify ResumeSession was NOT called (archived sessions should not be resumed)
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if len(sm.resumeCalls) != 0 {
+		t.Errorf("Expected 0 ResumeSession calls for archived session, got %d", len(sm.resumeCalls))
+	}
+}
+
+func TestSendPrompt_ResumeFailureStillQueuesMessage(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	parentMeta := session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	childMeta := session.Metadata{
+		SessionID:       childID,
+		Name:            "Stored Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}
+	if err := store.Create(childMeta); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// ResumeSession will fail
+	sm := &mockSessionManagerForAutoResume{
+		sessions: map[string]BackgroundSession{
+			parentID: &mockBackgroundSessionForAutoResume{},
+		},
+		resumeErr: fmt.Errorf("ACP process failed to start"),
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Prompt:         "Hello stored child",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	// Message should still be queued even if resume fails
+	if !output.Success {
+		t.Fatalf("Expected success (message queued), got error: %s", output.Error)
+	}
+
+	// Verify message was added to queue despite resume failure
+	queueLen, _ := store.Queue(childID).Len()
+	if queueLen != 1 {
+		t.Errorf("Expected 1 message in queue, got %d", queueLen)
+	}
+}
+
+func TestChildrenTasksWait_AutoResumesStoredChild(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	parentMeta := session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	childMeta := session.Metadata{
+		SessionID:       childID,
+		Name:            "Stored Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}
+	if err := store.Create(childMeta); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	mockBS := &mockBackgroundSessionForAutoResume{}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Mock session manager: child is initially NOT running.
+	// ResumeSession makes it available and registers it with the MCP server.
+	sm := &mockSessionManagerForAutoResume{
+		sessions: map[string]BackgroundSession{
+			// parentID is running, childID is NOT (stored)
+		},
+		resumeResult: mockBS,
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Set up onResume callback to register the child with the MCP server
+	// (simulates what the real SessionManager does on resume)
+	sm.onResume = func(sessionID string) {
+		_ = srv.RegisterSession(sessionID, nil, logger)
+	}
+
+	// Register parent session with MCP server
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+	// Do NOT register childID — it's stored/not running
+
+	ctx := context.Background()
+
+	// Use a short timeout — child won't actually report
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+
+	// Verify ResumeSession was called for the stored child
+	sm.mu.Lock()
+	resumeCalls := sm.resumeCalls
+	sm.mu.Unlock()
+
+	if len(resumeCalls) != 1 {
+		t.Fatalf("Expected 1 ResumeSession call, got %d", len(resumeCalls))
+	}
+	if resumeCalls[0].sessionID != childID {
+		t.Errorf("Expected ResumeSession for %s, got %s", childID, resumeCalls[0].sessionID)
+	}
+
+	// The child should be treated as running (not in notRunningChildren)
+	// Since it times out without a report, verify it was waited on (not skipped)
+	if !output.TimedOut {
+		t.Error("Expected timeout (child didn't report), but got success — this is fine if child reported")
+	}
+}
+
+func TestChildrenTasksWait_DoesNotResumeArchivedChild(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	parentMeta := session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	childMeta := session.Metadata{
+		SessionID:       childID,
+		Name:            "Archived Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+		Archived:        true,
+	}
+	if err := store.Create(childMeta); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	sm := &mockSessionManagerForAutoResume{
+		sessions:     map[string]BackgroundSession{},
+		resumeResult: &mockBackgroundSessionForAutoResume{},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent session: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+
+	// Verify ResumeSession was NOT called for the archived child
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if len(sm.resumeCalls) != 0 {
+		t.Errorf("Expected 0 ResumeSession calls for archived child, got %d", len(sm.resumeCalls))
+	}
+
+	// The child should be in the not_running state
+	if output.Reports == nil {
+		t.Fatal("Expected reports in output")
+	}
+	report, exists := output.Reports[childID]
+	if !exists {
+		t.Fatal("Expected report for child in output")
+	}
+	if report.Status != "not_running" {
+		t.Errorf("Expected status 'not_running' for archived child, got '%s'", report.Status)
 	}
 }

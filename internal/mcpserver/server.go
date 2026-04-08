@@ -1251,7 +1251,7 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	}
 
 	// Check if target conversation exists
-	_, err := store.GetMetadata(input.ConversationID)
+	targetMeta, err := store.GetMetadata(input.ConversationID)
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,
@@ -1280,9 +1280,25 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		"message_id", msg.ID,
 		"queue_position", queueLen)
 
-	// Try to process the queued message immediately if agent is idle
+	// Try to process the queued message immediately if agent is idle.
+	// If the session is not running (stored), auto-resume it first.
 	if s.sessionManager != nil {
-		if bs := s.sessionManager.GetSession(input.ConversationID); bs != nil {
+		bs := s.sessionManager.GetSession(input.ConversationID)
+		if bs == nil && !targetMeta.Archived {
+			// Session is stored (not running) — try to resume it so the queue gets processed.
+			s.logger.Info("Auto-resuming stored session to process queued prompt",
+				"target_session", input.ConversationID,
+				"source_session", realSessionID)
+			resumed, resumeErr := s.sessionManager.ResumeSession(input.ConversationID, targetMeta.Name, targetMeta.WorkingDir)
+			if resumeErr != nil {
+				s.logger.Warn("Failed to auto-resume stored session",
+					"target_session", input.ConversationID,
+					"error", resumeErr)
+			} else {
+				bs = resumed
+			}
+		}
+		if bs != nil {
 			go bs.TryProcessQueuedMessage()
 		}
 	}
@@ -2528,8 +2544,25 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		}
 		validChildren = append(validChildren, childID)
 
-		// Check if the child is currently running (registered with MCP server)
+		// Check if the child is currently running (registered with MCP server).
+		// If not running and not archived, try to auto-resume it.
 		childReg := s.getSession(childID)
+		if childReg == nil && !childMeta.Archived && s.sessionManager != nil {
+			// Session is stored (not running) — try to resume it.
+			s.logger.Info("Auto-resuming stored child session",
+				"parent_session", realSessionID,
+				"child_session", childID)
+			resumed, resumeErr := s.sessionManager.ResumeSession(childID, childMeta.Name, childMeta.WorkingDir)
+			if resumeErr != nil {
+				s.logger.Warn("Failed to auto-resume child session",
+					"parent_session", realSessionID,
+					"child_session", childID,
+					"error", resumeErr)
+			} else if resumed != nil {
+				// Re-check registration after resume
+				childReg = s.getSession(childID)
+			}
+		}
 		if childReg == nil {
 			notRunningChildren = append(notRunningChildren, childID)
 			reason := "not running"
