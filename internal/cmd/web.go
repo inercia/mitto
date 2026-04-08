@@ -229,12 +229,12 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// Run the up hook if configured
 	// Use external port if available (for tunneling services like Tailscale/ngrok),
 	// otherwise fall back to local port
+	hookPort := actualPort
+	if actualExternalPort > 0 {
+		hookPort = actualExternalPort
+	}
 	var upHook *hooks.Process
 	if cfg != nil {
-		hookPort := actualPort
-		if actualExternalPort > 0 {
-			hookPort = actualExternalPort
-		}
 		// Set up failure callback to broadcast to UI clients
 		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
 			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
@@ -259,6 +259,38 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		downHook = cfg.Web.Hooks.Down
 	}
 	shutdown.SetHooks(upHook, downHook, actualPort)
+
+	// Start health monitor if external address is configured
+	var healthMonitor *hooks.HealthMonitor
+	if cfg != nil && cfg.Web.Hooks.ExternalAddress != "" && upHook != nil {
+		healthMonitor = hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
+			Address:  cfg.Web.Hooks.ExternalAddress,
+			UpHook:   cfg.Web.Hooks.Up,
+			DownHook: cfg.Web.Hooks.Down,
+			Port:     hookPort,
+			OnFailure: func(failure hooks.HookFailure) {
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+			},
+			OnRestart: func(attempt int) {
+				srv.BroadcastHookRestarted(attempt)
+			},
+			SetUpHook: func(p *hooks.Process) {
+				shutdown.SetHooks(p, cfg.Web.Hooks.Down, hookPort)
+			},
+		})
+		healthMonitor.Start()
+		shutdown.SetHealthMonitor(healthMonitor)
+	}
+
+	// Register health monitor dependencies with server for dynamic management
+	srv.SetHealthMonitorDeps(hookPort, func(p *hooks.Process) {
+		shutdown.SetHooks(p, cfg.Web.Hooks.Down, hookPort)
+	}, func(m *hooks.HealthMonitor) {
+		shutdown.SetHealthMonitor(m)
+	})
+	if healthMonitor != nil {
+		srv.SetHealthMonitor(healthMonitor)
+	}
 
 	// Add cleanup functions
 	shutdown.AddCleanup(func(reason string) {

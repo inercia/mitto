@@ -46,8 +46,8 @@ like auggie, claude-code, and others that implement ACP.`,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config loading for commands that don't need it
-		// (help, completion, prompts management commands, and mcp proxy mode)
-		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && cmd.Parent().Name() == "prompts" {
+		// (help, completion, prompts and processors management commands, and mcp proxy mode)
+		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors") {
 			return nil
 		}
 

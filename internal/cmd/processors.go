@@ -42,6 +42,7 @@ Disabled processors are marked accordingly.`,
 }
 
 var (
+	processorsListDir             string
 	updateBuiltinProcessorsDryRun bool
 	updateBuiltinProcessorsForce  bool
 )
@@ -65,6 +66,9 @@ func init() {
 	processorsCmd.AddCommand(processorsListCmd)
 	processorsCmd.AddCommand(processorsUpdateBuiltinCmd)
 
+	processorsListCmd.Flags().StringVarP(&processorsListDir, "dir", "d", "",
+		"Additional directory to search for processors (e.g., workspace .mitto/processors)")
+
 	processorsUpdateBuiltinCmd.Flags().BoolVar(&updateBuiltinProcessorsDryRun, "dry-run", false,
 		"Show what would be updated without making changes")
 	processorsUpdateBuiltinCmd.Flags().BoolVarP(&updateBuiltinProcessorsForce, "force", "f", false,
@@ -84,13 +88,21 @@ func runProcessorsList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	loader := processors.NewLoader(processorsDir, nil)
-	procs, err := loader.Load()
-	if err != nil {
+	mgr := processors.NewManager(processorsDir, nil)
+	if err := mgr.Load(); err != nil {
 		return fmt.Errorf("failed to load processors: %w", err)
 	}
 
-	fmt.Printf("Processors directory: %s\n\n", processorsDir)
+	// Merge workspace processors from --dir if specified
+	if processorsListDir != "" {
+		mgr = mgr.CloneWithDirProcessors([]string{processorsListDir}, nil)
+		fmt.Printf("Processors directory: %s\n", processorsDir)
+		fmt.Printf("Workspace directory:  %s\n\n", processorsListDir)
+	} else {
+		fmt.Printf("Processors directory: %s\n\n", processorsDir)
+	}
+
+	procs := mgr.Processors()
 
 	if len(procs) == 0 {
 		fmt.Println("No processors found. Create .yaml files in the processors directory to add global processors.")
