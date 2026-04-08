@@ -382,7 +382,6 @@ func TestGCStartStop_DoubleStartIsNoop(t *testing.T) {
 	m.StopGC()
 }
 
-
 // TestGCTier1_SkipsRecentlyDisconnectedObservers verifies that a session whose
 // last observer disconnected recently (within the observer grace period) is NOT
 // closed by the GC, even if the resume grace period has expired. This prevents

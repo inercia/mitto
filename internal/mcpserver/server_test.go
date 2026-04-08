@@ -3171,9 +3171,9 @@ type mockBackgroundSessionForAutoResume struct {
 	tryProcessCalled atomic.Bool
 }
 
-func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                         { return false }
-func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                        { return 0 }
-func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                  { return 0 }
+func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                          { return false }
+func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                         { return 0 }
+func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                   { return 0 }
 func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool { return true }
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
@@ -3186,8 +3186,8 @@ type mockSessionManagerForAutoResume struct {
 	mu           sync.Mutex
 	sessions     map[string]BackgroundSession // initially empty for stored sessions
 	resumeCalls  []resumeCall
-	resumeErr    error                        // if set, ResumeSession returns this error
-	resumeResult BackgroundSession            // returned by ResumeSession on success
+	resumeErr    error             // if set, ResumeSession returns this error
+	resumeResult BackgroundSession // returned by ResumeSession on success
 	// onResume is called after a successful resume to allow registering the session
 	// with the MCP server's internal registry (simulating the real flow).
 	onResume func(sessionID string)
@@ -3285,7 +3285,7 @@ func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	// Create mock session manager: GetSession returns nil initially (stored),
 	// ResumeSession succeeds and makes it available
 	sm := &mockSessionManagerForAutoResume{
-		sessions:     map[string]BackgroundSession{
+		sessions: map[string]BackgroundSession{
 			parentID: &mockBackgroundSessionForAutoResume{}, // parent is running
 			// childID NOT in map — simulates stored session
 		},

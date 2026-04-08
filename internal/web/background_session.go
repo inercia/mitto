@@ -71,9 +71,9 @@ type BackgroundSession struct {
 	startedAt time.Time // When this session was started/resumed (for GC grace period)
 
 	// Observers (multiple clients can observe this session)
-	observersMu            sync.RWMutex
-	observers              map[SessionObserver]struct{}
-	lastObserverRemovedAt  atomic.Int64 // Unix nanos when observer count last dropped to 0 (for GC grace period)
+	observersMu           sync.RWMutex
+	observers             map[SessionObserver]struct{}
+	lastObserverRemovedAt atomic.Int64 // Unix nanos when observer count last dropped to 0 (for GC grace period)
 
 	// Prompt state
 	promptMu             sync.Mutex

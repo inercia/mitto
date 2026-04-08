@@ -652,7 +652,6 @@ func (sm *SessionManager) loadWorkspaceProcessors(procMgr *processors.Manager, w
 	return procMgr.CloneWithDirProcessors(dirs, sm.logger)
 }
 
-
 // GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
 // Returns zero time if the file doesn't exist or the cache is not initialized.
 func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time {

@@ -191,7 +191,6 @@ func TestBackgroundSession_RemoveNonExistentObserver(t *testing.T) {
 	}
 }
 
-
 func TestBackgroundSession_LastObserverRemovedAt(t *testing.T) {
 	bs := &BackgroundSession{}
 

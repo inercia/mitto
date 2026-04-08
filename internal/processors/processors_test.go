@@ -417,7 +417,6 @@ rerun:
 	}
 }
 
-
 func TestResolveCommand(t *testing.T) {
 	h := &Processor{
 		Command: "./script.sh",
@@ -1359,7 +1358,6 @@ func containsHelper(s, substr string) bool {
 func boolPtr(b bool) *bool {
 	return &b
 }
-
 
 func TestCloneWithDirProcessors(t *testing.T) {
 	// Create global processors directory with one processor

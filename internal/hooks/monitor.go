@@ -21,7 +21,7 @@ const (
 	monitorRequestTimeout         = 10 * time.Second
 	monitorMaxConsecutiveRestarts = 10
 	monitorMaxCheckInterval       = 5 * time.Minute
-	monitorFailureRetries         = 2               // Additional retries before restarting
+	monitorFailureRetries         = 2                // Additional retries before restarting
 	monitorRetryDelay             = 10 * time.Second // Delay between retries
 )
 
@@ -192,7 +192,6 @@ func (m *HealthMonitor) run(ctx context.Context) {
 		}
 	}
 }
-
 
 // checkHealth performs an HTTP GET to the external address.
 // Returns true if the response status is 2xx or 3xx.

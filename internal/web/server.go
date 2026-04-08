@@ -182,11 +182,11 @@ type Server struct {
 	negativeSessionCache *NegativeSessionCache
 
 	// Health monitor for external address reachability checking
-	healthMonitor            *hooks.HealthMonitor
-	healthMonitorMu          sync.Mutex
-	hookPort                 int                          // Port used for hook commands
-	onHookProcessChanged     func(*hooks.Process)         // Callback to update shutdown manager when hooks restart
-	onHealthMonitorChanged   func(*hooks.HealthMonitor)   // Callback to update shutdown manager when health monitor changes
+	healthMonitor          *hooks.HealthMonitor
+	healthMonitorMu        sync.Mutex
+	hookPort               int                        // Port used for hook commands
+	onHookProcessChanged   func(*hooks.Process)       // Callback to update shutdown manager when hooks restart
+	onHealthMonitorChanged func(*hooks.HealthMonitor) // Callback to update shutdown manager when health monitor changes
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
