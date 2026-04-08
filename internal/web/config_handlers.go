@@ -534,6 +534,9 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		newWebConfig.Hooks = configPkg.WebHooks{}
 	}
 
+	// Update health monitor based on new hooks configuration
+	s.updateHealthMonitor(newWebConfig.Hooks)
+
 	// Update access log settings
 	if req.Web.AccessLog != nil {
 		newWebConfig.AccessLog = req.Web.AccessLog

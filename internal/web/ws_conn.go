@@ -132,6 +132,17 @@ func (w *WSConn) Close() error {
 	return w.conn.Close()
 }
 
+// ResetReadDeadline resets the read deadline to PongWait from now.
+// This MUST be called before starting readPump if the WebSocket connection
+// was idle for longer than PongWait (e.g., while waiting for ACP session
+// resumption), otherwise ReadMessage() will fail immediately with a
+// deadline-exceeded error.
+func (w *WSConn) ResetReadDeadline() {
+	if w.config.PongWait > 0 {
+		w.conn.SetReadDeadline(time.Now().Add(w.config.PongWait))
+	}
+}
+
 // WritePump pumps messages from the send channel to the WebSocket connection.
 // It also handles ping/pong keepalive. This should be run in a goroutine.
 // The done channel is closed when the pump exits.

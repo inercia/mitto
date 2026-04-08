@@ -311,6 +311,56 @@ func TestGCTier2_SkipsProcessWithActiveRPCs(t *testing.T) {
 	}
 }
 
+// TestGCTier1_SkipsRecentlyResumedSession verifies that a session resumed less than
+// one GC interval ago is not closed, even when it has no observers or active prompts.
+// This prevents the race where an async resume goroutine hasn't yet completed
+// load_events / observer registration before the first GC cycle fires.
+func TestGCTier1_SkipsRecentlyResumedSession(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:     "recently-resumed",
+				WorkspaceUUID: "ws-1",
+				IsPrompting:   false,
+				HasObservers:  false,
+				QueueLength:   0,
+				ResumedAt:     time.Now().Add(-5 * time.Second), // Resumed 5s ago, within 30s interval
+			},
+			{
+				SessionID:     "old-idle",
+				WorkspaceUUID: "ws-1",
+				IsPrompting:   false,
+				HasObservers:  false,
+				QueueLength:   0,
+				ResumedAt:     time.Now().Add(-5 * time.Minute), // Resumed 5 minutes ago
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["recently-resumed"] {
+		t.Error("recently resumed session (5s ago) should not be GC'd within the grace period")
+	}
+	if !closed["old-idle"] {
+		t.Error("old idle session (5min ago) should be closed by Tier 1 GC")
+	}
+}
+
 // TestGCStartStop_DoubleStartIsNoop verifies that calling StartGC a second time
 // while the GC is already running is a no-op, and StopGC still shuts down cleanly.
 func TestGCStartStop_DoubleStartIsNoop(t *testing.T) {
@@ -330,4 +380,133 @@ func TestGCStartStop_DoubleStartIsNoop(t *testing.T) {
 
 	// Calling StopGC again must also be a no-op.
 	m.StopGC()
+}
+
+
+// TestGCTier1_SkipsRecentlyDisconnectedObservers verifies that a session whose
+// last observer disconnected recently (within the observer grace period) is NOT
+// closed by the GC, even if the resume grace period has expired. This prevents
+// sessions from being closed during staggered reconnects (e.g., macOS app activation).
+func TestGCTier1_SkipsRecentlyDisconnectedObservers(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:             "recent-disconnect",
+				WorkspaceUUID:         "ws-1",
+				IsPrompting:           false,
+				HasObservers:          false,
+				QueueLength:           0,
+				ResumedAt:             time.Now().Add(-5 * time.Minute), // Resumed long ago
+				LastObserverRemovedAt: time.Now().Add(-2 * time.Second), // Observer disconnected 2s ago
+			},
+			{
+				SessionID:             "old-disconnect",
+				WorkspaceUUID:         "ws-1",
+				IsPrompting:           false,
+				HasObservers:          false,
+				QueueLength:           0,
+				ResumedAt:             time.Now().Add(-5 * time.Minute),  // Resumed long ago
+				LastObserverRemovedAt: time.Now().Add(-30 * time.Second), // Observer disconnected 30s ago
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["recent-disconnect"] {
+		t.Error("session with recently disconnected observers (2s ago) should not be GC'd within the observer grace period")
+	}
+	if !closed["old-disconnect"] {
+		t.Error("session with observers disconnected 30s ago should be closed by Tier 1 GC")
+	}
+}
+
+// TestGCTier1_ObserverGracePeriodDoesNotProtectForever verifies that the observer
+// grace period eventually expires and the session is GC'd.
+func TestGCTier1_ObserverGracePeriodDoesNotProtectForever(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:             "expired-grace",
+				WorkspaceUUID:         "ws-1",
+				IsPrompting:           false,
+				HasObservers:          false,
+				QueueLength:           0,
+				ResumedAt:             time.Now().Add(-10 * time.Minute),
+				LastObserverRemovedAt: time.Now().Add(-20 * time.Second), // Well past the 15s grace
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !closed["expired-grace"] {
+		t.Error("session with expired observer grace period should be GC'd")
+	}
+}
+
+// TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers verifies that sessions
+// WITH observers are kept alive regardless of LastObserverRemovedAt.
+func TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:             "has-observers",
+				WorkspaceUUID:         "ws-1",
+				IsPrompting:           false,
+				HasObservers:          true,
+				QueueLength:           0,
+				ResumedAt:             time.Now().Add(-10 * time.Minute),
+				LastObserverRemovedAt: time.Now().Add(-30 * time.Second), // Old, but has observers
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["has-observers"] {
+		t.Error("session with active observers should never be GC'd")
+	}
 }

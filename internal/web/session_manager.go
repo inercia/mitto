@@ -1,12 +1,16 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"path/filepath"
+
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
@@ -602,6 +606,53 @@ func (sm *SessionManager) GetWorkspacePromptsDirs(workingDir string) []string {
 	return rc.PromptsDirs
 }
 
+// GetWorkspaceProcessorsDirs returns the processors_dirs defined in the workspace's .mittorc file.
+// Returns nil if no .mittorc exists or if it has no processors_dirs section.
+func (sm *SessionManager) GetWorkspaceProcessorsDirs(workingDir string) []string {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return nil
+	}
+
+	rc, err := sm.workspaceRCCache.Get(workingDir)
+	if err != nil {
+		return nil
+	}
+
+	if rc == nil {
+		return nil
+	}
+
+	return rc.ProcessorsDirs
+}
+
+// loadWorkspaceProcessors clones the processor manager with workspace-specific
+// processors loaded from .mitto/processors/ and any processors_dirs in .mittorc.
+// Returns the original manager if no workspace processors are found.
+func (sm *SessionManager) loadWorkspaceProcessors(procMgr *processors.Manager, workingDir string) *processors.Manager {
+	if procMgr == nil || workingDir == "" {
+		return procMgr
+	}
+
+	var dirs []string
+
+	// 1. Default .mitto/processors/ directory (lowest priority among workspace dirs)
+	defaultDir := appdir.WorkspaceProcessorsDir(workingDir)
+	dirs = append(dirs, defaultDir)
+
+	// 2. Additional processors_dirs from .mittorc (higher priority)
+	if extraDirs := sm.GetWorkspaceProcessorsDirs(workingDir); len(extraDirs) > 0 {
+		for _, dir := range extraDirs {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(workingDir, dir)
+			}
+			dirs = append(dirs, dir)
+		}
+	}
+
+	return procMgr.CloneWithDirProcessors(dirs, sm.logger)
+}
+
+
 // GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
 // Returns zero time if the file doesn't exist or the cache is not initialized.
 func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time {
@@ -1062,6 +1113,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		procMgr = procMgr.CloneWithTextProcessors(textProcs, 0)
 	}
 
+	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
+	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
+
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
 	if workspaceConv != nil && workspaceConv.Queue != nil {
@@ -1256,6 +1310,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	// Auto-create children for top-level sessions.
 	// Run in goroutine to not block the parent session creation response.
 	go sm.createAutoChildren(bs, effectiveWs)
+
+	// Trigger early MCP tools fetch to warm the cache before the first message.
+	sm.ensureMCPToolsFetch(workspaceUUID)
 
 	return bs, nil
 }
@@ -1546,6 +1603,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		procMgr = procMgr.CloneWithTextProcessors(textProcs, 0)
 	}
 
+	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
+	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
+
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
 	if workspaceConv != nil && workspaceConv.Queue != nil {
@@ -1699,6 +1759,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 			"working_dir", workingDir,
 			"total_sessions", len(sm.sessions))
 	}
+
+	// Trigger early MCP tools fetch to warm the cache before the first message.
+	sm.ensureMCPToolsFetch(workspaceUUID)
 
 	signalDone(bs, nil)
 	return bs, nil
@@ -2084,12 +2147,14 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 		}
 
 		result[uuid] = append(result[uuid], SessionInfo{
-			SessionID:      bs.GetSessionID(),
-			WorkspaceUUID:  uuid,
-			IsPrompting:    bs.IsPrompting(),
-			HasObservers:   bs.HasObservers(),
-			QueueLength:    queueLen,
-			NextPeriodicAt: nextPeriodic,
+			SessionID:             bs.GetSessionID(),
+			WorkspaceUUID:         uuid,
+			IsPrompting:           bs.IsPrompting(),
+			HasObservers:          bs.HasObservers(),
+			QueueLength:           queueLen,
+			NextPeriodicAt:        nextPeriodic,
+			ResumedAt:             bs.StartedAt(),
+			LastObserverRemovedAt: bs.LastObserverRemovedAt(),
 		})
 	}
 	return result
@@ -2163,4 +2228,71 @@ func (sm *SessionManager) ClearMCPToolsFetched(workspaceUUID string) {
 	sm.mcpToolsFetchedWorkspacesMu.Lock()
 	defer sm.mcpToolsFetchedWorkspacesMu.Unlock()
 	delete(sm.mcpToolsFetchedWorkspaces, workspaceUUID)
+}
+
+// ensureMCPToolsFetch triggers an asynchronous MCP tools fetch for the given workspace
+// if not already fetched. This warms the cache so that processor enabledWhenMCP checks
+// have tool names available by the time the first message is processed.
+// Safe to call multiple times — only the first call for a workspace triggers the fetch.
+func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {
+	if workspaceUUID == "" {
+		return
+	}
+	if sm.IsMCPToolsFetched(workspaceUUID) {
+		return
+	}
+	sm.MarkMCPToolsFetched(workspaceUUID)
+
+	// Read auxiliaryManager and eventsManager under lock.
+	sm.mu.RLock()
+	auxMgr := sm.auxiliaryManager
+	evtMgr := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if auxMgr == nil {
+		return
+	}
+
+	go func() {
+		// Use a long timeout — auxiliary RPCs can be queued behind active prompts.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		if sm.logger != nil {
+			sm.logger.Debug("early MCP tools fetch: starting",
+				"workspace_uuid", workspaceUUID)
+		}
+
+		tools, err := auxMgr.FetchMCPTools(ctx, workspaceUUID)
+		if err != nil {
+			if sm.logger != nil {
+				sm.logger.Debug("early MCP tools fetch: failed",
+					"workspace_uuid", workspaceUUID,
+					"error", err)
+			}
+			// Clear the fetched flag so the WebSocket fallback can retry.
+			sm.ClearMCPToolsFetched(workspaceUUID)
+			return
+		}
+
+		if sm.logger != nil {
+			sm.logger.Debug("early MCP tools fetch: completed",
+				"workspace_uuid", workspaceUUID,
+				"tool_count", len(tools))
+		}
+
+		// If empty result, clear flag so next connection retries.
+		if len(tools) == 0 {
+			sm.ClearMCPToolsFetched(workspaceUUID)
+			return
+		}
+
+		// Broadcast to frontend (same as triggerMCPToolsFetch in session_ws.go).
+		if evtMgr != nil {
+			evtMgr.Broadcast(WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+				"workspace_uuid": workspaceUUID,
+				"tools":          tools,
+			})
+		}
+	}()
 }

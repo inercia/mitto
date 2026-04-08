@@ -14,6 +14,11 @@ type GCConfig struct {
 }
 
 // SessionInfo contains the minimum information the GC needs about a session.
+// observerGracePeriod is the time to keep a session alive after the last
+// observer disconnects. This prevents the GC from closing sessions during
+// transient reconnect windows (e.g., macOS app staggered reconnect).
+const observerGracePeriod = 15 * time.Second
+
 type SessionInfo struct {
 	SessionID     string
 	WorkspaceUUID string
@@ -22,6 +27,12 @@ type SessionInfo struct {
 	QueueLength   int
 	// NextPeriodicAt is when the next periodic prompt is due (nil = no periodic config).
 	NextPeriodicAt *time.Time
+	// ResumedAt is when the session was last started/resumed. Used by GC to give
+	// freshly resumed sessions a grace period before considering them idle.
+	ResumedAt time.Time
+	// LastObserverRemovedAt is when the observer count last dropped to zero.
+	// Used by GC to provide a grace period for reconnecting clients.
+	LastObserverRemovedAt time.Time
 }
 
 // SessionQueryFunc returns running sessions grouped by workspace UUID.
@@ -147,11 +158,34 @@ func (m *ACPProcessManager) RunGCOnce() {
 				}
 				continue
 			}
+			// Skip sessions that were recently resumed — they may not have
+			// observers registered yet (async resume + load_events race).
+			// Give them at least one full GC interval to establish observers.
+			if !s.ResumedAt.IsZero() && now.Sub(s.ResumedAt) < m.gcConfig.Interval {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping session (recently resumed)",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID,
+						"resumed_ago", now.Sub(s.ResumedAt))
+				}
+				continue
+			}
 			if s.HasObservers {
 				if m.logger != nil {
 					m.logger.Debug("GC: skipping session (has observers)",
 						"session_id", s.SessionID,
 						"workspace_uuid", workspaceUUID)
+				}
+				continue
+			}
+			// Skip sessions where observers recently disconnected — they may be
+			// in the middle of a reconnect (e.g., macOS app staggered reconnect).
+			if !s.LastObserverRemovedAt.IsZero() && now.Sub(s.LastObserverRemovedAt) < observerGracePeriod {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping session (observers recently disconnected)",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID,
+						"observer_removed_ago", now.Sub(s.LastObserverRemovedAt))
 				}
 				continue
 			}

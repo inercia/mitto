@@ -15,6 +15,7 @@ import (
 	"github.com/inercia/mitto/internal/auxiliary"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/defense"
+	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
@@ -179,6 +180,13 @@ type Server struct {
 	// Negative session cache for circuit-breaking "Session not found" error storms.
 	// Caches session IDs known to not exist, preventing repeated filesystem lookups.
 	negativeSessionCache *NegativeSessionCache
+
+	// Health monitor for external address reachability checking
+	healthMonitor            *hooks.HealthMonitor
+	healthMonitorMu          sync.Mutex
+	hookPort                 int                          // Port used for hook commands
+	onHookProcessChanged     func(*hooks.Process)         // Callback to update shutdown manager when hooks restart
+	onHealthMonitorChanged   func(*hooks.HealthMonitor)   // Callback to update shutdown manager when health monitor changes
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -755,6 +763,14 @@ func (s *Server) Shutdown() error {
 		s.accessLogger.Close()
 	}
 
+	// Stop health monitor
+	s.healthMonitorMu.Lock()
+	if s.healthMonitor != nil {
+		s.healthMonitor.Stop()
+		s.healthMonitor = nil
+	}
+	s.healthMonitorMu.Unlock()
+
 	// Stop MCP debug server
 	if s.mcpServer != nil {
 		s.mcpServer.Stop()
@@ -1123,6 +1139,85 @@ func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string)
 	if s.logger != nil {
 		s.logger.Warn("Broadcast hook failed", "name", name, "exit_code", exitCode, "error", errorMsg,
 			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastHookRestarted notifies all connected clients that lifecycle hooks were restarted
+// due to an external address health check failure.
+func (s *Server) BroadcastHookRestarted(attempt int) {
+	s.eventsManager.Broadcast("hook_restarted", map[string]interface{}{
+		"attempt": attempt,
+	})
+
+	if s.logger != nil {
+		s.logger.Info("Broadcast hook restarted",
+			"attempt", attempt,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// SetHealthMonitorDeps provides dependencies needed for dynamic health monitor management.
+// This is called by the startup code to enable the server to manage the health monitor
+// lifecycle when configuration changes.
+func (s *Server) SetHealthMonitorDeps(hookPort int, onHookProcessChanged func(*hooks.Process), onHealthMonitorChanged func(*hooks.HealthMonitor)) {
+	s.healthMonitorMu.Lock()
+	defer s.healthMonitorMu.Unlock()
+	s.hookPort = hookPort
+	s.onHookProcessChanged = onHookProcessChanged
+	s.onHealthMonitorChanged = onHealthMonitorChanged
+}
+
+// SetHealthMonitor sets the current health monitor reference.
+// Called by startup code to register the initially-created health monitor.
+func (s *Server) SetHealthMonitor(m *hooks.HealthMonitor) {
+	s.healthMonitorMu.Lock()
+	defer s.healthMonitorMu.Unlock()
+	s.healthMonitor = m
+}
+
+// updateHealthMonitor starts, stops, or restarts the health monitor based on the
+// current hooks configuration. Called when configuration changes at runtime.
+func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
+	s.healthMonitorMu.Lock()
+	defer s.healthMonitorMu.Unlock()
+
+	// Stop existing monitor if running
+	if s.healthMonitor != nil {
+		if s.logger != nil {
+			s.logger.Info("Stopping existing health monitor")
+		}
+		s.healthMonitor.Stop()
+		s.healthMonitor = nil
+	}
+
+	// Start new monitor if external address is configured and up hook exists
+	if hooksConfig.ExternalAddress != "" && hooksConfig.Up.Command != "" && s.hookPort > 0 {
+		m := hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
+			Address:  hooksConfig.ExternalAddress,
+			UpHook:   hooksConfig.Up,
+			DownHook: hooksConfig.Down,
+			Port:     s.hookPort,
+			OnFailure: func(failure hooks.HookFailure) {
+				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+			},
+			OnRestart: func(attempt int) {
+				s.BroadcastHookRestarted(attempt)
+			},
+			SetUpHook: s.onHookProcessChanged,
+		})
+		m.Start()
+		s.healthMonitor = m
+
+		if s.logger != nil {
+			s.logger.Info("Health monitor started for external address",
+				"address", hooksConfig.ExternalAddress,
+			)
+		}
+	}
+
+	// Notify shutdown manager about the current monitor state
+	if s.onHealthMonitorChanged != nil {
+		s.onHealthMonitorChanged(s.healthMonitor)
 	}
 }
 
