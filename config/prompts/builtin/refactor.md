@@ -13,21 +13,6 @@ Propose a plan and wait for approval.
 
 Preserve external behavior. One type of change at a time. No new features.
 
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Note**: Works without Mitto's MCP server, but provides a better experience with it.
-
-**Optional tools:**
-- `mitto_ui_options_buttons`
-- `mitto_conversation_new`
-- `mitto_children_tasks_wait`
-- `mitto_children_tasks_report`
-- `mitto_conversation_delete`
-
-If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
-
----
-
 ### 1. Analyze
 
 | Area | What to Look For |

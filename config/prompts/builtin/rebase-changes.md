@@ -8,19 +8,6 @@ backgroundColor: "#B2DFDB"
 
 Rebase the current branch onto the target branch, resolving conflicts and pushing the result.
 
-
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Note**: Works without Mitto's MCP server, but provides a better experience with it.
-
-**Optional tools:**
-- `mitto_ui_ask_yes_no`
-- `mitto_ui_options_buttons`
-
-If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
-
----
-
 ### 1. Check Repository Status
 
 ```bash

@@ -1,5 +1,5 @@
 ---
-name: "Create minions"
+name: "Distribute work among children"
 description: "Break down a complex problem into parallel tasks, coordinate workers, and iterate until solved"
 group: "Work flow"
 backgroundColor: "#FFF9C4"
@@ -9,22 +9,6 @@ enabledWhenMCP: mitto_conversation_*
 
 Decompose the current problem into parallel subtasks, dispatch to child conversations,
 collect results, and iterate until solved.
-
-## Prerequisites: Check for Mitto MCP Server
-
-This prompt requires Mitto's MCP server tools.
-
-**Required tools:**
-- `mitto_conversation_get_summary`
-- `mitto_conversation_new`
-- `mitto_conversation_delete`
-- `mitto_children_tasks_wait`
-- `mitto_children_tasks_report`
-- `mitto_ui_options_combo`
-
-If any are missing, **stop** and show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp. Do not proceed.
-
----
 
 ## Overview
 

@@ -1,26 +1,13 @@
 ---
-name: "Continue work in child"
-description: "Resume work in an existing child conversation"
+name: "Continue work in existing child"
+description: "Continue work in an existing child conversation"
 group: "Work flow"
-backgroundColor: "#B3E5FC"
+backgroundColor: "#FFF9C4"
 enabledWhen: "children.exists"
+enabledWhenMCP: mitto_conversation_*
 ---
 
-Continue working on a task by sending instructions to an existing child conversation.
-
-## Prerequisites: Check for Mitto MCP Server
-
-This prompt requires Mitto's MCP server tools.
-
-**Required tools:**
-- `mitto_conversation_list`
-- `mitto_conversation_get_summary`
-- `mitto_conversation_send_prompt`
-- `mitto_ui_options_combo`
-
-If any are missing, **stop** and show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp. Do not proceed.
-
----
+Continue working on this by sending instructions to an existing child conversation.
 
 ## Phase 1: Get Context
 

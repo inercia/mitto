@@ -2,20 +2,12 @@
 name: "What's next?"
 description: "Analyze progress and suggest next steps"
 group: "Work flow"
-backgroundColor: "#BBDEFB"
+backgroundColor: "#FFF9C4"
 ---
 
 Review current state: read relevant files, check git status and recent changes.
 
 Analyze progress and suggest next steps.
-
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Optional tools:** `mitto_ui_ask_yes_no`
-
-If missing, show instructions for Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
-
----
 
 ### Review
 

@@ -10,20 +10,6 @@ Check callers and dependents to ensure changes preserve external behavior.
 
 Simplify the current implementation while preserving functionality.
 
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Note**: Works without Mitto's MCP server, but provides a better experience with it.
-
-**Optional tools:**
-- `mitto_conversation_new`
-- `mitto_children_tasks_wait`
-- `mitto_children_tasks_report`
-- `mitto_conversation_delete`
-
-If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without delegation support.
-
----
-
 ### 1. Look for Simplification Opportunities
 
 1. **Redundant code**: Duplicate logic to consolidate

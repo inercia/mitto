@@ -1,26 +1,13 @@
 ---
-name: "Handoff to new conversation"
+name: "Continue in new child"
 description: "Continue current work in a new conversation, maybe with a different model"
 group: "Work flow"
-backgroundColor: "#B3E5FC"
+backgroundColor: "#FFF9C4"
 enabledWhen: "!session.isChild"
 enabledWhenMCP: mitto_conversation_*
 ---
 
 Continue the current work in a new conversation, optionally with a different model.
-
-## Prerequisites: Check for Mitto MCP Server
-
-This prompt requires Mitto's MCP server tools.
-
-**Required tools:**
-- `mitto_conversation_get_summary`
-- `mitto_conversation_new`
-- `mitto_ui_options_combo`
-
-If any are missing, **stop** and show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp. Do not proceed.
-
----
 
 ## Phase 1: Analyze Context
 

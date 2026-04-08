@@ -2,7 +2,7 @@
 name: "Continue"
 description: "Continue with the current task from where we left off"
 group: "Work flow"
-backgroundColor: "#B3E5FC"
+backgroundColor: "#FFF9C4"
 ---
 
 Before taking any action, review the current state of the work by reading relevant files,

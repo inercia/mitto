@@ -8,18 +8,6 @@ backgroundColor: "#FFECB3"
 Act as a technical product interviewer. Extract every detail needed for a
 developer-ready specification through guided Q&A.
 
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Note**: Works without Mitto's MCP server, but provides a better experience with it.
-
-**Optional tools:**
-- `mitto_ui_ask_yes_no`
-- `mitto_ui_options_combo`
-
-If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
-
----
-
 ## Process
 
 Begin: **"What do you want to build?"**

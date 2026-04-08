@@ -7,21 +7,6 @@ backgroundColor: "#B2DFDB"
 
 Address all review comments on the current pull request with thoughtful responses and code changes.
 
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Note**: Works without Mitto's MCP server, but provides a better experience with it.
-
-**Optional tools:**
-- `mitto_ui_ask_yes_no`
-- `mitto_conversation_new`
-- `mitto_children_tasks_wait`
-- `mitto_children_tasks_report`
-- `mitto_conversation_delete`
-
-If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
-
----
-
 ### 1. Identify the PR/MR
 
 ```bash

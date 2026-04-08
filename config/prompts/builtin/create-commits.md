@@ -7,17 +7,6 @@ backgroundColor: "#B2DFDB"
 
 Create Git commits for changes in this repository with proper organization and messages.
 
-## Prerequisites: Check for Mitto MCP Server (Optional)
-
-**Note**: Works without Mitto's MCP server, but provides a better experience with it.
-
-**Optional tools:**
-- `mitto_ui_options_buttons`
-
-If missing, show instructions for adding Mitto's MCP server at http://127.0.0.1:5757/mcp, then proceed without interactive features.
-
----
-
 ### 0. Prerequisites
 
 **Formatting:** Run project formatters. Report any files modified and include in commit analysis.
