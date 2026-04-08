@@ -317,6 +317,14 @@ func WorkspacePromptsDir(workspaceRoot string) string {
 	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, PromptsDirName)
 }
 
+// WorkspaceProcessorsDir returns the full path to the default workspace processors directory.
+// This is $WORKSPACE/.mitto/processors/ and is automatically searched for processors
+// when a workspace is active, without requiring explicit configuration in .mittorc.
+func WorkspaceProcessorsDir(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, ProcessorsDirName)
+}
+
+
 // AuthSessionsPath returns the full path to the auth_sessions.json file.
 // This file stores authenticated user sessions so they persist across server restarts.
 func AuthSessionsPath() (string, error) {

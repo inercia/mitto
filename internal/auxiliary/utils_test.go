@@ -5,6 +5,131 @@ import (
 	"testing"
 )
 
+func TestStripMarkdownFences(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no fences unchanged",
+			input: `{"tools": []}`,
+			want:  `{"tools": []}`,
+		},
+		{
+			name:  "json fenced block",
+			input: "```json\n{\"tools\": []}\n```",
+			want:  `{"tools": []}`,
+		},
+		{
+			name:  "plain fenced block",
+			input: "```\n{\"tools\": []}\n```",
+			want:  `{"tools": []}`,
+		},
+		{
+			name:  "fence with trailing commentary containing braces",
+			input: "```json\n{\"tools\": [{\"name\": \"t\"}]}\n```\n\nNote: {1 tool listed}",
+			want:  `{"tools": [{"name": "t"}]}`,
+		},
+		{
+			name:  "fence with leading whitespace after trimspace",
+			input: "```json\n  {\"key\": \"val\"}\n```",
+			want:  `{"key": "val"}`,
+		},
+		{
+			name:  "unclosed fence unchanged",
+			input: "```json\n{\"tools\": []}",
+			want:  "```json\n{\"tools\": []}",
+		},
+		{
+			name:  "fence with no newline unchanged",
+			input: "```json",
+			want:  "```json",
+		},
+		{
+			name:  "empty content between fences",
+			input: "```\n\n```",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripMarkdownFences(tt.input)
+			if got != tt.want {
+				t.Errorf("stripMarkdownFences(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseMCPToolsList(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantTools  int
+		wantErrMsg string
+		wantErr    bool
+	}{
+		{
+			name:      "raw JSON object with tools",
+			input:     `{"tools": [{"name": "tool1", "description": "desc1"}]}`,
+			wantTools: 1,
+		},
+		{
+			name:      "markdown fenced JSON object",
+			input:     "```json\n{\"tools\": [{\"name\": \"tool1\", \"description\": \"desc1\"}]}\n```",
+			wantTools: 1,
+		},
+		{
+			name:      "markdown fenced with trailing commentary and braces",
+			input:     "```json\n{\"tools\": [{\"name\": \"t\", \"description\": \"d\"}]}\n```\n\nNote: {1 tool listed}",
+			wantTools: 1,
+		},
+		{
+			name:      "bare JSON array fallback",
+			input:     `[{"name": "tool1", "description": "desc1"}]`,
+			wantTools: 1,
+		},
+		{
+			name:      "fenced bare JSON array",
+			input:     "```\n[{\"name\": \"tool1\", \"description\": \"desc1\"}]\n```",
+			wantTools: 1,
+		},
+		{
+			name:       "agent error response",
+			input:      `{"error": "no tools available"}`,
+			wantErrMsg: "no tools available",
+		},
+		{
+			name:    "invalid JSON fails",
+			input:   `not json at all`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tools, agentErr, err := parseMCPToolsList(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErrMsg != "" && agentErr != tt.wantErrMsg {
+				t.Errorf("agentErr = %q, want %q", agentErr, tt.wantErrMsg)
+			}
+			if len(tools) != tt.wantTools {
+				t.Errorf("len(tools) = %d, want %d", len(tools), tt.wantTools)
+			}
+		})
+	}
+}
+
 func TestParseEnabledWhenMCPCheck_ValidJSON(t *testing.T) {
 	input := `{"patterns": {"jira_*": true, "slack_*": false}}`
 	got, err := parseEnabledWhenMCPCheck(input)

@@ -483,6 +483,9 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 	if mergedCfg.Web.Hooks.Down.Command == "" && settingsCfg.Web.Hooks.Down.Command != "" {
 		mergedCfg.Web.Hooks.Down = settingsCfg.Web.Hooks.Down
 	}
+	if mergedCfg.Web.Hooks.ExternalAddress == "" && settingsCfg.Web.Hooks.ExternalAddress != "" {
+		mergedCfg.Web.Hooks.ExternalAddress = settingsCfg.Web.Hooks.ExternalAddress
+	}
 
 	// Host setting (for external access - 0.0.0.0 vs 127.0.0.1)
 	// If settings.json has 0.0.0.0 (external access enabled), use it

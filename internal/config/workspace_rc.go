@@ -22,6 +22,10 @@ type WorkspaceRC struct {
 	// Paths can be absolute or relative (resolved against the workspace directory).
 	// These directories are searched in addition to global prompts directories.
 	PromptsDirs []string `json:"prompts_dirs,omitempty"`
+	// ProcessorsDirs is a list of additional directories to search for processor YAML files.
+	// Paths can be absolute or relative (resolved against the workspace directory).
+	// These directories are searched in addition to the default .mitto/processors/ directory.
+	ProcessorsDirs []string `json:"processors_dirs,omitempty"`
 	// Conversations contains workspace-specific conversation processing configuration.
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 	// UserDataSchema defines the allowed user data fields for conversations in this workspace.
@@ -65,6 +69,8 @@ type rawWorkspaceRC struct {
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
+	// ProcessorsDirs is a list of additional directories to search for processor files
+	ProcessorsDirs []string `yaml:"processors_dirs"`
 	// Conversations section for message processing and user data schema
 	Conversations *struct {
 		Processing *struct {
@@ -172,6 +178,9 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 
 	// Copy prompts directories
 	rc.PromptsDirs = raw.PromptsDirs
+
+	// Copy processors directories
+	rc.ProcessorsDirs = raw.ProcessorsDirs
 
 	// Copy conversations config
 	if raw.Conversations != nil && raw.Conversations.Processing != nil {

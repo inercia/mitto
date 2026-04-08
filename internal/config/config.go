@@ -111,6 +111,10 @@ type WebHooks struct {
 	Up WebHook `json:"up,omitempty"`
 	// Down is executed right before the web server shuts down
 	Down WebHook `json:"down,omitempty"`
+	// ExternalAddress is an optional URL to health-check periodically.
+	// When set, Mitto will restart the hooks (stop → wait → start) if the
+	// address becomes unreachable.
+	ExternalAddress string `json:"external_address,omitempty"`
 }
 
 // SimpleAuth represents simple username/password authentication.
@@ -980,6 +984,7 @@ type rawConfig struct {
 				Command string `yaml:"command"`
 				Name    string `yaml:"name"`
 			} `yaml:"down"`
+			ExternalAddress string `yaml:"external_address"`
 		} `yaml:"hooks"`
 		Auth *struct {
 			Simple *struct {
@@ -1192,6 +1197,7 @@ func Parse(data []byte) (*Config, error) {
 	cfg.Web.Hooks.Up.Name = raw.Web.Hooks.Up.Name
 	cfg.Web.Hooks.Down.Command = raw.Web.Hooks.Down.Command
 	cfg.Web.Hooks.Down.Name = raw.Web.Hooks.Down.Name
+	cfg.Web.Hooks.ExternalAddress = raw.Web.Hooks.ExternalAddress
 
 	// Populate auth config
 	if raw.Web.Auth != nil {
