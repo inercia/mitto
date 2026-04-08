@@ -73,14 +73,17 @@ export async function fetchConfig(acpServer = null, force = false) {
   const promise = authFetch(url, { headers: fetchHeaders })
     .then((res) => {
       if (res.status === 304) {
-        // Config unchanged — keep using the cached data without parsing the body.
-        // Update the timestamp so the TTL window resets from this revalidation.
-        configCache.set(cacheKey, {
-          ...cached,
-          timestamp: Date.now(),
-        });
-        inflight.delete(cacheKey);
-        return cached.data;
+        if (cached) {
+          // Config unchanged — keep using the cached data without parsing the body.
+          // Update the timestamp so the TTL window resets from this revalidation.
+          configCache.set(cacheKey, {
+            ...cached,
+            timestamp: Date.now(),
+          });
+          inflight.delete(cacheKey);
+          return cached.data;
+        }
+        // Cache was cleared between ETag send and 304 response — fall through to parse.
       }
       const etag = res.headers.get("ETag") || null;
       return res.json().then((data) => {
@@ -106,9 +109,10 @@ export async function fetchConfig(acpServer = null, force = false) {
 /**
  * Invalidate the entire config cache.
  * Call this after saving settings so the next fetch returns fresh data.
- * In-flight requests are left untouched — they will still populate the cache when
- * they settle, but the next caller after invalidation will bypass them.
+ * Both the completed-response cache and the in-flight map are cleared so that
+ * concurrent fetches in progress do not repopulate the cache with stale data.
  */
 export function invalidateConfigCache() {
   configCache.clear();
+  inflight.clear();
 }

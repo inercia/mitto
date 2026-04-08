@@ -26,12 +26,17 @@ func (s *Server) writeConfigError(w http.ResponseWriter, err *configValidationEr
 }
 
 // hasExistingSimpleAuth returns true if the server already has simple auth configured
-// with a non-empty password (either in config or in secure storage).
+// with a non-empty username AND a non-empty password.
+//
+// The password check uses the runtime config value, which is already populated from
+// the system keychain at startup (via LoadSettings → loadKeychainPassword), so
+// this correctly handles both in-file and keychain-stored passwords.
 func (s *Server) hasExistingSimpleAuth() bool {
 	if s.config.MittoConfig == nil || s.config.MittoConfig.Web.Auth == nil || s.config.MittoConfig.Web.Auth.Simple == nil {
 		return false
 	}
-	return s.config.MittoConfig.Web.Auth.Simple.Username != ""
+	simple := s.config.MittoConfig.Web.Auth.Simple
+	return simple.Username != "" && simple.Password != ""
 }
 
 // validateConfigRequest validates the basic structure of a ConfigSaveRequest.

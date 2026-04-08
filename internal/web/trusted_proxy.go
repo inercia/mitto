@@ -103,21 +103,24 @@ func (tpc *TrustedProxyChecker) GetClientIP(r *http.Request) string {
 
 	// Check Cf-Connecting-IP (set by Cloudflare edge — most reliable)
 	if cfIP := r.Header.Get("Cf-Connecting-IP"); cfIP != "" {
-		return strings.TrimSpace(cfIP)
+		if ip := strings.TrimSpace(cfIP); net.ParseIP(ip) != nil {
+			return ip
+		}
 	}
 
 	// Check X-Real-IP (typically set by nginx)
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+		if ip := strings.TrimSpace(xri); net.ParseIP(ip) != nil {
+			return ip
+		}
 	}
 
 	// Check X-Forwarded-For (may contain multiple IPs — take the first)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
 		if len(parts) > 0 {
-			clientIP := strings.TrimSpace(parts[0])
-			if clientIP != "" {
-				return clientIP
+			if ip := strings.TrimSpace(parts[0]); ip != "" && net.ParseIP(ip) != nil {
+				return ip
 			}
 		}
 	}

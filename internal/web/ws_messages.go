@@ -381,11 +381,13 @@ const (
 	// WSMsgTypeEnabledWhenMCPStatus notifies the frontend about required tool pattern availability.
 	// Sent after checking which required tool patterns are satisfied in the workspace.
 	// This is sent progressively as retries discover newly-available tools.
+	// Renamed from "enabledWhenMCP_status" to "required_tools_status" for consistency
+	// with the snake_case WebSocket message naming convention used throughout the protocol.
 	// Data: {
 	//   "workspace_uuid": string,
 	//   "patterns": map[string]bool  // e.g., {"jira_*": true, "slack_*": false}
 	// }
-	WSMsgTypeEnabledWhenMCPStatus = "enabledWhenMCP_status"
+	WSMsgTypeEnabledWhenMCPStatus = "required_tools_status"
 )
 
 // =============================================================================
