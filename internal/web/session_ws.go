@@ -152,7 +152,6 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	// Try to get existing background session first
 	bs := s.sessionManager.GetSession(sessionID)
-	wasResumed := false // Track if we resumed the session (vs already running)
 
 	// Circuit breaker fast path: if session is known to not exist (negative cache hit),
 	// send session_gone immediately without hitting the filesystem.
@@ -209,30 +208,42 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						"session_id", sessionID)
 				}
 			} else {
-				// Session exists in store and is not archived, resume it
+				// Session exists in store and is not archived.
+				// Resume ACP asynchronously to avoid blocking the WebSocket handler.
+				// The frontend will receive `connected` immediately with is_running=false,
+				// and `acp_started` when the ACP process is ready. Events from events.jsonl
+				// can be served via load_events before ACP is up.
 				cwd := meta.WorkingDir
 				if cwd == "" {
 					cwd, _ = os.Getwd()
 				}
-				bs, err = s.sessionManager.ResumeSession(sessionID, meta.Name, cwd)
-				if err != nil {
-					if clientLogger != nil {
-						clientLogger.Error("Failed to resume session", "error", err)
+				sessionName := meta.Name
+				go func() {
+					resumedBS, err := s.sessionManager.ResumeSession(sessionID, sessionName, cwd)
+					if err != nil {
+						if clientLogger != nil {
+							clientLogger.Error("Failed to resume session (async)", "error", err)
+						}
+						s.BroadcastACPStartFailed(sessionID, err, "")
+						return
 					}
-					// Broadcast ACP start failure to all clients
-					s.BroadcastACPStartFailed(sessionID, err, "")
-					// Continue without a running session - client can still view history
-				} else {
-					wasResumed = true
-					// Invalidate negative cache in case this session was previously cached as not found
+					// Invalidate negative cache
 					if s.negativeSessionCache != nil {
 						s.negativeSessionCache.Remove(sessionID)
 					}
 					if clientLogger != nil {
-						clientLogger.Debug("Resumed session for WebSocket client",
-							"acp_id", bs.GetACPID())
+						clientLogger.Debug("Resumed session for WebSocket client (async)",
+							"acp_id", resumedBS.GetACPID())
 					}
-				}
+					// Attach to all WebSocket clients watching this session.
+					// Use the same pattern as unarchive: tryAttachToSession handles
+					// observer registration and sends acp_started notification.
+					client.tryAttachToSession()
+					// Broadcast to global events so all clients (including other browsers) learn about it
+					s.BroadcastACPStarted(sessionID)
+					// Trigger follow-up suggestions for resumed sessions
+					resumedBS.TriggerFollowUpSuggestions()
+				}()
 			}
 		case session.ErrSessionNotFound:
 			// Session truly doesn't exist in memory or store — send session_gone and close.
@@ -292,13 +303,13 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// the client receives, regardless of scheduling.
 	client.sendSessionConnected(bs)
 
-	go client.readPump()
+	// Reset the read deadline before starting readPump. The initial deadline was set
+	// at WebSocket upgrade time (in configureWebSocketConn). If ResumeSession blocked
+	// for longer than PongWait (60s), the deadline has already expired and ReadMessage()
+	// would fail immediately. This refresh ensures readPump starts with a fresh deadline.
+	client.wsConn.ResetReadDeadline()
 
-	// Trigger follow-up suggestions for resumed sessions with message history
-	// This analyzes the last agent message and sends suggested responses asynchronously
-	if wasResumed && bs != nil {
-		bs.TriggerFollowUpSuggestions()
-	}
+	go client.readPump()
 }
 
 func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
@@ -393,6 +404,7 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 	if bs != nil {
 		data["agent_supports_images"] = bs.AgentSupportsImages()
 		data["workspace_uuid"] = bs.GetWorkspaceUUID()
+		data["acp_ready"] = bs.IsACPReady()
 	}
 
 	c.sendMessage(WSMsgTypeConnected, data)
@@ -539,7 +551,7 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptID string, 
 	}
 
 	if c.bgSession == nil {
-		c.sendPromptError("Session not running. Create or resume the session first.", promptID)
+		c.sendPromptError("The AI agent for this conversation is not connected. It may still be starting up — please wait a moment and try again.", promptID)
 		return
 	}
 
@@ -2185,6 +2197,19 @@ func (c *SessionWSClient) OnConfigOptionChanged(configID, value string) {
 		"session_id": c.sessionID,
 		"config_id":  configID,
 		"value":      value,
+	})
+}
+
+// OnACPStarted is called when the ACP connection for this session becomes ready.
+// This notifies the WebSocket client that the session is now running and ready for prompts.
+func (c *SessionWSClient) OnACPStarted() {
+	if c.logger != nil {
+		c.logger.Debug("ACP started notification sent to client",
+			"session_id", c.sessionID,
+			"client_id", c.clientID)
+	}
+	c.sendMessage(WSMsgTypeACPStarted, map[string]interface{}{
+		"session_id": c.sessionID,
 	})
 }
 

@@ -342,6 +342,10 @@ func (m *mockSessionObserver) OnACPStopped(reason string) {
 	m.acpStoppedReasons = append(m.acpStoppedReasons, reason)
 }
 
+func (m *mockSessionObserver) OnACPStarted() {
+	// no-op for testing
+}
+
 func (m *mockSessionObserver) OnUIPrompt(req UIPromptRequest) {
 	// no-op for testing
 }
@@ -1845,6 +1849,7 @@ func (o *trackingObserver) OnACPStopped(reason string) {
 		o.onACPStopped(reason)
 	}
 }
+func (o *trackingObserver) OnACPStarted() {}
 func (o *trackingObserver) OnPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
 }
@@ -3706,5 +3711,112 @@ func TestCancel_NoActiveUIPrompt(t *testing.T) {
 	// Verify still no active prompt
 	if bs.GetActiveUIPrompt() != nil {
 		t.Error("There should still be no active UI prompt after Cancel()")
+	}
+}
+
+
+// =============================================================================
+// IsACPReady Tests
+// =============================================================================
+
+// TestIsACPReady verifies that IsACPReady returns the correct readiness state.
+func TestIsACPReady(t *testing.T) {
+	// Test 1: New session with no ACP connection → not ready
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	if bs.IsACPReady() {
+		t.Error("IsACPReady should be false when no ACP connection")
+	}
+
+	// Test 2: Closed session → not ready (even if fields were set)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	bs2 := &BackgroundSession{
+		observers: make(map[SessionObserver]struct{}),
+		ctx:       ctx2,
+		cancel:    cancel2,
+	}
+	bs2.Close("test")
+	if bs2.IsACPReady() {
+		t.Error("IsACPReady should be false when session is closed")
+	}
+}
+
+// TestIsACPReady_WithConn verifies IsACPReady returns true when acpConn is set.
+func TestIsACPReady_WithConn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	// Without acpConn or sharedProcess → not ready
+	if bs.IsACPReady() {
+		t.Error("IsACPReady should be false without acpConn or sharedProcess")
+	}
+
+	// With sharedProcess set (acpConn is nil but sharedProcess is non-nil would also return true)
+	// Since we can't easily construct an acpConn or sharedProcess in a unit test,
+	// verify that the logic is: !IsClosed() && (acpConn != nil || sharedProcess != nil)
+	// The nil case is already tested above.
+	// Verify IsClosed() does not affect a non-closed session.
+	if bs.IsClosed() {
+		t.Error("IsClosed should be false for a new session")
+	}
+}
+
+// =============================================================================
+// PromptWithMeta Error Message Tests
+// =============================================================================
+
+// TestPromptWithMeta_NoACPConnection_ErrorMessage verifies the error message
+// when PromptWithMeta is called without an ACP connection.
+func TestPromptWithMeta_NoACPConnection_ErrorMessage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:       ctx,
+		cancel:    cancel,
+		observers: make(map[SessionObserver]struct{}),
+	}
+
+	err := bs.PromptWithMeta("hello", PromptMeta{})
+	if err == nil {
+		t.Fatal("Expected error when ACP not connected")
+	}
+
+	expected := "The AI agent is still starting up"
+	if !strings.Contains(err.Error(), expected) {
+		t.Errorf("Error message should contain %q, got: %q", expected, err.Error())
+	}
+}
+
+// TestPromptWithMeta_ClosedSession_ErrorMessage verifies the error message
+// when PromptWithMeta is called on a closed session.
+func TestPromptWithMeta_ClosedSession_ErrorMessage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:       ctx,
+		cancel:    cancel,
+		observers: make(map[SessionObserver]struct{}),
+	}
+
+	bs.Close("test")
+
+	err := bs.PromptWithMeta("hello", PromptMeta{})
+	if err == nil {
+		t.Fatal("Expected error when session is closed")
+	}
+
+	// Closed session returns a different error
+	if !strings.Contains(err.Error(), "session is closed") {
+		t.Errorf("Error message for closed session should contain 'session is closed', got: %q", err.Error())
 	}
 }

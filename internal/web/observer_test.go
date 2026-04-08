@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/inercia/mitto/internal/session"
@@ -88,6 +89,10 @@ func (m *mockObserver) OnAvailableCommandsUpdated(commands []AvailableCommand) {
 }
 
 func (m *mockObserver) OnACPStopped(reason string) {
+	// no-op for testing
+}
+
+func (m *mockObserver) OnACPStarted() {
 	// no-op for testing
 }
 
@@ -183,5 +188,88 @@ func TestBackgroundSession_RemoveNonExistentObserver(t *testing.T) {
 
 	if bs.ObserverCount() != 1 {
 		t.Errorf("ObserverCount = %d, want 1", bs.ObserverCount())
+	}
+}
+
+
+func TestBackgroundSession_LastObserverRemovedAt(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	// Initially zero
+	if !bs.LastObserverRemovedAt().IsZero() {
+		t.Error("LastObserverRemovedAt should be zero initially")
+	}
+
+	// Add and remove an observer — timestamp should be set
+	observer1 := &mockObserver{}
+	bs.AddObserver(observer1)
+	bs.RemoveObserver(observer1)
+
+	removedAt := bs.LastObserverRemovedAt()
+	if removedAt.IsZero() {
+		t.Error("LastObserverRemovedAt should be set after removing the last observer")
+	}
+	if time.Since(removedAt) > time.Second {
+		t.Error("LastObserverRemovedAt should be recent")
+	}
+
+	// Add two observers, remove one — timestamp should NOT change
+	observer2 := &mockObserver{}
+	observer3 := &mockObserver{}
+	bs.AddObserver(observer2)
+	bs.AddObserver(observer3)
+
+	previousRemovedAt := bs.LastObserverRemovedAt()
+	bs.RemoveObserver(observer2)
+
+	// With one observer still remaining, the timestamp should not have been updated
+	if bs.ObserverCount() != 1 {
+		t.Errorf("ObserverCount = %d, want 1", bs.ObserverCount())
+	}
+	if !bs.LastObserverRemovedAt().Equal(previousRemovedAt) {
+		t.Error("LastObserverRemovedAt should not change when observers still remain")
+	}
+
+	// Remove the last observer — timestamp should update
+	time.Sleep(2 * time.Millisecond) // Ensure different nanos
+	bs.RemoveObserver(observer3)
+
+	finalRemovedAt := bs.LastObserverRemovedAt()
+	if finalRemovedAt.Equal(previousRemovedAt) || finalRemovedAt.Before(previousRemovedAt) {
+		t.Error("LastObserverRemovedAt should be updated when the last observer is removed")
+	}
+}
+
+// TestSessionObserver_OnACPStarted verifies that OnACPStarted is part of the
+// SessionObserver interface and can be called without panicking.
+func TestSessionObserver_OnACPStarted(t *testing.T) {
+	// Verify mockObserver implements OnACPStarted (interface compliance)
+	observer := &mockObserver{}
+	var _ SessionObserver = observer
+
+	// Should not panic
+	observer.OnACPStarted()
+}
+
+// TestBackgroundSession_OnACPStarted_NotifiesObservers verifies that when
+// notifyObservers fires OnACPStarted, all registered observers receive it.
+func TestBackgroundSession_OnACPStarted_NotifiesObservers(t *testing.T) {
+	bs := &BackgroundSession{
+		observers: make(map[SessionObserver]struct{}),
+	}
+
+	observer1 := &mockObserver{}
+	observer2 := &mockObserver{}
+	bs.AddObserver(observer1)
+	bs.AddObserver(observer2)
+
+	// Fire OnACPStarted via notifyObservers — should not panic.
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnACPStarted()
+	})
+
+	// Both observers should still be registered after notification.
+	if bs.ObserverCount() != 2 {
+		t.Errorf("ObserverCount = %d, want 2 after OnACPStarted notifications", bs.ObserverCount())
 	}
 }

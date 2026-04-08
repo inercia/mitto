@@ -65,13 +65,15 @@ type BackgroundSession struct {
 	seqMu   sync.Mutex // Protects nextSeq
 
 	// Session lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
-	closed atomic.Int32
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closed    atomic.Int32
+	startedAt time.Time // When this session was started/resumed (for GC grace period)
 
 	// Observers (multiple clients can observe this session)
-	observersMu sync.RWMutex
-	observers   map[SessionObserver]struct{}
+	observersMu            sync.RWMutex
+	observers              map[SessionObserver]struct{}
+	lastObserverRemovedAt  atomic.Int64 // Unix nanos when observer count last dropped to 0 (for GC grace period)
 
 	// Prompt state
 	promptMu             sync.Mutex
@@ -242,6 +244,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	bs := &BackgroundSession{
 		ctx:                     ctx,
 		cancel:                  cancel,
+		startedAt:               time.Now(),
 		autoApprove:             cfg.AutoApprove,
 		logger:                  cfg.Logger,
 		observers:               make(map[SessionObserver]struct{}),
@@ -408,6 +411,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		persistedID:             config.PersistedID,
 		ctx:                     ctx,
 		cancel:                  cancel,
+		startedAt:               time.Now(),
 		autoApprove:             config.AutoApprove,
 		logger:                  sessionLogger,
 		observers:               make(map[SessionObserver]struct{}),
@@ -536,9 +540,25 @@ func (bs *BackgroundSession) GetACPID() string {
 	return bs.acpID
 }
 
+// StartedAt returns when this session was started or resumed.
+// Used by the GC to apply a grace period to freshly started sessions.
+func (bs *BackgroundSession) StartedAt() time.Time {
+	return bs.startedAt
+}
+
 // IsClosed returns true if the session has been closed.
 func (bs *BackgroundSession) IsClosed() bool {
 	return bs.closed.Load() != 0
+}
+
+// IsACPReady returns true if the ACP connection is initialized and ready for prompts.
+// This returns false while the session is starting up (ACP process not yet initialized)
+// or after the session has been closed.
+func (bs *BackgroundSession) IsACPReady() bool {
+	if bs.IsClosed() {
+		return false
+	}
+	return bs.acpConn != nil || bs.sharedProcess != nil
 }
 
 // IsPrompting returns true if a prompt is currently being processed.
@@ -782,9 +802,23 @@ func (bs *BackgroundSession) RemoveObserver(observer SessionObserver) {
 	bs.observersMu.Lock()
 	defer bs.observersMu.Unlock()
 	delete(bs.observers, observer)
-	if bs.logger != nil {
-		bs.logger.Debug("Observer removed", "observer_count", len(bs.observers))
+	remaining := len(bs.observers)
+	if remaining == 0 {
+		bs.lastObserverRemovedAt.Store(time.Now().UnixNano())
 	}
+	if bs.logger != nil {
+		bs.logger.Debug("Observer removed", "observer_count", remaining)
+	}
+}
+
+// LastObserverRemovedAt returns the time when the observer count last dropped to zero.
+// Returns zero time if observers have never been fully removed.
+func (bs *BackgroundSession) LastObserverRemovedAt() time.Time {
+	nanos := bs.lastObserverRemovedAt.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // ObserverCount returns the number of attached observers.
@@ -1779,11 +1813,13 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Try to load existing session if we have an ACP session ID and the agent supports it
 	if acpSessionID != "" && initResp.AgentCapabilities.LoadSession {
-		loadResp, err := bs.acpConn.LoadSession(initCtx, acp.LoadSessionRequest{
+		loadCtx, loadCancel := context.WithTimeout(initCtx, 30*time.Second)
+		loadResp, err := bs.acpConn.LoadSession(loadCtx, acp.LoadSessionRequest{
 			SessionId:  acp.SessionId(acpSessionID),
 			Cwd:        cwd,
 			McpServers: mcpServers,
 		})
+		loadCancel()
 		if err == nil {
 			bs.acpID = acpSessionID
 			// Store available modes from session load
@@ -1796,10 +1832,16 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			return "", nil
 		}
 		// Log the error but fall through to create a new session
+		logFields := []any{
+			"acp_session_id", acpSessionID,
+			"error", err,
+		}
+		if loadCtx.Err() == context.DeadlineExceeded {
+			logFields = append(logFields, "timeout", true)
+		}
 		if bs.logger != nil {
 			bs.logger.Warn("Failed to load ACP session, creating new session",
-				"acp_session_id", acpSessionID,
-				"error", err)
+				logFields...)
 		}
 	}
 
@@ -1842,6 +1884,11 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			"command", acpCommand)
 		bs.logSessionModes(sessResp.Modes)
 	}
+
+	// Notify observers that ACP is now ready to accept prompts.
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnACPStarted()
+	})
 
 	return "", nil
 }
@@ -1965,12 +2012,20 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 
 	// Try to resume an existing session if we have an ID and the agent supports it.
 	if acpSessionID != "" && caps.LoadSession {
-		handle, err = sharedProcess.LoadSession(bs.ctx, acpSessionID, workingDir, mcpServers)
+		loadCtx, loadCancel := context.WithTimeout(bs.ctx, 30*time.Second)
+		handle, err = sharedProcess.LoadSession(loadCtx, acpSessionID, workingDir, mcpServers)
+		loadCancel()
 		if err != nil {
+			logFields := []any{
+				"acp_session_id", acpSessionID,
+				"error", err,
+			}
+			if loadCtx.Err() == context.DeadlineExceeded {
+				logFields = append(logFields, "timeout", true)
+			}
 			if bs.logger != nil {
 				bs.logger.Warn("Failed to load ACP session on shared process, creating new",
-					"acp_session_id", acpSessionID,
-					"error", err)
+					logFields...)
 			}
 		}
 	}
@@ -2023,6 +2078,12 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 			"requested_acp_session_id", acpSessionID,
 			"supports_images", bs.agentSupportsImages)
 	}
+
+	// Notify observers that ACP is now ready to accept prompts.
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnACPStarted()
+	})
+
 	return nil
 }
 
@@ -2189,7 +2250,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		return &sessionError{"session is closed"}
 	}
 	if bs.acpConn == nil && bs.sharedProcess == nil {
-		return &sessionError{"no ACP connection"}
+		return &sessionError{"The AI agent is still starting up. Please wait a moment and try again."}
 	}
 
 	bs.promptMu.Lock()
