@@ -62,6 +62,7 @@ import {
   shouldDebounceReconnect,
   isReconnectLimitReached,
   checkSessionExists,
+  isTerminalSessionError,
 } from "../utils/websocket.js";
 
 // Time threshold (in ms) for considering the session potentially stale
@@ -961,6 +962,14 @@ export function useWebSocket() {
     return sessions[activeSessionId].isStreaming || false;
   }, [sessions, activeSessionId]);
 
+  // Check if the ACP agent is running for the active session.
+  // When false, the session exists but the agent process hasn't started yet
+  // (e.g., during resume). Prompts should be blocked until acp_started arrives.
+  const isRunning = useMemo(() => {
+    if (!activeSessionId || !sessions[activeSessionId]) return false;
+    return sessions[activeSessionId].isRunning ?? false;
+  }, [sessions, activeSessionId]);
+
   // Check if active session has more messages to load
   const hasMoreMessages = useMemo(() => {
     if (!activeSessionId || !sessions[activeSessionId]) return false;
@@ -981,22 +990,26 @@ export function useWebSocket() {
     return messageCount >= MAX_MESSAGES;
   }, [sessions, activeSessionId]);
 
+  // Extract action buttons reference — stable across streaming updates.
+  // During streaming, setSessions() spreads the session object which copies
+  // actionButtons by reference, so this stays the same array instance until
+  // buttons are actually set or cleared.
+  const sessionActionButtons = sessions[activeSessionId]?.actionButtons;
+
   // Get action buttons for active session
   const actionButtons = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) {
-      console.log("[ActionButtons] No active session for buttons");
+    if (!activeSessionId || !sessionActionButtons) {
       return [];
     }
-    const buttons = sessions[activeSessionId].actionButtons || [];
-    if (buttons.length > 0) {
-      console.log("[ActionButtons] Returning buttons for render:", {
+    if (sessionActionButtons.length > 0) {
+      console.log("[ActionButtons] Buttons updated:", {
         sessionId: activeSessionId,
-        buttonCount: buttons.length,
-        buttons: buttons.map((b) => b.label),
+        buttonCount: sessionActionButtons.length,
+        buttons: sessionActionButtons.map((b) => b.label),
       });
     }
-    return buttons;
-  }, [sessions, activeSessionId]);
+    return sessionActionButtons;
+  }, [sessionActionButtons, activeSessionId]);
 
   // Get all active sessions as array for sidebar
   // Memoized with structural fingerprint to prevent unnecessary re-renders
@@ -1156,8 +1169,11 @@ export function useWebSocket() {
                   session.info?.periodic_enabled ??
                   false,
                 workspace_uuid: msg.data.workspace_uuid ?? null,
+                // ACP readiness: false until acp_started event or explicit true in connected msg
+                acp_ready: msg.data.acp_ready ?? false,
               },
               isStreaming: msg.data.is_prompting || false,
+              isRunning: msg.data.is_running ?? session.isRunning ?? false,
             },
           };
         });
@@ -1643,8 +1659,30 @@ export function useWebSocket() {
             clearTimeout(pending.timeoutId);
             pending.reject(new Error(msg.data.message));
             delete pendingSendsRef.current[errorPromptId];
-            // Remove from pending prompts in localStorage
-            removePendingPrompt(errorPromptId);
+          }
+          // Always remove from localStorage — even if this was a retry
+          // from retryPendingPrompts() (which doesn't register in pendingSendsRef).
+          // Without this, retried prompts that get errors stay in localStorage
+          // forever, causing an infinite retry loop on every reconnect.
+          removePendingPrompt(errorPromptId);
+
+          // If this is a terminal error (session gone/closed), clear ALL
+          // pending prompts for this session to prevent retry storms
+          if (isTerminalSessionError(msg.data.message)) {
+            const allPending = getPendingPromptsForSession(sessionId);
+            for (const { promptId: pid } of allPending) {
+              removePendingPrompt(pid);
+              // Also reject any in-flight sends for these prompts
+              const inFlight = pendingSendsRef.current[pid];
+              if (inFlight) {
+                clearTimeout(inFlight.timeoutId);
+                inFlight.reject(new Error(msg.data.message));
+                delete pendingSendsRef.current[pid];
+              }
+            }
+            console.log(
+              `Cleared all pending prompts for closed session ${sessionId}`,
+            );
           }
         }
 
@@ -1738,12 +1776,9 @@ export function useWebSocket() {
         // Sync is_running state (detect if background session disconnected)
         // This is useful for showing a "reconnect" indicator in the UI
         const serverIsRunning = msg.data?.is_running ?? true;
-        if (
-          currentSession?.info?.isRunning !== undefined &&
-          currentSession.info.isRunning !== serverIsRunning
-        ) {
+        if (currentSession?.isRunning !== serverIsRunning) {
           console.log(
-            `[keepalive] Session ${sessionId} running state sync: ${currentSession.info.isRunning} -> ${serverIsRunning}`,
+            `[keepalive] Session ${sessionId} running state sync: ${currentSession?.isRunning} -> ${serverIsRunning}`,
           );
           setSessions((prev) => {
             const session = prev[sessionId];
@@ -1752,7 +1787,7 @@ export function useWebSocket() {
               ...prev,
               [sessionId]: {
                 ...session,
-                info: { ...session.info, isRunning: serverIsRunning },
+                isRunning: serverIsRunning,
               },
             };
           });
@@ -2448,6 +2483,29 @@ export function useWebSocket() {
         }
         break;
 
+      case "acp_started":
+        // ACP started for this specific session (sent after async resume completes).
+        // Defense-in-depth: the global events WS also handles this, but it may be
+        // temporarily disconnected. Just set isRunning=true; no system message here
+        // to avoid duplicating the one added by the global handler.
+        console.log("ACP started for session (per-session WS):", sessionId);
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              isRunning: true,
+              info: {
+                ...session.info,
+                acp_ready: true,
+              },
+            },
+          };
+        });
+        break;
+
       case "acp_stopped":
         // Server notifies that the ACP connection for this session was stopped.
         // This happens when the session is archived or explicitly closed.
@@ -2478,6 +2536,10 @@ export function useWebSocket() {
               ...session,
               isRunning: false,
               isStreaming: false,
+              info: {
+                ...session.info,
+                acp_ready: false,
+              },
               // Add a system/error message to inform the user
               messages: [
                 ...session.messages,
@@ -5087,6 +5149,7 @@ export function useWebSocket() {
     archiveSession,
     removeSession,
     isStreaming,
+    isRunning,
     hasMoreMessages,
     hasReachedLimit,
     isLoadingMore,

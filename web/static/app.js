@@ -2709,6 +2709,7 @@ function App() {
     archiveSession,
     removeSession,
     isStreaming,
+    isRunning,
     hasMoreMessages,
     hasReachedLimit,
     isLoadingMore,
@@ -5433,12 +5434,12 @@ function App() {
       html`
         <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
           <div
-            class="flex flex-col gap-1 px-4 py-3 bg-red-600 text-white rounded-lg shadow-lg max-w-md"
+            class="flex flex-col gap-1 px-4 py-3 bg-amber-600 text-white rounded-lg shadow-lg max-w-md"
           >
             <div class="flex items-center gap-2">
-              <span class="text-lg">❌</span>
+              <span class="text-lg">⏳</span>
               <span class="text-sm font-medium"
-                >ACP Server Failed to Start</span
+                >AI Agent Starting...</span
               >
               <button
                 onClick=${() => setAcpStartFailedError(null)}
@@ -5449,8 +5450,8 @@ function App() {
               </button>
             </div>
             <div class="text-xs opacity-90 ml-7">
-              <div class="text-white/70 break-words">
-                ${acpStartFailedError.error}
+              <div class="text-white/70">
+                The AI agent is still starting up. This may take a few seconds. Please wait...
               </div>
             </div>
           </div>
@@ -5706,7 +5707,7 @@ function App() {
               html`
                 <div class="flex items-center justify-center h-full">
                   <div class="text-center text-gray-400">
-                    <div class="text-6xl mb-6">💬</div>
+                    <img src="./favicon.png" alt="Mitto" class="w-24 h-24 mb-6 opacity-30 mx-auto" />
                     <p class="text-2xl font-medium text-gray-300 mb-4">
                       Welcome to Mitto
                     </p>
@@ -5750,6 +5751,20 @@ function App() {
                     html`
                       <p class="text-sm mt-6 text-yellow-500">
                         Connecting to server...
+                      </p>
+                    `}
+                    ${connected &&
+                    activeSessionId &&
+                    sessionInfo &&
+                    !sessionInfo.acp_ready &&
+                    html`
+                      <p
+                        class="text-sm mt-6 text-yellow-500 flex items-center gap-2"
+                      >
+                        <span
+                          class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
+                        ></span>
+                        Connecting to AI agent...
                       </p>
                     `}
                   </div>
@@ -5839,6 +5854,24 @@ function App() {
         </div>
         <!-- End of messages wrapper -->
 
+        <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
+        <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
+        ${connected &&
+        activeSessionId &&
+        sessionInfo &&
+        !sessionInfo.acp_ready &&
+        messages.length > 0 &&
+        html`
+          <div
+            class="flex items-center justify-center gap-2 py-2 text-sm text-yellow-500"
+          >
+            <span
+              class="w-3 h-3 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"
+            ></span>
+            Reconnecting to AI agent...
+          </div>
+        `}
+
         <!-- Input Area Container (relative for QueueDropdown positioning) -->
         <div class="relative flex-shrink-0">
           <!-- Queue Dropdown (floating overlay above input) -->
@@ -5860,6 +5893,7 @@ function App() {
             onCancel=${cancelPrompt}
             disabled=${!connected || !activeSessionId}
             isStreaming=${isStreaming}
+            isRunning=${isRunning}
             isReadOnly=${sessionInfo?.isReadOnly}
             isArchived=${sessionInfo?.archived || false}
             predefinedPrompts=${predefinedPrompts}
@@ -5879,6 +5913,7 @@ function App() {
             availableCommands=${availableCommands}
             periodicEnabled=${sessionInfo?.periodic_enabled || false}
             agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
+            acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
             activeUIPrompt=${activeUIPrompt}
             onUIPromptAnswer=${(requestId, optionId, label) =>
               sendUIPromptAnswer(activeSessionId, requestId, optionId, label)}

@@ -157,6 +157,7 @@ export function ChatInput({
   onCancel,
   disabled,
   isStreaming,
+  isRunning = true,
   isReadOnly,
   isArchived = false,
   isArchivePending = false,
@@ -176,6 +177,7 @@ export function ChatInput({
   availableCommands = [],
   periodicEnabled = false,
   agentSupportsImages = false,
+  acpReady = true,
   activeUIPrompt = null,
   onUIPromptAnswer,
   workingDir = "",
@@ -522,6 +524,10 @@ export function ChatInput({
   const isFullyDisabled =
     disabled || noSession || isSending || isArchived || isArchivePending;
 
+  // Session exists but ACP agent hasn't started yet (e.g., during resume).
+  // Blocks sending and action buttons, but allows typing so drafts are preserved.
+  const isResuming = !isRunning && !isArchived && !noSession && !disabled;
+
   // Expose focus and togglePrompts methods via inputRef for external control
   useEffect(() => {
     if (inputRef) {
@@ -610,6 +616,11 @@ export function ChatInput({
         `Queue is full (${queueConfig.max_size}/${queueConfig.max_size}). Wait for the agent to finish or clear the queue.`,
       );
       setTimeout(() => setSendError(null), 10000);
+      return;
+    }
+
+    if (isResuming) {
+      // Session is resuming — don't send, don't show error (banner is visible)
       return;
     }
 
@@ -1008,6 +1019,7 @@ export function ChatInput({
     if (isReadOnly)
       return "This is a read-only session. Create a new session to chat.";
     if (isSending) return "Sending message...";
+    if (!acpReady) return "Waiting for AI agent to connect...";
     if (isQueueFull)
       return `Queue full (${queueConfig.max_size}/${queueConfig.max_size})...`;
     if (isStreaming) {
@@ -1737,11 +1749,41 @@ export function ChatInput({
           </div>
         </div>
       `}
+      ${isResuming &&
+      html`
+        <div class="max-w-4xl mx-auto mb-2">
+          <div
+            class="bg-amber-900/40 border border-amber-700/50 text-amber-200 px-3 py-1.5 rounded-lg text-sm flex items-center gap-2"
+          >
+            <svg
+              class="w-4 h-4 animate-spin flex-shrink-0"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              ></path>
+            </svg>
+            <span>Resuming session…</span>
+          </div>
+        </div>
+      `}
       ${hasActionButtons &&
       !isStreaming &&
       !isReadOnly &&
       !noSession &&
       !periodicEnabled &&
+      !isResuming &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
           <div class="flex flex-wrap gap-2">
@@ -2523,6 +2565,8 @@ export function ChatInput({
                       <button
                         type="submit"
                         disabled=${isFullyDisabled ||
+                        isResuming ||
+                        !acpReady ||
                         (!text.trim() && !hasPendingAttachments) ||
                         isReadOnly ||
                         isImproving ||
