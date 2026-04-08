@@ -370,19 +370,23 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 }
 
 // getOrCreateAuxiliarySession returns an existing auxiliary session or creates a new one.
+// The entire function holds auxMu to prevent a TOCTOU race where two concurrent callers
+// both observe a missing entry and each create a duplicate session.
+// Auxiliary sessions are created rarely (prewarm + on-demand), so holding the lock during
+// creation is acceptable.
 func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, workspaceUUID, purpose string) (*auxiliarySessionState, error) {
 	key := auxSessionKey{
 		workspaceUUID: workspaceUUID,
 		purpose:       purpose,
 	}
 
-	// Check if session already exists
 	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
+
+	// Check if session already exists (double-check under lock).
 	if state, ok := m.auxSessions[key]; ok {
-		m.auxMu.Unlock()
 		return state, nil
 	}
-	m.auxMu.Unlock()
 
 	// Need to create a new auxiliary session
 	// Get the shared process for this workspace
@@ -449,16 +453,14 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	}
 	process.RegisterSession(acp.SessionId(sessionHandle.SessionID), callbacks)
 
-	// Create and store the auxiliary session state
+	// Create and store the auxiliary session state.
+	// auxMu is already held for the duration of this function.
 	state := &auxiliarySessionState{
 		sessionID: sessionHandle.SessionID,
 		client:    client,
 		lastUsed:  time.Now(),
 	}
-
-	m.auxMu.Lock()
 	m.auxSessions[key] = state
-	m.auxMu.Unlock()
 
 	if m.logger != nil {
 		m.logger.Info("Created auxiliary session",

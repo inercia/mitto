@@ -122,13 +122,13 @@ Inform user: "Waiting for child tasks (iteration N)... Monitor in Conversations 
 ## Iteration <N> Results
 
 ### Completed
-- ****: <summary> | Files: <modified>
+- **<Task>**: <summary> | Files: <modified>
 
 ### Partially Completed
-- ****: <summary> | Remaining: <what's left>
+- **<Task>**: <summary> | Remaining: <what's left>
 
 ### Failed
-- ****: <error>
+- **<Task>**: <error>
 
 ### Discoveries / Open Questions
 - ...

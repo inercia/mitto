@@ -64,6 +64,7 @@ type rawWorkspaceRC struct {
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		EnabledWhenACP  string `yaml:"enabledWhenACP"`
+		EnabledWhenMCP  string `yaml:"enabledWhenMCP"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -171,6 +172,7 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 				Description:     p.Description,
 				Group:           p.Group,
 				EnabledWhenACP:  p.EnabledWhenACP,
+				EnabledWhenMCP:  p.EnabledWhenMCP,
 				EnabledWhen:     p.EnabledWhen,
 			})
 		}

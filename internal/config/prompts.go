@@ -41,9 +41,10 @@ type PromptFile struct {
 	// Tags is an optional list of categorization tags for future use.
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 
-	// ACPs is an optional comma-separated list of ACP server names this prompt applies to.
+	// EnabledWhenACP is an optional comma-separated list of ACP server names this prompt applies to.
 	// If empty, the prompt works with all ACP servers.
-	// Example: "acps: auggie, claude-code" means only show this prompt for those ACP servers.
+	// Example: "enabledWhenACP: auggie, claude-code" means only show this prompt for those ACP servers.
+	// Legacy key "acps" is also supported for backward compatibility.
 	EnabledWhenACP string `yaml:"enabledWhenACP,omitempty" json:"-"`
 
 	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for this prompt.
@@ -145,6 +146,29 @@ func (p *PromptFile) HasVisibilityCondition() bool {
 	return strings.TrimSpace(p.EnabledWhen) != ""
 }
 
+// promptLegacyFields holds fields from legacy prompt YAML keys for backward compatibility.
+// These field names were used before the rename to enabledWhenACP / enabledWhenMCP.
+type promptLegacyFields struct {
+	ACPs          string `yaml:"acps"`
+	RequiredTools string `yaml:"required_tools"`
+}
+
+// migratePromptLegacyFields copies legacy field values into the current field names
+// if the current fields are empty. This provides backward compatibility for existing
+// prompt files that still use the old YAML keys "acps" and "required_tools".
+func migratePromptLegacyFields(p *PromptFile, frontMatterData []byte) {
+	var legacy promptLegacyFields
+	if err := yaml.Unmarshal(frontMatterData, &legacy); err != nil {
+		return
+	}
+	if p.EnabledWhenACP == "" && legacy.ACPs != "" {
+		p.EnabledWhenACP = legacy.ACPs
+	}
+	if p.EnabledWhenMCP == "" && legacy.RequiredTools != "" {
+		p.EnabledWhenMCP = legacy.RequiredTools
+	}
+}
+
 // frontMatterDelimiter is the YAML front-matter delimiter.
 const frontMatterDelimiter = "---"
 
@@ -191,9 +215,14 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 		if frontMatterEnd > 0 {
 			// Extract and parse front-matter
 			frontMatter := strings.Join(lines[1:frontMatterEnd], "\n")
-			if err := yaml.Unmarshal([]byte(frontMatter), prompt); err != nil {
+			frontMatterBytes := []byte(frontMatter)
+			if err := yaml.Unmarshal(frontMatterBytes, prompt); err != nil {
 				return nil, fmt.Errorf("failed to parse front-matter in %s: %w", path, err)
 			}
+
+			// Apply legacy field name migrations for backward compatibility.
+			// Handles "acps" → EnabledWhenACP and "required_tools" → EnabledWhenMCP.
+			migratePromptLegacyFields(prompt, frontMatterBytes)
 
 			// Extract content after front-matter
 			if frontMatterEnd+1 < len(lines) {
