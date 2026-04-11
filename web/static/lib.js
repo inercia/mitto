@@ -595,16 +595,6 @@ export function coalesceAgentMessages(messages, options = {}) {
 }
 
 /**
- * Get the minimum sequence number from an array of events.
- * @param {Array} events - Array of events with seq property
- * @returns {number} The minimum sequence number, or 0 if no events
- */
-export function getMinSeq(events) {
-  if (!events || events.length === 0) return 0;
-  return Math.min(...events.map((e) => e.seq || 0));
-}
-
-/**
  * Get the maximum sequence number from an array of events.
  * @param {Array} events - Array of events with seq property
  * @returns {number} The maximum sequence number, or 0 if no events
@@ -639,51 +629,6 @@ export function isStaleClientState(clientLastSeq, serverLastSeq) {
 
   // Client is stale if it thinks it has seen more than the server has
   return clientLastSeq > serverLastSeq;
-}
-
-/**
- * Determine if a keepalive sync should be triggered based on sequence gap.
- * Uses different tolerance levels for streaming vs non-streaming sessions:
- * - Streaming: tolerance=2 (avoid noise from markdown buffer delays)
- * - Non-streaming: tolerance=0 (immediate sync to catch session_end events)
- *
- * @param {number} clientMaxSeq - Client's maximum sequence number
- * @param {number} serverMaxSeq - Server's maximum sequence number from keepalive_ack
- * @param {boolean} isStreaming - Whether the session is actively streaming
- * @returns {boolean} True if sync should be triggered
- */
-export function shouldSyncOnKeepalive(
-  clientMaxSeq,
-  serverMaxSeq,
-  isStreaming,
-) {
-  // Validate inputs
-  if (
-    typeof clientMaxSeq !== "number" ||
-    typeof serverMaxSeq !== "number" ||
-    clientMaxSeq < 0 ||
-    serverMaxSeq < 0
-  ) {
-    return false;
-  }
-
-  // Client ahead of server = stale state, always sync
-  if (clientMaxSeq > serverMaxSeq) {
-    return true;
-  }
-
-  // Client in sync or ahead, no sync needed
-  if (clientMaxSeq >= serverMaxSeq) {
-    return false;
-  }
-
-  // Client is behind. Apply tolerance based on streaming state.
-  // Streaming: tolerance=2 (avoid noise from markdown buffer delays)
-  // Non-streaming: tolerance=0 (immediate sync to catch session_end events)
-  const tolerance = isStreaming ? 2 : 0;
-  const gap = serverMaxSeq - clientMaxSeq;
-
-  return gap > tolerance;
 }
 
 /**
@@ -855,32 +800,6 @@ export function safeJsonParse(jsonString) {
 }
 
 /**
- * Create a new session state object.
- * @param {string} sessionId - The session ID
- * @param {Object} options - Session options
- * @returns {Object} New session state
- */
-export function createSessionState(sessionId, options = {}) {
-  const {
-    name,
-    acpServer,
-    createdAt,
-    messages = [],
-    status = "active",
-  } = options;
-  return {
-    messages,
-    info: {
-      session_id: sessionId,
-      name: name || "New conversation",
-      acp_server: acpServer || "",
-      created_at: createdAt || new Date().toISOString(),
-      status,
-    },
-  };
-}
-
-/**
  * Limit an array to the last N items.
  * @param {Array} arr - Array to limit
  * @param {number} maxItems - Maximum number of items to keep (default: MAX_MESSAGES)
@@ -891,70 +810,6 @@ export function limitMessages(arr, maxItems = MAX_MESSAGES) {
     return arr;
   }
   return arr.slice(-maxItems);
-}
-
-/**
- * Add a message to a session's message list immutably.
- * Automatically limits messages to MAX_MESSAGES to prevent memory issues.
- * @param {Object} session - Current session state
- * @param {Object} message - Message to add
- * @returns {Object} New session state with message added
- */
-export function addMessageToSessionState(session, message) {
-  if (!session) {
-    session = { messages: [], info: {} };
-  }
-  const newMessages = limitMessages([...session.messages, message]);
-  return {
-    ...session,
-    messages: newMessages,
-  };
-}
-
-/**
- * Update the last message in a session immutably.
- * @param {Object} session - Current session state
- * @param {Function} updater - Function to update the last message
- * @returns {Object} New session state with updated last message
- */
-export function updateLastMessageInSession(session, updater) {
-  if (!session || session.messages.length === 0) {
-    return session;
-  }
-  const messages = [...session.messages];
-  const lastIdx = messages.length - 1;
-  messages[lastIdx] = updater(messages[lastIdx]);
-  return { ...session, messages };
-}
-
-/**
- * Remove a session from sessions state and determine next active session.
- * @param {Object} sessions - Current sessions state { sessionId: sessionData }
- * @param {string} sessionIdToRemove - Session ID to remove
- * @param {string} currentActiveSessionId - Currently active session ID
- * @returns {{ newSessions: Object, nextActiveSessionId: string|null, needsNewSession: boolean }}
- */
-export function removeSessionFromState(
-  sessions,
-  sessionIdToRemove,
-  currentActiveSessionId,
-) {
-  const { [sessionIdToRemove]: removed, ...rest } = sessions;
-
-  let nextActiveSessionId = currentActiveSessionId;
-  let needsNewSession = false;
-
-  if (sessionIdToRemove === currentActiveSessionId) {
-    const remainingIds = Object.keys(rest);
-    if (remainingIds.length > 0) {
-      nextActiveSessionId = remainingIds[0];
-    } else {
-      nextActiveSessionId = null;
-      needsNewSession = true;
-    }
-  }
-
-  return { newSessions: rest, nextActiveSessionId, needsNewSession };
 }
 
 // =============================================================================
@@ -1295,18 +1150,6 @@ export function validatePassword(password) {
   return "";
 }
 
-/**
- * Validates both username and password.
- * @param {string} username - Username to validate
- * @param {string} password - Password to validate
- * @returns {string} First error message found, or empty string if both valid
- */
-export function validateCredentials(username, password) {
-  const usernameError = validateUsername(username);
-  if (usernameError) return usernameError;
-  return validatePassword(password);
-}
-
 // =============================================================================
 // Pending Prompts Queue (for reliable message delivery on mobile)
 // =============================================================================
@@ -1426,40 +1269,6 @@ export function cleanupExpiredPrompts() {
     }
   } catch (err) {
     console.warn("Failed to cleanup expired prompts:", err);
-  }
-}
-
-/**
- * Clears pending prompts that have been persisted in loaded events.
- * This is called when events are loaded on reconnect to prevent duplicate sends.
- * @param {Array} events - Array of loaded events from the server
- */
-export function clearPendingPromptsFromEvents(events) {
-  if (!events || events.length === 0) return;
-
-  try {
-    const pending = getPendingPrompts();
-    if (Object.keys(pending).length === 0) return;
-
-    let changed = false;
-    for (const event of events) {
-      if (event.type === "user_prompt" && event.data?.prompt_id) {
-        const promptId = event.data.prompt_id;
-        if (pending[promptId]) {
-          console.log(
-            `Clearing pending prompt ${promptId} - found in loaded events`,
-          );
-          delete pending[promptId];
-          changed = true;
-        }
-      }
-    }
-
-    if (changed) {
-      localStorage.setItem(PENDING_PROMPTS_KEY, JSON.stringify(pending));
-    }
-  } catch (err) {
-    console.warn("Failed to clear pending prompts from events:", err);
   }
 }
 
