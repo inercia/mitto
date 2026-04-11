@@ -1105,10 +1105,6 @@ func ParseJSON(data []byte) (*Config, error) {
 
 	cfg := settings.ToConfig()
 
-	if len(cfg.ACPServers) == 0 {
-		return nil, fmt.Errorf("no ACP servers configured")
-	}
-
 	return cfg, nil
 }
 
@@ -1156,10 +1152,6 @@ func Parse(data []byte) (*Config, error) {
 			}
 			cfg.ACPServers = append(cfg.ACPServers, acpServer)
 		}
-	}
-
-	if len(cfg.ACPServers) == 0 {
-		return nil, fmt.Errorf("no ACP servers configured")
 	}
 
 	// Populate global prompts (top-level)

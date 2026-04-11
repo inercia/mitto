@@ -1,12 +1,16 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/fileutil"
+	"gopkg.in/yaml.v3"
 )
 
 // MaxAutoChildren is the maximum number of auto-children allowed per workspace.
@@ -32,16 +36,16 @@ var ValidRunnerTypes = []string{
 // This is stored in the Mitto data directory as workspaces.json.
 type WorkspacesFile struct {
 	// Workspaces is the list of configured workspaces
-	Workspaces []WorkspaceSettings `json:"workspaces"`
+	Workspaces []WorkspaceSettings `json:"workspaces" yaml:"workspaces"`
 }
 
 // AutoChild defines a child conversation to auto-create when a new parent is created.
 type AutoChild struct {
 	// Title is the name/title for the child conversation (required)
-	Title string `json:"title"`
+	Title string `json:"title" yaml:"title"`
 	// TargetWorkspaceUUID is the UUID of the workspace to use for the child.
 	// If empty, uses the parent's workspace.
-	TargetWorkspaceUUID string `json:"target_workspace_uuid,omitempty"`
+	TargetWorkspaceUUID string `json:"target_workspace_uuid,omitempty" yaml:"target_workspace_uuid,omitempty"`
 }
 
 // WorkspaceSettings is the JSON representation of a workspace.
@@ -50,45 +54,63 @@ type AutoChild struct {
 type WorkspaceSettings struct {
 	// UUID is a unique identifier for this workspace.
 	// Automatically generated if not set when loading or creating a workspace.
-	UUID string `json:"uuid,omitempty"`
+	UUID string `json:"uuid,omitempty" yaml:"uuid,omitempty"`
 	// ACPServer is the name of the ACP server (from settings.json)
-	ACPServer string `json:"acp_server"`
+	ACPServer string `json:"acp_server" yaml:"acp_server"`
 	// ACPCommand is the shell command to start the ACP server
-	ACPCommand string `json:"acp_command"`
+	ACPCommand string `json:"acp_command" yaml:"acp_command"`
 	// ACPCwd is the working directory for the ACP server process.
 	// If empty, the ACP process inherits the current working directory.
-	ACPCwd string `json:"acp_cwd,omitempty"`
+	ACPCwd string `json:"acp_cwd,omitempty" yaml:"acp_cwd,omitempty"`
 	// WorkingDir is the absolute path to the working directory
-	WorkingDir string `json:"working_dir"`
+	WorkingDir string `json:"working_dir" yaml:"working_dir"`
 	// RestrictedRunner is the runner type to use for this workspace.
 	// Options: "exec" (default), "sandbox-exec", "firejail", "docker"
 	// This determines which runner type is used when creating sessions in this workspace.
-	RestrictedRunner string `json:"restricted_runner,omitempty"`
+	RestrictedRunner string `json:"restricted_runner,omitempty" yaml:"restricted_runner,omitempty"`
 	// Name is the optional friendly display name for the workspace
 	// If not set, the UI should fall back to displaying the directory basename
-	Name string `json:"name,omitempty"`
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 	// Color is the optional custom color for the workspace badge (e.g., "#ff5500")
 	// If not set, a color is automatically generated from the workspace path
-	Color string `json:"color,omitempty"`
+	Color string `json:"color,omitempty" yaml:"color,omitempty"`
 	// Code is the optional three-letter code for the workspace badge
 	// If not set, a code is automatically generated from the workspace path
-	Code string `json:"code,omitempty"`
+	Code string `json:"code,omitempty" yaml:"code,omitempty"`
 	// AutoApprove enables automatic approval of permission requests for sessions in this workspace.
 	// When true, all permission requests (file writes, command execution, etc.) are auto-approved.
 	// When false or nil, the global auto_approve setting or per-conversation settings apply.
-	AutoApprove *bool `json:"auto_approve,omitempty"`
+	AutoApprove *bool `json:"auto_approve,omitempty" yaml:"auto_approve,omitempty"`
 	// RestrictedRunnerConfig holds per-workspace runner restriction overrides.
 	// Applied as level 3 in the config hierarchy (global → agent → workspace).
 	// Only used when RestrictedRunner is not "exec".
 	// When both a .mittorc workspace config and this field exist, this field takes precedence.
-	RestrictedRunnerConfig *WorkspaceRunnerConfig `json:"restricted_runner_config,omitempty"`
+	RestrictedRunnerConfig *WorkspaceRunnerConfig `json:"restricted_runner_config,omitempty" yaml:"restricted_runner_config,omitempty"`
 	// ACPCommandOverride is an optional user-provided command override for the ACP server.
 	// When set, this command is used instead of the one from the server configuration.
-	ACPCommandOverride string `json:"acp_command_override,omitempty"`
+	ACPCommandOverride string `json:"acp_command_override,omitempty" yaml:"acp_command_override,omitempty"`
 	// AutoChildren defines child conversations to auto-create when a top-level
 	// conversation is created in this workspace. Only applies to conversations
 	// without a parent (to prevent infinite recursion). Maximum 5 children.
-	AutoChildren []AutoChild `json:"auto_children,omitempty"`
+	AutoChildren []AutoChild `json:"auto_children,omitempty" yaml:"auto_children,omitempty"`
+	// AuxiliaryACPServer is the name of the ACP server to use for auxiliary tasks
+	// (title generation, follow-up analysis, MCP checks, etc.) in this workspace.
+	// When set, a dedicated ACP process is spawned for auxiliary work, decoupled
+	// from the main workspace process.
+	// Special values:
+	//   "" (empty) = use main workspace process (current behavior)
+	//   "none"     = disable auxiliary features for this workspace
+	AuxiliaryACPServer string `json:"auxiliary_acp_server,omitempty" yaml:"auxiliary_acp_server,omitempty"`
+}
+
+// HasDedicatedAuxiliary returns true if this workspace has a dedicated auxiliary ACP server configured.
+func (w *WorkspaceSettings) HasDedicatedAuxiliary() bool {
+	return w.AuxiliaryACPServer != "" && !strings.EqualFold(w.AuxiliaryACPServer, "none")
+}
+
+// IsAuxiliaryDisabled returns true if auxiliary features are explicitly disabled.
+func (w *WorkspaceSettings) IsAuxiliaryDisabled() bool {
+	return strings.EqualFold(w.AuxiliaryACPServer, "none")
 }
 
 // WorkspaceID returns a unique identifier for this workspace.
@@ -215,6 +237,43 @@ func LoadWorkspaces() ([]WorkspaceSettings, error) {
 			// Log but don't fail - the workspaces are still valid
 			// The UUIDs will be re-generated next time if save failed
 			_ = err // ignore save error, UUIDs will be re-generated
+		}
+	}
+
+	return file.Workspaces, nil
+}
+
+// LoadWorkspacesFromFile loads workspaces from an explicit JSON or YAML file.
+// The format is detected by file extension: .json → JSON, .yaml/.yml → YAML.
+// Returns an error for unsupported extensions or file read/parse failures.
+// UUIDs are generated in-memory for workspaces that lack them; the file is NOT modified.
+func LoadWorkspacesFromFile(path string) ([]WorkspaceSettings, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read workspaces file %s: %w", path, err)
+	}
+
+	var file WorkspacesFile
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".json":
+		if err := json.Unmarshal(data, &file); err != nil {
+			return nil, fmt.Errorf("failed to parse JSON workspaces file %s: %w", path, err)
+		}
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(data, &file); err != nil {
+			return nil, fmt.Errorf("failed to parse YAML workspaces file %s: %w", path, err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported workspaces file extension %q: must be .json, .yaml, or .yml", ext)
+	}
+
+	// Validate and assign UUIDs in-memory (do NOT save back to the file)
+	for i := range file.Workspaces {
+		file.Workspaces[i].EnsureUUID()
+
+		if err := file.Workspaces[i].ValidateRestrictedRunner(); err != nil {
+			return nil, fmt.Errorf("workspace %q: %w", file.Workspaces[i].WorkspaceID(), err)
 		}
 	}
 
