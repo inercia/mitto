@@ -57,6 +57,15 @@ The web interface uses REST APIs for session management and configuration:
 | `/api/queue/{session_id}`         | POST   | Add message to queue                       |
 | `/api/queue/{session_id}/{id}`    | DELETE | Remove message from queue                  |
 
+### Callback Endpoints
+
+| Endpoint                                      | Method | Auth                       | Description                        |
+| --------------------------------------------- | ------ | -------------------------- | ---------------------------------- |
+| `{prefix}/api/callback/{token}`               | POST   | Token (capability URL)     | Trigger periodic prompt run        |
+| `{prefix}/api/sessions/{id}/callback`         | GET    | Session auth               | Get callback status                |
+| `{prefix}/api/sessions/{id}/callback`         | POST   | Session auth               | Generate/rotate callback token     |
+| `{prefix}/api/sessions/{id}/callback`         | DELETE | Session auth               | Revoke callback token              |
+
 ### Session Metadata Fields
 
 The `/api/sessions` endpoint returns an array of session objects with the following key fields:

@@ -22,7 +22,11 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Follow-up Suggestions](follow-up-suggestions.md)** — AI-generated response suggestions, persistence, multi-client sync, and lifecycle
 
+- **[Callbacks](callbacks.md)** — HTTP callback endpoints for triggering periodic conversations on-demand, token management, security model
+
 ### Infrastructure
+
+- **[ACP Architecture](acp.md)** — Shared process model, concurrent RPC handling, MultiplexClient routing, auxiliary sessions, content blocks, and process GC
 
 - **[Restricted Runner Integration](restricted-runner-integration.md)** — Runner system architecture, sandbox types, configuration hierarchy, and ACP subprocess integration
 
@@ -36,7 +40,8 @@ This directory contains technical documentation for developers working on Mitto.
 | ------------------- | ----------------------------------------------------------------- | -------------------------------------------- |
 | Package structure   | [Architecture](architecture.md)                                   | Component Breakdown                          |
 | Configuration       | [Architecture](architecture.md)                                   | `internal/config`                            |
-| ACP client          | [Architecture](architecture.md)                                   | `internal/acp`                               |
+| ACP architecture    | [ACP Architecture](acp.md)                                        | Shared process, multiplexing, concurrency    |
+| ACP client          | [ACP Architecture](acp.md)                                        | `internal/acp`                               |
 | Feature flags       | [Architecture](architecture.md)                                   | Advanced Settings                            |
 | Event types         | [Session Management](session-management.md)                       | Event Types                                  |
 | Session settings    | [Session Management](session-management.md)                       | Advanced Settings                            |
@@ -51,6 +56,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Mobile support      | [WebSocket Docs](websockets/synchronization.md)                   | Mobile Wake Resync, Zombie Detection         |
 | Workspace API       | [Workspaces](workspaces.md)                                       | Workspace REST API                           |
 | Action buttons      | [Follow-up Suggestions](follow-up-suggestions.md)                 | Persistence, Lifecycle                       |
+| Callback endpoints  | [Callbacks](callbacks.md)                                         | Public API, Token Lifecycle, Security        |
 | MCP debugging       | [MCP Servers](mcp.md)                                             | Global Debug Server                          |
 | Session MCP         | [MCP Servers](mcp.md)                                             | Per-Session MCP Servers                      |
 | Settings API        | [MCP Servers](mcp.md)                                             | Advanced Settings API                        |

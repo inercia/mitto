@@ -838,6 +838,108 @@ func (s *Server) handleMyNewTool(
 
 ---
 
+## MCP Availability Checking
+
+Mitto can verify that its MCP tools are available in the user's ACP server (e.g.,
+Claude Desktop). This helps users discover and install the Mitto MCP server.
+
+### How It Works
+
+- **Purpose constant**: `PurposeMCPCheck = "mcp-check"`
+- **Scope**: One auxiliary session per workspace, results cached
+- **Trigger**: User focuses or switches to a conversation (once per workspace per server session)
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant SessionManager
+    participant AuxiliaryManager
+    participant AuxiliarySession
+
+    User->>Frontend: Focus/switch to conversation
+    Frontend->>SessionManager: Check if MCP verified for workspace
+    alt Not checked yet
+        SessionManager->>AuxiliaryManager: CheckMCPAvailability(workspaceUUID, mcpServerURL)
+        AuxiliaryManager->>AuxiliarySession: Send check prompt
+        AuxiliarySession-->>AuxiliaryManager: JSON response
+        AuxiliaryManager->>SessionManager: Mark workspace as checked
+        alt Tools NOT available
+            SessionManager->>Frontend: WebSocket: mcp_tools_unavailable
+            Frontend->>User: Show installation modal
+        end
+    end
+```
+
+The auxiliary session asks the agent to check for `mitto_conversation_get_current`
+and respond with JSON indicating availability, an optional install command
+(`suggested_run`), and optional instructions (`suggested_instructions`, max 500 chars).
+
+### WebSocket Messages
+
+**`mcp_tools_unavailable`** (Server → Frontend) — sent when tools are not available:
+
+```json
+{
+  "type": "mcp_tools_unavailable",
+  "workspace_uuid": "...",
+  "suggested_run": "command",
+  "suggested_instructions": "instructions"
+}
+```
+
+**`run_mcp_install_command`** (Frontend → Server) — sent when user confirms install:
+
+```json
+{
+  "type": "run_mcp_install_command",
+  "command": "..."
+}
+```
+
+### UI Behavior
+
+| Scenario | UI |
+|----------|----|
+| `suggested_run` provided | Modal with command in code block + "Yes, run command" / "No, dismiss" buttons |
+| Only `suggested_instructions` | Modal with instructions + "Dismiss" button |
+| Neither provided | Warning: "Mitto MCP tools are not available. Some features may not work." |
+
+### Caching
+
+**Session-level** (`SessionManager.mcpCheckedWorkspaces`): Tracks which workspaces
+have been checked. Prevents repeated prompts during the same session. Cleared when
+user runs install command or session restarts.
+
+**Result-level** (`WorkspaceAuxiliaryManager.mcpCheckCache`): Stores actual check
+results. Prevents repeated auxiliary prompts. Cleared via
+`ClearMCPCheckCache(workspaceUUID)` or after running install command.
+
+### API
+
+```go
+// Check MCP availability (with caching)
+result, err := mgr.CheckMCPAvailability(ctx, workspaceUUID, mcpServerURL)
+mgr.ClearMCPCheckCache(workspaceUUID) // Force re-check
+
+// Session-level tracking
+sm.IsMCPChecked(workspaceUUID)    // Has workspace been checked?
+sm.MarkMCPChecked(workspaceUUID)  // Mark as checked
+sm.ClearMCPChecked(workspaceUUID) // Clear (after installation)
+```
+
+### Implementation Status
+
+| Status | Item |
+|--------|------|
+| ✅ | Purpose constant, prompt template, `MCPAvailabilityResult` struct |
+| ✅ | `CheckMCPAvailability()` with caching and JSON parsing |
+| ✅ | WebSocket message type definitions, SessionManager tracking |
+| ⏳ | WebSocket integration (trigger on conversation focus) |
+| ⏳ | Command execution handler, frontend UI, cache clearing after execution |
+
+---
+
 ## Advanced Settings (Feature Flags)
 
 Sessions can have per-conversation feature flags stored in their metadata:
