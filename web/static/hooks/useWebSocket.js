@@ -2875,13 +2875,15 @@ export function useWebSocket() {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          console.log(
-            `[WS ${wsId}] Received:`,
-            msg.type,
-            msg.data?.html?.substring(0, 50) ||
-              msg.data?.message?.substring(0, 50) ||
-              "",
-          );
+          if (msg.type !== "keepalive_ack") {
+            console.log(
+              `[WS ${wsId}] Received:`,
+              msg.type,
+              msg.data?.html?.substring(0, 50) ||
+                msg.data?.message?.substring(0, 50) ||
+                "",
+            );
+          }
           handleSessionMessage(sessionId, msg);
         } catch (err) {
           console.error(
