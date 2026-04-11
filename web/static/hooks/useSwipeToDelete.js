@@ -361,14 +361,3 @@ export function useSwipeToAction(options = {}) {
   };
 }
 
-// Backward-compatible alias for existing code
-// TODO: Remove this after all usages are migrated to useSwipeToAction
-export function useSwipeToDelete(options = {}) {
-  const { onDelete, ...rest } = options;
-  const result = useSwipeToAction({ onAction: onDelete, ...rest });
-  return {
-    ...result,
-    isDeleting: result.isActioning,
-    triggerDelete: result.triggerAction,
-  };
-}

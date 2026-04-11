@@ -731,7 +731,7 @@ export function getMessageHash(message) {
  * (they're read from events.jsonl which is append-only).
  *
  * @param {Array} existingMessages - Messages currently in UI
- * @param {Array} newMessages - Messages from session_sync
+ * @param {Array} newMessages - New messages to merge (from events_loaded or sync)
  * @returns {Array} Merged and ordered messages
  */
 export function mergeMessagesWithSync(existingMessages, newMessages) {
