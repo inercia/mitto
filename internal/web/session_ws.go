@@ -279,6 +279,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// historical events from storage.
 	if bs != nil {
 		client.bgSession = bs
+		bs.AddConnectedClient()
 		// Observer will be added in handleLoadEvents after initial load
 		if clientLogger != nil {
 			clientLogger.Debug("SessionWSClient has background session, observer will be added after initial load",
@@ -422,6 +423,7 @@ func (c *SessionWSClient) readPump() {
 		}
 		c.cancel()
 		if c.bgSession != nil {
+			c.bgSession.RemoveConnectedClient()
 			c.bgSession.RemoveObserver(c)
 		}
 		// Note: Don't close c.store - it's owned by the server and shared across handlers
@@ -1142,6 +1144,9 @@ func (c *SessionWSClient) syncMissedEventsDuringRegistration(lastLoadedSeq int64
 // - status: Session status (active, completed, error)
 // - is_running: Whether the background session is active
 func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq int64) {
+	if c.bgSession != nil {
+		c.bgSession.TouchActivity()
+	}
 	serverTime := time.Now().UnixMilli()
 
 	// Get the server's current max sequence number for this session
@@ -1326,11 +1331,8 @@ func (c *SessionWSClient) triggerMCPAvailabilityCheck(workspaceUUID string) {
 	}
 	auxMgr := c.server.auxiliaryManager
 
-	// Use a long timeout because the ACP agent serializes all RPCs. When the main
-	// session has an active prompt (which can last 5-15+ minutes), the auxiliary
-	// session creation (session/new) and the availability-check prompt are both
-	// queued behind it. A 2-minute timeout is routinely exceeded in practice
-	// (observed: 150-244 s RPCs). 30 minutes matches the worst-case agent runtime.
+	// Use a long timeout — auxiliary session creation and the availability-check prompt
+	// can take several minutes depending on agent load. 30 minutes covers worst-case scenarios.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -1392,11 +1394,8 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	}
 	auxMgr := c.server.auxiliaryManager
 
-	// Use a long timeout because the ACP agent serializes all RPCs. When the main
-	// session has an active prompt (which can last 5-15+ minutes), the auxiliary
-	// session creation (session/new) and the tool-fetch prompt are both queued
-	// behind it. A 2-minute timeout is routinely exceeded in practice
-	// (observed: 150-244 s RPCs). 30 minutes matches the worst-case agent runtime.
+	// Use a long timeout — auxiliary session creation and the tool-fetch prompt
+	// can take several minutes depending on agent load. 30 minutes covers worst-case scenarios.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 

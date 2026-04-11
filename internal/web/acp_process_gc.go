@@ -11,20 +11,26 @@ type GCConfig struct {
 	Interval time.Duration
 	// GracePeriod is how long a process must be sessionless before it is stopped (default: 60s).
 	GracePeriod time.Duration
+	// ObserverGracePeriod is how long to keep a session alive after the last observer
+	// disconnects. Prevents closing sessions during transient reconnect windows (default: 60s).
+	ObserverGracePeriod time.Duration
+	// IdleTimeout is how long a session must be inactive before the GC considers
+	// closing it. Recent keepalive, prompt, or observer changes reset this (default: 5m).
+	IdleTimeout time.Duration
+	// MaxClosuresPerCycle limits how many sessions the GC closes per cycle.
+	// 0 means unlimited. Prevents reconnection storms when many sessions go idle at once.
+	MaxClosuresPerCycle int
 }
-
-// SessionInfo contains the minimum information the GC needs about a session.
-// observerGracePeriod is the time to keep a session alive after the last
-// observer disconnects. This prevents the GC from closing sessions during
-// transient reconnect windows (e.g., macOS app staggered reconnect).
-const observerGracePeriod = 15 * time.Second
 
 type SessionInfo struct {
 	SessionID     string
 	WorkspaceUUID string
 	IsPrompting   bool
 	HasObservers  bool
-	QueueLength   int
+	// HasConnectedClients is true when there are WebSocket connections that have not
+	// yet registered as observers (i.e., connected but haven't sent load_events).
+	HasConnectedClients bool
+	QueueLength         int
 	// NextPeriodicAt is when the next periodic prompt is due (nil = no periodic config).
 	NextPeriodicAt *time.Time
 	// ResumedAt is when the session was last started/resumed. Used by GC to give
@@ -33,6 +39,9 @@ type SessionInfo struct {
 	// LastObserverRemovedAt is when the observer count last dropped to zero.
 	// Used by GC to provide a grace period for reconnecting clients.
 	LastObserverRemovedAt time.Time
+	// LastActivityAt is when the session last had meaningful activity (keepalive,
+	// prompt, or observer change). Used by GC idle timeout check.
+	LastActivityAt time.Time
 }
 
 // SessionQueryFunc returns running sessions grouped by workspace UUID.
@@ -45,8 +54,11 @@ type SessionCloseFunc func(sessionID string)
 // defaultGCConfig returns a GCConfig with sensible defaults.
 func defaultGCConfig() GCConfig {
 	return GCConfig{
-		Interval:    30 * time.Second,
-		GracePeriod: 60 * time.Second,
+		Interval:            30 * time.Second,
+		GracePeriod:         60 * time.Second,
+		ObserverGracePeriod: 60 * time.Second,
+		IdleTimeout:         5 * time.Minute,
+		MaxClosuresPerCycle: 3,
 	}
 }
 
@@ -67,6 +79,13 @@ func (m *ACPProcessManager) StartGC(config GCConfig, query SessionQueryFunc, clo
 	if config.GracePeriod <= 0 {
 		config.GracePeriod = defaultGCConfig().GracePeriod
 	}
+	if config.ObserverGracePeriod <= 0 {
+		config.ObserverGracePeriod = defaultGCConfig().ObserverGracePeriod
+	}
+	if config.IdleTimeout <= 0 {
+		config.IdleTimeout = defaultGCConfig().IdleTimeout
+	}
+	// Note: MaxClosuresPerCycle == 0 means unlimited — no default applied.
 
 	m.gcConfig = config
 	m.sessionQuery = query
@@ -148,6 +167,8 @@ func (m *ACPProcessManager) RunGCOnce() {
 	// ----------------------------------------------------------------
 	sessionsByWorkspace := m.sessionQuery()
 
+	closedCount := 0
+gcTier1:
 	for workspaceUUID, sessions := range sessionsByWorkspace {
 		for _, s := range sessions {
 			if s.IsPrompting {
@@ -180,12 +201,33 @@ func (m *ACPProcessManager) RunGCOnce() {
 			}
 			// Skip sessions where observers recently disconnected — they may be
 			// in the middle of a reconnect (e.g., macOS app staggered reconnect).
-			if !s.LastObserverRemovedAt.IsZero() && now.Sub(s.LastObserverRemovedAt) < observerGracePeriod {
+			if !s.LastObserverRemovedAt.IsZero() && now.Sub(s.LastObserverRemovedAt) < m.gcConfig.ObserverGracePeriod {
 				if m.logger != nil {
 					m.logger.Debug("GC: skipping session (observers recently disconnected)",
 						"session_id", s.SessionID,
 						"workspace_uuid", workspaceUUID,
 						"observer_removed_ago", now.Sub(s.LastObserverRemovedAt))
+				}
+				continue
+			}
+			// Skip sessions with connected WebSocket clients — they may be
+			// reconnecting or haven't sent load_events yet.
+			if s.HasConnectedClients {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping session (has connected clients)",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID)
+				}
+				continue
+			}
+			// Skip sessions with recent activity — keepalive, prompt, or observer
+			// changes within the idle timeout window.
+			if !s.LastActivityAt.IsZero() && now.Sub(s.LastActivityAt) < m.gcConfig.IdleTimeout {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping session (recent activity)",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID,
+						"last_activity_ago", now.Sub(s.LastActivityAt))
 				}
 				continue
 			}
@@ -217,6 +259,15 @@ func (m *ACPProcessManager) RunGCOnce() {
 					"workspace_uuid", workspaceUUID)
 			}
 			m.sessionClose(s.SessionID)
+			closedCount++
+			if m.gcConfig.MaxClosuresPerCycle > 0 && closedCount >= m.gcConfig.MaxClosuresPerCycle {
+				if m.logger != nil {
+					m.logger.Info("GC: reached max closures per cycle, deferring remaining",
+						"closed_count", closedCount,
+						"max_per_cycle", m.gcConfig.MaxClosuresPerCycle)
+				}
+				break gcTier1
+			}
 		}
 	}
 
@@ -294,6 +345,7 @@ func (m *ACPProcessManager) RunGCOnce() {
 					"grace_period", m.gcConfig.GracePeriod))
 		}
 		m.StopProcess(workspaceUUID)
+		m.StopAuxProcess(workspaceUUID)
 
 		m.gcMu.Lock()
 	}

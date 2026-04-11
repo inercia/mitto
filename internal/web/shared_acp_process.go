@@ -96,11 +96,9 @@ type SharedACPProcess struct {
 	ctxCancel context.CancelFunc
 
 	// activeRPCs tracks the number of in-flight RPCs on this process (session/prompt,
-	// session/load, and session/new). The ACP agent serializes all RPCs, so auxiliary
-	// session/new calls are queued behind any active RPC. WaitForIdle polls this counter
-	// before creating auxiliary sessions. The GC also checks this before stopping an
-	// idle process to avoid killing the pipe under an in-flight LoadSession (which can
-	// take 70+ seconds).
+	// session/load, and session/new). The GC checks this counter before stopping an
+	// idle process to avoid killing the pipe while an RPC is in-flight (LoadSession
+	// can take 70+ seconds).
 	activeRPCs atomic.Int32
 
 	// Restart tracking
@@ -564,7 +562,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 
 	if err != nil {
 		if p.logger != nil {
-			p.logger.Warn("SharedACPProcess.LoadSession failed",
+			p.logger.Info("SharedACPProcess.LoadSession failed",
 				"acp_session_id", acpSessionID,
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"error", err)
@@ -625,28 +623,6 @@ func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, 
 		SessionId: sessionID,
 		Prompt:    content,
 	})
-}
-
-// WaitForIdle blocks until no RPCs are active on this process, or ctx is cancelled.
-// The ACP agent serializes all RPCs, so callers should wait for idle before issuing
-// session/new requests to avoid long queuing delays behind an active session/prompt,
-// session/load, or another session/new.
-func (p *SharedACPProcess) WaitForIdle(ctx context.Context) error {
-	if p.activeRPCs.Load() == 0 {
-		return nil
-	}
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if p.activeRPCs.Load() == 0 {
-				return nil
-			}
-		}
-	}
 }
 
 // ActiveRPCs returns the number of in-flight RPCs on this process (session/prompt,
