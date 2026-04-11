@@ -3163,6 +3163,246 @@ func TestChildrenTasksWait_TimeoutWithSessionUnregistered(t *testing.T) {
 }
 
 // =============================================================================
+// Auto-Complete Idle/Stopped Child Tests
+// =============================================================================
+
+// mockSessionManagerForChildrenMutable is like mockSessionManagerForChildren
+// but supports safe concurrent mutation of the sessions map.
+type mockSessionManagerForChildrenMutable struct {
+	mu       sync.RWMutex
+	sessions map[string]BackgroundSession
+}
+
+func (m *mockSessionManagerForChildrenMutable) GetSession(sessionID string) BackgroundSession {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	bs, ok := m.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	return bs
+}
+
+func (m *mockSessionManagerForChildrenMutable) RemoveSession(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, sessionID)
+}
+
+func (m *mockSessionManagerForChildrenMutable) ListRunningSessions() []string { return nil }
+func (m *mockSessionManagerForChildrenMutable) CloseSessionGracefully(string, string, time.Duration) bool {
+	return true
+}
+func (m *mockSessionManagerForChildrenMutable) CloseSession(string, string) {}
+func (m *mockSessionManagerForChildrenMutable) ResumeSession(string, string, string) (BackgroundSession, error) {
+	return nil, nil
+}
+func (m *mockSessionManagerForChildrenMutable) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionCreated(string, string, string, string, string) {
+}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, bool) {}
+
+func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
+	// Child is idle (not prompting) from the start and never reports.
+	// The parent should unblock via idle detection (not timeout).
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Idle Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child is idle (not prompting) — will never report
+	mockBS := newMockBackgroundSessionForWait(false)
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	start := time.Now()
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 60, // generous — should return well before this
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+	if output.TimedOut {
+		t.Error("Expected TimedOut=false (should have auto-completed via idle detection, not timeout)")
+	}
+	report, ok := output.Reports[childID]
+	if !ok {
+		t.Fatalf("Expected report for child %s", childID)
+	}
+	if report.Status != "agent_not_responding" {
+		t.Errorf("Expected status 'agent_not_responding', got '%s'", report.Status)
+	}
+	if report.Reason != "agent_idle" {
+		t.Errorf("Expected reason 'agent_idle', got '%s'", report.Reason)
+	}
+	if report.Completed {
+		t.Error("Expected Completed=false for auto-completed idle child")
+	}
+	// Should return in ~20s (5s poll + 15s grace); allow generous headroom for slow CI
+	if elapsed > 30*time.Second {
+		t.Errorf("Expected to return within 30s (idle detection), but took %v", elapsed)
+	}
+}
+
+func TestChildrenTasksWait_AutoCompletesStoppedChild(t *testing.T) {
+	// Child session disappears from the session manager mid-wait.
+	// The parent should unblock quickly via "session_stopped" auto-completion.
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Stopping Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child starts as prompting so idle detection doesn't fire first
+	mockBS := newMockBackgroundSessionForWait(true)
+	sm := &mockSessionManagerForChildrenMutable{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+
+	start := time.Now()
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   []string{childID},
+			TimeoutSeconds: 60, // generous — should return well before this
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	// Let the wait loop start, then remove the child from the session manager
+	time.Sleep(200 * time.Millisecond)
+	sm.RemoveSession(childID)
+
+	select {
+	case result := <-resultCh:
+		elapsed := time.Since(start)
+		if result.err != nil {
+			t.Fatalf("handleChildrenTasksWait returned error: %v", result.err)
+		}
+		if !result.output.Success {
+			t.Fatalf("Expected success, got error: %s", result.output.Error)
+		}
+		if result.output.TimedOut {
+			t.Error("Expected TimedOut=false (should have auto-completed via session_stopped)")
+		}
+		report, ok := result.output.Reports[childID]
+		if !ok {
+			t.Fatalf("Expected report for child %s", childID)
+		}
+		if report.Status != "agent_not_responding" {
+			t.Errorf("Expected status 'agent_not_responding', got '%s'", report.Status)
+		}
+		if report.Reason != "session_stopped" {
+			t.Errorf("Expected reason 'session_stopped', got '%s'", report.Reason)
+		}
+		if report.Completed {
+			t.Error("Expected Completed=false for auto-completed stopped child")
+		}
+		// Should return quickly (next poll tick after session removal = ~5s); 15s max
+		if elapsed > 15*time.Second {
+			t.Errorf("Expected to return within 15s (session_stopped detection), but took %v", elapsed)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
+	}
+}
+
+// =============================================================================
 // Auto-Resume Stored Sessions Tests
 // =============================================================================
 

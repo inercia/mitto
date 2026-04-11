@@ -383,6 +383,38 @@ func (c *childReportCollector) addReport(childID string, taskID string, report j
 	c.checkAndSignalWait()
 }
 
+// markChildAutoCompleted marks a child as auto-completed when its agent
+// stops responding without sending a report. This typically happens when
+// the agent finishes processing but doesn't call mitto_children_tasks_report.
+// The reason parameter provides diagnostic info (e.g., "agent_idle", "session_stopped").
+func (c *childReportCollector) markChildAutoCompleted(childID string, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Don't overwrite a real report
+	r := c.reports[childID]
+	if r != nil && r.Completed {
+		return
+	}
+
+	reportJSON, _ := json.Marshal(map[string]string{
+		"status":  "auto_completed",
+		"summary": "Child did not report back: " + reason,
+	})
+
+	if r == nil {
+		r = &childReport{}
+		c.reports[childID] = r
+	}
+	r.Report = reportJSON
+	r.Completed = true
+	r.Timestamp = time.Now()
+	r.AutoCompleted = true
+	r.AutoReason = reason
+
+	c.checkAndSignalWait()
+}
+
 // checkAndSignalWait checks if all waited-on children have reported and signals if so.
 // Must be called with c.mu held.
 func (c *childReportCollector) checkAndSignalWait() {
@@ -536,10 +568,12 @@ func (c *childReportCollector) getStuckChildren() []string {
 
 // childReport stores the report from a single child conversation.
 type childReport struct {
-	Report    json.RawMessage `json:"report"`
-	Completed bool            `json:"completed"`
-	Timestamp time.Time       `json:"timestamp"`
-	TaskID    string          `json:"task_id,omitempty"`
+	Report        json.RawMessage `json:"report"`
+	Completed     bool            `json:"completed"`
+	Timestamp     time.Time       `json:"timestamp"`
+	TaskID        string          `json:"task_id,omitempty"`
+	AutoCompleted bool            `json:"auto_completed,omitempty"` // true if auto-completed (agent went idle without reporting)
+	AutoReason    string          `json:"auto_reason,omitempty"`    // reason for auto-completion
 }
 
 // ChildrenTasksWaitInput is the input for mitto_children_tasks_wait tool.

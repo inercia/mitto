@@ -2704,23 +2704,105 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 
 	var timedOut bool
 
-	select {
-	case <-waitCh:
-		// All running children reported
-	case <-time.After(timeout):
-		timedOut = true
-		pendingChildren, reportedChildren := collector.getPendingAndReported()
-		s.logger.Warn("Timeout waiting for children to report",
-			"parent_session", realSessionID,
-			"pending_children", pendingChildren,
-			"reported_children", reportedChildren,
-			"total_running", len(runningChildren),
-			"timeout", timeout)
-	case <-ctx.Done():
-		return nil, ChildrenTasksWaitOutput{
-			Success: false,
-			Error:   "context cancelled while waiting for children to report",
-		}, nil
+	// childIdlePollInterval is how often we check if pending children are still responsive.
+	const childIdlePollInterval = 5 * time.Second
+	// childIdleGracePeriod is how long a child must be idle (not prompting) before
+	// we consider it done without response. This accounts for:
+	// - Time for the child to pick up a queued message
+	// - Time for the agent to process and call the report tool
+	const childIdleGracePeriod = 15 * time.Second
+
+	if s.sessionManager != nil {
+		// Polling loop: check child agent status periodically
+		pollTicker := time.NewTicker(childIdlePollInterval)
+		defer pollTicker.Stop()
+
+		timeoutTimer := time.NewTimer(timeout)
+		defer timeoutTimer.Stop()
+
+		// Track when each child was first seen idle (not prompting)
+		childIdleSince := make(map[string]time.Time)
+
+	waitLoop:
+		for {
+			select {
+			case <-waitCh:
+				// All children reported or auto-completed
+				break waitLoop
+			case <-timeoutTimer.C:
+				timedOut = true
+				pendingChildren, reportedChildren := collector.getPendingAndReported()
+				s.logger.Warn("Timeout waiting for children to report",
+					"parent_session", realSessionID,
+					"pending_children", pendingChildren,
+					"reported_children", reportedChildren,
+					"total_running", len(runningChildren),
+					"timeout", timeout)
+				break waitLoop
+			case <-ctx.Done():
+				return nil, ChildrenTasksWaitOutput{
+					Success: false,
+					Error:   "context cancelled while waiting for children to report",
+				}, nil
+			case <-pollTicker.C:
+				// Check status of pending children
+				pending, _ := collector.getPendingAndReported()
+				for _, childID := range pending {
+					bs := s.sessionManager.GetSession(childID)
+					if bs == nil {
+						// Session is no longer running — auto-complete
+						s.logger.Info("Child session stopped while waiting — auto-completing",
+							"parent_session", realSessionID,
+							"child_session", childID)
+						collector.markChildAutoCompleted(childID, "session_stopped")
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					if bs.IsPrompting() {
+						// Child is actively processing — reset idle timer
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					// Child is running but idle (not prompting)
+					if idleSince, exists := childIdleSince[childID]; exists {
+						if time.Since(idleSince) > childIdleGracePeriod {
+							// Been idle too long without reporting — auto-complete
+							s.logger.Info("Child agent idle without reporting — auto-completing",
+								"parent_session", realSessionID,
+								"child_session", childID,
+								"idle_duration", time.Since(idleSince).Round(time.Second))
+							collector.markChildAutoCompleted(childID, "agent_idle")
+							delete(childIdleSince, childID)
+						}
+					} else {
+						// First time seeing this child idle — start tracking
+						childIdleSince[childID] = time.Now()
+					}
+				}
+			}
+		}
+	} else {
+		// No session manager available — fall back to simple wait (original behavior)
+		select {
+		case <-waitCh:
+			// All running children reported
+		case <-time.After(timeout):
+			timedOut = true
+			pendingChildren, reportedChildren := collector.getPendingAndReported()
+			s.logger.Warn("Timeout waiting for children to report",
+				"parent_session", realSessionID,
+				"pending_children", pendingChildren,
+				"reported_children", reportedChildren,
+				"total_running", len(runningChildren),
+				"timeout", timeout)
+		case <-ctx.Done():
+			return nil, ChildrenTasksWaitOutput{
+				Success: false,
+				Error:   "context cancelled while waiting for children to report",
+			}, nil
+		}
 	}
 
 	// Build the output with whatever reports we have
@@ -2732,21 +2814,31 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		report := collector.reports[childID]
 		info := ChildReportInfo{Completed: false, Status: "pending"}
 		if report != nil && report.Completed {
-			info.Completed = true
-			info.Status = "completed"
-			// Unmarshal the raw JSON report into the typed struct for proper schema validation
-			if len(report.Report) > 0 {
-				var reportData ChildReportData
-				if err := json.Unmarshal(report.Report, &reportData); err != nil {
-					s.logger.Warn("Failed to unmarshal child report data",
-						"child_session", childID,
-						"error", err)
-				} else {
-					info.Report = &reportData
+			if report.AutoCompleted {
+				// Auto-completed: agent went idle without reporting
+				info.Completed = false
+				info.Status = "agent_not_responding"
+				info.Reason = report.AutoReason
+				if !report.Timestamp.IsZero() {
+					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
 				}
-			}
-			if !report.Timestamp.IsZero() {
-				info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
+			} else {
+				info.Completed = true
+				info.Status = "completed"
+				// Unmarshal the raw JSON report into the typed struct for proper schema validation
+				if len(report.Report) > 0 {
+					var reportData ChildReportData
+					if err := json.Unmarshal(report.Report, &reportData); err != nil {
+						s.logger.Warn("Failed to unmarshal child report data",
+							"child_session", childID,
+							"error", err)
+					} else {
+						info.Report = &reportData
+					}
+				}
+				if !report.Timestamp.IsZero() {
+					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
+				}
 			}
 		} else if timedOut {
 			// Add diagnostic reason for timed-out children
