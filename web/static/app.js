@@ -96,6 +96,7 @@ import {
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
 import { SettingsDialog } from "./components/SettingsDialog.js";
+import { AgentDiscoveryDialog } from "./components/AgentDiscoveryDialog.js";
 import { QueueDropdown } from "./components/QueueDropdown.js";
 import {
   AgentPlanPanel,
@@ -3635,6 +3636,9 @@ function App() {
   // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
   const [sendKeyMode, setSendKeyMode] = useState("enter");
 
+  // Agent discovery dialog state (shown on first run when no ACP servers configured)
+  const [showAgentDiscovery, setShowAgentDiscovery] = useState(false);
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
@@ -3720,7 +3724,7 @@ function App() {
         setSingleExpandedGroupMode(
           config?.ui?.web?.single_expanded_group === true,
         );
-        // Check if ACP servers or workspaces are configured - if not, force open settings
+        // Check if ACP servers or workspaces are configured - if not, prompt user to set up
         // Skip this if config is read-only (user manages config via file) or if external connection
         const noAcpServers =
           !config?.acp_servers || config.acp_servers.length === 0;
@@ -3732,7 +3736,13 @@ function App() {
           !config?.config_readonly &&
           !isExternalConnection
         ) {
-          setSettingsDialog({ isOpen: true, forceOpen: true });
+          if (noAcpServers) {
+            // Show agent discovery dialog first so the user can auto-detect installed agents
+            setShowAgentDiscovery(true);
+          } else {
+            // Only workspaces missing - go straight to settings
+            setSettingsDialog({ isOpen: true, forceOpen: true });
+          }
         }
       })
       .catch((err) => console.error("Failed to fetch config:", err));
@@ -5248,6 +5258,31 @@ function App() {
         workspaces=${workspaces}
         onSelect=${handleWorkspaceSelect}
         onCancel=${() => setWorkspaceDialog({ isOpen: false })}
+      />
+
+      <!-- Agent Discovery Dialog (first-run when no ACP servers configured) -->
+      <${AgentDiscoveryDialog}
+        isOpen=${showAgentDiscovery}
+        onClose=${() => {
+          setShowAgentDiscovery(false);
+          // Fall through to settings dialog so user can configure manually
+          setSettingsDialog({ isOpen: true, forceOpen: true });
+        }}
+        onAgentsConfirmed=${async () => {
+          setShowAgentDiscovery(false);
+          // Refresh config to pick up newly added servers
+          invalidateConfigCache();
+          try {
+            const config = await fetchConfig();
+            if (config) {
+              setAcpServersWithPrompts(config?.acp_servers || []);
+              setGlobalPrompts(config?.prompts || []);
+              refreshWorkspaces();
+            }
+          } catch (err) {
+            console.error("[AgentDiscovery] Failed to refresh config:", err);
+          }
+        }}
       />
 
       <!-- Settings Dialog -->
