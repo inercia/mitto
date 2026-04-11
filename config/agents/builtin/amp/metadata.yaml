@@ -1,0 +1,10 @@
+# Amp agent configuration
+name: "Amp"
+displayName: "Amp"
+acpId: "amp"
+description: "ACP wrapper for Amp - the frontier coding agent"
+repository: "https://github.com/tao12345666333/amp-acp"
+license: "Apache-2.0"
+install:
+  method: "binary"
+  note: "Download from https://github.com/tao12345666333/amp-acp/releases"

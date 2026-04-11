@@ -1,0 +1,12 @@
+# Qwen Code agent configuration
+name: "Qwen Code"
+displayName: "Qwen Code"
+acpId: "qwen-code"
+description: "Alibaba's Qwen coding assistant"
+website: "https://qwenlm.github.io/qwen-code-docs/en/users/overview"
+repository: "https://github.com/QwenLM/qwen-code"
+license: "Apache-2.0"
+install:
+  method: "npx"
+  package: "@qwen-code/qwen-code"
+  args: ["--acp", "--experimental-skills"]

@@ -1,0 +1,11 @@
+# Mistral Vibe agent configuration
+name: "Mistral Vibe"
+displayName: "Mistral Vibe"
+acpId: "mistral-vibe"
+description: "Mistral's open-source coding assistant"
+website: "https://mistral.ai/products/vibe"
+repository: "https://github.com/mistralai/mistral-vibe"
+license: "Apache-2.0"
+install:
+  method: "binary"
+  note: "Download from https://github.com/mistralai/mistral-vibe/releases"

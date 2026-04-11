@@ -1,0 +1,12 @@
+# Augment agent configuration
+name: "Augment"
+displayName: "Augment"
+acpId: "auggie"
+description: "Augment Code's powerful software agent, backed by industry-leading context engine"
+website: "https://www.augmentcode.com/"
+repository: "https://github.com/augmentcode/auggie"
+license: "proprietary"
+install:
+  method: "npx"
+  package: "@augmentcode/auggie"
+  args: ["--acp"]

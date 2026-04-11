@@ -1,0 +1,10 @@
+# Cursor agent configuration
+name: "Cursor"
+displayName: "Cursor"
+acpId: "cursor"
+description: "Cursor's coding agent"
+website: "https://cursor.com/docs/cli/acp"
+license: "proprietary"
+install:
+  method: "binary"
+  note: "Download from https://cursor.com — Cursor agent is distributed as part of the Cursor IDE"

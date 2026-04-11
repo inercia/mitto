@@ -1,0 +1,12 @@
+# Cline agent configuration
+name: "Cline"
+displayName: "Cline"
+acpId: "cline"
+description: "Autonomous coding agent CLI - capable of creating/editing files, running commands, using the browser, and more"
+website: "https://cline.bot/cli"
+repository: "https://github.com/cline/cline"
+license: "Apache-2.0"
+install:
+  method: "npx"
+  package: "cline"
+  args: ["--acp"]
