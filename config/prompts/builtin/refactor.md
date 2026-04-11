@@ -35,7 +35,7 @@ Effort: Small (low risk), Medium (some risk), Large (higher risk).
 
 ### 3. Wait for Approval
 
-**With Mitto UI**: `mitto_ui_options_buttons` → "Approve all / Approve selected / Investigate / Cancel"
+**With Mitto UI**: `mitto_ui_options_buttons(self_id: "@mitto:session_id", ...` → "Approve all / Approve selected / Investigate / Cancel"
 **Without**: Ask in conversation. Wait for explicit approval.
 
 ### 4. Execute
@@ -49,8 +49,12 @@ For refactorings spanning 3+ files, module extraction, or multiple parallelizabl
 **Session context for delegation:**
 
 Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
-Available ACP servers: `@mitto:available_acp_servers`
-Existing children: `@mitto:children`
+
+Available ACP servers:
+@mitto:available_acp_servers
+
+Existing children:
+@mitto:children
 
 **Choosing the right ACP server:**
 

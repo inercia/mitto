@@ -27,8 +27,8 @@ Existing children: `@mitto:children`
 
 ## Step 2 — Let the user choose a ticket
 
-- If **multiple tickets** are found: use `mitto_ui_options_buttons_mitto` to present the ticket list and ask the user which one to work on. Include the ticket key and summary in each option label.
-- If **exactly one ticket** is found: use `mitto_ui_ask_yes_no_mitto` to confirm with the user before proceeding.
+- If **multiple tickets** are found: use `mitto_ui_options_buttons_mitto(self_id: "@mitto:session_id")` to present the ticket list and ask the user which one to work on. Include the ticket key and summary in each option label.
+- If **exactly one ticket** is found: use `mitto_ui_ask_yes_no_mitto(self_id: "@mitto:session_id")` to confirm with the user before proceeding.
 - If **no tickets** are found: inform the user and stop.
 
 ## Step 3 — Fetch full ticket details
@@ -66,7 +66,7 @@ A numbered list of concrete, independently executable tasks. Each task must have
 
 ## Step 5 — Present the plan and iterate
 
-Use `mitto_ui_ask_yes_no_mitto` to show the plan summary to the user and ask: "Does this plan look correct? Shall I proceed with spawning work conversations?"
+Use `mitto_ui_ask_yes_no_mitto(self_id: "@mitto:session_id")` to show the plan summary to the user and ask: "Does this plan look correct? Shall I proceed with spawning work conversations?"
 
 - If the user says **No** or provides feedback: revise the plan accordingly and present it again. Repeat until the user explicitly approves.
 - If the user says **Yes**: proceed to Step 6.

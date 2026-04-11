@@ -5,7 +5,6 @@ group: "Submission of changes"
 backgroundColor: "#B2DFDB"
 ---
 
-
 Submit current work by preparing, committing (if needed), and pushing changes to a pull request.
 
 ### 1. Check for Uncommitted Changes
@@ -23,6 +22,7 @@ git branch --show-current
 ```
 
 If on `main`/`master`/protected branch:
+
 - Check recent branch naming: `git branch -r --sort=-committerdate | head -20`
 - Suggest branch name following detected convention
 - Confirm with user, then: `git checkout -b <branch-name>`
@@ -55,7 +55,7 @@ Priority: `upstream` → `origin` → tracking branch.
 
 Confirm if: multiple remotes, non-standard setup, no tracking/PR found.
 
-**With Mitto UI**: `mitto_ui_ask_yes_no` → "PR targets upstream/main, push to origin. Correct?"
+**With Mitto UI**: `mitto_ui_ask_yes_no(self_id: "@mitto:session_id", ...)` → "PR targets upstream/main, push to origin. Correct?"
 **Without**: Ask in conversation.
 
 ### 4. Check if Rebase Needed
@@ -86,9 +86,8 @@ Provide PR/MR URL.
 
 ### 6. Update Agent Rules (Optional)
 
-If during this session you discovered project conventions, patterns, or preferences (or the user corrected assumptions), update Agent rules/memories. Ask user before modifying rules files.
-
-
+If during this session you discovered project conventions, patterns, or preferences (or the user corrected assumptions),
+update Agent rules/memories. Ask user before modifying rules files.
 
 ## Summary Report
 

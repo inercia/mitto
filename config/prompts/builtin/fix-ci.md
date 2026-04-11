@@ -66,6 +66,35 @@ Per issue: implement fix, explain the change, verify locally (tests, build, lint
 
 Fix in dependency order — causes before symptoms.
 
+#### Delegating Complex CI Fixes to Child Conversations
+
+When there are **3+ independent CI failures** in different areas (e.g., test failures in separate packages, a lint error AND a build error AND a test failure), delegate fixes to parallel child conversations.
+
+**Do NOT delegate** for: a single failure, cascading failures from one root cause, or simple lint/format fixes.
+
+**Session context for delegation:**
+
+Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+
+Available ACP servers:
+@mitto:available_acp_servers
+
+Existing children:
+@mitto:children
+
+**How to delegate:**
+
+1. Group failures into independent fix tasks (no shared root cause, no overlapping files)
+2. Choose ACP server: straightforward fixes → prefer `"coding"`/`"fast"` servers; ambiguous failures needing investigation → prefer `"reasoning"`/`"planning"` servers; no match → server marked `(current)`, then first available
+3. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
+4. `mitto_conversation_new(self_id: "@mitto:session_id")` per task — include: the exact error log, relevant file paths, what to fix, constraints (minimal changes, fix root cause not symptoms), and reporting directive
+5. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<ci-fix-description>", timeout_seconds: 600)`
+6. Review all results together — check for conflicts between fixes
+7. Verify combined changes locally: run full CI check (`make test` or equivalent)
+8. `mitto_conversation_delete` for completed children
+
+**Without Mitto tools**: fix all issues directly in sequence.
+
 ### 6. Report
 
 ```console

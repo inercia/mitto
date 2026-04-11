@@ -53,5 +53,5 @@ Create a spec file:
 
 1. Check for `specs/` or `spec/` folder
 2. Multiple candidates: **With Mitto UI**: `mitto_ui_options_combo` to select. **Without**: list and ask.
-3. No folder exists: **With Mitto UI**: `mitto_ui_ask_yes_no` to create `specs/`. **Without**: ask permission.
+3. No folder exists: **With Mitto UI**: `mitto_ui_ask_yes_no(self_id: "@mitto:session_id", ...)` to create `specs/`. **Without**: ask permission.
 4. Create file with short descriptive name (e.g., `user-auth.md`)

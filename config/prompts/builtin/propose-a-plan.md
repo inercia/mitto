@@ -20,5 +20,5 @@ Create a detailed plan for the current task.
 
 Present plan, wait for approval.
 
-**With Mitto UI**: `mitto_ui_ask_yes_no` → "Approve and execute / Modify plan"
+**With Mitto UI**: `mitto_ui_ask_yes_no(self_id: "@mitto:session_id", ...)` → "Approve and execute / Modify plan"
 **Without**: Ask in conversation.

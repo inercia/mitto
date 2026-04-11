@@ -38,8 +38,6 @@ Look for: unexported functions never called, exported functions with no referenc
 
 ### 2. Propose Plan
 
-
-
 | Priority | Category | Location | Description | Risk | Effort |
 |----------|----------|----------|-------------|------|--------|
 | 1 | Dead Code | `path/file` | Remove unused `oldHelper()` | Low | Small |
@@ -47,11 +45,9 @@ Look for: unexported functions never called, exported functions with no referenc
 Priority: 1=clear dead code, 2=likely unused, 3=needs verification.
 Risk: Low=clearly unused, Medium=verify first, High=public API.
 
-
-
 ### 3. Wait for Approval
 
-**With Mitto UI**: `mitto_ui_options_buttons` → "Approve all / Approve selected / Investigate / Cancel"
+**With Mitto UI**: `mitto_ui_options_buttons(self_id: "@mitto:session_id", ...` → "Approve all / Approve selected / Investigate / Cancel"
 **Without**: Ask in conversation. Wait for explicit approval.
 
 ### 4. Execute
@@ -65,8 +61,12 @@ For cleanup spanning 3+ files, module restructuring, or multiple parallelizable 
 **Session context for delegation:**
 
 Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
-Available ACP servers: `@mitto:available_acp_servers`
-Existing children: `@mitto:children`
+
+Available ACP servers:
+@mitto:available_acp_servers
+
+Existing children:
+@mitto:children
 
 **Choosing the right ACP server:**
 
