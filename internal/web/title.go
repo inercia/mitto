@@ -3,11 +3,97 @@ package web
 import (
 	"context"
 	"log/slog"
+	"regexp"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/session"
 )
+
+// Precompiled regexps for GenerateQuickTitle.
+var (
+	reFencedCode    = regexp.MustCompile("(?s)```[^`]*```")
+	reInlineCode    = regexp.MustCompile("`[^`]+`")
+	reMarkdownLink  = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
+	reURL           = regexp.MustCompile(`https?://\S+`)
+	reMarkdownHead  = regexp.MustCompile(`(?m)^#{1,6}\s+`)
+	reMarkdownEmph  = regexp.MustCompile(`\*{1,2}([^*]+)\*{1,2}`)
+	reMarkdownUnder = regexp.MustCompile(`_{1,2}([^_]+)_{1,2}`)
+	reWhitespace    = regexp.MustCompile(`\s+`)
+)
+
+const (
+	quickTitleMaxWords  = 6
+	quickTitleMaxChars  = 50
+	quickTitleMinLength = 4 // if result is shorter than this, return ""
+)
+
+// GenerateQuickTitle generates a quick fallback title from the message text
+// without needing the auxiliary session. It extracts the first few meaningful
+// words from the message, stripping markdown formatting and noise.
+// Returns empty string if no meaningful title can be extracted.
+func GenerateQuickTitle(message string) string {
+	s := message
+
+	// Strip fenced code blocks first (multi-line)
+	s = reFencedCode.ReplaceAllString(s, " ")
+	// Strip inline code
+	s = reInlineCode.ReplaceAllString(s, " ")
+	// Strip markdown links, keeping link text
+	s = reMarkdownLink.ReplaceAllString(s, "$1")
+	// Strip bare URLs
+	s = reURL.ReplaceAllString(s, " ")
+	// Strip markdown headings (leading #)
+	s = reMarkdownHead.ReplaceAllString(s, "")
+	// Strip bold/italic markers, keeping inner text
+	s = reMarkdownEmph.ReplaceAllString(s, "$1")
+	s = reMarkdownUnder.ReplaceAllString(s, "$1")
+
+	// Collapse whitespace
+	s = reWhitespace.ReplaceAllString(s, " ")
+	s = strings.TrimSpace(s)
+
+	if s == "" {
+		return ""
+	}
+
+	// Take first quickTitleMaxWords words
+	words := strings.Fields(s)
+	if len(words) > quickTitleMaxWords {
+		words = words[:quickTitleMaxWords]
+	}
+	title := strings.Join(words, " ")
+
+	// Strip leading/trailing punctuation
+	title = strings.TrimFunc(title, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+
+	if len(title) < quickTitleMinLength {
+		return ""
+	}
+
+	// Cap at quickTitleMaxChars, breaking at word boundary
+	if len(title) > quickTitleMaxChars {
+		cut := title[:quickTitleMaxChars]
+		// Find last space within limit
+		if idx := strings.LastIndex(cut, " "); idx > 0 {
+			cut = cut[:idx]
+		}
+		title = strings.TrimRight(cut, " ") + "..."
+	}
+
+	// Capitalize first letter
+	if len(title) > 0 {
+		runes := []rune(title)
+		runes[0] = unicode.ToUpper(runes[0])
+		title = string(runes)
+	}
+
+	return title
+}
 
 // TitleGenerationConfig holds configuration for title generation.
 type TitleGenerationConfig struct {
@@ -41,11 +127,9 @@ const (
 	// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
 	titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
 	// titleSessionCreateTimeout is the timeout for a single title generation attempt.
-	// This covers the full round-trip: WaitForIdle (waiting for any active user prompt
-	// to complete) + the title prompt itself. Agents can take 5–20+ minutes on complex
-	// tasks, so we budget 20 minutes per attempt. With titleMaxRetries=3 the total
-	// worst-case wall time is ≈ 83 minutes, but in practice the agent is usually free
-	// within the first few attempts.
+	// This covers the full round-trip: auxiliary session creation + the title prompt itself.
+	// 20 minutes per attempt is generous. With titleMaxRetries=3 the total worst-case
+	// wall time is ≈ 83 minutes.
 	titleSessionCreateTimeout = 20 * time.Minute
 )
 
@@ -53,7 +137,30 @@ const (
 // This runs asynchronously and doesn't block the caller.
 // It retries up to titleMaxRetries times with exponential backoff on transient failures.
 // The OnTitleGenerated callback is called when the title is successfully generated and saved.
+//
+// Before launching the async goroutine, it synchronously sets a quick fallback title extracted
+// from the message text so the UI shows something immediately without waiting for the auxiliary.
 func GenerateAndSetTitle(cfg TitleGenerationConfig) {
+	// Immediately set a quick fallback title from the message text.
+	// This gives the conversation a title right away without waiting for the
+	// auxiliary session.
+	quickTitle := GenerateQuickTitle(cfg.Message)
+	if quickTitle != "" && cfg.Store != nil {
+		if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
+			if m.Name == "" { // Only set if no title yet
+				m.Name = quickTitle
+			}
+		}); err == nil {
+			if cfg.Logger != nil {
+				cfg.Logger.Debug("Set quick fallback title", "session_id", cfg.SessionID, "title", quickTitle)
+			}
+			// Notify immediately so UI updates
+			if cfg.OnTitleGenerated != nil {
+				cfg.OnTitleGenerated(cfg.SessionID, quickTitle)
+			}
+		}
+	}
+
 	go func() {
 		if cfg.WorkspaceUUID == "" {
 			if cfg.Logger != nil {
@@ -75,16 +182,8 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		var lastErr error
 		for attempt := 0; attempt <= titleMaxRetries; attempt++ {
 			if attempt > 0 {
-				// Check if title was set by another path while we were retrying
-				if !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
-					if cfg.Logger != nil {
-						cfg.Logger.Debug("Title already set during retry, skipping",
-							"session_id", cfg.SessionID,
-							"attempt", attempt)
-					}
-					return
-				}
-
+				// A quick title may already be set, but we still try auxiliary to get a
+				// better (more descriptive) title. Only the retry delay applies here.
 				delay := titleRetryBaseDelay * time.Duration(1<<(attempt-1)) // exponential: 30s, 60s, 120s
 				if cfg.Logger != nil {
 					cfg.Logger.Info("Retrying title generation",
@@ -95,10 +194,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				time.Sleep(delay)
 			}
 
-			// Use titleSessionCreateTimeout as the overall timeout for the title generation
-			// request, covering any necessary auxiliary session setup and the prompt itself.
-			// getOrCreateAuxiliarySession calls WaitForIdle internally before NewSession,
-			// so the 20-minute budget covers waiting for the agent to finish any active prompt.
+			// The 20-minute budget covers auxiliary session setup and the prompt itself.
 			ctx, cancel := context.WithTimeout(context.Background(), titleSessionCreateTimeout)
 			title, lastErr = cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
 			cancel()
