@@ -239,6 +239,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
 	isUserDataRequest := len(parts) > 1 && parts[1] == "user-data"
 	isPeriodicRequest := len(parts) > 1 && parts[1] == "periodic"
+	isCallbackRequest := len(parts) > 1 && parts[1] == "callback"
 	isSettingsRequest := len(parts) > 1 && parts[1] == "settings"
 	isPruneRequest := len(parts) > 1 && parts[1] == "prune"
 
@@ -295,6 +296,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			periodicSubPath = parts[2]
 		}
 		s.handleSessionPeriodic(w, r, sessionID, periodicSubPath)
+		return
+	}
+
+	// Handle callback token operations
+	if isCallbackRequest {
+		s.handleSessionCallback(w, r, sessionID)
 		return
 	}
 
@@ -622,6 +629,14 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 			"error", err)
 	}
 
+	// Clean up callback index entries for this session and its auto-children
+	if s.callbackIndex != nil {
+		s.callbackIndex.RemoveBySessionID(sessionID)
+		for _, childID := range autoChildIDs {
+			s.callbackIndex.RemoveBySessionID(childID)
+		}
+	}
+
 	// Close ACP processes for parent and all auto-children
 	if s.sessionManager != nil {
 		s.sessionManager.CloseSession(sessionID, "deleted")
@@ -698,11 +713,12 @@ func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
 
 // WorkspaceAddRequest represents a request to add a new workspace
 type WorkspaceAddRequest struct {
-	ACPServer  string `json:"acp_server"`
-	WorkingDir string `json:"working_dir"`
-	Name       string `json:"name,omitempty"`
-	Color      string `json:"color,omitempty"`
-	Code       string `json:"code,omitempty"`
+	ACPServer          string `json:"acp_server"`
+	WorkingDir         string `json:"working_dir"`
+	Name               string `json:"name,omitempty"`
+	Color              string `json:"color,omitempty"`
+	Code               string `json:"code,omitempty"`
+	AuxiliaryACPServer string `json:"auxiliary_acp_server,omitempty"`
 }
 
 // handleAddWorkspace adds a new workspace
@@ -753,14 +769,25 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate auxiliary ACP server if provided
+	if req.AuxiliaryACPServer != "" && !strings.EqualFold(req.AuxiliaryACPServer, "none") {
+		if s.config.MittoConfig != nil {
+			if _, err := s.config.MittoConfig.GetServer(req.AuxiliaryACPServer); err != nil {
+				http.Error(w, fmt.Sprintf("Unknown auxiliary ACP server: %s", req.AuxiliaryACPServer), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
 	// Add the workspace
 	newWorkspace := config.WorkspaceSettings{
-		ACPServer:  req.ACPServer,
-		ACPCommand: acpCommand,
-		WorkingDir: req.WorkingDir,
-		Name:       req.Name,
-		Color:      req.Color,
-		Code:       req.Code,
+		ACPServer:          req.ACPServer,
+		ACPCommand:         acpCommand,
+		WorkingDir:         req.WorkingDir,
+		Name:               req.Name,
+		Color:              req.Color,
+		Code:               req.Code,
+		AuxiliaryACPServer: req.AuxiliaryACPServer,
 	}
 	s.sessionManager.AddWorkspace(newWorkspace)
 

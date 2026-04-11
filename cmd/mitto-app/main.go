@@ -972,6 +972,19 @@ func run() error {
 		}
 	}
 
+	// Deploy builtin agents on first run
+	builtinAgentsDir, err := appdir.BuiltinAgentsDir()
+	if err != nil {
+		slog.Warn("Failed to get builtin agents directory", "error", err)
+	} else {
+		deployed, err := embeddedconfig.EnsureBuiltinAgents(builtinAgentsDir)
+		if err != nil {
+			slog.Warn("Failed to deploy builtin agents", "error", err)
+		} else if deployed {
+			slog.Info("Deployed builtin agents", "dir", builtinAgentsDir)
+		}
+	}
+
 	// Load configuration using the hierarchy:
 	// 1. RC file (~/.mittorc) if it exists - settings become read-only
 	// 2. settings.json if no RC file (auto-creates from defaults if missing)

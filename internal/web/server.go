@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	builtinConfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	configPkg "github.com/inercia/mitto/internal/config"
@@ -159,6 +160,10 @@ type Server struct {
 	// Periodic runner for scheduled prompt delivery
 	periodicRunner *PeriodicRunner
 
+	// Callback index for mapping callback tokens to session IDs
+	callbackIndex       *CallbackIndex
+	callbackRateLimiter *CallbackRateLimiter
+
 	// Access logger for security-relevant events (nil if disabled)
 	accessLogger *AccessLogger
 
@@ -237,6 +242,16 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
+	// Ensure builtin agent definitions are deployed to the agents directory.
+	// This is done on every startup so new agents added in updates are deployed automatically.
+	if agentsDir, err := appdir.BuiltinAgentsDir(); err == nil {
+		if deployed, err := builtinConfig.EnsureBuiltinAgents(agentsDir); err != nil {
+			logger.Warn("Failed to deploy builtin agents", "error", err)
+		} else if deployed {
+			logger.Info("Builtin agents deployed/updated", "dir", agentsDir)
+		}
+	}
+
 	// Get API prefix early (needed by session manager for HTTP file links)
 	apiPrefix := configPkg.DefaultAPIPrefix
 	if config.MittoConfig != nil && config.MittoConfig.Web.APIPrefix != "" {
@@ -266,6 +281,10 @@ func NewServer(config Config) (*Server, error) {
 	// Create shared ACP process manager for workspace-level process sharing
 	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
 	acpProcessMgr.DisableAuxiliary = config.DisableAuxiliaryPrewarm || os.Getenv("MITTO_TEST_MODE") != ""
+	// Set workspace config provider so process manager can resolve auxiliary config.
+	acpProcessMgr.WorkspaceConfigProvider = func(workspaceUUID string) *configPkg.WorkspaceSettings {
+		return sessionMgr.GetWorkspaceByUUID(workspaceUUID)
+	}
 	sessionMgr.SetACPProcessManager(acpProcessMgr)
 
 	// Start ACP process garbage collector to clean up idle sessions and processes.
@@ -524,6 +543,10 @@ func NewServer(config Config) (*Server, error) {
 	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
 	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
 
+	// Initialize callback index and rate limiter
+	s.callbackIndex = NewCallbackIndex()
+	s.callbackRateLimiter = NewCallbackRateLimiter()
+
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
 		autoArchivePeriod := config.MittoConfig.Session.GetAutoArchiveInactiveAfter()
@@ -536,6 +559,9 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	s.periodicRunner.Start()
+
+	// Build callback index from existing sessions
+	s.buildCallbackIndex()
 
 	// Initialize prompts watcher for monitoring prompt file changes
 	if promptsWatcher, err := configPkg.NewPromptsWatcher(logger); err != nil {
@@ -571,6 +597,9 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
+	mux.HandleFunc(apiPrefix+"/api/agent-types", s.handleAgentTypes)
+	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.handleScanAgents)
+	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.handleConfirmAgents)
 	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
 	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.handleAdvancedFlags)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
@@ -588,6 +617,9 @@ func NewServer(config Config) (*Server, error) {
 	// M3: Health check endpoint for load balancer integration and monitoring
 	// This endpoint is intentionally NOT behind auth to allow health checks
 	mux.HandleFunc(apiPrefix+"/api/health", s.handleHealthCheck)
+
+	// Callback trigger endpoint (public, no auth required)
+	mux.HandleFunc(apiPrefix+"/api/callback/", s.handleCallbackTrigger)
 
 	// File server endpoint - serves files from workspace directories (for web browser access)
 	fileServer := NewFileServer(sessionMgr, logger)

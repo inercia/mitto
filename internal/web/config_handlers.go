@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/secrets"
@@ -774,6 +778,57 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 	}
 
 	// Case 4: Auth was disabled and still disabled -> nothing to do
+}
+
+// handleAgentTypes handles GET /api/agent-types.
+// Returns the list of available agent definitions by reading subdirectory names
+// from the agents directory (both builtin and user-created).
+func (s *Server) handleAgentTypes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	agentsDir, err := appdir.AgentsDir()
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{"agent_types": []string{}})
+		return
+	}
+
+	// Collect unique agent type names from all subdirectories
+	typeSet := make(map[string]bool)
+
+	// Walk top-level subdirectories (e.g., "builtin")
+	topEntries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{"agent_types": []string{}})
+		return
+	}
+
+	for _, topEntry := range topEntries {
+		if !topEntry.IsDir() {
+			continue
+		}
+		subDir := filepath.Join(agentsDir, topEntry.Name())
+		entries, err := os.ReadDir(subDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+				typeSet[entry.Name()] = true
+			}
+		}
+	}
+
+	// Convert to sorted slice
+	types := make([]string, 0, len(typeSet))
+	for t := range typeSet {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+
+	writeJSONOK(w, map[string]interface{}{"agent_types": types})
 }
 
 // RunnerInfo contains information about a runner type.

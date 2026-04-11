@@ -192,7 +192,10 @@ func (c *CSRFManager) isCSRFExemptPath(path string) bool {
 			return true
 		}
 	}
-	return false
+
+	// Check path prefixes for dynamic paths (callback tokens)
+	callbackPrefix := c.apiPrefix + "/api/callback/"
+	return strings.HasPrefix(path, callbackPrefix)
 }
 
 // CSRFMiddleware returns a middleware that validates CSRF tokens on state-changing requests.

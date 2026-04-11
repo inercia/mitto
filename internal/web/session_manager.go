@@ -845,6 +845,28 @@ func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryMa
 	sm.auxiliaryManager = am
 }
 
+// resolveACPCommand resolves an ACP server name to its shell command.
+// Returns empty string if the server name cannot be resolved.
+func (sm *SessionManager) resolveACPCommand(serverName string) string {
+	sm.mu.RLock()
+	cfg := sm.mittoConfig
+	sm.mu.RUnlock()
+
+	if cfg == nil {
+		return serverName // fallback: use name as command
+	}
+	srv, err := cfg.GetServer(serverName)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Warn("Failed to resolve ACP server command",
+				"server_name", serverName,
+				"error", err)
+		}
+		return ""
+	}
+	return srv.Command
+}
+
 // EnsureWorkspaceProcess ensures the shared ACP process for the given workspace UUID is running,
 // starting it on demand if necessary. This allows auxiliary features (e.g. "improve prompt") to
 // work even when no user session is currently active for that workspace.
@@ -873,6 +895,37 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 	if p == nil {
 		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
 	}
+
+	// If workspace has a dedicated auxiliary ACP server, ensure its process exists.
+	if ws.HasDedicatedAuxiliary() && sm.acpProcessManager != nil {
+		auxCommand := sm.resolveACPCommand(ws.AuxiliaryACPServer)
+		if auxCommand != "" {
+			auxRunner, auxRunnerErr := sm.createRunner(ws.WorkingDir, ws.AuxiliaryACPServer, ws)
+			if auxRunnerErr != nil {
+				if sm.logger != nil {
+					sm.logger.Warn("Failed to create runner for dedicated auxiliary, proceeding without restriction",
+						"workspace_uuid", workspaceUUID,
+						"aux_acp_server", ws.AuxiliaryACPServer,
+						"error", auxRunnerErr)
+				}
+				auxRunner = nil
+			}
+			if _, auxErr := sm.acpProcessManager.GetOrCreateAuxProcess(ws, auxCommand, auxRunner); auxErr != nil {
+				if sm.logger != nil {
+					sm.logger.Error("Failed to create dedicated auxiliary process",
+						"workspace_uuid", workspaceUUID,
+						"aux_acp_server", ws.AuxiliaryACPServer,
+						"error", auxErr)
+				}
+				// Non-fatal: auxiliary will fall back to main process
+			} else if sm.logger != nil {
+				sm.logger.Info("Dedicated auxiliary process ready",
+					"workspace_uuid", workspaceUUID,
+					"aux_acp_server", ws.AuxiliaryACPServer)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -2150,10 +2203,12 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			WorkspaceUUID:         uuid,
 			IsPrompting:           bs.IsPrompting(),
 			HasObservers:          bs.HasObservers(),
+			HasConnectedClients:   bs.HasConnectedClients(),
 			QueueLength:           queueLen,
 			NextPeriodicAt:        nextPeriodic,
 			ResumedAt:             bs.StartedAt(),
 			LastObserverRemovedAt: bs.LastObserverRemovedAt(),
+			LastActivityAt:        bs.LastActivityAt(),
 		})
 	}
 	return result
@@ -2253,7 +2308,7 @@ func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {
 	}
 
 	go func() {
-		// Use a long timeout — auxiliary RPCs can be queued behind active prompts.
+		// Use a long timeout — auxiliary operations can take several minutes.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 

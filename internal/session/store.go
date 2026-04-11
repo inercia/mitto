@@ -102,6 +102,12 @@ func (s *Store) Periodic(sessionID string) *PeriodicStore {
 	return NewPeriodicStore(s.sessionDir(sessionID))
 }
 
+// Callback returns a CallbackStore instance for managing the callback token of a session.
+// The returned CallbackStore is safe for concurrent use.
+func (s *Store) Callback(sessionID string) *CallbackStore {
+	return NewCallbackStore(s.sessionDir(sessionID))
+}
+
 // Create creates a new session with the given metadata.
 func (s *Store) Create(meta Metadata) error {
 	log := logging.Session()

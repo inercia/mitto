@@ -50,14 +50,6 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 		}
 	}
 
-	// Validate: at least one ACP server
-	if len(req.ACPServers) == 0 {
-		return &configValidationError{
-			StatusCode: http.StatusBadRequest,
-			Message:    "At least one ACP server is required",
-		}
-	}
-
 	// Validate ACP servers
 	acpServerNames := make(map[string]bool)
 	for _, srv := range req.ACPServers {
@@ -82,7 +74,7 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 		acpServerNames[srv.Name] = true
 	}
 
-	// Validate workspaces reference valid ACP servers
+	// Validate workspaces
 	for _, ws := range req.Workspaces {
 		if ws.WorkingDir == "" {
 			return &configValidationError{
@@ -90,7 +82,10 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 				Message:    "Workspace path cannot be empty",
 			}
 		}
-		if !acpServerNames[ws.ACPServer] {
+		// Validate ACP server reference when the workspace specifies one.
+		// A workspace with an empty ACPServer is valid (first-run, no servers configured yet).
+		// A workspace that references a named server must reference one that exists.
+		if ws.ACPServer != "" && !acpServerNames[ws.ACPServer] {
 			return &configValidationError{
 				StatusCode: http.StatusBadRequest,
 				Message:    fmt.Sprintf("Workspace '%s' references unknown ACP server: %s", ws.WorkingDir, ws.ACPServer),

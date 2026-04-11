@@ -165,7 +165,11 @@ test.describe("Mermaid Diagram Rendering", () => {
     await page.locator(selectors.sendButton).click();
 
     // Confirm the prompt was accepted — user message should appear in the chat
-    await expect(page.locator("text=Show mermaid test")).toBeVisible({
+    // Use the userMessage selector to avoid strict mode violations from matching
+    // sidebar titles or session header elements with the same text.
+    await expect(
+      page.locator(selectors.userMessage).filter({ hasText: "Show mermaid test" }),
+    ).toBeVisible({
       timeout: timeouts.shortAction,
     });
 

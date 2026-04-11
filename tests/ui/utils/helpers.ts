@@ -229,13 +229,18 @@ export async function sendMessageAndWait(
 }
 
 /**
- * Wait for a user message to appear in the chat
+ * Wait for a user message to appear in the chat.
+ * Scopes the search to within user message bubbles to avoid matching
+ * sidebar session titles or session header elements that display the
+ * same text (which would cause strict mode violations).
  */
 export async function waitForUserMessage(
   page: Page,
   message: string,
 ): Promise<void> {
-  await expect(page.locator(`text=${message}`)).toBeVisible({
+  await expect(
+    page.locator(selectors.userMessage).filter({ hasText: message }),
+  ).toBeVisible({
     timeout: timeouts.shortAction,
   });
 }
