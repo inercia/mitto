@@ -28,6 +28,8 @@ export {
   MagicWandIcon,
   ImageIcon,
   LightningIcon,
+  RobotIcon,
+  PersonIcon,
   StopIcon,
   ErrorIcon,
   ServerIcon,

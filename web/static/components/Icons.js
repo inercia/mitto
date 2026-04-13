@@ -359,6 +359,22 @@ export function LightningIcon({ className = "w-4 h-4" }) {
   return html`
     <svg
       class="${className}"
+      fill="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+    </svg>
+  `;
+}
+
+/**
+ * Robot icon for MCP-spawned child conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function RobotIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
       fill="none"
       stroke="currentColor"
       viewBox="0 0 24 24"
@@ -367,7 +383,29 @@ export function LightningIcon({ className = "w-4 h-4" }) {
         stroke-linecap="round"
         stroke-linejoin="round"
         stroke-width="2"
-        d="M13 10V3L4 14h7v7l9-11h-7z"
+        d="M9 3v1m6-1v1M9 19v1m6-1v1M5 8h14a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2zM9 13h.01M15 13h.01"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Person icon for human-created child conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PersonIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
       />
     </svg>
   `;
