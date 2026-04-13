@@ -358,6 +358,8 @@ export function computeAllSessions(activeSessions, storedSessions) {
         periodic_frequency: s.periodic_frequency ?? stored.periodic_frequency ?? null,
         // CRITICAL: Preserve parent_session_id for hierarchical conversation tree
         parent_session_id: s.parent_session_id || stored.parent_session_id || null,
+        // Preserve child_origin for child session icon rendering (lightning/robot/person)
+        child_origin: s.child_origin || stored.child_origin || null,
       };
     }
 
@@ -368,6 +370,7 @@ export function computeAllSessions(activeSessions, storedSessions) {
       working_dir: workingDir || s.working_dir,
       acp_server: acpServer || s.acp_server,
       parent_session_id: s.parent_session_id || null,
+      child_origin: s.child_origin || null,
     };
   });
 

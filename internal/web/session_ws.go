@@ -336,6 +336,13 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			data["status"] = meta.Status
 			data["runner_type"] = meta.RunnerType
 			data["runner_restricted"] = meta.RunnerRestricted
+			// Include parent-child relationship fields for session tree rendering
+			if meta.ParentSessionID != "" {
+				data["parent_session_id"] = meta.ParentSessionID
+			}
+			if meta.ChildOrigin != "" {
+				data["child_origin"] = string(meta.ChildOrigin)
+			}
 			// Override acp_server with session-specific value from metadata
 			// This fixes grouping for multiple workspaces with the same folder but different ACP servers
 			if meta.ACPServer != "" {
