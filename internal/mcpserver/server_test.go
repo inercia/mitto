@@ -424,6 +424,8 @@ func (m *mockSessionManager) BroadcastSessionCreated(sessionID, name, acpServer,
 }
 
 func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived bool) {}
+func (m *mockSessionManager) BroadcastSessionDeleted(sessionID string)                 {}
+func (m *mockSessionManager) DeleteChildSessions(parentID string)                      {}
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -2356,6 +2358,8 @@ func (m *mockSessionManagerForWait) GetWorkspacesForFolder(string) []config.Work
 }
 func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, string, string, string) {}
 func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)                          {}
+func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                                 {}
+func (m *mockSessionManagerForWait) DeleteChildSessions(string)                                     {}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -3029,6 +3033,8 @@ func (m *mockSessionManagerForChildren) GetWorkspacesForFolder(string) []config.
 func (m *mockSessionManagerForChildren) BroadcastSessionCreated(string, string, string, string, string) {
 }
 func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool) {}
+func (m *mockSessionManagerForChildren) BroadcastSessionDeleted(string)        {}
+func (m *mockSessionManagerForChildren) DeleteChildSessions(string)            {}
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -3203,6 +3209,8 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspacesForFolder(string) []
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionCreated(string, string, string, string, string) {
 }
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, bool) {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionDeleted(string)        {}
+func (m *mockSessionManagerForChildrenMutable) DeleteChildSessions(string)            {}
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -3482,6 +3490,8 @@ func (m *mockSessionManagerForAutoResume) GetWorkspacesForFolder(string) []confi
 func (m *mockSessionManagerForAutoResume) BroadcastSessionCreated(string, string, string, string, string) {
 }
 func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool) {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionDeleted(string)        {}
+func (m *mockSessionManagerForAutoResume) DeleteChildSessions(string)            {}
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -3897,5 +3907,145 @@ func TestChildrenTasksWait_DoesNotResumeArchivedChild(t *testing.T) {
 	}
 	if report.Status != "not_running" {
 		t.Errorf("Expected status 'not_running' for archived child, got '%s'", report.Status)
+	}
+}
+
+// =============================================================================
+// Child Session Guard Tests
+// =============================================================================
+
+// TestArchiveConversation_ChildRejected tests that archiving a child conversation
+// via the MCP tool is rejected.
+func TestArchiveConversation_ChildRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create parent: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child: %v", err)
+	}
+
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "test-server", WorkingDir: "/test/dir"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:          store,
+		SessionManager: mockSM,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := true
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+
+	if output.Success {
+		t.Error("Expected failure when trying to archive a child conversation")
+	}
+	if output.Error == "" {
+		t.Error("Expected error message explaining why child cannot be archived")
+	}
+
+	// Verify child is NOT archived
+	meta, _ := store.GetMetadata(childID)
+	if meta.Archived {
+		t.Error("Child should NOT be archived after rejected request")
+	}
+}
+
+// TestSetPeriodic_ChildRejected tests that setting periodic on a child conversation
+// via the MCP tool is rejected.
+func TestSetPeriodic_ChildRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create parent: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleSetPeriodic(ctx, nil, SetPeriodicInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Prompt:         "check updates",
+		FrequencyValue: 1,
+		FrequencyUnit:  "hours",
+	})
+	if err != nil {
+		t.Fatalf("handleSetPeriodic returned error: %v", err)
+	}
+
+	if output.Success {
+		t.Error("Expected failure when trying to set periodic on a child conversation")
+	}
+	if output.Error == "" {
+		t.Error("Expected error message explaining why child cannot be periodic")
 	}
 }
