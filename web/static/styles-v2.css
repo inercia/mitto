@@ -1206,14 +1206,39 @@ a:hover {
  * Swipe-to-Delete V2 Theme Styles
  * ============================================================================= */
 
-/* Session item container border - light theme */
+/* Session item container - no individual borders when inside a group (border is on parent-session-group) */
+.v2-theme .parent-session-group .session-item-container {
+  border-bottom: none !important;
+}
+
+/* Standalone session items (ungrouped mode) keep their own border */
 .v2-theme:not(.dark) .session-item-container {
+  border-bottom: 1px solid #e4e4e7;
+}
+
+.v2-theme.dark .session-item-container {
+  border-bottom: 1px solid #334155;
+}
+
+/* Parent-session-group gets the border: parent + children are one visual cell */
+.v2-theme:not(.dark) .parent-session-group {
   border-bottom: 1px solid #e4e4e7 !important;
 }
 
-/* Session item container border - dark theme */
-.v2-theme.dark .session-item-container {
+.v2-theme.dark .parent-session-group {
   border-bottom: 1px solid #334155 !important;
+}
+
+/* Animated expand/collapse for child sessions */
+.session-children {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease-out;
+}
+
+.session-children--expanded {
+  max-height: 2000px;
+  transition: max-height 0.3s ease-in;
 }
 
 /* Swipe delete background - light theme (softer red) */

@@ -123,6 +123,8 @@ import {
   SunIcon,
   MoonIcon,
   LightningIcon,
+  RobotIcon,
+  PersonIcon,
   QueueIcon,
   PinIcon,
   PinFilledIcon,
@@ -1431,7 +1433,7 @@ function SessionItem({
         />
       `}
       <div
-        class="session-item-container relative overflow-hidden border-b border-slate-700"
+        class="session-item-container relative overflow-hidden"
         ...${containerProps}
       >
         <!-- Swipe action background (revealed when swiping left) -->
@@ -1485,35 +1487,11 @@ function SessionItem({
             : ""}
           <div class="relative z-10">
             <!-- Top row: status indicator, title, and workspace pill -->
-            <div class="flex items-start gap-2">
+            <div class="flex items-center gap-2">
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
-                  ${hasChildren
+                  ${isSpawned
                     ? html`
-                        <button
-                          class="expand-toggle-button flex-shrink-0 p-0.5 text-gray-500 hover:text-white transition-colors"
-                          onClick=${(e) => {
-                            e.stopPropagation();
-                            if (onToggleExpand) onToggleExpand();
-                          }}
-                          title=${isExpanded
-                            ? "Collapse children"
-                            : "Expand children"}
-                        >
-                          <span
-                            class="expand-toggle-icon ${isExpanded
-                              ? ""
-                              : "expand-toggle-icon--collapsed"}"
-                          >
-                            <${ChevronDownIcon} className="w-3 h-3" />
-                          </span>
-                        </button>
-                      `
-                    : null}
-                  ${
-                    // Spawned indicator removed - visual hierarchy from indentation makes parent-child relationships clear
-                    false
-                      ? html`
                           <span
                             class="spawned-indicator flex-shrink-0"
                             title="Spawned from another conversation"
@@ -1522,39 +1500,48 @@ function SessionItem({
                         `
                       : null
                   }
-                  ${isStreaming || hasChildStreaming
-                    ? html`
-                        <span
-                          class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
-                            ? "child-streaming-indicator"
-                            : "streaming-indicator"}"
-                          title=${hasChildStreaming
-                            ? "Child conversation responding..."
-                            : "Receiving response..."}
-                        ></span>
-                      `
-                    : isActiveSession
-                      ? html`
-                          <span
-                            class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
-                          ></span>
-                        `
-                      : null}
                   <span class="text-sm font-medium truncate"
                     >${displayName}</span
                   >
-                  ${childCount > 0 &&
-                  html`
-                    <span
-                      class="child-count-badge flex-shrink-0"
-                      title="${childCount} spawned conversation${childCount > 1
-                        ? "s"
-                        : ""}"
-                      >+${childCount}</span
-                    >
-                  `}
+                  ${session.child_origin === "auto"
+                    ? html`
+                        <span class="flex-shrink-0 text-amber-400" title="Auto-created child">
+                          <${LightningIcon} className="w-4 h-4" />
+                        </span>
+                      `
+                    : session.child_origin === "mcp"
+                      ? html`
+                          <span class="flex-shrink-0 text-blue-400" title="Created by agent">
+                            <${RobotIcon} className="w-4 h-4" />
+                          </span>
+                        `
+                      : session.child_origin === "human"
+                        ? html`
+                            <span class="flex-shrink-0 text-green-400" title="Manually created child">
+                              <${PersonIcon} className="w-4 h-4" />
+                            </span>
+                          `
+                        : null}
                 </div>
               </div>
+              ${isStreaming || hasChildStreaming
+                ? html`
+                    <span
+                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
+                        ? "child-streaming-indicator"
+                        : "streaming-indicator"}"
+                      title=${hasChildStreaming
+                        ? "Child conversation responding..."
+                        : "Receiving response..."}
+                    ></span>
+                  `
+                : isActiveSession
+                  ? html`
+                      <span
+                        class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
+                      ></span>
+                    `
+                  : null}
               ${workingDir &&
               !hideBadge &&
               html`
@@ -1571,21 +1558,27 @@ function SessionItem({
                 />
               `}
             </div>
-            <!-- Bottom row: saved/stored badge and action buttons -->
+            ${!isSpawned && html`
+            <!-- Bottom row: children count and action buttons -->
             <div class="flex items-center justify-between mt-1">
               <div class="flex items-center gap-2">
-                ${session.isActive
+                ${hasChildren && childCount > 0
                   ? html`
-                      <span class="text-gray-500" title="Session is auto-saved">
-                        <${SaveIcon} className="w-3 h-3" />
-                      </span>
-                    `
-                  : html`
-                      <span
-                        class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
-                        >stored</span
+                      <button
+                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400 hover:text-white hover:bg-slate-600 transition-colors cursor-pointer"
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          if (onToggleExpand) onToggleExpand();
+                        }}
+                        title="${isExpanded ? 'Collapse children' : 'Expand children'}"
                       >
-                    `}
+                        <span class="inline-block transition-transform ${isExpanded ? '' : '-rotate-90'}">
+                          <${ChevronDownIcon} className="w-3 h-3" />
+                        </span>
+                        <span>+${childCount}</span>
+                      </button>
+                    `
+                  : null}
               </div>
               <div
                 class="flex items-center gap-1 ${showActions
@@ -1642,6 +1635,7 @@ function SessionItem({
                 </button>
               </div>
             </div>
+            `}
           </div>
         </div>
       </div>
@@ -1693,8 +1687,11 @@ function SessionList({
   const [groupingMode, setGroupingModeState] = useState(() =>
     getFilterTabGrouping(getFilterTab()),
   );
-  // Track expanded groups - use a counter to force re-render when localStorage changes
-  const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
+  // Track expanded groups in React state to avoid stale localStorage reads in WKWebView.
+  // This mirrors the fix applied for navigableSessions (see expandedGroupsForNav in app.js).
+  const [sidebarExpandedGroups, setSidebarExpandedGroups] = useState(() =>
+    getExpandedGroups(),
+  );
 
   // Track new sessions for blink animation
   const [newSessionIds, setNewSessionIds] = useState(new Set());
@@ -1732,8 +1729,8 @@ function SessionList({
       const currentTab = getFilterTab();
       const newMode = getFilterTabGrouping(currentTab);
       setGroupingModeState(newMode);
-      // Force re-render for expanded groups
-      setExpandedGroupsVersion((v) => v + 1);
+      // Sync expanded groups from localStorage (just updated by server sync)
+      setSidebarExpandedGroups(getExpandedGroups());
       console.debug(
         "[Mitto] SessionList: UI preferences synced from server, tab:",
         currentTab,
@@ -1746,11 +1743,17 @@ function SessionList({
 
   // Listen for programmatic group expansion changes (e.g., from swipe/keyboard navigation)
   // When expandGroupForSession in useWebSocket.js expands a group during session switching,
-  // it dispatches mitto-expanded-groups-changed. We need to bump expandedGroupsVersion
-  // so the sidebar re-renders and shows the newly expanded group.
+  // it dispatches mitto-expanded-groups-changed. We sync React state to avoid stale
+  // localStorage reads in WKWebView.
   useEffect(() => {
-    const handleExpandedGroupsChanged = () => {
-      setExpandedGroupsVersion((v) => v + 1);
+    const handleExpandedGroupsChanged = (e) => {
+      const { groupKey, expanded } = e.detail || {};
+      if (groupKey !== undefined) {
+        setSidebarExpandedGroups((prev) => ({ ...prev, [groupKey]: expanded }));
+      } else {
+        // Fallback: re-read from localStorage if no detail provided
+        setSidebarExpandedGroups(getExpandedGroups());
+      }
     };
     window.addEventListener(
       "mitto-expanded-groups-changed",
@@ -1797,25 +1800,53 @@ function SessionList({
     setGroupingModeState(newMode);
   }, [filterTab]);
 
-  // Handle group expand/collapse toggle
-  const handleToggleGroup = useCallback((groupKey, allGroupKeys = []) => {
-    const currentlyExpanded = isGroupExpanded(groupKey);
-    const willExpand = !currentlyExpanded;
+  // Helper to check if a group is expanded using React state (not localStorage)
+  // to avoid stale reads in WKWebView (macOS native app).
+  const isSidebarGroupExpanded = useCallback(
+    (groupKey) => {
+      if (groupKey in sidebarExpandedGroups) return sidebarExpandedGroups[groupKey];
+      if (groupKey === "__archived__") return false;
+      return true;
+    },
+    [sidebarExpandedGroups],
+  );
 
-    // In accordion mode, collapse all other groups when expanding
-    if (willExpand && getSingleExpandedGroupMode()) {
-      // Use provided allGroupKeys to collapse all other groups
-      // (needed because getExpandedGroups only tracks explicitly set groups)
-      for (const key of allGroupKeys) {
-        if (key !== groupKey && isGroupExpanded(key)) {
-          setGroupExpanded(key, false);
+  // Handle group expand/collapse toggle
+  const handleToggleGroup = useCallback(
+    (groupKey, allGroupKeys = []) => {
+      // Update React state (source of truth for sidebar rendering)
+      setSidebarExpandedGroups((prev) => {
+        const currentlyExpanded =
+          groupKey in prev
+            ? prev[groupKey]
+            : groupKey === "__archived__"
+              ? false
+              : true;
+        const willExpand = !currentlyExpanded;
+        const next = { ...prev, [groupKey]: willExpand };
+        if (willExpand && getSingleExpandedGroupMode()) {
+          for (const key of allGroupKeys) {
+            if (key !== groupKey) next[key] = false;
+          }
+        }
+        return next;
+      });
+
+      // Persist to localStorage (for cross-session persistence)
+      const currentlyExpanded = isGroupExpanded(groupKey);
+      const willExpand = !currentlyExpanded;
+      if (willExpand && getSingleExpandedGroupMode()) {
+        for (const key of allGroupKeys) {
+          if (key !== groupKey && isGroupExpanded(key)) {
+            setGroupExpanded(key, false);
+          }
         }
       }
-    }
-
-    setGroupExpanded(groupKey, willExpand);
-    setExpandedGroupsVersion((v) => v + 1); // Force re-render
-  }, []);
+      setGroupExpanded(groupKey, willExpand);
+      // Note: setSidebarExpandedGroups already triggers a re-render, no version bump needed
+    },
+    [sidebarExpandedGroups],
+  );
 
   // Get grouping icon based on current mode
   const getGroupingIcon = () => {
@@ -2109,9 +2140,9 @@ function SessionList({
       return;
     }
 
-    // Find all currently expanded groups in the current view
+    // Find all currently expanded groups in the current view (use React state, not localStorage)
     const expandedKeys = groupedSessions
-      .filter((g) => isGroupExpanded(g.key))
+      .filter((g) => isSidebarGroupExpanded(g.key))
       .map((g) => g.key);
 
     // If more than one group is expanded, collapse all but the first
@@ -2123,13 +2154,19 @@ function SessionList({
         "Collapsing:",
         toCollapse,
       );
+      // Update React state and localStorage for collapsed groups
+      setSidebarExpandedGroups((prev) => {
+        const next = { ...prev };
+        for (const key of toCollapse) {
+          next[key] = false;
+        }
+        return next;
+      });
       for (const key of toCollapse) {
         setGroupExpanded(key, false);
       }
-      // Force re-render to reflect the collapsed state
-      setExpandedGroupsVersion((v) => v + 1);
     }
-  }, [groupedSessions, filterTab, groupingMode]);
+  }, [groupedSessions, filterTab, groupingMode, sidebarExpandedGroups]);
 
   // Render a single session item
   // hideBadge: if true, hides the entire badge
@@ -2149,6 +2186,9 @@ function SessionList({
       extraLeftPadding = "",
       childCount = 0,
       hasChildStreaming = false,
+      hasChildren = false,
+      isExpanded = false,
+      onToggleExpand = null,
     } = {},
   ) => {
     const workingDir = getSessionWorkingDir(session);
@@ -2200,6 +2240,9 @@ function SessionList({
         extraLeftPadding=${extraLeftPadding}
         childCount=${childCount}
         hasChildStreaming=${hasChildStreaming}
+        hasChildren=${hasChildren}
+        isExpanded=${isExpanded}
+        onToggleExpand=${onToggleExpand}
         isNew=${isNew}
       />
     `;
@@ -2251,7 +2294,7 @@ function SessionList({
 
     return html`
       ${groupedSessions.map((group) => {
-        const expanded = isGroupExpanded(group.key);
+        const expanded = isSidebarGroupExpanded(group.key);
         const sessionCount = group.sessions.length;
         // Check if any session in this group is actively streaming
         // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
@@ -2343,14 +2386,16 @@ function SessionList({
   const renderHierarchicalGroups = () => {
     if (!groupedSessions) return null;
 
-    // Collect all group keys for accordion mode (folder keys + parent session keys)
-    const allGroupKeys = [];
+    // Collect group keys for accordion mode
+    // Folder keys and parent session keys are kept separate so that
+    // toggling a session's children doesn't collapse the folder.
+    const allGroupKeys = []; // folder-level keys only
+    const parentGroupKeys = []; // session-level parent keys only
     groupedSessions.forEach((folder) => {
       allGroupKeys.push(folder.key);
-      // Add parent session keys (sessions with children)
       folder.sessions.forEach((session) => {
         if (session.children && session.children.length > 0) {
-          allGroupKeys.push(`parent:${session.session_id}`);
+          parentGroupKeys.push(`parent:${session.session_id}`);
         }
       });
     });
@@ -2375,7 +2420,7 @@ function SessionList({
 
     return html`
       ${groupedSessions.map((folder) => {
-        const folderExpanded = isGroupExpanded(folder.key);
+        const folderExpanded = isSidebarGroupExpanded(folder.key);
         const totalSessions = countTotalSessions(folder.sessions);
         const hasFolderStreaming = hasStreaming(folder.sessions);
 
@@ -2416,7 +2461,7 @@ function SessionList({
                 session.children && session.children.length > 0;
               const parentKey = `parent:${session.session_id}`;
               const childrenExpanded = hasChildren
-                ? isGroupExpanded(parentKey)
+                ? isSidebarGroupExpanded(parentKey)
                 : false;
               // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
               const hasChildStreaming =
@@ -2426,7 +2471,7 @@ function SessionList({
               return html`
                 <div
                   key=${session.session_id}
-                  class="parent-session-group ${hasChildren
+                  class="parent-session-group border-b border-slate-700 ${hasChildren
                     ? "has-children"
                     : ""}"
                 >
@@ -2448,7 +2493,7 @@ function SessionList({
                       hasChildren: hasChildren,
                       isExpanded: childrenExpanded,
                       onToggleExpand: hasChildren
-                        ? () => handleToggleGroup(parentKey, allGroupKeys)
+                        ? () => handleToggleGroup(parentKey, parentGroupKeys)
                         : null,
                     },
                   )}
