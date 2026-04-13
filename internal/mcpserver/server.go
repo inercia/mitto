@@ -143,6 +143,10 @@ type SessionManager interface {
 	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string)
 	// BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
 	BroadcastSessionArchived(sessionID string, archived bool)
+	// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
+	BroadcastSessionDeleted(sessionID string)
+	// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
+	DeleteChildSessions(parentID string)
 }
 
 // BackgroundSession interface for session info.
@@ -2000,10 +2004,19 @@ func (s *Server) handleSetPeriodic(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	// Verify target conversation exists
-	if _, err := store.GetMetadata(input.ConversationID); err != nil {
+	meta, err := store.GetMetadata(input.ConversationID)
+	if err != nil {
 		return nil, SetPeriodicOutput{
 			Success: false,
 			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
+		}, nil
+	}
+
+	// Prevent setting periodic on child sessions
+	if meta.ParentSessionID != "" {
+		return nil, SetPeriodicOutput{
+			Success: false,
+			Error:   "cannot set periodic on a child conversation; only parent or top-level conversations can be periodic",
 		}, nil
 	}
 
@@ -2139,6 +2152,14 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		}, nil
 	}
 
+	// Prevent direct archival of child sessions - children are archived via parent cascade
+	if archived && meta.ParentSessionID != "" {
+		return nil, ArchiveConversationOutput{
+			Success: false,
+			Error:   "cannot archive a child conversation directly; archive the parent conversation instead",
+		}, nil
+	}
+
 	// Check if already in the desired state
 	if meta.Archived == archived {
 		state := "archived"
@@ -2190,6 +2211,11 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 	// Broadcast the archived state change to all connected WebSocket clients
 	if s.sessionManager != nil {
 		s.sessionManager.BroadcastSessionArchived(input.ConversationID, archived)
+	}
+
+	// Delete all child sessions when parent is archived
+	if archived && s.sessionManager != nil {
+		go s.sessionManager.DeleteChildSessions(input.ConversationID)
 	}
 
 	// Handle unarchive lifecycle: restart ACP session

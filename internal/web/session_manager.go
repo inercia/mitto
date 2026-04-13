@@ -1013,6 +1013,97 @@ func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bo
 	}
 }
 
+// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
+// This is called when a session is permanently deleted.
+func (sm *SessionManager) BroadcastSessionDeleted(sessionID string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionDeleted, map[string]string{
+		"session_id": sessionID,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session deleted",
+			"session_id", sessionID,
+			"clients", em.ClientCount())
+	}
+}
+
+// childArchiveTimeout is the timeout for gracefully closing child sessions when a parent is archived.
+const childArchiveTimeout = 30 * time.Second
+
+// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
+// Each child's ACP process is gracefully stopped, then the session data is removed from disk.
+// Auto-grandchildren are cascade-deleted by store.Delete; MCP-grandchildren are orphaned.
+func (sm *SessionManager) DeleteChildSessions(parentID string) {
+	sm.mu.RLock()
+	store := sm.store
+	sm.mu.RUnlock()
+
+	if store == nil {
+		return
+	}
+
+	children, err := store.ListChildSessions(parentID)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Error("Failed to list child sessions for deletion cascade",
+				"parent_session_id", parentID,
+				"error", err)
+		}
+		return
+	}
+
+	for _, child := range children {
+		childID := child.SessionID
+
+		// Find auto-grandchildren before deletion — store.Delete will cascade-delete them,
+		// so we need their IDs now to close their ACP processes and broadcast deletions.
+		autoGrandchildIDs, _ := store.FindAutoChildrenRecursive(childID)
+
+		// Gracefully close ACP process for the child
+		if !sm.CloseSessionGracefully(childID, "parent_archived", childArchiveTimeout) {
+			sm.CloseSession(childID, "parent_archived_timeout")
+		}
+
+		// Close ACP processes for auto-grandchildren (they will be cascade-deleted)
+		for _, gcID := range autoGrandchildIDs {
+			sm.CloseSession(gcID, "ancestor_archived")
+		}
+
+		// Permanently delete the child (cascade-deletes auto-grandchildren, orphans MCP-grandchildren)
+		if err := store.Delete(childID); err != nil {
+			if sm.logger != nil {
+				sm.logger.Error("Failed to delete child session",
+					"parent_session_id", parentID,
+					"child_session_id", childID,
+					"error", err)
+			}
+			continue
+		}
+
+		// Broadcast deletion for child and any cascade-deleted auto-grandchildren
+		sm.BroadcastSessionDeleted(childID)
+		for _, gcID := range autoGrandchildIDs {
+			sm.BroadcastSessionDeleted(gcID)
+		}
+
+		if sm.logger != nil {
+			sm.logger.Info("Deleted child session (parent archived)",
+				"parent_session_id", parentID,
+				"child_session_id", childID,
+				"child_name", child.Name,
+				"auto_grandchildren_deleted", len(autoGrandchildIDs))
+		}
+	}
+}
+
 // SetGlobalMCPServer sets the global MCP server for session registration.
 // Sessions will register with this server to enable session-scoped MCP tools.
 func (sm *SessionManager) SetGlobalMCPServer(srv *mcpserver.Server) {

@@ -438,6 +438,15 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	// Prevent direct archival of child sessions - children are archived via parent cascade
+	if req.Archived != nil && *req.Archived {
+		meta, err := store.GetMetadata(sessionID)
+		if err == nil && meta.ParentSessionID != "" {
+			http.Error(w, "Cannot archive a child conversation directly. Archive the parent conversation instead.", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Handle archive lifecycle: wait for response and stop ACP
 	if req.Archived != nil && *req.Archived {
 		if s.sessionManager != nil {
@@ -512,6 +521,13 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 	// Broadcast the archived state change to all connected WebSocket clients
 	if req.Archived != nil {
 		s.BroadcastSessionArchived(sessionID, *req.Archived)
+	}
+
+	// Delete all child sessions when parent is archived
+	if req.Archived != nil && *req.Archived {
+		if s.sessionManager != nil {
+			go s.sessionManager.DeleteChildSessions(sessionID)
+		}
 	}
 
 	// Handle unarchive lifecycle: restart ACP session

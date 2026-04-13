@@ -1306,6 +1306,16 @@ func (a *sessionManagerAdapter) BroadcastSessionArchived(sessionID string, archi
 	a.sm.BroadcastSessionArchived(sessionID, archived)
 }
 
+// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastSessionDeleted(sessionID string) {
+	a.sm.BroadcastSessionDeleted(sessionID)
+}
+
+// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
+func (a *sessionManagerAdapter) DeleteChildSessions(parentID string) {
+	a.sm.DeleteChildSessions(parentID)
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================
