@@ -408,9 +408,10 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 			SessionID:       childID,
 			Name:            child.Title,
 			ACPServer:       targetWS.ACPServer,
-			WorkingDir:      parentWorkingDir, // Inherit parent's working dir
-			ParentSessionID: parentID,         // Mark as child
-			IsAutoChild:     true,             // Cascade delete with parent
+			WorkingDir:      parentWorkingDir,        // Inherit parent's working dir
+			ParentSessionID: parentID,                // Mark as child
+			IsAutoChild:     true,                    // Cascade delete with parent (backward compat)
+			ChildOrigin:     session.ChildOriginAuto, // Created via auto_children config
 		}
 
 		// Create via store

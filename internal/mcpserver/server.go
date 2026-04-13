@@ -1774,7 +1774,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		Name:             input.Title,
 		ACPServer:        acpServerName,
 		WorkingDir:       sourceMeta.WorkingDir,
-		ParentSessionID:  realSessionID, // Mark this session as a child
+		ParentSessionID:  realSessionID,          // Mark this session as a child
+		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
 	}
 
