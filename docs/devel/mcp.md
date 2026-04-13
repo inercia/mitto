@@ -899,11 +899,11 @@ and respond with JSON indicating availability, an optional install command
 
 ### UI Behavior
 
-| Scenario | UI |
-|----------|----|
-| `suggested_run` provided | Modal with command in code block + "Yes, run command" / "No, dismiss" buttons |
-| Only `suggested_instructions` | Modal with instructions + "Dismiss" button |
-| Neither provided | Warning: "Mitto MCP tools are not available. Some features may not work." |
+| Scenario                      | UI                                                                            |
+| ----------------------------- | ----------------------------------------------------------------------------- |
+| `suggested_run` provided      | Modal with command in code block + "Yes, run command" / "No, dismiss" buttons |
+| Only `suggested_instructions` | Modal with instructions + "Dismiss" button                                    |
+| Neither provided              | Warning: "Mitto MCP tools are not available. Some features may not work."     |
 
 ### Caching
 
@@ -930,13 +930,13 @@ sm.ClearMCPChecked(workspaceUUID) // Clear (after installation)
 
 ### Implementation Status
 
-| Status | Item |
-|--------|------|
-| ✅ | Purpose constant, prompt template, `MCPAvailabilityResult` struct |
-| ✅ | `CheckMCPAvailability()` with caching and JSON parsing |
-| ✅ | WebSocket message type definitions, SessionManager tracking |
-| ⏳ | WebSocket integration (trigger on conversation focus) |
-| ⏳ | Command execution handler, frontend UI, cache clearing after execution |
+| Status | Item                                                                   |
+| ------ | ---------------------------------------------------------------------- |
+| ✅     | Purpose constant, prompt template, `MCPAvailabilityResult` struct      |
+| ✅     | `CheckMCPAvailability()` with caching and JSON parsing                 |
+| ✅     | WebSocket message type definitions, SessionManager tracking            |
+| ⏳     | WebSocket integration (trigger on conversation focus)                  |
+| ⏳     | Command execution handler, frontend UI, cache clearing after execution |
 
 ---
 

@@ -317,17 +317,17 @@ substitution system used by [message processors](processors.md#variable-substitu
 
 ### Available Variables
 
-| Variable | Description |
-|----------|-------------|
-| `@mitto:session_id` | Current session/conversation ID |
-| `@mitto:parent_session_id` | Parent conversation ID (empty if root session) |
-| `@mitto:parent` | Parent session as "id (name)" or empty |
-| `@mitto:session_name` | Conversation title/name |
-| `@mitto:working_dir` | Session working directory |
-| `@mitto:acp_server` | ACP server name (e.g., "claude-code") |
-| `@mitto:workspace_uuid` | Workspace identifier |
+| Variable                       | Description                                                                  |
+| ------------------------------ | ---------------------------------------------------------------------------- |
+| `@mitto:session_id`            | Current session/conversation ID                                              |
+| `@mitto:parent_session_id`     | Parent conversation ID (empty if root session)                               |
+| `@mitto:parent`                | Parent session as "id (name)" or empty                                       |
+| `@mitto:session_name`          | Conversation title/name                                                      |
+| `@mitto:working_dir`           | Session working directory                                                    |
+| `@mitto:acp_server`            | ACP server name (e.g., "claude-code")                                        |
+| `@mitto:workspace_uuid`        | Workspace identifier                                                         |
 | `@mitto:available_acp_servers` | ACP servers for this workspace, comma-separated with tags and current marker |
-| `@mitto:children` | Child sessions, comma-separated with names and ACP servers |
+| `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
 
 ### Behavior
 
@@ -354,7 +354,7 @@ would otherwise require additional tool calls to retrieve.
 
 A prompt that helps the agent use Mitto MCP tools efficiently:
 
-````markdown
+```markdown
 ---
 name: "Spawn Workers"
 enabledWhenMCP: mitto_conversation_*
@@ -369,7 +369,7 @@ Existing children: `@mitto:children`
 ## Instructions
 
 Create child conversations to work on subtasks...
-````
+```
 
 ### Important: Child Session Limitation
 

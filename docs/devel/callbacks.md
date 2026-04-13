@@ -22,8 +22,9 @@ curl -X POST https://your-mitto-server.com/mitto/api/callback/cb_YOUR_TOKEN_HERE
 ```
 
 A successful trigger returns:
+
 ```json
-{"status":"triggered"}
+{ "status": "triggered" }
 ```
 
 You can optionally include metadata for audit logging:
@@ -66,8 +67,8 @@ Triggers the periodic prompt for the session associated with this token.
 }
 ```
 
-| Field    | Type   | Description                                                      |
-| -------- | ------ | ---------------------------------------------------------------- |
+| Field    | Type   | Description                                                                     |
+| -------- | ------ | ------------------------------------------------------------------------------- |
 | metadata | object | Opaque key-value pairs. Logged for auditing only. NOT injected into the prompt. |
 
 **Responses:**
@@ -116,10 +117,10 @@ Returns callback status for the session.
 
 **Responses:**
 
-| Status | Body                                                                         | Condition                   |
-| ------ | ---------------------------------------------------------------------------- | --------------------------- |
-| 200    | `{"callback_url": "https://...", "created_at": "2026-04-09T12:00:00Z"}`      | Callback configured         |
-| 404    | `{"error": "not_found"}`                                                     | No callback configured      |
+| Status | Body                                                                    | Condition              |
+| ------ | ----------------------------------------------------------------------- | ---------------------- |
+| 200    | `{"callback_url": "https://...", "created_at": "2026-04-09T12:00:00Z"}` | Callback configured    |
+| 404    | `{"error": "not_found"}`                                                | No callback configured |
 
 **Example:**
 
@@ -179,26 +180,26 @@ flowchart TB
     PERIODIC --> ENABLE[Enable Callback<br/>POST /api/sessions/id/callback]
     ENABLE --> ACTIVE[callback.json created<br/>Token registered in index]
     ACTIVE --> SHARED[URL shared with<br/>CI/webhook systems]
-    
+
     SHARED --> TRIGGER[External POST<br/>to callback URL]
     TRIGGER --> CHECK{Periodic<br/>enabled?}
     CHECK -->|Yes| RUN[200: Trigger prompt]
     CHECK -->|No| DISABLED[410: periodic_disabled]
-    
+
     SHARED --> DISABLE[User disables periodic]
     DISABLE --> PRESERVED[callback.json UNTOUCHED<br/>URL returns 410]
     PRESERVED --> REENABLE[User re-enables periodic]
     REENABLE --> WORKS[URL returns 200 again]
-    
+
     SHARED --> ROTATE[User rotates token]
     ROTATE --> NEWTOKEN[New token generated<br/>Old token removed from index]
     NEWTOKEN --> OLDURL[Old URL returns 404]
     NEWTOKEN --> NEWURL[New URL works]
-    
+
     SHARED --> REVOKE[User revokes callback<br/>DELETE /api/sessions/id/callback]
     REVOKE --> DELETED[callback.json deleted<br/>Token removed from index]
     DELETED --> NOTFOUND[URL returns 404]
-    
+
     START --> SESSIONDEL[Session deleted]
     SESSIONDEL --> CLEANUP[callback.json removed<br/>Index cleaned up]
 ```
@@ -292,13 +293,13 @@ This separation ensures:
 
 ### Key Components
 
-| Component           | File                      | Purpose                                        |
-| ------------------- | ------------------------- | ---------------------------------------------- |
-| CallbackStore       | internal/session/callback.go | Token persistence (callback.json)              |
-| CallbackIndex       | internal/web/callback.go  | In-memory token→session lookup                 |
-| CallbackRateLimiter | internal/web/callback.go  | Per-token rate limiting                        |
-| handleCallbackTrigger | internal/web/callback.go  | Public POST handler                            |
-| handleSessionCallback | internal/web/callback.go  | Authenticated management endpoints (GET/POST/DELETE) |
+| Component             | File                         | Purpose                                              |
+| --------------------- | ---------------------------- | ---------------------------------------------------- |
+| CallbackStore         | internal/session/callback.go | Token persistence (callback.json)                    |
+| CallbackIndex         | internal/web/callback.go     | In-memory token→session lookup                       |
+| CallbackRateLimiter   | internal/web/callback.go     | Per-token rate limiting                              |
+| handleCallbackTrigger | internal/web/callback.go     | Public POST handler                                  |
+| handleSessionCallback | internal/web/callback.go     | Authenticated management endpoints (GET/POST/DELETE) |
 
 ### CallbackStore
 
@@ -352,13 +353,13 @@ func (cr *CallbackRateLimiter) Allow(token string) bool
 
 ### Index Maintenance
 
-| Event                    | Action                                       |
-| ------------------------ | -------------------------------------------- |
-| Server startup           | Scan all callback.json → populate index     |
-| UI: Enable/Rotate        | Register new token (remove old if rotating) |
-| UI: Revoke               | Remove token from index                     |
-| Session deletion         | RemoveBySessionID from index                |
-| Token rotation           | Remove old token, register new token        |
+| Event             | Action                                      |
+| ----------------- | ------------------------------------------- |
+| Server startup    | Scan all callback.json → populate index     |
+| UI: Enable/Rotate | Register new token (remove old if rotating) |
+| UI: Revoke        | Remove token from index                     |
+| Session deletion  | RemoveBySessionID from index                |
+| Token rotation    | Remove old token, register new token        |
 
 **Thread safety:** All index operations are protected by `CallbackIndex.mu`.
 
@@ -368,11 +369,11 @@ The `ConversationPropertiesPanel` component shows callback controls in the **Per
 
 ### UI States
 
-| Periodic State | Callback State | UI Display                                                        |
-| -------------- | -------------- | ----------------------------------------------------------------- |
-| Disabled       | None           | "Enable Periodic Prompts first" message                           |
-| Enabled        | None           | "Enable Callback" button                                          |
-| Enabled        | Active         | URL display + Copy/Rotate/Revoke buttons                          |
+| Periodic State | Callback State | UI Display                                                             |
+| -------------- | -------------- | ---------------------------------------------------------------------- |
+| Disabled       | None           | "Enable Periodic Prompts first" message                                |
+| Enabled        | None           | "Enable Callback" button                                               |
+| Enabled        | Active         | URL display + Copy/Rotate/Revoke buttons                               |
 | Disabled       | Active         | Subdued display: "Callback preserved but inactive (periodic disabled)" |
 
 ### Workflow

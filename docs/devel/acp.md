@@ -106,12 +106,14 @@ pending map), and the agent dispatches prompts to a remote LLM API — so it doe
 block while waiting for one session's response before processing another.
 
 **What IS concurrent:**
+
 - Prompts to **different sessions** run in parallel (verified empirically: multiple
   conversations respond simultaneously against the same agent process)
 - Auxiliary operations (title gen, follow-ups) can run alongside user prompts in
   other sessions
 
 **What IS serialized:**
+
 - Prompts to the **same session** — you can't send two prompts to the same
   conversation simultaneously; the agent must process them in order to maintain
   conversation history consistency
@@ -161,6 +163,7 @@ func (p *SharedACPProcess) WaitForIdle(ctx context.Context) error {
 ### Layer 1: ACP SDK (`github.com/coder/acp-go-sdk`)
 
 The SDK provides the JSON-RPC transport:
+
 - `Connection` — wraps stdin/stdout of the agent subprocess
 - `SendRequest[T]()` — sends a JSON-RPC request, waits for matching response by ID
 - `writeMu` — serializes wire writes (not request lifecycle)
@@ -172,6 +175,7 @@ simultaneously — each gets a unique ID and waits for its own response.
 ### Layer 2: Mitto ACP Client (`internal/acp/`)
 
 Wraps the SDK with Mitto-specific concerns:
+
 - `connection.go` — `NewConnection()`, process lifecycle management
 - `client.go` — Permission handling, file operations
 - `command.go` — Agent command construction
@@ -181,6 +185,7 @@ Wraps the SDK with Mitto-specific concerns:
 ### Layer 3: Shared Process (`internal/web/shared_acp_process.go`)
 
 Manages the lifecycle of a single agent process shared across sessions:
+
 - Starts the agent subprocess with `acp.NewConnection()`
 - Tracks `activeRPCs` for GC safety (avoids killing processes with in-flight RPCs)
 - Provides `NewSession()`, `LoadSession()`, `Prompt()` that wrap SDK calls
@@ -204,6 +209,7 @@ a session.
 ### Layer 5: Process Manager (`internal/web/acp_process_manager.go`)
 
 Top-level manager, one per Mitto server:
+
 - `processes map[string]*SharedACPProcess` — keyed by workspace UUID
 - `GetOrCreateProcess()` — lazy process creation
 - Auxiliary session management (title-gen, follow-ups, prompt improvement)
@@ -283,12 +289,12 @@ User uploads image (HTTP POST)
 
 Auxiliary sessions use the **same shared process** for non-critical background work:
 
-| Purpose | Session | Trigger |
-|---------|---------|---------|
-| Title generation | `title-gen` | After first agent response |
-| Follow-up suggestions | `follow-up` | After prompt completes |
-| Prompt improvement | `improve-prompt` | User requests it |
-| MCP tools check | `mcp-check` | On process creation |
+| Purpose               | Session          | Trigger                    |
+| --------------------- | ---------------- | -------------------------- |
+| Title generation      | `title-gen`      | After first agent response |
+| Follow-up suggestions | `follow-up`      | After prompt completes     |
+| Prompt improvement    | `improve-prompt` | User requests it           |
+| MCP tools check       | `mcp-check`      | On process creation        |
 
 Auxiliary sessions are pre-warmed on process creation to avoid cold-start delays.
 Auxiliary sessions run concurrently with user sessions — they do not block on or wait for user prompts.
@@ -324,11 +330,11 @@ must process them in order to maintain conversation history consistency.
 
 ### Possible Improvements
 
-| Approach | Description | Trade-off |
-|----------|-------------|-----------|
-| **Separate auxiliary process** | Dedicated process for title-gen, follow-ups | ✅ Resource/crash isolation. ❌ 2× memory per workspace |
-| **Process pool** | N processes per workspace, route by session | ✅ Crash isolation per group. ❌ N× resources, more complexity |
-| **Per-conversation process** | Revert to 1:1 (legacy mode) | ✅ Full crash isolation. ❌ Much more memory, duplicated workspace index |
+| Approach                       | Description                                 | Trade-off                                                                |
+| ------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------ |
+| **Separate auxiliary process** | Dedicated process for title-gen, follow-ups | ✅ Resource/crash isolation. ❌ 2× memory per workspace                  |
+| **Process pool**               | N processes per workspace, route by session | ✅ Crash isolation per group. ❌ N× resources, more complexity           |
+| **Per-conversation process**   | Revert to 1:1 (legacy mode)                 | ✅ Full crash isolation. ❌ Much more memory, duplicated workspace index |
 
 These improvements are less critical given the agent's built-in concurrency support.
 They may still be worthwhile for **resource isolation** (an aux crash won't kill user

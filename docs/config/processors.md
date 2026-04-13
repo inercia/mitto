@@ -55,12 +55,12 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 
 ### Included Builtin Processors
 
-| Processor           | Description                                                                                              | When    | Enabled                                       |
-| ------------------- | -------------------------------------------------------------------------------------------------------- | ------- | --------------------------------------------- |
-| `session-context`   | Injects session identity, parent/child relationships, and available agents into the first message        | `first` | Yes                                           |
-| `check-mcp-tools`   | Checks if Mitto MCP tools are available and suggests installation if missing                             | `first` | Yes                                           |
-| `delegate-to-coder` | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | Yes (only activates for matching ACP servers) |
-| `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model | `first` | Yes (requires smart model + `browser_*` MCP tools) |
+| Processor             | Description                                                                                              | When    | Enabled                                            |
+| --------------------- | -------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------- |
+| `session-context`     | Injects session identity, parent/child relationships, and available agents into the first message        | `first` | Yes                                                |
+| `check-mcp-tools`     | Checks if Mitto MCP tools are available and suggests installation if missing                             | `first` | Yes                                                |
+| `delegate-to-coder`   | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | Yes (only activates for matching ACP servers)      |
+| `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model           | `first` | Yes (requires smart model + `browser_*` MCP tools) |
 
 ### Managing Builtin Processors
 
