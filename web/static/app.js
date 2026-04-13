@@ -1565,7 +1565,7 @@ function SessionItem({
                 ${hasChildren && childCount > 0
                   ? html`
                       <button
-                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400 hover:text-white hover:bg-slate-600 transition-colors cursor-pointer"
+                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-slate-700'} text-gray-400 hover:text-white hover:bg-slate-600 transition-colors cursor-pointer"
                         onClick=${(e) => {
                           e.stopPropagation();
                           if (onToggleExpand) onToggleExpand();

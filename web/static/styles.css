@@ -354,6 +354,33 @@
   background-color: rgba(203, 213, 225, 1); /* slate-300 fixed background */
 }
 
+/* Child expand button streaming pulse - similar approach to filter-tab-streaming */
+.child-expand-streaming {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0.25rem;
+}
+.child-expand-streaming::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 0.25rem;
+  background-color: rgba(59, 130, 246, 0.4); /* blue-500 */
+  animation: filter-tab-pulse 1.8s ease-in-out infinite;
+  will-change: opacity;
+}
+.child-expand-streaming > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Light theme: slightly more subtle blue for child expand button */
+.light .child-expand-streaming::before {
+  background-color: rgba(59, 130, 246, 0.3); /* blue-500, slightly lighter for light theme */
+}
+
 /* Streaming cursor */
 .streaming-cursor::after {
   content: "▋";
@@ -1677,6 +1704,12 @@ mitto-action {
 }
 
 .reduce-animations .filter-tab-streaming::before {
+  animation: none;
+  opacity: 0.5;
+  will-change: auto;
+}
+
+.reduce-animations .child-expand-streaming::before {
   animation: none;
   opacity: 0.5;
   will-change: auto;
