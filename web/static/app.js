@@ -1824,7 +1824,9 @@ function SessionList({
               : true;
         const willExpand = !currentlyExpanded;
         const next = { ...prev, [groupKey]: willExpand };
-        if (willExpand && getSingleExpandedGroupMode()) {
+        // Always enforce accordion mode for parent-child groups (only one expanded at a time)
+        const isParentGroup = groupKey.startsWith("parent:");
+        if (willExpand && (getSingleExpandedGroupMode() || isParentGroup)) {
           for (const key of allGroupKeys) {
             if (key !== groupKey) next[key] = false;
           }
@@ -1835,7 +1837,9 @@ function SessionList({
       // Persist to localStorage (for cross-session persistence)
       const currentlyExpanded = isGroupExpanded(groupKey);
       const willExpand = !currentlyExpanded;
-      if (willExpand && getSingleExpandedGroupMode()) {
+      // Always enforce accordion mode for parent-child groups (only one expanded at a time)
+      const isParentGroup = groupKey.startsWith("parent:");
+      if (willExpand && (getSingleExpandedGroupMode() || isParentGroup)) {
         for (const key of allGroupKeys) {
           if (key !== groupKey && isGroupExpanded(key)) {
             setGroupExpanded(key, false);
@@ -1847,6 +1851,7 @@ function SessionList({
     },
     [sidebarExpandedGroups],
   );
+
 
   // Get grouping icon based on current mode
   const getGroupingIcon = () => {
@@ -2133,6 +2138,68 @@ function SessionList({
     return result;
   }, [filteredSessions, groupingMode, allSessions]);
 
+  // Build a map from session ID → its family's parent group key ("parent:<id>").
+  // Covers both the parent session itself and all its children.
+  // Used by handleSelectWithCollapse to know which family a clicked session belongs to.
+  const sessionFamilyMap = useMemo(() => {
+    const map = new Map();
+    if (!groupedSessions) return map;
+    groupedSessions.forEach((folder) => {
+      folder.sessions.forEach((session) => {
+        if (session.children && session.children.length > 0) {
+          const parentKey = `parent:${session.session_id}`;
+          map.set(session.session_id, parentKey);
+          session.children.forEach((child) => {
+            map.set(child.session_id, parentKey);
+          });
+        }
+      });
+    });
+    return map;
+  }, [groupedSessions]);
+
+  // Wrap onSelect to auto-collapse parent-child groups when selecting outside the family.
+  // If the selected session belongs to a family (parent + its children), only that family
+  // stays expanded. All other expanded parent groups are collapsed.
+  const handleSelectWithCollapse = useCallback(
+    (sessionId) => {
+      // Find which family (if any) this session belongs to
+      const familyKey = sessionFamilyMap.get(sessionId);
+
+      // Find all currently expanded parent groups
+      const expandedParentKeys = Object.entries(sidebarExpandedGroups)
+        .filter(([key, expanded]) => key.startsWith("parent:") && expanded)
+        .map(([key]) => key);
+
+      // If there are expanded parent groups and the selected session doesn't belong
+      // to any of them, collapse all other parent groups
+      if (expandedParentKeys.length > 0) {
+        const shouldCollapse = expandedParentKeys.some((key) => key !== familyKey);
+        if (shouldCollapse) {
+          setSidebarExpandedGroups((prev) => {
+            const next = { ...prev };
+            for (const key of expandedParentKeys) {
+              if (key !== familyKey) {
+                next[key] = false;
+              }
+            }
+            return next;
+          });
+          // Persist to localStorage
+          for (const key of expandedParentKeys) {
+            if (key !== familyKey) {
+              setGroupExpanded(key, false);
+            }
+          }
+        }
+      }
+
+      // Call the original onSelect
+      onSelect(sessionId);
+    },
+    [onSelect, sessionFamilyMap, sidebarExpandedGroups],
+  );
+
   // Enforce accordion mode when groups change (e.g., tab switch, grouping mode change)
   // If multiple groups are expanded and accordion mode is enabled, collapse all but the first.
   useEffect(() => {
@@ -2218,7 +2285,7 @@ function SessionList({
         key=${session.session_id}
         session=${finalSession}
         isActive=${activeSessionId === session.session_id}
-        onSelect=${onSelect}
+        onSelect=${handleSelectWithCollapse}
         onRename=${onRename}
         onDelete=${onDelete}
         onArchive=${onArchive}
