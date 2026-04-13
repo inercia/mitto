@@ -557,6 +557,7 @@ output: prepend
 - **Empty values** — e.g. `@mitto:parent_session_id` when there is no parent → replaced with empty string
 - **Fast path** — if the assembled message contains no `@mitto:`, the substitution pass is skipped entirely
 - **CLI mode** — `@mitto:session_id`, `@mitto:parent_session_id`, `@mitto:parent`, `@mitto:session_name`, `@mitto:acp_server`, `@mitto:workspace_uuid`, `@mitto:available_acp_servers`, and `@mitto:children` all substitute to empty string; `@mitto:working_dir` substitutes to the CLI working directory
+- **Escaping** — to include a literal `@mitto:variable` without substitution, prefix it with a backslash: `\@mitto:variable`. The backslash is stripped and the variable name is passed through as-is (e.g. `\@mitto:session_id` → `@mitto:session_id`)
 
 ## Command-Mode Examples
 

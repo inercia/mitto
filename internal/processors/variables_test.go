@@ -151,6 +151,36 @@ func TestSubstituteVariables(t *testing.T) {
 			},
 			expected: "agent-a [fast], agent-b [smart, expensive]",
 		},
+		{
+			name:     "escaped variable not substituted",
+			message:  `id: \@mitto:session_id`,
+			input:    input,
+			expected: "id: @mitto:session_id",
+		},
+		{
+			name:     "escaped and unescaped mixed",
+			message:  `@mitto:session_id and \@mitto:working_dir`,
+			input:    input,
+			expected: `session-123 and @mitto:working_dir`,
+		},
+		{
+			name:     "multiple escaped variables",
+			message:  `\@mitto:session_id \@mitto:acp_server`,
+			input:    input,
+			expected: "@mitto:session_id @mitto:acp_server",
+		},
+		{
+			name:     "escaped unknown variable strips backslash",
+			message:  `\@mitto:unknown`,
+			input:    input,
+			expected: "@mitto:unknown",
+		},
+		{
+			name:     "double backslash before mitto not treated as escape",
+			message:  `\\@mitto:session_id`,
+			input:    input,
+			expected: `\session-123`,
+		},
 	}
 
 	for _, tt := range tests {

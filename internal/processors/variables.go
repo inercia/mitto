@@ -23,12 +23,40 @@ import (
 // Unknown @mitto: variables are left as-is.
 // Empty values substitute to empty string.
 //
+// To include a literal @mitto:variable without substitution, escape it with a
+// backslash: \@mitto:variable. The backslash is stripped and the variable name is
+// passed through as-is (e.g. \@mitto:session_id → @mitto:session_id).
+//
 // The @mitto: prefix is consistent with the existing @namespace:value convention
 // used by processor triggers (e.g., @git:status, @file:path).
 func SubstituteVariables(message string, input *ProcessorInput) string {
 	if !strings.Contains(message, "@mitto:") {
 		return message // Fast path: no variables to substitute
 	}
+
+	// Handle escape sequences before running substitutions.
+	//
+	// Two sentinels are used (both contain NUL bytes, which cannot appear in
+	// any substitution value):
+	//
+	//   sentinelBackslash — marks a literal '\' that preceded \\ before @mitto:.
+	//     \\@mitto:foo  →  sentinelBackslash + @mitto:foo
+	//     After substitution sentinelBackslash is restored to '\', so the
+	//     variable IS substituted and the literal backslash is preserved.
+	//
+	//   sentinelEscaped — marks a \@mitto: that should NOT be substituted.
+	//     \@mitto:foo  →  sentinelEscapedfoo
+	//     After substitution sentinelEscaped is restored to @mitto:, stripping
+	//     the leading backslash.
+	//
+	// Double-backslash must be handled first to avoid the inner \@mitto: being
+	// caught by the single-backslash rule.
+	const (
+		sentinelBackslash = "\x00MITTO_BACKSLASH\x00"
+		sentinelEscaped   = "\x00MITTO_ESCAPED\x00"
+	)
+	message = strings.ReplaceAll(message, `\\@mitto:`, sentinelBackslash+"@mitto:")
+	message = strings.ReplaceAll(message, `\@mitto:`, sentinelEscaped)
 
 	replacements := map[string]string{
 		"@mitto:session_id":            input.SessionID,
@@ -58,6 +86,11 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 			result = strings.ReplaceAll(result, placeholder, replacements[placeholder])
 		}
 	}
+
+	// Restore sentinels: escaped variables become literal @mitto: (backslash
+	// stripped); double-backslash prefix becomes a single literal backslash.
+	result = strings.ReplaceAll(result, sentinelEscaped, "@mitto:")
+	result = strings.ReplaceAll(result, sentinelBackslash, `\`)
 	return result
 }
 

@@ -315,6 +315,7 @@ The full structured data (including `type` field) is also available:
 - **Empty values** substitute to an empty string (e.g., `@mitto:parent_session_id` → `""` when there is no parent).
 - **`@mitto:available_acp_servers`** substitutes to an empty string when the workspace has no servers configured.
 - **Fast path**: if the message contains no `@mitto:`, substitution is skipped entirely.
+- **Escaping**: prefix a variable with a backslash (`\@mitto:variable`) to suppress substitution. The backslash is stripped and the variable name is passed through as-is (e.g. `\@mitto:session_id` → `@mitto:session_id`).
 - Substitution runs on the **final message** after all processor text has been applied — both declarative (prepend/append) and command-processor output are included.
 
 ### Where Substitution Happens
