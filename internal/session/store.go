@@ -303,6 +303,7 @@ func (s *Store) GetMetadata(sessionID string) (Metadata, error) {
 }
 
 // readMetadata reads metadata from disk (must be called with lock held).
+// Automatically migrates ChildOrigin for backward compatibility with old metadata files.
 func (s *Store) readMetadata(sessionID string) (Metadata, error) {
 	var meta Metadata
 	if err := fileutil.ReadJSON(s.metadataPath(sessionID), &meta); err != nil {
@@ -311,6 +312,8 @@ func (s *Store) readMetadata(sessionID string) (Metadata, error) {
 		}
 		return Metadata{}, fmt.Errorf("failed to read metadata: %w", err)
 	}
+	// Migrate old metadata that has IsAutoChild/ParentSessionID but no ChildOrigin
+	meta.MigrateChildOrigin()
 	return meta, nil
 }
 
