@@ -154,7 +154,7 @@ export function AgentDiscoveryDialog({
 
   return html`
     <div
-      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
       onClick=${(e) => e.target === e.currentTarget && !isLoading && onClose?.()}
       data-testid="agent-discovery-backdrop"
     >
