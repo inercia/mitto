@@ -1304,10 +1304,11 @@ function SessionItem({
     return parts.join("\n");
   };
 
-  // Determine swipe action based on filter tab:
+  // Determine swipe action based on filter tab and session type:
   // - Archived tab: swipe to delete
+  // - Child (spawned) sessions: swipe to delete (archive not applicable)
   // - Regular/Periodic tabs: swipe to archive
-  const isSwipeToDelete = filterTab === FILTER_TAB.ARCHIVED;
+  const isSwipeToDelete = filterTab === FILTER_TAB.ARCHIVED || isSpawned;
 
   // Swipe action handler - archive or delete based on current tab
   const handleSwipeAction = useCallback(() => {
@@ -1378,25 +1379,30 @@ function SessionItem({
   const isStreaming = !isArchived && (session.isStreaming || false);
 
   const contextMenuItems = [
-    {
-      label: !canArchive
-        ? archiveBlockedReason
-        : isArchived
-          ? "Unarchive"
-          : "Archive",
-      icon: isArchived
-        ? html`<${ArchiveFilledIcon} />`
-        : html`<${ArchiveIcon} />`,
-      onClick: canArchive ? () => handleArchive() : undefined,
-      disabled: !canArchive,
-    },
+    // Hide archive option for child (spawned) sessions
+    ...(isSpawned
+      ? []
+      : [
+          {
+            label: !canArchive
+              ? archiveBlockedReason
+              : isArchived
+                ? "Unarchive"
+                : "Archive",
+            icon: isArchived
+              ? html`<${ArchiveFilledIcon} />`
+              : html`<${ArchiveIcon} />`,
+            onClick: canArchive ? () => handleArchive() : undefined,
+            disabled: !canArchive,
+          },
+        ]),
     {
       label: "Properties",
       icon: html`<${EditIcon} />`,
       onClick: () => handleRename(),
     },
-    // Hide periodic option for archived sessions
-    ...(isArchived
+    // Hide periodic option for archived sessions and child (spawned) sessions
+    ...(isArchived || isSpawned
       ? []
       : [
           {
@@ -1908,10 +1914,39 @@ function SessionList({
       const regular = [];
       const periodic = [];
       const archived = [];
+
+      // Build a map for O(1) parent lookups
+      const sessionMap = new Map(allSessions.map((s) => [s.session_id, s]));
+
+      // Walk up the parent chain to find the root ancestor's category.
+      // Depth limit guards against circular references.
+      // If a child session is itself archived, always categorize as "archived"
+      // regardless of the parent's status — this ensures deleted children
+      // don't appear in the active conversations list.
+      const getSessionCategory = (session, depth = 0) => {
+        // A session that is itself archived is always "archived",
+        // even if its parent is still active.
+        if (session.archived) return "archived";
+
+        if (depth > 10 || !session.parent_session_id) {
+          // Base case: categorize by own flags
+          if (session.periodic_enabled) return "periodic";
+          return "regular";
+        }
+        const parent = sessionMap.get(session.parent_session_id);
+        if (!parent) {
+          // Parent not found — fall back to own flags
+          if (session.periodic_enabled) return "periodic";
+          return "regular";
+        }
+        return getSessionCategory(parent, depth + 1);
+      };
+
       allSessions.forEach((session) => {
-        if (session.archived) {
+        const category = getSessionCategory(session);
+        if (category === "archived") {
           archived.push(session);
-        } else if (session.periodic_enabled) {
+        } else if (category === "periodic") {
           periodic.push(session);
         } else {
           regular.push(session);
@@ -2127,6 +2162,42 @@ function SessionList({
         });
       }
       groups.get(groupKey).sessions.push(session);
+    });
+
+    // Build parent-child tree within each group (same as folder mode)
+    const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
+    groups.forEach((group) => {
+      const { rootSessions, childrenMap, orphans } = buildSessionTree(
+        group.sessions,
+        allKnownSessionIds,
+      );
+
+      // Attach children to parents
+      const parents = rootSessions.map((parent) => ({
+        ...parent,
+        children: childrenMap.get(parent.session_id) || [],
+      }));
+
+      // Sort children within each parent by created_at (most recent first)
+      parents.forEach((parent) => {
+        parent.children.sort(
+          (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+        );
+      });
+
+      // Sort parents by created_at (most recent first)
+      parents.sort(
+        (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+      );
+
+      // Sort orphans by created_at (most recent first)
+      orphans.sort(
+        (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+      );
+
+      // Replace flat list with tree structure
+      group.sessions = [...parents, ...orphans];
+      group.isParentChild = true;
     });
 
     // Convert to array and sort by label
@@ -2362,11 +2433,18 @@ function SessionList({
     return html`
       ${groupedSessions.map((group) => {
         const expanded = isSidebarGroupExpanded(group.key);
-        const sessionCount = group.sessions.length;
-        // Check if any session in this group is actively streaming
+        // Count total sessions including children
+        const sessionCount = group.sessions.reduce(
+          (sum, s) => sum + 1 + (s.children ? s.children.length : 0),
+          0,
+        );
+        // Check if any session (or its children) in this group is actively streaming
         // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
-        const hasStreamingSession = group.sessions.some((s) =>
-          streamingMap.has(s.session_id),
+        const hasStreamingSession = group.sessions.some(
+          (s) =>
+            streamingMap.has(s.session_id) ||
+            (s.children &&
+              s.children.some((c) => streamingMap.has(c.session_id))),
         );
         // Get workspace info for badge display (workspace mode only)
         const workspace =
@@ -2429,20 +2507,84 @@ function SessionList({
               <span class="text-xs text-gray-500">${sessionCount}</span>
             </div>
             ${expanded &&
-            group.sessions.map((session) =>
-              renderSessionItem(
-                {
-                  ...session,
-                  isStreaming: streamingMap.has(session.session_id),
-                },
-                {
-                  // In workspace grouping, hide entire badge (both abbreviation and ACP server are in group header)
-                  hideBadge: groupingMode === "workspace",
-                  // In server grouping, hide the ACP server name (redundant with group header)
-                  badgeHideAcpServer: groupingMode === "server",
-                },
-              ),
-            )}
+            (() => {
+              // Collect all parent group keys for accordion mode
+              const parentGroupKeys = group.sessions
+                .filter((s) => s.children && s.children.length > 0)
+                .map((s) => `parent:${s.session_id}`);
+
+              return group.sessions.map((session) => {
+                const hasChildSessions =
+                  session.children && session.children.length > 0;
+                const parentKey = `parent:${session.session_id}`;
+                const childrenExpanded = hasChildSessions
+                  ? isSidebarGroupExpanded(parentKey)
+                  : false;
+                const hasChildStreaming =
+                  hasChildSessions &&
+                  session.children.some((c) =>
+                    streamingMap.has(c.session_id),
+                  );
+
+                return html`
+                  <div
+                    key=${session.session_id}
+                    class="parent-session-group border-b border-slate-700 ${hasChildSessions ? "has-children" : ""}"
+                  >
+                    ${renderSessionItem(
+                      {
+                        ...session,
+                        isStreaming: streamingMap.has(session.session_id),
+                      },
+                      {
+                        hideBadge: groupingMode === "workspace",
+                        badgeHideAcpServer: groupingMode === "server",
+                        childCount: hasChildSessions
+                          ? session.children.length
+                          : 0,
+                        hasChildStreaming:
+                          hasChildSessions &&
+                          !childrenExpanded &&
+                          hasChildStreaming,
+                        hasChildren: hasChildSessions,
+                        isExpanded: childrenExpanded,
+                        onToggleExpand: hasChildSessions
+                          ? () =>
+                              handleToggleGroup(parentKey, parentGroupKeys)
+                          : null,
+                      },
+                    )}
+                    ${hasChildSessions &&
+                    html`
+                      <div
+                        class="session-children ${childrenExpanded ? "session-children--expanded" : ""}"
+                      >
+                        ${session.children.map(
+                          (child) =>
+                            html`<div class="session-item--child">
+                              ${renderSessionItem(
+                                {
+                                  ...child,
+                                  isStreaming: streamingMap.has(
+                                    child.session_id,
+                                  ),
+                                },
+                                {
+                                  hideBadge: groupingMode === "workspace",
+                                  badgeHideAcpServer:
+                                    groupingMode === "server",
+                                  isSpawned: true,
+                                  extraLeftPadding: "pl-8",
+                                },
+                              )}
+                            </div>`,
+                        )}
+                      </div>
+                    `}
+                  </div>
+                `;
+              });
+            })()}
           </div>
         `;
       })}
@@ -2602,9 +2744,92 @@ function SessionList({
     `;
   };
 
-  // Render sessions in "none" grouping mode - flat list
+  // Render sessions in "none" grouping mode - tree-aware (parent-child nesting)
   const renderUngroupedSessions = () => {
-    return filteredSessions.map((session) => renderSessionItem(session));
+    // Build parent-child tree
+    const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
+    const { rootSessions, childrenMap, orphans } = buildSessionTree(
+      filteredSessions,
+      allKnownSessionIds,
+    );
+
+    // Attach children to parents
+    const parents = rootSessions.map((parent) => ({
+      ...parent,
+      children: childrenMap.get(parent.session_id) || [],
+    }));
+
+    // Sort children within each parent (most recent first)
+    parents.forEach((parent) => {
+      parent.children.sort(
+        (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+      );
+    });
+
+    // Combine parents and orphans
+    const sessionsToRender = [...parents, ...orphans];
+
+    // Collect all parent group keys for accordion mode
+    const parentGroupKeys = sessionsToRender
+      .filter((s) => s.children && s.children.length > 0)
+      .map((s) => `parent:${s.session_id}`);
+
+    return sessionsToRender.map((session) => {
+      const hasChildSessions = session.children && session.children.length > 0;
+      const parentKey = `parent:${session.session_id}`;
+      const childrenExpanded = hasChildSessions
+        ? isSidebarGroupExpanded(parentKey)
+        : false;
+      const hasChildStreaming =
+        hasChildSessions &&
+        session.children.some((c) => streamingMap.has(c.session_id));
+
+      return html`
+        <div
+          key=${session.session_id}
+          class="parent-session-group border-b border-slate-700 ${hasChildSessions ? "has-children" : ""}"
+        >
+          ${renderSessionItem(
+            {
+              ...session,
+              isStreaming: streamingMap.has(session.session_id),
+            },
+            {
+              childCount: hasChildSessions ? session.children.length : 0,
+              hasChildStreaming:
+                hasChildSessions && !childrenExpanded && hasChildStreaming,
+              hasChildren: hasChildSessions,
+              isExpanded: childrenExpanded,
+              onToggleExpand: hasChildSessions
+                ? () => handleToggleGroup(parentKey, parentGroupKeys)
+                : null,
+            },
+          )}
+          ${hasChildSessions &&
+          html`
+            <div
+              class="session-children ${childrenExpanded ? "session-children--expanded" : ""}"
+            >
+              ${session.children.map(
+                (child) =>
+                  html`<div class="session-item--child">
+                    ${renderSessionItem(
+                      {
+                        ...child,
+                        isStreaming: streamingMap.has(child.session_id),
+                      },
+                      {
+                        isSpawned: true,
+                        extraLeftPadding: "pl-8",
+                      },
+                    )}
+                  </div>`,
+              )}
+            </div>
+          `}
+        </div>
+      `;
+    });
   };
 
   // Get empty state message based on active filter tab
@@ -3477,20 +3702,24 @@ function App() {
   // - When not grouped: sessions sorted by created_at (newest first)
   const navigableSessions = useMemo(() => {
     // First filter sessions based on the active filter tab
+    // Also exclude child sessions (those with parent_session_id) — navigation
+    // should only cycle through top-level conversations
     let tabFilteredSessions;
     switch (filterTabForNav) {
       case FILTER_TAB.PERIODIC:
         tabFilteredSessions = allSessions.filter(
-          (s) => !s.archived && s.periodic_enabled,
+          (s) => !s.archived && s.periodic_enabled && !s.parent_session_id,
         );
         break;
       case FILTER_TAB.ARCHIVED:
-        tabFilteredSessions = allSessions.filter((s) => s.archived);
+        tabFilteredSessions = allSessions.filter(
+          (s) => s.archived && !s.parent_session_id,
+        );
         break;
       case FILTER_TAB.CONVERSATIONS:
       default:
         tabFilteredSessions = allSessions.filter(
-          (s) => !s.archived && !s.periodic_enabled,
+          (s) => !s.archived && !s.periodic_enabled && !s.parent_session_id,
         );
         break;
     }
@@ -5904,6 +6133,7 @@ function App() {
                     activeSessionId &&
                     sessionInfo &&
                     !sessionInfo.acp_ready &&
+                    !sessionInfo.archived &&
                     html`
                       <p
                         class="text-sm mt-6 text-yellow-500 flex items-center gap-2"
@@ -6007,6 +6237,7 @@ function App() {
         activeSessionId &&
         sessionInfo &&
         !sessionInfo.acp_ready &&
+        !sessionInfo.archived &&
         messages.length > 0 &&
         html`
           <div
