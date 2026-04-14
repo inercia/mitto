@@ -98,6 +98,67 @@ func TestACPProcessManager_CloseWorkspaceAuxiliary(t *testing.T) {
 	}
 }
 
+func TestACPProcessManager_InvalidateAuxiliarySessions(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewACPProcessManager(ctx, nil)
+	defer mgr.Close()
+
+	// Add mock auxiliary sessions for two workspaces
+	mgr.auxMu.Lock()
+	mgr.auxSessions[auxSessionKey{workspaceUUID: "workspace1", purpose: "title-gen"}] = &auxiliarySessionState{
+		sessionID: "session1",
+	}
+	mgr.auxSessions[auxSessionKey{workspaceUUID: "workspace1", purpose: "follow-up"}] = &auxiliarySessionState{
+		sessionID: "session2",
+	}
+	mgr.auxSessions[auxSessionKey{workspaceUUID: "workspace2", purpose: "title-gen"}] = &auxiliarySessionState{
+		sessionID: "session3",
+	}
+	mgr.auxMu.Unlock()
+
+	// Invalidate workspace1's auxiliary sessions
+	mgr.invalidateAuxiliarySessions("workspace1")
+
+	// Check that workspace1's sessions are removed
+	mgr.auxMu.Lock()
+	defer mgr.auxMu.Unlock()
+
+	if _, exists := mgr.auxSessions[auxSessionKey{workspaceUUID: "workspace1", purpose: "title-gen"}]; exists {
+		t.Error("workspace1 title-gen session should be invalidated")
+	}
+	if _, exists := mgr.auxSessions[auxSessionKey{workspaceUUID: "workspace1", purpose: "follow-up"}]; exists {
+		t.Error("workspace1 follow-up session should be invalidated")
+	}
+
+	// Check that workspace2's session is untouched
+	if _, exists := mgr.auxSessions[auxSessionKey{workspaceUUID: "workspace2", purpose: "title-gen"}]; !exists {
+		t.Error("workspace2 title-gen session should still exist")
+	}
+}
+
+func TestACPProcessManager_InvalidateAuxiliarySessions_NoopForEmptyWorkspace(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewACPProcessManager(ctx, nil)
+	defer mgr.Close()
+
+	// Add a session for a different workspace
+	mgr.auxMu.Lock()
+	mgr.auxSessions[auxSessionKey{workspaceUUID: "workspace1", purpose: "title-gen"}] = &auxiliarySessionState{
+		sessionID: "session1",
+	}
+	mgr.auxMu.Unlock()
+
+	// Invalidate a non-existent workspace — should be a no-op
+	mgr.invalidateAuxiliarySessions("nonexistent")
+
+	mgr.auxMu.Lock()
+	defer mgr.auxMu.Unlock()
+
+	if len(mgr.auxSessions) != 1 {
+		t.Errorf("expected 1 session remaining, got %d", len(mgr.auxSessions))
+	}
+}
+
 func TestACPProcessManager_PromptAuxiliary_NoProcess(t *testing.T) {
 	ctx := context.Background()
 	mgr := NewACPProcessManager(ctx, nil)

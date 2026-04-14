@@ -109,6 +109,8 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	m.mu.Lock()
 	lockWait := time.Since(lockStart)
 
+	recreated := false // Track whether we're replacing a dead/changed process
+
 	// Check if process already exists and is alive
 	if p, ok := m.processes[workspace.UUID]; ok {
 		select {
@@ -120,6 +122,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 					"acp_server", workspace.ACPServer)
 			}
 			delete(m.processes, workspace.UUID)
+			recreated = true
 		default:
 			if !sharedProcessConfigMatchesWorkspace(p, workspace) {
 				if m.logger != nil {
@@ -132,6 +135,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 				}
 				p.Close()
 				delete(m.processes, workspace.UUID)
+				recreated = true
 				break
 			}
 
@@ -179,6 +183,14 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	// Release lock before pre-warming: prewarmAuxiliarySessions calls GetProcess
 	// which also acquires m.mu, so the lock must be released first.
 	m.mu.Unlock()
+
+	// If the process was recreated (dead or config changed), invalidate cached
+	// auxiliary sessions. Those sessions were on the old process and their IDs
+	// are unknown to the new process. Must be called after m.mu is released to
+	// respect lock ordering (auxMu → mu).
+	if recreated {
+		m.invalidateAuxiliarySessions(workspace.UUID)
+	}
 
 	if m.logger != nil {
 		m.logger.Info("Created shared ACP process for workspace",
@@ -630,6 +642,30 @@ func (m *ACPProcessManager) CloseWorkspaceAuxiliary(workspaceUUID string) error 
 	m.StopAuxProcess(workspaceUUID)
 
 	return nil
+}
+
+// invalidateAuxiliarySessions removes cached auxiliary session entries for a workspace,
+// forcing new sessions to be created on the next PromptAuxiliary call.
+// Unlike CloseWorkspaceAuxiliary, this does NOT stop the dedicated aux process
+// (which uses a separate ACP server and is unaffected by main process recreation).
+// This must be called AFTER releasing m.mu to respect lock ordering (auxMu → mu).
+func (m *ACPProcessManager) invalidateAuxiliarySessions(workspaceUUID string) {
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
+
+	var count int
+	for key := range m.auxSessions {
+		if key.workspaceUUID == workspaceUUID {
+			delete(m.auxSessions, key)
+			count++
+		}
+	}
+
+	if m.logger != nil && count > 0 {
+		m.logger.Info("Invalidated stale auxiliary sessions due to process recreation",
+			"workspace_uuid", workspaceUUID,
+			"count", count)
+	}
 }
 
 // CleanupStaleAuxiliarySessions removes auxiliary sessions that haven't been used recently.
