@@ -1005,7 +1005,7 @@ a.mailto-link:hover {
 
 .scroll-to-bottom-btn {
   position: relative;
-  bottom: 100px;
+  bottom: 20px;
   width: 44px;
   height: 44px;
   border-radius: 50%;
@@ -1118,7 +1118,7 @@ a.mailto-link:hover {
 /* Mobile adjustments */
 @media (max-width: 640px) {
   .scroll-to-bottom-btn {
-    bottom: 200px;
+    bottom: 16px;
     width: 40px;
     height: 40px;
   }
