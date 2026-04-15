@@ -2009,15 +2009,21 @@ function SessionList({
       return null; // No grouping, render flat list
     }
 
-    // Compute structural fingerprint: only session IDs, parent IDs, and working dirs matter for tree structure
-    // This avoids expensive buildSessionTree rebuilds when only isStreaming or message content changes
-    const fingerprint = filteredSessions
-      .map(
-        (s) =>
-          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ""}`,
-      )
-      .sort()
-      .join("\n");
+    // Compute structural fingerprint: session IDs, parent IDs, working dirs, AND grouping mode
+    // This avoids expensive buildSessionTree rebuilds when only non-structural properties change
+    // (e.g., isStreaming, message content during tool_update events).
+    // groupingMode MUST be included because the same sessions produce different group structures
+    // depending on the mode (server vs folder vs workspace).
+    const fingerprint =
+      groupingMode +
+      "\n" +
+      filteredSessions
+        .map(
+          (s) =>
+            `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ""}`,
+        )
+        .sort()
+        .join("\n");
 
     if (
       fingerprint === prevSessionFingerprint.current &&
@@ -2037,6 +2043,21 @@ function SessionList({
       };
     };
 
+    // Build a lookup map and root-parent resolver used by all grouping modes
+    // to ensure children are placed in the same group as their parent.
+    const sessionById = new Map(filteredSessions.map((s) => [s.session_id, s]));
+    const resolveRootParent = (session) => {
+      let current = session;
+      let depth = 0;
+      while (current.parent_session_id && depth < 10) {
+        const parent = sessionById.get(current.parent_session_id);
+        if (!parent) break;
+        current = parent;
+        depth++;
+      }
+      return current;
+    };
+
     if (groupingMode === "folder") {
       // Hierarchical mode: folder -> sessions (with parent-child relationships)
       // Structure: Folder → Parent sessions (with nested child sessions)
@@ -2051,13 +2072,20 @@ function SessionList({
       const getParentSessionId = (session) => session.parent_session_id || "";
 
       // First pass: group all sessions by folder
+      // Use root parent's working_dir so children with a different working_dir
+      // end up in the same folder group as their parent.
       filteredSessions.forEach((session) => {
-        const { workingDir } = getSessionInfo(session);
+        const rootParent = resolveRootParent(session);
+        const { workingDir } = getSessionInfo(rootParent);
         const folderKey = workingDir || "Unknown";
 
         if (!folderGroups.has(folderKey)) {
           folderGroups.set(folderKey, {
-            label: workingDir ? getBasename(workingDir) : "Unknown",
+            label: (() => {
+              if (!workingDir) return "Unknown";
+              const ws = workspaces.find(w => w.working_dir === workingDir);
+              return ws?.name || getBasename(workingDir);
+            })(),
             workingDir,
             allSessions: [], // All sessions in this folder (before parent-child grouping)
           });
@@ -2131,24 +2159,28 @@ function SessionList({
     const groups = new Map();
 
     filteredSessions.forEach((session) => {
+      // Use root parent's properties for grouping so children with a different
+      // acp_server or working_dir stay in the same group as their parent.
+      const groupSession = resolveRootParent(session);
+
       let groupKey;
       let groupLabel;
       let groupWorkingDir = "";
       let groupAcpServer = "";
 
       if (groupingMode === "server") {
-        const { acpServer } = getSessionInfo(session);
+        const { acpServer } = getSessionInfo(groupSession);
         groupKey = acpServer || "Unknown";
         groupLabel = groupKey;
       } else {
         // workspace mode - group by workspace (working_dir + acp_server combination)
         // This ensures workspaces with the same folder but different ACP servers are separate groups
-        const { workingDir, acpServer } = getSessionInfo(session);
+        const { workingDir, acpServer } = getSessionInfo(groupSession);
         // Use composite key: working_dir|acp_server (to separate same-folder workspaces)
         groupKey = `${workingDir}|${acpServer}`;
-        // Label is just the basename - acpServer is shown as a badge
-        const basename = workingDir ? getBasename(workingDir) : "Unknown";
-        groupLabel = basename;
+        // Label is the workspace display name if available, otherwise basename - acpServer is shown as a badge
+        const ws = workspaces.find(w => w.working_dir === workingDir && (!acpServer || w.acp_server === acpServer));
+        groupLabel = ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
         groupWorkingDir = workingDir;
         groupAcpServer = acpServer;
       }
@@ -2207,7 +2239,7 @@ function SessionList({
 
     prevGroupedSessions.current = result;
     return result;
-  }, [filteredSessions, groupingMode, allSessions]);
+  }, [filteredSessions, groupingMode, allSessions, workspaces]);
 
   // Build a map from session ID → its family's parent group key ("parent:<id>").
   // Covers both the parent session itself and all its children.
@@ -2896,8 +2928,8 @@ function SessionList({
           title="Conversations"
         >
           <${ChatBubbleIcon} className="w-5 h-5" />
-          ${regularSessions.length > 0 &&
-          html`<span class="ml-1.5 text-xs">${regularSessions.length}</span>`}
+          ${regularSessions.filter(s => !s.parent_session_id).length > 0 &&
+          html`<span class="ml-1.5 text-xs">${regularSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
         <button
           role="tab"
@@ -2912,8 +2944,8 @@ function SessionList({
           title="Periodic"
         >
           <${PeriodicIcon} className="w-5 h-5" />
-          ${periodicSessions.length > 0 &&
-          html`<span class="ml-1.5 text-xs">${periodicSessions.length}</span>`}
+          ${periodicSessions.filter(s => !s.parent_session_id).length > 0 &&
+          html`<span class="ml-1.5 text-xs">${periodicSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
         <button
           role="tab"
@@ -2928,8 +2960,8 @@ function SessionList({
           title="Archived"
         >
           <${ArchiveIcon} className="w-5 h-5" />
-          ${archivedSessions.length > 0 &&
-          html`<span class="ml-1.5 text-xs">${archivedSessions.length}</span>`}
+          ${archivedSessions.filter(s => !s.parent_session_id).length > 0 &&
+          html`<span class="ml-1.5 text-xs">${archivedSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
       </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">
@@ -3686,12 +3718,14 @@ function App() {
           storedSession?.working_dir ||
           getGlobalWorkingDir(session.session_id) ||
           "";
-        // Label is the basename (same as sidebar)
-        return workingDir ? getBasename(workingDir) : "Unknown";
+        // Label is the workspace display name if available, otherwise basename
+        const acpServer = session.acp_server || storedSession?.acp_server || "";
+        const ws = workspaces.find(w => w.working_dir === workingDir && (!acpServer || w.acp_server === acpServer));
+        return ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
       }
       return "";
     },
-    [groupingModeForNav, storedSessions],
+    [groupingModeForNav, storedSessions, workspaces],
   );
 
   // Sessions available for navigation based on active filter tab
