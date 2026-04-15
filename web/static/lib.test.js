@@ -4804,3 +4804,124 @@ describe("formatTimeAgo", () => {
     expect(formatTimeAgo(fiveMinutesAgo)).toBe("5m ago");
   });
 });
+
+
+describe("User Prompt Image Construction (WebSocket handler)", () => {
+  // This tests the logic used in the user_prompt WebSocket handler
+  // (useWebSocket.js) to construct image objects from raw image_ids.
+  //
+  // Bug: The handler previously stored `imageIds` (raw ID strings) on the
+  // message, but Message.js renders from `message.images` (array of objects
+  // with {id, url, name}). Images were invisible until reload because
+  // convertEventsToMessages (used on reload) correctly constructs the objects.
+  //
+  // Fix: The handler now constructs proper image objects matching the format
+  // from convertEventsToMessages.
+
+  // Helper that mimics the FIXED user_prompt handler image construction
+  function buildUserMessageWithImages(sessionId, message, imageIds, apiPrefix = "") {
+    const userMessage = {
+      role: ROLE_USER,
+      text: message,
+      timestamp: Date.now(),
+      seq: 1,
+    };
+    if (imageIds && imageIds.length > 0) {
+      userMessage.images = imageIds.map((id) => ({
+        id,
+        url: `${apiPrefix}/api/sessions/${sessionId}/images/${id}`,
+        name: id,
+      }));
+    }
+    return userMessage;
+  }
+
+  // Helper that mimics the OLD BUGGY handler (for regression test)
+  function buildUserMessageWithImagesBuggy(message, imageIds) {
+    const userMessage = {
+      role: ROLE_USER,
+      text: message,
+      timestamp: Date.now(),
+      seq: 1,
+    };
+    if (imageIds && imageIds.length > 0) {
+      userMessage.imageIds = imageIds; // Bug: wrong property name
+    }
+    return userMessage;
+  }
+
+  test("constructs images array with URLs from image_ids", () => {
+    const msg = buildUserMessageWithImages("sess-123", "Check this", ["img_001", "img_002"]);
+    expect(msg.images).toHaveLength(2);
+    expect(msg.images[0]).toEqual({
+      id: "img_001",
+      url: "/api/sessions/sess-123/images/img_001",
+      name: "img_001",
+    });
+    expect(msg.images[1]).toEqual({
+      id: "img_002",
+      url: "/api/sessions/sess-123/images/img_002",
+      name: "img_002",
+    });
+  });
+
+  test("images property is undefined when no image_ids", () => {
+    const msg = buildUserMessageWithImages("sess-123", "No images", []);
+    expect(msg.images).toBeUndefined();
+  });
+
+  test("images property is undefined when image_ids is null", () => {
+    const msg = buildUserMessageWithImages("sess-123", "No images", null);
+    expect(msg.images).toBeUndefined();
+  });
+
+  test("image URLs include apiPrefix when set", () => {
+    const msg = buildUserMessageWithImages("sess-123", "Test", ["img_001"], "/mitto");
+    expect(msg.images[0].url).toBe("/mitto/api/sessions/sess-123/images/img_001");
+  });
+
+  test("image format matches convertEventsToMessages output", () => {
+    // The WebSocket handler's output should be compatible with what
+    // convertEventsToMessages produces for the same image IDs
+    const sessionId = "test-session";
+    const imageId = "img_001.png";
+
+    // What the WebSocket handler produces
+    const wsMessage = buildUserMessageWithImages(sessionId, "Test", [imageId]);
+
+    // What convertEventsToMessages produces
+    const events = [{
+      type: "user_prompt",
+      data: {
+        message: "Test",
+        images: [{ id: imageId, mime_type: "image/png" }],
+      },
+      timestamp: "2024-01-01T10:00:00Z",
+      seq: 1,
+    }];
+    const loadedMessages = convertEventsToMessages(events, { sessionId });
+
+    // Both should have images with id and url
+    expect(wsMessage.images[0].id).toBe(loadedMessages[0].images[0].id);
+    expect(wsMessage.images[0].url).toBe(loadedMessages[0].images[0].url);
+  });
+
+  test("Message component can render images from WebSocket handler", () => {
+    // Message.js checks: message.images && message.images.length > 0
+    // and renders: message.images.map(img => img.url)
+    const msg = buildUserMessageWithImages("sess-123", "Check this", ["img_001"]);
+    const hasImages = msg.images && msg.images.length > 0;
+    expect(hasImages).toBe(true);
+    expect(msg.images[0].url).toBeDefined();
+    expect(msg.images[0].url).toContain("/api/sessions/");
+  });
+
+  test("OLD BUG: imageIds property is invisible to Message component", () => {
+    // This verifies the old bug: storing imageIds instead of images
+    // meant Message.js could never see the images
+    const msg = buildUserMessageWithImagesBuggy("Check this", ["img_001"]);
+    const hasImages = msg.images && msg.images.length > 0;
+    expect(hasImages).toBeFalsy(); // Bug: images is undefined
+    expect(msg.imageIds).toHaveLength(1); // The data was there, just wrong property
+  });
+});

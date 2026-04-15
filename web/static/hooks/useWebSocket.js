@@ -2385,9 +2385,15 @@ export function useWebSocket() {
               fromOtherClient: true,
               seq, // Include seq for ordering and deduplication
             };
-            // Add image references if present (we don't have the actual image data)
+            // Add image references if present, constructing full image objects
+            // with URLs so the Message component can render them immediately
+            // (matching the format produced by convertEventsToMessages in lib.js)
             if (image_ids && image_ids.length > 0) {
-              userMessage.imageIds = image_ids;
+              userMessage.images = image_ids.map((id) => ({
+                id,
+                url: `${getApiPrefix()}/api/sessions/${sessionId}/images/${id}`,
+                name: id,
+              }));
             }
             messages = limitMessages([...messages, userMessage]);
             console.log(
