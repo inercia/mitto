@@ -313,6 +313,9 @@ export function ChatInput({
   const [isPeriodicLocked, setIsPeriodicLocked] = useState(false);
   const [isPeriodicSaving, setIsPeriodicSaving] = useState(false);
 
+  // Max height for textarea: collapsed when periodic is locked, full otherwise
+  const textareaMaxHeight = periodicEnabled && isPeriodicLocked ? 80 : 200;
+
   // Scroll selected prompt into view when keyboard selection changes
   useEffect(() => {
     if (promptSelectedIndex >= 0) {
@@ -559,13 +562,14 @@ export function ChatInput({
   }, [showDropup]);
 
   // Adjust textarea height when draft changes (e.g., switching sessions)
+  // Also re-adjusts when periodic lock state changes (collapse when locked, expand when unlocked)
   useEffect(() => {
     const textarea = textareaRef.current;
     if (textarea) {
       textarea.style.height = "auto";
-      textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+      textarea.style.height = Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
     }
-  }, [text]);
+  }, [text, textareaMaxHeight]);
 
   // Clean up toolbar hide timeout on unmount
   useEffect(() => {
@@ -896,7 +900,7 @@ export function ChatInput({
     setText(newValue);
     const textarea = e.target;
     textarea.style.height = "auto";
-    textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+    textarea.style.height = Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
 
     // Show slash command picker when typing '/' at the start
     if (
@@ -931,7 +935,7 @@ export function ChatInput({
         textarea.focus();
         // Adjust height to fit content
         textarea.style.height = "auto";
-        textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+        textarea.style.height = Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
       });
     } else {
       // Fallback: just set the text
@@ -986,7 +990,7 @@ export function ChatInput({
             if (textarea) {
               textarea.style.height = "auto";
               textarea.style.height =
-                Math.min(textarea.scrollHeight, 200) + "px";
+                Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
               textarea.focus();
             }
           });
@@ -1558,11 +1562,11 @@ export function ChatInput({
         if (textarea) {
           textarea.focus();
           textarea.style.height = "auto";
-          textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+          textarea.style.height = Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
         }
       });
     },
-    [setText],
+    [setText, textareaMaxHeight],
   );
 
   return html`
@@ -2200,7 +2204,7 @@ export function ChatInput({
                 : "Type your recurring prompt, then click 🔒 to activate"
               : getPlaceholder()}
             rows="3"
-            class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-[200px] placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
+            class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 ${periodicEnabled && isPeriodicLocked ? 'max-h-[80px] overflow-y-auto' : 'max-h-[200px] overflow-y-hidden'} placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
             isReadOnly ||
             isImproving ||
             (periodicEnabled && isPeriodicLocked)
