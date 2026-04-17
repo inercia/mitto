@@ -318,6 +318,7 @@ export function ChatInput({
   // UI textbox state (for mitto_ui_textbox)
   const [textboxValue, setTextboxValue] = useState("");
   const textboxRef = useRef(null);
+  const [isPromptCollapsed, setIsPromptCollapsed] = useState(false);
 
   // Periodic prompt lock state
   // When locked, the prompt is saved to the periodic config and textarea is read-only
@@ -394,10 +395,13 @@ export function ChatInput({
     setFreeTextInput("");
   }, [activeUIPrompt?.requestId]);
 
-  // Initialize textbox value when a textbox prompt arrives
+  // Initialize textbox value when a textbox prompt arrives, and auto-collapse prompt area
   useEffect(() => {
     if (activeUIPrompt?.promptType === "textbox") {
       setTextboxValue(activeUIPrompt.text || "");
+      setIsPromptCollapsed(true); // Collapse prompt area when textbox appears
+    } else {
+      setIsPromptCollapsed(false); // Expand when textbox disappears
     }
   }, [activeUIPrompt?.requestId]);
 
@@ -1559,6 +1563,8 @@ export function ChatInput({
           label,
           freeText,
         });
+        // Immediately expand the prompt area (don't wait for dismiss from backend)
+        setIsPromptCollapsed(false);
         onUIPromptAnswer(activeUIPrompt.requestId, optionId, label, freeText);
       }
     },
@@ -1740,18 +1746,39 @@ ${activeUIPrompt.text || ""}</textarea
                             : ""}${textboxValue.length.toLocaleString()}
                           / 16,384
                         </span>
-                        <div class="flex gap-2">
-                          ${activeUIPrompt.allowAbort &&
-                          html`
-                            <button
-                              type="button"
-                              onClick=${() =>
-                                handleUIPromptAnswer("abort", "Abort")}
-                              class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-600 hover:bg-slate-500 text-white transition-colors"
+                        <div class="flex gap-2 items-center">
+                          <button
+                            type="button"
+                            onClick=${() => setIsPromptCollapsed((v) => !v)}
+                            class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
+                            title=${isPromptCollapsed
+                              ? "Show prompt area"
+                              : "Hide prompt area"}
+                          >
+                            <svg
+                              class="w-4 h-4 transition-transform ${isPromptCollapsed
+                                ? ""
+                                : "rotate-180"}"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
                             >
-                              Abort
-                            </button>
-                          `}
+                              <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M19 9l-7 7-7-7"
+                              />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick=${() =>
+                              handleUIPromptAnswer("abort", "Abort")}
+                            class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-600 hover:bg-slate-500 text-white transition-colors"
+                          >
+                            Abort
+                          </button>
                           <button
                             type="button"
                             onClick=${() =>
@@ -2094,111 +2121,34 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-
-      <!-- Collapsible Action Toolbar - positioned at bottom-right of conversation area -->
-      <!-- Note: toolbar uses flex-direction: row-reverse, so DOM order is reversed from visual order -->
-      <!-- Visual order (left to right): magic-wand / save / attach-file / attach-image / trash -->
-      <div
-        ref=${toolbarRef}
-        class="action-toolbar ${isTextareaFocused &&
-        !isFullyDisabled &&
-        !isReadOnly
-          ? "visible"
-          : ""}"
-      >
-        <!-- Clear Button (trash icon) - rightmost in visual order -->
-        <button
-          type="button"
-          onClick=${() => {
-            setText("");
-            setPendingImages([]);
-            setPendingFiles([]);
-          }}
-          onMouseDown=${(e) => e.preventDefault()}
-          disabled=${isFullyDisabled ||
-          isReadOnly ||
-          isImproving ||
-          (!text.trim() && !hasPendingAttachments)}
-          class="action-toolbar-btn"
-          title="Clear message"
+      ${!(isPromptCollapsed && activeUIPrompt?.promptType === "textbox") &&
+      html`
+        <!-- Collapsible Action Toolbar - positioned at bottom-right of conversation area -->
+        <!-- Note: toolbar uses flex-direction: row-reverse, so DOM order is reversed from visual order -->
+        <!-- Visual order (left to right): magic-wand / save / attach-file / attach-image / trash -->
+        <div
+          ref=${toolbarRef}
+          class="action-toolbar ${isTextareaFocused &&
+          !isFullyDisabled &&
+          !isReadOnly
+            ? "visible"
+            : ""}"
         >
-          <svg
-            class="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-            />
-          </svg>
-        </button>
-
-        <!-- Attach Image Button -->
-        <button
-          type="button"
-          onClick=${handleAttachImageClick}
-          onMouseDown=${(e) => e.preventDefault()}
-          disabled=${isFullyDisabled || isReadOnly || isImproving}
-          class="action-toolbar-btn"
-          title="Attach image"
-        >
-          <svg
-            class="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-            />
-          </svg>
-        </button>
-
-        <!-- Attach File Button (paperclip icon) -->
-        <button
-          type="button"
-          onClick=${handleAttachFileClick}
-          onMouseDown=${(e) => e.preventDefault()}
-          disabled=${isFullyDisabled || isReadOnly || isImproving}
-          class="action-toolbar-btn"
-          title="Attach file"
-        >
-          <svg
-            class="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-            />
-          </svg>
-        </button>
-
-        <!-- Save Prompt Button (floppy disk icon) - macOS native only, hidden on external access -->
-        ${isNativeApp() &&
-        window.mittoIsExternal !== true &&
-        html`
+          <!-- Clear Button (trash icon) - rightmost in visual order -->
           <button
             type="button"
-            onClick=${() => setShowSaveDialog(true)}
+            onClick=${() => {
+              setText("");
+              setPendingImages([]);
+              setPendingFiles([]);
+            }}
             onMouseDown=${(e) => e.preventDefault()}
             disabled=${isFullyDisabled ||
-            !text.trim() ||
             isReadOnly ||
-            isImproving}
+            isImproving ||
+            (!text.trim() && !hasPendingAttachments)}
             class="action-toolbar-btn"
-            title="Save prompt as file"
+            title="Clear message"
           >
             <svg
               class="w-5 h-5"
@@ -2210,28 +2160,195 @@ ${activeUIPrompt.text || ""}</textarea
                 stroke-linecap="round"
                 stroke-linejoin="round"
                 stroke-width="2"
-                d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
               />
             </svg>
           </button>
-        `}
 
-        <!-- Magic Wand / Improve Prompt Button - leftmost in visual order -->
-        <button
-          type="button"
-          onClick=${handleImprovePrompt}
-          onMouseDown=${(e) => e.preventDefault()}
-          disabled=${isFullyDisabled ||
-          !text.trim() ||
-          isReadOnly ||
-          isImproving}
-          class="action-toolbar-btn ${isImproving ? "loading" : ""}"
-          title="Improve prompt with AI (Ctrl+P)"
+          <!-- Attach Image Button -->
+          <button
+            type="button"
+            onClick=${handleAttachImageClick}
+            onMouseDown=${(e) => e.preventDefault()}
+            disabled=${isFullyDisabled || isReadOnly || isImproving}
+            class="action-toolbar-btn"
+            title="Attach image"
+          >
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+              />
+            </svg>
+          </button>
+
+          <!-- Attach File Button (paperclip icon) -->
+          <button
+            type="button"
+            onClick=${handleAttachFileClick}
+            onMouseDown=${(e) => e.preventDefault()}
+            disabled=${isFullyDisabled || isReadOnly || isImproving}
+            class="action-toolbar-btn"
+            title="Attach file"
+          >
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+              />
+            </svg>
+          </button>
+
+          <!-- Save Prompt Button (floppy disk icon) - macOS native only, hidden on external access -->
+          ${isNativeApp() &&
+          window.mittoIsExternal !== true &&
+          html`
+            <button
+              type="button"
+              onClick=${() => setShowSaveDialog(true)}
+              onMouseDown=${(e) => e.preventDefault()}
+              disabled=${isFullyDisabled ||
+              !text.trim() ||
+              isReadOnly ||
+              isImproving}
+              class="action-toolbar-btn"
+              title="Save prompt as file"
+            >
+              <svg
+                class="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
+                />
+              </svg>
+            </button>
+          `}
+
+          <!-- Magic Wand / Improve Prompt Button - leftmost in visual order -->
+          <button
+            type="button"
+            onClick=${handleImprovePrompt}
+            onMouseDown=${(e) => e.preventDefault()}
+            disabled=${isFullyDisabled ||
+            !text.trim() ||
+            isReadOnly ||
+            isImproving}
+            class="action-toolbar-btn ${isImproving ? "loading" : ""}"
+            title="Improve prompt with AI (Ctrl+P)"
+          >
+            ${isImproving
+              ? html`
+                  <svg
+                    class="w-5 h-5 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      stroke-width="4"
+                    ></circle>
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                `
+              : html`
+                  <svg
+                    class="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                    />
+                  </svg>
+                `}
+          </button>
+        </div>
+
+        <div
+          class="flex gap-2 items-end max-w-4xl mx-auto chat-input-container"
         >
-          ${isImproving
-            ? html`
+          <!-- Textarea container -->
+          <div class="relative flex-1">
+            <!-- Slash command picker - expands from bottom of this container -->
+            <${SlashCommandPicker}
+              isOpen=${showSlashPicker}
+              onClose=${() => setShowSlashPicker(false)}
+              onSelect=${handleSlashCommandSelect}
+              commands=${availableCommands}
+              filter=${slashFilter}
+              selectedIndex=${slashSelectedIndex}
+              onSelectedIndexChange=${setSlashSelectedIndex}
+            />
+
+            <textarea
+              ref=${textareaRef}
+              value=${text}
+              onInput=${handleInput}
+              onKeyDown=${handleKeyDown}
+              onPaste=${handlePaste}
+              onFocus=${handleTextareaFocus}
+              onBlur=${handleTextareaBlur}
+              placeholder=${periodicEnabled
+                ? isPeriodicLocked
+                  ? "Periodic prompt locked — click 🔓 to edit"
+                  : "Type your recurring prompt, then click 🔒 to activate"
+                : getPlaceholder()}
+              rows="3"
+              class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 ${periodicEnabled &&
+              isPeriodicLocked
+                ? "max-h-[80px] overflow-y-auto"
+                : "max-h-[200px] overflow-y-hidden"} placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
+              isReadOnly ||
+              isImproving ||
+              (periodicEnabled && isPeriodicLocked)
+                ? "opacity-50 cursor-not-allowed"
+                : ""} ${periodicEnabled && isPeriodicLocked
+                ? "bg-slate-800"
+                : ""}"
+              disabled=${isFullyDisabled ||
+              isReadOnly ||
+              isImproving ||
+              (periodicEnabled && isPeriodicLocked)}
+            />
+
+            <!-- Improving prompt overlay with spinner -->
+            ${isImproving &&
+            html`
+              <div class="textarea-improving-overlay">
                 <svg
-                  class="w-5 h-5 animate-spin"
+                  class="w-6 h-6 animate-spin text-blue-400"
                   fill="none"
                   viewBox="0 0 24 24"
                 >
@@ -2249,407 +2366,239 @@ ${activeUIPrompt.text || ""}</textarea
                     d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                   ></path>
                 </svg>
-              `
-            : html`
-                <svg
-                  class="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+                <span class="text-sm text-blue-300 mt-2"
+                  >Improving prompt...</span
                 >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
-                  />
-                </svg>
-              `}
-        </button>
-      </div>
-
-      <div class="flex gap-2 items-end max-w-4xl mx-auto chat-input-container">
-        <!-- Textarea container -->
-        <div class="relative flex-1">
-          <!-- Slash command picker - expands from bottom of this container -->
-          <${SlashCommandPicker}
-            isOpen=${showSlashPicker}
-            onClose=${() => setShowSlashPicker(false)}
-            onSelect=${handleSlashCommandSelect}
-            commands=${availableCommands}
-            filter=${slashFilter}
-            selectedIndex=${slashSelectedIndex}
-            onSelectedIndexChange=${setSlashSelectedIndex}
-          />
-
-          <textarea
-            ref=${textareaRef}
-            value=${text}
-            onInput=${handleInput}
-            onKeyDown=${handleKeyDown}
-            onPaste=${handlePaste}
-            onFocus=${handleTextareaFocus}
-            onBlur=${handleTextareaBlur}
-            placeholder=${periodicEnabled
-              ? isPeriodicLocked
-                ? "Periodic prompt locked — click 🔓 to edit"
-                : "Type your recurring prompt, then click 🔒 to activate"
-              : getPlaceholder()}
-            rows="3"
-            class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 ${periodicEnabled &&
-            isPeriodicLocked
-              ? "max-h-[80px] overflow-y-auto"
-              : "max-h-[200px] overflow-y-hidden"} placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
-            isReadOnly ||
-            isImproving ||
-            (periodicEnabled && isPeriodicLocked)
-              ? "opacity-50 cursor-not-allowed"
-              : ""} ${periodicEnabled && isPeriodicLocked
-              ? "bg-slate-800"
-              : ""}"
-            disabled=${isFullyDisabled ||
-            isReadOnly ||
-            isImproving ||
-            (periodicEnabled && isPeriodicLocked)}
-          />
-
-          <!-- Improving prompt overlay with spinner -->
-          ${isImproving &&
-          html`
-            <div class="textarea-improving-overlay">
-              <svg
-                class="w-6 h-6 animate-spin text-blue-400"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-              <span class="text-sm text-blue-300 mt-2"
-                >Improving prompt...</span
-              >
-            </div>
-          `}
-        </div>
-
-        <!-- Vertical button stack (Send on top, Queue below) - aligned with textarea -->
-        <div class="relative chat-input-buttons flex-shrink-0" ref=${dropupRef}>
-          ${showDropup &&
-          hasPrompts &&
-          html`
-            <div
-              class="absolute bottom-full right-0 mb-2 w-64 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 max-h-80 flex flex-col"
-              style="box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
-            >
-              <!-- Filter input -->
-              <div class="px-2 pt-2 pb-1 flex-shrink-0">
-                <input
-                  ref=${promptFilterInputRef}
-                  type="text"
-                  value=${promptFilterText}
-                  onInput=${(e) => {
-                    setPromptFilterText(e.target.value);
-                    setPromptSelectedIndex(-1);
-                  }}
-                  onKeyDown=${(e) => {
-                    // Prevent the event from bubbling to the textarea
-                    e.stopPropagation();
-                    if (e.key === "Escape") {
-                      setShowDropup(false);
-                      return;
-                    }
-                    if (e.key === "ArrowDown") {
-                      e.preventDefault();
-                      setPromptSelectedIndex((prev) =>
-                        Math.min(prev + 1, flatFilteredPrompts.length - 1),
-                      );
-                      return;
-                    }
-                    if (e.key === "ArrowUp") {
-                      e.preventDefault();
-                      setPromptSelectedIndex((prev) => Math.max(-1, prev - 1));
-                      return;
-                    }
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      if (
-                        promptSelectedIndex >= 0 &&
-                        flatFilteredPrompts.length > 0
-                      ) {
-                        const clampedIndex = Math.min(
-                          Math.max(promptSelectedIndex, 0),
-                          flatFilteredPrompts.length - 1,
-                        );
-                        handlePredefinedPrompt(
-                          flatFilteredPrompts[clampedIndex],
-                        );
-                      }
-                      return;
-                    }
-                  }}
-                  placeholder="Filter prompts..."
-                  autocomplete="off"
-                  autocorrect="off"
-                  autocapitalize="off"
-                  spellcheck=${false}
-                  class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
-                />
               </div>
-              <div class="py-1 overflow-y-auto">
-                ${(() => {
-                  // Re-group the precomputed flat list for rendering with group headers
-                  const groupedPrompts = {};
-                  const ungroupedPrompts = [];
-                  flatFilteredPrompts.forEach((prompt) => {
-                    if (prompt.group) {
-                      if (!groupedPrompts[prompt.group])
-                        groupedPrompts[prompt.group] = [];
-                      groupedPrompts[prompt.group].push(prompt);
-                    } else {
-                      ungroupedPrompts.push(prompt);
-                    }
-                  });
-                  const sortedGroupNames = Object.keys(groupedPrompts).sort();
-                  const sortedUngrouped = ungroupedPrompts; // already sorted in useMemo
+            `}
+          </div>
 
-                  // Build a lookup: prompt -> flat index for selection highlighting
-                  const promptToFlatIdx = new Map();
-                  flatFilteredPrompts.forEach((p, i) =>
-                    promptToFlatIdx.set(p, i),
-                  );
-
-                  const clampedIndex =
-                    flatFilteredPrompts.length === 0
-                      ? -1
-                      : Math.min(
-                          promptSelectedIndex,
-                          flatFilteredPrompts.length - 1,
+          <!-- Vertical button stack (Send on top, Queue below) - aligned with textarea -->
+          <div
+            class="relative chat-input-buttons flex-shrink-0"
+            ref=${dropupRef}
+          >
+            ${showDropup &&
+            hasPrompts &&
+            html`
+              <div
+                class="absolute bottom-full right-0 mb-2 w-64 bg-slate-800 border border-slate-600 rounded-xl overflow-hidden z-50 max-h-80 flex flex-col"
+                style="box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+              >
+                <!-- Filter input -->
+                <div class="px-2 pt-2 pb-1 flex-shrink-0">
+                  <input
+                    ref=${promptFilterInputRef}
+                    type="text"
+                    value=${promptFilterText}
+                    onInput=${(e) => {
+                      setPromptFilterText(e.target.value);
+                      setPromptSelectedIndex(-1);
+                    }}
+                    onKeyDown=${(e) => {
+                      // Prevent the event from bubbling to the textarea
+                      e.stopPropagation();
+                      if (e.key === "Escape") {
+                        setShowDropup(false);
+                        return;
+                      }
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        setPromptSelectedIndex((prev) =>
+                          Math.min(prev + 1, flatFilteredPrompts.length - 1),
                         );
-
-                  // Helper to get badge info based on source
-                  const getBadgeInfo = (source) => {
-                    if (source === "workspace") {
-                      return {
-                        label: "W",
-                        title: "Workspace prompt",
-                        bgColor: "bg-green-600/80",
-                      };
-                    } else if (source === "file") {
-                      return {
-                        label: "F",
-                        title: "File-based prompt",
-                        bgColor: "bg-purple-600/80",
-                      };
-                    } else {
-                      return {
-                        label: "S",
-                        title: "Settings prompt",
-                        bgColor: "bg-blue-600/80",
-                      };
-                    }
-                  };
-
-                  // Render function for a single prompt using flat index lookup
-                  const renderPrompt = (prompt) => {
-                    const fi = promptToFlatIdx.get(prompt);
-                    const isSelected = fi === clampedIndex;
-                    const baseStyle = prompt.backgroundColor
-                      ? {
-                          backgroundColor: prompt.backgroundColor,
-                          color: getContrastColor(prompt.backgroundColor),
+                        return;
+                      }
+                      if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setPromptSelectedIndex((prev) =>
+                          Math.max(-1, prev - 1),
+                        );
+                        return;
+                      }
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (
+                          promptSelectedIndex >= 0 &&
+                          flatFilteredPrompts.length > 0
+                        ) {
+                          const clampedIndex = Math.min(
+                            Math.max(promptSelectedIndex, 0),
+                            flatFilteredPrompts.length - 1,
+                          );
+                          handlePredefinedPrompt(
+                            flatFilteredPrompts[clampedIndex],
+                          );
                         }
-                      : {};
-                    const selectedStyle = isSelected
-                      ? {
-                          ...baseStyle,
-                          backgroundColor:
-                            baseStyle.backgroundColor ||
-                            "rgba(59, 130, 246, 0.25)",
-                          boxShadow: "inset 3px 0 0 0 #3b82f6",
-                        }
-                      : baseStyle;
-                    return html`
-                      <button
-                        key=${"prompt-" + fi}
-                        type="button"
-                        onClick=${() => handlePredefinedPrompt(prompt)}
-                        title=${prompt.description || prompt.name}
-                        class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
-                        style=${selectedStyle}
-                        ref=${isSelected ? selectedPromptItemRef : null}
-                      >
-                        <svg
-                          class="w-4 h-4 flex-shrink-0 opacity-60"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M13 10V3L4 14h7v7l9-11h-7z"
-                          />
-                        </svg>
-                        <span class="truncate flex-1">${prompt.name}</span>
-                        <span
-                          class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
-                            prompt.source,
-                          ).bgColor} text-white/90 flex-shrink-0"
-                          title=${getBadgeInfo(prompt.source).title}
-                        >
-                          ${getBadgeInfo(prompt.source).label}
-                        </span>
-                      </button>
-                    `;
-                  };
+                        return;
+                      }
+                    }}
+                    placeholder="Filter prompts..."
+                    autocomplete="off"
+                    autocorrect="off"
+                    autocapitalize="off"
+                    spellcheck=${false}
+                    class="w-full pl-4 pr-2.5 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-xs focus:outline-none focus:border-blue-500 placeholder-gray-500"
+                  />
+                </div>
+                <div class="py-1 overflow-y-auto">
+                  ${(() => {
+                    // Re-group the precomputed flat list for rendering with group headers
+                    const groupedPrompts = {};
+                    const ungroupedPrompts = [];
+                    flatFilteredPrompts.forEach((prompt) => {
+                      if (prompt.group) {
+                        if (!groupedPrompts[prompt.group])
+                          groupedPrompts[prompt.group] = [];
+                        groupedPrompts[prompt.group].push(prompt);
+                      } else {
+                        ungroupedPrompts.push(prompt);
+                      }
+                    });
+                    const sortedGroupNames = Object.keys(groupedPrompts).sort();
+                    const sortedUngrouped = ungroupedPrompts; // already sorted in useMemo
 
-                  return html`
-                    ${sortedGroupNames.map(
-                      (groupName) => html`
-                        <div key=${"group-" + groupName}>
-                          <div
-                            class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
+                    // Build a lookup: prompt -> flat index for selection highlighting
+                    const promptToFlatIdx = new Map();
+                    flatFilteredPrompts.forEach((p, i) =>
+                      promptToFlatIdx.set(p, i),
+                    );
+
+                    const clampedIndex =
+                      flatFilteredPrompts.length === 0
+                        ? -1
+                        : Math.min(
+                            promptSelectedIndex,
+                            flatFilteredPrompts.length - 1,
+                          );
+
+                    // Helper to get badge info based on source
+                    const getBadgeInfo = (source) => {
+                      if (source === "workspace") {
+                        return {
+                          label: "W",
+                          title: "Workspace prompt",
+                          bgColor: "bg-green-600/80",
+                        };
+                      } else if (source === "file") {
+                        return {
+                          label: "F",
+                          title: "File-based prompt",
+                          bgColor: "bg-purple-600/80",
+                        };
+                      } else {
+                        return {
+                          label: "S",
+                          title: "Settings prompt",
+                          bgColor: "bg-blue-600/80",
+                        };
+                      }
+                    };
+
+                    // Render function for a single prompt using flat index lookup
+                    const renderPrompt = (prompt) => {
+                      const fi = promptToFlatIdx.get(prompt);
+                      const isSelected = fi === clampedIndex;
+                      const baseStyle = prompt.backgroundColor
+                        ? {
+                            backgroundColor: prompt.backgroundColor,
+                            color: getContrastColor(prompt.backgroundColor),
+                          }
+                        : {};
+                      const selectedStyle = isSelected
+                        ? {
+                            ...baseStyle,
+                            backgroundColor:
+                              baseStyle.backgroundColor ||
+                              "rgba(59, 130, 246, 0.25)",
+                            boxShadow: "inset 3px 0 0 0 #3b82f6",
+                          }
+                        : baseStyle;
+                      return html`
+                        <button
+                          key=${"prompt-" + fi}
+                          type="button"
+                          onClick=${() => handlePredefinedPrompt(prompt)}
+                          title=${prompt.description || prompt.name}
+                          class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                          style=${selectedStyle}
+                          ref=${isSelected ? selectedPromptItemRef : null}
+                        >
+                          <svg
+                            class="w-4 h-4 flex-shrink-0 opacity-60"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
                           >
-                            ${groupName}
-                          </div>
-                          ${groupedPrompts[groupName].map((prompt) =>
-                            renderPrompt(prompt),
-                          )}
-                        </div>
-                      `,
-                    )}
-                    ${sortedUngrouped.length > 0
-                      ? html`
-                          <div key="group-other">
+                            <path
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              stroke-width="2"
+                              d="M13 10V3L4 14h7v7l9-11h-7z"
+                            />
+                          </svg>
+                          <span class="truncate flex-1">${prompt.name}</span>
+                          <span
+                            class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
+                              prompt.source,
+                            ).bgColor} text-white/90 flex-shrink-0"
+                            title=${getBadgeInfo(prompt.source).title}
+                          >
+                            ${getBadgeInfo(prompt.source).label}
+                          </span>
+                        </button>
+                      `;
+                    };
+
+                    return html`
+                      ${sortedGroupNames.map(
+                        (groupName) => html`
+                          <div key=${"group-" + groupName}>
                             <div
                               class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
                             >
-                              Other
+                              ${groupName}
                             </div>
-                            ${sortedUngrouped.map((prompt) =>
+                            ${groupedPrompts[groupName].map((prompt) =>
                               renderPrompt(prompt),
                             )}
                           </div>
-                        `
-                      : ""}
-                    ${flatFilteredPrompts.length === 0
-                      ? html`<div
-                          class="px-4 py-3 text-xs text-gray-500 text-center"
-                        >
-                          No matching prompts
-                        </div>`
-                      : ""}
-                  `;
-                })()}
+                        `,
+                      )}
+                      ${sortedUngrouped.length > 0
+                        ? html`
+                            <div key="group-other">
+                              <div
+                                class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-slate-700/30"
+                              >
+                                Other
+                              </div>
+                              ${sortedUngrouped.map((prompt) =>
+                                renderPrompt(prompt),
+                              )}
+                            </div>
+                          `
+                        : ""}
+                      ${flatFilteredPrompts.length === 0
+                        ? html`<div
+                            class="px-4 py-3 text-xs text-gray-500 text-center"
+                          >
+                            No matching prompts
+                          </div>`
+                        : ""}
+                    `;
+                  })()}
+                </div>
               </div>
-            </div>
-          `}
+            `}
 
-          <!-- Send/Stop button OR Lock/Unlock button for periodic sessions -->
-          <div class="flex gap-1">
-            ${periodicEnabled
-              ? // Periodic session: show lock/unlock button
-                isPeriodicSaving
-                ? html`
-                    <!-- Saving spinner -->
-                    <button
-                      type="button"
-                      disabled
-                      class="action-toolbar-btn"
-                      style="opacity: 1; transform: none;"
-                    >
-                      <svg
-                        class="w-5 h-5 animate-spin"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          class="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          stroke-width="4"
-                        ></circle>
-                        <path
-                          class="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        ></path>
-                      </svg>
-                    </button>
-                  `
-                : isPeriodicLocked
+            <!-- Send/Stop button OR Lock/Unlock button for periodic sessions -->
+            <div class="flex gap-1">
+              ${periodicEnabled
+                ? // Periodic session: show lock/unlock button
+                  isPeriodicSaving
                   ? html`
-                      <!-- Locked state: show lock icon, click to unlock -->
-                      <button
-                        type="button"
-                        onClick=${handleUnlockPeriodicPrompt}
-                        class="action-toolbar-btn"
-                        style="background: #2563eb !important; border-color: #3b82f6 !important; color: white !important; opacity: 1; transform: none;"
-                        title="Unlock to edit periodic prompt"
-                      >
-                        <${LockIcon} className="w-5 h-5" />
-                      </button>
-                    `
-                  : html`
-                      <!-- Unlocked state: show unlock icon, click to lock -->
-                      <button
-                        type="button"
-                        onClick=${handleLockPeriodicPrompt}
-                        disabled=${!text.trim()}
-                        class="action-toolbar-btn"
-                        style="opacity: 1; transform: none;"
-                        title=${!text.trim()
-                          ? "Enter a prompt to lock"
-                          : "Lock periodic prompt"}
-                      >
-                        <${UnlockIcon} className="w-5 h-5" />
-                      </button>
-                    `
-              : // Normal session: show send/stop button
-                isStreaming
-                ? html`
-                    <!-- Stop button - uses action-toolbar-btn style but with red background -->
-                    <button
-                      type="button"
-                      onClick=${onCancel}
-                      class="action-toolbar-btn"
-                      style="background: #dc2626 !important; border-color: #ef4444 !important; color: white !important; opacity: 1; transform: none;"
-                      title="Stop streaming"
-                    >
-                      <svg
-                        class="w-5 h-5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <rect
-                          x="6"
-                          y="6"
-                          width="12"
-                          height="12"
-                          rx="2"
-                          stroke-width="2"
-                        />
-                      </svg>
-                    </button>
-                  `
-                : isSending
-                  ? html`
-                      <!-- Sending spinner - uses action-toolbar-btn disabled style -->
+                      <!-- Saving spinner -->
                       <button
                         type="button"
                         disabled
@@ -2677,80 +2626,202 @@ ${activeUIPrompt.text || ""}</textarea
                         </svg>
                       </button>
                     `
-                  : html`
-                      <!-- Send button - uses action-toolbar-btn style, paper plane arrow pointing right -->
+                  : isPeriodicLocked
+                    ? html`
+                        <!-- Locked state: show lock icon, click to unlock -->
+                        <button
+                          type="button"
+                          onClick=${handleUnlockPeriodicPrompt}
+                          class="action-toolbar-btn"
+                          style="background: #2563eb !important; border-color: #3b82f6 !important; color: white !important; opacity: 1; transform: none;"
+                          title="Unlock to edit periodic prompt"
+                        >
+                          <${LockIcon} className="w-5 h-5" />
+                        </button>
+                      `
+                    : html`
+                        <!-- Unlocked state: show unlock icon, click to lock -->
+                        <button
+                          type="button"
+                          onClick=${handleLockPeriodicPrompt}
+                          disabled=${!text.trim()}
+                          class="action-toolbar-btn"
+                          style="opacity: 1; transform: none;"
+                          title=${!text.trim()
+                            ? "Enter a prompt to lock"
+                            : "Lock periodic prompt"}
+                        >
+                          <${UnlockIcon} className="w-5 h-5" />
+                        </button>
+                      `
+                : // Normal session: show send/stop button
+                  isStreaming
+                  ? html`
+                      <!-- Stop button - uses action-toolbar-btn style but with red background -->
                       <button
-                        type="submit"
-                        disabled=${isFullyDisabled ||
-                        isResuming ||
-                        !acpReady ||
-                        (!text.trim() && !hasPendingAttachments) ||
-                        isReadOnly ||
-                        isImproving ||
-                        isQueueFull}
-                        class="action-toolbar-btn ${isQueueFull
-                          ? "queue-full"
-                          : ""}"
-                        style="${isQueueFull
-                          ? "background: #ea580c !important; border-color: #f97316 !important; color: white !important; opacity: 1; transform: none;"
-                          : "opacity: 1; transform: none;"}"
-                        title=${isQueueFull
-                          ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
-                          : "Send message"}
+                        type="button"
+                        onClick=${onCancel}
+                        class="action-toolbar-btn"
+                        style="background: #dc2626 !important; border-color: #ef4444 !important; color: white !important; opacity: 1; transform: none;"
+                        title="Stop streaming"
                       >
-                        ${isQueueFull
-                          ? html`
-                              <!-- Queue full icon -->
-                              <svg
-                                class="w-5 h-5"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  stroke-linecap="round"
-                                  stroke-linejoin="round"
-                                  stroke-width="2"
-                                  d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
-                                />
-                              </svg>
-                            `
-                          : html`
-                              <!-- Paper plane / send arrow pointing RIGHT (like WhatsApp) -->
-                              <svg
-                                class="w-5 h-5"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  stroke-linecap="round"
-                                  stroke-linejoin="round"
-                                  stroke-width="2"
-                                  d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
-                                />
-                              </svg>
-                            `}
+                        <svg
+                          class="w-5 h-5"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <rect
+                            x="6"
+                            y="6"
+                            width="12"
+                            height="12"
+                            rx="2"
+                            stroke-width="2"
+                          />
+                        </svg>
                       </button>
-                    `}
-            ${hasPrompts &&
-            html`
-              <!-- Prompts dropdown toggle - uses action-toolbar-btn style -->
-              <!-- Disabled when periodic is locked (prompt is fixed) -->
+                    `
+                  : isSending
+                    ? html`
+                        <!-- Sending spinner - uses action-toolbar-btn disabled style -->
+                        <button
+                          type="button"
+                          disabled
+                          class="action-toolbar-btn"
+                          style="opacity: 1; transform: none;"
+                        >
+                          <svg
+                            class="w-5 h-5 animate-spin"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                          >
+                            <circle
+                              class="opacity-25"
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              stroke-width="4"
+                            ></circle>
+                            <path
+                              class="opacity-75"
+                              fill="currentColor"
+                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                            ></path>
+                          </svg>
+                        </button>
+                      `
+                    : html`
+                        <!-- Send button - uses action-toolbar-btn style, paper plane arrow pointing right -->
+                        <button
+                          type="submit"
+                          disabled=${isFullyDisabled ||
+                          isResuming ||
+                          !acpReady ||
+                          (!text.trim() && !hasPendingAttachments) ||
+                          isReadOnly ||
+                          isImproving ||
+                          isQueueFull}
+                          class="action-toolbar-btn ${isQueueFull
+                            ? "queue-full"
+                            : ""}"
+                          style="${isQueueFull
+                            ? "background: #ea580c !important; border-color: #f97316 !important; color: white !important; opacity: 1; transform: none;"
+                            : "opacity: 1; transform: none;"}"
+                          title=${isQueueFull
+                            ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
+                            : "Send message"}
+                        >
+                          ${isQueueFull
+                            ? html`
+                                <!-- Queue full icon -->
+                                <svg
+                                  class="w-5 h-5"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                                  />
+                                </svg>
+                              `
+                            : html`
+                                <!-- Paper plane / send arrow pointing RIGHT (like WhatsApp) -->
+                                <svg
+                                  class="w-5 h-5"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
+                                  />
+                                </svg>
+                              `}
+                        </button>
+                      `}
+              ${hasPrompts &&
+              html`
+                <!-- Prompts dropdown toggle - uses action-toolbar-btn style -->
+                <!-- Disabled when periodic is locked (prompt is fixed) -->
+                <button
+                  type="button"
+                  onClick=${handleTogglePrompts}
+                  disabled=${isFullyDisabled ||
+                  isReadOnly ||
+                  (periodicEnabled && isPeriodicLocked)}
+                  class="action-toolbar-btn"
+                  style="opacity: 1; transform: none;"
+                  title="Insert predefined prompt"
+                >
+                  <svg
+                    class="w-5 h-5 transition-transform ${showDropup
+                      ? "rotate-180"
+                      : ""}"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M5 15l7-7 7 7"
+                    />
+                  </svg>
+                </button>
+              `}
+            </div>
+
+            <!-- Queue button group (bottom) - uses action-toolbar-btn style -->
+            <!-- Disabled when periodic prompts are enabled (queue is disabled for periodic sessions) -->
+            <div class="flex gap-1">
+              <!-- Add to Queue button -->
               <button
                 type="button"
-                onClick=${handleTogglePrompts}
+                onClick=${handleAddToQueueClick}
                 disabled=${isFullyDisabled ||
+                (!text.trim() && !hasPendingAttachments) ||
                 isReadOnly ||
-                (periodicEnabled && isPeriodicLocked)}
+                isImproving ||
+                periodicEnabled}
                 class="action-toolbar-btn"
                 style="opacity: 1; transform: none;"
-                title="Insert predefined prompt"
+                title=${periodicEnabled
+                  ? "Queue disabled for periodic sessions"
+                  : "Add to queue (⌘/Ctrl+Enter)"}
               >
+                <!-- Plus icon -->
                 <svg
-                  class="w-5 h-5 transition-transform ${showDropup
-                    ? "rotate-180"
-                    : ""}"
+                  class="w-5 h-5"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -2759,88 +2830,52 @@ ${activeUIPrompt.text || ""}</textarea
                     stroke-linecap="round"
                     stroke-linejoin="round"
                     stroke-width="2"
-                    d="M5 15l7-7 7 7"
+                    d="M12 4v16m8-8H4"
                   />
                 </svg>
               </button>
-            `}
-          </div>
-
-          <!-- Queue button group (bottom) - uses action-toolbar-btn style -->
-          <!-- Disabled when periodic prompts are enabled (queue is disabled for periodic sessions) -->
-          <div class="flex gap-1">
-            <!-- Add to Queue button -->
-            <button
-              type="button"
-              onClick=${handleAddToQueueClick}
-              disabled=${isFullyDisabled ||
-              (!text.trim() && !hasPendingAttachments) ||
-              isReadOnly ||
-              isImproving ||
-              periodicEnabled}
-              class="action-toolbar-btn"
-              style="opacity: 1; transform: none;"
-              title=${periodicEnabled
-                ? "Queue disabled for periodic sessions"
-                : "Add to queue (⌘/Ctrl+Enter)"}
-            >
-              <!-- Plus icon -->
-              <svg
-                class="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+              <!-- Toggle Queue Panel button -->
+              <button
+                type="button"
+                onClick=${() => {
+                  console.log(
+                    "[DEBUG] Queue toggle button clicked, onToggleQueue=",
+                    typeof onToggleQueue,
+                  );
+                  if (!periodicEnabled && onToggleQueue) onToggleQueue();
+                }}
+                disabled=${periodicEnabled}
+                data-queue-toggle
+                class="action-toolbar-btn relative"
+                style="${showQueueDropdown && !periodicEnabled
+                  ? "background: #2563eb !important; border-color: #3b82f6 !important; color: white !important; opacity: 1; transform: none;"
+                  : "opacity: 1; transform: none;"}"
+                title=${periodicEnabled
+                  ? "Queue disabled for periodic sessions"
+                  : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M12 4v16m8-8H4"
-                />
-              </svg>
-            </button>
-            <!-- Toggle Queue Panel button -->
-            <button
-              type="button"
-              onClick=${() => {
-                console.log(
-                  "[DEBUG] Queue toggle button clicked, onToggleQueue=",
-                  typeof onToggleQueue,
-                );
-                if (!periodicEnabled && onToggleQueue) onToggleQueue();
-              }}
-              disabled=${periodicEnabled}
-              data-queue-toggle
-              class="action-toolbar-btn relative"
-              style="${showQueueDropdown && !periodicEnabled
-                ? "background: #2563eb !important; border-color: #3b82f6 !important; color: white !important; opacity: 1; transform: none;"
-                : "opacity: 1; transform: none;"}"
-              title=${periodicEnabled
-                ? "Queue disabled for periodic sessions"
-                : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
-            >
-              <!-- Queue/list icon -->
-              <svg
-                class="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M4 6h16M4 10h16M4 14h16M4 18h16"
-                />
-              </svg>
-              ${queueLength > 0 &&
-              !periodicEnabled &&
-              html` <span class="queue-badge">${queueLength}</span> `}
-            </button>
+                <!-- Queue/list icon -->
+                <svg
+                  class="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M4 6h16M4 10h16M4 14h16M4 18h16"
+                  />
+                </svg>
+                ${queueLength > 0 &&
+                !periodicEnabled &&
+                html` <span class="queue-badge">${queueLength}</span> `}
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-
+      `}
       ${improveError &&
       html`
         <div class="max-w-4xl mx-auto mt-2">

@@ -1872,7 +1872,7 @@ func (s *Server) handleUITextbox(ctx context.Context, req *mcp.CallToolRequest, 
 		Question:       input.Title, // Use title as question for consistency
 		Text:           input.Text,
 		ResultMode:     resultMode,
-		AllowAbort:     input.AllowAbort,
+		AllowAbort:     true, // Always allow abort
 		TimeoutSeconds: timeout,
 		Blocking:       true,
 	}
@@ -1884,7 +1884,6 @@ func (s *Server) handleUITextbox(ctx context.Context, req *mcp.CallToolRequest, 
 		"title", input.Title,
 		"text_length", len(input.Text),
 		"result_mode", resultMode,
-		"allow_abort", input.AllowAbort,
 		"timeout", timeout)
 
 	// Send prompt and wait for response (blocks until user responds or timeout)

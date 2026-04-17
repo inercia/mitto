@@ -341,7 +341,6 @@ type UITextboxInput struct {
 	Title          string `json:"title"`                     // Dialog title
 	Text           string `json:"text"`                      // Initial text content
 	ResultMode     string `json:"result"`                    // "text" or "diff"
-	AllowAbort     bool   `json:"abort,omitempty"`           // Show abort button
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Timeout in seconds
 }
 

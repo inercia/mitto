@@ -1557,7 +1557,6 @@ export function useWebSocket() {
                 // Textbox fields
                 text: msg.data.text || "",
                 resultMode: msg.data.result_mode || "text",
-                allowAbort: msg.data.allow_abort || false,
               },
             },
           };
