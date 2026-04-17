@@ -2592,6 +2592,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					Name:        child.Name,
 					ACPServer:   child.ACPServer,
 					IsAutoChild: child.IsAutoChild,
+					ChildOrigin: string(child.ChildOrigin),
 				})
 			}
 		}
@@ -4327,7 +4328,7 @@ func (bs *BackgroundSession) DismissActiveUIPrompt() {
 
 // HandleUIPromptAnswer processes a user's response to a UI prompt.
 // This is called by SessionWSClient when it receives a ui_prompt_answer message.
-func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label string) {
+func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label, freeText string) {
 	bs.activePromptMu.Lock()
 
 	if bs.activePrompt == nil || bs.activePrompt.request.RequestID != requestID {
@@ -4346,6 +4347,8 @@ func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label str
 		RequestID: requestID,
 		OptionID:  optionID,
 		Label:     label,
+		FreeText:  freeText,
+		Aborted:   optionID == "abort",
 	}:
 	default:
 		// Already received a response - ignore duplicate

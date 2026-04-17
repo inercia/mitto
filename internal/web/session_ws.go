@@ -543,12 +543,13 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			RequestID string `json:"request_id"`
 			OptionID  string `json:"option_id"`
 			Label     string `json:"label"`
+			FreeText  string `json:"free_text"`
 		}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label)
+		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label, data.FreeText)
 	}
 }
 
@@ -631,7 +632,7 @@ func (c *SessionWSClient) handlePermissionAnswer(optionID string, cancel bool) {
 	}
 }
 
-func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label string) {
+func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label, freeText string) {
 	// Try to attach to session if unarchived after client connected
 	if c.bgSession == nil {
 		c.tryAttachToSession()
@@ -648,11 +649,12 @@ func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label string
 			"client_id", c.clientID,
 			"request_id", requestID,
 			"option_id", optionID,
-			"label", label)
+			"label", label,
+			"has_free_text", freeText != "")
 	}
 
 	// Forward the answer to the background session
-	c.bgSession.HandleUIPromptAnswer(requestID, optionID, label)
+	c.bgSession.HandleUIPromptAnswer(requestID, optionID, label, freeText)
 }
 
 func (c *SessionWSClient) handleSync(afterSeq int64) {
@@ -2250,12 +2252,19 @@ func (c *SessionWSClient) OnUIPrompt(req UIPromptRequest) {
 			"option_count", len(req.Options))
 	}
 	c.sendMessage(WSMsgTypeUIPrompt, map[string]interface{}{
-		"session_id":      c.sessionID,
-		"request_id":      req.RequestID,
-		"prompt_type":     req.Type,
-		"question":        req.Question,
-		"options":         req.Options,
-		"timeout_seconds": req.TimeoutSeconds,
+		"session_id":            c.sessionID,
+		"request_id":            req.RequestID,
+		"prompt_type":           req.Type,
+		"question":              req.Question,
+		"options":               req.Options,
+		"timeout_seconds":       req.TimeoutSeconds,
+		"allow_free_text":       req.AllowFreeText,
+		"free_text_placeholder": req.FreeTextPlaceholder,
+		// Textbox fields
+		"title":       req.Title,
+		"text":        req.Text,
+		"result_mode": req.ResultMode,
+		"allow_abort": req.AllowAbort,
 	})
 }
 

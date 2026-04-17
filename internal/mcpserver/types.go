@@ -335,6 +335,24 @@ type OptionsComboOutput struct {
 	TimedOut bool   `json:"timed_out,omitempty"`
 }
 
+// UITextboxInput is the input for the mitto_ui_textbox tool.
+type UITextboxInput struct {
+	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
+	Title          string `json:"title"`                     // Dialog title
+	Text           string `json:"text"`                      // Initial text content
+	ResultMode     string `json:"result"`                    // "text" or "diff"
+	AllowAbort     bool   `json:"abort,omitempty"`           // Show abort button
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Timeout in seconds
+}
+
+// UITextboxOutput is the output for the mitto_ui_textbox tool.
+type UITextboxOutput struct {
+	Changed  bool   `json:"changed"`
+	Aborted  bool   `json:"aborted,omitempty"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+	Result   string `json:"result,omitempty"`
+}
+
 // =============================================================================
 // Parent-Child Task Coordination Types
 // =============================================================================

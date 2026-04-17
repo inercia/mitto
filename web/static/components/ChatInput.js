@@ -1,7 +1,8 @@
 // Mitto Web Interface - Chat Input Component
 // Handles message composition, image uploads, and predefined prompts
 
-const { useState, useEffect, useRef, useCallback, useMemo, html } = window.preact;
+const { useState, useEffect, useRef, useCallback, useMemo, html } =
+  window.preact;
 
 import {
   hasNativeImagePicker,
@@ -211,7 +212,9 @@ export function ChatInput({
     const filtered = lowerFilter
       ? predefinedPrompts.filter((p) => {
           const matchName = (p.name || "").toLowerCase().includes(lowerFilter);
-          const matchDesc = (p.description || "").toLowerCase().includes(lowerFilter);
+          const matchDesc = (p.description || "")
+            .toLowerCase()
+            .includes(lowerFilter);
           return matchName || matchDesc;
         })
       : predefinedPrompts;
@@ -234,9 +237,10 @@ export function ChatInput({
         grouped[group].sort((a, b) => a.name.localeCompare(b.name));
       }
     });
-    const sortedUngrouped = promptSortMode === "color"
-      ? sortPromptsByColor(ungrouped)
-      : [...ungrouped].sort((a, b) => a.name.localeCompare(b.name));
+    const sortedUngrouped =
+      promptSortMode === "color"
+        ? sortPromptsByColor(ungrouped)
+        : [...ungrouped].sort((a, b) => a.name.localeCompare(b.name));
     const sortedGroupNames = Object.keys(grouped).sort();
 
     const flat = [];
@@ -308,6 +312,13 @@ export function ChatInput({
   // UI prompt combo box selection state
   const [comboSelectedId, setComboSelectedId] = useState("");
 
+  // UI prompt free text input state (for mitto_ui_options with allow_free_text)
+  const [freeTextInput, setFreeTextInput] = useState("");
+
+  // UI textbox state (for mitto_ui_textbox)
+  const [textboxValue, setTextboxValue] = useState("");
+  const textboxRef = useRef(null);
+
   // Periodic prompt lock state
   // When locked, the prompt is saved to the periodic config and textarea is read-only
   const [isPeriodicLocked, setIsPeriodicLocked] = useState(false);
@@ -377,9 +388,17 @@ export function ChatInput({
     setPeriodicNextScheduledAt(null);
   }, [sessionId]);
 
-  // Reset combo box selection when UI prompt changes
+  // Reset combo box selection and free text input when UI prompt changes
   useEffect(() => {
     setComboSelectedId("");
+    setFreeTextInput("");
+  }, [activeUIPrompt?.requestId]);
+
+  // Initialize textbox value when a textbox prompt arrives
+  useEffect(() => {
+    if (activeUIPrompt?.promptType === "textbox") {
+      setTextboxValue(activeUIPrompt.text || "");
+    }
   }, [activeUIPrompt?.requestId]);
 
   // Fetch periodic config when periodic is enabled for this session
@@ -567,7 +586,8 @@ export function ChatInput({
     const textarea = textareaRef.current;
     if (textarea) {
       textarea.style.height = "auto";
-      textarea.style.height = Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+      textarea.style.height =
+        Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
     }
   }, [text, textareaMaxHeight]);
 
@@ -900,7 +920,8 @@ export function ChatInput({
     setText(newValue);
     const textarea = e.target;
     textarea.style.height = "auto";
-    textarea.style.height = Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+    textarea.style.height =
+      Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
 
     // Show slash command picker when typing '/' at the start
     if (
@@ -935,7 +956,8 @@ export function ChatInput({
         textarea.focus();
         // Adjust height to fit content
         textarea.style.height = "auto";
-        textarea.style.height = Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+        textarea.style.height =
+          Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
       });
     } else {
       // Fallback: just set the text
@@ -1470,7 +1492,9 @@ export function ChatInput({
 
     if (imageItems.length > 0) {
       if (!agentSupportsImages) {
-        setUploadError("⚠️ This agent may not support images — attaching anyway");
+        setUploadError(
+          "⚠️ This agent may not support images — attaching anyway",
+        );
         setTimeout(() => setUploadError(null), 5000);
       }
       e.preventDefault();
@@ -1527,14 +1551,15 @@ export function ChatInput({
 
   // Handle UI prompt answer click
   const handleUIPromptAnswer = useCallback(
-    (optionId, label) => {
+    (optionId, label, freeText = "") => {
       if (activeUIPrompt && onUIPromptAnswer) {
         console.log("[UIPrompt] User clicked:", {
           requestId: activeUIPrompt.requestId,
           optionId,
           label,
+          freeText,
         });
-        onUIPromptAnswer(activeUIPrompt.requestId, optionId, label);
+        onUIPromptAnswer(activeUIPrompt.requestId, optionId, label, freeText);
       }
     },
     [activeUIPrompt, onUIPromptAnswer],
@@ -1562,7 +1587,8 @@ export function ChatInput({
         if (textarea) {
           textarea.focus();
           textarea.style.height = "auto";
-          textarea.style.height = Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
+          textarea.style.height =
+            Math.min(textarea.scrollHeight, textareaMaxHeight) + "px";
         }
       });
     },
@@ -1612,145 +1638,211 @@ export function ChatInput({
         />
       </div>
 
-      <!-- UI Prompt from MCP tool (yes/no, options_buttons, select, or permission) -->
+      <!-- UI Prompt from MCP tool (unified menu or permission) -->
       ${hasActiveUIPrompt &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
-          <div
-            class="ui-prompt-panel p-4 rounded-lg border ${activeUIPrompt.promptType ===
-            "permission"
-              ? "border-amber-500/50"
-              : "border-blue-500/50"} shadow-lg"
-          >
-            ${
-              /* Permission prompts show title and question */
-              activeUIPrompt.promptType === "permission" &&
-              activeUIPrompt.title &&
-              html`
-                <div class="mb-2">
-                  <span
-                    class="text-xs font-medium text-amber-400 uppercase tracking-wide"
-                    >Permission Required</span
+          ${
+            /* Permission prompts keep original button-based rendering */
+            activeUIPrompt.promptType === "permission"
+              ? html`
+                  <div
+                    class="ui-prompt-panel p-4 rounded-lg border border-amber-500/50 shadow-lg"
                   >
-                </div>
-                <p
-                  class="text-sm font-mono bg-slate-800/50 p-2 rounded mb-3 break-all"
-                >
-                  ${activeUIPrompt.title}
-                </p>
-              `
-            }
-            ${
-              /* Other prompts just show question */
-              activeUIPrompt.promptType !== "permission" &&
-              html`
-                <p class="ui-prompt-question text-sm mb-3">
-                  ${activeUIPrompt.question}
-                </p>
-              `
-            }
-            <div class="flex flex-wrap gap-2">
-              ${activeUIPrompt.promptType === "yes_no" &&
-              activeUIPrompt.options?.map((opt, idx) => {
-                const isYes = opt.id === "yes";
-                return html`
-                  <button
-                    key=${opt.id}
-                    type="button"
-                    onClick=${() => handleUIPromptAnswer(opt.id, opt.label)}
-                    class="px-4 py-2 ${isYes
-                      ? "bg-blue-600 hover:bg-blue-700 border-blue-500"
-                      : "bg-slate-600 hover:bg-slate-700 border-slate-500"} text-white rounded-lg text-sm font-medium transition-colors border"
-                  >
-                    ${opt.label}
-                  </button>
-                `;
-              })}
-              ${activeUIPrompt.promptType === "options_buttons" &&
-              activeUIPrompt.options?.map((opt, idx) => {
-                // Alternate colors for visual distinction
-                const colors = [
-                  "bg-blue-600 hover:bg-blue-700 border-blue-500",
-                  "bg-purple-600 hover:bg-purple-700 border-purple-500",
-                  "bg-emerald-600 hover:bg-emerald-700 border-emerald-500",
-                  "bg-amber-600 hover:bg-amber-700 border-amber-500",
-                  "bg-rose-600 hover:bg-rose-700 border-rose-500",
-                ];
-                const colorClass = colors[idx % colors.length];
-                return html`
-                  <button
-                    key=${opt.id}
-                    type="button"
-                    onClick=${() => handleUIPromptAnswer(opt.id, opt.label)}
-                    class="px-4 py-2 ${colorClass} text-white rounded-lg text-sm font-medium transition-colors border"
-                  >
-                    ${opt.label}
-                  </button>
-                `;
-              })}
-              ${activeUIPrompt.promptType === "permission" &&
-              activeUIPrompt.options?.map((opt) => {
-                // Style buttons based on permission kind
-                const kind = opt.kind || "";
-                let colorClass;
-                if (
-                  kind === "allow_once" ||
-                  kind === "allow_always" ||
-                  opt.style === "success"
-                ) {
-                  colorClass =
-                    "bg-emerald-600 hover:bg-emerald-700 border-emerald-500";
-                } else if (kind === "reject_once" || opt.style === "danger") {
-                  colorClass = "bg-rose-600 hover:bg-rose-700 border-rose-500";
-                } else {
-                  colorClass =
-                    "bg-slate-600 hover:bg-slate-700 border-slate-500";
-                }
-                return html`
-                  <button
-                    key=${opt.id}
-                    type="button"
-                    onClick=${() => handleUIPromptAnswer(opt.id, opt.label)}
-                    class="px-4 py-2 ${colorClass} text-white rounded-lg text-sm font-medium transition-colors border"
-                  >
-                    ${opt.label}
-                  </button>
-                `;
-              })}
-              ${activeUIPrompt.promptType === "select" &&
-              html`
-                <select
-                  class="bg-slate-700 text-white rounded-lg px-3 py-2 border border-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  value=${comboSelectedId}
-                  onChange=${(e) => setComboSelectedId(e.target.value)}
-                >
-                  <option value="">Select an option...</option>
-                  ${activeUIPrompt.options?.map(
-                    (opt) => html`
-                      <option key=${opt.id} value=${opt.id}>
-                        ${opt.label}
-                      </option>
-                    `,
-                  )}
-                </select>
-                <button
-                  type="button"
-                  disabled=${!comboSelectedId}
-                  onClick=${() => {
-                    const opt = activeUIPrompt.options?.find(
-                      (o) => o.id === comboSelectedId,
-                    );
-                    if (opt) handleUIPromptAnswer(opt.id, opt.label);
-                  }}
-                  class="px-4 py-2 ${comboSelectedId
-                    ? "bg-blue-600 hover:bg-blue-700 border-blue-500"
-                    : "bg-slate-600 border-slate-500 opacity-50 cursor-not-allowed"} text-white rounded-lg text-sm font-medium transition-colors border"
-                >
-                  OK
-                </button>
-              `}
-            </div>
-          </div>
+                    ${activeUIPrompt.title &&
+                    html`
+                      <div class="mb-2">
+                        <span
+                          class="text-xs font-medium text-amber-400 uppercase tracking-wide"
+                          >Permission Required</span
+                        >
+                      </div>
+                      <p
+                        class="text-sm font-mono bg-slate-800/50 p-2 rounded mb-3 break-all"
+                      >
+                        ${activeUIPrompt.title}
+                      </p>
+                    `}
+                    <div class="flex flex-wrap gap-2">
+                      ${activeUIPrompt.options?.map((opt) => {
+                        const kind = opt.kind || "";
+                        let colorClass;
+                        if (
+                          kind === "allow_once" ||
+                          kind === "allow_always" ||
+                          opt.style === "success"
+                        ) {
+                          colorClass =
+                            "bg-emerald-600 hover:bg-emerald-700 border-emerald-500";
+                        } else if (
+                          kind === "reject_once" ||
+                          opt.style === "danger"
+                        ) {
+                          colorClass =
+                            "bg-rose-600 hover:bg-rose-700 border-rose-500";
+                        } else {
+                          colorClass =
+                            "bg-slate-600 hover:bg-slate-700 border-slate-500";
+                        }
+                        return html`
+                          <button
+                            key=${opt.id}
+                            type="button"
+                            onClick=${() =>
+                              handleUIPromptAnswer(opt.id, opt.label)}
+                            class="px-4 py-2 ${colorClass} text-white rounded-lg text-sm font-medium transition-colors border"
+                          >
+                            ${opt.label}
+                          </button>
+                        `;
+                      })}
+                    </div>
+                  </div>
+                `
+              : activeUIPrompt.promptType === "textbox"
+                ? html`
+                    <!-- Textbox editor for mitto_ui_textbox -->
+                    <div
+                      class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden"
+                    >
+                      <!-- Title -->
+                      <div class="px-4 pt-4 pb-3">
+                        <p class="ui-prompt-question text-sm font-medium">
+                          ${activeUIPrompt.title || activeUIPrompt.question}
+                        </p>
+                      </div>
+
+                      <!-- Textarea -->
+                      <div class="px-4 pb-2">
+                        <textarea
+                          ref=${textboxRef}
+                          class="w-full bg-slate-800/80 text-white text-sm font-mono rounded-lg px-3 py-2 resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 border border-slate-600"
+                          style="min-height: 300px; max-height: 70vh;"
+                          rows="18"
+                          maxlength=${16384}
+                          onInput=${(e) => setTextboxValue(e.target.value)}
+                        >
+${activeUIPrompt.text || ""}</textarea
+                        >
+                      </div>
+
+                      <!-- Counter + Buttons on same row -->
+                      <div
+                        class="flex items-center justify-between px-4 pt-3 pb-5 mb-2"
+                      >
+                        <span
+                          class="text-xs ${textboxValue.length > 15000
+                            ? "text-amber-400"
+                            : "text-gray-500"}"
+                        >
+                          ${textboxValue.length > 15000
+                            ? "⚠ "
+                            : ""}${textboxValue.length.toLocaleString()}
+                          / 16,384
+                        </span>
+                        <div class="flex gap-2">
+                          ${activeUIPrompt.allowAbort &&
+                          html`
+                            <button
+                              type="button"
+                              onClick=${() =>
+                                handleUIPromptAnswer("abort", "Abort")}
+                              class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-600 hover:bg-slate-500 text-white transition-colors"
+                            >
+                              Abort
+                            </button>
+                          `}
+                          <button
+                            type="button"
+                            onClick=${() =>
+                              handleUIPromptAnswer(
+                                "submit",
+                                "Submit",
+                                textboxValue,
+                              )}
+                            class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                          >
+                            Submit
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  `
+                : html`
+                    <!-- Unified Claude Code-style menu for yes_no, options_buttons, select -->
+                    <div
+                      class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden"
+                    >
+                      <!-- Question -->
+                      <div class="px-4 pt-4 pb-2">
+                        <p class="ui-prompt-question text-sm font-medium">
+                          ${activeUIPrompt.question}
+                        </p>
+                      </div>
+
+                      <!-- Options list (scrollable when many options) -->
+                      <div
+                        class="divide-y divide-slate-700/50 max-h-[280px] overflow-y-auto"
+                      >
+                        ${activeUIPrompt.options?.map(
+                          (opt, idx) => html`
+                            <button
+                              key=${opt.id}
+                              type="button"
+                              onClick=${() =>
+                                handleUIPromptAnswer(opt.id, opt.label)}
+                              class="w-full text-left px-4 py-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3 group"
+                            >
+                              <span
+                                class="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
+                                0
+                                  ? "bg-blue-600 text-white"
+                                  : "bg-slate-600/80 text-gray-300 group-hover:bg-slate-500"} transition-colors"
+                              >
+                                ${idx + 1}
+                              </span>
+                              <div class="min-w-0 flex-1">
+                                <span class="text-sm font-medium text-white"
+                                  >${opt.label}</span
+                                >
+                                ${opt.description &&
+                                html`<span
+                                  class="block text-xs text-gray-400 mt-0.5"
+                                  >${opt.description}</span
+                                >`}
+                              </div>
+                            </button>
+                          `,
+                        )}
+
+                        <!-- Free text input (if allowed) -->
+                        ${activeUIPrompt.allowFreeText &&
+                        html`
+                          <div class="px-4 py-3">
+                            <input
+                              type="text"
+                              value=${freeTextInput}
+                              onInput=${(e) => setFreeTextInput(e.target.value)}
+                              onKeyDown=${(e) => {
+                                if (e.key === "Enter" && freeTextInput.trim()) {
+                                  handleUIPromptAnswer(
+                                    "free_text",
+                                    freeTextInput.trim(),
+                                    freeTextInput.trim(),
+                                  );
+                                  setFreeTextInput("");
+                                }
+                              }}
+                              placeholder=${activeUIPrompt.freeTextPlaceholder ||
+                              "Type a custom response..."}
+                              class="w-full bg-transparent text-sm text-gray-300 placeholder-gray-500 outline-none"
+                            />
+                          </div>
+                        `}
+                      </div>
+                    </div>
+                  `
+          }
         </div>
       `}
       ${isResuming &&
@@ -2204,7 +2296,10 @@ export function ChatInput({
                 : "Type your recurring prompt, then click 🔒 to activate"
               : getPlaceholder()}
             rows="3"
-            class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 ${periodicEnabled && isPeriodicLocked ? 'max-h-[80px] overflow-y-auto' : 'max-h-[200px] overflow-y-hidden'} placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
+            class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 ${periodicEnabled &&
+            isPeriodicLocked
+              ? "max-h-[80px] overflow-y-auto"
+              : "max-h-[200px] overflow-y-hidden"} placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
             isReadOnly ||
             isImproving ||
             (periodicEnabled && isPeriodicLocked)
@@ -2277,7 +2372,7 @@ export function ChatInput({
                     if (e.key === "ArrowDown") {
                       e.preventDefault();
                       setPromptSelectedIndex((prev) =>
-                        Math.min(prev + 1, flatFilteredPrompts.length - 1)
+                        Math.min(prev + 1, flatFilteredPrompts.length - 1),
                       );
                       return;
                     }
@@ -2288,12 +2383,17 @@ export function ChatInput({
                     }
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      if (promptSelectedIndex >= 0 && flatFilteredPrompts.length > 0) {
+                      if (
+                        promptSelectedIndex >= 0 &&
+                        flatFilteredPrompts.length > 0
+                      ) {
                         const clampedIndex = Math.min(
                           Math.max(promptSelectedIndex, 0),
-                          flatFilteredPrompts.length - 1
+                          flatFilteredPrompts.length - 1,
                         );
-                        handlePredefinedPrompt(flatFilteredPrompts[clampedIndex]);
+                        handlePredefinedPrompt(
+                          flatFilteredPrompts[clampedIndex],
+                        );
                       }
                       return;
                     }
@@ -2313,7 +2413,8 @@ export function ChatInput({
                   const ungroupedPrompts = [];
                   flatFilteredPrompts.forEach((prompt) => {
                     if (prompt.group) {
-                      if (!groupedPrompts[prompt.group]) groupedPrompts[prompt.group] = [];
+                      if (!groupedPrompts[prompt.group])
+                        groupedPrompts[prompt.group] = [];
                       groupedPrompts[prompt.group].push(prompt);
                     } else {
                       ungroupedPrompts.push(prompt);
@@ -2324,11 +2425,17 @@ export function ChatInput({
 
                   // Build a lookup: prompt -> flat index for selection highlighting
                   const promptToFlatIdx = new Map();
-                  flatFilteredPrompts.forEach((p, i) => promptToFlatIdx.set(p, i));
+                  flatFilteredPrompts.forEach((p, i) =>
+                    promptToFlatIdx.set(p, i),
+                  );
 
-                  const clampedIndex = flatFilteredPrompts.length === 0
-                    ? -1
-                    : Math.min(promptSelectedIndex, flatFilteredPrompts.length - 1);
+                  const clampedIndex =
+                    flatFilteredPrompts.length === 0
+                      ? -1
+                      : Math.min(
+                          promptSelectedIndex,
+                          flatFilteredPrompts.length - 1,
+                        );
 
                   // Helper to get badge info based on source
                   const getBadgeInfo = (source) => {
@@ -2366,44 +2473,46 @@ export function ChatInput({
                     const selectedStyle = isSelected
                       ? {
                           ...baseStyle,
-                          backgroundColor: baseStyle.backgroundColor || "rgba(59, 130, 246, 0.25)",
+                          backgroundColor:
+                            baseStyle.backgroundColor ||
+                            "rgba(59, 130, 246, 0.25)",
                           boxShadow: "inset 3px 0 0 0 #3b82f6",
                         }
                       : baseStyle;
                     return html`
-                    <button
-                      key=${"prompt-" + fi}
-                      type="button"
-                      onClick=${() => handlePredefinedPrompt(prompt)}
-                      title=${prompt.description || prompt.name}
-                      class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
-                      style=${selectedStyle}
-                      ref=${isSelected ? selectedPromptItemRef : null}
-                    >
-                      <svg
-                        class="w-4 h-4 flex-shrink-0 opacity-60"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
+                      <button
+                        key=${"prompt-" + fi}
+                        type="button"
+                        onClick=${() => handlePredefinedPrompt(prompt)}
+                        title=${prompt.description || prompt.name}
+                        class="prompt-item w-full text-left px-4 py-2.5 text-sm text-gray-200 hover:brightness-110 transition-all flex items-center gap-2"
+                        style=${selectedStyle}
+                        ref=${isSelected ? selectedPromptItemRef : null}
                       >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M13 10V3L4 14h7v7l9-11h-7z"
-                        />
-                      </svg>
-                      <span class="truncate flex-1">${prompt.name}</span>
-                      <span
-                        class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
-                          prompt.source,
-                        ).bgColor} text-white/90 flex-shrink-0"
-                        title=${getBadgeInfo(prompt.source).title}
-                      >
-                        ${getBadgeInfo(prompt.source).label}
-                      </span>
-                    </button>
-                  `;
+                        <svg
+                          class="w-4 h-4 flex-shrink-0 opacity-60"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M13 10V3L4 14h7v7l9-11h-7z"
+                          />
+                        </svg>
+                        <span class="truncate flex-1">${prompt.name}</span>
+                        <span
+                          class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
+                            prompt.source,
+                          ).bgColor} text-white/90 flex-shrink-0"
+                          title=${getBadgeInfo(prompt.source).title}
+                        >
+                          ${getBadgeInfo(prompt.source).label}
+                        </span>
+                      </button>
+                    `;
                   };
 
                   return html`
@@ -2436,7 +2545,11 @@ export function ChatInput({
                         `
                       : ""}
                     ${flatFilteredPrompts.length === 0
-                      ? html`<div class="px-4 py-3 text-xs text-gray-500 text-center">No matching prompts</div>`
+                      ? html`<div
+                          class="px-4 py-3 text-xs text-gray-500 text-center"
+                        >
+                          No matching prompts
+                        </div>`
                       : ""}
                   `;
                 })()}
