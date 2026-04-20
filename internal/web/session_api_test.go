@@ -825,21 +825,12 @@ func TestHandleDeleteSession_ClearsParentReferences(t *testing.T) {
 		t.Error("Parent session still exists after deletion")
 	}
 
-	// Verify child sessions have their parent references cleared
-	child1After, err := store.GetMetadata("child-api-1")
-	if err != nil {
-		t.Fatalf("GetMetadata child1 failed: %v", err)
+	// Verify child sessions are cascade-deleted along with the parent
+	if store.Exists("child-api-1") {
+		t.Error("Child 1 still exists after parent deletion — expected cascade delete")
 	}
-	if child1After.ParentSessionID != "" {
-		t.Errorf("child1.ParentSessionID = %q, want empty string", child1After.ParentSessionID)
-	}
-
-	child2After, err := store.GetMetadata("child-api-2")
-	if err != nil {
-		t.Fatalf("GetMetadata child2 failed: %v", err)
-	}
-	if child2After.ParentSessionID != "" {
-		t.Errorf("child2.ParentSessionID = %q, want empty string", child2After.ParentSessionID)
+	if store.Exists("child-api-2") {
+		t.Error("Child 2 still exists after parent deletion — expected cascade delete")
 	}
 }
 
@@ -1800,9 +1791,9 @@ func TestHandleUpdateSession_UnarchiveDoesNotStartACP(t *testing.T) {
 // Child Session Guard Tests
 // =============================================================================
 
-// TestHandleUpdateSession_ArchiveChildRejected tests that a child session
-// cannot be directly archived — it returns HTTP 400.
-func TestHandleUpdateSession_ArchiveChildRejected(t *testing.T) {
+// TestHandleUpdateSession_ArchiveChildDeletesInstead tests that archiving a child session
+// deletes it instead of archiving — children should never end up in the archived list.
+func TestHandleUpdateSession_ArchiveChildDeletesInstead(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -1834,9 +1825,10 @@ func TestHandleUpdateSession_ArchiveChildRejected(t *testing.T) {
 	server := &Server{
 		sessionManager: NewSessionManager("", "", false, nil),
 		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
 	}
 
-	// Try to archive the child — should be rejected
+	// Try to archive the child — should be converted to delete (HTTP 204)
 	archived := true
 	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
 	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/test-child-session", bytes.NewReader(body))
@@ -1845,14 +1837,14 @@ func TestHandleUpdateSession_ArchiveChildRejected(t *testing.T) {
 
 	server.handleUpdateSession(w, req, "test-child-session")
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d (child archive should be rejected)", w.Code, http.StatusBadRequest)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("Status = %d, want %d (child archive should be converted to delete)", w.Code, http.StatusNoContent)
 	}
 
-	// Verify child is NOT archived
-	meta, _ := store.GetMetadata("test-child-session")
-	if meta.Archived {
-		t.Error("Child should NOT be archived after rejected request")
+	// Verify child is deleted (not just archived)
+	_, err = store.GetMetadata("test-child-session")
+	if err != session.ErrSessionNotFound {
+		t.Errorf("Expected ErrSessionNotFound after child archive-to-delete, got: %v", err)
 	}
 }
 

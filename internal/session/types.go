@@ -56,6 +56,10 @@ type SessionStore interface {
 	// CountChildSessions returns the count of direct child sessions.
 	CountChildSessions(parentID string) (int, error)
 
+	// CountMCPChildSessions returns the count of direct child sessions
+	// excluding auto-children (only MCP and human-created children).
+	CountMCPChildSessions(parentID string) (int, error)
+
 	// HasChildSessions returns true if the session has at least one child.
 	HasChildSessions(parentID string) (bool, error)
 

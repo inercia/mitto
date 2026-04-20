@@ -119,7 +119,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			s.logger.Error("Failed to create session", "error", err)
 		}
 		// Broadcast ACP start failure to all clients (use empty session_id since session wasn't created)
-		s.BroadcastACPStartFailed("", err, workspace.ACPCommand)
+		s.BroadcastACPStartFailed("", req.Name, err, workspace.ACPCommand)
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -438,11 +438,16 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	// Prevent direct archival of child sessions - children are archived via parent cascade
+	// When archiving a child session, delete it instead (children should never be archived)
 	if req.Archived != nil && *req.Archived {
 		meta, err := store.GetMetadata(sessionID)
 		if err == nil && meta.ParentSessionID != "" {
-			http.Error(w, "Cannot archive a child conversation directly. Archive the parent conversation instead.", http.StatusBadRequest)
+			if s.logger != nil {
+				s.logger.Info("Converting child archive to delete",
+					"session_id", sessionID,
+					"parent_session_id", meta.ParentSessionID)
+			}
+			s.handleDeleteSession(w, sessionID)
 			return
 		}
 	}
@@ -544,7 +549,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 						"error", err)
 				}
 				// Broadcast ACP start failure to all clients
-				s.BroadcastACPStartFailed(sessionID, err, "")
+				s.BroadcastACPStartFailed(sessionID, meta.Name, err, "")
 			} else {
 				if s.logger != nil {
 					s.logger.Info("Resumed ACP session after unarchive",
@@ -636,32 +641,32 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		return
 	}
 
-	// Find auto-children BEFORE deletion (they will be cascade-deleted by store.Delete)
+	// Find ALL children recursively BEFORE deletion (they will be cascade-deleted by store.Delete)
 	// We need their IDs to close their ACP processes and broadcast deletions
-	autoChildIDs, err := store.FindAutoChildrenRecursive(sessionID)
+	allChildIDs, err := store.FindAllChildrenRecursive(sessionID)
 	if err != nil && s.logger != nil {
-		s.logger.Warn("Failed to find auto-children for deletion",
+		s.logger.Warn("Failed to find children for deletion",
 			"session_id", sessionID,
 			"error", err)
 	}
 
-	// Clean up callback index entries for this session and its auto-children
+	// Clean up callback index entries for this session and all children
 	if s.callbackIndex != nil {
 		s.callbackIndex.RemoveBySessionID(sessionID)
-		for _, childID := range autoChildIDs {
+		for _, childID := range allChildIDs {
 			s.callbackIndex.RemoveBySessionID(childID)
 		}
 	}
 
-	// Close ACP processes for parent and all auto-children
+	// Close ACP processes for parent and all children
 	if s.sessionManager != nil {
 		s.sessionManager.CloseSession(sessionID, "deleted")
-		for _, childID := range autoChildIDs {
+		for _, childID := range allChildIDs {
 			s.sessionManager.CloseSession(childID, "parent_deleted")
 		}
 	}
 
-	// Delete from store (cascade-deletes auto-children, orphans MCP-children)
+	// Delete from store (cascade-deletes all children recursively)
 	if err := store.Delete(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
 			http.Error(w, "Session not found", http.StatusNotFound)
@@ -676,14 +681,14 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 
 	// Broadcast deletions to all connected WebSocket clients
 	s.BroadcastSessionDeleted(sessionID)
-	for _, childID := range autoChildIDs {
+	for _, childID := range allChildIDs {
 		s.BroadcastSessionDeleted(childID)
 	}
 
-	if s.logger != nil && len(autoChildIDs) > 0 {
-		s.logger.Info("Deleted session with auto-children",
+	if s.logger != nil && len(allChildIDs) > 0 {
+		s.logger.Info("Deleted session with children",
 			"session_id", sessionID,
-			"auto_children_deleted", len(autoChildIDs))
+			"children_deleted", len(allChildIDs))
 	}
 
 	writeNoContent(w)
