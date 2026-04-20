@@ -1557,6 +1557,8 @@ export function useWebSocket() {
                 // Textbox fields
                 text: msg.data.text || "",
                 resultMode: msg.data.result_mode || "text",
+                // Form fields
+                formHTML: msg.data.form_html || "",
               },
             },
           };
@@ -3374,6 +3376,7 @@ export function useWebSocket() {
               acp_server: msg.data.acp_server,
               working_dir: msg.data.working_dir,
               parent_session_id: msg.data.parent_session_id || null, // Preserve parent-child relationship
+              child_origin: msg.data.child_origin || null, // Preserve child origin (mcp, auto, human) for icon rendering
               status: "active",
               created_at: new Date().toISOString(),
             },

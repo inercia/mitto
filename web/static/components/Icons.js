@@ -412,6 +412,28 @@ export function PersonIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Hourglass icon for parent conversations waiting for children
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function HourglassIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M5 3h14M5 21h14M7 3v4l5 5-5 5v4M17 3v4l-5 5 5 5v4"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Stop/square icon (for cancel streaming)
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */

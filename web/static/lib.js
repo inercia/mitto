@@ -360,6 +360,8 @@ export function computeAllSessions(activeSessions, storedSessions) {
         parent_session_id: s.parent_session_id || stored.parent_session_id || null,
         // Preserve child_origin for child session icon rendering (lightning/robot/person)
         child_origin: s.child_origin || stored.child_origin || null,
+        // Preserve isWaitingForChildren from stored session (set by global WebSocket session_waiting events)
+        isWaitingForChildren: s.isWaitingForChildren || stored.isWaitingForChildren || false,
       };
     }
 

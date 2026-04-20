@@ -400,8 +400,10 @@ export function ChatInput({
     if (activeUIPrompt?.promptType === "textbox") {
       setTextboxValue(activeUIPrompt.text || "");
       setIsPromptCollapsed(true); // Collapse prompt area when textbox appears
+    } else if (activeUIPrompt?.promptType === "form") {
+      setIsPromptCollapsed(true); // Collapse prompt area when form appears
     } else {
-      setIsPromptCollapsed(false); // Expand when textbox disappears
+      setIsPromptCollapsed(false); // Expand when textbox/form disappears
     }
   }, [activeUIPrompt?.requestId]);
 
@@ -1795,7 +1797,107 @@ ${activeUIPrompt.text || ""}</textarea
                       </div>
                     </div>
                   `
-                : html`
+                : activeUIPrompt.promptType === "form"
+                  ? html`
+                      <!-- HTML Form for mitto_ui_form -->
+                      <div
+                        class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden"
+                      >
+                        <!-- Title -->
+                        <div class="px-4 pt-4 pb-3">
+                          <p class="ui-prompt-question text-sm font-medium">
+                            ${activeUIPrompt.title || activeUIPrompt.question}
+                          </p>
+                        </div>
+
+                        <!-- Sanitized HTML form content -->
+                        <div
+                          class="ui-form-content px-4 pb-2"
+                          ref=${(el) => {
+                            if (
+                              el &&
+                              activeUIPrompt.formHTML &&
+                              !el.dataset.formInitialized
+                            ) {
+                              el.innerHTML = activeUIPrompt.formHTML;
+                              el.dataset.formInitialized = "true";
+                            }
+                          }}
+                        ></div>
+
+                        <!-- Submit / Cancel / Toggle buttons -->
+                        <div
+                          class="flex items-center justify-between gap-2 px-4 pt-3 pb-5 mb-2"
+                        >
+                          <button
+                            type="button"
+                            onClick=${() => setIsPromptCollapsed((v) => !v)}
+                            class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
+                            title=${isPromptCollapsed
+                              ? "Show prompt area"
+                              : "Hide prompt area"}
+                          >
+                            <svg
+                              class="w-4 h-4 transition-transform ${isPromptCollapsed
+                                ? ""
+                                : "rotate-180"}"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M19 9l-7 7-7-7"
+                              />
+                            </svg>
+                          </button>
+                          <div class="flex gap-2 items-center">
+                          <button
+                            type="button"
+                            onClick=${() =>
+                              handleUIPromptAnswer("cancel", "Cancel", "")}
+                            class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-700 hover:bg-slate-600 text-gray-300 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick=${(e) => {
+                              // Find the form container and extract all named field values
+                              const container =
+                                e.target.closest(".ui-prompt-panel")?.querySelector(".ui-form-content");
+                              if (!container) return;
+                              const values = {};
+                              container
+                                .querySelectorAll("input[name], select[name], textarea[name]")
+                                .forEach((el) => {
+                                  const name = el.name;
+                                  if (!name) return;
+                                  if (el.type === "checkbox") {
+                                    values[name] = el.checked ? "true" : "false";
+                                  } else if (el.type === "radio") {
+                                    if (el.checked) values[name] = el.value;
+                                  } else {
+                                    values[name] = el.value;
+                                  }
+                                });
+                              handleUIPromptAnswer(
+                                "submit",
+                                "Submit",
+                                JSON.stringify(values),
+                              );
+                            }}
+                            class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                          >
+                            Submit
+                          </button>
+                          </div>
+                        </div>
+                      </div>
+                    `
+                  : html`
                     <!-- Unified Claude Code-style menu for yes_no, options_buttons, select -->
                     <div
                       class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden"
@@ -1936,6 +2038,135 @@ ${activeUIPrompt.text || ""}</textarea
                 </button>
               `,
             )}
+          </div>
+        </div>
+      `}
+      ${uploadError &&
+      html`
+        <div class="max-w-4xl mx-auto mb-2">
+          <div
+            class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
+          >
+            <svg
+              class="w-4 h-4 flex-shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+              />
+            </svg>
+            <span>${uploadError}</span>
+            <button
+              type="button"
+              onClick=${() => setUploadError(null)}
+              class="ml-auto text-red-300 hover:text-red-100"
+            >
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+      `}
+      ${improveError &&
+      html`
+        <div class="max-w-4xl mx-auto mb-2">
+          <div
+            class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
+          >
+            <svg
+              class="w-4 h-4 flex-shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <span>${improveError}</span>
+            <button
+              type="button"
+              onClick=${() => setImproveError(null)}
+              class="ml-auto text-red-300 hover:text-red-100"
+            >
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+      `}
+      ${sendError &&
+      html`
+        <div class="max-w-4xl mx-auto mb-2">
+          <div
+            class="bg-orange-900/50 border border-orange-700 text-orange-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
+          >
+            <svg
+              class="w-4 h-4 flex-shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+              />
+            </svg>
+            <span>${sendError}</span>
+            <span class="text-orange-300 text-xs ml-1"
+              >(Your message is preserved - click Send to retry)</span
+            >
+            <button
+              type="button"
+              onClick=${() => setSendError(null)}
+              class="ml-auto text-orange-300 hover:text-orange-100"
+            >
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
           </div>
         </div>
       `}
@@ -2121,7 +2352,7 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-      ${!(isPromptCollapsed && activeUIPrompt?.promptType === "textbox") &&
+      ${!(isPromptCollapsed && (activeUIPrompt?.promptType === "textbox" || activeUIPrompt?.promptType === "form")) &&
       html`
         <!-- Collapsible Action Toolbar - positioned at bottom-right of conversation area -->
         <!-- Note: toolbar uses flex-direction: row-reverse, so DOM order is reversed from visual order -->
@@ -2873,135 +3104,6 @@ ${activeUIPrompt.text || ""}</textarea
                 html` <span class="queue-badge">${queueLength}</span> `}
               </button>
             </div>
-          </div>
-        </div>
-      `}
-      ${improveError &&
-      html`
-        <div class="max-w-4xl mx-auto mt-2">
-          <div
-            class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
-          >
-            <svg
-              class="w-4 h-4 flex-shrink-0"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
-            </svg>
-            <span>${improveError}</span>
-            <button
-              type="button"
-              onClick=${() => setImproveError(null)}
-              class="ml-auto text-red-300 hover:text-red-100"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
-      `}
-      ${uploadError &&
-      html`
-        <div class="max-w-4xl mx-auto mt-2">
-          <div
-            class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
-          >
-            <svg
-              class="w-4 h-4 flex-shrink-0"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-              />
-            </svg>
-            <span>${uploadError}</span>
-            <button
-              type="button"
-              onClick=${() => setUploadError(null)}
-              class="ml-auto text-red-300 hover:text-red-100"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
-      `}
-      ${sendError &&
-      html`
-        <div class="max-w-4xl mx-auto mt-2">
-          <div
-            class="bg-orange-900/50 border border-orange-700 text-orange-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
-          >
-            <svg
-              class="w-4 h-4 flex-shrink-0"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-              />
-            </svg>
-            <span>${sendError}</span>
-            <span class="text-orange-300 text-xs ml-1"
-              >(Your message is preserved - click Send to retry)</span
-            >
-            <button
-              type="button"
-              onClick=${() => setSendError(null)}
-              class="ml-auto text-orange-300 hover:text-orange-100"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
           </div>
         </div>
       `}

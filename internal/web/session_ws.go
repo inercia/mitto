@@ -224,7 +224,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						if clientLogger != nil {
 							clientLogger.Error("Failed to resume session (async)", "error", err)
 						}
-						s.BroadcastACPStartFailed(sessionID, err, "")
+						s.BroadcastACPStartFailed(sessionID, sessionName, err, "")
 						return
 					}
 					// Invalidate negative cache
@@ -2265,6 +2265,8 @@ func (c *SessionWSClient) OnUIPrompt(req UIPromptRequest) {
 		"text":        req.Text,
 		"result_mode": req.ResultMode,
 		"allow_abort": req.AllowAbort,
+		// Form fields
+		"form_html": req.FormHTML,
 	})
 }
 

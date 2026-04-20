@@ -125,6 +125,7 @@ import {
   LightningIcon,
   RobotIcon,
   PersonIcon,
+  HourglassIcon,
   QueueIcon,
   PinIcon,
   PinFilledIcon,
@@ -1528,6 +1529,13 @@ function SessionItem({
                             </span>
                           `
                         : null}
+                  ${session.isWaitingForChildren
+                    ? html`
+                        <span class="flex-shrink-0 text-yellow-400 animate-pulse" title="Waiting for child conversations">
+                          <${HourglassIcon} className="w-4 h-4" />
+                        </span>
+                      `
+                    : null}
                 </div>
               </div>
               ${isStreaming || hasChildStreaming
@@ -1591,24 +1599,33 @@ function SessionItem({
                   ? "opacity-100"
                   : "opacity-0"} transition-opacity flex-shrink-0"
               >
-                <button
-                  onClick=${canArchive ? handleArchive : undefined}
-                  disabled=${!canArchive}
-                  class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
-                    ? "opacity-50 cursor-not-allowed text-gray-500"
-                    : isArchived
-                      ? "hover:bg-slate-600 text-gray-500"
-                      : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
-                  title="${!canArchive
-                    ? archiveBlockedReason
-                    : isArchived
-                      ? "Unarchive"
-                      : "Archive"}"
-                >
-                  ${isArchived
-                    ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
-                    : html`<${ArchiveIcon} className="w-4 h-4" />`}
-                </button>
+                ${isSpawned
+                  ? html`<button
+                      onClick=${handleDelete}
+                      class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
+                      title="Delete"
+                    >
+                      <${TrashIcon} className="w-4 h-4" />
+                    </button>`
+                  : html`<button
+                      onClick=${canArchive ? handleArchive : undefined}
+                      disabled=${!canArchive}
+                      class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
+                        ? "opacity-50 cursor-not-allowed text-gray-500"
+                        : isArchived
+                          ? "hover:bg-slate-600 text-gray-500"
+                          : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
+                      title="${!canArchive
+                        ? archiveBlockedReason
+                        : isArchived
+                          ? "Unarchive"
+                          : "Archive"}"
+                    >
+                      ${isArchived
+                        ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
+                        : html`<${ArchiveIcon} className="w-4 h-4" />`}
+                    </button>`
+                }
                 <button
                   onClick=${handleRename}
                   class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
@@ -1980,6 +1997,15 @@ function SessionList({
     const map = new Map();
     allSessions.forEach((s) => {
       if (s.isStreaming) map.set(s.session_id, true);
+    });
+    return map;
+  }, [allSessions]);
+
+  // Build a lookup map of session_id → true for sessions currently waiting for children.
+  const waitingMap = useMemo(() => {
+    const map = new Map();
+    allSessions.forEach((s) => {
+      if (s.isWaitingForChildren) map.set(s.session_id, true);
     });
     return map;
   }, [allSessions]);
@@ -2449,6 +2475,30 @@ function SessionList({
     [groupingMode, workspaces, onNewSession],
   );
 
+  // Handle creating a new session in a specific folder group
+  const handleNewSessionInFolder = useCallback(
+    (workingDir, e) => {
+      e.stopPropagation();
+
+      // Find all workspaces matching this folder's working_dir
+      const matchingWorkspaces = workspaces.filter(
+        (ws) => ws.working_dir === workingDir,
+      );
+
+      if (matchingWorkspaces.length === 1) {
+        // Single workspace - create session directly
+        onNewSession(matchingWorkspaces[0]);
+      } else if (matchingWorkspaces.length > 1) {
+        // Multiple workspaces - show dialog filtered to this folder
+        onNewSession(null, workingDir);
+      } else {
+        // Fallback
+        onNewSession();
+      }
+    },
+    [workspaces, onNewSession],
+  );
+
   // Render grouped sessions with collapsible headers
   // Handles both flat grouping (server, workspace) and hierarchical grouping (folder)
   const renderGroupedSessions = () => {
@@ -2500,8 +2550,8 @@ function SessionList({
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
               ${groupingMode === "server"
-                ? html`<${ServerIcon} className="w-4 h-4" />`
-                : html`<${LayersIcon} className="w-4 h-4" />`}
+                ? html`<${ServerIcon} className="w-4 h-4 flex-shrink-0" />`
+                : html`<${LayersIcon} className="w-4 h-4 flex-shrink-0" />`}
               <span class="text-left truncate">${group.label}</span>
               ${groupingMode === "workspace" &&
               group.workingDir &&
@@ -2567,6 +2617,7 @@ function SessionList({
                       {
                         ...session,
                         isStreaming: streamingMap.has(session.session_id),
+                        isWaitingForChildren: waitingMap.has(session.session_id),
                       },
                       {
                         hideBadge: groupingMode === "workspace",
@@ -2600,6 +2651,7 @@ function SessionList({
                                   isStreaming: streamingMap.has(
                                     child.session_id,
                                   ),
+                                  isWaitingForChildren: waitingMap.has(child.session_id),
                                 },
                                 {
                                   hideBadge: groupingMode === "workspace",
@@ -2679,7 +2731,7 @@ function SessionList({
               >
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
-              <${FolderIcon} className="w-4 h-4" />
+              <${FolderIcon} className="w-4 h-4 flex-shrink-0" />
               <span class="text-left truncate" title=${folder.workingDir}>
                 ${folder.label}
               </span>
@@ -2691,6 +2743,16 @@ function SessionList({
                   class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 streaming-indicator"
                   title="Agent responding in this folder"
                 ></span>
+              `}
+              ${filterTab === FILTER_TAB.CONVERSATIONS &&
+              html`
+                <button
+                  onClick=${(e) => handleNewSessionInFolder(folder.workingDir, e)}
+                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                  title="New conversation in ${folder.label}"
+                >
+                  <${PlusIcon} className="w-3.5 h-3.5" />
+                </button>
               `}
               <span class="text-xs text-gray-500">${totalSessions}</span>
             </div>
@@ -2721,6 +2783,7 @@ function SessionList({
                     {
                       ...session,
                       isStreaming: streamingMap.has(session.session_id),
+                      isWaitingForChildren: waitingMap.has(session.session_id),
                     },
                     {
                       hideBadge: false, // Show badge to display ACP server
@@ -2754,6 +2817,7 @@ function SessionList({
                               {
                                 ...child,
                                 isStreaming: streamingMap.has(child.session_id),
+                                isWaitingForChildren: waitingMap.has(child.session_id),
                               },
                               {
                                 hideBadge: false, // Show badge to display ACP server
@@ -2825,6 +2889,7 @@ function SessionList({
             {
               ...session,
               isStreaming: streamingMap.has(session.session_id),
+              isWaitingForChildren: waitingMap.has(session.session_id),
             },
             {
               childCount: hasChildSessions ? session.children.length : 0,
@@ -2849,6 +2914,7 @@ function SessionList({
                       {
                         ...child,
                         isStreaming: streamingMap.has(child.session_id),
+                        isWaitingForChildren: waitingMap.has(child.session_id),
                       },
                       {
                         isSpawned: true,
@@ -4992,7 +5058,7 @@ function App() {
     reconnectAllSessionsStaggered,
   ]);
 
-  const handleNewSession = async (workspace = null) => {
+  const handleNewSession = async (workspace = null, folderFilter = null) => {
     // If a specific workspace is provided, create session directly in that workspace
     if (workspace) {
       setShowSidebar(false);
@@ -5010,6 +5076,32 @@ function App() {
             chatInputRef.current.focus();
           }
         }, 100);
+      }
+      return;
+    }
+
+    // If folder filter provided, show workspace dialog filtered to that folder
+    if (folderFilter) {
+      const filteredWs = workspaces.filter(
+        (ws) => ws.working_dir === folderFilter,
+      );
+      if (filteredWs.length === 1) {
+        // Single workspace in folder - create directly
+        setShowSidebar(false);
+        const result = await newSession({
+          workingDir: filteredWs[0].working_dir,
+          acpServer: filteredWs[0].acp_server,
+        });
+        if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+          setSettingsDialog({ isOpen: true, forceOpen: true });
+        } else {
+          setTimeout(() => {
+            if (chatInputRef.current) chatInputRef.current.focus();
+          }, 100);
+        }
+      } else if (filteredWs.length > 1) {
+        setWorkspaceDialog({ isOpen: true, filteredWorkspaces: filteredWs });
+        setShowSidebar(false);
       }
       return;
     }
@@ -5630,7 +5722,7 @@ function App() {
       <!-- Workspace Selection Dialog (for new conversations) -->
       <${WorkspaceDialog}
         isOpen=${workspaceDialog.isOpen}
-        workspaces=${workspaces}
+        workspaces=${workspaceDialog.filteredWorkspaces || workspaces}
         onSelect=${handleWorkspaceSelect}
         onCancel=${() => setWorkspaceDialog({ isOpen: false })}
       />
@@ -5844,12 +5936,12 @@ function App() {
       html`
         <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
           <div
-            class="flex flex-col gap-1 px-4 py-3 bg-amber-600 text-white rounded-lg shadow-lg max-w-md"
+            class="flex flex-col gap-1 px-4 py-3 bg-red-600 text-white rounded-lg shadow-lg max-w-lg"
           >
             <div class="flex items-center gap-2">
-              <span class="text-lg">⏳</span>
+              <span class="text-lg">⚠️</span>
               <span class="text-sm font-medium"
-                >AI Agent Starting...</span
+                >AI Agent Failed to Start</span
               >
               <button
                 onClick=${() => setAcpStartFailedError(null)}
@@ -5860,8 +5952,21 @@ function App() {
               </button>
             </div>
             <div class="text-xs opacity-90 ml-7">
+              ${acpStartFailedError.session_id && html`
+                <div class="text-white/90 mb-1">
+                  Session: <button
+                    class="underline hover:text-white cursor-pointer"
+                    onClick=${() => {
+                      setAcpStartFailedError(null);
+                      if (acpStartFailedError.session_id) {
+                        switchToSession(acpStartFailedError.session_id);
+                      }
+                    }}
+                  >${acpStartFailedError.session_name || acpStartFailedError.session_id}</button>
+                </div>
+              `}
               <div class="text-white/70">
-                The AI agent is still starting up. This may take a few seconds. Please wait...
+                The AI agent process could not be started. Try switching to the session and sending a message to retry.
               </div>
             </div>
           </div>
@@ -6327,8 +6432,8 @@ function App() {
             agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
             acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
             activeUIPrompt=${activeUIPrompt}
-            onUIPromptAnswer=${(requestId, optionId, label) =>
-              sendUIPromptAnswer(activeSessionId, requestId, optionId, label)}
+            onUIPromptAnswer=${(requestId, optionId, label, freeText) =>
+              sendUIPromptAnswer(activeSessionId, requestId, optionId, label, freeText)}
             workingDir=${sessionInfo?.working_dir || ""}
             sendKeyMode=${sendKeyMode}
           />

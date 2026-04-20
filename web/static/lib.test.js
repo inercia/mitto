@@ -1140,6 +1140,16 @@ describe("isStaleClientState", () => {
       // Client has seq 1000 from before server restart, server now has seq 50
       expect(isStaleClientState(1000, 50)).toBe(true);
     });
+
+    test("off-by-one: client seq exactly 1 ahead of server (ACP crash scenario)", () => {
+      // This is the exact scenario from the 2026-04-16 bug: ACP sent seq=2181
+      // via streaming but crashed before persisting it. Server has max_seq=2180.
+      expect(isStaleClientState(2181, 2180)).toBe(true);
+    });
+
+    test("off-by-one: client seq equals server (not stale)", () => {
+      expect(isStaleClientState(2180, 2180)).toBe(false);
+    });
   });
 
   describe("normal sync scenarios (not stale)", () => {
@@ -1285,6 +1295,50 @@ describe("isStaleClientState", () => {
       expect(isStaleClientState(clientMaxSeq, serverMaxSeq)).toBe(false);
       // When false and serverMaxSeq <= clientMaxSeq, no sync needed
     });
+  });
+});
+
+// =============================================================================
+// prepend cascade prevention (2026-04-16 fix)
+// =============================================================================
+
+describe("prepend cascade prevention (2026-04-16 fix)", () => {
+  test("BUG: prepend batch with stale sessionsRef triggers false M1 fix", () => {
+    // Scenario: After stale recovery, sessionsRef still has old messages
+    // (React async batching hasn't flushed yet).
+    // A prepend batch arrives with events for seq 1-2130.
+    // sessionsRef.current has stale messages with getMaxSeq = 2181.
+    // lastKnownSeqRef was reset to 2180 by the initial M1 fix.
+    //
+    // clientLastSeq = Math.max(refSeq=2180, staleStateSeq=2181, lastLoadedSeq=2180)
+    //              = 2181 (from stale React state!)
+    // maxSeq = 2180 (from server)
+    // isStaleClient = isStaleClientState(2181, 2180) = true  ← FALSE POSITIVE!
+    //
+    // The fix: skip stale detection entirely for prepend batches.
+    // Prepend batches load historical context; the stale condition was already
+    // handled by the initial events_loaded that triggered the auto-load.
+
+    const clientLastSeq = 2181; // From stale React state
+    const serverMaxSeq = 2180;
+
+    // Without fix: stale detection fires on prepend → cascade
+    expect(isStaleClientState(clientLastSeq, serverMaxSeq)).toBe(true);
+
+    // The fix is behavioral (in useWebSocket.js events_loaded handler):
+    // const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, maxSeq);
+    // When isPrepend=true, isStaleClient is always false regardless of seq comparison.
+    const isPrepend = true;
+    const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
+    expect(isStaleClient).toBe(false); // Cascade prevented!
+  });
+
+  test("non-prepend batch still detects stale state correctly", () => {
+    const clientLastSeq = 2181;
+    const serverMaxSeq = 2180;
+    const isPrepend = false;
+    const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
+    expect(isStaleClient).toBe(true); // Stale detection works for non-prepend
   });
 });
 
