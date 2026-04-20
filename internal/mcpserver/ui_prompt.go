@@ -52,6 +52,12 @@ const (
 	// Used by: MCP tools that need the user to review/edit text.
 	// Blocking: Yes (caller waits for response).
 	UIPromptTypeTextbox UIPromptType = "textbox"
+
+	// UIPromptTypeForm displays a sanitized HTML form for user input.
+	// Used by: MCP tools that need structured user input via form fields.
+	// The HTML is strictly sanitized to allow only form-related elements.
+	// Blocking: Yes (caller waits for response).
+	UIPromptTypeForm UIPromptType = "form"
 )
 
 // UIPromptOptionStyle defines the visual style for an option button.
@@ -150,6 +156,11 @@ type UIPromptRequest struct {
 	// AllowAbort indicates whether the user can abort the textbox editing.
 	// Only relevant when Type is UIPromptTypeTextbox.
 	AllowAbort bool `json:"allow_abort,omitempty"`
+
+	// FormHTML is sanitized HTML content for form prompts.
+	// Only relevant when Type is UIPromptTypeForm.
+	// Contains only whitelisted form elements (input, select, textarea, label, etc.).
+	FormHTML string `json:"form_html,omitempty"`
 }
 
 // UIPromptResponse contains the user's response to a UI prompt.

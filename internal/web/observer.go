@@ -33,6 +33,8 @@ const (
 	UIPromptTypeOptions       = mcpserver.UIPromptTypeOptions
 	UIPromptTypeActionButtons = mcpserver.UIPromptTypeActionButtons
 	UIPromptTypePermission    = mcpserver.UIPromptTypePermission
+	UIPromptTypeTextbox       = mcpserver.UIPromptTypeTextbox
+	UIPromptTypeForm          = mcpserver.UIPromptTypeForm
 )
 
 // Re-export UI prompt option style constants for convenience.
