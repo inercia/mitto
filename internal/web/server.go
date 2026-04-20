@@ -539,9 +539,13 @@ func NewServer(config Config) (*Server, error) {
 		})
 	}
 
-	// Initialize periodic runner for scheduled prompt delivery
+	// Initialize periodic runner for scheduled prompt delivery and session housekeeping
 	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
 	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
+	s.periodicRunner.SetOnAutoArchive(func(sessionID string) {
+		s.BroadcastACPStopped(sessionID, "auto_archived")
+		s.BroadcastSessionArchived(sessionID, true)
+	})
 
 	// Initialize callback index and rate limiter
 	s.callbackIndex = NewCallbackIndex()
@@ -555,6 +559,13 @@ func NewServer(config Config) (*Server, error) {
 		} else if autoArchiveDuration > 0 {
 			s.periodicRunner.SetAutoArchiveAfter(autoArchiveDuration)
 			logger.Info("Auto-archive inactive sessions enabled", "period", autoArchivePeriod, "duration", autoArchiveDuration)
+		}
+
+		// Configure periodic cleanup of archived sessions
+		retentionPeriod := config.MittoConfig.Session.GetArchiveRetentionPeriod()
+		if retentionPeriod != "" {
+			s.periodicRunner.SetArchiveRetentionPeriod(retentionPeriod)
+			logger.Info("Periodic archive retention cleanup enabled", "retention_period", retentionPeriod)
 		}
 	}
 
@@ -1104,15 +1115,16 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
 // If err is an *ACPClassifiedError with a permanent classification, a more detailed
 // "acp_error_permanent" message is broadcast with actionable user guidance.
-func (s *Server) BroadcastACPStartFailed(sessionID string, err error, command string) {
+func (s *Server) BroadcastACPStartFailed(sessionID, sessionName string, err error, command string) {
 	if s.eventsManager == nil {
 		return
 	}
 
 	data := map[string]interface{}{
-		"session_id": sessionID,
-		"error":      err.Error(),
-		"command":    command,
+		"session_id":   sessionID,
+		"session_name": sessionName,
+		"error":        err.Error(),
+		"command":      command,
 	}
 
 	// Check if this is a classified permanent error — broadcast with extra context.
@@ -1297,8 +1309,8 @@ func (a *sessionManagerAdapter) GetWorkspacesForFolder(folder string) []configPk
 }
 
 // BroadcastSessionCreated broadcasts a session_created event to all connected clients.
-func (a *sessionManagerAdapter) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
-	a.sm.BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID)
+func (a *sessionManagerAdapter) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
+	a.sm.BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin)
 }
 
 // BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
@@ -1309,6 +1321,11 @@ func (a *sessionManagerAdapter) BroadcastSessionArchived(sessionID string, archi
 // BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
 func (a *sessionManagerAdapter) BroadcastSessionDeleted(sessionID string) {
 	a.sm.BroadcastSessionDeleted(sessionID)
+}
+
+// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
+	a.sm.BroadcastWaitingForChildren(sessionID, isWaiting)
 }
 
 // DeleteChildSessions permanently deletes all child sessions when a parent is archived.
