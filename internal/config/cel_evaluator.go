@@ -59,6 +59,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// Children variables
 		cel.Variable("children.count", cel.IntType),
 		cel.Variable("children.exists", cel.BoolType),
+		cel.Variable("children.mcp_count", cel.IntType),
 		cel.Variable("children.names", cel.ListType(cel.StringType)),
 		cel.Variable("children.acpServers", cel.ListType(cel.StringType)),
 
@@ -173,6 +174,7 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 
 		"children.count":      int64(ctx.Children.Count),
 		"children.exists":     ctx.Children.Exists,
+		"children.mcp_count":  int64(ctx.Children.MCPCount),
 		"children.names":      ctx.Children.Names,
 		"children.acpServers": ctx.Children.ACPServers,
 

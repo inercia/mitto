@@ -3364,7 +3364,7 @@ func TestUIPrompt(t *testing.T) {
 		go func() {
 			<-promptCh // Wait for prompt to be sent
 			time.Sleep(50 * time.Millisecond)
-			bs.HandleUIPromptAnswer("test-request-001", "yes", "Deploy Now")
+			bs.HandleUIPromptAnswer("test-request-001", "yes", "Deploy Now", "")
 		}()
 
 		// Send a UI prompt
@@ -3525,7 +3525,7 @@ func TestUIPrompt(t *testing.T) {
 		}
 
 		// Now answer the second prompt
-		bs.HandleUIPromptAnswer("second-prompt", "yes", "Yes")
+		bs.HandleUIPromptAnswer("second-prompt", "yes", "Yes", "")
 
 		// Get response
 		var resp UIPromptResponse

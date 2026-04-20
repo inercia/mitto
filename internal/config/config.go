@@ -506,6 +506,11 @@ type ConversationsConfig struct {
 	// If a flag is not present in this map, the compile-time default from
 	// internal/session/flags.go is used instead.
 	DefaultFlags map[string]bool `json:"default_flags,omitempty" yaml:"default_flags,omitempty"`
+	// MaxChildConversations limits the number of child conversations a session can
+	// spawn via the MCP mitto_conversation_new tool. Auto-children (created via
+	// workspace auto_children config) are NOT counted toward this limit.
+	// nil means use default (10). 0 means unlimited.
+	MaxChildConversations *int `json:"max_child_conversations,omitempty" yaml:"max_child_conversations,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -696,6 +701,20 @@ func (c *ConversationsConfig) AreExternalImagesEnabled() bool {
 		return false
 	}
 	return c.ExternalImages.IsEnabled()
+}
+
+// DefaultMaxChildConversations is the default limit for child conversations
+// spawned via MCP when no explicit limit is configured.
+const DefaultMaxChildConversations = 10
+
+// GetMaxChildConversations returns the configured max child conversations limit.
+// Safe to call on nil receiver - returns DefaultMaxChildConversations if not configured.
+// Returns 0 for unlimited.
+func (c *ConversationsConfig) GetMaxChildConversations() int {
+	if c == nil || c.MaxChildConversations == nil {
+		return DefaultMaxChildConversations
+	}
+	return *c.MaxChildConversations
 }
 
 // MergeProcessors combines global and workspace processors according to precedence rules.
@@ -1060,7 +1079,8 @@ type rawConfig struct {
 		ExternalImages *struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"external_images"`
-		DefaultFlags map[string]bool `yaml:"default_flags"`
+		DefaultFlags          map[string]bool `yaml:"default_flags"`
+		MaxChildConversations *int            `yaml:"max_child_conversations"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1338,10 +1358,15 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.DefaultFlags = raw.Conversations.DefaultFlags
 		}
 
+		// Copy max child conversations
+		if raw.Conversations.MaxChildConversations != nil {
+			cfg.Conversations.MaxChildConversations = raw.Conversations.MaxChildConversations
+		}
+
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
-			cfg.Conversations.DefaultFlags == nil {
+			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil {
 			cfg.Conversations = nil
 		}
 	}

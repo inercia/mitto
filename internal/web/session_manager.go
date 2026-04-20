@@ -20,7 +20,8 @@ import (
 )
 
 // MaxSessions is the maximum number of concurrent sessions allowed.
-const MaxSessions = 32
+// This limits running sessions (those with an active ACP process), not stored/archived sessions.
+const MaxSessions = 64
 
 // ErrTooManySessions is returned when the session limit is reached.
 var ErrTooManySessions = errors.New("maximum number of sessions reached")
@@ -439,7 +440,7 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 		}
 
 		// Broadcast creation to all connected clients
-		sm.BroadcastSessionCreated(childID, child.Title, targetWS.ACPServer, parentWorkingDir, parentID)
+		sm.BroadcastSessionCreated(childID, child.Title, targetWS.ACPServer, parentWorkingDir, parentID, string(session.ChildOriginAuto))
 
 		if sm.logger != nil {
 			sm.logger.Info("Auto-created child conversation",
@@ -956,7 +957,7 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 
 // BroadcastSessionCreated broadcasts a session_created event to all connected clients.
 // This is called when a new session is created (via HTTP API or MCP tools).
-func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
+func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
 	sm.mu.RLock()
 	em := sm.eventsManager
 	sm.mu.RUnlock()
@@ -978,6 +979,11 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 		sessionData["parent_session_id"] = parentSessionID
 	}
 
+	// Include child_origin so frontend can show the correct icon (e.g., robot for MCP)
+	if childOrigin != "" {
+		sessionData["child_origin"] = childOrigin
+	}
+
 	em.Broadcast(WSMsgTypeSessionCreated, sessionData)
 
 	if sm.logger != nil {
@@ -985,6 +991,7 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 			"session_id", sessionID,
 			"name", name,
 			"parent_session_id", parentSessionID,
+			"child_origin", childOrigin,
 			"clients", em.ClientCount())
 	}
 }
@@ -1031,6 +1038,30 @@ func (sm *SessionManager) BroadcastSessionDeleted(sessionID string) {
 	if sm.logger != nil {
 		sm.logger.Debug("Broadcast session deleted",
 			"session_id", sessionID,
+			"clients", em.ClientCount())
+	}
+}
+
+// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
+// This is called when a parent session starts or stops blocking on mitto_children_tasks_wait.
+func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionWaiting, map[string]interface{}{
+		"session_id": sessionID,
+		"is_waiting": isWaiting,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session waiting for children",
+			"session_id", sessionID,
+			"is_waiting", isWaiting,
 			"clients", em.ClientCount())
 	}
 }

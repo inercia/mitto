@@ -1242,6 +1242,7 @@ export function SettingsDialog({
   const [newWorkspacePath, setNewWorkspacePath] = useState("");
   const [newWorkspaceServer, setNewWorkspaceServer] = useState("");
   const [newWorkspaceRunner, setNewWorkspaceRunner] = useState("exec");
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
 
   const [showAddServer, setShowAddServer] = useState(false);
   const [newServerName, setNewServerName] = useState("");
@@ -1307,6 +1308,9 @@ export function SettingsDialog({
 
   // External images settings (advanced) - disabled by default for security
   const [externalImagesEnabled, setExternalImagesEnabled] = useState(false);
+
+  // Max child conversations setting - default 10
+  const [maxChildConversations, setMaxChildConversations] = useState(10);
 
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
@@ -1772,6 +1776,11 @@ export function SettingsDialog({
         config.conversations?.external_images?.enabled === true,
       );
 
+      // Load max child conversations setting - default to 10
+      setMaxChildConversations(
+        config.conversations?.max_child_conversations ?? 10,
+      );
+
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -1978,6 +1987,7 @@ export function SettingsDialog({
         external_images: {
           enabled: externalImagesEnabled,
         },
+        max_child_conversations: maxChildConversations,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -2191,6 +2201,7 @@ export function SettingsDialog({
     setWorkspaces([
       ...workspaces,
       {
+        name: newWorkspaceName.trim() || undefined,
         working_dir: pathTrimmed,
         acp_server: newWorkspaceServer,
         acp_command: server.command,
@@ -2198,6 +2209,7 @@ export function SettingsDialog({
       },
     ]);
     setNewWorkspacePath("");
+    setNewWorkspaceName("");
     setNewWorkspaceRunner("exec");
     setShowAddWorkspace(false);
     setError("");
@@ -2779,6 +2791,23 @@ export function SettingsDialog({
                         >
                           <div>
                             <label class="block text-sm text-gray-400 mb-1"
+                              >Display Name</label
+                            >
+                            <input
+                              type="text"
+                              value=${newWorkspaceName}
+                              onInput=${(e) => {
+                                setNewWorkspaceName(e.target.value);
+                              }}
+                              placeholder="My Project"
+                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            <p class="text-xs text-gray-500 mt-1">
+                              Optional friendly name shown in the UI
+                            </p>
+                          </div>
+                          <div>
+                            <label class="block text-sm text-gray-400 mb-1"
                               >Directory Path</label
                             >
                             <div class="flex gap-2">
@@ -2870,6 +2899,7 @@ export function SettingsDialog({
                               onClick=${() => {
                                 setShowAddWorkspace(false);
                                 setNewWorkspacePath("");
+                                setNewWorkspaceName("");
                                 setNewWorkspaceRunner("exec");
                                 setError("");
                               }}
@@ -4398,6 +4428,40 @@ export function SettingsDialog({
                               <option value="1m">After 1 month</option>
                               <option value="3m">After 3 months</option>
                             </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Child Conversations Limit -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Child Conversations
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Max Child Conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Maximum number of child conversations an AI agent
+                                can spawn via MCP. Auto-created children are not
+                                counted. Set to 0 for unlimited.
+                              </div>
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value=${maxChildConversations}
+                              onChange=${(e) =>
+                                setMaxChildConversations(
+                                  parseInt(e.target.value, 10) || 0,
+                                )}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm w-20 text-center focus:ring-blue-500 focus:border-blue-500"
+                            />
                           </div>
                         </div>
                       </div>
