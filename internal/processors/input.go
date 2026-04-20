@@ -68,6 +68,8 @@ type ChildSession struct {
 	ACPServer string `json:"acp_server,omitempty"`
 	// IsAutoChild indicates the child was auto-created with the parent.
 	IsAutoChild bool `json:"is_auto_child,omitempty"`
+	// ChildOrigin indicates how the child was created: "auto", "mcp", or "human".
+	ChildOrigin string `json:"child_origin,omitempty"`
 }
 
 // HistoryEntry represents a single turn in the conversation history.

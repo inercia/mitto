@@ -2,6 +2,7 @@ package processors
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -19,6 +20,8 @@ import (
 //   - @mitto:available_acp_servers  — ACP servers with workspaces for this folder,
 //     comma-separated with tags and current marker
 //   - @mitto:children               — Child sessions, comma-separated with names and ACP servers
+//   - @mitto:mcp_children_count     — Number of MCP-created child sessions (integer as string)
+//   - @mitto:mcp_children           — MCP-created child sessions only, comma-separated
 //
 // Unknown @mitto: variables are left as-is.
 // Empty values substitute to empty string.
@@ -67,6 +70,8 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 		"@mitto:acp_server":            input.ACPServer,
 		"@mitto:workspace_uuid":        input.WorkspaceUUID,
 		"@mitto:available_acp_servers": formatAvailableACPServers(input.AvailableACPServers),
+		"@mitto:mcp_children_count":    formatMCPChildrenCount(input.ChildSessions),
+		"@mitto:mcp_children":          formatMCPChildren(input.ChildSessions),
 		"@mitto:children":              formatChildSessions(input.ChildSessions),
 	}
 
@@ -119,6 +124,40 @@ func formatChildSessions(children []ChildSession) string {
 	}
 	parts := make([]string, 0, len(children))
 	for _, child := range children {
+		s := child.ID
+		if child.Name != "" {
+			s += " (" + child.Name + ")"
+		}
+		if child.ACPServer != "" {
+			s += " [" + child.ACPServer + "]"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatMCPChildrenCount returns the count of MCP-origin children as a string.
+func formatMCPChildrenCount(children []ChildSession) string {
+	count := 0
+	for _, child := range children {
+		if child.ChildOrigin == "mcp" {
+			count++
+		}
+	}
+	return strconv.Itoa(count)
+}
+
+// formatMCPChildren renders only MCP-origin children as a human-readable string.
+//
+// Format: "id (name) [acp-server], id2 (name2) [acp-server2]"
+// If a child has no name, the parenthetical group is omitted.
+// If a child has no ACP server, the bracket group is omitted.
+func formatMCPChildren(children []ChildSession) string {
+	var parts []string
+	for _, child := range children {
+		if child.ChildOrigin != "mcp" {
+			continue
+		}
 		s := child.ID
 		if child.Name != "" {
 			s += " (" + child.Name + ")"

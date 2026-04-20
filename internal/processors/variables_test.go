@@ -299,6 +299,30 @@ func TestSubstituteVariables_Children(t *testing.T) {
 			},
 			expected: "sess-1",
 		},
+		{
+			name:    "mcp_children_count substitution",
+			message: "Count: @mitto:mcp_children_count",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "c1", Name: "A", ChildOrigin: "mcp"},
+					{ID: "c2", Name: "B", ChildOrigin: "auto"},
+					{ID: "c3", Name: "C", ChildOrigin: "mcp"},
+				},
+			},
+			expected: "Count: 2",
+		},
+		{
+			name:    "mcp_children substitution",
+			message: "Children: @mitto:mcp_children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "c1", Name: "A", ACPServer: "fast", ChildOrigin: "mcp"},
+					{ID: "c2", Name: "B", ACPServer: "fast", ChildOrigin: "auto"},
+					{ID: "c3", ChildOrigin: "mcp"},
+				},
+			},
+			expected: "Children: c1 (A) [fast], c3",
+		},
 	}
 
 	for _, tt := range tests {
