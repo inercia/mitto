@@ -46,7 +46,7 @@ Priority: tracking branch → `upstream` remote → `origin` remote.
 
 Confirm if: multiple remotes, detected remote differs from `origin`, no tracking/PR found, branch name suggests non-default target.
 
-**With Mitto UI**: `mitto_ui_ask_yes_no(self_id: "@mitto:session_id", ...)` → "Detected rebase target: upstream/main. Correct?"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Detected rebase target: upstream/main. Correct?"
 **Without**: Ask in conversation.
 
 ### 3. Fetch and Preview
@@ -74,7 +74,7 @@ Per conflicting file:
 
 **Ask user** when: same logic modified differently, semantic meaning changes, multiple valid resolutions, complex refactoring.
 
-**With Mitto UI**: `mitto_ui_options_buttons(self_id: "@mitto:session_id", ...` → "Accept theirs / Accept ours / Combine both / Custom"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...` → "Accept theirs / Accept ours / Combine both / Custom"
 **Without**: Present options in conversation.
 
 After each file: `git add <file>` → `git rebase --continue`. Iterate until complete.

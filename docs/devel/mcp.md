@@ -183,39 +183,57 @@ Send a prompt to another conversation's queue. Requires `can_send_prompt` flag o
 | `conversation_id` | string | Yes      | Target conversation ID           |
 | `prompt`          | string | Yes      | The prompt text to send          |
 
-#### `mitto_ui_ask_yes_no`
+#### `mitto_ui_options`
 
-Present a yes/no question to the user. Requires `can_prompt_user` flag.
+Present an options menu to the user. Requires `can_prompt_user` flag. Supports up to 20 options,
+optional per-option descriptions, and an optional free-text input field.
 
-| Parameter         | Type   | Required | Description                  |
-| ----------------- | ------ | -------- | ---------------------------- |
-| `session_id`      | string | Yes      | Session to display prompt in |
-| `question`        | string | Yes      | The question to ask          |
-| `yes_label`       | string | No       | Custom "Yes" button label    |
-| `no_label`        | string | No       | Custom "No" button label     |
-| `timeout_seconds` | int    | No       | Timeout (default: 300)       |
+| Parameter              | Type     | Required | Description                                        |
+| ---------------------- | -------- | -------- | -------------------------------------------------- |
+| `self_id`              | string   | Yes      | YOUR session ID (the caller)                       |
+| `question`             | string   | No       | The question to display (default: "Please select") |
+| `options`              | object[] | No       | List of `{label, description}` objects (max 20)    |
+| `allow_free_text`      | bool     | No       | Allow user to type a custom response               |
+| `free_text_placeholder`| string   | No       | Placeholder text for the free-text input           |
+| `timeout_seconds`      | int      | No       | Timeout in seconds (default: 300)                  |
 
-#### `mitto_ui_options_buttons`
+Returns:
 
-Present multiple options as buttons. Requires `can_prompt_user` flag. Max 4 options.
+| Field      | Description                                      |
+| ---------- | ------------------------------------------------ |
+| `selected` | Label of the selected option (if option chosen)  |
+| `index`    | 0-based index of selected option (-1 if none)    |
+| `free_text`| User-typed text (if free text was entered)       |
+| `timed_out`| true if no response within timeout               |
 
-| Parameter         | Type     | Required | Description                   |
-| ----------------- | -------- | -------- | ----------------------------- |
-| `session_id`      | string   | Yes      | Session to display prompt in  |
-| `options`         | string[] | Yes      | List of option labels (max 4) |
-| `question`        | string   | No       | Question text                 |
-| `timeout_seconds` | int      | No       | Timeout (default: 300)        |
+#### `mitto_ui_form`
 
-#### `mitto_ui_options_combo`
+Present a sanitized HTML form to the user and wait for submission. Requires `can_prompt_user` flag.
 
-Present a dropdown/combo box. Requires `can_prompt_user` flag. Max 10 options.
+The HTML is strictly sanitized to allow only form-related elements (input, select, textarea, label,
+fieldset, legend, div, span, p, br, hr, headings). Scripts, styles, event handlers, images, links,
+iframes, and all other elements are stripped. Submit/cancel buttons are added automatically.
+Form values are returned as key-value pairs keyed by each element's `name` attribute.
 
-| Parameter         | Type     | Required | Description                    |
-| ----------------- | -------- | -------- | ------------------------------ |
-| `session_id`      | string   | Yes      | Session to display prompt in   |
-| `options`         | string[] | Yes      | List of option labels (max 10) |
-| `question`        | string   | No       | Question text                  |
-| `timeout_seconds` | int      | No       | Timeout (default: 300)         |
+| Parameter         | Type   | Required | Description                                         |
+| ----------------- | ------ | -------- | --------------------------------------------------- |
+| `self_id`         | string | Yes      | YOUR session ID (the caller)                        |
+| `title`           | string | Yes      | Dialog title shown above the form                   |
+| `html`            | string | Yes      | HTML form content (sanitized before rendering)      |
+| `timeout_seconds` | int    | No       | Timeout in seconds (default: 600)                   |
+
+Returns:
+
+| Field       | Description                                                |
+| ----------- | ---------------------------------------------------------- |
+| `submitted` | true if the user submitted the form                        |
+| `cancelled` | true if the user clicked Cancel                            |
+| `timed_out` | true if no response within timeout                         |
+| `values`    | Object of field name → value pairs (when submitted)        |
+
+Supported input types: `text`, `number`, `email`, `url`, `tel`, `password`, `date`, `time`,
+`checkbox`, `radio`, `hidden`, `color`, `range`. Checkbox values are returned as `"true"`/`"false"`.
+Radio groups return the value of the selected option.
 
 #### `mitto_conversation_new`
 
@@ -420,7 +438,7 @@ Session-scoped tools check permissions at runtime:
 | ------------------------ | --------------------------------------------------------------------------- |
 | `can_do_introspection`   | (None currently - for future tools)                                         |
 | `can_send_prompt`        | `mitto_conversation_send_prompt`, `mitto_children_tasks_wait`               |
-| `can_prompt_user`        | `mitto_ui_ask_yes_no`, `mitto_ui_options_buttons`, `mitto_ui_options_combo` |
+| `can_prompt_user`        | `mitto_ui_options`, `mitto_ui_textbox`, `mitto_ui_form`                                         |
 | `can_start_conversation` | `mitto_conversation_new`                                                    |
 
 **Note:** `mitto_conversation_list` is **always available** (no permission check).
@@ -740,7 +758,7 @@ sequenceDiagram
     BS->>ACP: NewSession(McpServers: [])
     Note over ACP: Agent uses pre-configured MCP URL
 
-    ACP->>MCP: Call mitto_ui_ask_yes_no(session_id=X)
+    ACP->>MCP: Call mitto_ui_options(self_id=X)
     MCP->>MCP: Look up session X
     MCP->>Store: Read flags for session X
     Store-->>MCP: {can_prompt_user: true}

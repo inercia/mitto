@@ -35,7 +35,7 @@ Effort: Small (low risk), Medium (some risk), Large (higher risk).
 
 ### 3. Wait for Approval
 
-**With Mitto UI**: `mitto_ui_options_buttons(self_id: "@mitto:session_id", ...` → "Approve all / Approve selected / Investigate / Cancel"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...` → "Approve all / Approve selected / Investigate / Cancel"
 **Without**: Ask in conversation. Wait for explicit approval.
 
 ### 4. Execute

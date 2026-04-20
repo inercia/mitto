@@ -55,7 +55,7 @@ Priority: `upstream` → `origin` → tracking branch.
 
 Confirm if: multiple remotes, non-standard setup, no tracking/PR found.
 
-**With Mitto UI**: `mitto_ui_ask_yes_no(self_id: "@mitto:session_id", ...)` → "PR targets upstream/main, push to origin. Correct?"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "PR targets upstream/main, push to origin. Correct?"
 **Without**: Ask in conversation.
 
 ### 4. Check if Rebase Needed

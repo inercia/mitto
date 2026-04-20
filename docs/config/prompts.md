@@ -342,7 +342,7 @@ substitution system used by [message processors](processors.md#variable-substitu
 ### Why Use Variables in Prompts?
 
 Variables are especially useful for prompts that instruct the AI agent to call MCP tools.
-Many Mitto MCP tools (like `mitto_conversation_new`, `mitto_ui_ask_yes_no`, etc.) require
+Many Mitto MCP tools (like `mitto_conversation_new`, `mitto_ui_options`, etc.) require
 a `self_id` parameter. By providing `@mitto:session_id` directly in the prompt text, you
 eliminate the need for the agent to first call `mitto_conversation_get_current` to discover
 its session ID — saving a tool call round-trip.

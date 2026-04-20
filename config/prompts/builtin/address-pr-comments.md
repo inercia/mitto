@@ -55,7 +55,7 @@ Ask me for confirmation if any question arises.
 |---------|------|----------|----------|--------|
 | ...     | ...  | ...      | ...      | ...    |
 
-**With Mitto UI**: `mitto_ui_ask_yes_no(self_id: "@mitto:session_id", ...)` → "Does this analysis look correct?"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Does this analysis look correct?"
 **Without**: Ask in conversation for confirmation.
 
 ### 6. Implement Changes
@@ -118,7 +118,7 @@ In fork workflows: push to `origin` (your fork), not `upstream`. Verify via PR's
 
 ### 9. Push and Request Re-review
 
-**With Mitto UI**: `mitto_ui_ask_yes_no(self_id: "@mitto:session_id", ...)` → "Ready to push and request re-review?"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Ready to push and request re-review?"
 **Without**: Ask in conversation.
 
 ```bash

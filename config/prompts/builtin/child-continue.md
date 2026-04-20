@@ -27,7 +27,7 @@ If no children found: inform user "No child conversations found. Use 'Create min
 
 Present children with their status:
 
-Ask via `mitto_ui_options_combo(self_id: "@mitto:session_id", ...)` (timeout: 60s):
+Ask via `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 60s):
 
 ```
 question: "Which child conversation should continue working?"

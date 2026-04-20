@@ -26,7 +26,7 @@ If on `main`/`master`/protected branch:
 
 - Check recent branch naming: `git branch -r --sort=-committerdate | head -20`
 - Suggest branch name following detected convention (based on the changes to commit)
-- **With Mitto UI**: `mitto_ui_options_buttons(self_id: "@mitto:session_id", ...` → "Create feature branch / Continue on current branch"
+- **With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...` → "Create feature branch / Continue on current branch"
 - **Without**: Ask in conversation
 - If confirmed: `git checkout -b <branch-name>`
 
@@ -48,7 +48,7 @@ Files can use wildcards (`*.md`, `docs/*`). Order logically.
 
 ### 4. Wait for Approval
 
-**With Mitto UI**: `mitto_ui_options_buttons(self_id: "@mitto:session_id", ...` → "Approve all / Modify / Cancel"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...` → "Approve all / Modify / Cancel"
 **Without**: Ask in conversation. Wait for explicit approval.
 
 ### 5. Execute
