@@ -13,11 +13,16 @@ import {
 } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
-import { getPromptSortMode } from "../utils/storage.js";
+import {
+  getPromptSortMode,
+  getUIPromptPanelHeight,
+  setUIPromptPanelHeight,
+} from "../utils/storage.js";
+import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { LockIcon, UnlockIcon } from "./Icons.js";
+import { LockIcon, UnlockIcon, GripIcon } from "./Icons.js";
 
 /**
  * Calculate contrasting text color (black or white) for a given background color.
@@ -319,6 +324,20 @@ export function ChatInput({
   const [textboxValue, setTextboxValue] = useState("");
   const textboxRef = useRef(null);
   const [isPromptCollapsed, setIsPromptCollapsed] = useState(false);
+
+  // Resize handle for UI prompt panels (textbox, form, options)
+  const {
+    height: uiPromptHeight,
+    isDragging: isPromptDragging,
+    handleProps: promptHandleProps,
+  } = useResizeHandle({
+    initialHeight: getUIPromptPanelHeight(),
+    minHeight: 150,
+    maxHeight: 600,
+    onDragEnd: (finalHeight) => {
+      setUIPromptPanelHeight(finalHeight);
+    },
+  });
 
   // Periodic prompt lock state
   // When locked, the prompt is saved to the periodic config and textarea is read-only
@@ -1711,22 +1730,32 @@ export function ChatInput({
                 ? html`
                     <!-- Textbox editor for mitto_ui_textbox -->
                     <div
-                      class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden"
+                      class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                      style="height: ${uiPromptHeight}px;"
                     >
+                      <!-- Resize handle at top edge -->
+                      <div
+                        class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
+                          ? "bg-slate-600/50"
+                          : ""}"
+                        ...${promptHandleProps}
+                        title="Drag to resize"
+                      >
+                        <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                      </div>
+
                       <!-- Title -->
-                      <div class="px-4 pt-4 pb-3">
+                      <div class="px-4 pt-2 pb-2 flex-shrink-0">
                         <p class="ui-prompt-question text-sm font-medium">
                           ${activeUIPrompt.title || activeUIPrompt.question}
                         </p>
                       </div>
 
-                      <!-- Textarea -->
-                      <div class="px-4 pb-2">
+                      <!-- Textarea (fills available space) -->
+                      <div class="px-4 pb-2 flex-1 min-h-0">
                         <textarea
                           ref=${textboxRef}
-                          class="w-full bg-slate-800/80 text-white text-sm font-mono rounded-lg px-3 py-2 resize-y focus:outline-none focus:ring-2 focus:ring-blue-500 border border-slate-600"
-                          style="min-height: 300px; max-height: 70vh;"
-                          rows="18"
+                          class="w-full h-full bg-slate-800/80 text-white text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border border-slate-600"
                           maxlength=${16384}
                           onInput=${(e) => setTextboxValue(e.target.value)}
                         >
@@ -1736,7 +1765,7 @@ ${activeUIPrompt.text || ""}</textarea
 
                       <!-- Counter + Buttons on same row -->
                       <div
-                        class="flex items-center justify-between px-4 pt-3 pb-5 mb-2"
+                        class="flex items-center justify-between px-4 pt-2 pb-3 flex-shrink-0"
                       >
                         <span
                           class="text-xs ${textboxValue.length > 15000
@@ -1801,18 +1830,30 @@ ${activeUIPrompt.text || ""}</textarea
                   ? html`
                       <!-- HTML Form for mitto_ui_form -->
                       <div
-                        class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden"
+                        class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                        style="height: ${uiPromptHeight}px;"
                       >
+                        <!-- Resize handle at top edge -->
+                        <div
+                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
+                            ? "bg-slate-600/50"
+                            : ""}"
+                          ...${promptHandleProps}
+                          title="Drag to resize"
+                        >
+                          <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                        </div>
+
                         <!-- Title -->
-                        <div class="px-4 pt-4 pb-3">
+                        <div class="px-4 pt-2 pb-2 flex-shrink-0">
                           <p class="ui-prompt-question text-sm font-medium">
                             ${activeUIPrompt.title || activeUIPrompt.question}
                           </p>
                         </div>
 
-                        <!-- Sanitized HTML form content -->
+                        <!-- Sanitized HTML form content (scrollable) -->
                         <div
-                          class="ui-form-content px-4 pb-2"
+                          class="ui-form-content px-4 pb-2 flex-1 min-h-0 overflow-y-auto"
                           ref=${(el) => {
                             if (
                               el &&
@@ -1827,150 +1868,171 @@ ${activeUIPrompt.text || ""}</textarea
 
                         <!-- Submit / Cancel / Toggle buttons -->
                         <div
-                          class="flex items-center justify-between gap-2 px-4 pt-3 pb-5 mb-2"
+                          class="flex items-center justify-end gap-2 px-4 pt-2 pb-3 flex-shrink-0"
                         >
-                          <button
-                            type="button"
-                            onClick=${() => setIsPromptCollapsed((v) => !v)}
-                            class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
-                            title=${isPromptCollapsed
-                              ? "Show prompt area"
-                              : "Hide prompt area"}
-                          >
-                            <svg
-                              class="w-4 h-4 transition-transform ${isPromptCollapsed
-                                ? ""
-                                : "rotate-180"}"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M19 9l-7 7-7-7"
-                              />
-                            </svg>
-                          </button>
                           <div class="flex gap-2 items-center">
-                          <button
-                            type="button"
-                            onClick=${() =>
-                              handleUIPromptAnswer("cancel", "Cancel", "")}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-700 hover:bg-slate-600 text-gray-300 transition-colors"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick=${(e) => {
-                              // Find the form container and extract all named field values
-                              const container =
-                                e.target.closest(".ui-prompt-panel")?.querySelector(".ui-form-content");
-                              if (!container) return;
-                              const values = {};
-                              container
-                                .querySelectorAll("input[name], select[name], textarea[name]")
-                                .forEach((el) => {
-                                  const name = el.name;
-                                  if (!name) return;
-                                  if (el.type === "checkbox") {
-                                    values[name] = el.checked ? "true" : "false";
-                                  } else if (el.type === "radio") {
-                                    if (el.checked) values[name] = el.value;
-                                  } else {
-                                    values[name] = el.value;
-                                  }
-                                });
-                              handleUIPromptAnswer(
-                                "submit",
-                                "Submit",
-                                JSON.stringify(values),
-                              );
-                            }}
-                            class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
-                          >
-                            Submit
-                          </button>
+                            <button
+                              type="button"
+                              onClick=${() => setIsPromptCollapsed((v) => !v)}
+                              class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
+                              title=${isPromptCollapsed
+                                ? "Show prompt area"
+                                : "Hide prompt area"}
+                            >
+                              <svg
+                                class="w-4 h-4 transition-transform ${isPromptCollapsed
+                                  ? ""
+                                  : "rotate-180"}"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  stroke-width="2"
+                                  d="M19 9l-7 7-7-7"
+                                />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              onClick=${() =>
+                                handleUIPromptAnswer("cancel", "Cancel", "")}
+                              class="px-4 py-2 text-sm font-medium rounded-lg bg-slate-700 hover:bg-slate-600 text-gray-300 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick=${(e) => {
+                                // Find the form container and extract all named field values
+                                const container = e.target
+                                  .closest(".ui-prompt-panel")
+                                  ?.querySelector(".ui-form-content");
+                                if (!container) return;
+                                const values = {};
+                                container
+                                  .querySelectorAll(
+                                    "input[name], select[name], textarea[name]",
+                                  )
+                                  .forEach((el) => {
+                                    const name = el.name;
+                                    if (!name) return;
+                                    if (el.type === "checkbox") {
+                                      values[name] = el.checked
+                                        ? "true"
+                                        : "false";
+                                    } else if (el.type === "radio") {
+                                      if (el.checked) values[name] = el.value;
+                                    } else {
+                                      values[name] = el.value;
+                                    }
+                                  });
+                                handleUIPromptAnswer(
+                                  "submit",
+                                  "Submit",
+                                  JSON.stringify(values),
+                                );
+                              }}
+                              class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                            >
+                              Submit
+                            </button>
                           </div>
                         </div>
                       </div>
                     `
                   : html`
-                    <!-- Unified Claude Code-style menu for yes_no, options_buttons, select -->
-                    <div
-                      class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden"
-                    >
-                      <!-- Question -->
-                      <div class="px-4 pt-4 pb-2">
-                        <p class="ui-prompt-question text-sm font-medium">
-                          ${activeUIPrompt.question}
-                        </p>
-                      </div>
-
-                      <!-- Options list (scrollable when many options) -->
+                      <!-- Unified Claude Code-style menu for yes_no, options_buttons, select -->
                       <div
-                        class="divide-y divide-slate-700/50 max-h-[280px] overflow-y-auto"
+                        class="ui-prompt-panel rounded-lg border border-blue-500/50 shadow-lg overflow-hidden flex flex-col"
+                        style="max-height: ${uiPromptHeight}px;"
                       >
-                        ${activeUIPrompt.options?.map(
-                          (opt, idx) => html`
-                            <button
-                              key=${opt.id}
-                              type="button"
-                              onClick=${() =>
-                                handleUIPromptAnswer(opt.id, opt.label)}
-                              class="w-full text-left px-4 py-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3 group"
-                            >
-                              <span
-                                class="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
-                                0
-                                  ? "bg-blue-600 text-white"
-                                  : "bg-slate-600/80 text-gray-300 group-hover:bg-slate-500"} transition-colors"
-                              >
-                                ${idx + 1}
-                              </span>
-                              <div class="min-w-0 flex-1">
-                                <span class="text-sm font-medium text-white"
-                                  >${opt.label}</span
-                                >
-                                ${opt.description &&
-                                html`<span
-                                  class="block text-xs text-gray-400 mt-0.5"
-                                  >${opt.description}</span
-                                >`}
-                              </div>
-                            </button>
-                          `,
-                        )}
+                        <!-- Resize handle at top edge -->
+                        <div
+                          class="flex items-center justify-center py-1 cursor-ns-resize hover:bg-slate-600/50 transition-colors select-none touch-none flex-shrink-0 ${isPromptDragging
+                            ? "bg-slate-600/50"
+                            : ""}"
+                          ...${promptHandleProps}
+                          title="Drag to resize"
+                        >
+                          <${GripIcon} className="w-6 h-1.5 text-gray-500" />
+                        </div>
 
-                        <!-- Free text input (if allowed) -->
-                        ${activeUIPrompt.allowFreeText &&
-                        html`
-                          <div class="px-4 py-3">
-                            <input
-                              type="text"
-                              value=${freeTextInput}
-                              onInput=${(e) => setFreeTextInput(e.target.value)}
-                              onKeyDown=${(e) => {
-                                if (e.key === "Enter" && freeTextInput.trim()) {
-                                  handleUIPromptAnswer(
-                                    "free_text",
-                                    freeTextInput.trim(),
-                                    freeTextInput.trim(),
-                                  );
-                                  setFreeTextInput("");
-                                }
-                              }}
-                              placeholder=${activeUIPrompt.freeTextPlaceholder ||
-                              "Type a custom response..."}
-                              class="w-full bg-transparent text-sm text-gray-300 placeholder-gray-500 outline-none"
-                            />
-                          </div>
-                        `}
+                        <!-- Question -->
+                        <div class="px-4 pt-2 pb-2 flex-shrink-0">
+                          <p class="ui-prompt-question text-sm font-medium">
+                            ${activeUIPrompt.question}
+                          </p>
+                        </div>
+
+                        <!-- Options list (scrollable) -->
+                        <div
+                          class="divide-y divide-slate-700/50 flex-1 min-h-0 overflow-y-auto"
+                        >
+                          ${activeUIPrompt.options?.map(
+                            (opt, idx) => html`
+                              <button
+                                key=${opt.id}
+                                type="button"
+                                onClick=${() =>
+                                  handleUIPromptAnswer(opt.id, opt.label)}
+                                class="w-full text-left px-4 py-3 hover:bg-slate-700/50 transition-colors flex items-start gap-3 group"
+                              >
+                                <span
+                                  class="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${idx ===
+                                  0
+                                    ? "bg-blue-600 text-white"
+                                    : "bg-slate-600/80 text-gray-300 group-hover:bg-slate-500"} transition-colors"
+                                >
+                                  ${idx + 1}
+                                </span>
+                                <div class="min-w-0 flex-1">
+                                  <span class="text-sm font-medium text-white"
+                                    >${opt.label}</span
+                                  >
+                                  ${opt.description &&
+                                  html`<span
+                                    class="block text-xs text-gray-400 mt-0.5"
+                                    >${opt.description}</span
+                                  >`}
+                                </div>
+                              </button>
+                            `,
+                          )}
+
+                          <!-- Free text input (if allowed) -->
+                          ${activeUIPrompt.allowFreeText &&
+                          html`
+                            <div class="px-4 py-3">
+                              <input
+                                type="text"
+                                value=${freeTextInput}
+                                onInput=${(e) =>
+                                  setFreeTextInput(e.target.value)}
+                                onKeyDown=${(e) => {
+                                  if (
+                                    e.key === "Enter" &&
+                                    freeTextInput.trim()
+                                  ) {
+                                    handleUIPromptAnswer(
+                                      "free_text",
+                                      freeTextInput.trim(),
+                                      freeTextInput.trim(),
+                                    );
+                                    setFreeTextInput("");
+                                  }
+                                }}
+                                placeholder=${activeUIPrompt.freeTextPlaceholder ||
+                                "Type a custom response..."}
+                                class="w-full bg-transparent text-sm text-gray-300 placeholder-gray-500 outline-none"
+                              />
+                            </div>
+                          `}
+                        </div>
                       </div>
-                    </div>
-                  `
+                    `
           }
         </div>
       `}
@@ -2352,7 +2414,11 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-      ${!(isPromptCollapsed && (activeUIPrompt?.promptType === "textbox" || activeUIPrompt?.promptType === "form")) &&
+      ${!(
+        isPromptCollapsed &&
+        (activeUIPrompt?.promptType === "textbox" ||
+          activeUIPrompt?.promptType === "form")
+      ) &&
       html`
         <!-- Collapsible Action Toolbar - positioned at bottom-right of conversation area -->
         <!-- Note: toolbar uses flex-direction: row-reverse, so DOM order is reversed from visual order -->
