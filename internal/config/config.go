@@ -395,6 +395,11 @@ type AccessLogConfig struct {
 	// MaxBackups is the maximum number of old log files to retain.
 	// Default: 1
 	MaxBackups int `json:"max_backups,omitempty"`
+	// LogAll controls whether all HTTP requests are logged (like nginx/Apache access.log)
+	// or only security-relevant events (login attempts, unauthorized access, rate limiting).
+	// When nil, the default depends on the runtime: true for the macOS app, false for CLI.
+	// Set to true for comprehensive HTTP access logging, false for security-events-only mode.
+	LogAll *bool `json:"log_all,omitempty"`
 }
 
 // DefaultAPIPrefix is the default URL prefix for API endpoints.

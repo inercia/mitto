@@ -26,6 +26,12 @@ type AccessLogConfig struct {
 	// MaxBackups is the maximum number of old log files to retain.
 	// Default: 1
 	MaxBackups int
+
+	// LogAll controls whether all HTTP requests are logged (like nginx/Apache access.log)
+	// or only security-relevant events (login attempts, unauthorized access, rate limiting).
+	// Default: false (security events only for backward compatibility).
+	// Set to true for comprehensive HTTP access logging.
+	LogAll bool
 }
 
 // DefaultAccessLogConfig returns the default access log configuration.
@@ -36,14 +42,16 @@ func DefaultAccessLogConfig() AccessLogConfig {
 	}
 }
 
-// AccessLogger handles security-focused access logging to a file with rotation.
-// It logs security-relevant events such as authentication attempts, unauthorized
-// access, and rate limiting triggers.
+// AccessLogger handles access logging to a file with rotation.
+// When LogAll is false (default), it logs only security-relevant events such as
+// authentication attempts, unauthorized access, and rate limiting triggers.
+// When LogAll is true, it logs all HTTP requests like nginx/Apache access.log.
 type AccessLogger struct {
 	writer    io.WriteCloser
 	mu        sync.Mutex
 	authMgr   *AuthManager // Reference to auth manager for enriched logging
 	apiPrefix string       // API prefix for detecting security-relevant paths
+	logAll    bool         // Whether to log all requests (not just security events)
 }
 
 // NewAccessLogger creates a new access logger that writes to the specified file.
@@ -74,6 +82,7 @@ func NewAccessLogger(config AccessLogConfig) *AccessLogger {
 
 	return &AccessLogger{
 		writer: writer,
+		logAll: config.LogAll,
 	}
 }
 
@@ -355,6 +364,11 @@ func (a *AccessLogger) determineEventType(r *http.Request, statusCode int, isExt
 	// Rate limiting trigger (429)
 	if statusCode == http.StatusTooManyRequests {
 		return "rate_limited"
+	}
+
+	// If comprehensive logging is enabled, log all remaining requests
+	if a.logAll {
+		return "request"
 	}
 
 	return "" // Not a security-relevant event
