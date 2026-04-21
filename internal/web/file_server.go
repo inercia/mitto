@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -157,6 +158,12 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 			return
 		}
 		fs.serveRenderedMarkdown(w, realPath, relativePath)
+		return
+	}
+
+	// Check for diff parameter - return git diff output for the file
+	if r.URL.Query().Get("diff") == "true" {
+		fs.serveGitDiff(w, r, workspace, cleanPath)
 		return
 	}
 
@@ -518,3 +525,59 @@ const renderedMarkdownPageSuffix = `
 </script>
 </body>
 </html>`
+
+
+// serveGitDiff runs `git diff HEAD -- <file>` in the workspace and returns the output.
+// If there are no changes, it tries `git diff` (for unstaged changes against index).
+// Returns plain text with content type text/plain.
+func (fs *FileServer) serveGitDiff(w http.ResponseWriter, r *http.Request, workspace, relativePath string) {
+	// Check if workspace is a git repository
+	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd.Dir = workspace
+	if err := cmd.Run(); err != nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Not a git repository"))
+		return
+	}
+
+	// Common flags to force standard unified diff format:
+	// --no-ext-diff: bypass external diff tools (delta, diff-so-fancy, etc.)
+	// --no-color: strip ANSI color codes
+	diffFlags := []string{"diff", "--no-ext-diff", "--no-color"}
+
+	// Try git diff HEAD -- <file> first (shows both staged and unstaged changes)
+	args := append(append([]string{}, diffFlags...), "HEAD", "--", relativePath)
+	cmd = exec.Command("git", args...)
+	cmd.Dir = workspace
+	output, err := cmd.Output()
+	if err != nil {
+		// HEAD might not exist yet (new repo with no commits), try plain git diff
+		args = append(append([]string{}, diffFlags...), "--", relativePath)
+		cmd = exec.Command("git", args...)
+		cmd.Dir = workspace
+		output, _ = cmd.Output()
+	}
+
+	// If still empty, try --cached (staged only)
+	if len(output) == 0 {
+		args = append(append([]string{}, diffFlags...), "--cached", "--", relativePath)
+		cmd = exec.Command("git", args...)
+		cmd.Dir = workspace
+		cachedOutput, _ := cmd.Output()
+		if len(cachedOutput) > 0 {
+			output = cachedOutput
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+
+	if len(output) == 0 {
+		_, _ = w.Write([]byte("No changes"))
+	} else {
+		_, _ = w.Write(output)
+	}
+}
