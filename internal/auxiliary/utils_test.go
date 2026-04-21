@@ -173,6 +173,84 @@ func TestParseEnabledWhenMCPCheck_EmptyPatterns(t *testing.T) {
 	}
 }
 
+func TestStripPromptPreamble(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no preamble unchanged",
+			input: "Fix the login bug in auth.go",
+			want:  "Fix the login bug in auth.go",
+		},
+		{
+			name:  "here is the improved prompt with double newline",
+			input: "Here is the improved prompt:\n\nFix the login bug in auth.go",
+			want:  "Fix the login bug in auth.go",
+		},
+		{
+			name:  "here is the improved prompt with single newline",
+			input: "Here is the improved prompt:\nFix the login bug in auth.go",
+			want:  "Fix the login bug in auth.go",
+		},
+		{
+			name:  "here is the improved prompt colon only",
+			input: "Here is the improved prompt:Fix the login bug",
+			want:  "Fix the login bug",
+		},
+		{
+			name:  "here's the improved prompt",
+			input: "Here's the improved prompt:\n\nWrite a comprehensive unit test",
+			want:  "Write a comprehensive unit test",
+		},
+		{
+			name:  "sure here is the improved prompt",
+			input: "Sure, here is the improved prompt:\n\nAdd error handling",
+			want:  "Add error handling",
+		},
+		{
+			name:  "sure exclamation here's the improved prompt",
+			input: "Sure! Here's the improved prompt:\n\nRefactor the database layer",
+			want:  "Refactor the database layer",
+		},
+		{
+			name:  "improved prompt prefix",
+			input: "Improved prompt:\n\nCreate a REST API endpoint",
+			want:  "Create a REST API endpoint",
+		},
+		{
+			name:  "case insensitive matching",
+			input: "HERE IS THE IMPROVED PROMPT:\n\nFix the bug",
+			want:  "Fix the bug",
+		},
+		{
+			name:  "leading and trailing whitespace trimmed",
+			input: "  Fix the login bug in auth.go  ",
+			want:  "Fix the login bug in auth.go",
+		},
+		{
+			name:  "preamble with surrounding whitespace",
+			input: "  Here is the improved prompt:\n\nFix the bug  ",
+			want:  "Fix the bug",
+		},
+		{
+			name:  "empty string unchanged",
+			input: "",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripPromptPreamble(tt.input)
+			if got != tt.want {
+				t.Errorf("stripPromptPreamble(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTrimQuotes(t *testing.T) {
 	tests := []struct {
 		name  string

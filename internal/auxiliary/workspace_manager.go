@@ -115,8 +115,9 @@ func (m *WorkspaceAuxiliaryManager) ImprovePrompt(ctx context.Context, workspace
 		return "", fmt.Errorf("failed to improve prompt: %w", err)
 	}
 
-	// Clean up the response - remove quotes, trim whitespace
+	// Clean up the response - remove quotes, trim whitespace, strip any preamble
 	improved := trimQuotes(response)
+	improved = stripPromptPreamble(improved)
 
 	return improved, nil
 }
