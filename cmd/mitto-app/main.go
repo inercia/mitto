@@ -27,6 +27,7 @@ package main
 #include "webviewlog_darwin.h"
 #include "cache_darwin.h"
 #include "power_darwin.h"
+#include "viewer_darwin.h"
 
 // Global hotkey reference (static to avoid duplicate symbols)
 static EventHotKeyRef gHotKeyRef = NULL;
@@ -285,6 +286,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -704,6 +706,33 @@ func openFileURL(url string) {
 	cURL := C.CString(url)
 	defer C.free(unsafe.Pointer(cURL))
 	C.openURLInBrowser(cURL) // NSWorkspace.openURL handles file:// URLs
+}
+
+// openViewerInNativeWindow opens a file in a native viewer window.
+// This creates a new NSWindow with WKWebView that loads the viewer URL.
+// This is exposed to JavaScript via webview.Bind as window.mittoOpenViewer.
+func openViewerInNativeWindow(viewerURL string) {
+	title := extractFilenameFromViewerURL(viewerURL)
+	cURL := C.CString(viewerURL)
+	defer C.free(unsafe.Pointer(cURL))
+	cTitle := C.CString(title)
+	defer C.free(unsafe.Pointer(cTitle))
+	C.openViewerWindow(cURL, cTitle, 0, 0) // 0,0 = use defaults (1000x750)
+}
+
+// extractFilenameFromViewerURL extracts the filename from a viewer URL for use as window title.
+// It reads the "path" query parameter and returns the base filename.
+// Falls back to "File Viewer" if the URL cannot be parsed or has no path.
+func extractFilenameFromViewerURL(viewerURL string) string {
+	u, err := url.Parse(viewerURL)
+	if err != nil {
+		return "File Viewer"
+	}
+	filePath := u.Query().Get("path")
+	if filePath == "" {
+		return "File Viewer"
+	}
+	return filepath.Base(filePath)
 }
 
 // revealInFinder reveals a file or folder in Finder (macOS file browser).
@@ -1184,7 +1213,7 @@ func run() error {
 	if cfg != nil {
 		// Set up failure callback to broadcast to UI clients
 		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
-			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 		})
 		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
@@ -1229,6 +1258,7 @@ func run() error {
 	w.Bind("mittoPickFolder", pickFolder)
 	w.Bind("mittoPickImages", pickImages)
 	w.Bind("mittoPickFiles", pickFiles)
+	w.Bind("mittoOpenViewer", openViewerInNativeWindow)
 
 	// Bind login item functions (start at login)
 	w.Bind("mittoIsLoginItemSupported", isLoginItemSupported)
@@ -1365,7 +1395,7 @@ func run() error {
 			DownHook: cfg.Web.Hooks.Down,
 			Port:     hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 			},
 			OnRestart: func(attempt int) {
 				srv.BroadcastHookRestarted(attempt)
@@ -1465,9 +1495,12 @@ func getHotkeyConfig(cfg *config.Config) (hotkey string, enabled bool) {
 }
 
 // resolveAccessLogConfigApp determines the access log configuration for the macOS app.
-// Priority: settings.json > default (enabled with platform-specific path)
+// Priority: settings.json > default (enabled with platform-specific path, LogAll=true)
 func resolveAccessLogConfigApp(cfg *config.Config) web.AccessLogConfig {
 	accessLogConfig := web.DefaultAccessLogConfig()
+
+	// Default for macOS app: log all requests (comprehensive access log like nginx/Apache)
+	accessLogConfig.LogAll = true
 
 	// Check settings from config file
 	if cfg != nil && cfg.Web.AccessLog != nil {
@@ -1493,6 +1526,11 @@ func resolveAccessLogConfigApp(cfg *config.Config) web.AccessLogConfig {
 			accessLogConfig.MaxBackups = alCfg.MaxBackups
 		}
 
+		// Respect explicit LogAll override from config
+		if alCfg.LogAll != nil {
+			accessLogConfig.LogAll = *alCfg.LogAll
+		}
+
 		// If path is already set from settings, return
 		if accessLogConfig.Path != "" {
 			return accessLogConfig
@@ -1513,6 +1551,6 @@ func resolveAccessLogConfigApp(cfg *config.Config) web.AccessLogConfig {
 	}
 
 	accessLogConfig.Path = filepath.Join(logsDir, "access.log")
-	slog.Info("Access logging enabled", "path", accessLogConfig.Path)
+	slog.Info("Access logging enabled", "path", accessLogConfig.Path, "log_all", accessLogConfig.LogAll)
 	return accessLogConfig
 }
