@@ -51,7 +51,7 @@ import {
 import {
   openExternalURL,
   openFileURL,
-  convertHTTPFileURLToFile,
+  convertFileURLToViewer,
   convertHTTPFileURLToViewer,
   setCurrentWorkspace,
   pickImages,
@@ -72,7 +72,6 @@ import {
   getExpandedGroups,
   getSingleExpandedGroupMode,
   setSingleExpandedGroupMode,
-  getAPIPrefix,
   initUIPreferences,
   onUIPreferencesLoaded,
   FILTER_TAB,
@@ -148,45 +147,13 @@ import {
 } from "./constants.js";
 
 // =============================================================================
-// File Link Helpers
-// =============================================================================
-
-/**
- * Determines if a file link should open directly (browser renders it) or in the viewer.
- * Only HTML files open directly since the browser renders them natively.
- * All other files (including markdown) open in the unified viewer.
- * @param {string} href - The file API URL (e.g., /mitto/api/files?ws=...&path=...)
- * @returns {boolean} True if the file should open directly, false if it should open in viewer
- */
-function shouldOpenFileDirectly(href) {
-  try {
-    const url = new URL(href, window.location.origin);
-    const path = url.searchParams.get("path") || "";
-    const ext = path.split(".").pop()?.toLowerCase() || "";
-
-    // HTML files should always open directly (browser renders them)
-    if (ext === "html" || ext === "htm") {
-      return true;
-    }
-
-    // All other files (including markdown) open in the unified viewer
-    return false;
-  } catch (e) {
-    console.error("[Mitto] Error checking file type:", e);
-    return false;
-  }
-}
-
-// =============================================================================
 // Global Link Click Handler
 // =============================================================================
 
-// Intercept clicks on external links (http/https), file links (file://),
-// and internal file API links to prevent WebView navigation.
-// In the native macOS app, this ensures:
-// - External links open in the default browser
-// - File links open in the default application for that file type
-// - Internal file API links (used in web mode) are converted to file:// URLs
+// Intercept clicks on all link types and route them through the viewer.
+// All file links in agent responses are now in viewer URL format.
+// Backward compatibility is maintained for old file:// and /api/files? links
+// from session recordings.
 document.addEventListener("click", (e) => {
   // Find the closest anchor element (handles clicks on nested elements inside links)
   const link = e.target.closest("a");
@@ -197,47 +164,55 @@ document.addEventListener("click", (e) => {
 
   console.log("[Mitto] Link clicked:", href, "isNativeApp:", isNativeApp());
 
-  // Handle file:// URLs (open in default application)
-  if (href.startsWith("file://")) {
-    console.log("[Mitto] Handling as file:// URL");
+  // Handle viewer URLs (new format: /viewer.html?ws=...&path=...)
+  if (href.includes("/viewer.html?")) {
+    console.log("[Mitto] Handling as viewer URL");
     e.preventDefault();
     e.stopPropagation();
-    openFileURL(href);
+    if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+      // macOS native app — open in native viewer window
+      const fullUrl = new URL(href, window.location.origin).href;
+      window.mittoOpenViewer(fullUrl);
+    } else {
+      // Web browser — open in new tab
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
     return;
   }
 
-  // Handle internal file API links (e.g., /mitto/api/files?workspace=...&path=...)
-  if (href.includes("/api/files?")) {
-    console.log("[Mitto] Handling as /api/files link");
+  // BACKWARD COMPAT: Handle old file:// URLs (from old session recordings)
+  if (href.startsWith("file://")) {
+    console.log("[Mitto] Handling as file:// URL (backward compat)");
     e.preventDefault();
     e.stopPropagation();
-    if (isNativeApp()) {
-      // Native macOS app - convert to file:// URL and open with system app
-      const fileUrl = convertHTTPFileURLToFile(href);
-      console.log("[Mitto] Converted to file URL:", fileUrl);
-      if (fileUrl) {
-        openFileURL(fileUrl);
+    if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+      const viewerUrl = convertFileURLToViewer(href);
+      if (viewerUrl) {
+        window.mittoOpenViewer(viewerUrl);
+      } else {
+        openFileURL(href); // fallback: open with system app
       }
     } else {
-      // Web browser - determine how to open the file
-      const shouldOpenDirectly = shouldOpenFileDirectly(href);
-      if (shouldOpenDirectly) {
-        // Open directly via API - browser will render HTML
-        // Fix old links missing API prefix
-        const apiPrefix = getAPIPrefix();
-        let finalUrl = href;
-        if (apiPrefix && !href.includes(apiPrefix)) {
-          finalUrl = finalUrl.replace("/api/files?", apiPrefix + "/api/files?");
-          console.log("[Mitto] Fixed old API link:", href, "->", finalUrl);
-        }
-        window.open(finalUrl, "_blank", "noopener,noreferrer");
+      const viewerUrl = convertFileURLToViewer(href);
+      if (viewerUrl) {
+        window.open(viewerUrl, "_blank", "noopener,noreferrer");
+      }
+    }
+    return;
+  }
+
+  // BACKWARD COMPAT: Handle old /api/files? URLs (from old session recordings)
+  if (href.includes("/api/files?")) {
+    console.log("[Mitto] Handling as /api/files link (backward compat)");
+    e.preventDefault();
+    e.stopPropagation();
+    const viewerUrl = convertHTTPFileURLToViewer(href);
+    console.log("[Mitto] Converted to viewer URL:", viewerUrl);
+    if (viewerUrl) {
+      if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+        window.mittoOpenViewer(new URL(viewerUrl, window.location.origin).href);
       } else {
-        // Open in unified viewer page (handles code + markdown)
-        const viewerUrl = convertHTTPFileURLToViewer(href);
-        console.log("[Mitto] Converted to viewer URL:", viewerUrl);
-        if (viewerUrl) {
-          window.open(viewerUrl, "_blank", "noopener,noreferrer");
-        }
+        window.open(viewerUrl, "_blank", "noopener,noreferrer");
       }
     }
     return;
