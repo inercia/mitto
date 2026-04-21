@@ -69,17 +69,53 @@ If behind: inform user to rebase first (use "Rebase changes" prompt), then stop.
 
 ### 5. Create or Update PR
 
-**No existing PR:**
+**PR exists:**
+```bash
+git push --force-with-lease <push-remote> <branch-name>
+```
+Provide PR/MR URL.
 
+**No existing PR — With Mitto UI:**
+
+First, generate a PR title and description from the commits. Then present a form for the user to review and customize:
+
+```
+mitto_ui_form(self_id: "@mitto:session_id", title: "Create Pull Request", html: "
+  <label for='pr_title'>Title:</label>
+  <input type='text' name='pr_title' id='pr_title' value='<generated-title>' placeholder='PR title'>
+  <label for='base_branch'>Base branch:</label>
+  <select name='base_branch' id='base_branch'>
+    <option value='main' selected>main</option>
+    <option value='develop'>develop</option>
+  </select>
+  <div>
+    <label><input type='checkbox' name='draft' value='true'> Create as draft</label>
+  </div>
+  <label for='reviewers'>Reviewers (comma-separated):</label>
+  <input type='text' name='reviewers' id='reviewers' placeholder='username1, username2'>
+")
+```
+
+Then present the PR description in a textbox for editing:
+
+```
+mitto_ui_textbox(self_id: "@mitto:session_id",
+  title: "Edit PR Description",
+  text: "<generated-description-markdown>",
+  result: "edited_text")
+```
+
+Use the form values and edited description to create the PR:
+```bash
+git push -u <push-remote> <branch-name>
+gh pr create --title "<pr_title>" --body "<description>" --base <base_branch> [--draft] [--reviewer <reviewers>]
+```
+
+**No existing PR — Without Mitto UI:**
 ```bash
 git push -u <push-remote> <branch-name>
 gh pr create --fill --base <target-branch>    # GitHub
 glab mr create --fill                          # GitLab
-```
-
-**PR exists:**
-```bash
-git push --force-with-lease <push-remote> <branch-name>
 ```
 
 Provide PR/MR URL.

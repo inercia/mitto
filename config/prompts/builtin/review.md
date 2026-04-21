@@ -94,6 +94,8 @@ Before adding any dependency: Does the existing stack solve this? How large is i
 
 ## Output Format
 
+Generate the review using this template:
+
 ```markdown
 ## Review: [title]
 
@@ -123,8 +125,41 @@ Before adding any dependency: Does the existing stack solve this? How large is i
 
 - [ ] No N+1, no unbounded ops, pagination present
 
+### Findings
+
+[List each finding with severity label, file, line, and description]
+
 ### Verdict
 
 - [ ] **Approve** — improves code health
 - [ ] **Request changes** — issues listed above
 ```
+
+### Review and Edit Before Posting (With Mitto UI)
+
+Before posting the review (e.g., as a PR comment or sharing with the user), present it in a textbox for editing:
+
+```
+mitto_ui_textbox(self_id: "@mitto:session_id",
+  title: "Review — edit before posting",
+  text: "<generated-review-markdown>",
+  result: "edited_text")
+```
+
+- If `changed == true`: use the edited text as the final review.
+- If `changed == false`: use the original.
+- If `aborted == true`: ask the user what they'd like to change.
+
+Then confirm what to do with the review:
+
+```
+mitto_ui_options(self_id: "@mitto:session_id",
+  question: "How should this review be shared?",
+  options: [
+    {label: "Post as PR comment", description: "Add as a review comment on the pull request"},
+    {label: "Just show in chat", description: "Display here without posting anywhere"},
+    {label: "Save to file", description: "Save the review to a markdown file"}
+  ])
+```
+
+**Without Mitto UI**: Show the review in conversation and ask what to do with it.
