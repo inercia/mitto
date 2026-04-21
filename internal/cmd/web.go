@@ -256,7 +256,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	if cfg != nil {
 		// Set up failure callback to broadcast to UI clients
 		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
-			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 		})
 		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
@@ -288,7 +288,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 			DownHook: cfg.Web.Hooks.Down,
 			Port:     hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 			},
 			OnRestart: func(attempt int) {
 				srv.BroadcastHookRestarted(attempt)
@@ -381,6 +381,11 @@ func resolveAccessLogConfig(cfg *config.Config, cliPath string) web.AccessLogCon
 		}
 		if alCfg.MaxBackups > 0 {
 			accessLogConfig.MaxBackups = alCfg.MaxBackups
+		}
+
+		// Propagate LogAll from config (default: false for CLI)
+		if alCfg.LogAll != nil {
+			accessLogConfig.LogAll = *alCfg.LogAll
 		}
 
 		if accessLogConfig.Path != "" {

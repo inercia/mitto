@@ -1173,15 +1173,17 @@ func (s *Server) BroadcastPeriodicStarted(sessionID, sessionName string) {
 
 // BroadcastHookFailed notifies all connected clients that a lifecycle hook failed.
 // This allows the frontend to show a toast notification about the hook failure.
-func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string) {
+func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string, output string) {
 	s.eventsManager.Broadcast(WSMsgTypeHookFailed, map[string]interface{}{
 		"name":      name,
 		"exit_code": exitCode,
 		"error":     errorMsg,
+		"output":    output,
 	})
 
 	if s.logger != nil {
 		s.logger.Warn("Broadcast hook failed", "name", name, "exit_code", exitCode, "error", errorMsg,
+			"output", output,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
@@ -1242,7 +1244,7 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 			DownHook: hooksConfig.Down,
 			Port:     s.hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 			},
 			OnRestart: func(attempt int) {
 				s.BroadcastHookRestarted(attempt)
