@@ -1977,10 +1977,10 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 	if bs.fileLinksConfig.IsEnabled() {
 		cfg.FileLinksConfig = &conversion.FileLinkerConfig{
 			WorkingDir:            bs.workingDir,
+			WorkspacePath:         bs.workingDir,
 			WorkspaceUUID:         bs.workspaceUUID,
 			Enabled:               true,
 			AllowOutsideWorkspace: bs.fileLinksConfig.IsAllowOutsideWorkspace(),
-			UseHTTPLinks:          true,
 			APIPrefix:             bs.apiPrefix,
 		}
 	}

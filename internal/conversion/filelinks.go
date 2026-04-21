@@ -16,9 +16,13 @@ type FileLinkerConfig struct {
 	// WorkingDir is the workspace root for resolving relative paths.
 	WorkingDir string
 
+	// WorkspacePath is the filesystem path to the workspace root.
+	// Included in viewer URLs as ws_path so the viewer can construct
+	// file:// URLs for the "Open in System App" button.
+	WorkspacePath string
+
 	// WorkspaceUUID is the unique identifier for the workspace.
-	// Used in HTTP URLs instead of the full path for security.
-	// Only used when UseHTTPLinks is true.
+	// Used in viewer URLs for secure file links.
 	WorkspaceUUID string
 
 	// Enabled controls whether file linking is active.
@@ -30,12 +34,8 @@ type FileLinkerConfig struct {
 	// AllowOutsideWorkspace allows linking to files outside the workspace.
 	AllowOutsideWorkspace bool
 
-	// UseHTTPLinks generates HTTP URLs instead of file:// URLs.
-	// This is used for web browser access where file:// URLs are blocked.
-	UseHTTPLinks bool
-
-	// APIPrefix is the URL prefix for API endpoints (e.g., "/mitto").
-	// Only used when UseHTTPLinks is true.
+	// APIPrefix is the URL prefix for the web server (e.g., "/mitto").
+	// Used when generating viewer URLs.
 	APIPrefix string
 }
 
@@ -121,6 +121,17 @@ var urlPattern = regexp.MustCompile(
 	`\b((?:https?://|ftp://|mailto:)[^\s<>"\[\]{}|\\^` + "`" + `]+)`,
 )
 
+// anchorHrefPattern matches opening <a> tags with an href attribute.
+// Group 1: attributes before href, Group 2: href value, Group 3: attributes after href.
+var anchorHrefPattern = regexp.MustCompile(`<a\s+([^>]*?)href="([^"]*)"([^>]*)>`)
+
+// relAttrPattern matches a rel="..." attribute in an HTML tag (for removal when rewriting).
+var relAttrPattern = regexp.MustCompile(`\s*rel="[^"]*"`)
+
+// classAttrInTagPattern matches a class="..." attribute in an HTML tag (for merging classes).
+var classAttrInTagPattern = regexp.MustCompile(`\s*class="([^"]*)"`)
+
+
 // LinkFilePaths scans HTML content for file path patterns and converts them to file:// links.
 // Only paths that exist on the filesystem and pass security checks are converted.
 // This also processes inline <code> tags (backtick-enclosed text in markdown) for both
@@ -130,11 +141,16 @@ func (fl *FileLinker) LinkFilePaths(html string) string {
 		return html
 	}
 
-	// First pass: process inline <code> tags that contain URLs
+	// First pass: rewrite <a> tags whose href is a local file path.
+	// Agent-generated markdown links like [text](path/to/file.md) become
+	// <a href="path/to/file.md"> after Goldmark. We rewrite them to API links.
+	html = fl.processAnchorHrefs(html)
+
+	// Second pass: process inline <code> tags that contain URLs
 	// These come from backtick-enclosed text in markdown (e.g., `https://example.com`)
 	html = fl.processInlineCodeURLs(html)
 
-	// Second pass: process inline <code> tags that contain file paths
+	// Third pass: process inline <code> tags that contain file paths
 	// These come from backtick-enclosed text in markdown (e.g., `src/main.go`)
 	html = fl.processInlineCodeTags(html)
 
@@ -187,6 +203,8 @@ func (fl *FileLinker) LinkFilePaths(html string) string {
 func (fl *FileLinker) processInlineCodeURLs(html string) string {
 	// Find all <pre> tag regions to skip
 	preRegions := fl.findPreRegions(html)
+	// Find all <a> tag regions to skip (prevent double-nesting)
+	anchorRegions := fl.findAnchorRegions(html)
 
 	// Find all inline <code> tags
 	matches := inlineCodePattern.FindAllStringSubmatchIndex(html, -1)
@@ -209,6 +227,10 @@ func (fl *FileLinker) processInlineCodeURLs(html string) string {
 
 		// Skip if inside a <pre> tag (code block)
 		if fl.isInSkipRegion(fullStart, fullEnd, preRegions) {
+			continue
+		}
+		// Skip if inside an <a> tag (prevent double-nesting)
+		if fl.isInSkipRegion(fullStart, fullEnd, anchorRegions) {
 			continue
 		}
 
@@ -260,10 +282,12 @@ func (fl *FileLinker) processInlineCodeURLs(html string) string {
 }
 
 // processInlineCodeTags finds inline <code> tags containing file paths and wraps them in links.
-// Only processes <code> tags that are NOT inside <pre> tags (i.e., inline code, not code blocks).
+// Only processes <code> tags that are NOT inside <pre> or <a> tags.
 func (fl *FileLinker) processInlineCodeTags(html string) string {
 	// Find all <pre> tag regions to skip
 	preRegions := fl.findPreRegions(html)
+	// Find all <a> tag regions to skip (prevent double-nesting)
+	anchorRegions := fl.findAnchorRegions(html)
 
 	// Find all inline <code> tags
 	matches := inlineCodePattern.FindAllStringSubmatchIndex(html, -1)
@@ -286,6 +310,10 @@ func (fl *FileLinker) processInlineCodeTags(html string) string {
 
 		// Skip if inside a <pre> tag (code block)
 		if fl.isInSkipRegion(fullStart, fullEnd, preRegions) {
+			continue
+		}
+		// Skip if inside an <a> tag (prevent double-nesting)
+		if fl.isInSkipRegion(fullStart, fullEnd, anchorRegions) {
 			continue
 		}
 
@@ -322,29 +350,154 @@ func (fl *FileLinker) findPreRegions(html string) [][2]int {
 	return regions
 }
 
-// buildLinkURL creates the URL for a file link.
-func (fl *FileLinker) buildLinkURL(displayPath, realPath string) string {
-	if fl.config.UseHTTPLinks {
-		// Generate HTTP URL for web browser access
-		relativePath := strings.TrimPrefix(displayPath, "./")
-		// Use workspace UUID for secure file links
-		linkURL := fl.config.APIPrefix + "/api/files?ws=" + url.QueryEscape(fl.config.WorkspaceUUID) + "&path=" + url.QueryEscape(relativePath)
-		// Auto-render Markdown files as HTML for better viewing
-		if isMarkdownFile(relativePath) {
-			linkURL += "&render=html"
-		}
-		return linkURL
+// findAnchorRegions returns a list of [start, end] pairs for <a> tag regions.
+func (fl *FileLinker) findAnchorRegions(html string) [][2]int {
+	var regions [][2]int
+	for _, match := range anchorTagPattern.FindAllStringIndex(html, -1) {
+		regions = append(regions, [2]int{match[0], match[1]})
 	}
-	// Create file:// URL for native app
-	linkURL := "file://" + url.PathEscape(realPath)
-	// PathEscape encodes slashes, but we want to keep them for file URLs
-	return strings.ReplaceAll(linkURL, "%2F", "/")
+	return regions
 }
 
-// isMarkdownFile checks if a file has a Markdown extension.
-func isMarkdownFile(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".md" || ext == ".markdown"
+// processAnchorHrefs rewrites <a> tags whose href is a local file path.
+// Agent-generated markdown links like [text](path/to/file.md) become
+// <a href="path/to/file.md"> after Goldmark processing. This method
+// detects those and rewrites the href to use buildLinkURL() (which
+// generates viewer URLs in the form /viewer.html?ws=...&path=...).
+// It also adds a file-link CSS class and removes any rel="nofollow" attribute.
+func (fl *FileLinker) processAnchorHrefs(html string) string {
+	// Find all <pre> tag regions to skip
+	preRegions := fl.findPreRegions(html)
+
+	// Find all <a> tags with an href attribute
+	matches := anchorHrefPattern.FindAllStringSubmatchIndex(html, -1)
+	if len(matches) == 0 {
+		return html
+	}
+
+	// Process matches in reverse order to preserve indices
+	result := html
+	for i := len(matches) - 1; i >= 0; i-- {
+		match := matches[i]
+		if len(match) < 8 {
+			continue
+		}
+
+		// Full match: the entire <a ...> opening tag
+		fullStart, fullEnd := match[0], match[1]
+		// Group 1: attrs before href
+		preHrefStart, preHrefEnd := match[2], match[3]
+		// Group 2: href value
+		hrefStart, hrefEnd := match[4], match[5]
+		// Group 3: attrs after href
+		postHrefStart, postHrefEnd := match[6], match[7]
+
+		if hrefStart < 0 || hrefEnd < 0 {
+			continue
+		}
+
+		// Skip if inside a <pre> tag
+		if fl.isInSkipRegion(fullStart, fullEnd, preRegions) {
+			continue
+		}
+
+		href := html[hrefStart:hrefEnd]
+
+		// Skip if href is empty
+		if href == "" {
+			continue
+		}
+
+		// Skip external URLs, fragments, and special schemes
+		hrefLower := strings.ToLower(href)
+		if strings.HasPrefix(hrefLower, "http://") ||
+			strings.HasPrefix(hrefLower, "https://") ||
+			strings.HasPrefix(hrefLower, "ftp://") ||
+			strings.HasPrefix(hrefLower, "mailto:") ||
+			strings.HasPrefix(hrefLower, "file://") ||
+			strings.HasPrefix(hrefLower, "#") ||
+			strings.HasPrefix(hrefLower, "javascript:") ||
+			strings.Contains(hrefLower, "://") {
+			continue
+		}
+
+		// Validate the path (with caching)
+		var info *pathInfo
+		if cached, ok := fl.statCache.Load(href); ok {
+			info = cached.(*pathInfo)
+		} else {
+			info = fl.validatePath(href)
+			fl.statCache.Store(href, info)
+		}
+		if !info.safe || !info.exists {
+			continue
+		}
+
+		// Build the new href URL
+		linkURL := fl.buildLinkURL(href, info.realPath)
+
+		// Determine CSS class
+		class := "file-link"
+		if info.isDir {
+			class += " dir-link"
+		}
+
+		// Extract attribute strings captured by the regex
+		preHrefAttrs := ""
+		if preHrefStart >= 0 {
+			preHrefAttrs = html[preHrefStart:preHrefEnd]
+		}
+		postHrefAttrs := ""
+		if postHrefStart >= 0 {
+			postHrefAttrs = html[postHrefStart:postHrefEnd]
+		}
+
+		// Rebuild the <a> opening tag with updated href and class
+		newTag := fl.buildNewAnchorTag(preHrefAttrs, postHrefAttrs, linkURL, class)
+		result = result[:fullStart] + newTag + result[fullEnd:]
+	}
+
+	return result
+}
+
+// buildNewAnchorTag constructs a new <a> opening tag with an updated href and class.
+// It merges any existing class with additionalClass and removes rel="nofollow".
+func (fl *FileLinker) buildNewAnchorTag(preHrefAttrs, postHrefAttrs, newHref, additionalClass string) string {
+	// Combine all non-href attributes
+	allOtherAttrs := preHrefAttrs + postHrefAttrs
+
+	// Extract existing class value (if any) before stripping it
+	existingClass := ""
+	if m := classAttrInTagPattern.FindStringSubmatch(allOtherAttrs); m != nil {
+		existingClass = m[1]
+	}
+
+	// Remove class and rel attributes; we re-add class cleanly below
+	allOtherAttrs = classAttrInTagPattern.ReplaceAllString(allOtherAttrs, "")
+	allOtherAttrs = relAttrPattern.ReplaceAllString(allOtherAttrs, "")
+	allOtherAttrs = strings.TrimSpace(allOtherAttrs)
+
+	// Build the final class value
+	finalClass := additionalClass
+	if existingClass != "" {
+		finalClass = existingClass + " " + additionalClass
+	}
+
+	// Reconstruct the opening tag
+	if allOtherAttrs != "" {
+		return fmt.Sprintf(`<a href="%s" class="%s" %s>`, newHref, finalClass, allOtherAttrs)
+	}
+	return fmt.Sprintf(`<a href="%s" class="%s">`, newHref, finalClass)
+}
+
+// buildLinkURL creates the viewer URL for a file link.
+func (fl *FileLinker) buildLinkURL(displayPath, realPath string) string {
+	relativePath := strings.TrimPrefix(displayPath, "./")
+	u := fl.config.APIPrefix + "/viewer.html?ws=" + url.QueryEscape(fl.config.WorkspaceUUID) + "&path=" + url.QueryEscape(relativePath)
+	if fl.config.WorkspacePath != "" {
+		u += "&ws_path=" + url.QueryEscape(fl.config.WorkspacePath)
+	}
+	return u
 }
 
 // findSkipRegions returns a list of [start, end] pairs for regions to skip.
