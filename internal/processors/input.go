@@ -43,6 +43,9 @@ type ProcessorInput struct {
 	// Used for enabledWhenMCP pattern matching and tools.* CEL context.
 	// May be empty if tools haven't been fetched yet.
 	MCPToolNames []string `json:"-"`
+	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.
+	// Used for @mitto:periodic variable substitution.
+	IsPeriodic bool `json:"is_periodic,omitempty"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.

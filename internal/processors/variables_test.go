@@ -391,3 +391,40 @@ func TestFormatAvailableACPServers(t *testing.T) {
 		})
 	}
 }
+
+func TestSubstituteVariables_Periodic(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		input    *ProcessorInput
+		expected string
+	}{
+		{
+			name:     "periodic true",
+			message:  "periodic: @mitto:periodic",
+			input:    &ProcessorInput{IsPeriodic: true},
+			expected: "periodic: true",
+		},
+		{
+			name:     "periodic false",
+			message:  "periodic: @mitto:periodic",
+			input:    &ProcessorInput{IsPeriodic: false},
+			expected: "periodic: false",
+		},
+		{
+			name:     "periodic default (false)",
+			message:  "periodic: @mitto:periodic",
+			input:    &ProcessorInput{},
+			expected: "periodic: false",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubstituteVariables(tt.message, tt.input)
+			if got != tt.expected {
+				t.Errorf("SubstituteVariables() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}

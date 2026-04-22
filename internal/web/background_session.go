@@ -2621,6 +2621,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		AvailableACPServers: bs.availableACPServers,
 		ChildSessions:       childSessions,
 		MCPToolNames:        mcpToolNames,
+		IsPeriodic:          meta.SenderID == "periodic-runner",
 	}
 
 	if bs.processorManager != nil {

@@ -22,6 +22,7 @@ import (
 //   - @mitto:children               — Child sessions, comma-separated with names and ACP servers
 //   - @mitto:mcp_children_count     — Number of MCP-created child sessions (integer as string)
 //   - @mitto:mcp_children           — MCP-created child sessions only, comma-separated
+//   - @mitto:periodic               — "true" if this prompt is from the periodic runner, "false" otherwise
 //
 // Unknown @mitto: variables are left as-is.
 // Empty values substitute to empty string.
@@ -73,6 +74,7 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 		"@mitto:mcp_children_count":    formatMCPChildrenCount(input.ChildSessions),
 		"@mitto:mcp_children":          formatMCPChildren(input.ChildSessions),
 		"@mitto:children":              formatChildSessions(input.ChildSessions),
+		"@mitto:periodic":              strconv.FormatBool(input.IsPeriodic),
 	}
 
 	// Sort placeholders by length descending to prevent prefix collisions.
