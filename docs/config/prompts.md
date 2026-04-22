@@ -4,6 +4,8 @@ Prompts (also called Quick Actions) are predefined text snippets that appear as 
 in the chat interface. Clicking a prompt button sends its content to the AI agent,
 saving you from typing common requests.
 
+![](prompts-1.png)
+
 ## Overview
 
 Prompts appear in a dropdown menu above the chat input. They are organized into two
@@ -328,6 +330,7 @@ substitution system used by [message processors](processors.md#variable-substitu
 | `@mitto:workspace_uuid`        | Workspace identifier                                                         |
 | `@mitto:available_acp_servers` | ACP servers for this workspace, comma-separated with tags and current marker |
 | `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
+| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
 
 ### Behavior
 

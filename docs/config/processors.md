@@ -480,6 +480,7 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 | `@mitto:workspace_uuid`        | Workspace UUID                                                                 |
 | `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
 | `@mitto:children`              | Human-readable list of child sessions — see below                              |
+| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
 
 ### `@mitto:available_acp_servers` format
 
