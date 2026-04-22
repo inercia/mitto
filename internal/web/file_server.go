@@ -526,7 +526,6 @@ const renderedMarkdownPageSuffix = `
 </body>
 </html>`
 
-
 // serveGitDiff runs `git diff HEAD -- <file>` in the workspace and returns the output.
 // If there are no changes, it tries `git diff` (for unstaged changes against index).
 // Returns plain text with content type text/plain.

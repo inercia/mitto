@@ -131,7 +131,6 @@ var relAttrPattern = regexp.MustCompile(`\s*rel="[^"]*"`)
 // classAttrInTagPattern matches a class="..." attribute in an HTML tag (for merging classes).
 var classAttrInTagPattern = regexp.MustCompile(`\s*class="([^"]*)"`)
 
-
 // LinkFilePaths scans HTML content for file path patterns and converts them to file:// links.
 // Only paths that exist on the filesystem and pass security checks are converted.
 // This also processes inline <code> tags (backtick-enclosed text in markdown) for both
