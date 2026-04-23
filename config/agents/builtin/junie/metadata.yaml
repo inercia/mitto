@@ -1,0 +1,12 @@
+# Junie agent configuration
+name: "Junie"
+displayName: "Junie"
+acpId: "junie"
+description: "AI Coding Agent by JetBrains"
+website: "https://junie.jetbrains.com"
+repository: "https://github.com/JetBrains/junie"
+license: "proprietary"
+install:
+  method: "binary"
+  note: "Download from https://github.com/JetBrains/junie/releases"
+  args: ["--acp=true"]

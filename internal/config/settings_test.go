@@ -32,10 +32,8 @@ func TestLoadSettings_CreatesDefaultSettings(t *testing.T) {
 		t.Fatalf("settings.json was not created: %v", err)
 	}
 
-	// Verify config has ACP servers (from embedded defaults)
-	if len(cfg.ACPServers) == 0 {
-		t.Error("expected at least one ACP server from default config")
-	}
+	// Default config ships with zero ACP servers — discovery guides user on first run
+	_ = cfg // config is valid even with no servers
 }
 
 func TestLoadSettings_ReadsExistingSettings(t *testing.T) {

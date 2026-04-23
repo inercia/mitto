@@ -2,14 +2,17 @@
 package web
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/inercia/mitto/internal/conversion"
 )
@@ -157,6 +160,12 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 			return
 		}
 		fs.serveRenderedMarkdown(w, realPath, relativePath)
+		return
+	}
+
+	// Check for diff parameter - return git diff output for the file
+	if r.URL.Query().Get("diff") == "true" {
+		fs.serveGitDiff(w, r, workspace, cleanPath)
 		return
 	}
 
@@ -518,3 +527,77 @@ const renderedMarkdownPageSuffix = `
 </script>
 </body>
 </html>`
+
+// gitDiffTimeout is the maximum time allowed for a single git diff command.
+const gitDiffTimeout = 10 * time.Second
+
+// maxDiffOutputBytes is the maximum size of git diff output to buffer (1 MB).
+const maxDiffOutputBytes = 1 << 20
+
+// serveGitDiff runs `git diff HEAD -- <file>` in the workspace and returns the output.
+// If there are no changes, it tries `git diff` (for unstaged changes against index).
+// Returns plain text with content type text/plain.
+func (fs *FileServer) serveGitDiff(w http.ResponseWriter, r *http.Request, workspace, relativePath string) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitDiffTimeout)
+	defer cancel()
+
+	// Check if workspace is a git repository
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	cmd.Dir = workspace
+	if err := cmd.Run(); err != nil {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Not a git repository"))
+		return
+	}
+
+	// Common flags to force standard unified diff format:
+	// --no-ext-diff: bypass external diff tools (delta, diff-so-fancy, etc.)
+	// --no-color: strip ANSI color codes
+	diffFlags := []string{"diff", "--no-ext-diff", "--no-color"}
+
+	// Try git diff HEAD -- <file> first (shows both staged and unstaged changes)
+	args := append(append([]string{}, diffFlags...), "HEAD", "--", relativePath)
+	output, err := fs.runGitDiff(ctx, workspace, args)
+	if err != nil {
+		// HEAD might not exist yet (new repo with no commits), try plain git diff
+		args = append(append([]string{}, diffFlags...), "--", relativePath)
+		output, _ = fs.runGitDiff(ctx, workspace, args)
+	}
+
+	// If still empty, try --cached (staged only)
+	if len(output) == 0 {
+		args = append(append([]string{}, diffFlags...), "--cached", "--", relativePath)
+		cachedOutput, _ := fs.runGitDiff(ctx, workspace, args)
+		if len(cachedOutput) > 0 {
+			output = cachedOutput
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+
+	if len(output) == 0 {
+		_, _ = w.Write([]byte("No changes"))
+	} else {
+		_, _ = w.Write(output)
+	}
+}
+
+// runGitDiff executes a git command with a context timeout and returns its
+// output, limited to maxDiffOutputBytes. Stderr is captured and included in
+// the error if the command fails.
+func (fs *FileServer) runGitDiff(ctx context.Context, workspace string, args []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = workspace
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, err
+	}
+	if len(output) > maxDiffOutputBytes {
+		output = append(output[:maxDiffOutputBytes], []byte("\n... (output truncated)")...)
+	}
+	return output, nil
+}

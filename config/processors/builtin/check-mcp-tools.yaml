@@ -18,7 +18,7 @@ text: |
   ---
   [Mitto MCP Tools Check]
   Check if Mitto's MCP tools are available. You should have access to
-  tools like `mitto_ui_options_buttons`, `mitto_conversation_new`,
+  tools like `mitto_ui_options`, `mitto_conversation_new`,
   `mitto_conversation_get_current`, etc.
 
   If these tools are NOT available, show the user instructions for adding

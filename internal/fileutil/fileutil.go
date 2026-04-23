@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // ReadJSON reads a JSON file and unmarshals it into the provided value.
@@ -40,6 +41,11 @@ func WriteJSONAtomic(path string, v any, perm os.FileMode) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("failed to create parent directory: %w", err)
 	}
 
 	// Write to temp file first

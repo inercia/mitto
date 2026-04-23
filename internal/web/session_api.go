@@ -119,7 +119,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			s.logger.Error("Failed to create session", "error", err)
 		}
 		// Broadcast ACP start failure to all clients (use empty session_id since session wasn't created)
-		s.BroadcastACPStartFailed("", err, workspace.ACPCommand)
+		s.BroadcastACPStartFailed("", req.Name, err, workspace.ACPCommand)
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -239,6 +239,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
 	isUserDataRequest := len(parts) > 1 && parts[1] == "user-data"
 	isPeriodicRequest := len(parts) > 1 && parts[1] == "periodic"
+	isCallbackRequest := len(parts) > 1 && parts[1] == "callback"
 	isSettingsRequest := len(parts) > 1 && parts[1] == "settings"
 	isPruneRequest := len(parts) > 1 && parts[1] == "prune"
 
@@ -295,6 +296,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			periodicSubPath = parts[2]
 		}
 		s.handleSessionPeriodic(w, r, sessionID, periodicSubPath)
+		return
+	}
+
+	// Handle callback token operations
+	if isCallbackRequest {
+		s.handleSessionCallback(w, r, sessionID)
 		return
 	}
 
@@ -431,6 +438,20 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	// When archiving a child session, delete it instead (children should never be archived)
+	if req.Archived != nil && *req.Archived {
+		meta, err := store.GetMetadata(sessionID)
+		if err == nil && meta.ParentSessionID != "" {
+			if s.logger != nil {
+				s.logger.Info("Converting child archive to delete",
+					"session_id", sessionID,
+					"parent_session_id", meta.ParentSessionID)
+			}
+			s.handleDeleteSession(w, sessionID)
+			return
+		}
+	}
+
 	// Handle archive lifecycle: wait for response and stop ACP
 	if req.Archived != nil && *req.Archived {
 		if s.sessionManager != nil {
@@ -507,6 +528,13 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 		s.BroadcastSessionArchived(sessionID, *req.Archived)
 	}
 
+	// Delete all child sessions when parent is archived
+	if req.Archived != nil && *req.Archived {
+		if s.sessionManager != nil {
+			go s.sessionManager.DeleteChildSessions(sessionID)
+		}
+	}
+
 	// Handle unarchive lifecycle: restart ACP session
 	if req.Archived != nil && !*req.Archived {
 		if s.sessionManager != nil {
@@ -521,7 +549,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, ses
 						"error", err)
 				}
 				// Broadcast ACP start failure to all clients
-				s.BroadcastACPStartFailed(sessionID, err, "")
+				s.BroadcastACPStartFailed(sessionID, meta.Name, err, "")
 			} else {
 				if s.logger != nil {
 					s.logger.Info("Resumed ACP session after unarchive",
@@ -613,24 +641,32 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 		return
 	}
 
-	// Find auto-children BEFORE deletion (they will be cascade-deleted by store.Delete)
+	// Find ALL children recursively BEFORE deletion (they will be cascade-deleted by store.Delete)
 	// We need their IDs to close their ACP processes and broadcast deletions
-	autoChildIDs, err := store.FindAutoChildrenRecursive(sessionID)
+	allChildIDs, err := store.FindAllChildrenRecursive(sessionID)
 	if err != nil && s.logger != nil {
-		s.logger.Warn("Failed to find auto-children for deletion",
+		s.logger.Warn("Failed to find children for deletion",
 			"session_id", sessionID,
 			"error", err)
 	}
 
-	// Close ACP processes for parent and all auto-children
+	// Clean up callback index entries for this session and all children
+	if s.callbackIndex != nil {
+		s.callbackIndex.RemoveBySessionID(sessionID)
+		for _, childID := range allChildIDs {
+			s.callbackIndex.RemoveBySessionID(childID)
+		}
+	}
+
+	// Close ACP processes for parent and all children
 	if s.sessionManager != nil {
 		s.sessionManager.CloseSession(sessionID, "deleted")
-		for _, childID := range autoChildIDs {
+		for _, childID := range allChildIDs {
 			s.sessionManager.CloseSession(childID, "parent_deleted")
 		}
 	}
 
-	// Delete from store (cascade-deletes auto-children, orphans MCP-children)
+	// Delete from store (cascade-deletes all children recursively)
 	if err := store.Delete(sessionID); err != nil {
 		if err == session.ErrSessionNotFound {
 			http.Error(w, "Session not found", http.StatusNotFound)
@@ -645,14 +681,14 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
 
 	// Broadcast deletions to all connected WebSocket clients
 	s.BroadcastSessionDeleted(sessionID)
-	for _, childID := range autoChildIDs {
+	for _, childID := range allChildIDs {
 		s.BroadcastSessionDeleted(childID)
 	}
 
-	if s.logger != nil && len(autoChildIDs) > 0 {
-		s.logger.Info("Deleted session with auto-children",
+	if s.logger != nil && len(allChildIDs) > 0 {
+		s.logger.Info("Deleted session with children",
 			"session_id", sessionID,
-			"auto_children_deleted", len(autoChildIDs))
+			"children_deleted", len(allChildIDs))
 	}
 
 	writeNoContent(w)
@@ -698,11 +734,12 @@ func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
 
 // WorkspaceAddRequest represents a request to add a new workspace
 type WorkspaceAddRequest struct {
-	ACPServer  string `json:"acp_server"`
-	WorkingDir string `json:"working_dir"`
-	Name       string `json:"name,omitempty"`
-	Color      string `json:"color,omitempty"`
-	Code       string `json:"code,omitempty"`
+	ACPServer          string `json:"acp_server"`
+	WorkingDir         string `json:"working_dir"`
+	Name               string `json:"name,omitempty"`
+	Color              string `json:"color,omitempty"`
+	Code               string `json:"code,omitempty"`
+	AuxiliaryACPServer string `json:"auxiliary_acp_server,omitempty"`
 }
 
 // handleAddWorkspace adds a new workspace
@@ -753,14 +790,25 @@ func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate auxiliary ACP server if provided
+	if req.AuxiliaryACPServer != "" && !strings.EqualFold(req.AuxiliaryACPServer, "none") {
+		if s.config.MittoConfig != nil {
+			if _, err := s.config.MittoConfig.GetServer(req.AuxiliaryACPServer); err != nil {
+				http.Error(w, fmt.Sprintf("Unknown auxiliary ACP server: %s", req.AuxiliaryACPServer), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
 	// Add the workspace
 	newWorkspace := config.WorkspaceSettings{
-		ACPServer:  req.ACPServer,
-		ACPCommand: acpCommand,
-		WorkingDir: req.WorkingDir,
-		Name:       req.Name,
-		Color:      req.Color,
-		Code:       req.Code,
+		ACPServer:          req.ACPServer,
+		ACPCommand:         acpCommand,
+		WorkingDir:         req.WorkingDir,
+		Name:               req.Name,
+		Color:              req.Color,
+		Code:               req.Code,
+		AuxiliaryACPServer: req.AuxiliaryACPServer,
 	}
 	s.sessionManager.AddWorkspace(newWorkspace)
 

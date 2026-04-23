@@ -47,7 +47,7 @@ install yet another AI coding agent...
 
 - **Session Management** — Automatic conversation history with resume capability
 - **Parent/Children Conversations** — Spawn child conversations to delegate work to faster/cheaper models, wait for results, and synthesize — enabling multi-agent workflows
-- **Periodic Conversations** — Schedule recurring prompts (every N minutes/hours/days) for automated tasks like daily reports or periodic checks
+- **Periodic Conversations** — Schedule recurring prompts (every N minutes/hours/days) for automated tasks like daily reports or periodic checks, with HTTP callback URLs for on-demand triggering from webhooks, cron jobs, or CI pipelines
 - **Message Queue** — Queue messages while the agent is busy, with auto-generated titles and automatic delivery when the agent becomes idle
 
 🖥️ **User Interface**

@@ -174,3 +174,4 @@ test-results/
 .dolt/
 *.db
 .beads-credential-key
+.augment/settings.local.json

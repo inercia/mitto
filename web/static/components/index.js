@@ -5,6 +5,7 @@ export { Message } from "./Message.js";
 export { ChatInput } from "./ChatInput.js";
 export { SettingsDialog } from "./SettingsDialog.js";
 export { ConfirmDialog } from "./ConfirmDialog.js";
+export { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 export { SavePromptDialog } from "./SavePromptDialog.js";
 export { QueueDropdown } from "./QueueDropdown.js";
 export { ConversationPropertiesPanel } from "./ConversationPropertiesPanel.js";
@@ -27,6 +28,8 @@ export {
   MagicWandIcon,
   ImageIcon,
   LightningIcon,
+  RobotIcon,
+  PersonIcon,
   StopIcon,
   ErrorIcon,
   ServerIcon,
@@ -39,4 +42,5 @@ export {
   ListIcon,
   ArchiveIcon,
   ArchiveFilledIcon,
+  SearchIcon,
 } from "./Icons.js";

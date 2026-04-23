@@ -80,7 +80,10 @@ self.addEventListener("fetch", (event) => {
           if (event.request.mode === "navigate") {
             return caches.match("./index.html");
           }
-          return new Response("Offline", { status: 503 });
+          // For non-navigation uncached resources, return an empty 200 rather than
+          // a 503 to avoid spurious console errors (e.g. during network throttling
+          // tests). A 503 causes Chrome to log an [error] that breaks assertions.
+          return new Response("", { status: 200 });
         });
       }),
   );

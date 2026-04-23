@@ -1206,14 +1206,39 @@ a:hover {
  * Swipe-to-Delete V2 Theme Styles
  * ============================================================================= */
 
-/* Session item container border - light theme */
+/* Session item container - no individual borders when inside a group (border is on parent-session-group) */
+.v2-theme .parent-session-group .session-item-container {
+  border-bottom: none !important;
+}
+
+/* Standalone session items (ungrouped mode) keep their own border */
 .v2-theme:not(.dark) .session-item-container {
+  border-bottom: 1px solid #e4e4e7;
+}
+
+.v2-theme.dark .session-item-container {
+  border-bottom: 1px solid #334155;
+}
+
+/* Parent-session-group gets the border: parent + children are one visual cell */
+.v2-theme:not(.dark) .parent-session-group {
   border-bottom: 1px solid #e4e4e7 !important;
 }
 
-/* Session item container border - dark theme */
-.v2-theme.dark .session-item-container {
+.v2-theme.dark .parent-session-group {
   border-bottom: 1px solid #334155 !important;
+}
+
+/* Animated expand/collapse for child sessions */
+.session-children {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease-out;
+}
+
+.session-children--expanded {
+  max-height: 2000px;
+  transition: max-height 0.3s ease-in;
 }
 
 /* Swipe delete background - light theme (softer red) */
@@ -1253,6 +1278,110 @@ a:hover {
 .v2-theme.dark .ui-prompt-question {
   color: #e5e7eb !important;
 }
+
+/* =============================================================================
+   UI Form (mitto_ui_form) - Form Element Styling
+   ============================================================================= */
+
+/* Base form element styles for both themes */
+.ui-form-content label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+  margin-top: 0.75rem;
+}
+.ui-form-content label:first-child {
+  margin-top: 0;
+}
+.ui-form-content input[type="text"],
+.ui-form-content input[type="number"],
+.ui-form-content input[type="email"],
+.ui-form-content input[type="url"],
+.ui-form-content input[type="tel"],
+.ui-form-content input[type="password"],
+.ui-form-content input[type="date"],
+.ui-form-content input[type="time"],
+.ui-form-content select,
+.ui-form-content textarea {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  border-radius: 0.5rem;
+  border: 1px solid;
+  outline: none;
+  margin-bottom: 0.25rem;
+  box-sizing: border-box;
+}
+.ui-form-content input[type="text"]:focus,
+.ui-form-content input[type="number"]:focus,
+.ui-form-content input[type="email"]:focus,
+.ui-form-content input[type="url"]:focus,
+.ui-form-content input[type="tel"]:focus,
+.ui-form-content input[type="password"]:focus,
+.ui-form-content input[type="date"]:focus,
+.ui-form-content input[type="time"]:focus,
+.ui-form-content select:focus,
+.ui-form-content textarea:focus {
+  ring: 2px;
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
+}
+.ui-form-content input[type="checkbox"],
+.ui-form-content input[type="radio"] {
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+.ui-form-content fieldset {
+  border: 1px solid;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  margin: 0.5rem 0;
+}
+.ui-form-content legend {
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0 0.25rem;
+}
+.ui-form-content small {
+  font-size: 0.75rem;
+  display: block;
+  margin-top: 0.125rem;
+}
+.ui-form-content hr {
+  margin: 0.75rem 0;
+  border: none;
+  border-top: 1px solid;
+}
+
+/* Light theme form elements */
+.v2-theme:not(.dark) .ui-form-content label { color: #18181b; }
+.v2-theme:not(.dark) .ui-form-content input,
+.v2-theme:not(.dark) .ui-form-content select,
+.v2-theme:not(.dark) .ui-form-content textarea {
+  background: #f8fafc;
+  border-color: #d1d5db;
+  color: #18181b;
+}
+.v2-theme:not(.dark) .ui-form-content fieldset { border-color: #d1d5db; }
+.v2-theme:not(.dark) .ui-form-content legend { color: #18181b; }
+.v2-theme:not(.dark) .ui-form-content small { color: #6b7280; }
+.v2-theme:not(.dark) .ui-form-content hr { border-color: #d1d5db; }
+
+/* Dark theme form elements */
+.v2-theme.dark .ui-form-content label { color: #e5e7eb; }
+.v2-theme.dark .ui-form-content input,
+.v2-theme.dark .ui-form-content select,
+.v2-theme.dark .ui-form-content textarea {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: #475569;
+  color: #e5e7eb;
+}
+.v2-theme.dark .ui-form-content fieldset { border-color: #475569; }
+.v2-theme.dark .ui-form-content legend { color: #e5e7eb; }
+.v2-theme.dark .ui-form-content small { color: #9ca3af; }
+.v2-theme.dark .ui-form-content hr { border-color: #475569; }
 
 /* =============================================================================
    Properties Panel - Light Theme Overrides

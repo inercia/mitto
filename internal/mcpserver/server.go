@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,9 +141,15 @@ type SessionManager interface {
 	// Multiple workspaces may share the same folder with different ACP servers.
 	GetWorkspacesForFolder(folder string) []config.WorkspaceSettings
 	// BroadcastSessionCreated broadcasts a session_created event to all connected clients.
-	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string)
+	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string)
 	// BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
 	BroadcastSessionArchived(sessionID string, archived bool)
+	// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
+	BroadcastSessionDeleted(sessionID string)
+	// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
+	BroadcastWaitingForChildren(sessionID string, isWaiting bool)
+	// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
+	DeleteChildSessions(parentID string)
 }
 
 // BackgroundSession interface for session info.
@@ -767,6 +774,11 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 			details.LockClientType = lockInfo.ClientType
 			details.IsPrompting = lockInfo.Status == session.LockStatusProcessing
 		}
+
+		// Check if conversation has an active periodic prompt
+		if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
+			details.IsPeriodic = p.Enabled
+		}
 	}
 
 	// Get running session info if available (overrides lock-based IsPrompting)
@@ -877,32 +889,39 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
 
-	// mitto_ui_ask_yes_no - Present a yes/no question
+	// mitto_ui_options - Unified options menu
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_ui_ask_yes_no",
-		Description: "Present a yes/no question to the user and wait for their response. " +
-			"The tool blocks until the user clicks a button or the timeout expires. " +
+		Name: "mitto_ui_options",
+		Description: "Present a list of options to the user as an expandable menu and wait for their selection. " +
+			"Each option can have a short label and an optional longer description. " +
+			"Optionally allows the user to type free text instead of selecting a predefined option. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
-	}, s.handleAskYesNo)
+	}, s.handleUIOptions)
 
-	// mitto_ui_options_buttons - Present multiple option buttons
+	// mitto_ui_textbox - Present editable text to user
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_ui_options_buttons",
-		Description: "Present multiple options as buttons to the user and wait for their selection. " +
-			"The tool blocks until the user clicks a button or the timeout expires. " +
+		Name: "mitto_ui_textbox",
+		Description: "Present a text editing dialog to the user and wait for their changes. " +
+			"Shows a modal with a title and a large editable textarea pre-filled with the provided text. " +
+			"The user can edit the text and submit, or abort if allowed. " +
+			"Returns the edited text (or a unified diff of changes). " +
+			"Text is limited to 16KB. For short-to-medium text snippets only, not full files. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
-	}, s.handleOptionsButtons)
+	}, s.handleUITextbox)
 
-	// mitto_ui_options_combo - Present a combo box
+	// mitto_ui_form - Present a sanitized HTML form to the user
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_ui_options_combo",
-		Description: "Present a dropdown/combo box with options to the user. " +
-			"The user selects an option and clicks OK to confirm. " +
+		Name: "mitto_ui_form",
+		Description: "Present an HTML form to the user and wait for their submission. " +
+			"Provide simple HTML with form elements (input, select, textarea, checkbox, radio) and labels. " +
+			"The HTML is strictly sanitized — only form-related elements are allowed (no scripts, styles, " +
+			"images, links, or event handlers). Submit/cancel buttons are added automatically. " +
+			"Returns the submitted form field values as key-value pairs (keyed by the 'name' attribute). " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
-	}, s.handleOptionsCombo)
+	}, s.handleUIForm)
 
 	// mitto_conversation_new - Start a new conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
@@ -1073,6 +1092,11 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 					info.IsPrompting = bs.IsPrompting()
 					info.LastSeq = bs.GetMaxAssignedSeq()
 				}
+			}
+
+			// Check if conversation has an active periodic prompt
+			if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
+				info.IsPeriodic = p.Enabled
 			}
 
 			// Apply is_running filter after runtime status is resolved
@@ -1310,25 +1334,40 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	}, nil
 }
 
-// AskYesNoInput is the input for the mitto_ui_ask_yes_no tool.
-type AskYesNoInput struct {
-	SelfID         string `json:"self_id"` // YOUR session ID (the caller)
-	Question       string `json:"question"`
-	YesLabel       string `json:"yes_label,omitempty"`
-	NoLabel        string `json:"no_label,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+// UIOptionsItem represents a single option in the unified options menu.
+type UIOptionsItem struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
-func (s *Server) handleAskYesNo(ctx context.Context, req *mcp.CallToolRequest, input AskYesNoInput) (*mcp.CallToolResult, AskYesNoOutput, error) {
+// UIOptionsInput is the input for the mitto_ui_options tool.
+type UIOptionsInput struct {
+	SelfID              string          `json:"self_id"` // YOUR session ID (the caller)
+	Question            string          `json:"question"`
+	Options             []UIOptionsItem `json:"options"`
+	AllowFreeText       bool            `json:"allow_free_text,omitempty"`
+	FreeTextPlaceholder string          `json:"free_text_placeholder,omitempty"`
+	TimeoutSeconds      int             `json:"timeout_seconds,omitempty"`
+}
+
+// UIOptionsOutput is the output for the mitto_ui_options tool.
+type UIOptionsOutput struct {
+	Selected string `json:"selected,omitempty"`
+	Index    int    `json:"index"`
+	FreeText string `json:"free_text,omitempty"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+}
+
+func (s *Server) handleUIOptions(ctx context.Context, req *mcp.CallToolRequest, input UIOptionsInput) (*mcp.CallToolResult, UIOptionsOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
-		return nil, AskYesNoOutput{}, fmt.Errorf("self_id is required")
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("self_id is required")
 	}
 
 	// Resolve the self_id to a real session ID
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
 	if realSessionID == "" {
-		return nil, AskYesNoOutput{}, fmt.Errorf(
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
 			input.SelfID,
 		)
@@ -1337,94 +1376,248 @@ func (s *Server) handleAskYesNo(ctx context.Context, req *mcp.CallToolRequest, i
 	// Check if session is registered and get the UIPrompter
 	reg := s.getSession(realSessionID)
 	if reg == nil {
-		return nil, AskYesNoOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("session not found or not running: %s", realSessionID)
 	}
 
 	// Permission check
 	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
-		return nil, AskYesNoOutput{}, permissionError("mitto_ui_ask_yes_no", session.FlagCanPromptUser, "Can prompt user")
+		return nil, UIOptionsOutput{Index: -1}, permissionError("mitto_ui_options", session.FlagCanPromptUser, "Can prompt user")
 	}
 
 	// Check if UIPrompter is available
 	if reg.uiPrompter == nil {
-		return nil, AskYesNoOutput{}, fmt.Errorf("UI prompts are not available (no UI connected)")
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("UI prompts are not available (no UI connected)")
+	}
+
+	// Validate input
+	if len(input.Options) == 0 && !input.AllowFreeText {
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("at least one option is required (or enable allow_free_text)")
+	}
+	if len(input.Options) > 10 {
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("mitto_ui_options supports at most 10 options (got %d)", len(input.Options))
 	}
 
 	// Apply defaults
-	yesLabel := input.YesLabel
-	if yesLabel == "" {
-		yesLabel = "Yes"
-	}
-	noLabel := input.NoLabel
-	if noLabel == "" {
-		noLabel = "No"
-	}
 	timeout := input.TimeoutSeconds
 	if timeout <= 0 {
-		timeout = 300 // 5 minutes default
+		timeout = 300
+	}
+
+	question := input.Question
+	if question == "" {
+		question = "Please select an option:"
 	}
 
 	// Generate unique internal request ID for UI prompt
+	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
+
+	// Build options with IDs and descriptions
+	options := make([]UIPromptOption, len(input.Options))
+	for i, item := range input.Options {
+		options[i] = UIPromptOption{
+			ID:          fmt.Sprintf("%d", i),
+			Label:       item.Label,
+			Description: item.Description,
+		}
+	}
+
+	promptReq := UIPromptRequest{
+		RequestID:           uiRequestID,
+		Type:                UIPromptTypeOptions,
+		Question:            question,
+		Options:             options,
+		TimeoutSeconds:      timeout,
+		AllowFreeText:       input.AllowFreeText,
+		FreeTextPlaceholder: input.FreeTextPlaceholder,
+	}
+
+	s.logger.Debug("Sending UI options prompt",
+		"session_id", realSessionID,
+		"input_session_id", input.SelfID,
+		"ui_request_id", uiRequestID,
+		"option_count", len(input.Options),
+		"allow_free_text", input.AllowFreeText,
+		"timeout", timeout)
+
+	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
+	if err != nil {
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("failed to display UI prompt: %w", err)
+	}
+
+	if resp.TimedOut {
+		s.logger.Debug("UI options prompt timed out", "session_id", realSessionID)
+		return nil, UIOptionsOutput{Index: -1, TimedOut: true}, nil
+	}
+
+	// Handle free text response
+	if resp.FreeText != "" {
+		s.logger.Debug("UI options prompt answered with free text",
+			"session_id", realSessionID,
+			"free_text", resp.FreeText)
+		return nil, UIOptionsOutput{
+			Index:    -1,
+			FreeText: resp.FreeText,
+		}, nil
+	}
+
+	var selectedIndex int
+	if _, err := fmt.Sscanf(resp.OptionID, "%d", &selectedIndex); err != nil {
+		selectedIndex = -1
+	}
+
+	s.logger.Debug("UI options prompt answered",
+		"session_id", realSessionID,
+		"selected", resp.Label,
+		"index", selectedIndex)
+
+	return nil, UIOptionsOutput{
+		Selected: resp.Label,
+		Index:    selectedIndex,
+	}, nil
+}
+
+func (s *Server) handleUITextbox(ctx context.Context, req *mcp.CallToolRequest, input UITextboxInput) (*mcp.CallToolResult, UITextboxOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, UITextboxOutput{}, fmt.Errorf("self_id is required")
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, UITextboxOutput{}, fmt.Errorf(
+			"session not found: the self_id '%s' could not be resolved",
+			input.SelfID,
+		)
+	}
+
+	// Check if session is registered and get the UIPrompter
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, UITextboxOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
+	}
+
+	// Permission check
+	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
+		return nil, UITextboxOutput{}, permissionError("mitto_ui_textbox", session.FlagCanPromptUser, "Can prompt user")
+	}
+
+	// Check if UIPrompter is available
+	if reg.uiPrompter == nil {
+		return nil, UITextboxOutput{}, fmt.Errorf("UI prompts are not available (no UI connected)")
+	}
+
+	// Validate input
+	if input.Title == "" {
+		return nil, UITextboxOutput{}, fmt.Errorf("title is required")
+	}
+	if input.Text == "" {
+		return nil, UITextboxOutput{}, fmt.Errorf("text is required")
+	}
+	const maxTextSize = 16 * 1024 // 16KB
+	if len(input.Text) > maxTextSize {
+		return nil, UITextboxOutput{}, fmt.Errorf("text exceeds maximum size of 16KB (got %d bytes)", len(input.Text))
+	}
+
+	// Validate and default result mode
+	resultMode := input.ResultMode
+	if resultMode == "" {
+		resultMode = "text"
+	}
+	if resultMode != "text" && resultMode != "diff" {
+		return nil, UITextboxOutput{}, fmt.Errorf("result must be 'text' or 'diff' (got '%s')", resultMode)
+	}
+
+	// Apply timeout default
+	timeout := input.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 600 // 10 minutes default for text editing
+	}
+
+	// Generate unique internal request ID
 	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
 
 	// Build the prompt request
 	promptReq := UIPromptRequest{
-		RequestID: uiRequestID,
-		Type:      UIPromptTypeYesNo,
-		Question:  input.Question,
-		Options: []UIPromptOption{
-			{ID: "yes", Label: yesLabel},
-			{ID: "no", Label: noLabel},
-		},
+		RequestID:      uiRequestID,
+		Type:           UIPromptTypeTextbox,
+		Title:          input.Title,
+		Question:       input.Title, // Use title as question for consistency
+		Text:           input.Text,
+		ResultMode:     resultMode,
+		AllowAbort:     true, // Always allow abort
 		TimeoutSeconds: timeout,
+		Blocking:       true,
 	}
 
-	s.logger.Debug("Sending UI yes/no prompt",
+	s.logger.Debug("Sending UI textbox prompt",
 		"session_id", realSessionID,
 		"input_session_id", input.SelfID,
 		"ui_request_id", uiRequestID,
-		"question", input.Question,
+		"title", input.Title,
+		"text_length", len(input.Text),
+		"result_mode", resultMode,
 		"timeout", timeout)
 
-	// Send prompt and wait for response
+	// Send prompt and wait for response (blocks until user responds or timeout)
 	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
 	if err != nil {
-		return nil, AskYesNoOutput{}, fmt.Errorf("failed to display UI prompt: %w", err)
+		return nil, UITextboxOutput{}, fmt.Errorf("failed to display UI textbox: %w", err)
 	}
 
+	// Handle timeout
 	if resp.TimedOut {
-		s.logger.Debug("UI yes/no prompt timed out", "session_id", realSessionID)
-		return nil, AskYesNoOutput{Response: "timeout"}, nil
+		s.logger.Debug("UI textbox prompt timed out", "session_id", realSessionID)
+		return nil, UITextboxOutput{TimedOut: true}, nil
 	}
 
-	s.logger.Debug("UI yes/no prompt answered",
-		"session_id", realSessionID,
-		"response", resp.OptionID)
+	// Handle abort
+	if resp.Aborted || resp.OptionID == "abort" {
+		s.logger.Debug("UI textbox prompt aborted", "session_id", realSessionID)
+		return nil, UITextboxOutput{Aborted: true}, nil
+	}
 
-	return nil, AskYesNoOutput{
-		Response: resp.OptionID,
-		Label:    resp.Label,
+	// Get the edited text from the response
+	editedText := resp.FreeText
+
+	// Check if text was changed
+	changed := editedText != input.Text
+
+	if !changed {
+		s.logger.Debug("UI textbox prompt submitted without changes", "session_id", realSessionID)
+		return nil, UITextboxOutput{Changed: false}, nil
+	}
+
+	// Compute result based on mode
+	var result string
+	if resultMode == "diff" {
+		result = computeUnifiedDiff(input.Text, editedText, "original", "edited")
+	} else {
+		result = editedText
+	}
+
+	s.logger.Debug("UI textbox prompt submitted with changes",
+		"session_id", realSessionID,
+		"result_mode", resultMode,
+		"original_length", len(input.Text),
+		"edited_length", len(editedText))
+
+	return nil, UITextboxOutput{
+		Changed: true,
+		Result:  result,
 	}, nil
 }
 
-// OptionsButtonsInput is the input for the mitto_ui_options_buttons tool.
-type OptionsButtonsInput struct {
-	SelfID         string   `json:"self_id"` // YOUR session ID (the caller)
-	Options        []string `json:"options"`
-	Question       string   `json:"question,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
-}
-
-func (s *Server) handleOptionsButtons(ctx context.Context, req *mcp.CallToolRequest, input OptionsButtonsInput) (*mcp.CallToolResult, OptionsButtonsOutput, error) {
+func (s *Server) handleUIForm(ctx context.Context, req *mcp.CallToolRequest, input UIFormInput) (*mcp.CallToolResult, UIFormOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("self_id is required")
+		return nil, UIFormOutput{}, fmt.Errorf("self_id is required")
 	}
 
 	// Resolve the self_id to a real session ID
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
 	if realSessionID == "" {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf(
+		return nil, UIFormOutput{}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
 			input.SelfID,
 		)
@@ -1433,200 +1626,160 @@ func (s *Server) handleOptionsButtons(ctx context.Context, req *mcp.CallToolRequ
 	// Check if session is registered and get the UIPrompter
 	reg := s.getSession(realSessionID)
 	if reg == nil {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("session not found or not running: %s", realSessionID)
+		return nil, UIFormOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
 	}
 
 	// Permission check
 	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
-		return nil, OptionsButtonsOutput{Index: -1}, permissionError("mitto_ui_options_buttons", session.FlagCanPromptUser, "Can prompt user")
+		return nil, UIFormOutput{}, permissionError("mitto_ui_form", session.FlagCanPromptUser, "Can prompt user")
 	}
 
 	// Check if UIPrompter is available
 	if reg.uiPrompter == nil {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("UI prompts are not available (no UI connected)")
+		return nil, UIFormOutput{}, fmt.Errorf("UI prompts are not available (no UI connected)")
 	}
 
-	// Validate input
-	if len(input.Options) == 0 {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("at least one option is required")
+	// Validate and sanitize HTML
+	if input.Title == "" {
+		return nil, UIFormOutput{}, fmt.Errorf("title is required")
 	}
-	if len(input.Options) > 4 {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("options_buttons supports at most 4 options (got %d); use options_combo for more options", len(input.Options))
+	sanitizedHTML, err := sanitizeFormHTML(input.HTML)
+	if err != nil {
+		return nil, UIFormOutput{}, fmt.Errorf("invalid form HTML: %w", err)
 	}
 
-	// Apply defaults
+	// Apply timeout default
 	timeout := input.TimeoutSeconds
 	if timeout <= 0 {
-		timeout = 300
+		timeout = 600 // 10 minutes default
 	}
 
-	question := input.Question
-	if question == "" {
-		question = "Please select an option:"
-	}
-
-	// Generate unique internal request ID for UI prompt
+	// Generate unique internal request ID
 	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
 
-	// Build options with IDs
-	options := make([]UIPromptOption, len(input.Options))
-	for i, label := range input.Options {
-		options[i] = UIPromptOption{
-			ID:    fmt.Sprintf("%d", i),
-			Label: label,
-		}
-	}
-
+	// Build the prompt request
 	promptReq := UIPromptRequest{
 		RequestID:      uiRequestID,
-		Type:           UIPromptTypeOptions,
-		Question:       question,
-		Options:        options,
+		Type:           UIPromptTypeForm,
+		Title:          input.Title,
+		Question:       input.Title,
+		FormHTML:       sanitizedHTML,
 		TimeoutSeconds: timeout,
+		Blocking:       true,
 	}
 
-	s.logger.Debug("Sending UI options buttons prompt",
+	s.logger.Debug("Sending UI form prompt",
 		"session_id", realSessionID,
 		"input_session_id", input.SelfID,
 		"ui_request_id", uiRequestID,
-		"option_count", len(input.Options),
+		"title", input.Title,
+		"html_length", len(sanitizedHTML),
 		"timeout", timeout)
 
+	// Send prompt and wait for response (blocks until user responds or timeout)
 	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
 	if err != nil {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("failed to display UI prompt: %w", err)
+		return nil, UIFormOutput{}, fmt.Errorf("failed to display UI form: %w", err)
 	}
 
+	// Handle timeout
 	if resp.TimedOut {
-		s.logger.Debug("UI options buttons prompt timed out", "session_id", realSessionID)
-		return nil, OptionsButtonsOutput{Index: -1, TimedOut: true}, nil
+		s.logger.Debug("UI form prompt timed out", "session_id", realSessionID)
+		return nil, UIFormOutput{TimedOut: true}, nil
 	}
 
-	var selectedIndex int
-	if _, err := fmt.Sscanf(resp.OptionID, "%d", &selectedIndex); err != nil {
-		selectedIndex = -1
+	// Handle cancel
+	if resp.Aborted || resp.OptionID == "cancel" {
+		s.logger.Debug("UI form prompt cancelled", "session_id", realSessionID)
+		return nil, UIFormOutput{Cancelled: true}, nil
 	}
 
-	s.logger.Debug("UI options buttons prompt answered",
-		"session_id", realSessionID,
-		"selected", resp.Label,
-		"index", selectedIndex)
-
-	return nil, OptionsButtonsOutput{
-		Selected: resp.Label,
-		Index:    selectedIndex,
-	}, nil
-}
-
-// OptionsComboInput is the input for the mitto_ui_options_combo tool.
-type OptionsComboInput struct {
-	SelfID         string   `json:"self_id"` // YOUR session ID (the caller)
-	Options        []string `json:"options"`
-	Question       string   `json:"question,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
-}
-
-func (s *Server) handleOptionsCombo(ctx context.Context, req *mcp.CallToolRequest, input OptionsComboInput) (*mcp.CallToolResult, OptionsComboOutput, error) {
-	// Validate self_id
-	if input.SelfID == "" {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("self_id is required")
-	}
-
-	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
-	if realSessionID == "" {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf(
-			"session not found: the self_id '%s' could not be resolved",
-			input.SelfID,
-		)
-	}
-
-	// Check if session is registered and get the UIPrompter
-	reg := s.getSession(realSessionID)
-	if reg == nil {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("session not found or not running: %s", realSessionID)
-	}
-
-	// Permission check
-	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
-		return nil, OptionsComboOutput{Index: -1}, permissionError("mitto_ui_options_combo", session.FlagCanPromptUser, "Can prompt user")
-	}
-
-	// Check if UIPrompter is available
-	if reg.uiPrompter == nil {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("UI prompts are not available (no UI connected)")
-	}
-
-	// Validate input
-	if len(input.Options) == 0 {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("at least one option is required")
-	}
-	if len(input.Options) > 10 {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("options_combo supports at most 10 options (got %d)", len(input.Options))
-	}
-
-	// Apply defaults
-	timeout := input.TimeoutSeconds
-	if timeout <= 0 {
-		timeout = 300
-	}
-
-	question := input.Question
-	if question == "" {
-		question = "Please select an option:"
-	}
-
-	// Generate unique internal request ID for UI prompt
-	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
-
-	// Build options with IDs
-	options := make([]UIPromptOption, len(input.Options))
-	for i, label := range input.Options {
-		options[i] = UIPromptOption{
-			ID:    fmt.Sprintf("%d", i),
-			Label: label,
+	// Parse form values from FreeText (JSON-encoded map[string]string)
+	var values map[string]string
+	if resp.FreeText != "" {
+		if err := json.Unmarshal([]byte(resp.FreeText), &values); err != nil {
+			s.logger.Error("Failed to parse form values", "session_id", realSessionID, "error", err)
+			return nil, UIFormOutput{}, fmt.Errorf("failed to parse form values: %w", err)
 		}
 	}
 
-	promptReq := UIPromptRequest{
-		RequestID:      uiRequestID,
-		Type:           UIPromptTypeSelect,
-		Question:       question,
-		Options:        options,
-		TimeoutSeconds: timeout,
-	}
-
-	s.logger.Debug("Sending UI options combo prompt",
+	s.logger.Debug("UI form prompt submitted",
 		"session_id", realSessionID,
-		"input_session_id", input.SelfID,
-		"ui_request_id", uiRequestID,
-		"option_count", len(input.Options),
-		"timeout", timeout)
+		"field_count", len(values))
 
-	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
-	if err != nil {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("failed to display UI prompt: %w", err)
-	}
-
-	if resp.TimedOut {
-		s.logger.Debug("UI options combo prompt timed out", "session_id", realSessionID)
-		return nil, OptionsComboOutput{Index: -1, TimedOut: true}, nil
-	}
-
-	var selectedIndex int
-	if _, err := fmt.Sscanf(resp.OptionID, "%d", &selectedIndex); err != nil {
-		selectedIndex = -1
-	}
-
-	s.logger.Debug("UI options combo prompt answered",
-		"session_id", realSessionID,
-		"selected", resp.Label,
-		"index", selectedIndex)
-
-	return nil, OptionsComboOutput{
-		Selected: resp.Label,
-		Index:    selectedIndex,
+	return nil, UIFormOutput{
+		Submitted: true,
+		Values:    values,
 	}, nil
+}
+
+// computeUnifiedDiff generates a simple unified diff between two texts.
+func computeUnifiedDiff(original, edited, originalName, editedName string) string {
+	originalLines := strings.Split(original, "\n")
+	editedLines := strings.Split(edited, "\n")
+
+	var result strings.Builder
+	result.WriteString(fmt.Sprintf("--- %s\n", originalName))
+	result.WriteString(fmt.Sprintf("+++ %s\n", editedName))
+
+	m, n := len(originalLines), len(editedLines)
+
+	// Build LCS table
+	lcs := make([][]int, m+1)
+	for i := range lcs {
+		lcs[i] = make([]int, n+1)
+	}
+	for i := 1; i <= m; i++ {
+		for j := 1; j <= n; j++ {
+			if originalLines[i-1] == editedLines[j-1] {
+				lcs[i][j] = lcs[i-1][j-1] + 1
+			} else if lcs[i-1][j] >= lcs[i][j-1] {
+				lcs[i][j] = lcs[i-1][j]
+			} else {
+				lcs[i][j] = lcs[i][j-1]
+			}
+		}
+	}
+
+	// Backtrack to find the diff operations
+	type diffOp struct {
+		op   byte // ' ' = context, '-' = remove, '+' = add
+		line string
+	}
+	var ops []diffOp
+	i, j := m, n
+	for i > 0 || j > 0 {
+		if i > 0 && j > 0 && originalLines[i-1] == editedLines[j-1] {
+			ops = append(ops, diffOp{' ', originalLines[i-1]})
+			i--
+			j--
+		} else if j > 0 && (i == 0 || lcs[i][j-1] >= lcs[i-1][j]) {
+			ops = append(ops, diffOp{'+', editedLines[j-1]})
+			j--
+		} else if i > 0 {
+			ops = append(ops, diffOp{'-', originalLines[i-1]})
+			i--
+		}
+	}
+
+	// Reverse ops (we built them backwards)
+	for left, right := 0, len(ops)-1; left < right; left, right = left+1, right-1 {
+		ops[left], ops[right] = ops[right], ops[left]
+	}
+
+	// Output all ops with unified diff markers
+	for _, op := range ops {
+		switch op.op {
+		case ' ':
+			result.WriteString(fmt.Sprintf(" %s\n", op.line))
+		case '-':
+			result.WriteString(fmt.Sprintf("-%s\n", op.line))
+		case '+':
+			result.WriteString(fmt.Sprintf("+%s\n", op.line))
+		}
+	}
+
+	return result.String()
 }
 
 // ConversationStartInput is the input for mitto_conversation_new tool.
@@ -1693,6 +1846,30 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		return nil, ConversationStartOutput{}, fmt.Errorf(
 			"this session was created by another session (parent: %s) and cannot create new conversations to prevent infinite recursion",
 			sourceMeta.ParentSessionID)
+	}
+
+	// Check max child conversations limit
+	// This prevents a single session from spawning too many children and exhausting resources.
+	// Auto-children (from workspace config) are excluded from the count.
+	s.mu.RLock()
+	cfg := s.config
+	s.mu.RUnlock()
+
+	maxChildren := config.DefaultMaxChildConversations
+	if cfg != nil && cfg.Conversations != nil {
+		maxChildren = cfg.Conversations.GetMaxChildConversations()
+	}
+	if maxChildren > 0 { // 0 means unlimited
+		currentCount, err := store.CountMCPChildSessions(realSessionID)
+		if err != nil {
+			s.logger.Warn("Failed to count child sessions", "session_id", realSessionID, "error", err)
+			// Don't block on count errors - just log and proceed
+		} else if currentCount >= maxChildren {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"maximum number of child conversations reached (%d). "+
+					"This limit can be changed in Settings → Conversations → Max Child Conversations",
+				maxChildren)
+		}
 	}
 
 	// Check for duplicate title if title is provided
@@ -1774,7 +1951,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		Name:             input.Title,
 		ACPServer:        acpServerName,
 		WorkingDir:       sourceMeta.WorkingDir,
-		ParentSessionID:  realSessionID, // Mark this session as a child
+		ParentSessionID:  realSessionID,          // Mark this session as a child
+		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
 	}
 
@@ -1821,7 +1999,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			input.Title,
 			acpServerName,
 			sourceMeta.WorkingDir,
-			realSessionID, // parent_session_id
+			realSessionID,                  // parent_session_id
+			string(session.ChildOriginMCP), // child_origin
 		)
 	}
 
@@ -1999,10 +2178,19 @@ func (s *Server) handleSetPeriodic(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	// Verify target conversation exists
-	if _, err := store.GetMetadata(input.ConversationID); err != nil {
+	meta, err := store.GetMetadata(input.ConversationID)
+	if err != nil {
 		return nil, SetPeriodicOutput{
 			Success: false,
 			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
+		}, nil
+	}
+
+	// Prevent setting periodic on child sessions
+	if meta.ParentSessionID != "" {
+		return nil, SetPeriodicOutput{
+			Success: false,
+			Error:   "cannot set periodic on a child conversation; only parent or top-level conversations can be periodic",
 		}, nil
 	}
 
@@ -2138,6 +2326,29 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		}, nil
 	}
 
+	// When archiving a child session, delegate to handleDeleteConversation (which enforces parent-only permission)
+	if archived && meta.ParentSessionID != "" {
+		if meta.ParentSessionID != realSessionID {
+			return nil, ArchiveConversationOutput{
+				Success: false,
+				Error:   "permission denied: only the parent can archive/delete a child conversation",
+			}, nil
+		}
+		_, deleteOut, err := s.handleDeleteConversation(ctx, req, DeleteConversationInput{
+			SelfID:         input.SelfID,
+			ConversationID: input.ConversationID,
+		})
+		if err != nil {
+			return nil, ArchiveConversationOutput{Success: false, Error: err.Error()}, nil
+		}
+		return nil, ArchiveConversationOutput{
+			Success:        deleteOut.Success,
+			ConversationID: deleteOut.ConversationID,
+			Archived:       deleteOut.Success,
+			Error:          deleteOut.Error,
+		}, nil
+	}
+
 	// Check if already in the desired state
 	if meta.Archived == archived {
 		state := "archived"
@@ -2189,6 +2400,11 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 	// Broadcast the archived state change to all connected WebSocket clients
 	if s.sessionManager != nil {
 		s.sessionManager.BroadcastSessionArchived(input.ConversationID, archived)
+	}
+
+	// Delete all child sessions when parent is archived
+	if archived && s.sessionManager != nil {
+		go s.sessionManager.DeleteChildSessions(input.ConversationID)
 	}
 
 	// Handle unarchive lifecycle: restart ACP session
@@ -2282,7 +2498,15 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 		}, nil
 	}
 
-	// Gracefully stop the child if it's running
+	// Find ALL descendants recursively BEFORE deletion so we can close their ACP processes
+	allDescendantIDs, findErr := store.FindAllChildrenRecursive(input.ConversationID)
+	if findErr != nil {
+		s.logger.Warn("Failed to find descendants for cascade deletion via MCP",
+			"child_session", input.ConversationID,
+			"error", findErr)
+	}
+
+	// Gracefully stop the child and all its descendants
 	if sessionManager != nil {
 		reason := "deleted_by_parent_via_mcp"
 		if !sessionManager.CloseSessionGracefully(input.ConversationID, reason, archiveWaitTimeout) {
@@ -2291,28 +2515,34 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 				"child_session", input.ConversationID)
 			sessionManager.CloseSession(input.ConversationID, "deleted_by_parent_timeout_via_mcp")
 		}
+		// Close ACP for all descendants
+		for _, descendantID := range allDescendantIDs {
+			sessionManager.CloseSession(descendantID, "ancestor_deleted_via_mcp")
+		}
 	}
 
-	// Archive the conversation (mark as read-only rather than permanently deleting)
-	err = store.UpdateMetadata(input.ConversationID, func(m *session.Metadata) {
-		m.Archived = true
-		m.ArchivedAt = time.Now()
-	})
+	// Permanently delete the child conversation from disk
+	// store.Delete() will cascade-delete all descendants via handleChildSessionsOnParentDelete
+	err = store.Delete(input.ConversationID)
 	if err != nil {
 		return nil, DeleteConversationOutput{
 			Success: false,
-			Error:   fmt.Sprintf("failed to archive conversation: %v", err),
+			Error:   fmt.Sprintf("failed to delete conversation: %v", err),
 		}, nil
 	}
 
-	// Broadcast the archived state change to all connected WebSocket clients
+	// Broadcast deletion for the child and all descendants
 	if s.sessionManager != nil {
-		s.sessionManager.BroadcastSessionArchived(input.ConversationID, true)
+		s.sessionManager.BroadcastSessionDeleted(input.ConversationID)
+		for _, descendantID := range allDescendantIDs {
+			s.sessionManager.BroadcastSessionDeleted(descendantID)
+		}
 	}
 
-	s.logger.Info("Child conversation deleted (archived) by parent via MCP",
+	s.logger.Info("Child conversation permanently deleted by parent via MCP",
 		"parent_session", realSessionID,
-		"child_session", input.ConversationID)
+		"child_session", input.ConversationID,
+		"descendants_deleted", len(allDescendantIDs))
 
 	return nil, DeleteConversationOutput{
 		Success:        true,
@@ -2405,6 +2635,14 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 		"target_conversation", input.ConversationID,
 		"what", input.What,
 		"timeout", timeout)
+
+	// Broadcast that this session is now waiting (shows hourglass in sidebar)
+	if s.sessionManager != nil {
+		s.sessionManager.BroadcastWaitingForChildren(realSessionID, true)
+		defer func() {
+			s.sessionManager.BroadcastWaitingForChildren(realSessionID, false)
+		}()
+	}
 
 	// Wait for the agent to finish responding, respecting context cancellation.
 	// WaitForResponseComplete blocks with its own timeout, but we also need to
@@ -2694,6 +2932,14 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		timeout = defaultChildrenTasksTimeout
 	}
 
+	// Broadcast that this parent is now waiting for children
+	if s.sessionManager != nil {
+		s.sessionManager.BroadcastWaitingForChildren(realSessionID, true)
+		defer func() {
+			s.sessionManager.BroadcastWaitingForChildren(realSessionID, false)
+		}()
+	}
+
 	// Block until all running children report or timeout
 	s.logger.Info("Waiting for children to report",
 		"parent_session", realSessionID,
@@ -2704,23 +2950,105 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 
 	var timedOut bool
 
-	select {
-	case <-waitCh:
-		// All running children reported
-	case <-time.After(timeout):
-		timedOut = true
-		pendingChildren, reportedChildren := collector.getPendingAndReported()
-		s.logger.Warn("Timeout waiting for children to report",
-			"parent_session", realSessionID,
-			"pending_children", pendingChildren,
-			"reported_children", reportedChildren,
-			"total_running", len(runningChildren),
-			"timeout", timeout)
-	case <-ctx.Done():
-		return nil, ChildrenTasksWaitOutput{
-			Success: false,
-			Error:   "context cancelled while waiting for children to report",
-		}, nil
+	// childIdlePollInterval is how often we check if pending children are still responsive.
+	const childIdlePollInterval = 5 * time.Second
+	// childIdleGracePeriod is how long a child must be idle (not prompting) before
+	// we consider it done without response. This accounts for:
+	// - Time for the child to pick up a queued message
+	// - Time for the agent to process and call the report tool
+	const childIdleGracePeriod = 15 * time.Second
+
+	if s.sessionManager != nil {
+		// Polling loop: check child agent status periodically
+		pollTicker := time.NewTicker(childIdlePollInterval)
+		defer pollTicker.Stop()
+
+		timeoutTimer := time.NewTimer(timeout)
+		defer timeoutTimer.Stop()
+
+		// Track when each child was first seen idle (not prompting)
+		childIdleSince := make(map[string]time.Time)
+
+	waitLoop:
+		for {
+			select {
+			case <-waitCh:
+				// All children reported or auto-completed
+				break waitLoop
+			case <-timeoutTimer.C:
+				timedOut = true
+				pendingChildren, reportedChildren := collector.getPendingAndReported()
+				s.logger.Warn("Timeout waiting for children to report",
+					"parent_session", realSessionID,
+					"pending_children", pendingChildren,
+					"reported_children", reportedChildren,
+					"total_running", len(runningChildren),
+					"timeout", timeout)
+				break waitLoop
+			case <-ctx.Done():
+				return nil, ChildrenTasksWaitOutput{
+					Success: false,
+					Error:   "context cancelled while waiting for children to report",
+				}, nil
+			case <-pollTicker.C:
+				// Check status of pending children
+				pending, _ := collector.getPendingAndReported()
+				for _, childID := range pending {
+					bs := s.sessionManager.GetSession(childID)
+					if bs == nil {
+						// Session is no longer running — auto-complete
+						s.logger.Info("Child session stopped while waiting — auto-completing",
+							"parent_session", realSessionID,
+							"child_session", childID)
+						collector.markChildAutoCompleted(childID, "session_stopped")
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					if bs.IsPrompting() {
+						// Child is actively processing — reset idle timer
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					// Child is running but idle (not prompting)
+					if idleSince, exists := childIdleSince[childID]; exists {
+						if time.Since(idleSince) > childIdleGracePeriod {
+							// Been idle too long without reporting — auto-complete
+							s.logger.Info("Child agent idle without reporting — auto-completing",
+								"parent_session", realSessionID,
+								"child_session", childID,
+								"idle_duration", time.Since(idleSince).Round(time.Second))
+							collector.markChildAutoCompleted(childID, "agent_idle")
+							delete(childIdleSince, childID)
+						}
+					} else {
+						// First time seeing this child idle — start tracking
+						childIdleSince[childID] = time.Now()
+					}
+				}
+			}
+		}
+	} else {
+		// No session manager available — fall back to simple wait (original behavior)
+		select {
+		case <-waitCh:
+			// All running children reported
+		case <-time.After(timeout):
+			timedOut = true
+			pendingChildren, reportedChildren := collector.getPendingAndReported()
+			s.logger.Warn("Timeout waiting for children to report",
+				"parent_session", realSessionID,
+				"pending_children", pendingChildren,
+				"reported_children", reportedChildren,
+				"total_running", len(runningChildren),
+				"timeout", timeout)
+		case <-ctx.Done():
+			return nil, ChildrenTasksWaitOutput{
+				Success: false,
+				Error:   "context cancelled while waiting for children to report",
+			}, nil
+		}
 	}
 
 	// Build the output with whatever reports we have
@@ -2732,21 +3060,31 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		report := collector.reports[childID]
 		info := ChildReportInfo{Completed: false, Status: "pending"}
 		if report != nil && report.Completed {
-			info.Completed = true
-			info.Status = "completed"
-			// Unmarshal the raw JSON report into the typed struct for proper schema validation
-			if len(report.Report) > 0 {
-				var reportData ChildReportData
-				if err := json.Unmarshal(report.Report, &reportData); err != nil {
-					s.logger.Warn("Failed to unmarshal child report data",
-						"child_session", childID,
-						"error", err)
-				} else {
-					info.Report = &reportData
+			if report.AutoCompleted {
+				// Auto-completed: agent went idle without reporting
+				info.Completed = false
+				info.Status = "agent_not_responding"
+				info.Reason = report.AutoReason
+				if !report.Timestamp.IsZero() {
+					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
 				}
-			}
-			if !report.Timestamp.IsZero() {
-				info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
+			} else {
+				info.Completed = true
+				info.Status = "completed"
+				// Unmarshal the raw JSON report into the typed struct for proper schema validation
+				if len(report.Report) > 0 {
+					var reportData ChildReportData
+					if err := json.Unmarshal(report.Report, &reportData); err != nil {
+						s.logger.Warn("Failed to unmarshal child report data",
+							"child_session", childID,
+							"error", err)
+					} else {
+						info.Report = &reportData
+					}
+				}
+				if !report.Timestamp.IsZero() {
+					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
+				}
 			}
 		} else if timedOut {
 			// Add diagnostic reason for timed-out children

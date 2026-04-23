@@ -1,0 +1,10 @@
+# Codex agent configuration
+name: "Codex CLI"
+displayName: "Codex CLI"
+acpId: "codex"
+description: "ACP adapter for OpenAI's coding assistant"
+repository: "https://github.com/zed-industries/codex-acp"
+license: "Apache-2.0"
+install:
+  method: "npx"
+  package: "@zed-industries/codex-acp"

@@ -9,13 +9,15 @@ enabledWhenMCP: mitto_conversation_*
 
 Continue working on this by sending instructions to an existing child conversation.
 
-## Phase 1: Get Context
+## Phase 1: Context
 
-Your session ID is `@mitto:session_id`.
-Existing children: `@mitto:children`
+Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
 
-List child conversations:
-`mitto_conversation_list(self_id: "@mitto:session_id", working_dir: "@mitto:working_dir", archived: false)`
+Available ACP servers:
+@mitto:available_acp_servers
+
+Existing children:
+@mitto:children
 
 Filter results to only show conversations where the parent is this session.
 
@@ -25,7 +27,8 @@ If no children found: inform user "No child conversations found. Use 'Create min
 
 Present children with their status:
 
-Ask via `mitto_ui_options_combo` (timeout: 60s):
+Ask via `mitto_ui_options(self_id: "@mitto:session_id", ...)` (timeout: 60s):
+
 ```
 question: "Which child conversation should continue working?"
 options: <children formatted as "Title - ACP Server (running/idle)">

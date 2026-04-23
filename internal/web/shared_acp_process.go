@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -96,11 +97,9 @@ type SharedACPProcess struct {
 	ctxCancel context.CancelFunc
 
 	// activeRPCs tracks the number of in-flight RPCs on this process (session/prompt,
-	// session/load, and session/new). The ACP agent serializes all RPCs, so auxiliary
-	// session/new calls are queued behind any active RPC. WaitForIdle polls this counter
-	// before creating auxiliary sessions. The GC also checks this before stopping an
-	// idle process to avoid killing the pipe under an in-flight LoadSession (which can
-	// take 70+ seconds).
+	// session/load, and session/new). The GC checks this counter before stopping an
+	// idle process to avoid killing the pipe while an RPC is in-flight (LoadSession
+	// can take 70+ seconds).
 	activeRPCs atomic.Int32
 
 	// Restart tracking
@@ -215,9 +214,37 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			"acp_server", p.config.ACPServer)
 	}
 
+	// Parse command using shell-aware tokenization FIRST,
+	// then expand $MITTO_* references in each arg individually.
+	// This preserves paths with spaces as single arguments.
+	// Session ID is empty for shared processes (they serve multiple sessions).
 	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
 		return "", fmt.Errorf("parse command: %w", err)
+	}
+	mittoEnv := mittoAcp.BuildMittoEnv("", p.config.WorkingDir, p.config.ACPServer, "")
+	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
+	if p.logger != nil {
+		changedIndices := make([]int, 0)
+		for i, orig := range args {
+			if orig != expandedArgs[i] {
+				changedIndices = append(changedIndices, i)
+			}
+		}
+		if len(changedIndices) > 0 {
+			p.logger.Debug("expanded MITTO_* vars in shared ACP command args",
+				"changed_indices", changedIndices,
+				"changed_count", len(changedIndices),
+				"acp_server", p.config.ACPServer)
+		}
+	}
+	args = expandedArgs
+	// Expand cwd (single string, not shlex-parsed)
+	originalCwd := acpCwd
+	acpCwd = mittoAcp.ExpandCommand(acpCwd, mittoEnv)
+	if acpCwd != originalCwd && p.logger != nil {
+		p.logger.Debug("expanded MITTO_* vars in shared ACP cwd",
+			"acp_server", p.config.ACPServer)
 	}
 
 	var stdin runner.WriteCloser
@@ -292,6 +319,13 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("stderr pipe: %w", err)
 		}
+
+		// Set MITTO_* environment variables for the ACP subprocess
+		processEnv := os.Environ()
+		for k, v := range mittoEnv {
+			processEnv = append(processEnv, k+"="+v)
+		}
+		cmd.Env = processEnv
 
 		if err := cmd.Start(); err != nil {
 			return "", fmt.Errorf("failed to start ACP server: %w", err)
@@ -564,7 +598,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 
 	if err != nil {
 		if p.logger != nil {
-			p.logger.Warn("SharedACPProcess.LoadSession failed",
+			p.logger.Info("SharedACPProcess.LoadSession failed",
 				"acp_session_id", acpSessionID,
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"error", err)
@@ -625,28 +659,6 @@ func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, 
 		SessionId: sessionID,
 		Prompt:    content,
 	})
-}
-
-// WaitForIdle blocks until no RPCs are active on this process, or ctx is cancelled.
-// The ACP agent serializes all RPCs, so callers should wait for idle before issuing
-// session/new requests to avoid long queuing delays behind an active session/prompt,
-// session/load, or another session/new.
-func (p *SharedACPProcess) WaitForIdle(ctx context.Context) error {
-	if p.activeRPCs.Load() == 0 {
-		return nil
-	}
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if p.activeRPCs.Load() == 0 {
-				return nil
-			}
-		}
-	}
 }
 
 // ActiveRPCs returns the number of in-flight RPCs on this process (session/prompt,

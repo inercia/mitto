@@ -2,6 +2,7 @@ package processors
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -19,9 +20,16 @@ import (
 //   - @mitto:available_acp_servers  — ACP servers with workspaces for this folder,
 //     comma-separated with tags and current marker
 //   - @mitto:children               — Child sessions, comma-separated with names and ACP servers
+//   - @mitto:mcp_children_count     — Number of MCP-created child sessions (integer as string)
+//   - @mitto:mcp_children           — MCP-created child sessions only, comma-separated
+//   - @mitto:periodic               — "true" if this prompt is from the periodic runner, "false" otherwise
 //
 // Unknown @mitto: variables are left as-is.
 // Empty values substitute to empty string.
+//
+// To include a literal @mitto:variable without substitution, escape it with a
+// backslash: \@mitto:variable. The backslash is stripped and the variable name is
+// passed through as-is (e.g. \@mitto:session_id → @mitto:session_id).
 //
 // The @mitto: prefix is consistent with the existing @namespace:value convention
 // used by processor triggers (e.g., @git:status, @file:path).
@@ -29,6 +37,30 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 	if !strings.Contains(message, "@mitto:") {
 		return message // Fast path: no variables to substitute
 	}
+
+	// Handle escape sequences before running substitutions.
+	//
+	// Two sentinels are used (both contain NUL bytes, which cannot appear in
+	// any substitution value):
+	//
+	//   sentinelBackslash — marks a literal '\' that preceded \\ before @mitto:.
+	//     \\@mitto:foo  →  sentinelBackslash + @mitto:foo
+	//     After substitution sentinelBackslash is restored to '\', so the
+	//     variable IS substituted and the literal backslash is preserved.
+	//
+	//   sentinelEscaped — marks a \@mitto: that should NOT be substituted.
+	//     \@mitto:foo  →  sentinelEscapedfoo
+	//     After substitution sentinelEscaped is restored to @mitto:, stripping
+	//     the leading backslash.
+	//
+	// Double-backslash must be handled first to avoid the inner \@mitto: being
+	// caught by the single-backslash rule.
+	const (
+		sentinelBackslash = "\x00MITTO_BACKSLASH\x00"
+		sentinelEscaped   = "\x00MITTO_ESCAPED\x00"
+	)
+	message = strings.ReplaceAll(message, `\\@mitto:`, sentinelBackslash+"@mitto:")
+	message = strings.ReplaceAll(message, `\@mitto:`, sentinelEscaped)
 
 	replacements := map[string]string{
 		"@mitto:session_id":            input.SessionID,
@@ -39,7 +71,10 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 		"@mitto:acp_server":            input.ACPServer,
 		"@mitto:workspace_uuid":        input.WorkspaceUUID,
 		"@mitto:available_acp_servers": formatAvailableACPServers(input.AvailableACPServers),
+		"@mitto:mcp_children_count":    formatMCPChildrenCount(input.ChildSessions),
+		"@mitto:mcp_children":          formatMCPChildren(input.ChildSessions),
 		"@mitto:children":              formatChildSessions(input.ChildSessions),
+		"@mitto:periodic":              strconv.FormatBool(input.IsPeriodic),
 	}
 
 	// Sort placeholders by length descending to prevent prefix collisions.
@@ -58,6 +93,11 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 			result = strings.ReplaceAll(result, placeholder, replacements[placeholder])
 		}
 	}
+
+	// Restore sentinels: escaped variables become literal @mitto: (backslash
+	// stripped); double-backslash prefix becomes a single literal backslash.
+	result = strings.ReplaceAll(result, sentinelEscaped, "@mitto:")
+	result = strings.ReplaceAll(result, sentinelBackslash, `\`)
 	return result
 }
 
@@ -86,6 +126,40 @@ func formatChildSessions(children []ChildSession) string {
 	}
 	parts := make([]string, 0, len(children))
 	for _, child := range children {
+		s := child.ID
+		if child.Name != "" {
+			s += " (" + child.Name + ")"
+		}
+		if child.ACPServer != "" {
+			s += " [" + child.ACPServer + "]"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatMCPChildrenCount returns the count of MCP-origin children as a string.
+func formatMCPChildrenCount(children []ChildSession) string {
+	count := 0
+	for _, child := range children {
+		if child.ChildOrigin == "mcp" {
+			count++
+		}
+	}
+	return strconv.Itoa(count)
+}
+
+// formatMCPChildren renders only MCP-origin children as a human-readable string.
+//
+// Format: "id (name) [acp-server], id2 (name2) [acp-server2]"
+// If a child has no name, the parenthetical group is omitted.
+// If a child has no ACP server, the bracket group is omitted.
+func formatMCPChildren(children []ChildSession) string {
+	var parts []string
+	for _, child := range children {
+		if child.ChildOrigin != "mcp" {
+			continue
+		}
 		s := child.ID
 		if child.Name != "" {
 			s += " (" + child.Name + ")"

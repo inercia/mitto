@@ -188,9 +188,12 @@ func TestParse_EmptyACPServers(t *testing.T) {
 	yaml := `
 acp: []
 `
-	_, err := Parse([]byte(yaml))
-	if err == nil {
-		t.Error("expected error for empty ACP servers, got nil")
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error for empty ACP servers: %v", err)
+	}
+	if len(cfg.ACPServers) != 0 {
+		t.Errorf("expected 0 ACP servers, got %d", len(cfg.ACPServers))
 	}
 }
 
@@ -633,9 +636,12 @@ acp:
 
 func TestParseJSON_EmptyACPServers(t *testing.T) {
 	jsonConfig := `{"acp_servers": []}`
-	_, err := ParseJSON([]byte(jsonConfig))
-	if err == nil {
-		t.Error("expected error for empty ACP servers, got nil")
+	cfg, err := ParseJSON([]byte(jsonConfig))
+	if err != nil {
+		t.Fatalf("unexpected error for empty ACP servers: %v", err)
+	}
+	if len(cfg.ACPServers) != 0 {
+		t.Errorf("expected 0 ACP servers, got %d", len(cfg.ACPServers))
 	}
 }
 

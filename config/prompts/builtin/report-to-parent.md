@@ -17,12 +17,15 @@ Your parent conversation ID is `@mitto:parent_session_id` — use this as `conve
 ## Phase 2: Analyze Current Work
 
 Review everything accomplished in this conversation:
+
 - What was the original task/assignment?
 - What has been completed?
 - What is still in progress?
 - What issues or blockers were encountered?
 - What decisions were made?
 - What files were modified?
+
+Think about what the parent conversation could be interested in knowing.
 
 ## Phase 3: Prepare Report
 
@@ -64,8 +67,6 @@ self_id: "@mitto:session_id"
 conversation_id: "@mitto:parent_session_id"
 prompt: <the full structured report from Phase 3>
 ```
-
-This works whether the parent is a human conversation or an AI orchestrator. If you know the parent is an AI orchestrator that called `mitto_children_tasks_wait`, you may also call `mitto_children_tasks_report` to unblock it — but `mitto_conversation_send_prompt` is always required for visibility.
 
 ## Phase 5: Confirm
 

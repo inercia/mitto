@@ -31,12 +31,19 @@ func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request, s
 	}
 
 	// Verify session exists
-	if _, err := store.GetMetadata(sessionID); err != nil {
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
 		if err == session.ErrSessionNotFound {
 			http.Error(w, "Session not found", http.StatusNotFound)
 			return
 		}
 		http.Error(w, "Failed to get session", http.StatusInternalServerError)
+		return
+	}
+
+	// Prevent setting periodic on child sessions - only parents/top-level sessions can be periodic
+	if r.Method != http.MethodGet && meta.ParentSessionID != "" {
+		http.Error(w, "Cannot set periodic on a child conversation. Only parent or top-level conversations can be periodic.", http.StatusBadRequest)
 		return
 	}
 

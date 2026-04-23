@@ -56,6 +56,10 @@ type SessionStore interface {
 	// CountChildSessions returns the count of direct child sessions.
 	CountChildSessions(parentID string) (int, error)
 
+	// CountMCPChildSessions returns the count of direct child sessions
+	// excluding auto-children (only MCP and human-created children).
+	CountMCPChildSessions(parentID string) (int, error)
+
 	// HasChildSessions returns true if the session has at least one child.
 	HasChildSessions(parentID string) (bool, error)
 
@@ -227,7 +231,41 @@ type Metadata struct {
 	// (via auto_children workspace config). Auto-children are cascade-deleted
 	// when their parent is deleted. MCP-created children (this field is false)
 	// are orphaned instead (ParentSessionID cleared).
+	// Deprecated: Use ChildOrigin instead. Kept for backward compatibility with existing metadata files.
 	IsAutoChild bool `json:"is_auto_child,omitempty"`
+	// ChildOrigin indicates how a child conversation was created.
+	// Empty string means this is a top-level session (not a child).
+	// Possible values: ChildOriginAuto, ChildOriginMCP, ChildOriginHuman.
+	ChildOrigin ChildOrigin `json:"child_origin,omitempty"`
+}
+
+// ChildOrigin represents how a child conversation was created.
+type ChildOrigin string
+
+const (
+	// ChildOriginAuto means the child was auto-created via workspace config (auto_children).
+	// These are cascade-deleted when the parent is deleted.
+	ChildOriginAuto ChildOrigin = "auto"
+	// ChildOriginMCP means the child was created via the mitto_conversation_new MCP tool.
+	// These are orphaned (parent link cleared) when the parent is deleted.
+	ChildOriginMCP ChildOrigin = "mcp"
+	// ChildOriginHuman means the child was manually created by the user.
+	// These are orphaned when the parent is deleted.
+	ChildOriginHuman ChildOrigin = "human"
+)
+
+// MigrateChildOrigin ensures ChildOrigin is populated for backward compatibility.
+// If ChildOrigin is empty but IsAutoChild is true, sets ChildOrigin to ChildOriginAuto.
+// If ChildOrigin is empty but ParentSessionID is set, defaults to ChildOriginMCP.
+func (m *Metadata) MigrateChildOrigin() {
+	if m.ChildOrigin != "" {
+		return // Already set
+	}
+	if m.IsAutoChild {
+		m.ChildOrigin = ChildOriginAuto
+	} else if m.ParentSessionID != "" {
+		m.ChildOrigin = ChildOriginMCP
+	}
 }
 
 // LockStatus represents the current activity status of a locked session.

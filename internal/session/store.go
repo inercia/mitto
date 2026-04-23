@@ -102,6 +102,12 @@ func (s *Store) Periodic(sessionID string) *PeriodicStore {
 	return NewPeriodicStore(s.sessionDir(sessionID))
 }
 
+// Callback returns a CallbackStore instance for managing the callback token of a session.
+// The returned CallbackStore is safe for concurrent use.
+func (s *Store) Callback(sessionID string) *CallbackStore {
+	return NewCallbackStore(s.sessionDir(sessionID))
+}
+
 // Create creates a new session with the given metadata.
 func (s *Store) Create(meta Metadata) error {
 	log := logging.Session()
@@ -297,6 +303,7 @@ func (s *Store) GetMetadata(sessionID string) (Metadata, error) {
 }
 
 // readMetadata reads metadata from disk (must be called with lock held).
+// Automatically migrates ChildOrigin for backward compatibility with old metadata files.
 func (s *Store) readMetadata(sessionID string) (Metadata, error) {
 	var meta Metadata
 	if err := fileutil.ReadJSON(s.metadataPath(sessionID), &meta); err != nil {
@@ -305,6 +312,8 @@ func (s *Store) readMetadata(sessionID string) (Metadata, error) {
 		}
 		return Metadata{}, fmt.Errorf("failed to read metadata: %w", err)
 	}
+	// Migrate old metadata that has IsAutoChild/ParentSessionID but no ChildOrigin
+	meta.MigrateChildOrigin()
 	return meta, nil
 }
 
@@ -487,7 +496,7 @@ func (s *Store) List() ([]Metadata, error) {
 }
 
 // FindAutoChildrenRecursive returns all auto-child session IDs recursively.
-// Used by the web layer to close ACP processes before deletion.
+// Deprecated: Use FindAllChildrenRecursive instead, which finds children of all origins.
 func (s *Store) FindAutoChildrenRecursive(sessionID string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -524,6 +533,51 @@ func (s *Store) findAutoChildrenRecursive(sessionID string, visited map[string]b
 			result = append(result, childID)
 			// Recurse to find grandchildren
 			grandchildren, _ := s.findAutoChildrenRecursive(childID, visited)
+			result = append(result, grandchildren...)
+		}
+	}
+	return result, nil
+}
+
+// FindAllChildrenRecursive returns all child session IDs recursively, regardless of origin.
+// This includes auto-children, MCP-children, and human-created children.
+// Used by the web layer to close ACP processes before cascade deletion.
+func (s *Store) FindAllChildrenRecursive(sessionID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	return s.findAllChildrenRecursive(sessionID, make(map[string]bool))
+}
+
+func (s *Store) findAllChildrenRecursive(sessionID string, visited map[string]bool) ([]string, error) {
+	if visited[sessionID] {
+		return nil, nil // Prevent cycles
+	}
+	visited[sessionID] = true
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		childID := entry.Name()
+		meta, err := s.readMetadata(childID)
+		if err != nil {
+			continue
+		}
+		if meta.ParentSessionID == sessionID {
+			result = append(result, childID)
+			// Recurse to find grandchildren
+			grandchildren, _ := s.findAllChildrenRecursive(childID, visited)
 			result = append(result, grandchildren...)
 		}
 	}
@@ -590,6 +644,44 @@ func (s *Store) CountChildSessions(parentID string) (int, error) {
 		}
 		if meta.ParentSessionID == parentID {
 			count++
+		}
+	}
+	return count, nil
+}
+
+// CountMCPChildSessions returns the count of direct non-archived child sessions that were
+// created via MCP (ChildOriginMCP) or by a human (ChildOriginHuman).
+// Auto-children (ChildOriginAuto) and archived children are excluded from the count.
+// This is used for enforcing the max_child_conversations limit.
+func (s *Store) CountMCPChildSessions(parentID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return 0, ErrStoreClosed
+	}
+
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		sessionID := entry.Name()
+		meta, err := s.readMetadata(sessionID)
+		if err != nil {
+			continue
+		}
+		if meta.ParentSessionID == parentID {
+			meta.MigrateChildOrigin()
+			// Exclude auto-children and archived children from the count
+			if meta.ChildOrigin != ChildOriginAuto && !meta.Archived {
+				count++
+			}
 		}
 	}
 	return count, nil
@@ -680,10 +772,9 @@ func (s *Store) Exists(sessionID string) bool {
 	return err == nil
 }
 
-// handleChildSessionsOnParentDelete processes child sessions when parent is deleted.
-// - Auto-children (IsAutoChild=true) are CASCADE DELETED (recursively)
-// - MCP-children (IsAutoChild=false) are ORPHANED (ParentSessionID cleared)
-// Returns the list of auto-child IDs that were deleted.
+// handleChildSessionsOnParentDelete cascade-deletes ALL child sessions when parent is deleted.
+// All children (auto, MCP, and human-created) are recursively deleted along with their parent.
+// Returns the list of child IDs that were deleted.
 // Note: This method assumes the caller holds s.mu.Lock().
 func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visited map[string]bool) ([]string, error) {
 	log := logging.Session()
@@ -704,8 +795,7 @@ func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visite
 	}
 
 	var deletedIDs []string
-	var updateErrors []error
-	var orphanedCount int
+	var deleteErrors []error
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -724,50 +814,39 @@ func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visite
 
 		// Check if this session has the parent we're deleting
 		if meta.ParentSessionID == parentSessionID {
-			if meta.IsAutoChild {
-				// CASCADE DELETE: Recursively delete auto-children
-				// First, handle this child's children
-				grandchildDeleted, _ := s.handleChildSessionsOnParentDelete(sessionID, visited)
-				deletedIDs = append(deletedIDs, grandchildDeleted...)
+			// CASCADE DELETE: Recursively delete this child and all its descendants
+			// First, handle this child's own children
+			grandchildDeleted, _ := s.handleChildSessionsOnParentDelete(sessionID, visited)
+			deletedIDs = append(deletedIDs, grandchildDeleted...)
 
-				// Now delete this auto-child
-				sessionDir := s.sessionDir(sessionID)
-				if err := os.RemoveAll(sessionDir); err != nil {
-					updateErrors = append(updateErrors, fmt.Errorf("failed to delete auto-child %s: %w", sessionID, err))
-					continue
-				}
-				deletedIDs = append(deletedIDs, sessionID)
-				log.Info("Cascade deleted auto-child session",
-					"parent_session_id", parentSessionID,
-					"deleted_session_id", sessionID,
-					"session_name", meta.Name)
-			} else {
-				// ORPHAN: Clear parent reference for MCP-created children
-				meta.ParentSessionID = ""
-				meta.UpdatedAt = time.Now()
-				if err := s.writeMetadata(meta); err != nil {
-					updateErrors = append(updateErrors, fmt.Errorf("failed to orphan session %s: %w", sessionID, err))
-					continue
-				}
-				orphanedCount++
-				log.Info("Orphaned MCP-child session",
-					"parent_session_id", parentSessionID,
-					"orphaned_session_id", sessionID)
+			// Now delete this child
+			sessionDir := s.sessionDir(sessionID)
+			if err := os.RemoveAll(sessionDir); err != nil {
+				deleteErrors = append(deleteErrors, fmt.Errorf("failed to delete child %s: %w", sessionID, err))
+				continue
 			}
+			deletedIDs = append(deletedIDs, sessionID)
+
+			// Migrate for logging purposes
+			meta.MigrateChildOrigin()
+			log.Info("Cascade deleted child session",
+				"parent_session_id", parentSessionID,
+				"deleted_session_id", sessionID,
+				"session_name", meta.Name,
+				"child_origin", string(meta.ChildOrigin))
 		}
 	}
 
-	if len(updateErrors) > 0 {
-		log.Error("Errors during child session cleanup",
+	if len(deleteErrors) > 0 {
+		log.Error("Errors during child session cascade deletion",
 			"parent_session_id", parentSessionID,
-			"error_count", len(updateErrors),
-			"errors", updateErrors)
+			"error_count", len(deleteErrors),
+			"errors", deleteErrors)
 	}
 
-	log.Debug("Processed child sessions on parent delete",
+	log.Debug("Cascade deleted child sessions on parent delete",
 		"parent_session_id", parentSessionID,
-		"auto_children_deleted", len(deletedIDs),
-		"mcp_children_orphaned", orphanedCount)
+		"children_deleted", len(deletedIDs))
 
 	return deletedIDs, nil
 }

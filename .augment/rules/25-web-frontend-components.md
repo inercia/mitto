@@ -4,10 +4,17 @@ globs:
   - "web/static/components/*.js"
   - "web/static/components/**/*"
   - "web/static/hooks/*.js"
+  - "web/static/app.js"
 keywords:
   - ChatInput
   - QueueDropdown
   - Icons
+  - SessionList
+  - SessionItem
+  - accordion
+  - children
+  - expand
+  - collapse
   - ContextMenu
   - SessionItem
   - useResizeHandle
@@ -104,3 +111,31 @@ useSwipeNavigation(containerRef, onSwipeLeft, onSwipeRight, {
 3. Use `window.preact` globals
 4. Always return cleanup from useEffect
 5. Include touch events for mobile
+
+
+## Session List: Parent-Child UI Rules
+
+### Accordion Mode for Children (Always On)
+
+Children groups **always** use accordion mode — only one parent's children can be expanded at a time. This is enforced in two ways, regardless of the global `single_expanded_group` config setting:
+
+**1. Expand toggle:** When expanding children of a conversation, children in all other conversations are automatically collapsed. Implemented in `handleToggleGroup`:
+```javascript
+const isParentGroup = groupKey.startsWith("parent:");
+if (willExpand && (getSingleExpandedGroupMode() || isParentGroup)) {
+  // Collapse all other groups in the same category
+}
+```
+
+**2. Session selection:** When clicking on any session that doesn't belong to the currently expanded "family" (parent + its children), all expanded parent-child groups are collapsed. Implemented via `handleSelectWithCollapse` which wraps `onSelect`:
+- `sessionFamilyMap` (useMemo) maps every session ID to its family's `parent:${id}` key
+- On select, finds expanded `parent:*` groups and collapses those that don't match the selected session's family
+
+Parent-child group keys use the format `parent:${session.session_id}`. These are kept separate from folder-level group keys so that toggling a session's children doesn't collapse the workspace folder.
+
+### Child Session Restrictions in UI
+
+These backend rules should be reflected in UI behavior:
+- **Children cannot be archived** — only deleted when parent is archived (cascade delete)
+- **Children cannot be made periodic** — only top-level sessions can have periodic config
+- **Children cannot be directly archived** — the archive action should be hidden or disabled for child sessions

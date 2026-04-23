@@ -135,6 +135,11 @@ const (
 	// Data: { "session_id": string, "is_streaming": bool }
 	WSMsgTypeSessionStreaming = "session_streaming"
 
+	// WSMsgTypeSessionWaiting notifies that a session's waiting-for-children state changed.
+	// This is broadcast when a parent session starts or stops blocking on mitto_children_tasks_wait.
+	// Data: { "session_id": string, "is_waiting": bool }
+	WSMsgTypeSessionWaiting = "session_waiting"
+
 	// WSMsgTypeSessionSettingsUpdated notifies that a session's advanced settings changed.
 	// Sent on /api/events to all connected clients.
 	// Data: { "session_id": string, "settings": { "flag_name": bool, ... } }

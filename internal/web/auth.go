@@ -734,6 +734,13 @@ func (a *AuthManager) isPublicPath(path string) bool {
 		}
 	}
 
+	// Check API path prefixes for dynamic paths (callback tokens)
+	callbackPrefix := a.apiPrefix + "/api/callback/"
+	if strings.HasPrefix(path, callbackPrefix) {
+		logger.Debug("AUTH: isPublicPath: MATCHED callback prefix", "path", path)
+		return true
+	}
+
 	// Log all known public paths for debugging
 	staticPathsList := make([]string, 0, len(publicStaticPaths))
 	for p := range publicStaticPaths {
@@ -892,7 +899,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			for i, c := range cookies {
 				cookieNames[i] = c.Name
 			}
-			logger.Info("AUTH: No valid session",
+			logger.Debug("AUTH: No valid session",
 				"path", r.URL.Path,
 				"client_ip", clientIP,
 				"cookies_present", cookieNames,
@@ -915,7 +922,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			// For page requests, redirect to login
-			logger.Info("AUTH: Redirecting to auth.html", "path", r.URL.Path, "raw_uri", r.RequestURI)
+			logger.Debug("AUTH: Redirecting to auth.html", "path", r.URL.Path, "raw_uri", r.RequestURI)
 			http.Redirect(w, r, "/auth.html", http.StatusFound)
 			return
 		}

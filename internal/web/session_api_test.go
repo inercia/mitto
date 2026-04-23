@@ -825,21 +825,12 @@ func TestHandleDeleteSession_ClearsParentReferences(t *testing.T) {
 		t.Error("Parent session still exists after deletion")
 	}
 
-	// Verify child sessions have their parent references cleared
-	child1After, err := store.GetMetadata("child-api-1")
-	if err != nil {
-		t.Fatalf("GetMetadata child1 failed: %v", err)
+	// Verify child sessions are cascade-deleted along with the parent
+	if store.Exists("child-api-1") {
+		t.Error("Child 1 still exists after parent deletion — expected cascade delete")
 	}
-	if child1After.ParentSessionID != "" {
-		t.Errorf("child1.ParentSessionID = %q, want empty string", child1After.ParentSessionID)
-	}
-
-	child2After, err := store.GetMetadata("child-api-2")
-	if err != nil {
-		t.Fatalf("GetMetadata child2 failed: %v", err)
-	}
-	if child2After.ParentSessionID != "" {
-		t.Errorf("child2.ParentSessionID = %q, want empty string", child2After.ParentSessionID)
+	if store.Exists("child-api-2") {
+		t.Error("Child 2 still exists after parent deletion — expected cascade delete")
 	}
 }
 
@@ -1794,4 +1785,205 @@ func TestHandleUpdateSession_UnarchiveDoesNotStartACP(t *testing.T) {
 
 	// Note: We don't check if ACP was started because ResumeSession will fail
 	// without a valid ACP command. The important thing is that the request succeeds.
+}
+
+// =============================================================================
+// Child Session Guard Tests
+// =============================================================================
+
+// TestHandleUpdateSession_ArchiveChildDeletesInstead tests that archiving a child session
+// deletes it instead of archiving — children should never end up in the archived list.
+func TestHandleUpdateSession_ArchiveChildDeletesInstead(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a parent session
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-parent-session",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Parent Session",
+	}); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	// Create a child session
+	if err := store.Create(session.Metadata{
+		SessionID:       "test-child-session",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Child Session",
+		ParentSessionID: "test-parent-session",
+	}); err != nil {
+		t.Fatalf("Create child failed: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	// Try to archive the child — should be converted to delete (HTTP 204)
+	archived := true
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/test-child-session", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleUpdateSession(w, req, "test-child-session")
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("Status = %d, want %d (child archive should be converted to delete)", w.Code, http.StatusNoContent)
+	}
+
+	// Verify child is deleted (not just archived)
+	_, err = store.GetMetadata("test-child-session")
+	if err != session.ErrSessionNotFound {
+		t.Errorf("Expected ErrSessionNotFound after child archive-to-delete, got: %v", err)
+	}
+}
+
+// TestHandleUpdateSession_ArchiveTopLevelAllowed tests that a top-level session
+// CAN be archived normally.
+func TestHandleUpdateSession_ArchiveTopLevelAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-toplevel-archive",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Top-Level Session",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	archived := true
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/test-toplevel-archive", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleUpdateSession(w, req, "test-toplevel-archive")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d (top-level archive should succeed)", w.Code, http.StatusOK)
+	}
+
+	updatedMeta, _ := store.GetMetadata("test-toplevel-archive")
+	if !updatedMeta.Archived {
+		t.Error("Top-level session should be archived")
+	}
+}
+
+// =============================================================================
+// Periodic Guard Tests
+// =============================================================================
+
+// TestHandleSessionPeriodic_ChildRejected tests that setting periodic on a child session is rejected.
+func TestHandleSessionPeriodic_ChildRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-parent-periodic",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	if err := store.Create(session.Metadata{
+		SessionID:       "test-child-periodic",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		ParentSessionID: "test-parent-periodic",
+	}); err != nil {
+		t.Fatalf("Create child failed: %v", err)
+	}
+
+	server := &Server{store: store}
+
+	// PUT periodic on child — should be rejected
+	body, _ := json.Marshal(PeriodicPromptRequest{
+		Prompt:    "check updates",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-child-periodic/periodic", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSessionPeriodic(w, req, "test-child-periodic", "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("PUT periodic on child: Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	// GET should still work (not rejected as 400)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/sessions/test-child-periodic/periodic", nil)
+	w2 := httptest.NewRecorder()
+
+	server.handleSessionPeriodic(w2, req2, "test-child-periodic", "")
+
+	if w2.Code == http.StatusBadRequest {
+		t.Error("GET periodic on child should NOT be rejected with 400")
+	}
+}
+
+// TestHandleSessionPeriodic_TopLevelAllowed tests that setting periodic on a top-level session works.
+func TestHandleSessionPeriodic_TopLevelAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-toplevel-periodic",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		store:         store,
+		eventsManager: NewGlobalEventsManager(),
+	}
+
+	body, _ := json.Marshal(PeriodicPromptRequest{
+		Prompt:    "check updates",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-toplevel-periodic/periodic", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSessionPeriodic(w, req, "test-toplevel-periodic", "")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("PUT periodic on top-level: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
 }

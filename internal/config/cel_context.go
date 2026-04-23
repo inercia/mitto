@@ -72,6 +72,8 @@ type ChildrenContext struct {
 	Count int
 	// Exists indicates whether there are any child sessions (Count > 0)
 	Exists bool
+	// MCPCount is the number of child sessions created via the MCP tool
+	MCPCount int
 	// Names contains the display names of child sessions
 	Names []string
 	// ACPServers contains the ACP server names of child sessions

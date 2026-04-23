@@ -4,6 +4,8 @@ Prompts (also called Quick Actions) are predefined text snippets that appear as 
 in the chat interface. Clicking a prompt button sends its content to the AI agent,
 saving you from typing common requests.
 
+![](prompts-1.png)
+
 ## Overview
 
 Prompts appear in a dropdown menu above the chat input. They are organized into two
@@ -308,6 +310,80 @@ Please analyze the code with the following criteria:
 - Assess code clarity
 - Suggest refactoring opportunities
 ```
+
+## Variable Substitution in Prompts
+
+Prompt text supports `@mitto:variable` placeholders that are automatically replaced with
+live session values before the prompt is sent to the AI agent. This is the same variable
+substitution system used by [message processors](processors.md#variable-substitution).
+
+### Available Variables
+
+| Variable                       | Description                                                                  |
+| ------------------------------ | ---------------------------------------------------------------------------- |
+| `@mitto:session_id`            | Current session/conversation ID                                              |
+| `@mitto:parent_session_id`     | Parent conversation ID (empty if root session)                               |
+| `@mitto:parent`                | Parent session as "id (name)" or empty                                       |
+| `@mitto:session_name`          | Conversation title/name                                                      |
+| `@mitto:working_dir`           | Session working directory                                                    |
+| `@mitto:acp_server`            | ACP server name (e.g., "claude-code")                                        |
+| `@mitto:workspace_uuid`        | Workspace identifier                                                         |
+| `@mitto:available_acp_servers` | ACP servers for this workspace, comma-separated with tags and current marker |
+| `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
+| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
+
+### Behavior
+
+- **Automatic**: Substitution happens after all processors run, on the final assembled
+  message — no configuration needed.
+- **Unknown variables**: `@mitto:unknown` is left verbatim in the text.
+- **Empty values**: e.g., `@mitto:parent_session_id` when there is no parent → replaced
+  with empty string.
+- **Fast path**: If the prompt text contains no `@mitto:`, the substitution pass is
+  skipped entirely.
+
+### Why Use Variables in Prompts?
+
+Variables are especially useful for prompts that instruct the AI agent to call MCP tools.
+Many Mitto MCP tools (like `mitto_conversation_new`, `mitto_ui_options`, etc.) require
+a `self_id` parameter. By providing `@mitto:session_id` directly in the prompt text, you
+eliminate the need for the agent to first call `mitto_conversation_get_current` to discover
+its session ID — saving a tool call round-trip.
+
+Similarly, `@mitto:available_acp_servers` and `@mitto:children` provide information that
+would otherwise require additional tool calls to retrieve.
+
+### Example
+
+A prompt that helps the agent use Mitto MCP tools efficiently:
+
+```markdown
+---
+name: "Spawn Workers"
+enabledWhenMCP: mitto_conversation_*
+---
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all MCP tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
+
+## Instructions
+
+Create child conversations to work on subtasks...
+```
+
+### Important: Child Session Limitation
+
+When a prompt instructs the agent to create child conversations via
+`mitto_conversation_new`, the `initial_prompt` text passed to the child **will not**
+benefit from the parent's `@mitto:` substitution for the child's own context. The parent's
+`@mitto:session_id` resolves to the parent's ID, not the child's.
+
+Children that need their own session ID (e.g., for `mitto_children_tasks_report`) must
+call `mitto_conversation_get_current(self_id: "init")` to discover it. This is the one
+case where the tool call cannot be avoided.
 
 ### Minimal Example
 

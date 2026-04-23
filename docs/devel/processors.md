@@ -283,6 +283,7 @@ This is consistent with the existing `@namespace:value` convention used by proce
 | `@mitto:acp_server`            | ACP server name (e.g., `"claude-code"`)                          |
 | `@mitto:workspace_uuid`        | Workspace identifier                                             |
 | `@mitto:available_acp_servers` | ACP servers with workspaces for the session's folder — see below |
+| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
 
 ### `@mitto:available_acp_servers` detail
 
@@ -315,6 +316,7 @@ The full structured data (including `type` field) is also available:
 - **Empty values** substitute to an empty string (e.g., `@mitto:parent_session_id` → `""` when there is no parent).
 - **`@mitto:available_acp_servers`** substitutes to an empty string when the workspace has no servers configured.
 - **Fast path**: if the message contains no `@mitto:`, substitution is skipped entirely.
+- **Escaping**: prefix a variable with a backslash (`\@mitto:variable`) to suppress substitution. The backslash is stripped and the variable name is passed through as-is (e.g. `\@mitto:session_id` → `@mitto:session_id`).
 - Substitution runs on the **final message** after all processor text has been applied — both declarative (prepend/append) and command-processor output are included.
 
 ### Where Substitution Happens

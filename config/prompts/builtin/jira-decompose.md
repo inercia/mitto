@@ -25,8 +25,8 @@ Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_
 
 ## Step 2 — Let the user choose a ticket
 
-- If **multiple tickets** are found: use `mitto_ui_options_buttons_mitto` to present the ticket list and ask the user which one to decompose. Include the ticket key and summary in each option label.
-- If **exactly one ticket** is found: use `mitto_ui_ask_yes_no_mitto` to confirm with the user before proceeding.
+- If **multiple tickets** are found: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to present the ticket list and ask the user which one to decompose. Include the ticket key and summary in each option label.
+- If **exactly one ticket** is found: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to confirm with the user before proceeding.
 - If **no tickets** are found: inform the user and stop.
 
 ## Step 3 — Fetch full ticket details
@@ -55,7 +55,7 @@ Before proposing sub-tickets, reason carefully:
 - The ticket is large enough that a single PR would be difficult to review
 - Multiple distinct acceptance criteria map cleanly to separate deliverables
 
-If decomposition is **not** recommended: use `mitto_ui_ask_yes_no_mitto` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, stop here.
+If decomposition is **not** recommended: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, stop here.
 
 ## Step 5 — Produce a decomposition plan
 
@@ -80,7 +80,7 @@ Describe what (if anything) remains in the parent ticket after sub-tickets are c
 
 ## Step 6 — Present the plan and iterate
 
-Use `mitto_ui_ask_yes_no_mitto` to show the decomposition plan to the user and ask: "Does this breakdown look correct? Shall I create these sub-tickets in JIRA?"
+Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to show the decomposition plan to the user and ask: "Does this breakdown look correct? Shall I create these sub-tickets in JIRA?"
 
 - If the user says **No** or provides feedback: revise the breakdown and present it again. Repeat until the user explicitly approves.
 - If the user says **Yes**: proceed to Step 7.

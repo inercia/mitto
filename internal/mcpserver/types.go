@@ -45,6 +45,7 @@ type ConversationInfo struct {
 	LockStatus     string `json:"lock_status,omitempty"`
 	LockClientType string `json:"lock_client_type,omitempty"`
 	LastSeq        int64  `json:"last_seq,omitempty"`
+	IsPeriodic     bool   `json:"is_periodic"`
 }
 
 // ConversationDetails is the unified output structure for conversation-related tools.
@@ -75,6 +76,7 @@ type ConversationDetails struct {
 
 	// Parent/child relationship
 	ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
+	IsPeriodic      bool   `json:"is_periodic"`                 // Whether the conversation has an active periodic prompt
 
 	// Available ACP servers that can be used when creating new conversations from this session
 	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
@@ -315,24 +317,37 @@ type DeleteConversationOutput struct {
 	Error          string `json:"error,omitempty"`
 }
 
-// AskYesNoOutput is the output for the mitto_ui_ask_yes_no tool.
-type AskYesNoOutput struct {
-	Response string `json:"response"` // "yes" | "no" | "timeout"
-	Label    string `json:"label,omitempty"`
+// UITextboxInput is the input for the mitto_ui_textbox tool.
+type UITextboxInput struct {
+	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
+	Title          string `json:"title"`                     // Dialog title
+	Text           string `json:"text"`                      // Initial text content
+	ResultMode     string `json:"result"`                    // "text" or "diff"
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Timeout in seconds
 }
 
-// OptionsButtonsOutput is the output for the mitto_ui_options_buttons tool.
-type OptionsButtonsOutput struct {
-	Selected string `json:"selected,omitempty"`
-	Index    int    `json:"index"`
+// UITextboxOutput is the output for the mitto_ui_textbox tool.
+type UITextboxOutput struct {
+	Changed  bool   `json:"changed"`
+	Aborted  bool   `json:"aborted,omitempty"`
 	TimedOut bool   `json:"timed_out,omitempty"`
+	Result   string `json:"result,omitempty"`
 }
 
-// OptionsComboOutput is the output for the mitto_ui_options_combo tool.
-type OptionsComboOutput struct {
-	Selected string `json:"selected,omitempty"`
-	Index    int    `json:"index"`
-	TimedOut bool   `json:"timed_out,omitempty"`
+// UIFormInput is the input for the mitto_ui_form tool.
+type UIFormInput struct {
+	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
+	Title          string `json:"title"`                     // Dialog title
+	HTML           string `json:"html"`                      // HTML form content (will be sanitized)
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Timeout in seconds
+}
+
+// UIFormOutput is the output for the mitto_ui_form tool.
+type UIFormOutput struct {
+	Submitted bool              `json:"submitted"`
+	Cancelled bool              `json:"cancelled,omitempty"`
+	TimedOut  bool              `json:"timed_out,omitempty"`
+	Values    map[string]string `json:"values,omitempty"` // field name → value
 }
 
 // =============================================================================
@@ -379,6 +394,38 @@ func (c *childReportCollector) addReport(childID string, taskID string, report j
 	r.Completed = true
 	r.Timestamp = time.Now()
 	r.TaskID = taskID
+
+	c.checkAndSignalWait()
+}
+
+// markChildAutoCompleted marks a child as auto-completed when its agent
+// stops responding without sending a report. This typically happens when
+// the agent finishes processing but doesn't call mitto_children_tasks_report.
+// The reason parameter provides diagnostic info (e.g., "agent_idle", "session_stopped").
+func (c *childReportCollector) markChildAutoCompleted(childID string, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Don't overwrite a real report
+	r := c.reports[childID]
+	if r != nil && r.Completed {
+		return
+	}
+
+	reportJSON, _ := json.Marshal(map[string]string{
+		"status":  "auto_completed",
+		"summary": "Child did not report back: " + reason,
+	})
+
+	if r == nil {
+		r = &childReport{}
+		c.reports[childID] = r
+	}
+	r.Report = reportJSON
+	r.Completed = true
+	r.Timestamp = time.Now()
+	r.AutoCompleted = true
+	r.AutoReason = reason
 
 	c.checkAndSignalWait()
 }
@@ -536,10 +583,12 @@ func (c *childReportCollector) getStuckChildren() []string {
 
 // childReport stores the report from a single child conversation.
 type childReport struct {
-	Report    json.RawMessage `json:"report"`
-	Completed bool            `json:"completed"`
-	Timestamp time.Time       `json:"timestamp"`
-	TaskID    string          `json:"task_id,omitempty"`
+	Report        json.RawMessage `json:"report"`
+	Completed     bool            `json:"completed"`
+	Timestamp     time.Time       `json:"timestamp"`
+	TaskID        string          `json:"task_id,omitempty"`
+	AutoCompleted bool            `json:"auto_completed,omitempty"` // true if auto-completed (agent went idle without reporting)
+	AutoReason    string          `json:"auto_reason,omitempty"`    // reason for auto-completion
 }
 
 // ChildrenTasksWaitInput is the input for mitto_children_tasks_wait tool.

@@ -66,6 +66,7 @@ The `text` field of a declarative processor (and any text produced by [command p
 | `@mitto:acp_server`            | Active ACP server name (e.g. `claude-code`)                                     |
 | `@mitto:workspace_uuid`        | Workspace UUID                                                                  |
 | `@mitto:available_acp_servers` | Comma-separated list of ACP servers with workspaces for this folder (see below) |
+| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
 
 ### `@mitto:available_acp_servers` format
 

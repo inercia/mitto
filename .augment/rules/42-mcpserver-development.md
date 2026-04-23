@@ -37,7 +37,7 @@ All agents connect to the same MCP server at `http://127.0.0.1:5757/mcp`. Sessio
 │  Session-Scoped Tools (require session_id):                 │
 │  • mitto_conversation_get_current                           │
 │  • mitto_conversation_send_prompt                           │
-│  • mitto_ui_ask_yes_no / _options_buttons / _options_combo  │
+│  • mitto_ui_options (unified)                               │
 ├─────────────────────────────────────────────────────────────┤
 │  Session Registry: Maps session_id → UIPrompter             │
 └─────────────────────────────────────────────────────────────┘

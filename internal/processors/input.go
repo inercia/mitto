@@ -43,6 +43,9 @@ type ProcessorInput struct {
 	// Used for enabledWhenMCP pattern matching and tools.* CEL context.
 	// May be empty if tools haven't been fetched yet.
 	MCPToolNames []string `json:"-"`
+	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.
+	// Used for @mitto:periodic variable substitution.
+	IsPeriodic bool `json:"is_periodic,omitempty"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.
@@ -68,6 +71,8 @@ type ChildSession struct {
 	ACPServer string `json:"acp_server,omitempty"`
 	// IsAutoChild indicates the child was auto-created with the parent.
 	IsAutoChild bool `json:"is_auto_child,omitempty"`
+	// ChildOrigin indicates how the child was created: "auto", "mcp", or "human".
+	ChildOrigin string `json:"child_origin,omitempty"`
 }
 
 // HistoryEntry represents a single turn in the conversation history.

@@ -413,7 +413,7 @@ func (m *mockSessionManager) GetWorkspacesForFolder(folder string) []config.Work
 	return m.workspacesForFolder
 }
 
-func (m *mockSessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
+func (m *mockSessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
 	m.broadcastCalls = append(m.broadcastCalls, broadcastCall{
 		sessionID:       sessionID,
 		name:            name,
@@ -423,7 +423,10 @@ func (m *mockSessionManager) BroadcastSessionCreated(sessionID, name, acpServer,
 	})
 }
 
-func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived bool) {}
+func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived bool)     {}
+func (m *mockSessionManager) BroadcastSessionDeleted(sessionID string)                     {}
+func (m *mockSessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {}
+func (m *mockSessionManager) DeleteChildSessions(parentID string)                          {}
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -2354,8 +2357,12 @@ func (m *mockSessionManagerForWait) ResumeSession(string, string, string) (Backg
 func (m *mockSessionManagerForWait) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, string, string, string) {}
-func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)                          {}
+func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, string, string, string, string) {
+}
+func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)           {}
+func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool) {}
+func (m *mockSessionManagerForWait) DeleteChildSessions(string)               {}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -3026,9 +3033,12 @@ func (m *mockSessionManagerForChildren) ResumeSession(string, string, string) (B
 func (m *mockSessionManagerForChildren) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForChildren) BroadcastSessionCreated(string, string, string, string, string) {
+func (m *mockSessionManagerForChildren) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool) {}
+func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerForChildren) BroadcastSessionDeleted(string)           {}
+func (m *mockSessionManagerForChildren) BroadcastWaitingForChildren(string, bool) {}
+func (m *mockSessionManagerForChildren) DeleteChildSessions(string)               {}
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -3163,6 +3173,249 @@ func TestChildrenTasksWait_TimeoutWithSessionUnregistered(t *testing.T) {
 }
 
 // =============================================================================
+// Auto-Complete Idle/Stopped Child Tests
+// =============================================================================
+
+// mockSessionManagerForChildrenMutable is like mockSessionManagerForChildren
+// but supports safe concurrent mutation of the sessions map.
+type mockSessionManagerForChildrenMutable struct {
+	mu       sync.RWMutex
+	sessions map[string]BackgroundSession
+}
+
+func (m *mockSessionManagerForChildrenMutable) GetSession(sessionID string) BackgroundSession {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	bs, ok := m.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	return bs
+}
+
+func (m *mockSessionManagerForChildrenMutable) RemoveSession(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, sessionID)
+}
+
+func (m *mockSessionManagerForChildrenMutable) ListRunningSessions() []string { return nil }
+func (m *mockSessionManagerForChildrenMutable) CloseSessionGracefully(string, string, time.Duration) bool {
+	return true
+}
+func (m *mockSessionManagerForChildrenMutable) CloseSession(string, string) {}
+func (m *mockSessionManagerForChildrenMutable) ResumeSession(string, string, string) (BackgroundSession, error) {
+	return nil, nil
+}
+func (m *mockSessionManagerForChildrenMutable) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionCreated(string, string, string, string, string, string) {
+}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionDeleted(string)           {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastWaitingForChildren(string, bool) {}
+func (m *mockSessionManagerForChildrenMutable) DeleteChildSessions(string)               {}
+
+func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
+	// Child is idle (not prompting) from the start and never reports.
+	// The parent should unblock via idle detection (not timeout).
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Idle Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child is idle (not prompting) — will never report
+	mockBS := newMockBackgroundSessionForWait(false)
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	start := time.Now()
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 60, // generous — should return well before this
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+	if output.TimedOut {
+		t.Error("Expected TimedOut=false (should have auto-completed via idle detection, not timeout)")
+	}
+	report, ok := output.Reports[childID]
+	if !ok {
+		t.Fatalf("Expected report for child %s", childID)
+	}
+	if report.Status != "agent_not_responding" {
+		t.Errorf("Expected status 'agent_not_responding', got '%s'", report.Status)
+	}
+	if report.Reason != "agent_idle" {
+		t.Errorf("Expected reason 'agent_idle', got '%s'", report.Reason)
+	}
+	if report.Completed {
+		t.Error("Expected Completed=false for auto-completed idle child")
+	}
+	// Should return in ~20s (5s poll + 15s grace); allow generous headroom for slow CI
+	if elapsed > 30*time.Second {
+		t.Errorf("Expected to return within 30s (idle detection), but took %v", elapsed)
+	}
+}
+
+func TestChildrenTasksWait_AutoCompletesStoppedChild(t *testing.T) {
+	// Child session disappears from the session manager mid-wait.
+	// The parent should unblock quickly via "session_stopped" auto-completion.
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Stopping Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child starts as prompting so idle detection doesn't fire first
+	mockBS := newMockBackgroundSessionForWait(true)
+	sm := &mockSessionManagerForChildrenMutable{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+
+	start := time.Now()
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   []string{childID},
+			TimeoutSeconds: 60, // generous — should return well before this
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	// Let the wait loop start, then remove the child from the session manager
+	time.Sleep(200 * time.Millisecond)
+	sm.RemoveSession(childID)
+
+	select {
+	case result := <-resultCh:
+		elapsed := time.Since(start)
+		if result.err != nil {
+			t.Fatalf("handleChildrenTasksWait returned error: %v", result.err)
+		}
+		if !result.output.Success {
+			t.Fatalf("Expected success, got error: %s", result.output.Error)
+		}
+		if result.output.TimedOut {
+			t.Error("Expected TimedOut=false (should have auto-completed via session_stopped)")
+		}
+		report, ok := result.output.Reports[childID]
+		if !ok {
+			t.Fatalf("Expected report for child %s", childID)
+		}
+		if report.Status != "agent_not_responding" {
+			t.Errorf("Expected status 'agent_not_responding', got '%s'", report.Status)
+		}
+		if report.Reason != "session_stopped" {
+			t.Errorf("Expected reason 'session_stopped', got '%s'", report.Reason)
+		}
+		if report.Completed {
+			t.Error("Expected Completed=false for auto-completed stopped child")
+		}
+		// Should return quickly (next poll tick after session removal = ~5s); 15s max
+		if elapsed > 15*time.Second {
+			t.Errorf("Expected to return within 15s (session_stopped detection), but took %v", elapsed)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
+	}
+}
+
+// =============================================================================
 // Auto-Resume Stored Sessions Tests
 // =============================================================================
 
@@ -3239,9 +3492,12 @@ func (m *mockSessionManagerForAutoResume) ResumeSession(sessionID, sessionName, 
 func (m *mockSessionManagerForAutoResume) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForAutoResume) BroadcastSessionCreated(string, string, string, string, string) {
+func (m *mockSessionManagerForAutoResume) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool) {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionDeleted(string)           {}
+func (m *mockSessionManagerForAutoResume) BroadcastWaitingForChildren(string, bool) {}
+func (m *mockSessionManagerForAutoResume) DeleteChildSessions(string)               {}
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -3657,5 +3913,960 @@ func TestChildrenTasksWait_DoesNotResumeArchivedChild(t *testing.T) {
 	}
 	if report.Status != "not_running" {
 		t.Errorf("Expected status 'not_running' for archived child, got '%s'", report.Status)
+	}
+}
+
+// =============================================================================
+// Child Session Guard Tests
+// =============================================================================
+
+// TestArchiveConversation_ChildDelegatesToDelete tests that archiving a child conversation
+// from the parent delegates to the delete handler and succeeds.
+func TestArchiveConversation_ChildDelegatesToDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create parent: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child: %v", err)
+	}
+
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "test-server", WorkingDir: "/test/dir"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:          store,
+		SessionManager: mockSM,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := true
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+
+	if !output.Success {
+		t.Errorf("Expected success when parent archives its child, got error: %s", output.Error)
+	}
+	if !output.Archived {
+		t.Error("Expected Archived=true in output")
+	}
+
+	// Verify child IS archived (delegated to delete handler)
+	meta, _ := store.GetMetadata(childID)
+	if !meta.Archived {
+		t.Error("Child should be archived after parent's archive request")
+	}
+}
+
+// TestArchiveConversation_ChildNonParentRejected tests that a non-parent session
+// cannot archive a child conversation.
+func TestArchiveConversation_ChildNonParentRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create parent: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child: %v", err)
+	}
+
+	// Create an unrelated session that is NOT the parent
+	otherID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  otherID,
+		Name:       "Other",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create other session: %v", err)
+	}
+
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "test-server", WorkingDir: "/test/dir"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:          store,
+		SessionManager: mockSM,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(otherID, nil, logger); err != nil {
+		t.Fatalf("Failed to register other session: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := true
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         otherID,
+		ConversationID: childID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+
+	if output.Success {
+		t.Error("Expected failure when non-parent tries to archive a child conversation")
+	}
+	if !strings.Contains(output.Error, "permission denied") {
+		t.Errorf("Expected 'permission denied' error, got: %s", output.Error)
+	}
+
+	// Verify child is NOT archived
+	meta, _ := store.GetMetadata(childID)
+	if meta.Archived {
+		t.Error("Child should NOT be archived after rejected request from non-parent")
+	}
+}
+
+// TestSetPeriodic_ChildRejected tests that setting periodic on a child conversation
+// via the MCP tool is rejected.
+func TestSetPeriodic_ChildRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create parent: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleSetPeriodic(ctx, nil, SetPeriodicInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Prompt:         "check updates",
+		FrequencyValue: 1,
+		FrequencyUnit:  "hours",
+	})
+	if err != nil {
+		t.Fatalf("handleSetPeriodic returned error: %v", err)
+	}
+
+	if output.Success {
+		t.Error("Expected failure when trying to set periodic on a child conversation")
+	}
+	if output.Error == "" {
+		t.Error("Expected error message explaining why child cannot be periodic")
+	}
+}
+
+// mockUIPrompter is a mock UIPrompter for testing handleUIOptions.
+type mockUIPrompter struct {
+	mu       sync.Mutex
+	response UIPromptResponse
+	err      error
+	calls    []UIPromptRequest
+}
+
+func (m *mockUIPrompter) UIPrompt(_ context.Context, req UIPromptRequest) (UIPromptResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, req)
+	return m.response, m.err
+}
+
+func (m *mockUIPrompter) DismissPrompt(_ string) {}
+
+func (m *mockUIPrompter) lastCall() UIPromptRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.calls) == 0 {
+		return UIPromptRequest{}
+	}
+	return m.calls[len(m.calls)-1]
+}
+
+// newServerWithUIPrompter creates a test server with a session that has a UIPrompter and can_prompt_user flag.
+func newServerWithUIPrompter(t *testing.T, prompter UIPrompter) (*Server, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sessionID := session.GenerateSessionID()
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		Name:       "Test Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanPromptUser: true,
+		},
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(sessionID, prompter, logger); err != nil {
+		t.Fatalf("Failed to register session: %v", err)
+	}
+
+	return srv, sessionID
+}
+
+func TestHandleUIOptions_BasicOptionSelection(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			RequestID: "req-001",
+			OptionID:  "1",
+			Label:     "Option B",
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:   sessionID,
+		Question: "Which option?",
+		Options: []UIOptionsItem{
+			{Label: "Option A"},
+			{Label: "Option B"},
+			{Label: "Option C"},
+		},
+	}
+
+	_, output, err := srv.handleUIOptions(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIOptions returned error: %v", err)
+	}
+
+	if output.Selected != "Option B" {
+		t.Errorf("Expected Selected='Option B', got=%q", output.Selected)
+	}
+	if output.Index != 1 {
+		t.Errorf("Expected Index=1, got=%d", output.Index)
+	}
+	if output.TimedOut {
+		t.Error("Expected TimedOut=false")
+	}
+
+	// Verify the prompt was sent with correct fields
+	call := mock.lastCall()
+	if call.Type != UIPromptTypeOptions {
+		t.Errorf("Expected prompt type=%s, got=%s", UIPromptTypeOptions, call.Type)
+	}
+	if call.Question != "Which option?" {
+		t.Errorf("Expected question='Which option?', got=%q", call.Question)
+	}
+	if len(call.Options) != 3 {
+		t.Errorf("Expected 3 options, got=%d", len(call.Options))
+	}
+}
+
+func TestHandleUIOptions_FreeTextResponse(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			RequestID: "req-002",
+			FreeText:  "custom user input",
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:              sessionID,
+		Question:            "Enter a value:",
+		Options:             []UIOptionsItem{{Label: "Use default"}},
+		AllowFreeText:       true,
+		FreeTextPlaceholder: "Type here...",
+	}
+
+	_, output, err := srv.handleUIOptions(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIOptions returned error: %v", err)
+	}
+
+	if output.FreeText != "custom user input" {
+		t.Errorf("Expected FreeText='custom user input', got=%q", output.FreeText)
+	}
+	if output.Index != -1 {
+		t.Errorf("Expected Index=-1 for free text response, got=%d", output.Index)
+	}
+
+	// Verify allow_free_text was passed to prompter
+	call := mock.lastCall()
+	if !call.AllowFreeText {
+		t.Error("Expected AllowFreeText=true in prompt request")
+	}
+	if call.FreeTextPlaceholder != "Type here..." {
+		t.Errorf("Expected FreeTextPlaceholder='Type here...', got=%q", call.FreeTextPlaceholder)
+	}
+}
+
+func TestHandleUIOptions_Timeout(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			TimedOut: true,
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:         sessionID,
+		Question:       "Quick question:",
+		Options:        []UIOptionsItem{{Label: "Yes"}, {Label: "No"}},
+		TimeoutSeconds: 5,
+	}
+
+	_, output, err := srv.handleUIOptions(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIOptions returned error: %v", err)
+	}
+
+	if !output.TimedOut {
+		t.Error("Expected TimedOut=true")
+	}
+	if output.Index != -1 {
+		t.Errorf("Expected Index=-1 on timeout, got=%d", output.Index)
+	}
+}
+
+func TestHandleUIOptions_ValidationEmptyOptions(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:        sessionID,
+		Question:      "Pick one:",
+		Options:       []UIOptionsItem{}, // empty
+		AllowFreeText: false,             // no free text either
+	}
+
+	_, _, err := srv.handleUIOptions(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error for empty options without allow_free_text, got nil")
+	}
+	if !strings.Contains(err.Error(), "at least one option") {
+		t.Errorf("Expected error about 'at least one option', got: %v", err)
+	}
+}
+
+func TestHandleUIOptions_ValidationTooManyOptions(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	// Build 11 options (exceeds max of 10)
+	opts := make([]UIOptionsItem, 11)
+	for i := range opts {
+		opts[i] = UIOptionsItem{Label: fmt.Sprintf("Option %d", i+1)}
+	}
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:   sessionID,
+		Question: "Too many options:",
+		Options:  opts,
+	}
+
+	_, _, err := srv.handleUIOptions(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error for >10 options, got nil")
+	}
+	if !strings.Contains(err.Error(), "10") {
+		t.Errorf("Expected error mentioning limit of 10, got: %v", err)
+	}
+}
+
+func TestHandleUIOptions_OptionDescriptions(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			RequestID: "req-005",
+			OptionID:  "0",
+			Label:     "Fast",
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:   sessionID,
+		Question: "Choose strategy:",
+		Options: []UIOptionsItem{
+			{Label: "Fast", Description: "Quick but may miss some cases"},
+			{Label: "Thorough", Description: "Slower but comprehensive"},
+		},
+	}
+
+	_, output, err := srv.handleUIOptions(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIOptions returned error: %v", err)
+	}
+
+	if output.Selected != "Fast" {
+		t.Errorf("Expected Selected='Fast', got=%q", output.Selected)
+	}
+
+	// Verify descriptions were passed through to the prompter
+	call := mock.lastCall()
+	if len(call.Options) != 2 {
+		t.Fatalf("Expected 2 options in prompt, got %d", len(call.Options))
+	}
+	if call.Options[0].Description != "Quick but may miss some cases" {
+		t.Errorf("Expected description for first option, got=%q", call.Options[0].Description)
+	}
+	if call.Options[1].Description != "Slower but comprehensive" {
+		t.Errorf("Expected description for second option, got=%q", call.Options[1].Description)
+	}
+}
+
+func TestHandleUIOptions_MissingSessionID(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, _ := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:  "", // missing
+		Options: []UIOptionsItem{{Label: "Yes"}, {Label: "No"}},
+	}
+
+	_, _, err := srv.handleUIOptions(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error for missing self_id, got nil")
+	}
+}
+
+// =============================================================================
+// handleUIForm Tests
+// =============================================================================
+
+func TestHandleUIForm_BasicSubmission(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			RequestID: "req-form-001",
+			OptionID:  "submit",
+			Label:     "Submit",
+			FreeText:  `{"name":"Alice","age":"30","agree":"true"}`,
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "User Info",
+		HTML:   `<label>Name:</label><input type="text" name="name"><label>Age:</label><input type="number" name="age"><label><input type="checkbox" name="agree"> I agree</label>`,
+	}
+
+	_, output, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+	if !output.Submitted {
+		t.Error("Expected Submitted=true")
+	}
+	if output.Values["name"] != "Alice" {
+		t.Errorf("Expected name=Alice, got=%q", output.Values["name"])
+	}
+	if output.Values["age"] != "30" {
+		t.Errorf("Expected age=30, got=%q", output.Values["age"])
+	}
+	if output.Values["agree"] != "true" {
+		t.Errorf("Expected agree=true, got=%q", output.Values["agree"])
+	}
+
+	// Verify prompt request was sent correctly
+	call := mock.lastCall()
+	if call.Type != UIPromptTypeForm {
+		t.Errorf("Expected prompt type=%s, got=%s", UIPromptTypeForm, call.Type)
+	}
+	if call.Title != "User Info" {
+		t.Errorf("Expected title='User Info', got=%q", call.Title)
+	}
+	if call.FormHTML == "" {
+		t.Error("Expected FormHTML to be non-empty (sanitized HTML)")
+	}
+	// Verify HTML was sanitized (should still contain form elements)
+	if !strings.Contains(call.FormHTML, `name="name"`) {
+		t.Error("Expected sanitized HTML to contain name attribute")
+	}
+}
+
+func TestHandleUIForm_Timeout(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{TimedOut: true},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID:         sessionID,
+		Title:          "Quick Form",
+		HTML:           `<input type="text" name="x">`,
+		TimeoutSeconds: 5,
+	}
+
+	_, output, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Error("Expected TimedOut=true")
+	}
+	if output.Submitted {
+		t.Error("Expected Submitted=false on timeout")
+	}
+}
+
+func TestHandleUIForm_Cancel(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			OptionID: "cancel",
+			Label:    "Cancel",
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<input type="text" name="x">`,
+	}
+
+	_, output, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+	if !output.Cancelled {
+		t.Error("Expected Cancelled=true")
+	}
+	if output.Submitted {
+		t.Error("Expected Submitted=false on cancel")
+	}
+}
+
+func TestHandleUIForm_Abort(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{Aborted: true},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<input type="text" name="x">`,
+	}
+
+	_, output, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+	if !output.Cancelled {
+		t.Error("Expected Cancelled=true on abort")
+	}
+}
+
+func TestHandleUIForm_MissingSelfID(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, _ := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: "",
+		Title:  "Form",
+		HTML:   `<input type="text" name="x">`,
+	}
+
+	_, _, err := srv.handleUIForm(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error for missing self_id")
+	}
+	if !strings.Contains(err.Error(), "self_id") {
+		t.Errorf("Expected error about self_id, got: %v", err)
+	}
+}
+
+func TestHandleUIForm_MissingTitle(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "",
+		HTML:   `<input type="text" name="x">`,
+	}
+
+	_, _, err := srv.handleUIForm(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error for missing title")
+	}
+	if !strings.Contains(err.Error(), "title") {
+		t.Errorf("Expected error about title, got: %v", err)
+	}
+}
+
+func TestHandleUIForm_EmptyHTML(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   "",
+	}
+
+	_, _, err := srv.handleUIForm(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error for empty HTML")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Errorf("Expected error about required HTML, got: %v", err)
+	}
+}
+
+func TestHandleUIForm_DangerousHTMLSanitized(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			OptionID: "submit",
+			FreeText: `{"x":"val"}`,
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<script>alert('xss')</script><input type="text" name="x"><img src="evil.gif">`,
+	}
+
+	_, output, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+	if !output.Submitted {
+		t.Error("Expected Submitted=true")
+	}
+
+	// Verify the HTML sent to the prompter was sanitized
+	call := mock.lastCall()
+	if strings.Contains(call.FormHTML, "<script") {
+		t.Error("Expected script to be stripped from FormHTML")
+	}
+	if strings.Contains(call.FormHTML, "<img") {
+		t.Error("Expected img to be stripped from FormHTML")
+	}
+	if !strings.Contains(call.FormHTML, `name="x"`) {
+		t.Error("Expected form input to survive sanitization")
+	}
+}
+
+func TestHandleUIForm_OnlyDangerousHTML_Error(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<script>alert('xss')</script><iframe src="evil"></iframe>`,
+	}
+
+	_, _, err := srv.handleUIForm(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error when all HTML is stripped")
+	}
+	if !strings.Contains(err.Error(), "no allowed form elements") {
+		t.Errorf("Expected error about no allowed elements, got: %v", err)
+	}
+}
+
+func TestHandleUIForm_InvalidJSONResponse(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			OptionID: "submit",
+			FreeText: `not valid json`,
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<input type="text" name="x">`,
+	}
+
+	_, _, err := srv.handleUIForm(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected error for invalid JSON response")
+	}
+	if !strings.Contains(err.Error(), "parse form values") {
+		t.Errorf("Expected error about parsing, got: %v", err)
+	}
+}
+
+func TestHandleUIForm_EmptyValuesOnSubmit(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			OptionID: "submit",
+			FreeText: `{}`,
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<input type="text" name="x">`,
+	}
+
+	_, output, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+	if !output.Submitted {
+		t.Error("Expected Submitted=true")
+	}
+	if len(output.Values) != 0 {
+		t.Errorf("Expected empty values map, got %d entries", len(output.Values))
+	}
+}
+
+func TestHandleUIForm_PermissionDenied(t *testing.T) {
+	// Create a server with a session that does NOT have can_prompt_user
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sessionID := session.GenerateSessionID()
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		Name:       "No Prompt Permission",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanPromptUser: false, // explicitly denied
+		},
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "test-server", WorkingDir: "/test/dir"},
+		},
+	}
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:          store,
+		SessionManager: mockSM,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	prompter := &mockUIPrompter{}
+	if err := srv.RegisterSession(sessionID, prompter, logger); err != nil {
+		t.Fatalf("Failed to register session: %v", err)
+	}
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<input type="text" name="x">`,
+	}
+
+	_, _, err = srv.handleUIForm(ctx, nil, input)
+	if err == nil {
+		t.Fatal("Expected permission error")
+	}
+	if !strings.Contains(err.Error(), "can_prompt_user") {
+		t.Errorf("Expected error mentioning can_prompt_user, got: %v", err)
+	}
+}
+
+func TestHandleUIForm_DefaultTimeout(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			OptionID: "submit",
+			FreeText: `{"x":"1"}`,
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<input type="text" name="x">`,
+		// TimeoutSeconds not set — should default to 600
+	}
+
+	_, _, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+
+	call := mock.lastCall()
+	if call.TimeoutSeconds != 600 {
+		t.Errorf("Expected default timeout=600, got=%d", call.TimeoutSeconds)
+	}
+}
+
+func TestHandleUIForm_CustomTimeout(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			OptionID: "submit",
+			FreeText: `{"x":"1"}`,
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID:         sessionID,
+		Title:          "Form",
+		HTML:           `<input type="text" name="x">`,
+		TimeoutSeconds: 120,
+	}
+
+	_, _, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+
+	call := mock.lastCall()
+	if call.TimeoutSeconds != 120 {
+		t.Errorf("Expected timeout=120, got=%d", call.TimeoutSeconds)
+	}
+}
+
+func TestHandleUIForm_BlockingFlagSet(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			OptionID: "submit",
+			FreeText: `{}`,
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIFormInput{
+		SelfID: sessionID,
+		Title:  "Form",
+		HTML:   `<input type="text" name="x">`,
+	}
+
+	_, _, err := srv.handleUIForm(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIForm returned error: %v", err)
+	}
+
+	call := mock.lastCall()
+	if !call.Blocking {
+		t.Error("Expected Blocking=true on form prompt request")
 	}
 }

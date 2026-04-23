@@ -1,0 +1,12 @@
+# Kilo Code agent configuration
+name: "Kilo"
+displayName: "Kilo"
+acpId: "kilo"
+description: "The open source coding agent"
+website: "https://kilo.ai/"
+repository: "https://github.com/Kilo-Org/kilocode"
+license: "MIT"
+install:
+  method: "npx"
+  package: "@kilocode/cli"
+  args: ["acp"]

@@ -1,17 +1,14 @@
 /**
  * Unit tests for Mitto Web Interface library functions
  *
- * TODO: Consider splitting this large test file (4000+ lines) into smaller, focused files:
- * - lib.session.test.js: computeAllSessions, createSessionState, addMessageToSessionState,
- *   updateLastMessageInSession, removeSessionFromState, limitMessages
- * - lib.sync.test.js: convertEventsToMessages, getMinSeq, getMaxSeq, getMessageHash,
- *   mergeMessagesWithSync
+ * TODO: Consider splitting this large test file into smaller, focused files:
+ * - lib.session.test.js: computeAllSessions, limitMessages
+ * - lib.sync.test.js: convertEventsToMessages, getMaxSeq, getMessageHash, mergeMessagesWithSync
  * - lib.workspace.test.js: getBasename, getWorkspaceAbbreviation, getWorkspaceColor,
  *   getWorkspaceVisualInfo, hexToRgb, getLuminance, getColorFromHex, hslToHex
- * - lib.validation.test.js: validateUsername, validatePassword, validateCredentials
+ * - lib.validation.test.js: validateUsername, validatePassword
  * - lib.prompt.test.js: generatePromptId, savePendingPrompt, getPendingPrompts,
- *   removePendingPrompt, getPendingPromptsForSession, cleanupExpiredPrompts,
- *   clearPendingPromptsFromEvents
+ *   removePendingPrompt, getPendingPromptsForSession, cleanupExpiredPrompts
  * - lib.markdown.test.js: hasMarkdownContent, renderUserMarkdown
  * - lib.ack.test.js: Send Message ACK Tracking tests
  * - lib.state.test.js: UI State Consistency tests
@@ -36,17 +33,11 @@ import {
   convertEventsToMessages,
   coalesceAgentMessages,
   COALESCE_DEFAULTS,
-  getMinSeq,
   getMaxSeq,
   isStaleClientState,
-  shouldSyncOnKeepalive,
   getMessageHash,
   mergeMessagesWithSync,
   safeJsonParse,
-  createSessionState,
-  addMessageToSessionState,
-  updateLastMessageInSession,
-  removeSessionFromState,
   limitMessages,
   getBasename,
   getWorkspaceAbbreviation,
@@ -58,14 +49,12 @@ import {
   hslToHex,
   validateUsername,
   validatePassword,
-  validateCredentials,
   generatePromptId,
   savePendingPrompt,
   removePendingPrompt,
   getPendingPrompts,
   getPendingPromptsForSession,
   cleanupExpiredPrompts,
-  clearPendingPromptsFromEvents,
   hasMarkdownContent,
   renderUserMarkdown,
   formatTimeAgo,
@@ -1100,32 +1089,8 @@ describe("coalesceAgentMessages", () => {
 });
 
 // =============================================================================
-// getMinSeq and getMaxSeq Tests
+// getMaxSeq Tests
 // =============================================================================
-
-describe("getMinSeq", () => {
-  test("returns minimum sequence number", () => {
-    const events = [{ seq: 5 }, { seq: 2 }, { seq: 8 }, { seq: 1 }];
-    expect(getMinSeq(events)).toBe(1);
-  });
-
-  test("returns 0 for empty array", () => {
-    expect(getMinSeq([])).toBe(0);
-  });
-
-  test("returns 0 for null input", () => {
-    expect(getMinSeq(null)).toBe(0);
-  });
-
-  test("returns 0 for undefined input", () => {
-    expect(getMinSeq(undefined)).toBe(0);
-  });
-
-  test("handles events with missing seq", () => {
-    const events = [{ seq: 5 }, {}, { seq: 3 }];
-    expect(getMinSeq(events)).toBe(0);
-  });
-});
 
 describe("getMaxSeq", () => {
   test("returns maximum sequence number", () => {
@@ -1174,6 +1139,16 @@ describe("isStaleClientState", () => {
     test("returns true when client is way ahead (server restart scenario)", () => {
       // Client has seq 1000 from before server restart, server now has seq 50
       expect(isStaleClientState(1000, 50)).toBe(true);
+    });
+
+    test("off-by-one: client seq exactly 1 ahead of server (ACP crash scenario)", () => {
+      // This is the exact scenario from the 2026-04-16 bug: ACP sent seq=2181
+      // via streaming but crashed before persisting it. Server has max_seq=2180.
+      expect(isStaleClientState(2181, 2180)).toBe(true);
+    });
+
+    test("off-by-one: client seq equals server (not stale)", () => {
+      expect(isStaleClientState(2180, 2180)).toBe(false);
     });
   });
 
@@ -1324,262 +1299,46 @@ describe("isStaleClientState", () => {
 });
 
 // =============================================================================
-// shouldSyncOnKeepalive Tests
+// prepend cascade prevention (2026-04-16 fix)
 // =============================================================================
 
-describe("shouldSyncOnKeepalive", () => {
-  // Tests for the session_end delivery bug fix:
-  // 1. Keepalive tolerance of 2 prevents catching up when only 1 behind
-  // 2. Non-streaming sessions should use tolerance=0 to catch session_end events
+describe("prepend cascade prevention (2026-04-16 fix)", () => {
+  test("BUG: prepend batch with stale sessionsRef triggers false M1 fix", () => {
+    // Scenario: After stale recovery, sessionsRef still has old messages
+    // (React async batching hasn't flushed yet).
+    // A prepend batch arrives with events for seq 1-2130.
+    // sessionsRef.current has stale messages with getMaxSeq = 2181.
+    // lastKnownSeqRef was reset to 2180 by the initial M1 fix.
+    //
+    // clientLastSeq = Math.max(refSeq=2180, staleStateSeq=2181, lastLoadedSeq=2180)
+    //              = 2181 (from stale React state!)
+    // maxSeq = 2180 (from server)
+    // isStaleClient = isStaleClientState(2181, 2180) = true  ← FALSE POSITIVE!
+    //
+    // The fix: skip stale detection entirely for prepend batches.
+    // Prepend batches load historical context; the stale condition was already
+    // handled by the initial events_loaded that triggered the auto-load.
 
-  describe("non-streaming sessions (tolerance=0)", () => {
-    test("detects 1-behind on non-streaming session triggers sync", () => {
-      // Scenario: session completed, client is exactly 1 behind (the session_end event)
-      // client_max_seq=311, server_max_seq=312, isStreaming=false
-      // Expected: sync should be triggered (tolerance=0 for non-streaming)
-      const clientMaxSeq = 311;
-      const serverMaxSeq = 312;
-      const isStreaming = false;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
-    });
+    const clientLastSeq = 2181; // From stale React state
+    const serverMaxSeq = 2180;
 
-    test("detects 2-behind on non-streaming session triggers sync", () => {
-      // Non-streaming with gap of 2 should sync (tolerance=0)
-      const clientMaxSeq = 310;
-      const serverMaxSeq = 312;
-      const isStreaming = false;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
-    });
+    // Without fix: stale detection fires on prepend → cascade
+    expect(isStaleClientState(clientLastSeq, serverMaxSeq)).toBe(true);
 
-    test("in-sync non-streaming session does not trigger sync", () => {
-      // Client and server at same seq, no sync needed
-      const clientMaxSeq = 312;
-      const serverMaxSeq = 312;
-      const isStreaming = false;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
-    });
+    // The fix is behavioral (in useWebSocket.js events_loaded handler):
+    // const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, maxSeq);
+    // When isPrepend=true, isStaleClient is always false regardless of seq comparison.
+    const isPrepend = true;
+    const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
+    expect(isStaleClient).toBe(false); // Cascade prevented!
   });
 
-  describe("streaming sessions (tolerance=2)", () => {
-    test("1-behind during streaming does not trigger sync (within tolerance)", () => {
-      // Scenario: client is 1 behind during active streaming
-      // client_max_seq=311, server_max_seq=312, isStreaming=true
-      // Expected: no sync (tolerance=2 applies, within tolerance)
-      const clientMaxSeq = 311;
-      const serverMaxSeq = 312;
-      const isStreaming = true;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
-    });
-
-    test("2-behind during streaming does not trigger sync (within tolerance)", () => {
-      // Gap of 2 is within tolerance for streaming
-      const clientMaxSeq = 310;
-      const serverMaxSeq = 312;
-      const isStreaming = true;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
-    });
-
-    test("3-behind during streaming triggers sync (exceeds tolerance)", () => {
-      // Scenario: client is 3 behind during streaming
-      // client_max_seq=309, server_max_seq=312, isStreaming=true
-      // Expected: sync triggered (3 > tolerance of 2)
-      const clientMaxSeq = 309;
-      const serverMaxSeq = 312;
-      const isStreaming = true;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
-    });
-
-    test("10-behind during streaming triggers sync", () => {
-      // Large gap should always trigger sync
-      const clientMaxSeq = 100;
-      const serverMaxSeq = 110;
-      const isStreaming = true;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
-    });
-
-    test("in-sync streaming session does not trigger sync", () => {
-      // Client and server at same seq, no sync needed
-      const clientMaxSeq = 312;
-      const serverMaxSeq = 312;
-      const isStreaming = true;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
-    });
-  });
-
-  describe("stale client detection (client ahead of server)", () => {
-    test("client ahead triggers sync regardless of streaming state", () => {
-      // Client thinks it has seq 463, server only has 160
-      // This is stale state - always sync
-      expect(shouldSyncOnKeepalive(463, 160, false)).toBe(true);
-      expect(shouldSyncOnKeepalive(463, 160, true)).toBe(true);
-    });
-
-    test("client 1 ahead triggers sync (non-streaming)", () => {
-      expect(shouldSyncOnKeepalive(313, 312, false)).toBe(true);
-    });
-
-    test("client 1 ahead triggers sync (streaming)", () => {
-      expect(shouldSyncOnKeepalive(313, 312, true)).toBe(true);
-    });
-  });
-
-  describe("edge cases", () => {
-    test("returns false for negative client seq", () => {
-      expect(shouldSyncOnKeepalive(-1, 100, false)).toBe(false);
-    });
-
-    test("returns false for negative server seq", () => {
-      expect(shouldSyncOnKeepalive(100, -1, false)).toBe(false);
-    });
-
-    test("returns false for non-number client seq", () => {
-      expect(shouldSyncOnKeepalive(null, 100, false)).toBe(false);
-      expect(shouldSyncOnKeepalive(undefined, 100, false)).toBe(false);
-      expect(shouldSyncOnKeepalive("100", 100, false)).toBe(false);
-    });
-
-    test("returns false for non-number server seq", () => {
-      expect(shouldSyncOnKeepalive(100, null, false)).toBe(false);
-      expect(shouldSyncOnKeepalive(100, undefined, false)).toBe(false);
-      expect(shouldSyncOnKeepalive(100, "100", false)).toBe(false);
-    });
-
-    test("handles zero sequences", () => {
-      expect(shouldSyncOnKeepalive(0, 0, false)).toBe(false);
-      expect(shouldSyncOnKeepalive(0, 1, false)).toBe(true); // 1 behind, non-streaming
-      expect(shouldSyncOnKeepalive(0, 1, true)).toBe(false); // 1 behind, streaming (within tolerance)
-    });
-  });
-
-  describe("real-world scenarios", () => {
-    test("session_end delivery bug - non-streaming catches final event", () => {
-      // Bug scenario: Agent finishes, writes session_end event (seq 312)
-      // Client has seq 311, keepalive returns server_max_seq=312
-      // With tolerance=0 for non-streaming, this triggers sync
-      const clientMaxSeq = 311;
-      const serverMaxSeq = 312;
-      const isStreaming = false;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
-    });
-
-    test("normal streaming - markdown buffer delay within tolerance", () => {
-      // During streaming, markdown buffer may hold content briefly
-      // Client is 1-2 behind due to buffering - this is normal, don't sync
-      expect(shouldSyncOnKeepalive(310, 311, true)).toBe(false); // 1 behind
-      expect(shouldSyncOnKeepalive(310, 312, true)).toBe(false); // 2 behind
-    });
-
-    test("streaming with significant lag - triggers sync", () => {
-      // If client falls significantly behind during streaming, sync
-      expect(shouldSyncOnKeepalive(310, 314, true)).toBe(true); // 4 behind, exceeds tolerance
-    });
-
-    test("mobile wake after session completion", () => {
-      // Phone wakes up, session completed while asleep
-      // Client has seq 311, server has seq 312 (session_end)
-      // Non-streaming (session complete), should sync
-      expect(shouldSyncOnKeepalive(311, 312, false)).toBe(true);
-    });
-  });
-
-  describe("ref-based clientMaxSeq scenarios", () => {
-    // These tests verify that shouldSyncOnKeepalive works correctly when
-    // clientMaxSeq is computed from Math.max(refSeq, stateSeq) where refSeq
-    // comes from lastKnownSeqRef and stateSeq comes from React state.
-
-    test("ref ahead of state - uses ref value for sync decision", () => {
-      // Scenario: ref has seq 113, state has seq 0 (messages cleared)
-      // Server has seq 113 - client is in sync
-      const refSeq = 113;
-      const stateSeq = 0;
-      const clientMaxSeq = Math.max(refSeq, stateSeq); // 113
-      const serverMaxSeq = 113;
-      const isStreaming = false;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
-    });
-
-    test("ref ahead of state - detects gap correctly", () => {
-      // Scenario: ref has seq 113, state has seq 0
-      // Server has seq 158 - client is behind
-      const refSeq = 113;
-      const stateSeq = 0;
-      const clientMaxSeq = Math.max(refSeq, stateSeq); // 113
-      const serverMaxSeq = 158;
-      const isStreaming = false;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
-    });
-
-    test("state ahead of ref - uses state value for sync decision", () => {
-      // Scenario: state has seq 200, ref has seq 150 (shouldn't happen but safety net)
-      // Server has seq 200 - client is in sync
-      const refSeq = 150;
-      const stateSeq = 200;
-      const clientMaxSeq = Math.max(refSeq, stateSeq); // 200
-      const serverMaxSeq = 200;
-      const isStreaming = false;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
-    });
-
-    test("ref provides correct value during reconnection", () => {
-      // Scenario: reconnection in progress, messages cleared, ref has last known seq
-      // Server has seq 113 - client is in sync via ref
-      const refSeq = 113;
-      const messagesMaxSeq = 0; // messages cleared during reconnect
-      const lastLoadedSeq = 0; // no events loaded yet
-      const clientMaxSeq = Math.max(refSeq, Math.max(messagesMaxSeq, lastLoadedSeq));
-      const serverMaxSeq = 113;
-      const isStreaming = false;
-      expect(clientMaxSeq).toBe(113); // ref provides the value
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
-    });
-
-    test("ref prevents false positive sync during reconnection", () => {
-      // Scenario: without ref, clientMaxSeq would be 0, triggering unnecessary sync
-      // With ref, clientMaxSeq is correct and no sync is needed
-      const refSeq = 113;
-      const messagesMaxSeq = 0;
-      const lastLoadedSeq = 0;
-      const clientMaxSeqWithRef = Math.max(refSeq, Math.max(messagesMaxSeq, lastLoadedSeq));
-      const clientMaxSeqWithoutRef = Math.max(messagesMaxSeq, lastLoadedSeq);
-      const serverMaxSeq = 113;
-      const isStreaming = false;
-
-      // Without ref: would incorrectly trigger sync
-      expect(shouldSyncOnKeepalive(clientMaxSeqWithoutRef, serverMaxSeq, isStreaming)).toBe(true);
-
-      // With ref: correctly detects in-sync state
-      expect(shouldSyncOnKeepalive(clientMaxSeqWithRef, serverMaxSeq, isStreaming)).toBe(false);
-    });
-
-    test("ref detects 1-behind on non-streaming session", () => {
-      // Scenario: session completed, ref has seq 311, server has seq 312 (session_end)
-      const refSeq = 311;
-      const stateSeq = 311;
-      const clientMaxSeq = Math.max(refSeq, stateSeq);
-      const serverMaxSeq = 312;
-      const isStreaming = false;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
-    });
-
-    test("ref with streaming tolerance - 1 behind does not sync", () => {
-      // Scenario: streaming session, ref has seq 311, server has seq 312
-      const refSeq = 311;
-      const stateSeq = 310;
-      const clientMaxSeq = Math.max(refSeq, stateSeq); // 311
-      const serverMaxSeq = 312;
-      const isStreaming = true;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(false);
-    });
-
-    test("ref with streaming tolerance - 3 behind triggers sync", () => {
-      // Scenario: streaming session, ref has seq 309, server has seq 312
-      const refSeq = 309;
-      const stateSeq = 300;
-      const clientMaxSeq = Math.max(refSeq, stateSeq); // 309
-      const serverMaxSeq = 312;
-      const isStreaming = true;
-      expect(shouldSyncOnKeepalive(clientMaxSeq, serverMaxSeq, isStreaming)).toBe(true);
-    });
+  test("non-prepend batch still detects stale state correctly", () => {
+    const clientLastSeq = 2181;
+    const serverMaxSeq = 2180;
+    const isPrepend = false;
+    const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
+    expect(isStaleClient).toBe(true); // Stale detection works for non-prepend
   });
 });
 
@@ -2983,99 +2742,6 @@ describe("safeJsonParse", () => {
 });
 
 // =============================================================================
-// createSessionState Tests
-// =============================================================================
-
-describe("createSessionState", () => {
-  test("creates session with defaults", () => {
-    const result = createSessionState("session-123");
-    expect(result.messages).toEqual([]);
-    expect(result.info.session_id).toBe("session-123");
-    expect(result.info.name).toBe("New conversation");
-    expect(result.info.status).toBe("active");
-  });
-
-  test("creates session with custom options", () => {
-    const result = createSessionState("session-456", {
-      name: "My Session",
-      acpServer: "auggie",
-      status: "completed",
-    });
-    expect(result.info.name).toBe("My Session");
-    expect(result.info.acp_server).toBe("auggie");
-    expect(result.info.status).toBe("completed");
-  });
-
-  test("creates session with initial messages", () => {
-    const messages = [{ role: ROLE_SYSTEM, text: "Welcome" }];
-    const result = createSessionState("session-789", { messages });
-    expect(result.messages).toHaveLength(1);
-    expect(result.messages[0].text).toBe("Welcome");
-  });
-});
-
-// =============================================================================
-// addMessageToSessionState Tests
-// =============================================================================
-
-describe("addMessageToSessionState", () => {
-  test("adds message to existing session", () => {
-    const session = { messages: [{ role: ROLE_USER, text: "Hi" }], info: {} };
-    const newMessage = { role: ROLE_AGENT, html: "Hello!" };
-    const result = addMessageToSessionState(session, newMessage);
-
-    expect(result.messages).toHaveLength(2);
-    expect(result.messages[1]).toEqual(newMessage);
-    // Original should be unchanged (immutability)
-    expect(session.messages).toHaveLength(1);
-  });
-
-  test("creates session if null", () => {
-    const newMessage = { role: ROLE_USER, text: "First message" };
-    const result = addMessageToSessionState(null, newMessage);
-
-    expect(result.messages).toHaveLength(1);
-    expect(result.messages[0]).toEqual(newMessage);
-  });
-
-  test("creates session if undefined", () => {
-    const newMessage = { role: ROLE_USER, text: "First message" };
-    const result = addMessageToSessionState(undefined, newMessage);
-
-    expect(result.messages).toHaveLength(1);
-  });
-
-  test("limits messages to MAX_MESSAGES when exceeding limit", () => {
-    // Create a session with MAX_MESSAGES - 1 messages
-    const existingMessages = Array.from(
-      { length: MAX_MESSAGES - 1 },
-      (_, i) => ({
-        role: ROLE_USER,
-        text: `Message ${i}`,
-      }),
-    );
-    const session = { messages: existingMessages, info: {} };
-
-    // Add 2 more messages (should trigger limit)
-    let result = addMessageToSessionState(session, {
-      role: ROLE_USER,
-      text: "New 1",
-    });
-    expect(result.messages).toHaveLength(MAX_MESSAGES);
-
-    result = addMessageToSessionState(result, {
-      role: ROLE_USER,
-      text: "New 2",
-    });
-    expect(result.messages).toHaveLength(MAX_MESSAGES);
-
-    // First message should have been removed
-    expect(result.messages[0].text).toBe("Message 1");
-    expect(result.messages[result.messages.length - 1].text).toBe("New 2");
-  });
-});
-
-// =============================================================================
 // limitMessages Tests
 // =============================================================================
 
@@ -3118,111 +2784,6 @@ describe("limitMessages", () => {
     const result = limitMessages(arr);
     expect(result).toHaveLength(MAX_MESSAGES);
     expect(result[0]).toBe(10); // First 10 should be trimmed
-  });
-});
-
-// =============================================================================
-// updateLastMessageInSession Tests
-// =============================================================================
-
-describe("updateLastMessageInSession", () => {
-  test("updates last message", () => {
-    const session = {
-      messages: [{ role: ROLE_AGENT, html: "Hello", complete: false }],
-      info: {},
-    };
-    const result = updateLastMessageInSession(session, (msg) => ({
-      ...msg,
-      complete: true,
-    }));
-
-    expect(result.messages[0].complete).toBe(true);
-    // Original should be unchanged
-    expect(session.messages[0].complete).toBe(false);
-  });
-
-  test("returns session unchanged if no messages", () => {
-    const session = { messages: [], info: {} };
-    const result = updateLastMessageInSession(session, (msg) => ({
-      ...msg,
-      complete: true,
-    }));
-
-    expect(result).toBe(session);
-  });
-
-  test("returns null/undefined session unchanged", () => {
-    expect(updateLastMessageInSession(null, (msg) => msg)).toBeNull();
-    expect(updateLastMessageInSession(undefined, (msg) => msg)).toBeUndefined();
-  });
-
-  test("only updates last message, not others", () => {
-    const session = {
-      messages: [
-        { role: ROLE_AGENT, html: "First", complete: false },
-        { role: ROLE_AGENT, html: "Second", complete: false },
-      ],
-      info: {},
-    };
-    const result = updateLastMessageInSession(session, (msg) => ({
-      ...msg,
-      complete: true,
-    }));
-
-    expect(result.messages[0].complete).toBe(false);
-    expect(result.messages[1].complete).toBe(true);
-  });
-});
-
-// =============================================================================
-// removeSessionFromState Tests
-// =============================================================================
-
-describe("removeSessionFromState", () => {
-  test("removes session from state", () => {
-    const sessions = {
-      "session-1": { messages: [], info: {} },
-      "session-2": { messages: [], info: {} },
-    };
-    const result = removeSessionFromState(sessions, "session-1", "session-2");
-
-    expect(result.newSessions).not.toHaveProperty("session-1");
-    expect(result.newSessions).toHaveProperty("session-2");
-    expect(result.nextActiveSessionId).toBe("session-2");
-    expect(result.needsNewSession).toBe(false);
-  });
-
-  test("switches to another session when active is removed", () => {
-    const sessions = {
-      "session-1": { messages: [], info: {} },
-      "session-2": { messages: [], info: {} },
-    };
-    const result = removeSessionFromState(sessions, "session-1", "session-1");
-
-    expect(result.nextActiveSessionId).toBe("session-2");
-    expect(result.needsNewSession).toBe(false);
-  });
-
-  test("signals need for new session when last session is removed", () => {
-    const sessions = {
-      "session-1": { messages: [], info: {} },
-    };
-    const result = removeSessionFromState(sessions, "session-1", "session-1");
-
-    expect(result.newSessions).toEqual({});
-    expect(result.nextActiveSessionId).toBeNull();
-    expect(result.needsNewSession).toBe(true);
-  });
-
-  test("keeps active session when non-active is removed", () => {
-    const sessions = {
-      "session-1": { messages: [], info: {} },
-      "session-2": { messages: [], info: {} },
-    };
-    const result = removeSessionFromState(sessions, "session-2", "session-1");
-
-    expect(result.nextActiveSessionId).toBe("session-1");
-    expect(result.needsNewSession).toBe(false);
   });
 });
 
@@ -3596,31 +3157,6 @@ describe("validatePassword", () => {
   });
 });
 
-describe("validateCredentials", () => {
-  test("returns empty string when both are valid", () => {
-    expect(validateCredentials("admin", "SecurePass123")).toBe("");
-  });
-
-  test("returns username error first if username is invalid", () => {
-    expect(validateCredentials("", "SecurePass123")).toBe(
-      "Username is required",
-    );
-    expect(validateCredentials("ab", "SecurePass123")).toBe(
-      "Username must be at least 3 characters",
-    );
-  });
-
-  test("returns password error if username is valid but password is invalid", () => {
-    expect(validateCredentials("admin", "")).toBe("Password is required");
-    expect(validateCredentials("admin", "short")).toBe(
-      "Password must be at least 8 characters",
-    );
-    expect(validateCredentials("admin", "password")).toBe(
-      "Password is too common. Please choose a stronger password",
-    );
-  });
-});
-
 // =============================================================================
 // Pending Prompts Queue Tests
 // =============================================================================
@@ -3876,104 +3412,6 @@ describe("cleanupExpiredPrompts", () => {
 
     const pending = getPendingPrompts();
     expect(Object.keys(pending).length).toBe(2);
-  });
-});
-
-describe("clearPendingPromptsFromEvents", () => {
-  beforeEach(() => {
-    localStorageMock.clear();
-  });
-
-  test("clears pending prompts that match loaded events", () => {
-    // Save some pending prompts
-    savePendingPrompt("session1", "prompt1", "First message", []);
-    savePendingPrompt("session1", "prompt2", "Second message", []);
-    savePendingPrompt("session1", "prompt3", "Third message", []);
-
-    // Simulate loaded events with prompt_id
-    const events = [
-      {
-        type: "user_prompt",
-        data: { message: "First message", prompt_id: "prompt1" },
-      },
-      { type: "agent_message", data: { text: "Response" } },
-      {
-        type: "user_prompt",
-        data: { message: "Second message", prompt_id: "prompt2" },
-      },
-    ];
-
-    clearPendingPromptsFromEvents(events);
-
-    const pending = getPendingPrompts();
-    expect(pending["prompt1"]).toBeUndefined();
-    expect(pending["prompt2"]).toBeUndefined();
-    expect(pending["prompt3"]).toBeDefined(); // Not in events, should remain
-  });
-
-  test("handles events without prompt_id", () => {
-    savePendingPrompt("session1", "prompt1", "Message", []);
-
-    // Events without prompt_id (old format)
-    const events = [{ type: "user_prompt", data: { message: "Message" } }];
-
-    clearPendingPromptsFromEvents(events);
-
-    // Should not be cleared since there's no prompt_id to match
-    const pending = getPendingPrompts();
-    expect(pending["prompt1"]).toBeDefined();
-  });
-
-  test("handles empty events array", () => {
-    savePendingPrompt("session1", "prompt1", "Message", []);
-
-    clearPendingPromptsFromEvents([]);
-
-    const pending = getPendingPrompts();
-    expect(pending["prompt1"]).toBeDefined();
-  });
-
-  test("handles null/undefined events", () => {
-    savePendingPrompt("session1", "prompt1", "Message", []);
-
-    clearPendingPromptsFromEvents(null);
-    clearPendingPromptsFromEvents(undefined);
-
-    const pending = getPendingPrompts();
-    expect(pending["prompt1"]).toBeDefined();
-  });
-
-  test("handles no pending prompts", () => {
-    const events = [
-      {
-        type: "user_prompt",
-        data: { message: "Message", prompt_id: "prompt1" },
-      },
-    ];
-
-    // Should not throw
-    clearPendingPromptsFromEvents(events);
-
-    expect(getPendingPrompts()).toEqual({});
-  });
-
-  test("only processes user_prompt events", () => {
-    savePendingPrompt("session1", "prompt1", "Message", []);
-
-    // Events with prompt_id but wrong type
-    const events = [
-      {
-        type: "agent_message",
-        data: { text: "Response", prompt_id: "prompt1" },
-      },
-      { type: "tool_call", data: { name: "test", prompt_id: "prompt1" } },
-    ];
-
-    clearPendingPromptsFromEvents(events);
-
-    // Should not be cleared since they're not user_prompt events
-    const pending = getPendingPrompts();
-    expect(pending["prompt1"]).toBeDefined();
   });
 });
 
@@ -5418,5 +4856,126 @@ describe("formatTimeAgo", () => {
   test("accepts timestamp numbers", () => {
     const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
     expect(formatTimeAgo(fiveMinutesAgo)).toBe("5m ago");
+  });
+});
+
+
+describe("User Prompt Image Construction (WebSocket handler)", () => {
+  // This tests the logic used in the user_prompt WebSocket handler
+  // (useWebSocket.js) to construct image objects from raw image_ids.
+  //
+  // Bug: The handler previously stored `imageIds` (raw ID strings) on the
+  // message, but Message.js renders from `message.images` (array of objects
+  // with {id, url, name}). Images were invisible until reload because
+  // convertEventsToMessages (used on reload) correctly constructs the objects.
+  //
+  // Fix: The handler now constructs proper image objects matching the format
+  // from convertEventsToMessages.
+
+  // Helper that mimics the FIXED user_prompt handler image construction
+  function buildUserMessageWithImages(sessionId, message, imageIds, apiPrefix = "") {
+    const userMessage = {
+      role: ROLE_USER,
+      text: message,
+      timestamp: Date.now(),
+      seq: 1,
+    };
+    if (imageIds && imageIds.length > 0) {
+      userMessage.images = imageIds.map((id) => ({
+        id,
+        url: `${apiPrefix}/api/sessions/${sessionId}/images/${id}`,
+        name: id,
+      }));
+    }
+    return userMessage;
+  }
+
+  // Helper that mimics the OLD BUGGY handler (for regression test)
+  function buildUserMessageWithImagesBuggy(message, imageIds) {
+    const userMessage = {
+      role: ROLE_USER,
+      text: message,
+      timestamp: Date.now(),
+      seq: 1,
+    };
+    if (imageIds && imageIds.length > 0) {
+      userMessage.imageIds = imageIds; // Bug: wrong property name
+    }
+    return userMessage;
+  }
+
+  test("constructs images array with URLs from image_ids", () => {
+    const msg = buildUserMessageWithImages("sess-123", "Check this", ["img_001", "img_002"]);
+    expect(msg.images).toHaveLength(2);
+    expect(msg.images[0]).toEqual({
+      id: "img_001",
+      url: "/api/sessions/sess-123/images/img_001",
+      name: "img_001",
+    });
+    expect(msg.images[1]).toEqual({
+      id: "img_002",
+      url: "/api/sessions/sess-123/images/img_002",
+      name: "img_002",
+    });
+  });
+
+  test("images property is undefined when no image_ids", () => {
+    const msg = buildUserMessageWithImages("sess-123", "No images", []);
+    expect(msg.images).toBeUndefined();
+  });
+
+  test("images property is undefined when image_ids is null", () => {
+    const msg = buildUserMessageWithImages("sess-123", "No images", null);
+    expect(msg.images).toBeUndefined();
+  });
+
+  test("image URLs include apiPrefix when set", () => {
+    const msg = buildUserMessageWithImages("sess-123", "Test", ["img_001"], "/mitto");
+    expect(msg.images[0].url).toBe("/mitto/api/sessions/sess-123/images/img_001");
+  });
+
+  test("image format matches convertEventsToMessages output", () => {
+    // The WebSocket handler's output should be compatible with what
+    // convertEventsToMessages produces for the same image IDs
+    const sessionId = "test-session";
+    const imageId = "img_001.png";
+
+    // What the WebSocket handler produces
+    const wsMessage = buildUserMessageWithImages(sessionId, "Test", [imageId]);
+
+    // What convertEventsToMessages produces
+    const events = [{
+      type: "user_prompt",
+      data: {
+        message: "Test",
+        images: [{ id: imageId, mime_type: "image/png" }],
+      },
+      timestamp: "2024-01-01T10:00:00Z",
+      seq: 1,
+    }];
+    const loadedMessages = convertEventsToMessages(events, { sessionId });
+
+    // Both should have images with id and url
+    expect(wsMessage.images[0].id).toBe(loadedMessages[0].images[0].id);
+    expect(wsMessage.images[0].url).toBe(loadedMessages[0].images[0].url);
+  });
+
+  test("Message component can render images from WebSocket handler", () => {
+    // Message.js checks: message.images && message.images.length > 0
+    // and renders: message.images.map(img => img.url)
+    const msg = buildUserMessageWithImages("sess-123", "Check this", ["img_001"]);
+    const hasImages = msg.images && msg.images.length > 0;
+    expect(hasImages).toBe(true);
+    expect(msg.images[0].url).toBeDefined();
+    expect(msg.images[0].url).toContain("/api/sessions/");
+  });
+
+  test("OLD BUG: imageIds property is invisible to Message component", () => {
+    // This verifies the old bug: storing imageIds instead of images
+    // meant Message.js could never see the images
+    const msg = buildUserMessageWithImagesBuggy("Check this", ["img_001"]);
+    const hasImages = msg.images && msg.images.length > 0;
+    expect(hasImages).toBeFalsy(); // Bug: images is undefined
+    expect(msg.imageIds).toHaveLength(1); // The data was there, just wrong property
   });
 });

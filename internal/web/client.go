@@ -238,14 +238,10 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		}
 
 	case u.ToolCall != nil:
-		// Seq is assigned at emit time by StreamBuffer.
-		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
-		status := string(u.ToolCall.Status)
-		c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
-
-		// Check if this is any mitto_* tool call and extract self_id for correlation.
-		// The tool title contains the tool name (e.g., "mitto_get_current_session_mitto-debug").
-		// All mitto_* tools use self_id for automatic session detection.
+		// Register MCP correlation BEFORE StreamBuffer processing.
+		// The MCP HTTP request arrives in parallel and polls for this correlation.
+		// By registering first, we avoid the MCP handler waiting for StreamBuffer
+		// to finish flushing markdown, persisting events, and notifying observers.
 		if c.onMittoToolCall != nil && strings.Contains(u.ToolCall.Title, "mitto_") {
 			selfID := extractMittoSelfID(u.ToolCall.RawInput)
 			if selfID != "" {
@@ -261,6 +257,11 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 				c.onMittoToolCall("init")
 			}
 		}
+
+		// Seq is assigned at emit time by StreamBuffer.
+		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
+		status := string(u.ToolCall.Status)
+		c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
 
 	case u.ToolCallUpdate != nil:
 		// Seq is assigned at emit time by StreamBuffer.

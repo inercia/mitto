@@ -194,6 +194,9 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	for _, child := range input.ChildSessions {
 		ctx.Children.Names = append(ctx.Children.Names, child.Name)
 		ctx.Children.ACPServers = append(ctx.Children.ACPServers, child.ACPServer)
+		if child.ChildOrigin == "mcp" {
+			ctx.Children.MCPCount++
+		}
 	}
 
 	// Tools context

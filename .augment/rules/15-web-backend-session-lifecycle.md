@@ -1,12 +1,14 @@
 ---
-description: Session lifecycle management, archive/unarchive flows, ACP connection lifecycle, graceful shutdown, crash recovery, error classification, and session lifecycle anti-patterns
+description: Session lifecycle management, archive/unarchive flows, ACP connection lifecycle, graceful shutdown, crash recovery, error classification, parent-child rules, and session lifecycle anti-patterns
 globs:
   - "internal/web/session_api.go"
   - "internal/web/session_manager.go"
   - "internal/web/background_session.go"
   - "internal/web/session_ws.go"
+  - "internal/web/session_periodic_api.go"
   - "internal/web/acp_error_classification.go"
   - "internal/web/shared_acp_process.go"
+  - "internal/mcpserver/server.go"
 keywords:
   - session lifecycle
   - archive
@@ -22,6 +24,10 @@ keywords:
   - crash recovery
   - restart
   - backoff
+  - parent child
+  - child session
+  - cascade delete
+  - periodic
 ---
 
 # Session Lifecycle Management
@@ -301,3 +307,61 @@ if err == session.ErrSessionNotFound {
 | `acp_started`       | Server->Client  | ACP connection started        |
 | `acp_start_failed`  | Server->Client  | ACP failed to start           |
 | `session_gone`      | Server->Client  | Session deleted/not found (terminal — client must stop reconnecting) |
+
+
+## Parent-Child Session Lifecycle Rules
+
+### Rule 1: Children Cannot Be Directly Archived
+
+A child session (one with `ParentSessionID != ""`) **cannot** be archived through the HTTP API or MCP tools. Attempting to archive a child returns HTTP 400 or an MCP error. Children are only removed when their parent is archived (see Rule 2).
+
+Guards exist in:
+- `handleUpdateSession` in `session_api.go` — checks `meta.ParentSessionID` before allowing archive
+- `handleArchiveConversation` in `mcpserver/server.go` — same check
+
+### Rule 2: Archiving a Parent Cascade-Deletes All Children
+
+When a parent session is archived, all its direct children are **permanently deleted** (not just archived). This is handled by `DeleteChildSessions()` in `SessionManager`:
+
+1. Lists all direct children via `store.ListChildSessions(parentID)`
+2. For each child: gracefully stops ACP process (30s timeout), then force-closes if needed
+3. Finds auto-grandchildren before deletion (for ACP cleanup and broadcast)
+4. Calls `store.Delete(childID)` — permanently removes session data from disk
+5. Broadcasts `session_deleted` for the child and any cascade-deleted grandchildren
+
+Called asynchronously (`go sm.DeleteChildSessions(parentID)`) from both:
+- `handleUpdateSession` in `session_api.go`
+- `handleArchiveConversation` in `mcpserver/server.go`
+
+### Rule 3: Children Cannot Be Made Periodic
+
+A child session cannot have periodic scheduling configured. Only top-level (parentless) sessions can be periodic. A child **can** have a periodic parent — the restriction is only on setting periodic config directly on a child.
+
+Guards exist in:
+- `handleSessionPeriodic` in `session_periodic_api.go` — blocks PUT/PATCH/DELETE on children (GET is allowed)
+- `handleSetPeriodic` in `mcpserver/server.go` — returns error for children
+
+### Anti-Patterns
+
+```go
+// BAD: Archiving a child directly
+store.UpdateMetadata(childID, func(m *session.Metadata) {
+    m.Archived = true  // Wrong — children should be deleted, not archived
+})
+
+// GOOD: Archive the parent — children are cascade-deleted automatically
+store.UpdateMetadata(parentID, func(m *session.Metadata) {
+    m.Archived = true
+})
+go sm.DeleteChildSessions(parentID)
+```
+
+```go
+// BAD: Allowing periodic on a child
+store.SetPeriodicConfig(childID, config)  // Wrong — children can't be periodic
+
+// GOOD: Check parent status first
+if meta.ParentSessionID != "" {
+    return error("cannot set periodic on a child conversation")
+}
+```

@@ -15,7 +15,7 @@ import {
   linkifyUrls,
 } from "../lib.js";
 
-import { openFileURL, isNativeApp } from "../utils/index.js";
+import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
 
 /**
  * Check if a thought message appears to be reporting an upstream model/API error.
@@ -140,25 +140,36 @@ export function Message({ message, isLast, isStreaming }) {
       [message.title],
     );
 
-    // Render title with clickable file paths
+    // Render title with clickable file paths (opens in internal viewer)
     const renderTitle = () => {
       return titleSegments.map((segment, index) => {
         if (segment.type === "path") {
-          // Render as a clickable link
+          // Build viewer URL for this file path
+          const apiPrefix = getAPIPrefix();
+          const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
+          const wsPath = window.mittoCurrentWorkspace || "";
+          const relativePath = segment.value.replace(/^\.\//, "");
+          let viewerUrl = null;
+          if (workspaceUUID) {
+            viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+            if (wsPath) {
+              viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
+            }
+          }
+
+          const href = viewerUrl || "#";
           return html`<a
             key=${index}
-            href="#"
+            href=${href}
             class="file-link hover:underline"
             onClick=${(e) => {
               e.preventDefault();
-              // Get the current workspace from global state
-              const workspace = window.mittoCurrentWorkspace || "";
-              if (workspace) {
-                // Build the file URL
-                const absolutePath = segment.value.startsWith("/")
-                  ? segment.value
-                  : workspace + "/" + segment.value;
-                openFileURL("file://" + absolutePath);
+              if (!viewerUrl) return;
+              if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+                const fullUrl = new URL(viewerUrl, window.location.origin).href;
+                window.mittoOpenViewer(fullUrl);
+              } else {
+                window.open(viewerUrl, "_blank", "noopener,noreferrer");
               }
             }}
             >${segment.value}</a

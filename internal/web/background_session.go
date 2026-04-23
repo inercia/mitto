@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -75,6 +76,15 @@ type BackgroundSession struct {
 	observers             map[SessionObserver]struct{}
 	lastObserverRemovedAt atomic.Int64 // Unix nanos when observer count last dropped to 0 (for GC grace period)
 
+	// Connected WebSocket client tracking (separate from observers)
+	// Clients are counted from initial WS connection until disconnect,
+	// even before they send load_events and become observers.
+	connectedClients atomic.Int32
+
+	// Activity tracking — updated on observer add and prompt start.
+	// Used by GC to determine if a session has been recently used.
+	lastActivityAt atomic.Int64 // Unix nanos
+
 	// Prompt state
 	promptMu             sync.Mutex
 	promptCond           *sync.Cond // Condition variable for waiting on prompt completion
@@ -108,6 +118,7 @@ type BackgroundSession struct {
 	actionButtonsConfig *config.ActionButtonsConfig // Configuration (nil means disabled)
 	actionButtonsMu     sync.RWMutex                // Protects cachedActionButtons
 	cachedActionButtons []ActionButton              // In-memory cache for fast access
+	followUpInProgress  atomic.Bool                 // Prevents concurrent follow-up analyses (prompt completion vs session resume race)
 
 	// File links configuration
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
@@ -269,6 +280,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Initialize activity timestamp
+	bs.lastActivityAt.Store(time.Now().UnixNano())
 
 	// Create recorder for persistence
 	if cfg.Store != nil {
@@ -438,6 +452,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Initialize activity timestamp
+	bs.lastActivityAt.Store(time.Now().UnixNano())
 
 	// Resume recorder for the existing session
 	if config.Store != nil {
@@ -744,6 +761,8 @@ func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 	observerCount := len(bs.observers)
 	bs.observersMu.Unlock()
 
+	bs.TouchActivity()
+
 	if bs.logger != nil {
 		bs.logger.Debug("Observer added", "observer_count", observerCount)
 	}
@@ -826,6 +845,50 @@ func (bs *BackgroundSession) ObserverCount() int {
 	bs.observersMu.RLock()
 	defer bs.observersMu.RUnlock()
 	return len(bs.observers)
+}
+
+// AddConnectedClient increments the connected WebSocket client counter.
+// Called when a client establishes a WebSocket connection, before load_events.
+func (bs *BackgroundSession) AddConnectedClient() {
+	count := bs.connectedClients.Add(1)
+	if bs.logger != nil {
+		bs.logger.Debug("Connected client added", "connected_client_count", count)
+	}
+}
+
+// RemoveConnectedClient decrements the connected WebSocket client counter.
+// Called when a WebSocket client disconnects (readPump exits).
+func (bs *BackgroundSession) RemoveConnectedClient() {
+	count := bs.connectedClients.Add(-1)
+	if bs.logger != nil {
+		bs.logger.Debug("Connected client removed", "connected_client_count", count)
+	}
+}
+
+// HasConnectedClients returns true if any WebSocket clients are currently connected.
+func (bs *BackgroundSession) HasConnectedClients() bool {
+	return bs.connectedClients.Load() > 0
+}
+
+// ConnectedClientCount returns the number of currently connected WebSocket clients.
+func (bs *BackgroundSession) ConnectedClientCount() int {
+	return int(bs.connectedClients.Load())
+}
+
+// TouchActivity records the current time as the session's last activity timestamp.
+// Called on observer add and at the start of each prompt.
+func (bs *BackgroundSession) TouchActivity() {
+	bs.lastActivityAt.Store(time.Now().UnixNano())
+}
+
+// LastActivityAt returns the time of the most recent session activity.
+// Returns zero time if lastActivityAt was never set (should not happen after construction).
+func (bs *BackgroundSession) LastActivityAt() time.Time {
+	nanos := bs.lastActivityAt.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // HasObservers returns true if any observers are attached.
@@ -1514,10 +1577,36 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			"acp_session_id", acpSessionID)
 	}
 
-	// Parse command using shell-aware tokenization
+	// Parse command using shell-aware tokenization FIRST,
+	// then expand $MITTO_* references in each arg individually.
+	// This preserves paths with spaces as single arguments.
 	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
 		return "", &sessionError{err.Error()}
+	}
+	mittoEnv := mittoAcp.BuildMittoEnv(bs.persistedID, workingDir, "", "")
+	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
+	if bs.logger != nil {
+		changedIndices := make([]int, 0)
+		for i, orig := range args {
+			if orig != expandedArgs[i] {
+				changedIndices = append(changedIndices, i)
+			}
+		}
+		if len(changedIndices) > 0 {
+			bs.logger.Debug("expanded MITTO_* vars in ACP command args",
+				"changed_indices", changedIndices,
+				"changed_count", len(changedIndices),
+				"session_id", bs.persistedID)
+		}
+	}
+	args = expandedArgs
+	// Expand cwd (single string, not shlex-parsed)
+	originalCwd := acpCwd
+	acpCwd = mittoAcp.ExpandCommand(acpCwd, mittoEnv)
+	if acpCwd != originalCwd && bs.logger != nil {
+		bs.logger.Debug("expanded MITTO_* vars in ACP cwd",
+			"session_id", bs.persistedID)
 	}
 
 	var stdin runner.WriteCloser
@@ -1605,6 +1694,13 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		if err != nil {
 			return "", &sessionError{"failed to create stderr pipe: " + err.Error()}
 		}
+
+		// Set MITTO_* environment variables for the ACP subprocess
+		processEnv := os.Environ()
+		for k, v := range mittoEnv {
+			processEnv = append(processEnv, k+"="+v)
+		}
+		cmd.Env = processEnv
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}
@@ -1915,10 +2011,10 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 	if bs.fileLinksConfig.IsEnabled() {
 		cfg.FileLinksConfig = &conversion.FileLinkerConfig{
 			WorkingDir:            bs.workingDir,
+			WorkspacePath:         bs.workingDir,
 			WorkspaceUUID:         bs.workspaceUUID,
 			Enabled:               true,
 			AllowOutsideWorkspace: bs.fileLinksConfig.IsAllowOutsideWorkspace(),
-			UseHTTPLinks:          true,
 			APIPrefix:             bs.apiPrefix,
 		}
 	}
@@ -2024,7 +2120,7 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 				logFields = append(logFields, "timeout", true)
 			}
 			if bs.logger != nil {
-				bs.logger.Warn("Failed to load ACP session on shared process, creating new",
+				bs.logger.Info("Failed to load ACP session on shared process, creating new",
 					logFields...)
 			}
 		}
@@ -2342,6 +2438,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	bs.isPrompting = true
 	bs.promptStartTime = time.Now()
 	bs.promptCount++
+	bs.TouchActivity()
 
 	// Check if we need to inject conversation history (first prompt of resumed session)
 	shouldInjectHistory := bs.isResumed && !bs.historyInjected
@@ -2529,6 +2626,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					Name:        child.Name,
 					ACPServer:   child.ACPServer,
 					IsAutoChild: child.IsAutoChild,
+					ChildOrigin: string(child.ChildOrigin),
 				})
 			}
 		}
@@ -2557,6 +2655,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		AvailableACPServers: bs.availableACPServers,
 		ChildSessions:       childSessions,
 		MCPToolNames:        mcpToolNames,
+		IsPeriodic:          meta.SenderID == "periodic-runner",
 	}
 
 	if bs.processorManager != nil {
@@ -2868,10 +2967,19 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 // to observers via OnActionButtons. This is non-blocking and runs in a goroutine.
 // userPrompt provides context about what the user asked.
 func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage string) {
-	// Use a generous timeout: PromptAuxiliary calls WaitForIdle before sending the
-	// follow-up prompt, and another aux operation (e.g. MCP tool fetch) may be
-	// in-flight at the same time — keeping activeRPCs > 0 for tens of seconds.
-	// 5 minutes is ample for those concurrent aux ops to finish.
+	// Prevent concurrent analysis — only one goroutine should analyze at a time.
+	// If another analysis is already in progress, skip this one.
+	// The in-progress analysis will produce the same results since the session
+	// state hasn't changed (no new prompts while both are running).
+	if !bs.followUpInProgress.CompareAndSwap(false, true) {
+		if bs.logger != nil {
+			bs.logger.Debug("follow-up analysis: skipped, another analysis already in progress")
+		}
+		return
+	}
+	defer bs.followUpInProgress.Store(false)
+
+	// Use a generous timeout for the auxiliary follow-up prompt.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -3012,6 +3120,12 @@ func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
 	bs.logger.Debug("follow-up suggestions: triggering analysis for resumed session",
 		"user_prompt_length", len(userPrompt),
 		"agent_message_length", len(agentMessage))
+
+	// Check if analysis is already in progress (e.g., from prompt completion racing with session resume)
+	if bs.followUpInProgress.Load() {
+		bs.logger.Debug("follow-up suggestions: analysis already in progress, skipping")
+		return true
+	}
 
 	// Run analysis asynchronously
 	go bs.analyzeFollowUpQuestions(userPrompt, agentMessage)
@@ -4249,7 +4363,7 @@ func (bs *BackgroundSession) DismissActiveUIPrompt() {
 
 // HandleUIPromptAnswer processes a user's response to a UI prompt.
 // This is called by SessionWSClient when it receives a ui_prompt_answer message.
-func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label string) {
+func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label, freeText string) {
 	bs.activePromptMu.Lock()
 
 	if bs.activePrompt == nil || bs.activePrompt.request.RequestID != requestID {
@@ -4268,6 +4382,8 @@ func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label str
 		RequestID: requestID,
 		OptionID:  optionID,
 		Label:     label,
+		FreeText:  freeText,
+		Aborted:   optionID == "abort",
 	}:
 	default:
 		// Already received a response - ignore duplicate

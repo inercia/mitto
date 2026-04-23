@@ -5,6 +5,7 @@ export {
   openExternalURL,
   openFileURL,
   convertFileURLToHTTP,
+  convertFileURLToViewer,
   convertHTTPFileURLToFile,
   convertHTTPFileURLToViewer,
   setCurrentWorkspace,

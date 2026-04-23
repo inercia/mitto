@@ -154,3 +154,24 @@ func TestWriteJSONAtomic_InvalidData(t *testing.T) {
 		t.Error("expected error for unmarshalable data, got nil")
 	}
 }
+
+func TestWriteJSONAtomic_MissingParentDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create a path with a non-existent subdirectory
+	path := filepath.Join(tmpDir, "subdir", "nested", "atomic.json")
+
+	data := testData{Name: "nested", Value: 42}
+	err := WriteJSONAtomic(path, &data, 0644)
+	if err != nil {
+		t.Fatalf("WriteJSONAtomic failed with missing parent dir: %v", err)
+	}
+
+	// Read back and verify
+	var readData testData
+	if err := ReadJSON(path, &readData); err != nil {
+		t.Fatalf("failed to read back: %v", err)
+	}
+	if readData.Name != data.Name || readData.Value != data.Value {
+		t.Errorf("read data = %+v, want %+v", readData, data)
+	}
+}

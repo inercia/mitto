@@ -35,7 +35,7 @@ Present to user with recommended model:
 
 ## Phase 3: Select ACP Server
 
-Ask via `mitto_ui_options_combo` (timeout: 60s):
+Ask via `mitto_ui_options` (timeout: 60s):
 ```
 question: "Which AI agent for continuing this work?"
 options: <list of server names from @mitto:available_acp_servers>

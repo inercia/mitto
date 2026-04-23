@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	builtinConfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	configPkg "github.com/inercia/mitto/internal/config"
@@ -159,6 +160,10 @@ type Server struct {
 	// Periodic runner for scheduled prompt delivery
 	periodicRunner *PeriodicRunner
 
+	// Callback index for mapping callback tokens to session IDs
+	callbackIndex       *CallbackIndex
+	callbackRateLimiter *CallbackRateLimiter
+
 	// Access logger for security-relevant events (nil if disabled)
 	accessLogger *AccessLogger
 
@@ -237,6 +242,16 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
+	// Ensure builtin agent definitions are deployed to the agents directory.
+	// This is done on every startup so new agents added in updates are deployed automatically.
+	if agentsDir, err := appdir.BuiltinAgentsDir(); err == nil {
+		if deployed, err := builtinConfig.EnsureBuiltinAgents(agentsDir); err != nil {
+			logger.Warn("Failed to deploy builtin agents", "error", err)
+		} else if deployed {
+			logger.Info("Builtin agents deployed/updated", "dir", agentsDir)
+		}
+	}
+
 	// Get API prefix early (needed by session manager for HTTP file links)
 	apiPrefix := configPkg.DefaultAPIPrefix
 	if config.MittoConfig != nil && config.MittoConfig.Web.APIPrefix != "" {
@@ -266,6 +281,10 @@ func NewServer(config Config) (*Server, error) {
 	// Create shared ACP process manager for workspace-level process sharing
 	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
 	acpProcessMgr.DisableAuxiliary = config.DisableAuxiliaryPrewarm || os.Getenv("MITTO_TEST_MODE") != ""
+	// Set workspace config provider so process manager can resolve auxiliary config.
+	acpProcessMgr.WorkspaceConfigProvider = func(workspaceUUID string) *configPkg.WorkspaceSettings {
+		return sessionMgr.GetWorkspaceByUUID(workspaceUUID)
+	}
 	sessionMgr.SetACPProcessManager(acpProcessMgr)
 
 	// Start ACP process garbage collector to clean up idle sessions and processes.
@@ -520,9 +539,17 @@ func NewServer(config Config) (*Server, error) {
 		})
 	}
 
-	// Initialize periodic runner for scheduled prompt delivery
+	// Initialize periodic runner for scheduled prompt delivery and session housekeeping
 	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
 	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
+	s.periodicRunner.SetOnAutoArchive(func(sessionID string) {
+		s.BroadcastACPStopped(sessionID, "auto_archived")
+		s.BroadcastSessionArchived(sessionID, true)
+	})
+
+	// Initialize callback index and rate limiter
+	s.callbackIndex = NewCallbackIndex()
+	s.callbackRateLimiter = NewCallbackRateLimiter()
 
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
@@ -533,9 +560,19 @@ func NewServer(config Config) (*Server, error) {
 			s.periodicRunner.SetAutoArchiveAfter(autoArchiveDuration)
 			logger.Info("Auto-archive inactive sessions enabled", "period", autoArchivePeriod, "duration", autoArchiveDuration)
 		}
+
+		// Configure periodic cleanup of archived sessions
+		retentionPeriod := config.MittoConfig.Session.GetArchiveRetentionPeriod()
+		if retentionPeriod != "" {
+			s.periodicRunner.SetArchiveRetentionPeriod(retentionPeriod)
+			logger.Info("Periodic archive retention cleanup enabled", "retention_period", retentionPeriod)
+		}
 	}
 
 	s.periodicRunner.Start()
+
+	// Build callback index from existing sessions
+	s.buildCallbackIndex()
 
 	// Initialize prompts watcher for monitoring prompt file changes
 	if promptsWatcher, err := configPkg.NewPromptsWatcher(logger); err != nil {
@@ -571,6 +608,9 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
+	mux.HandleFunc(apiPrefix+"/api/agent-types", s.handleAgentTypes)
+	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.handleScanAgents)
+	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.handleConfirmAgents)
 	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
 	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.handleAdvancedFlags)
 	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
@@ -588,6 +628,9 @@ func NewServer(config Config) (*Server, error) {
 	// M3: Health check endpoint for load balancer integration and monitoring
 	// This endpoint is intentionally NOT behind auth to allow health checks
 	mux.HandleFunc(apiPrefix+"/api/health", s.handleHealthCheck)
+
+	// Callback trigger endpoint (public, no auth required)
+	mux.HandleFunc(apiPrefix+"/api/callback/", s.handleCallbackTrigger)
 
 	// File server endpoint - serves files from workspace directories (for web browser access)
 	fileServer := NewFileServer(sessionMgr, logger)
@@ -1072,15 +1115,16 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
 // If err is an *ACPClassifiedError with a permanent classification, a more detailed
 // "acp_error_permanent" message is broadcast with actionable user guidance.
-func (s *Server) BroadcastACPStartFailed(sessionID string, err error, command string) {
+func (s *Server) BroadcastACPStartFailed(sessionID, sessionName string, err error, command string) {
 	if s.eventsManager == nil {
 		return
 	}
 
 	data := map[string]interface{}{
-		"session_id": sessionID,
-		"error":      err.Error(),
-		"command":    command,
+		"session_id":   sessionID,
+		"session_name": sessionName,
+		"error":        err.Error(),
+		"command":      command,
 	}
 
 	// Check if this is a classified permanent error — broadcast with extra context.
@@ -1129,15 +1173,17 @@ func (s *Server) BroadcastPeriodicStarted(sessionID, sessionName string) {
 
 // BroadcastHookFailed notifies all connected clients that a lifecycle hook failed.
 // This allows the frontend to show a toast notification about the hook failure.
-func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string) {
+func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string, output string) {
 	s.eventsManager.Broadcast(WSMsgTypeHookFailed, map[string]interface{}{
 		"name":      name,
 		"exit_code": exitCode,
 		"error":     errorMsg,
+		"output":    output,
 	})
 
 	if s.logger != nil {
 		s.logger.Warn("Broadcast hook failed", "name", name, "exit_code", exitCode, "error", errorMsg,
+			"output", output,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
@@ -1198,7 +1244,7 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 			DownHook: hooksConfig.Down,
 			Port:     s.hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 			},
 			OnRestart: func(attempt int) {
 				s.BroadcastHookRestarted(attempt)
@@ -1265,13 +1311,28 @@ func (a *sessionManagerAdapter) GetWorkspacesForFolder(folder string) []configPk
 }
 
 // BroadcastSessionCreated broadcasts a session_created event to all connected clients.
-func (a *sessionManagerAdapter) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
-	a.sm.BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID)
+func (a *sessionManagerAdapter) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
+	a.sm.BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin)
 }
 
 // BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
 func (a *sessionManagerAdapter) BroadcastSessionArchived(sessionID string, archived bool) {
 	a.sm.BroadcastSessionArchived(sessionID, archived)
+}
+
+// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastSessionDeleted(sessionID string) {
+	a.sm.BroadcastSessionDeleted(sessionID)
+}
+
+// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
+	a.sm.BroadcastWaitingForChildren(sessionID, isWaiting)
+}
+
+// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
+func (a *sessionManagerAdapter) DeleteChildSessions(parentID string) {
+	a.sm.DeleteChildSessions(parentID)
 }
 
 // =============================================================================

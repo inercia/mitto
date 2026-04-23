@@ -95,7 +95,8 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 	server := &Server{}
 
 	req := &ConfigSaveRequest{
-		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp", ACPServer: "test"}},
+		// Workspace with no ACPServer reference — valid when no servers configured
+		Workspaces: []config.WorkspaceSettings{{WorkingDir: "/tmp"}},
 		ACPServers: []struct {
 			Name        string                  `json:"name"`
 			Command     string                  `json:"command"`
@@ -109,11 +110,8 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 	}
 
 	err := server.validateConfigRequest(req)
-	if err == nil {
-		t.Fatal("Expected error for empty ACP servers")
-	}
-	if err.StatusCode != http.StatusBadRequest {
-		t.Errorf("StatusCode = %d, want %d", err.StatusCode, http.StatusBadRequest)
+	if err != nil {
+		t.Errorf("unexpected error for zero ACP servers: %v", err)
 	}
 }
 

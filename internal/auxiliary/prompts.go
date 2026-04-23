@@ -26,10 +26,13 @@ You MUST not call any tool for this task.
 	// clearer, more specific, and more effective. Use with fmt.Sprintf,
 	// passing the original user prompt.
 	ImprovePromptTemplate = `
-The user wants to improve the following prompt.
-Please enhance it by making it clearer, more specific, and more effective,
+Rewrite the following prompt to be clearer, more specific, and more effective,
 while preserving the user's intent. Consider the current project context.
-Return ONLY the improved prompt text without any explanations or preamble.
+
+CRITICAL: Your response must contain ONLY the rewritten prompt text.
+Do NOT include any introduction, preamble, or explanation.
+Do NOT start with "Here is", "Sure", "The improved prompt", or similar phrases.
+Just output the improved prompt directly.
 You MUST not call any tool for this task.
 Respond quickly.
 

@@ -74,6 +74,14 @@ func TestCELEvaluator_ExampleExpressions(t *testing.T) {
 		// tools.hasPattern("github_*") — only if GitHub tools available
 		{expr: `tools.hasPattern("github_*")`, ctx: childCtx, want: true},
 		{expr: `tools.hasPattern("github_*")`, ctx: rootCtx, want: false},
+
+		// children.mcp_count — only if enough MCP-created children
+		{expr: "children.mcp_count >= 2", ctx: &PromptEnabledContext{
+			Children: ChildrenContext{Count: 3, Exists: true, MCPCount: 2},
+		}, want: true},
+		{expr: "children.mcp_count >= 2", ctx: &PromptEnabledContext{
+			Children: ChildrenContext{Count: 2, Exists: true, MCPCount: 1},
+		}, want: false},
 	}
 
 	for _, tt := range tests {
@@ -127,7 +135,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS"},
 		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid"},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
-		Children:  ChildrenContext{Count: 3, Exists: true, Names: []string{"c1"}, ACPServers: []string{"a1"}},
+		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}},
 		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
 	}
 
@@ -149,6 +157,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`parent.acpServer == "pacp"`,
 		`children.count == 3`,
 		`children.exists`,
+		`children.mcp_count == 2`,
 		`"c1" in children.names`,
 		`"a1" in children.acpServers`,
 		`tools.available`,

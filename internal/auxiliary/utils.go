@@ -23,6 +23,50 @@ func trimQuotes(s string) string {
 	return s
 }
 
+// stripPromptPreamble removes common LLM preamble patterns from improved prompt responses.
+// This handles cases where the LLM adds introductory text despite being told not to.
+func stripPromptPreamble(s string) string {
+	s = strings.TrimSpace(s)
+
+	// Common preamble patterns to strip (case-insensitive check)
+	preambles := []string{
+		"Here is the improved prompt:\n\n",
+		"Here is the improved prompt:\n",
+		"Here is the improved prompt:",
+		"Here's the improved prompt:\n\n",
+		"Here's the improved prompt:\n",
+		"Here's the improved prompt:",
+		"Here is your improved prompt:\n\n",
+		"Here is your improved prompt:\n",
+		"Here is your improved prompt:",
+		"Improved prompt:\n\n",
+		"Improved prompt:\n",
+		"Improved prompt:",
+		"Sure, here is the improved prompt:\n\n",
+		"Sure, here is the improved prompt:\n",
+		"Sure, here is the improved prompt:",
+		"Sure! Here is the improved prompt:\n\n",
+		"Sure! Here is the improved prompt:\n",
+		"Sure! Here is the improved prompt:",
+		"Sure, here's the improved prompt:\n\n",
+		"Sure, here's the improved prompt:\n",
+		"Sure, here's the improved prompt:",
+		"Sure! Here's the improved prompt:\n\n",
+		"Sure! Here's the improved prompt:\n",
+		"Sure! Here's the improved prompt:",
+	}
+
+	lower := strings.ToLower(s)
+	for _, p := range preambles {
+		if strings.HasPrefix(lower, strings.ToLower(p)) {
+			s = s[len(p):]
+			break
+		}
+	}
+
+	return strings.TrimSpace(s)
+}
+
 // truncateForLog truncates a string to maxLen characters for logging,
 // appending "..." if truncated.
 func truncateForLog(s string, maxLen int) string {

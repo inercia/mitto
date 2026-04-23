@@ -237,11 +237,6 @@ func LoadSettings() (*Config, error) {
 
 	cfg := settings.ToConfig()
 
-	// Validate the config has at least one ACP server
-	if len(cfg.ACPServers) == 0 {
-		return nil, fmt.Errorf("no ACP servers configured in settings")
-	}
-
 	// If we modified settings during deduplication, save the cleaned version
 	if settingsModified {
 		_ = SaveSettings(&settings) // Ignore error - deduplication is best-effort
@@ -430,10 +425,6 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 
 	// If no RC file, return settings-only config
 	if rcPath == "" {
-		// Validate at least one ACP server
-		if len(settingsCfg.ACPServers) == 0 {
-			return nil, fmt.Errorf("no ACP servers configured in settings")
-		}
 		return &LoadResult{
 			Config:           settingsCfg,
 			Source:           ConfigSourceSettingsJSON,
@@ -498,11 +489,6 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 	if err := loadKeychainPassword(mergedCfg); err != nil {
 		// Non-fatal, just log and continue
 		_ = err
-	}
-
-	// Validate at least one ACP server
-	if len(mergedCfg.ACPServers) == 0 {
-		return nil, fmt.Errorf("no ACP servers configured")
 	}
 
 	return &LoadResult{

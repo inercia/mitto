@@ -36,8 +36,12 @@ For simplifications spanning 3+ files, removing abstraction layers, or multiple 
 **Session context for delegation:**
 
 Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
-Available ACP servers: `@mitto:available_acp_servers`
-Existing children: `@mitto:children`
+
+Available ACP servers:
+@mitto:available_acp_servers
+
+Existing children:
+@mitto:children
 
 **Choosing the right ACP server:**
 

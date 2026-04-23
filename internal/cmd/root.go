@@ -47,7 +47,7 @@ like auggie, claude-code, and others that implement ACP.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config loading for commands that don't need it
 		// (help, completion, prompts and processors management commands, and mcp proxy mode)
-		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors") {
+		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors" || cmd.Parent().Name() == "agents") {
 			return nil
 		}
 
@@ -110,6 +110,18 @@ like auggie, claude-code, and others that implement ACP.`,
 				slog.Warn("Failed to deploy builtin processors", "error", deployErr)
 			} else if deployed {
 				slog.Info("Deployed builtin processors", "dir", builtinProcessorsDir)
+			}
+		}
+
+		// Deploy builtin agents on first run
+		if builtinAgentsDir, baErr := appdir.BuiltinAgentsDir(); baErr != nil {
+			slog.Warn("Failed to get builtin agents directory", "error", baErr)
+		} else {
+			deployed, deployErr := embeddedconfig.EnsureBuiltinAgents(builtinAgentsDir)
+			if deployErr != nil {
+				slog.Warn("Failed to deploy builtin agents", "error", deployErr)
+			} else if deployed {
+				slog.Info("Deployed builtin agents", "dir", builtinAgentsDir)
 			}
 		}
 
@@ -216,22 +228,22 @@ func parseWorkspaces() ([]Workspace, error) {
 		return nil, fmt.Errorf("configuration not loaded")
 	}
 
+	// defaultServer may be nil when no ACP servers are configured (first-run experience).
+	// That's OK — the web UI will guide the user through agent discovery.
 	defaultServer := cfg.DefaultServer()
-	if defaultServer == nil {
-		return nil, fmt.Errorf("no ACP servers configured")
-	}
 
-	// If no --dir flags provided, use current directory with default server
+	// If no --dir flags provided, use current directory with default server (if any)
 	if len(dirFlags) == 0 {
 		wd, err := os.Getwd()
 		if err != nil {
 			wd = "."
 		}
-		return []Workspace{{
-			ServerName: defaultServer.Name,
-			Server:     defaultServer,
-			Dir:        wd,
-		}}, nil
+		ws := Workspace{Dir: wd}
+		if defaultServer != nil {
+			ws.ServerName = defaultServer.Name
+			ws.Server = defaultServer
+		}
+		return []Workspace{ws}, nil
 	}
 
 	// Parse each --dir flag
@@ -283,9 +295,12 @@ func parseWorkspaces() ([]Workspace, error) {
 			if err != nil {
 				return nil, fmt.Errorf("unknown ACP server %q: %w", serverName, err)
 			}
-		} else {
+		} else if defaultServer != nil {
 			server = defaultServer
 			serverName = defaultServer.Name
+		} else {
+			// No server name in flag and no default server — require explicit server:path format
+			return nil, fmt.Errorf("--dir flag %q requires a server name (server:path format) because no ACP servers are configured", dirFlag)
 		}
 
 		workspaces = append(workspaces, Workspace{

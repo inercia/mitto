@@ -41,7 +41,9 @@ import {
   ChevronRightIcon,
   DuplicateIcon,
   ShieldIcon,
+  SearchIcon,
 } from "./Icons.js";
+import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
@@ -526,6 +528,9 @@ function WorkspaceEditForm({
       "#808080",
   );
   const [acpServer, setAcpServer] = useState(workspace.acp_server);
+  const [auxiliaryAcpServer, setAuxiliaryAcpServer] = useState(
+    workspace.auxiliary_acp_server || "",
+  );
   const [runner, setRunner] = useState(workspace.restricted_runner || "exec");
   const [autoApprove, setAutoApprove] = useState(
     workspace.auto_approve === true,
@@ -576,6 +581,7 @@ function WorkspaceEditForm({
       code: sanitizedCode || undefined,
       color: color || undefined,
       acp_server: acpServer,
+      auxiliary_acp_server: auxiliaryAcpServer,
       restricted_runner: runner,
       // Only include runner config for non-exec runners
       restricted_runner_config: runner !== "exec" ? runnerConfig : undefined,
@@ -615,6 +621,31 @@ function WorkspaceEditForm({
             `,
           )}
         </select>
+      </div>
+
+      <!-- Auxiliary ACP Server Selection -->
+      <div>
+        <label class="block text-sm text-gray-400 mb-1"
+          >Auxiliary ACP Server</label
+        >
+        <select
+          value=${auxiliaryAcpServer}
+          onChange=${(e) => setAuxiliaryAcpServer(e.target.value)}
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Default (shared with main)</option>
+          <option value="none">None (disabled)</option>
+          ${sortedServers.map(
+            (srv) => html`
+              <option key=${"aux-" + srv.name} value=${srv.name}>
+                ${srv.name}
+              </option>
+            `,
+          )}
+        </select>
+        <p class="text-xs text-gray-500 mt-1">
+          Dedicated server for background tasks (titles, suggestions)
+        </p>
       </div>
 
       <!-- Sandbox Type -->
@@ -728,7 +759,7 @@ function WorkspaceEditForm({
  * Helper component for editing a server inline
  * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
-function ServerEditForm({ server, onSave, onCancel }) {
+function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
   const [type, setType] = useState(server.type || "");
@@ -744,7 +775,25 @@ function ServerEditForm({ server, onSave, onCancel }) {
   // All prompts are now file-based (read-only)
   const filePrompts = server.prompts || [];
 
+  const [typeError, setTypeError] = useState(false);
+  const [formError, setFormError] = useState("");
+
   const handleSave = () => {
+    setFormError("");
+    if (!name.trim()) {
+      setFormError("Server name cannot be empty");
+      return;
+    }
+    if (!command.trim()) {
+      setFormError("Server command cannot be empty");
+      return;
+    }
+    if (!type.trim()) {
+      setTypeError(true);
+      setFormError("Please select an agent type");
+      return;
+    }
+    setTypeError(false);
     // Convert envVars array back to object, filtering out empty keys
     const envObj = {};
     envVars.forEach(({ key, value }) => {
@@ -757,7 +806,10 @@ function ServerEditForm({ server, onSave, onCancel }) {
       .split(",")
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
-    onSave(name, command, type, autoApprove, envObj, parsedTags);
+    const err = onSave(name, command, type, autoApprove, envObj, parsedTags);
+    if (err) {
+      setFormError(err);
+    }
   };
 
   const addEnvVar = () => {
@@ -797,19 +849,26 @@ function ServerEditForm({ server, onSave, onCancel }) {
       <div>
         <label class="block text-sm text-gray-400 mb-1"
           >Type
-          <span class="text-xs text-gray-500"
-            >(optional, for prompt matching)</span
-          ></label
+          <span class="text-xs text-red-400 ml-1">*</span></label
         >
-        <input
-          type="text"
+        <select
           value=${type}
-          onInput=${(e) => setType(e.target.value)}
-          placeholder="e.g., auggie"
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
+          onChange=${(e) => {
+            setType(e.target.value);
+            if (e.target.value) setTypeError(false);
+          }}
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 ${typeError ? "ring-2 ring-red-500" : "focus:ring-blue-500"}"
+        >
+          <option value="">-- Select agent type --</option>
+          ${agentTypes.map(
+            (t) => html`<option key=${t} value=${t}>${t}</option>`,
+          )}
+        </select>
+        ${typeError && html`<p class="text-xs text-red-400 mt-1">
+          Agent type is required.
+        </p>`}
         <p class="text-xs text-gray-500 mt-1">
-          Servers with the same type share prompts. If empty, name is used.
+          Servers with the same type share prompts and agent configuration.
         </p>
       </div>
       <div>
@@ -943,6 +1002,15 @@ function ServerEditForm({ server, onSave, onCancel }) {
               `,
             )}
           </div>
+        </div>
+      `}
+
+      ${formError &&
+      html`
+        <div
+          class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
+        >
+          ⚠️ ${formError}
         </div>
       `}
 
@@ -1106,6 +1174,8 @@ export function SettingsDialog({
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [warning, setWarning] = useState("");
+  // Agent discovery dialog (triggered from Servers tab)
+  const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
 
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
@@ -1172,6 +1242,7 @@ export function SettingsDialog({
   const [newWorkspacePath, setNewWorkspacePath] = useState("");
   const [newWorkspaceServer, setNewWorkspaceServer] = useState("");
   const [newWorkspaceRunner, setNewWorkspaceRunner] = useState("exec");
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
 
   const [showAddServer, setShowAddServer] = useState(false);
   const [newServerName, setNewServerName] = useState("");
@@ -1180,6 +1251,9 @@ export function SettingsDialog({
   const [newServerTags, setNewServerTags] = useState("");
 
   const [editingServer, setEditingServer] = useState(null);
+
+  // Agent types for the type dropdown
+  const [agentTypes, setAgentTypes] = useState([]);
 
   // State for editing workspace (accordion-style, tracks workspaceKey being edited)
   const [editingWorkspace, setEditingWorkspace] = useState(null);
@@ -1234,6 +1308,9 @@ export function SettingsDialog({
 
   // External images settings (advanced) - disabled by default for security
   const [externalImagesEnabled, setExternalImagesEnabled] = useState(false);
+
+  // Max child conversations setting - default 10
+  const [maxChildConversations, setMaxChildConversations] = useState(10);
 
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
@@ -1379,6 +1456,14 @@ export function SettingsDialog({
       loadSupportedRunners();
     }
   }, [isOpen]);
+
+  // Fetch available agent types for the type dropdown
+  useEffect(() => {
+    secureFetch(apiUrl("/api/agent-types"))
+      .then((r) => r.json())
+      .then((data) => setAgentTypes(data.agent_types || []))
+      .catch(() => setAgentTypes([]));
+  }, []);
 
   // Load stored sessions to check workspace usage
   const loadStoredSessions = async () => {
@@ -1691,6 +1776,11 @@ export function SettingsDialog({
         config.conversations?.external_images?.enabled === true,
       );
 
+      // Load max child conversations setting - default to 10
+      setMaxChildConversations(
+        config.conversations?.max_child_conversations ?? 10,
+      );
+
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -1897,6 +1987,7 @@ export function SettingsDialog({
         external_images: {
           enabled: externalImagesEnabled,
         },
+        max_child_conversations: maxChildConversations,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -2110,6 +2201,7 @@ export function SettingsDialog({
     setWorkspaces([
       ...workspaces,
       {
+        name: newWorkspaceName.trim() || undefined,
         working_dir: pathTrimmed,
         acp_server: newWorkspaceServer,
         acp_command: server.command,
@@ -2117,6 +2209,7 @@ export function SettingsDialog({
       },
     ]);
     setNewWorkspacePath("");
+    setNewWorkspaceName("");
     setNewWorkspaceRunner("exec");
     setShowAddWorkspace(false);
     setError("");
@@ -2319,6 +2412,10 @@ export function SettingsDialog({
       setError("Please enter a server command");
       return;
     }
+    if (!newServerType.trim()) {
+      setError("Please select an agent type");
+      return;
+    }
     if (acpServers.some((s) => s.name === newServerName.trim())) {
       setError("A server with this name already exists");
       return;
@@ -2353,8 +2450,10 @@ export function SettingsDialog({
 
   const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags) => {
     if (!newName.trim() || !newCommand.trim()) {
-      setError("Server name and command cannot be empty");
-      return;
+      return "Server name and command cannot be empty";
+    }
+    if (!newType || !newType.trim()) {
+      return "Please select an agent type";
     }
 
     // Check for duplicate name (excluding current)
@@ -2362,8 +2461,7 @@ export function SettingsDialog({
       newName !== oldName &&
       acpServers.some((s) => s.name === newName.trim())
     ) {
-      setError("A server with this name already exists");
-      return;
+      return "A server with this name already exists";
     }
 
     // Update server (prompts are now read-only from files)
@@ -2470,15 +2568,22 @@ export function SettingsDialog({
       newName = `${baseName} (copy ${copyNum})`;
     }
 
-    // Create the duplicated server (prompts are file-based, so they aren't copied)
+    // Create the duplicated server with all copyable properties.
+    // Prompts are file-based and not copied; source defaults to "settings".
     const duplicatedServer = {
       name: newName,
       command: server.command,
+      source: "settings", // Duplicates are always settings-managed
     };
 
     // Copy type if present
     if (server.type) {
       duplicatedServer.type = server.type;
+    }
+
+    // Copy tags if present
+    if (server.tags && server.tags.length > 0) {
+      duplicatedServer.tags = [...server.tags];
     }
 
     // Copy environment variables if present (shallow copy to avoid shared references)
@@ -2686,6 +2791,23 @@ export function SettingsDialog({
                         >
                           <div>
                             <label class="block text-sm text-gray-400 mb-1"
+                              >Display Name</label
+                            >
+                            <input
+                              type="text"
+                              value=${newWorkspaceName}
+                              onInput=${(e) => {
+                                setNewWorkspaceName(e.target.value);
+                              }}
+                              placeholder="My Project"
+                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            <p class="text-xs text-gray-500 mt-1">
+                              Optional friendly name shown in the UI
+                            </p>
+                          </div>
+                          <div>
+                            <label class="block text-sm text-gray-400 mb-1"
                               >Directory Path</label
                             >
                             <div class="flex gap-2">
@@ -2777,6 +2899,7 @@ export function SettingsDialog({
                               onClick=${() => {
                                 setShowAddWorkspace(false);
                                 setNewWorkspacePath("");
+                                setNewWorkspaceName("");
                                 setNewWorkspaceRunner("exec");
                                 setError("");
                               }}
@@ -2964,6 +3087,13 @@ export function SettingsDialog({
                           for each workspace.
                         </p>
                         <button
+                          onClick=${() => setShowDiscoverAgents(true)}
+                          class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors"
+                          title="Discover Agents"
+                        >
+                          <${SearchIcon} className="w-5 h-5" />
+                        </button>
+                        <button
                           onClick=${() => setShowAddServer(!showAddServer)}
                           class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddServer
                             ? "bg-slate-700"
@@ -3007,21 +3137,22 @@ export function SettingsDialog({
                           <div>
                             <label class="block text-sm text-gray-400 mb-1"
                               >Type
-                              <span class="text-xs text-gray-500"
-                                >(optional)</span
-                              ></label
+                              <span class="text-xs text-red-400 ml-1">*</span></label
                             >
-                            <input
-                              type="text"
+                            <select
                               value=${newServerType}
-                              onInput=${(e) =>
+                              onChange=${(e) =>
                                 setNewServerType(e.target.value)}
-                              placeholder="e.g., auggie"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
+                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 ${!newServerType ? "ring-2 ring-amber-500/50" : "focus:ring-blue-500"}"
+                            >
+                              <option value="">-- Select agent type --</option>
+                              ${agentTypes.map(
+                                (t) => html`<option key=${t} value=${t}>${t}</option>`,
+                              )}
+                            </select>
                             <p class="text-xs text-gray-500 mt-1">
-                              Servers with the same type share prompts. If
-                              empty, name is used.
+                              Servers with the same type share prompts and
+                              agent configuration.
                             </p>
                           </div>
                           <div>
@@ -3104,6 +3235,7 @@ export function SettingsDialog({
                                       ? html`
                                           <${ServerEditForm}
                                             server=${srv}
+                                            agentTypes=${agentTypes}
                                             onSave=${(name, cmd, type, autoApprove, env, tags) =>
                                               updateServer(
                                                 srv.name,
@@ -4300,6 +4432,40 @@ export function SettingsDialog({
                         </div>
                       </div>
 
+                      <!-- Child Conversations Limit -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Child Conversations
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Max Child Conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Maximum number of child conversations an AI agent
+                                can spawn via MCP. Auto-created children are not
+                                counted. Set to 0 for unlimited.
+                              </div>
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value=${maxChildConversations}
+                              onChange=${(e) =>
+                                setMaxChildConversations(
+                                  parseInt(e.target.value, 10) || 0,
+                                )}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm w-20 text-center focus:ring-blue-500 focus:border-blue-500"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
                       <!-- Default Flags for New Conversations -->
                       ${availableFlags.length > 0 &&
                       html`
@@ -5191,6 +5357,23 @@ export function SettingsDialog({
           </div>
         </div>
       </div>
+
+      <!-- Agent Discovery Dialog (settings mode - returns agents to state without saving) -->
+      <${AgentDiscoveryDialog}
+        isOpen=${showDiscoverAgents}
+        mode="settings"
+        existingServers=${acpServers}
+        onClose=${() => setShowDiscoverAgents(false)}
+        onAgentsSelected=${(newAgents) => {
+          // Deduplicate by case-insensitive name before adding to state
+          const existingNames = new Set(acpServers.map((s) => s.name.toLowerCase()));
+          const toAdd = newAgents.filter((a) => !existingNames.has(a.name.toLowerCase()));
+          if (toAdd.length > 0) {
+            setAcpServers([...acpServers, ...toAdd]);
+          }
+          setShowDiscoverAgents(false);
+        }}
+      />
     </div>
   `;
 }

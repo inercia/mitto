@@ -20,7 +20,8 @@ import (
 )
 
 // MaxSessions is the maximum number of concurrent sessions allowed.
-const MaxSessions = 32
+// This limits running sessions (those with an active ACP process), not stored/archived sessions.
+const MaxSessions = 64
 
 // ErrTooManySessions is returned when the session limit is reached.
 var ErrTooManySessions = errors.New("maximum number of sessions reached")
@@ -408,9 +409,10 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 			SessionID:       childID,
 			Name:            child.Title,
 			ACPServer:       targetWS.ACPServer,
-			WorkingDir:      parentWorkingDir, // Inherit parent's working dir
-			ParentSessionID: parentID,         // Mark as child
-			IsAutoChild:     true,             // Cascade delete with parent
+			WorkingDir:      parentWorkingDir,        // Inherit parent's working dir
+			ParentSessionID: parentID,                // Mark as child
+			IsAutoChild:     true,                    // Cascade delete with parent (backward compat)
+			ChildOrigin:     session.ChildOriginAuto, // Created via auto_children config
 		}
 
 		// Create via store
@@ -438,7 +440,7 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 		}
 
 		// Broadcast creation to all connected clients
-		sm.BroadcastSessionCreated(childID, child.Title, targetWS.ACPServer, parentWorkingDir, parentID)
+		sm.BroadcastSessionCreated(childID, child.Title, targetWS.ACPServer, parentWorkingDir, parentID, string(session.ChildOriginAuto))
 
 		if sm.logger != nil {
 			sm.logger.Info("Auto-created child conversation",
@@ -845,6 +847,28 @@ func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryMa
 	sm.auxiliaryManager = am
 }
 
+// resolveACPCommand resolves an ACP server name to its shell command.
+// Returns empty string if the server name cannot be resolved.
+func (sm *SessionManager) resolveACPCommand(serverName string) string {
+	sm.mu.RLock()
+	cfg := sm.mittoConfig
+	sm.mu.RUnlock()
+
+	if cfg == nil {
+		return serverName // fallback: use name as command
+	}
+	srv, err := cfg.GetServer(serverName)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Warn("Failed to resolve ACP server command",
+				"server_name", serverName,
+				"error", err)
+		}
+		return ""
+	}
+	return srv.Command
+}
+
 // EnsureWorkspaceProcess ensures the shared ACP process for the given workspace UUID is running,
 // starting it on demand if necessary. This allows auxiliary features (e.g. "improve prompt") to
 // work even when no user session is currently active for that workspace.
@@ -873,6 +897,37 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 	if p == nil {
 		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
 	}
+
+	// If workspace has a dedicated auxiliary ACP server, ensure its process exists.
+	if ws.HasDedicatedAuxiliary() && sm.acpProcessManager != nil {
+		auxCommand := sm.resolveACPCommand(ws.AuxiliaryACPServer)
+		if auxCommand != "" {
+			auxRunner, auxRunnerErr := sm.createRunner(ws.WorkingDir, ws.AuxiliaryACPServer, ws)
+			if auxRunnerErr != nil {
+				if sm.logger != nil {
+					sm.logger.Warn("Failed to create runner for dedicated auxiliary, proceeding without restriction",
+						"workspace_uuid", workspaceUUID,
+						"aux_acp_server", ws.AuxiliaryACPServer,
+						"error", auxRunnerErr)
+				}
+				auxRunner = nil
+			}
+			if _, auxErr := sm.acpProcessManager.GetOrCreateAuxProcess(ws, auxCommand, auxRunner); auxErr != nil {
+				if sm.logger != nil {
+					sm.logger.Error("Failed to create dedicated auxiliary process",
+						"workspace_uuid", workspaceUUID,
+						"aux_acp_server", ws.AuxiliaryACPServer,
+						"error", auxErr)
+				}
+				// Non-fatal: auxiliary will fall back to main process
+			} else if sm.logger != nil {
+				sm.logger.Info("Dedicated auxiliary process ready",
+					"workspace_uuid", workspaceUUID,
+					"aux_acp_server", ws.AuxiliaryACPServer)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -902,7 +957,7 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 
 // BroadcastSessionCreated broadcasts a session_created event to all connected clients.
 // This is called when a new session is created (via HTTP API or MCP tools).
-func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
+func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
 	sm.mu.RLock()
 	em := sm.eventsManager
 	sm.mu.RUnlock()
@@ -924,6 +979,11 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 		sessionData["parent_session_id"] = parentSessionID
 	}
 
+	// Include child_origin so frontend can show the correct icon (e.g., robot for MCP)
+	if childOrigin != "" {
+		sessionData["child_origin"] = childOrigin
+	}
+
 	em.Broadcast(WSMsgTypeSessionCreated, sessionData)
 
 	if sm.logger != nil {
@@ -931,6 +991,7 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 			"session_id", sessionID,
 			"name", name,
 			"parent_session_id", parentSessionID,
+			"child_origin", childOrigin,
 			"clients", em.ClientCount())
 	}
 }
@@ -956,6 +1017,121 @@ func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bo
 			"session_id", sessionID,
 			"archived", archived,
 			"clients", em.ClientCount())
+	}
+}
+
+// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
+// This is called when a session is permanently deleted.
+func (sm *SessionManager) BroadcastSessionDeleted(sessionID string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionDeleted, map[string]string{
+		"session_id": sessionID,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session deleted",
+			"session_id", sessionID,
+			"clients", em.ClientCount())
+	}
+}
+
+// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
+// This is called when a parent session starts or stops blocking on mitto_children_tasks_wait.
+func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionWaiting, map[string]interface{}{
+		"session_id": sessionID,
+		"is_waiting": isWaiting,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session waiting for children",
+			"session_id", sessionID,
+			"is_waiting", isWaiting,
+			"clients", em.ClientCount())
+	}
+}
+
+// childArchiveTimeout is the timeout for gracefully closing child sessions when a parent is archived.
+const childArchiveTimeout = 30 * time.Second
+
+// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
+// Each child's ACP process is gracefully stopped, then the session data is removed from disk.
+// Auto-grandchildren are cascade-deleted by store.Delete; MCP-grandchildren are orphaned.
+func (sm *SessionManager) DeleteChildSessions(parentID string) {
+	sm.mu.RLock()
+	store := sm.store
+	sm.mu.RUnlock()
+
+	if store == nil {
+		return
+	}
+
+	children, err := store.ListChildSessions(parentID)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Error("Failed to list child sessions for deletion cascade",
+				"parent_session_id", parentID,
+				"error", err)
+		}
+		return
+	}
+
+	for _, child := range children {
+		childID := child.SessionID
+
+		// Find auto-grandchildren before deletion — store.Delete will cascade-delete them,
+		// so we need their IDs now to close their ACP processes and broadcast deletions.
+		autoGrandchildIDs, _ := store.FindAutoChildrenRecursive(childID)
+
+		// Gracefully close ACP process for the child
+		if !sm.CloseSessionGracefully(childID, "parent_archived", childArchiveTimeout) {
+			sm.CloseSession(childID, "parent_archived_timeout")
+		}
+
+		// Close ACP processes for auto-grandchildren (they will be cascade-deleted)
+		for _, gcID := range autoGrandchildIDs {
+			sm.CloseSession(gcID, "ancestor_archived")
+		}
+
+		// Permanently delete the child (cascade-deletes auto-grandchildren, orphans MCP-grandchildren)
+		if err := store.Delete(childID); err != nil {
+			if sm.logger != nil {
+				sm.logger.Error("Failed to delete child session",
+					"parent_session_id", parentID,
+					"child_session_id", childID,
+					"error", err)
+			}
+			continue
+		}
+
+		// Broadcast deletion for child and any cascade-deleted auto-grandchildren
+		sm.BroadcastSessionDeleted(childID)
+		for _, gcID := range autoGrandchildIDs {
+			sm.BroadcastSessionDeleted(gcID)
+		}
+
+		if sm.logger != nil {
+			sm.logger.Info("Deleted child session (parent archived)",
+				"parent_session_id", parentID,
+				"child_session_id", childID,
+				"child_name", child.Name,
+				"auto_grandchildren_deleted", len(autoGrandchildIDs))
+		}
 	}
 }
 
@@ -2150,10 +2326,12 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			WorkspaceUUID:         uuid,
 			IsPrompting:           bs.IsPrompting(),
 			HasObservers:          bs.HasObservers(),
+			HasConnectedClients:   bs.HasConnectedClients(),
 			QueueLength:           queueLen,
 			NextPeriodicAt:        nextPeriodic,
 			ResumedAt:             bs.StartedAt(),
 			LastObserverRemovedAt: bs.LastObserverRemovedAt(),
+			LastActivityAt:        bs.LastActivityAt(),
 		})
 	}
 	return result
@@ -2253,7 +2431,7 @@ func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {
 	}
 
 	go func() {
-		// Use a long timeout — auxiliary RPCs can be queued behind active prompts.
+		// Use a long timeout — auxiliary operations can take several minutes.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 

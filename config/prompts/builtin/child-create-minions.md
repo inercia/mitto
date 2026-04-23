@@ -48,7 +48,7 @@ For subsequent iterations, also show: learnings from previous round, new vs. ref
 
 ## Phase 3: Select ACP Server
 
-Ask via `mitto_ui_options_combo` (timeout: 60s):
+Ask via `mitto_ui_options` (timeout: 60s):
 ```
 question: "Which AI agent would you like to use for the parallel tasks?"
 options: <list of server names from @mitto:available_acp_servers>
@@ -152,7 +152,7 @@ Choose strategy based on Phase 6 assessment:
 - **C. Re-decomposition**: Original breakdown was wrong; return to Phase 2
 - **D. Escalate**: Need user input for ambiguities or conflicting requirements
 
-If next step isn't obvious, ask via `mitto_ui_options_combo` (timeout: 120s):
+If next step isn't obvious, ask via `mitto_ui_options` (timeout: 120s):
 ```
 options: ["Continue with follow-up tasks", "Retry failed tasks", "Re-decompose", "Let me review", "Stop here"]
 ```

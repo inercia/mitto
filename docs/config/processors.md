@@ -55,11 +55,12 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 
 ### Included Builtin Processors
 
-| Processor           | Description                                                                                              | When    | Enabled                                       |
-| ------------------- | -------------------------------------------------------------------------------------------------------- | ------- | --------------------------------------------- |
-| `session-context`   | Injects session identity, parent/child relationships, and available agents into the first message        | `first` | Yes                                           |
-| `check-mcp-tools`   | Checks if Mitto MCP tools are available and suggests installation if missing                             | `first` | Yes                                           |
-| `delegate-to-coder` | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | Yes (only activates for matching ACP servers) |
+| Processor             | Description                                                                                              | When    | Enabled                                            |
+| --------------------- | -------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------- |
+| `session-context`     | Injects session identity, parent/child relationships, and available agents into the first message        | `first` | Yes                                                |
+| `check-mcp-tools`     | Checks if Mitto MCP tools are available and suggests installation if missing                             | `first` | Yes                                                |
+| `delegate-to-coder`   | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | Yes (only activates for matching ACP servers)      |
+| `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model           | `first` | Yes (requires smart model + `browser_*` MCP tools) |
 
 ### Managing Builtin Processors
 
@@ -479,6 +480,7 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 | `@mitto:workspace_uuid`        | Workspace UUID                                                                 |
 | `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
 | `@mitto:children`              | Human-readable list of child sessions — see below                              |
+| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
 
 ### `@mitto:available_acp_servers` format
 
@@ -556,6 +558,7 @@ output: prepend
 - **Empty values** — e.g. `@mitto:parent_session_id` when there is no parent → replaced with empty string
 - **Fast path** — if the assembled message contains no `@mitto:`, the substitution pass is skipped entirely
 - **CLI mode** — `@mitto:session_id`, `@mitto:parent_session_id`, `@mitto:parent`, `@mitto:session_name`, `@mitto:acp_server`, `@mitto:workspace_uuid`, `@mitto:available_acp_servers`, and `@mitto:children` all substitute to empty string; `@mitto:working_dir` substitutes to the CLI working directory
+- **Escaping** — to include a literal `@mitto:variable` without substitution, prefix it with a backslash: `\@mitto:variable`. The backslash is stripped and the variable name is passed through as-is (e.g. `\@mitto:session_id` → `@mitto:session_id`)
 
 ## Command-Mode Examples
 

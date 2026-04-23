@@ -189,6 +189,30 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
+			name: "enabledWhen CEL children.mcp_count threshold met",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.mcp_count >= 2`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
+					{ID: "child-2", Name: "Task B", ChildOrigin: "mcp"},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhen CEL children.mcp_count below threshold",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.mcp_count >= 2`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
+					{ID: "child-2", Name: "Auto child", ChildOrigin: "auto"},
+				},
+			},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
 			name: "enabledWhen CEL invalid expression fails open",
 			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `!!!invalid`},
 			input: &ProcessorInput{

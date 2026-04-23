@@ -224,7 +224,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						if clientLogger != nil {
 							clientLogger.Error("Failed to resume session (async)", "error", err)
 						}
-						s.BroadcastACPStartFailed(sessionID, err, "")
+						s.BroadcastACPStartFailed(sessionID, sessionName, err, "")
 						return
 					}
 					// Invalidate negative cache
@@ -279,6 +279,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// historical events from storage.
 	if bs != nil {
 		client.bgSession = bs
+		bs.AddConnectedClient()
 		// Observer will be added in handleLoadEvents after initial load
 		if clientLogger != nil {
 			clientLogger.Debug("SessionWSClient has background session, observer will be added after initial load",
@@ -335,6 +336,13 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			data["status"] = meta.Status
 			data["runner_type"] = meta.RunnerType
 			data["runner_restricted"] = meta.RunnerRestricted
+			// Include parent-child relationship fields for session tree rendering
+			if meta.ParentSessionID != "" {
+				data["parent_session_id"] = meta.ParentSessionID
+			}
+			if meta.ChildOrigin != "" {
+				data["child_origin"] = string(meta.ChildOrigin)
+			}
 			// Override acp_server with session-specific value from metadata
 			// This fixes grouping for multiple workspaces with the same folder but different ACP servers
 			if meta.ACPServer != "" {
@@ -422,6 +430,7 @@ func (c *SessionWSClient) readPump() {
 		}
 		c.cancel()
 		if c.bgSession != nil {
+			c.bgSession.RemoveConnectedClient()
 			c.bgSession.RemoveObserver(c)
 		}
 		// Note: Don't close c.store - it's owned by the server and shared across handlers
@@ -534,12 +543,13 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			RequestID string `json:"request_id"`
 			OptionID  string `json:"option_id"`
 			Label     string `json:"label"`
+			FreeText  string `json:"free_text"`
 		}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label)
+		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label, data.FreeText)
 	}
 }
 
@@ -622,7 +632,7 @@ func (c *SessionWSClient) handlePermissionAnswer(optionID string, cancel bool) {
 	}
 }
 
-func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label string) {
+func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label, freeText string) {
 	// Try to attach to session if unarchived after client connected
 	if c.bgSession == nil {
 		c.tryAttachToSession()
@@ -639,11 +649,12 @@ func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label string
 			"client_id", c.clientID,
 			"request_id", requestID,
 			"option_id", optionID,
-			"label", label)
+			"label", label,
+			"has_free_text", freeText != "")
 	}
 
 	// Forward the answer to the background session
-	c.bgSession.HandleUIPromptAnswer(requestID, optionID, label)
+	c.bgSession.HandleUIPromptAnswer(requestID, optionID, label, freeText)
 }
 
 func (c *SessionWSClient) handleSync(afterSeq int64) {
@@ -1142,6 +1153,9 @@ func (c *SessionWSClient) syncMissedEventsDuringRegistration(lastLoadedSeq int64
 // - status: Session status (active, completed, error)
 // - is_running: Whether the background session is active
 func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq int64) {
+	if c.bgSession != nil {
+		c.bgSession.TouchActivity()
+	}
 	serverTime := time.Now().UnixMilli()
 
 	// Get the server's current max sequence number for this session
@@ -1326,11 +1340,8 @@ func (c *SessionWSClient) triggerMCPAvailabilityCheck(workspaceUUID string) {
 	}
 	auxMgr := c.server.auxiliaryManager
 
-	// Use a long timeout because the ACP agent serializes all RPCs. When the main
-	// session has an active prompt (which can last 5-15+ minutes), the auxiliary
-	// session creation (session/new) and the availability-check prompt are both
-	// queued behind it. A 2-minute timeout is routinely exceeded in practice
-	// (observed: 150-244 s RPCs). 30 minutes matches the worst-case agent runtime.
+	// Use a long timeout — auxiliary session creation and the availability-check prompt
+	// can take several minutes depending on agent load. 30 minutes covers worst-case scenarios.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -1392,11 +1403,8 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	}
 	auxMgr := c.server.auxiliaryManager
 
-	// Use a long timeout because the ACP agent serializes all RPCs. When the main
-	// session has an active prompt (which can last 5-15+ minutes), the auxiliary
-	// session creation (session/new) and the tool-fetch prompt are both queued
-	// behind it. A 2-minute timeout is routinely exceeded in practice
-	// (observed: 150-244 s RPCs). 30 minutes matches the worst-case agent runtime.
+	// Use a long timeout — auxiliary session creation and the tool-fetch prompt
+	// can take several minutes depending on agent load. 30 minutes covers worst-case scenarios.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -2244,12 +2252,21 @@ func (c *SessionWSClient) OnUIPrompt(req UIPromptRequest) {
 			"option_count", len(req.Options))
 	}
 	c.sendMessage(WSMsgTypeUIPrompt, map[string]interface{}{
-		"session_id":      c.sessionID,
-		"request_id":      req.RequestID,
-		"prompt_type":     req.Type,
-		"question":        req.Question,
-		"options":         req.Options,
-		"timeout_seconds": req.TimeoutSeconds,
+		"session_id":            c.sessionID,
+		"request_id":            req.RequestID,
+		"prompt_type":           req.Type,
+		"question":              req.Question,
+		"options":               req.Options,
+		"timeout_seconds":       req.TimeoutSeconds,
+		"allow_free_text":       req.AllowFreeText,
+		"free_text_placeholder": req.FreeTextPlaceholder,
+		// Textbox fields
+		"title":       req.Title,
+		"text":        req.Text,
+		"result_mode": req.ResultMode,
+		"allow_abort": req.AllowAbort,
+		// Form fields
+		"form_html": req.FormHTML,
 	})
 }
 

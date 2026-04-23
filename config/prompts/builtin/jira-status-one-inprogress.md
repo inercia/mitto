@@ -8,6 +8,10 @@ enabledWhenMCP: jira_*
 
 # JIRA: Status Check — One In-Progress Ticket
 
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
 ## Step 1 — Identify the current repository
 
 Run the following to determine the current repo's name and remote URL:
@@ -42,7 +46,7 @@ If **no tickets** survive the filter: inform the user and stop.
 
 ## Step 4 — Let the user choose one ticket
 
-Present the filtered tickets using `mitto_ui_options_combo_mitto`, showing each ticket as `KEY - Summary` in the dropdown. Ask: "Which in-progress ticket would you like to check status for?"
+Present the filtered tickets using `mitto_ui_options_mitto(self_id: "@mitto:session_id")`, showing each ticket as `KEY - Summary` in the dropdown. Ask: "Which in-progress ticket would you like to check status for?"
 
 ## Step 5 — Fetch full ticket details
 

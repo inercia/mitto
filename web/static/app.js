@@ -51,7 +51,7 @@ import {
 import {
   openExternalURL,
   openFileURL,
-  convertHTTPFileURLToFile,
+  convertFileURLToViewer,
   convertHTTPFileURLToViewer,
   setCurrentWorkspace,
   pickImages,
@@ -72,7 +72,6 @@ import {
   getExpandedGroups,
   getSingleExpandedGroupMode,
   setSingleExpandedGroupMode,
-  getAPIPrefix,
   initUIPreferences,
   onUIPreferencesLoaded,
   FILTER_TAB,
@@ -96,6 +95,7 @@ import {
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
 import { SettingsDialog } from "./components/SettingsDialog.js";
+import { AgentDiscoveryDialog } from "./components/AgentDiscoveryDialog.js";
 import { QueueDropdown } from "./components/QueueDropdown.js";
 import {
   AgentPlanPanel,
@@ -122,6 +122,9 @@ import {
   SunIcon,
   MoonIcon,
   LightningIcon,
+  RobotIcon,
+  PersonIcon,
+  HourglassIcon,
   QueueIcon,
   PinIcon,
   PinFilledIcon,
@@ -144,45 +147,13 @@ import {
 } from "./constants.js";
 
 // =============================================================================
-// File Link Helpers
-// =============================================================================
-
-/**
- * Determines if a file link should open directly (browser renders it) or in the viewer.
- * Only HTML files open directly since the browser renders them natively.
- * All other files (including markdown) open in the unified viewer.
- * @param {string} href - The file API URL (e.g., /mitto/api/files?ws=...&path=...)
- * @returns {boolean} True if the file should open directly, false if it should open in viewer
- */
-function shouldOpenFileDirectly(href) {
-  try {
-    const url = new URL(href, window.location.origin);
-    const path = url.searchParams.get("path") || "";
-    const ext = path.split(".").pop()?.toLowerCase() || "";
-
-    // HTML files should always open directly (browser renders them)
-    if (ext === "html" || ext === "htm") {
-      return true;
-    }
-
-    // All other files (including markdown) open in the unified viewer
-    return false;
-  } catch (e) {
-    console.error("[Mitto] Error checking file type:", e);
-    return false;
-  }
-}
-
-// =============================================================================
 // Global Link Click Handler
 // =============================================================================
 
-// Intercept clicks on external links (http/https), file links (file://),
-// and internal file API links to prevent WebView navigation.
-// In the native macOS app, this ensures:
-// - External links open in the default browser
-// - File links open in the default application for that file type
-// - Internal file API links (used in web mode) are converted to file:// URLs
+// Intercept clicks on all link types and route them through the viewer.
+// All file links in agent responses are now in viewer URL format.
+// Backward compatibility is maintained for old file:// and /api/files? links
+// from session recordings.
 document.addEventListener("click", (e) => {
   // Find the closest anchor element (handles clicks on nested elements inside links)
   const link = e.target.closest("a");
@@ -193,47 +164,55 @@ document.addEventListener("click", (e) => {
 
   console.log("[Mitto] Link clicked:", href, "isNativeApp:", isNativeApp());
 
-  // Handle file:// URLs (open in default application)
-  if (href.startsWith("file://")) {
-    console.log("[Mitto] Handling as file:// URL");
+  // Handle viewer URLs (new format: /viewer.html?ws=...&path=...)
+  if (href.includes("/viewer.html?")) {
+    console.log("[Mitto] Handling as viewer URL");
     e.preventDefault();
     e.stopPropagation();
-    openFileURL(href);
+    if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+      // macOS native app — open in native viewer window
+      const fullUrl = new URL(href, window.location.origin).href;
+      window.mittoOpenViewer(fullUrl);
+    } else {
+      // Web browser — open in new tab
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
     return;
   }
 
-  // Handle internal file API links (e.g., /mitto/api/files?workspace=...&path=...)
-  if (href.includes("/api/files?")) {
-    console.log("[Mitto] Handling as /api/files link");
+  // BACKWARD COMPAT: Handle old file:// URLs (from old session recordings)
+  if (href.startsWith("file://")) {
+    console.log("[Mitto] Handling as file:// URL (backward compat)");
     e.preventDefault();
     e.stopPropagation();
-    if (isNativeApp()) {
-      // Native macOS app - convert to file:// URL and open with system app
-      const fileUrl = convertHTTPFileURLToFile(href);
-      console.log("[Mitto] Converted to file URL:", fileUrl);
-      if (fileUrl) {
-        openFileURL(fileUrl);
+    if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+      const viewerUrl = convertFileURLToViewer(href);
+      if (viewerUrl) {
+        window.mittoOpenViewer(viewerUrl);
+      } else {
+        openFileURL(href); // fallback: open with system app
       }
     } else {
-      // Web browser - determine how to open the file
-      const shouldOpenDirectly = shouldOpenFileDirectly(href);
-      if (shouldOpenDirectly) {
-        // Open directly via API - browser will render HTML
-        // Fix old links missing API prefix
-        const apiPrefix = getAPIPrefix();
-        let finalUrl = href;
-        if (apiPrefix && !href.includes(apiPrefix)) {
-          finalUrl = finalUrl.replace("/api/files?", apiPrefix + "/api/files?");
-          console.log("[Mitto] Fixed old API link:", href, "->", finalUrl);
-        }
-        window.open(finalUrl, "_blank", "noopener,noreferrer");
+      const viewerUrl = convertFileURLToViewer(href);
+      if (viewerUrl) {
+        window.open(viewerUrl, "_blank", "noopener,noreferrer");
+      }
+    }
+    return;
+  }
+
+  // BACKWARD COMPAT: Handle old /api/files? URLs (from old session recordings)
+  if (href.includes("/api/files?")) {
+    console.log("[Mitto] Handling as /api/files link (backward compat)");
+    e.preventDefault();
+    e.stopPropagation();
+    const viewerUrl = convertHTTPFileURLToViewer(href);
+    console.log("[Mitto] Converted to viewer URL:", viewerUrl);
+    if (viewerUrl) {
+      if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+        window.mittoOpenViewer(new URL(viewerUrl, window.location.origin).href);
       } else {
-        // Open in unified viewer page (handles code + markdown)
-        const viewerUrl = convertHTTPFileURLToViewer(href);
-        console.log("[Mitto] Converted to viewer URL:", viewerUrl);
-        if (viewerUrl) {
-          window.open(viewerUrl, "_blank", "noopener,noreferrer");
-        }
+        window.open(viewerUrl, "_blank", "noopener,noreferrer");
       }
     }
     return;
@@ -828,6 +807,7 @@ function WorkspaceDialog({ isOpen, workspaces, onSelect, onCancel }) {
               }}
               placeholder="Filter workspaces..."
               autofocus
+              autocomplete="off"
               class="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-sm focus:outline-none focus:border-blue-500 placeholder-gray-500"
             />
           </div>
@@ -1301,10 +1281,11 @@ function SessionItem({
     return parts.join("\n");
   };
 
-  // Determine swipe action based on filter tab:
+  // Determine swipe action based on filter tab and session type:
   // - Archived tab: swipe to delete
+  // - Child (spawned) sessions: swipe to delete (archive not applicable)
   // - Regular/Periodic tabs: swipe to archive
-  const isSwipeToDelete = filterTab === FILTER_TAB.ARCHIVED;
+  const isSwipeToDelete = filterTab === FILTER_TAB.ARCHIVED || isSpawned;
 
   // Swipe action handler - archive or delete based on current tab
   const handleSwipeAction = useCallback(() => {
@@ -1375,25 +1356,30 @@ function SessionItem({
   const isStreaming = !isArchived && (session.isStreaming || false);
 
   const contextMenuItems = [
-    {
-      label: !canArchive
-        ? archiveBlockedReason
-        : isArchived
-          ? "Unarchive"
-          : "Archive",
-      icon: isArchived
-        ? html`<${ArchiveFilledIcon} />`
-        : html`<${ArchiveIcon} />`,
-      onClick: canArchive ? () => handleArchive() : undefined,
-      disabled: !canArchive,
-    },
+    // Hide archive option for child (spawned) sessions
+    ...(isSpawned
+      ? []
+      : [
+          {
+            label: !canArchive
+              ? archiveBlockedReason
+              : isArchived
+                ? "Unarchive"
+                : "Archive",
+            icon: isArchived
+              ? html`<${ArchiveFilledIcon} />`
+              : html`<${ArchiveIcon} />`,
+            onClick: canArchive ? () => handleArchive() : undefined,
+            disabled: !canArchive,
+          },
+        ]),
     {
       label: "Properties",
       icon: html`<${EditIcon} />`,
       onClick: () => handleRename(),
     },
-    // Hide periodic option for archived sessions
-    ...(isArchived
+    // Hide periodic option for archived sessions and child (spawned) sessions
+    ...(isArchived || isSpawned
       ? []
       : [
           {
@@ -1430,7 +1416,7 @@ function SessionItem({
         />
       `}
       <div
-        class="session-item-container relative overflow-hidden border-b border-slate-700"
+        class="session-item-container relative overflow-hidden"
         ...${containerProps}
       >
         <!-- Swipe action background (revealed when swiping left) -->
@@ -1484,35 +1470,11 @@ function SessionItem({
             : ""}
           <div class="relative z-10">
             <!-- Top row: status indicator, title, and workspace pill -->
-            <div class="flex items-start gap-2">
+            <div class="flex items-center gap-2">
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
-                  ${hasChildren
+                  ${isSpawned
                     ? html`
-                        <button
-                          class="expand-toggle-button flex-shrink-0 p-0.5 text-gray-500 hover:text-white transition-colors"
-                          onClick=${(e) => {
-                            e.stopPropagation();
-                            if (onToggleExpand) onToggleExpand();
-                          }}
-                          title=${isExpanded
-                            ? "Collapse children"
-                            : "Expand children"}
-                        >
-                          <span
-                            class="expand-toggle-icon ${isExpanded
-                              ? ""
-                              : "expand-toggle-icon--collapsed"}"
-                          >
-                            <${ChevronDownIcon} className="w-3 h-3" />
-                          </span>
-                        </button>
-                      `
-                    : null}
-                  ${
-                    // Spawned indicator removed - visual hierarchy from indentation makes parent-child relationships clear
-                    false
-                      ? html`
                           <span
                             class="spawned-indicator flex-shrink-0"
                             title="Spawned from another conversation"
@@ -1521,39 +1483,55 @@ function SessionItem({
                         `
                       : null
                   }
-                  ${isStreaming || hasChildStreaming
-                    ? html`
-                        <span
-                          class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
-                            ? "child-streaming-indicator"
-                            : "streaming-indicator"}"
-                          title=${hasChildStreaming
-                            ? "Child conversation responding..."
-                            : "Receiving response..."}
-                        ></span>
-                      `
-                    : isActiveSession
-                      ? html`
-                          <span
-                            class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
-                          ></span>
-                        `
-                      : null}
                   <span class="text-sm font-medium truncate"
                     >${displayName}</span
                   >
-                  ${childCount > 0 &&
-                  html`
-                    <span
-                      class="child-count-badge flex-shrink-0"
-                      title="${childCount} spawned conversation${childCount > 1
-                        ? "s"
-                        : ""}"
-                      >+${childCount}</span
-                    >
-                  `}
+                  ${session.child_origin === "auto"
+                    ? html`
+                        <span class="flex-shrink-0 text-amber-400" title="Auto-created child">
+                          <${LightningIcon} className="w-4 h-4" />
+                        </span>
+                      `
+                    : session.child_origin === "mcp"
+                      ? html`
+                          <span class="flex-shrink-0 text-blue-400" title="Created by agent">
+                            <${RobotIcon} className="w-4 h-4" />
+                          </span>
+                        `
+                      : session.child_origin === "human"
+                        ? html`
+                            <span class="flex-shrink-0 text-green-400" title="Manually created child">
+                              <${PersonIcon} className="w-4 h-4" />
+                            </span>
+                          `
+                        : null}
+                  ${session.isWaitingForChildren
+                    ? html`
+                        <span class="flex-shrink-0 text-yellow-400 animate-pulse" title="Waiting for child conversations">
+                          <${HourglassIcon} className="w-4 h-4" />
+                        </span>
+                      `
+                    : null}
                 </div>
               </div>
+              ${isStreaming || hasChildStreaming
+                ? html`
+                    <span
+                      class="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0 ${hasChildStreaming
+                        ? "child-streaming-indicator"
+                        : "streaming-indicator"}"
+                      title=${hasChildStreaming
+                        ? "Child conversation responding..."
+                        : "Receiving response..."}
+                    ></span>
+                  `
+                : isActiveSession
+                  ? html`
+                      <span
+                        class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
+                      ></span>
+                    `
+                  : null}
               ${workingDir &&
               !hideBadge &&
               html`
@@ -1570,45 +1548,60 @@ function SessionItem({
                 />
               `}
             </div>
-            <!-- Bottom row: saved/stored badge and action buttons -->
+            ${!isSpawned && html`
+            <!-- Bottom row: children count and action buttons -->
             <div class="flex items-center justify-between mt-1">
               <div class="flex items-center gap-2">
-                ${session.isActive
+                ${hasChildren && childCount > 0
                   ? html`
-                      <span class="text-gray-500" title="Session is auto-saved">
-                        <${SaveIcon} className="w-3 h-3" />
-                      </span>
-                    `
-                  : html`
-                      <span
-                        class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-gray-400"
-                        >stored</span
+                      <button
+                        class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${hasChildStreaming ? 'child-expand-streaming' : 'bg-slate-700'} text-gray-400 hover:text-white hover:bg-slate-600 transition-colors cursor-pointer"
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          if (onToggleExpand) onToggleExpand();
+                        }}
+                        title="${isExpanded ? 'Collapse children' : 'Expand children'}"
                       >
-                    `}
+                        <span class="inline-block transition-transform ${isExpanded ? '' : '-rotate-90'}">
+                          <${ChevronDownIcon} className="w-3 h-3" />
+                        </span>
+                        <span>+${childCount}</span>
+                      </button>
+                    `
+                  : null}
               </div>
               <div
                 class="flex items-center gap-1 ${showActions
                   ? "opacity-100"
                   : "opacity-0"} transition-opacity flex-shrink-0"
               >
-                <button
-                  onClick=${canArchive ? handleArchive : undefined}
-                  disabled=${!canArchive}
-                  class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
-                    ? "opacity-50 cursor-not-allowed text-gray-500"
-                    : isArchived
-                      ? "hover:bg-slate-600 text-gray-500"
-                      : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
-                  title="${!canArchive
-                    ? archiveBlockedReason
-                    : isArchived
-                      ? "Unarchive"
-                      : "Archive"}"
-                >
-                  ${isArchived
-                    ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
-                    : html`<${ArchiveIcon} className="w-4 h-4" />`}
-                </button>
+                ${isSpawned
+                  ? html`<button
+                      onClick=${handleDelete}
+                      class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
+                      title="Delete"
+                    >
+                      <${TrashIcon} className="w-4 h-4" />
+                    </button>`
+                  : html`<button
+                      onClick=${canArchive ? handleArchive : undefined}
+                      disabled=${!canArchive}
+                      class="p-1.5 bg-slate-700 rounded transition-colors ${!canArchive
+                        ? "opacity-50 cursor-not-allowed text-gray-500"
+                        : isArchived
+                          ? "hover:bg-slate-600 text-gray-500"
+                          : "hover:bg-slate-600 text-gray-300 hover:text-white"}"
+                      title="${!canArchive
+                        ? archiveBlockedReason
+                        : isArchived
+                          ? "Unarchive"
+                          : "Archive"}"
+                    >
+                      ${isArchived
+                        ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
+                        : html`<${ArchiveIcon} className="w-4 h-4" />`}
+                    </button>`
+                }
                 <button
                   onClick=${handleRename}
                   class="p-1.5 bg-slate-700 hover:bg-slate-600 rounded transition-colors text-gray-300 hover:text-white"
@@ -1641,6 +1634,7 @@ function SessionItem({
                 </button>
               </div>
             </div>
+            `}
           </div>
         </div>
       </div>
@@ -1692,8 +1686,11 @@ function SessionList({
   const [groupingMode, setGroupingModeState] = useState(() =>
     getFilterTabGrouping(getFilterTab()),
   );
-  // Track expanded groups - use a counter to force re-render when localStorage changes
-  const [expandedGroupsVersion, setExpandedGroupsVersion] = useState(0);
+  // Track expanded groups in React state to avoid stale localStorage reads in WKWebView.
+  // This mirrors the fix applied for navigableSessions (see expandedGroupsForNav in app.js).
+  const [sidebarExpandedGroups, setSidebarExpandedGroups] = useState(() =>
+    getExpandedGroups(),
+  );
 
   // Track new sessions for blink animation
   const [newSessionIds, setNewSessionIds] = useState(new Set());
@@ -1731,8 +1728,8 @@ function SessionList({
       const currentTab = getFilterTab();
       const newMode = getFilterTabGrouping(currentTab);
       setGroupingModeState(newMode);
-      // Force re-render for expanded groups
-      setExpandedGroupsVersion((v) => v + 1);
+      // Sync expanded groups from localStorage (just updated by server sync)
+      setSidebarExpandedGroups(getExpandedGroups());
       console.debug(
         "[Mitto] SessionList: UI preferences synced from server, tab:",
         currentTab,
@@ -1745,11 +1742,17 @@ function SessionList({
 
   // Listen for programmatic group expansion changes (e.g., from swipe/keyboard navigation)
   // When expandGroupForSession in useWebSocket.js expands a group during session switching,
-  // it dispatches mitto-expanded-groups-changed. We need to bump expandedGroupsVersion
-  // so the sidebar re-renders and shows the newly expanded group.
+  // it dispatches mitto-expanded-groups-changed. We sync React state to avoid stale
+  // localStorage reads in WKWebView.
   useEffect(() => {
-    const handleExpandedGroupsChanged = () => {
-      setExpandedGroupsVersion((v) => v + 1);
+    const handleExpandedGroupsChanged = (e) => {
+      const { groupKey, expanded } = e.detail || {};
+      if (groupKey !== undefined) {
+        setSidebarExpandedGroups((prev) => ({ ...prev, [groupKey]: expanded }));
+      } else {
+        // Fallback: re-read from localStorage if no detail provided
+        setSidebarExpandedGroups(getExpandedGroups());
+      }
     };
     window.addEventListener(
       "mitto-expanded-groups-changed",
@@ -1796,25 +1799,58 @@ function SessionList({
     setGroupingModeState(newMode);
   }, [filterTab]);
 
-  // Handle group expand/collapse toggle
-  const handleToggleGroup = useCallback((groupKey, allGroupKeys = []) => {
-    const currentlyExpanded = isGroupExpanded(groupKey);
-    const willExpand = !currentlyExpanded;
+  // Helper to check if a group is expanded using React state (not localStorage)
+  // to avoid stale reads in WKWebView (macOS native app).
+  const isSidebarGroupExpanded = useCallback(
+    (groupKey) => {
+      if (groupKey in sidebarExpandedGroups) return sidebarExpandedGroups[groupKey];
+      if (groupKey === "__archived__") return false;
+      return true;
+    },
+    [sidebarExpandedGroups],
+  );
 
-    // In accordion mode, collapse all other groups when expanding
-    if (willExpand && getSingleExpandedGroupMode()) {
-      // Use provided allGroupKeys to collapse all other groups
-      // (needed because getExpandedGroups only tracks explicitly set groups)
-      for (const key of allGroupKeys) {
-        if (key !== groupKey && isGroupExpanded(key)) {
-          setGroupExpanded(key, false);
+  // Handle group expand/collapse toggle
+  const handleToggleGroup = useCallback(
+    (groupKey, allGroupKeys = []) => {
+      // Update React state (source of truth for sidebar rendering)
+      setSidebarExpandedGroups((prev) => {
+        const currentlyExpanded =
+          groupKey in prev
+            ? prev[groupKey]
+            : groupKey === "__archived__"
+              ? false
+              : true;
+        const willExpand = !currentlyExpanded;
+        const next = { ...prev, [groupKey]: willExpand };
+        // Always enforce accordion mode for parent-child groups (only one expanded at a time)
+        const isParentGroup = groupKey.startsWith("parent:");
+        if (willExpand && (getSingleExpandedGroupMode() || isParentGroup)) {
+          for (const key of allGroupKeys) {
+            if (key !== groupKey) next[key] = false;
+          }
+        }
+        return next;
+      });
+
+      // Persist to localStorage (for cross-session persistence)
+      const currentlyExpanded = isGroupExpanded(groupKey);
+      const willExpand = !currentlyExpanded;
+      // Always enforce accordion mode for parent-child groups (only one expanded at a time)
+      const isParentGroup = groupKey.startsWith("parent:");
+      if (willExpand && (getSingleExpandedGroupMode() || isParentGroup)) {
+        for (const key of allGroupKeys) {
+          if (key !== groupKey && isGroupExpanded(key)) {
+            setGroupExpanded(key, false);
+          }
         }
       }
-    }
+      setGroupExpanded(groupKey, willExpand);
+      // Note: setSidebarExpandedGroups already triggers a re-render, no version bump needed
+    },
+    [sidebarExpandedGroups],
+  );
 
-    setGroupExpanded(groupKey, willExpand);
-    setExpandedGroupsVersion((v) => v + 1); // Force re-render
-  }, []);
 
   // Get grouping icon based on current mode
   const getGroupingIcon = () => {
@@ -1871,10 +1907,39 @@ function SessionList({
       const regular = [];
       const periodic = [];
       const archived = [];
+
+      // Build a map for O(1) parent lookups
+      const sessionMap = new Map(allSessions.map((s) => [s.session_id, s]));
+
+      // Walk up the parent chain to find the root ancestor's category.
+      // Depth limit guards against circular references.
+      // If a child session is itself archived, always categorize as "archived"
+      // regardless of the parent's status — this ensures deleted children
+      // don't appear in the active conversations list.
+      const getSessionCategory = (session, depth = 0) => {
+        // A session that is itself archived is always "archived",
+        // even if its parent is still active.
+        if (session.archived) return "archived";
+
+        if (depth > 10 || !session.parent_session_id) {
+          // Base case: categorize by own flags
+          if (session.periodic_enabled) return "periodic";
+          return "regular";
+        }
+        const parent = sessionMap.get(session.parent_session_id);
+        if (!parent) {
+          // Parent not found — fall back to own flags
+          if (session.periodic_enabled) return "periodic";
+          return "regular";
+        }
+        return getSessionCategory(parent, depth + 1);
+      };
+
       allSessions.forEach((session) => {
-        if (session.archived) {
+        const category = getSessionCategory(session);
+        if (category === "archived") {
           archived.push(session);
-        } else if (session.periodic_enabled) {
+        } else if (category === "periodic") {
           periodic.push(session);
         } else {
           regular.push(session);
@@ -1912,6 +1977,15 @@ function SessionList({
     return map;
   }, [allSessions]);
 
+  // Build a lookup map of session_id → true for sessions currently waiting for children.
+  const waitingMap = useMemo(() => {
+    const map = new Map();
+    allSessions.forEach((s) => {
+      if (s.isWaitingForChildren) map.set(s.session_id, true);
+    });
+    return map;
+  }, [allSessions]);
+
   // Check which filter tabs have streaming sessions (for pulsing animation)
   const streamingTabs = useMemo(() => {
     return {
@@ -1937,15 +2011,21 @@ function SessionList({
       return null; // No grouping, render flat list
     }
 
-    // Compute structural fingerprint: only session IDs, parent IDs, and working dirs matter for tree structure
-    // This avoids expensive buildSessionTree rebuilds when only isStreaming or message content changes
-    const fingerprint = filteredSessions
-      .map(
-        (s) =>
-          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ""}`,
-      )
-      .sort()
-      .join("\n");
+    // Compute structural fingerprint: session IDs, parent IDs, working dirs, AND grouping mode
+    // This avoids expensive buildSessionTree rebuilds when only non-structural properties change
+    // (e.g., isStreaming, message content during tool_update events).
+    // groupingMode MUST be included because the same sessions produce different group structures
+    // depending on the mode (server vs folder vs workspace).
+    const fingerprint =
+      groupingMode +
+      "\n" +
+      filteredSessions
+        .map(
+          (s) =>
+            `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ""}`,
+        )
+        .sort()
+        .join("\n");
 
     if (
       fingerprint === prevSessionFingerprint.current &&
@@ -1965,6 +2045,21 @@ function SessionList({
       };
     };
 
+    // Build a lookup map and root-parent resolver used by all grouping modes
+    // to ensure children are placed in the same group as their parent.
+    const sessionById = new Map(filteredSessions.map((s) => [s.session_id, s]));
+    const resolveRootParent = (session) => {
+      let current = session;
+      let depth = 0;
+      while (current.parent_session_id && depth < 10) {
+        const parent = sessionById.get(current.parent_session_id);
+        if (!parent) break;
+        current = parent;
+        depth++;
+      }
+      return current;
+    };
+
     if (groupingMode === "folder") {
       // Hierarchical mode: folder -> sessions (with parent-child relationships)
       // Structure: Folder → Parent sessions (with nested child sessions)
@@ -1979,13 +2074,20 @@ function SessionList({
       const getParentSessionId = (session) => session.parent_session_id || "";
 
       // First pass: group all sessions by folder
+      // Use root parent's working_dir so children with a different working_dir
+      // end up in the same folder group as their parent.
       filteredSessions.forEach((session) => {
-        const { workingDir } = getSessionInfo(session);
+        const rootParent = resolveRootParent(session);
+        const { workingDir } = getSessionInfo(rootParent);
         const folderKey = workingDir || "Unknown";
 
         if (!folderGroups.has(folderKey)) {
           folderGroups.set(folderKey, {
-            label: workingDir ? getBasename(workingDir) : "Unknown",
+            label: (() => {
+              if (!workingDir) return "Unknown";
+              const ws = workspaces.find(w => w.working_dir === workingDir);
+              return ws?.name || getBasename(workingDir);
+            })(),
             workingDir,
             allSessions: [], // All sessions in this folder (before parent-child grouping)
           });
@@ -2059,24 +2161,28 @@ function SessionList({
     const groups = new Map();
 
     filteredSessions.forEach((session) => {
+      // Use root parent's properties for grouping so children with a different
+      // acp_server or working_dir stay in the same group as their parent.
+      const groupSession = resolveRootParent(session);
+
       let groupKey;
       let groupLabel;
       let groupWorkingDir = "";
       let groupAcpServer = "";
 
       if (groupingMode === "server") {
-        const { acpServer } = getSessionInfo(session);
+        const { acpServer } = getSessionInfo(groupSession);
         groupKey = acpServer || "Unknown";
         groupLabel = groupKey;
       } else {
         // workspace mode - group by workspace (working_dir + acp_server combination)
         // This ensures workspaces with the same folder but different ACP servers are separate groups
-        const { workingDir, acpServer } = getSessionInfo(session);
+        const { workingDir, acpServer } = getSessionInfo(groupSession);
         // Use composite key: working_dir|acp_server (to separate same-folder workspaces)
         groupKey = `${workingDir}|${acpServer}`;
-        // Label is just the basename - acpServer is shown as a badge
-        const basename = workingDir ? getBasename(workingDir) : "Unknown";
-        groupLabel = basename;
+        // Label is the workspace display name if available, otherwise basename - acpServer is shown as a badge
+        const ws = workspaces.find(w => w.working_dir === workingDir && (!acpServer || w.acp_server === acpServer));
+        groupLabel = ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
         groupWorkingDir = workingDir;
         groupAcpServer = acpServer;
       }
@@ -2092,6 +2198,42 @@ function SessionList({
       groups.get(groupKey).sessions.push(session);
     });
 
+    // Build parent-child tree within each group (same as folder mode)
+    const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
+    groups.forEach((group) => {
+      const { rootSessions, childrenMap, orphans } = buildSessionTree(
+        group.sessions,
+        allKnownSessionIds,
+      );
+
+      // Attach children to parents
+      const parents = rootSessions.map((parent) => ({
+        ...parent,
+        children: childrenMap.get(parent.session_id) || [],
+      }));
+
+      // Sort children within each parent by created_at (most recent first)
+      parents.forEach((parent) => {
+        parent.children.sort(
+          (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+        );
+      });
+
+      // Sort parents by created_at (most recent first)
+      parents.sort(
+        (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+      );
+
+      // Sort orphans by created_at (most recent first)
+      orphans.sort(
+        (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+      );
+
+      // Replace flat list with tree structure
+      group.sessions = [...parents, ...orphans];
+      group.isParentChild = true;
+    });
+
     // Convert to array and sort by label
     const result = Array.from(groups.entries())
       .map(([key, value]) => ({ key, ...value }))
@@ -2099,7 +2241,69 @@ function SessionList({
 
     prevGroupedSessions.current = result;
     return result;
-  }, [filteredSessions, groupingMode, allSessions]);
+  }, [filteredSessions, groupingMode, allSessions, workspaces]);
+
+  // Build a map from session ID → its family's parent group key ("parent:<id>").
+  // Covers both the parent session itself and all its children.
+  // Used by handleSelectWithCollapse to know which family a clicked session belongs to.
+  const sessionFamilyMap = useMemo(() => {
+    const map = new Map();
+    if (!groupedSessions) return map;
+    groupedSessions.forEach((folder) => {
+      folder.sessions.forEach((session) => {
+        if (session.children && session.children.length > 0) {
+          const parentKey = `parent:${session.session_id}`;
+          map.set(session.session_id, parentKey);
+          session.children.forEach((child) => {
+            map.set(child.session_id, parentKey);
+          });
+        }
+      });
+    });
+    return map;
+  }, [groupedSessions]);
+
+  // Wrap onSelect to auto-collapse parent-child groups when selecting outside the family.
+  // If the selected session belongs to a family (parent + its children), only that family
+  // stays expanded. All other expanded parent groups are collapsed.
+  const handleSelectWithCollapse = useCallback(
+    (sessionId) => {
+      // Find which family (if any) this session belongs to
+      const familyKey = sessionFamilyMap.get(sessionId);
+
+      // Find all currently expanded parent groups
+      const expandedParentKeys = Object.entries(sidebarExpandedGroups)
+        .filter(([key, expanded]) => key.startsWith("parent:") && expanded)
+        .map(([key]) => key);
+
+      // If there are expanded parent groups and the selected session doesn't belong
+      // to any of them, collapse all other parent groups
+      if (expandedParentKeys.length > 0) {
+        const shouldCollapse = expandedParentKeys.some((key) => key !== familyKey);
+        if (shouldCollapse) {
+          setSidebarExpandedGroups((prev) => {
+            const next = { ...prev };
+            for (const key of expandedParentKeys) {
+              if (key !== familyKey) {
+                next[key] = false;
+              }
+            }
+            return next;
+          });
+          // Persist to localStorage
+          for (const key of expandedParentKeys) {
+            if (key !== familyKey) {
+              setGroupExpanded(key, false);
+            }
+          }
+        }
+      }
+
+      // Call the original onSelect
+      onSelect(sessionId);
+    },
+    [onSelect, sessionFamilyMap, sidebarExpandedGroups],
+  );
 
   // Enforce accordion mode when groups change (e.g., tab switch, grouping mode change)
   // If multiple groups are expanded and accordion mode is enabled, collapse all but the first.
@@ -2108,9 +2312,9 @@ function SessionList({
       return;
     }
 
-    // Find all currently expanded groups in the current view
+    // Find all currently expanded groups in the current view (use React state, not localStorage)
     const expandedKeys = groupedSessions
-      .filter((g) => isGroupExpanded(g.key))
+      .filter((g) => isSidebarGroupExpanded(g.key))
       .map((g) => g.key);
 
     // If more than one group is expanded, collapse all but the first
@@ -2122,13 +2326,19 @@ function SessionList({
         "Collapsing:",
         toCollapse,
       );
+      // Update React state and localStorage for collapsed groups
+      setSidebarExpandedGroups((prev) => {
+        const next = { ...prev };
+        for (const key of toCollapse) {
+          next[key] = false;
+        }
+        return next;
+      });
       for (const key of toCollapse) {
         setGroupExpanded(key, false);
       }
-      // Force re-render to reflect the collapsed state
-      setExpandedGroupsVersion((v) => v + 1);
     }
-  }, [groupedSessions, filterTab, groupingMode]);
+  }, [groupedSessions, filterTab, groupingMode, sidebarExpandedGroups]);
 
   // Render a single session item
   // hideBadge: if true, hides the entire badge
@@ -2148,6 +2358,9 @@ function SessionList({
       extraLeftPadding = "",
       childCount = 0,
       hasChildStreaming = false,
+      hasChildren = false,
+      isExpanded = false,
+      onToggleExpand = null,
     } = {},
   ) => {
     const workingDir = getSessionWorkingDir(session);
@@ -2177,7 +2390,7 @@ function SessionList({
         key=${session.session_id}
         session=${finalSession}
         isActive=${activeSessionId === session.session_id}
-        onSelect=${onSelect}
+        onSelect=${handleSelectWithCollapse}
         onRename=${onRename}
         onDelete=${onDelete}
         onArchive=${onArchive}
@@ -2199,6 +2412,9 @@ function SessionList({
         extraLeftPadding=${extraLeftPadding}
         childCount=${childCount}
         hasChildStreaming=${hasChildStreaming}
+        hasChildren=${hasChildren}
+        isExpanded=${isExpanded}
+        onToggleExpand=${onToggleExpand}
         isNew=${isNew}
       />
     `;
@@ -2235,6 +2451,30 @@ function SessionList({
     [groupingMode, workspaces, onNewSession],
   );
 
+  // Handle creating a new session in a specific folder group
+  const handleNewSessionInFolder = useCallback(
+    (workingDir, e) => {
+      e.stopPropagation();
+
+      // Find all workspaces matching this folder's working_dir
+      const matchingWorkspaces = workspaces.filter(
+        (ws) => ws.working_dir === workingDir,
+      );
+
+      if (matchingWorkspaces.length === 1) {
+        // Single workspace - create session directly
+        onNewSession(matchingWorkspaces[0]);
+      } else if (matchingWorkspaces.length > 1) {
+        // Multiple workspaces - show dialog filtered to this folder
+        onNewSession(null, workingDir);
+      } else {
+        // Fallback
+        onNewSession();
+      }
+    },
+    [workspaces, onNewSession],
+  );
+
   // Render grouped sessions with collapsible headers
   // Handles both flat grouping (server, workspace) and hierarchical grouping (folder)
   const renderGroupedSessions = () => {
@@ -2250,12 +2490,19 @@ function SessionList({
 
     return html`
       ${groupedSessions.map((group) => {
-        const expanded = isGroupExpanded(group.key);
-        const sessionCount = group.sessions.length;
-        // Check if any session in this group is actively streaming
+        const expanded = isSidebarGroupExpanded(group.key);
+        // Count total sessions including children
+        const sessionCount = group.sessions.reduce(
+          (sum, s) => sum + 1 + (s.children ? s.children.length : 0),
+          0,
+        );
+        // Check if any session (or its children) in this group is actively streaming
         // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
-        const hasStreamingSession = group.sessions.some((s) =>
-          streamingMap.has(s.session_id),
+        const hasStreamingSession = group.sessions.some(
+          (s) =>
+            streamingMap.has(s.session_id) ||
+            (s.children &&
+              s.children.some((c) => streamingMap.has(c.session_id))),
         );
         // Get workspace info for badge display (workspace mode only)
         const workspace =
@@ -2279,8 +2526,8 @@ function SessionList({
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
               ${groupingMode === "server"
-                ? html`<${ServerIcon} className="w-4 h-4" />`
-                : html`<${LayersIcon} className="w-4 h-4" />`}
+                ? html`<${ServerIcon} className="w-4 h-4 flex-shrink-0" />`
+                : html`<${LayersIcon} className="w-4 h-4 flex-shrink-0" />`}
               <span class="text-left truncate">${group.label}</span>
               ${groupingMode === "workspace" &&
               group.workingDir &&
@@ -2318,20 +2565,86 @@ function SessionList({
               <span class="text-xs text-gray-500">${sessionCount}</span>
             </div>
             ${expanded &&
-            group.sessions.map((session) =>
-              renderSessionItem(
-                {
-                  ...session,
-                  isStreaming: streamingMap.has(session.session_id),
-                },
-                {
-                  // In workspace grouping, hide entire badge (both abbreviation and ACP server are in group header)
-                  hideBadge: groupingMode === "workspace",
-                  // In server grouping, hide the ACP server name (redundant with group header)
-                  badgeHideAcpServer: groupingMode === "server",
-                },
-              ),
-            )}
+            (() => {
+              // Collect all parent group keys for accordion mode
+              const parentGroupKeys = group.sessions
+                .filter((s) => s.children && s.children.length > 0)
+                .map((s) => `parent:${s.session_id}`);
+
+              return group.sessions.map((session) => {
+                const hasChildSessions =
+                  session.children && session.children.length > 0;
+                const parentKey = `parent:${session.session_id}`;
+                const childrenExpanded = hasChildSessions
+                  ? isSidebarGroupExpanded(parentKey)
+                  : false;
+                const hasChildStreaming =
+                  hasChildSessions &&
+                  session.children.some((c) =>
+                    streamingMap.has(c.session_id),
+                  );
+
+                return html`
+                  <div
+                    key=${session.session_id}
+                    class="parent-session-group border-b border-slate-700 ${hasChildSessions ? "has-children" : ""}"
+                  >
+                    ${renderSessionItem(
+                      {
+                        ...session,
+                        isStreaming: streamingMap.has(session.session_id),
+                        isWaitingForChildren: waitingMap.has(session.session_id),
+                      },
+                      {
+                        hideBadge: groupingMode === "workspace",
+                        badgeHideAcpServer: groupingMode === "server",
+                        childCount: hasChildSessions
+                          ? session.children.length
+                          : 0,
+                        hasChildStreaming:
+                          hasChildSessions &&
+                          !childrenExpanded &&
+                          hasChildStreaming,
+                        hasChildren: hasChildSessions,
+                        isExpanded: childrenExpanded,
+                        onToggleExpand: hasChildSessions
+                          ? () =>
+                              handleToggleGroup(parentKey, parentGroupKeys)
+                          : null,
+                      },
+                    )}
+                    ${hasChildSessions &&
+                    html`
+                      <div
+                        class="session-children ${childrenExpanded ? "session-children--expanded" : ""}"
+                      >
+                        ${session.children.map(
+                          (child) =>
+                            html`<div class="session-item--child">
+                              ${renderSessionItem(
+                                {
+                                  ...child,
+                                  isStreaming: streamingMap.has(
+                                    child.session_id,
+                                  ),
+                                  isWaitingForChildren: waitingMap.has(child.session_id),
+                                },
+                                {
+                                  hideBadge: groupingMode === "workspace",
+                                  badgeHideAcpServer:
+                                    groupingMode === "server",
+                                  isSpawned: true,
+                                  extraLeftPadding: "pl-8",
+                                },
+                              )}
+                            </div>`,
+                        )}
+                      </div>
+                    `}
+                  </div>
+                `;
+              });
+            })()}
           </div>
         `;
       })}
@@ -2342,14 +2655,16 @@ function SessionList({
   const renderHierarchicalGroups = () => {
     if (!groupedSessions) return null;
 
-    // Collect all group keys for accordion mode (folder keys + parent session keys)
-    const allGroupKeys = [];
+    // Collect group keys for accordion mode
+    // Folder keys and parent session keys are kept separate so that
+    // toggling a session's children doesn't collapse the folder.
+    const allGroupKeys = []; // folder-level keys only
+    const parentGroupKeys = []; // session-level parent keys only
     groupedSessions.forEach((folder) => {
       allGroupKeys.push(folder.key);
-      // Add parent session keys (sessions with children)
       folder.sessions.forEach((session) => {
         if (session.children && session.children.length > 0) {
-          allGroupKeys.push(`parent:${session.session_id}`);
+          parentGroupKeys.push(`parent:${session.session_id}`);
         }
       });
     });
@@ -2374,7 +2689,7 @@ function SessionList({
 
     return html`
       ${groupedSessions.map((folder) => {
-        const folderExpanded = isGroupExpanded(folder.key);
+        const folderExpanded = isSidebarGroupExpanded(folder.key);
         const totalSessions = countTotalSessions(folder.sessions);
         const hasFolderStreaming = hasStreaming(folder.sessions);
 
@@ -2392,7 +2707,7 @@ function SessionList({
               >
                 <${ChevronDownIcon} className="w-4 h-4" />
               </span>
-              <${FolderIcon} className="w-4 h-4" />
+              <${FolderIcon} className="w-4 h-4 flex-shrink-0" />
               <span class="text-left truncate" title=${folder.workingDir}>
                 ${folder.label}
               </span>
@@ -2405,6 +2720,16 @@ function SessionList({
                   title="Agent responding in this folder"
                 ></span>
               `}
+              ${filterTab === FILTER_TAB.CONVERSATIONS &&
+              html`
+                <button
+                  onClick=${(e) => handleNewSessionInFolder(folder.workingDir, e)}
+                  class="p-0.5 rounded hover:bg-slate-600 transition-colors text-gray-500 hover:text-white"
+                  title="New conversation in ${folder.label}"
+                >
+                  <${PlusIcon} className="w-3.5 h-3.5" />
+                </button>
+              `}
               <span class="text-xs text-gray-500">${totalSessions}</span>
             </div>
 
@@ -2415,7 +2740,7 @@ function SessionList({
                 session.children && session.children.length > 0;
               const parentKey = `parent:${session.session_id}`;
               const childrenExpanded = hasChildren
-                ? isGroupExpanded(parentKey)
+                ? isSidebarGroupExpanded(parentKey)
                 : false;
               // Use streamingMap for fresh state (groupedSessions may cache stale isStreaming)
               const hasChildStreaming =
@@ -2425,7 +2750,7 @@ function SessionList({
               return html`
                 <div
                   key=${session.session_id}
-                  class="parent-session-group ${hasChildren
+                  class="parent-session-group border-b border-slate-700 ${hasChildren
                     ? "has-children"
                     : ""}"
                 >
@@ -2434,6 +2759,7 @@ function SessionList({
                     {
                       ...session,
                       isStreaming: streamingMap.has(session.session_id),
+                      isWaitingForChildren: waitingMap.has(session.session_id),
                     },
                     {
                       hideBadge: false, // Show badge to display ACP server
@@ -2447,7 +2773,7 @@ function SessionList({
                       hasChildren: hasChildren,
                       isExpanded: childrenExpanded,
                       onToggleExpand: hasChildren
-                        ? () => handleToggleGroup(parentKey, allGroupKeys)
+                        ? () => handleToggleGroup(parentKey, parentGroupKeys)
                         : null,
                     },
                   )}
@@ -2467,6 +2793,7 @@ function SessionList({
                               {
                                 ...child,
                                 isStreaming: streamingMap.has(child.session_id),
+                                isWaitingForChildren: waitingMap.has(child.session_id),
                               },
                               {
                                 hideBadge: false, // Show badge to display ACP server
@@ -2489,9 +2816,94 @@ function SessionList({
     `;
   };
 
-  // Render sessions in "none" grouping mode - flat list
+  // Render sessions in "none" grouping mode - tree-aware (parent-child nesting)
   const renderUngroupedSessions = () => {
-    return filteredSessions.map((session) => renderSessionItem(session));
+    // Build parent-child tree
+    const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
+    const { rootSessions, childrenMap, orphans } = buildSessionTree(
+      filteredSessions,
+      allKnownSessionIds,
+    );
+
+    // Attach children to parents
+    const parents = rootSessions.map((parent) => ({
+      ...parent,
+      children: childrenMap.get(parent.session_id) || [],
+    }));
+
+    // Sort children within each parent (most recent first)
+    parents.forEach((parent) => {
+      parent.children.sort(
+        (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+      );
+    });
+
+    // Combine parents and orphans
+    const sessionsToRender = [...parents, ...orphans];
+
+    // Collect all parent group keys for accordion mode
+    const parentGroupKeys = sessionsToRender
+      .filter((s) => s.children && s.children.length > 0)
+      .map((s) => `parent:${s.session_id}`);
+
+    return sessionsToRender.map((session) => {
+      const hasChildSessions = session.children && session.children.length > 0;
+      const parentKey = `parent:${session.session_id}`;
+      const childrenExpanded = hasChildSessions
+        ? isSidebarGroupExpanded(parentKey)
+        : false;
+      const hasChildStreaming =
+        hasChildSessions &&
+        session.children.some((c) => streamingMap.has(c.session_id));
+
+      return html`
+        <div
+          key=${session.session_id}
+          class="parent-session-group border-b border-slate-700 ${hasChildSessions ? "has-children" : ""}"
+        >
+          ${renderSessionItem(
+            {
+              ...session,
+              isStreaming: streamingMap.has(session.session_id),
+              isWaitingForChildren: waitingMap.has(session.session_id),
+            },
+            {
+              childCount: hasChildSessions ? session.children.length : 0,
+              hasChildStreaming:
+                hasChildSessions && !childrenExpanded && hasChildStreaming,
+              hasChildren: hasChildSessions,
+              isExpanded: childrenExpanded,
+              onToggleExpand: hasChildSessions
+                ? () => handleToggleGroup(parentKey, parentGroupKeys)
+                : null,
+            },
+          )}
+          ${hasChildSessions &&
+          html`
+            <div
+              class="session-children ${childrenExpanded ? "session-children--expanded" : ""}"
+            >
+              ${session.children.map(
+                (child) =>
+                  html`<div class="session-item--child">
+                    ${renderSessionItem(
+                      {
+                        ...child,
+                        isStreaming: streamingMap.has(child.session_id),
+                        isWaitingForChildren: waitingMap.has(child.session_id),
+                      },
+                      {
+                        isSpawned: true,
+                        extraLeftPadding: "pl-8",
+                      },
+                    )}
+                  </div>`,
+              )}
+            </div>
+          `}
+        </div>
+      `;
+    });
   };
 
   // Get empty state message based on active filter tab
@@ -2558,8 +2970,8 @@ function SessionList({
           title="Conversations"
         >
           <${ChatBubbleIcon} className="w-5 h-5" />
-          ${regularSessions.length > 0 &&
-          html`<span class="ml-1.5 text-xs">${regularSessions.length}</span>`}
+          ${regularSessions.filter(s => !s.parent_session_id).length > 0 &&
+          html`<span class="ml-1.5 text-xs">${regularSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
         <button
           role="tab"
@@ -2574,8 +2986,8 @@ function SessionList({
           title="Periodic"
         >
           <${PeriodicIcon} className="w-5 h-5" />
-          ${periodicSessions.length > 0 &&
-          html`<span class="ml-1.5 text-xs">${periodicSessions.length}</span>`}
+          ${periodicSessions.filter(s => !s.parent_session_id).length > 0 &&
+          html`<span class="ml-1.5 text-xs">${periodicSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
         <button
           role="tab"
@@ -2590,8 +3002,8 @@ function SessionList({
           title="Archived"
         >
           <${ArchiveIcon} className="w-5 h-5" />
-          ${archivedSessions.length > 0 &&
-          html`<span class="ml-1.5 text-xs">${archivedSessions.length}</span>`}
+          ${archivedSessions.filter(s => !s.parent_session_id).length > 0 &&
+          html`<span class="ml-1.5 text-xs">${archivedSessions.filter(s => !s.parent_session_id).length}</span>`}
         </button>
       </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">
@@ -3348,12 +3760,14 @@ function App() {
           storedSession?.working_dir ||
           getGlobalWorkingDir(session.session_id) ||
           "";
-        // Label is the basename (same as sidebar)
-        return workingDir ? getBasename(workingDir) : "Unknown";
+        // Label is the workspace display name if available, otherwise basename
+        const acpServer = session.acp_server || storedSession?.acp_server || "";
+        const ws = workspaces.find(w => w.working_dir === workingDir && (!acpServer || w.acp_server === acpServer));
+        return ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
       }
       return "";
     },
-    [groupingModeForNav, storedSessions],
+    [groupingModeForNav, storedSessions, workspaces],
   );
 
   // Sessions available for navigation based on active filter tab
@@ -3364,20 +3778,24 @@ function App() {
   // - When not grouped: sessions sorted by created_at (newest first)
   const navigableSessions = useMemo(() => {
     // First filter sessions based on the active filter tab
+    // Also exclude child sessions (those with parent_session_id) — navigation
+    // should only cycle through top-level conversations
     let tabFilteredSessions;
     switch (filterTabForNav) {
       case FILTER_TAB.PERIODIC:
         tabFilteredSessions = allSessions.filter(
-          (s) => !s.archived && s.periodic_enabled,
+          (s) => !s.archived && s.periodic_enabled && !s.parent_session_id,
         );
         break;
       case FILTER_TAB.ARCHIVED:
-        tabFilteredSessions = allSessions.filter((s) => s.archived);
+        tabFilteredSessions = allSessions.filter(
+          (s) => s.archived && !s.parent_session_id,
+        );
         break;
       case FILTER_TAB.CONVERSATIONS:
       default:
         tabFilteredSessions = allSessions.filter(
-          (s) => !s.archived && !s.periodic_enabled,
+          (s) => !s.archived && !s.periodic_enabled && !s.parent_session_id,
         );
         break;
     }
@@ -3635,6 +4053,9 @@ function App() {
   // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
   const [sendKeyMode, setSendKeyMode] = useState("enter");
 
+  // Agent discovery dialog state (shown on first run when no ACP servers configured)
+  const [showAgentDiscovery, setShowAgentDiscovery] = useState(false);
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
@@ -3720,7 +4141,7 @@ function App() {
         setSingleExpandedGroupMode(
           config?.ui?.web?.single_expanded_group === true,
         );
-        // Check if ACP servers or workspaces are configured - if not, force open settings
+        // Check if ACP servers or workspaces are configured - if not, prompt user to set up
         // Skip this if config is read-only (user manages config via file) or if external connection
         const noAcpServers =
           !config?.acp_servers || config.acp_servers.length === 0;
@@ -3732,7 +4153,13 @@ function App() {
           !config?.config_readonly &&
           !isExternalConnection
         ) {
-          setSettingsDialog({ isOpen: true, forceOpen: true });
+          if (noAcpServers) {
+            // Show agent discovery dialog first so the user can auto-detect installed agents
+            setShowAgentDiscovery(true);
+          } else {
+            // Only workspaces missing - go straight to settings
+            setSettingsDialog({ isOpen: true, forceOpen: true });
+          }
         }
       })
       .catch((err) => console.error("Failed to fetch config:", err));
@@ -4607,7 +5034,7 @@ function App() {
     reconnectAllSessionsStaggered,
   ]);
 
-  const handleNewSession = async (workspace = null) => {
+  const handleNewSession = async (workspace = null, folderFilter = null) => {
     // If a specific workspace is provided, create session directly in that workspace
     if (workspace) {
       setShowSidebar(false);
@@ -4625,6 +5052,32 @@ function App() {
             chatInputRef.current.focus();
           }
         }, 100);
+      }
+      return;
+    }
+
+    // If folder filter provided, show workspace dialog filtered to that folder
+    if (folderFilter) {
+      const filteredWs = workspaces.filter(
+        (ws) => ws.working_dir === folderFilter,
+      );
+      if (filteredWs.length === 1) {
+        // Single workspace in folder - create directly
+        setShowSidebar(false);
+        const result = await newSession({
+          workingDir: filteredWs[0].working_dir,
+          acpServer: filteredWs[0].acp_server,
+        });
+        if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+          setSettingsDialog({ isOpen: true, forceOpen: true });
+        } else {
+          setTimeout(() => {
+            if (chatInputRef.current) chatInputRef.current.focus();
+          }, 100);
+        }
+      } else if (filteredWs.length > 1) {
+        setWorkspaceDialog({ isOpen: true, filteredWorkspaces: filteredWs });
+        setShowSidebar(false);
       }
       return;
     }
@@ -5245,9 +5698,34 @@ function App() {
       <!-- Workspace Selection Dialog (for new conversations) -->
       <${WorkspaceDialog}
         isOpen=${workspaceDialog.isOpen}
-        workspaces=${workspaces}
+        workspaces=${workspaceDialog.filteredWorkspaces || workspaces}
         onSelect=${handleWorkspaceSelect}
         onCancel=${() => setWorkspaceDialog({ isOpen: false })}
+      />
+
+      <!-- Agent Discovery Dialog (first-run when no ACP servers configured) -->
+      <${AgentDiscoveryDialog}
+        isOpen=${showAgentDiscovery}
+        onClose=${() => {
+          setShowAgentDiscovery(false);
+          // Fall through to settings dialog so user can configure manually
+          setSettingsDialog({ isOpen: true, forceOpen: true });
+        }}
+        onAgentsConfirmed=${async () => {
+          setShowAgentDiscovery(false);
+          // Refresh config to pick up newly added servers
+          invalidateConfigCache();
+          try {
+            const config = await fetchConfig();
+            if (config) {
+              setAcpServersWithPrompts(config?.acp_servers || []);
+              setGlobalPrompts(config?.prompts || []);
+              refreshWorkspaces();
+            }
+          } catch (err) {
+            console.error("[AgentDiscovery] Failed to refresh config:", err);
+          }
+        }}
       />
 
       <!-- Settings Dialog -->
@@ -5434,12 +5912,12 @@ function App() {
       html`
         <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
           <div
-            class="flex flex-col gap-1 px-4 py-3 bg-amber-600 text-white rounded-lg shadow-lg max-w-md"
+            class="flex flex-col gap-1 px-4 py-3 bg-red-600 text-white rounded-lg shadow-lg max-w-lg"
           >
             <div class="flex items-center gap-2">
-              <span class="text-lg">⏳</span>
+              <span class="text-lg">⚠️</span>
               <span class="text-sm font-medium"
-                >AI Agent Starting...</span
+                >AI Agent Failed to Start</span
               >
               <button
                 onClick=${() => setAcpStartFailedError(null)}
@@ -5450,8 +5928,21 @@ function App() {
               </button>
             </div>
             <div class="text-xs opacity-90 ml-7">
+              ${acpStartFailedError.session_id && html`
+                <div class="text-white/90 mb-1">
+                  Session: <button
+                    class="underline hover:text-white cursor-pointer"
+                    onClick=${() => {
+                      setAcpStartFailedError(null);
+                      if (acpStartFailedError.session_id) {
+                        switchToSession(acpStartFailedError.session_id);
+                      }
+                    }}
+                  >${acpStartFailedError.session_name || acpStartFailedError.session_id}</button>
+                </div>
+              `}
               <div class="text-white/70">
-                The AI agent is still starting up. This may take a few seconds. Please wait...
+                The AI agent process could not be started. Try switching to the session and sending a message to retry.
               </div>
             </div>
           </div>
@@ -5757,6 +6248,7 @@ function App() {
                     activeSessionId &&
                     sessionInfo &&
                     !sessionInfo.acp_ready &&
+                    !sessionInfo.archived &&
                     html`
                       <p
                         class="text-sm mt-6 text-yellow-500 flex items-center gap-2"
@@ -5860,6 +6352,7 @@ function App() {
         activeSessionId &&
         sessionInfo &&
         !sessionInfo.acp_ready &&
+        !sessionInfo.archived &&
         messages.length > 0 &&
         html`
           <div
@@ -5915,8 +6408,8 @@ function App() {
             agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
             acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
             activeUIPrompt=${activeUIPrompt}
-            onUIPromptAnswer=${(requestId, optionId, label) =>
-              sendUIPromptAnswer(activeSessionId, requestId, optionId, label)}
+            onUIPromptAnswer=${(requestId, optionId, label, freeText) =>
+              sendUIPromptAnswer(activeSessionId, requestId, optionId, label, freeText)}
             workingDir=${sessionInfo?.working_dir || ""}
             sendKeyMode=${sendKeyMode}
           />

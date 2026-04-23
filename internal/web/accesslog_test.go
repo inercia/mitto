@@ -423,6 +423,89 @@ func TestAccessLogger_MiddlewareLogsSecurityEvents(t *testing.T) {
 	}
 }
 
+func TestAccessLogger_DetermineEventType_LogAll(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "access.log")
+
+	logger := NewAccessLogger(AccessLogConfig{Path: logPath, LogAll: true})
+	if logger == nil {
+		t.Fatal("Expected non-nil logger")
+	}
+	defer logger.Close()
+
+	tests := []struct {
+		name       string
+		path       string
+		method     string
+		statusCode int
+		isExternal bool
+		expected   string
+	}{
+		// Security events should still have their specific types
+		{"login success", "/api/login", "POST", 200, false, "login_success"},
+		{"login failed", "/api/login", "POST", 401, false, "login_failed"},
+		{"external unauthorized", "/api/sessions", "GET", 401, true, "unauthorized"},
+		{"external access", "/api/sessions", "GET", 200, true, "external_access"},
+		// Normal requests now get "request" event type when LogAll=true
+		{"internal success logged", "/api/sessions", "GET", 200, false, "request"},
+		{"static asset internal", "/static/app.js", "GET", 200, false, "request"},
+		{"websocket upgrade", "/api/sessions/abc/ws", "GET", 101, false, "request"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			got := logger.determineEventType(req, tt.statusCode, tt.isExternal)
+			if got != tt.expected {
+				t.Errorf("determineEventType() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestAccessLogger_MiddlewareLogsAllRequests(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "access.log")
+
+	logger := NewAccessLogger(AccessLogConfig{Path: logPath, LogAll: true})
+	if logger == nil {
+		t.Fatal("Expected non-nil logger")
+	}
+	defer logger.Close()
+
+	// Handler that returns 200 OK for internal request
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	wrapped := logger.Middleware(handler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	// Close to flush
+	logger.Close()
+
+	// Read log file - should contain the "request" event for a normal internal 200
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	if len(content) == 0 {
+		t.Error("Log should NOT be empty when LogAll=true")
+	}
+
+	logLine := string(content)
+	if !strings.Contains(logLine, "request") {
+		t.Errorf("Log should contain 'request' event type when LogAll=true: %s", logLine)
+	}
+	if !strings.Contains(logLine, "/api/sessions") {
+		t.Errorf("Log should contain the request path: %s", logLine)
+	}
+}
+
 func TestAccessLogger_MiddlewareSkipsNonSecurityEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "access.log")

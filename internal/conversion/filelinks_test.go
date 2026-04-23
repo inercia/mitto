@@ -36,8 +36,10 @@ func TestFileLinker_LinkFilePaths(t *testing.T) {
 	t.Logf("Test file: %s", testFile)
 
 	linker := NewFileLinker(FileLinkerConfig{
-		WorkingDir: tmpDir,
-		Enabled:    true,
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-ws",
+		APIPrefix:     "/mitto",
+		Enabled:       true,
 	})
 
 	tests := []struct {
@@ -49,12 +51,12 @@ func TestFileLinker_LinkFilePaths(t *testing.T) {
 		{
 			name:     "relative path that exists",
 			input:    "Check the file src/main.go for details",
-			contains: `<a href="file://`,
+			contains: `<a href=`,
 		},
 		{
 			name:     "relative path with ./",
 			input:    "See ./src/main.go",
-			contains: `<a href="file://`,
+			contains: `<a href=`,
 		},
 		{
 			name:     "directory link",
@@ -64,37 +66,37 @@ func TestFileLinker_LinkFilePaths(t *testing.T) {
 		{
 			name:     "non-existent file",
 			input:    "Check nonexistent/file.go",
-			excludes: `<a href="file://`,
+			excludes: `viewer.html`,
 		},
 		{
 			name:     "executable file skipped",
 			input:    "Run script.sh to start",
-			excludes: `<a href="file://`,
+			excludes: `viewer.html`,
 		},
 		{
 			name:     "path inside inline code tag linked",
 			input:    "<code>src/main.go</code>",
-			contains: `<a href="file://`,
+			contains: `<a href=`,
 		},
 		{
 			name:     "path inside pre tag skipped",
 			input:    "<pre>src/main.go</pre>",
-			excludes: `<a href="file://`,
+			excludes: `viewer.html`,
 		},
 		{
 			name:     "path inside pre>code tag skipped",
 			input:    "<pre><code>src/main.go</code></pre>",
-			excludes: `<a href="file://`,
+			excludes: `viewer.html`,
 		},
 		{
 			name:     "path inside anchor tag skipped",
 			input:    `<a href="http://example.com">src/main.go</a>`,
-			excludes: `file://`,
+			excludes: `viewer.html`,
 		},
 		{
 			name:     "disabled linker returns unchanged",
 			input:    "src/main.go",
-			excludes: `<a href="file://`,
+			excludes: `viewer.html`,
 		},
 	}
 
@@ -150,14 +152,14 @@ func TestFileLinker_SecurityChecks(t *testing.T) {
 
 	t.Run("sensitive file skipped", func(t *testing.T) {
 		result := linker.LinkFilePaths("Check .env for config")
-		if containsString(result, `<a href="file://`) {
+		if containsString(result, `<a href=`) {
 			t.Errorf("Sensitive file should not be linked: %s", result)
 		}
 	})
 
 	t.Run("file outside workspace skipped", func(t *testing.T) {
 		result := linker.LinkFilePaths("See " + outsideFile)
-		if containsString(result, `<a href="file://`) {
+		if containsString(result, `<a href=`) {
 			t.Errorf("File outside workspace should not be linked: %s", result)
 		}
 	})
@@ -238,12 +240,14 @@ func TestFileLinker_AllowOutsideWorkspace(t *testing.T) {
 
 	linker := NewFileLinker(FileLinkerConfig{
 		WorkingDir:            tmpDir,
+		WorkspaceUUID:         "test-ws-outside",
+		APIPrefix:             "/mitto",
 		Enabled:               true,
 		AllowOutsideWorkspace: true, // Allow outside workspace
 	})
 
 	result := linker.LinkFilePaths("See " + outsideFile)
-	if !containsString(result, `<a href="file://`) {
+	if !containsString(result, `<a href=`) {
 		t.Errorf("File outside workspace should be linked when allowed: %s", result)
 	}
 }
@@ -261,6 +265,8 @@ func TestFileLinker_MaxPathsLimit(t *testing.T) {
 
 	linker := NewFileLinker(FileLinkerConfig{
 		WorkingDir:         tmpDir,
+		WorkspaceUUID:      "test-ws-max",
+		APIPrefix:          "/mitto",
 		Enabled:            true,
 		MaxPathsPerMessage: 3, // Only process 3 paths
 	})
@@ -270,7 +276,7 @@ func TestFileLinker_MaxPathsLimit(t *testing.T) {
 	result := linker.LinkFilePaths(input)
 
 	// Count how many links were created
-	linkCount := countOccurrences(result, `<a href="file://`)
+	linkCount := countOccurrences(result, `viewer.html`)
 	if linkCount > 3 {
 		t.Errorf("Expected at most 3 links, got %d", linkCount)
 	}
@@ -299,7 +305,7 @@ func TestFileLinker_SymlinkSecurity(t *testing.T) {
 	})
 
 	result := linker.LinkFilePaths("See link.txt")
-	if containsString(result, `<a href="file://`) {
+	if containsString(result, `<a href=`) {
 		t.Errorf("Symlink pointing outside workspace should not be linked: %s", result)
 	}
 }
@@ -314,12 +320,14 @@ func TestFileLinker_AbsolutePath(t *testing.T) {
 	}
 
 	linker := NewFileLinker(FileLinkerConfig{
-		WorkingDir: tmpDir,
-		Enabled:    true,
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-ws-abs",
+		APIPrefix:     "/mitto",
+		Enabled:       true,
 	})
 
 	result := linker.LinkFilePaths("See " + testFile)
-	if !containsString(result, `<a href="file://`) {
+	if !containsString(result, `<a href=`) {
 		t.Errorf("Absolute path within workspace should be linked: %s", result)
 	}
 }
@@ -342,14 +350,183 @@ func TestFileLinker_MultiplePaths(t *testing.T) {
 	}
 
 	linker := NewFileLinker(FileLinkerConfig{
-		WorkingDir: tmpDir,
-		Enabled:    true,
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-ws-multi",
+		APIPrefix:     "/mitto",
+		Enabled:       true,
 	})
 
 	result := linker.LinkFilePaths("Check src/file1.txt and src/file2.txt")
-	linkCount := countOccurrences(result, `<a href="file://`)
+	linkCount := countOccurrences(result, `viewer.html`)
 	if linkCount != 2 {
 		t.Errorf("Expected 2 links, got %d: %s", linkCount, result)
+	}
+}
+
+func TestFileLinker_ProcessAnchorHrefs(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create test files
+	docsDir := filepath.Join(tmpDir, "docs")
+	if err := os.MkdirAll(docsDir, 0755); err != nil {
+		t.Fatalf("Failed to create docs directory: %v", err)
+	}
+	mdFile := filepath.Join(docsDir, "report.md")
+	if err := os.WriteFile(mdFile, []byte("# Report"), 0644); err != nil {
+		t.Fatalf("Failed to create .md file: %v", err)
+	}
+	txtFile := filepath.Join(docsDir, "notes.txt")
+	if err := os.WriteFile(txtFile, []byte("notes"), 0644); err != nil {
+		t.Fatalf("Failed to create .txt file: %v", err)
+	}
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-uuid-anchor",
+		Enabled:       true,
+		APIPrefix:     "/mitto",
+	})
+
+	tests := []struct {
+		name     string
+		input    string
+		contains []string
+		excludes []string
+	}{
+		{
+			name:  "relative .md link rewritten with viewer URL",
+			input: `<a href="docs/report.md">report</a>`,
+			contains: []string{
+				`href="/mitto/viewer.html?ws=test-uuid-anchor&path=docs%2Freport.md"`,
+				`class="file-link"`,
+				`>report</a>`,
+			},
+			excludes: []string{`href="docs/report.md"`},
+		},
+		{
+			name:  "relative non-.md link rewritten with viewer URL",
+			input: `<a href="docs/notes.txt">notes</a>`,
+			contains: []string{
+				`href="/mitto/viewer.html?ws=test-uuid-anchor`,
+				`class="file-link"`,
+			},
+			excludes: []string{`href="docs/notes.txt"`},
+		},
+		{
+			name:     "https link left untouched",
+			input:    `<a href="https://example.com">link</a>`,
+			contains: []string{`href="https://example.com"`},
+			excludes: []string{"file-link", "viewer.html"},
+		},
+		{
+			name:     "http link left untouched",
+			input:    `<a href="http://example.com">link</a>`,
+			contains: []string{`href="http://example.com"`},
+			excludes: []string{"file-link", "viewer.html"},
+		},
+		{
+			name:     "mailto link left untouched",
+			input:    `<a href="mailto:user@example.com">email</a>`,
+			contains: []string{`href="mailto:user@example.com"`},
+			excludes: []string{"file-link", "viewer.html"},
+		},
+		{
+			name:     "fragment link left untouched",
+			input:    `<a href="#section">section</a>`,
+			contains: []string{`href="#section"`},
+			excludes: []string{"file-link", "viewer.html"},
+		},
+		{
+			name:     "empty href left untouched",
+			input:    `<a href="">empty</a>`,
+			contains: []string{`href=""`},
+			excludes: []string{"file-link", "viewer.html"},
+		},
+		{
+			name:     "non-existent file left untouched",
+			input:    `<a href="docs/nonexistent.md">link</a>`,
+			contains: []string{`href="docs/nonexistent.md"`},
+			excludes: []string{"file-link", "viewer.html"},
+		},
+		{
+			name:     "link inside pre tag left untouched",
+			input:    `<pre><a href="docs/report.md">link</a></pre>`,
+			contains: []string{`href="docs/report.md"`},
+			excludes: []string{"file-link", "viewer.html"},
+		},
+		{
+			name:  "rel=nofollow removed when rewriting",
+			input: `<a href="docs/report.md" rel="nofollow">report</a>`,
+			contains: []string{
+				`class="file-link"`,
+			},
+			excludes: []string{`rel="nofollow"`, `href="docs/report.md"`},
+		},
+		{
+			name:  "nested code in anchor - href rewritten, code tag preserved",
+			input: `<a href="docs/report.md"><code>docs/report.md</code></a>`,
+			contains: []string{
+				`class="file-link"`,
+				`<code>docs/report.md</code></a>`,
+			},
+		},
+		{
+			name:  "existing class merged with file-link",
+			input: `<a class="custom" href="docs/report.md">report</a>`,
+			contains: []string{
+				`class="custom file-link"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := linker.LinkFilePaths(tt.input)
+
+			for _, expected := range tt.contains {
+				if !containsString(result, expected) {
+					t.Errorf("Expected result to contain %q\nInput:  %s\nOutput: %s", expected, tt.input, result)
+				}
+			}
+			for _, excluded := range tt.excludes {
+				if containsString(result, excluded) {
+					t.Errorf("Expected result to NOT contain %q\nInput:  %s\nOutput: %s", excluded, tt.input, result)
+				}
+			}
+		})
+	}
+}
+
+func TestFileLinker_ProcessAnchorHrefs_NoDoubleNesting(t *testing.T) {
+	// Verify that a <code> tag inside a rewritten <a> is not additionally wrapped.
+	tmpDir := t.TempDir()
+
+	docsDir := filepath.Join(tmpDir, "docs")
+	if err := os.MkdirAll(docsDir, 0755); err != nil {
+		t.Fatalf("Failed to create docs directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "report.md"), []byte("# R"), 0644); err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-uuid-ndn",
+		Enabled:       true,
+		APIPrefix:     "/mitto",
+	})
+
+	input := `<a href="docs/report.md"><code>docs/report.md</code></a>`
+	result := linker.LinkFilePaths(input)
+
+	// Exactly one <a> opening tag in the result (the rewritten one)
+	count := countOccurrences(result, `<a `)
+	if count != 1 {
+		t.Errorf("Expected exactly 1 <a> tag, got %d: %s", count, result)
+	}
+	// The <code> content must be preserved
+	if !containsString(result, `<code>docs/report.md</code>`) {
+		t.Errorf("Expected <code> tag to be preserved: %s", result)
 	}
 }
 
@@ -378,23 +555,27 @@ func TestFileLinker_HTTPLinks(t *testing.T) {
 
 	linker := NewFileLinker(FileLinkerConfig{
 		WorkingDir:    tmpDir,
+		WorkspacePath: tmpDir,
 		WorkspaceUUID: "test-uuid-123",
 		Enabled:       true,
-		UseHTTPLinks:  true,
 		APIPrefix:     "/mitto",
 	})
 
 	result := linker.LinkFilePaths("See src/main.go for details")
 
-	// Should generate HTTP link, not file:// link
+	// Should generate viewer link, not file:// link
 	if containsString(result, "file://") {
 		t.Errorf("Should not contain file:// links: %s", result)
 	}
-	if !containsString(result, `/mitto/api/files?ws=test-uuid-123`) {
-		t.Errorf("Should contain HTTP link with workspace UUID: %s", result)
+	if !containsString(result, `/mitto/viewer.html?ws=test-uuid-123`) {
+		t.Errorf("Should contain viewer link with workspace UUID: %s", result)
 	}
 	if !containsString(result, `path=src%2Fmain.go`) {
 		t.Errorf("Should contain URL-encoded path: %s", result)
+	}
+	// Should include ws_path for "Open in System App" button
+	if !containsString(result, `ws_path=`) {
+		t.Errorf("Should contain ws_path parameter: %s", result)
 	}
 }
 
@@ -415,16 +596,15 @@ func TestFileLinker_InlineCodeHTTPLinks(t *testing.T) {
 		WorkingDir:    tmpDir,
 		WorkspaceUUID: "test-uuid-456",
 		Enabled:       true,
-		UseHTTPLinks:  true,
 		APIPrefix:     "/mitto",
 	})
 
 	// Test inline code tag (backtick-enclosed in markdown)
 	result := linker.LinkFilePaths("Check <code>src/main.go</code> for details")
 
-	// Should wrap the code tag in a link
-	if !containsString(result, `<a href="/mitto/api/files?ws=test-uuid-456`) {
-		t.Errorf("Should contain HTTP link with workspace UUID: %s", result)
+	// Should wrap the code tag in a viewer link
+	if !containsString(result, `<a href="/mitto/viewer.html?ws=test-uuid-456`) {
+		t.Errorf("Should contain viewer link with workspace UUID: %s", result)
 	}
 	if !containsString(result, `<code>src/main.go</code></a>`) {
 		t.Errorf("Should wrap code tag in link: %s", result)
@@ -434,7 +614,7 @@ func TestFileLinker_InlineCodeHTTPLinks(t *testing.T) {
 	}
 }
 
-func TestFileLinker_MarkdownAutoRender(t *testing.T) {
+func TestFileLinker_ViewerURLs(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create test files in docs subdirectory
@@ -459,29 +639,28 @@ func TestFileLinker_MarkdownAutoRender(t *testing.T) {
 		WorkingDir:    tmpDir,
 		WorkspaceUUID: "test-uuid-md",
 		Enabled:       true,
-		UseHTTPLinks:  true,
 		APIPrefix:     "/mitto",
 	})
 
-	// Test .md file gets render=html
+	// Test .md file generates viewer URL with correct path
 	result := linker.LinkFilePaths("See <code>docs/README.md</code> for info")
-	if !containsString(result, `path=docs%2FREADME.md&render=html`) {
-		t.Errorf("Markdown file should have render=html: %s", result)
+	if !containsString(result, `/mitto/viewer.html?ws=test-uuid-md&path=docs%2FREADME.md`) {
+		t.Errorf("Markdown file should have viewer URL: %s", result)
 	}
-
-	// Test .markdown file gets render=html
-	result = linker.LinkFilePaths("See <code>docs/guide.markdown</code> for info")
-	if !containsString(result, `path=docs%2Fguide.markdown&render=html`) {
-		t.Errorf(".markdown file should have render=html: %s", result)
-	}
-
-	// Test non-markdown file does NOT get render=html
-	result = linker.LinkFilePaths("See <code>docs/main.go</code> for code")
 	if containsString(result, "render=html") {
-		t.Errorf("Non-markdown file should NOT have render=html: %s", result)
+		t.Errorf("Viewer URL should not contain render=html (viewer handles rendering): %s", result)
 	}
-	if !containsString(result, `path=docs%2Fmain.go"`) {
-		t.Errorf("Non-markdown file should still have path param: %s", result)
+
+	// Test .markdown file generates viewer URL with correct path
+	result = linker.LinkFilePaths("See <code>docs/guide.markdown</code> for info")
+	if !containsString(result, `path=docs%2Fguide.markdown`) {
+		t.Errorf(".markdown file should have viewer URL with path: %s", result)
+	}
+
+	// Test non-markdown file also generates viewer URL
+	result = linker.LinkFilePaths("See <code>docs/main.go</code> for code")
+	if !containsString(result, `/mitto/viewer.html?ws=test-uuid-md&path=docs%2Fmain.go`) {
+		t.Errorf("Non-markdown file should also have viewer URL: %s", result)
 	}
 }
 
@@ -512,7 +691,6 @@ func TestFileLinker_HiddenDirectoryPaths(t *testing.T) {
 		WorkingDir:    tmpDir,
 		WorkspaceUUID: "test-uuid-hidden",
 		Enabled:       true,
-		UseHTTPLinks:  true,
 		APIPrefix:     "/mitto",
 	})
 
@@ -521,8 +699,8 @@ func TestFileLinker_HiddenDirectoryPaths(t *testing.T) {
 	if !containsString(result, `path=.augment%2Frules%2Fimported%2Ftest.md`) {
 		t.Errorf("Hidden directory path should be linked: %s", result)
 	}
-	if !containsString(result, "render=html") {
-		t.Errorf("Markdown file in hidden dir should have render=html: %s", result)
+	if !containsString(result, `/mitto/viewer.html`) {
+		t.Errorf("Markdown file in hidden dir should have viewer URL: %s", result)
 	}
 
 	// Test .augment/ path in backticks
@@ -703,8 +881,10 @@ func TestFileLinker_BackwardCompatibility(t *testing.T) {
 	}
 
 	linker := NewFileLinker(FileLinkerConfig{
-		WorkingDir: tmpDir,
-		Enabled:    true,
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-ws-compat",
+		APIPrefix:     "/mitto",
+		Enabled:       true,
 	})
 
 	tests := []struct {
@@ -715,12 +895,12 @@ func TestFileLinker_BackwardCompatibility(t *testing.T) {
 		{
 			name:     "file path in backticks still works",
 			input:    "<code>src/main.go</code>",
-			contains: `<a href="file://`,
+			contains: `<a href="/mitto/viewer.html`,
 		},
 		{
 			name:     "file path in regular text still works",
 			input:    "Check src/main.go for details",
-			contains: `<a href="file://`,
+			contains: `<a href="/mitto/viewer.html`,
 		},
 		{
 			name:     "regular markdown links still work",

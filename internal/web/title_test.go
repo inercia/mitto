@@ -92,6 +92,99 @@ func TestGenerateAndSetTitle_NilStore(t *testing.T) {
 	// This test mainly verifies no panic occurs
 }
 
+func TestGenerateQuickTitle(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    string // "" means we expect empty (no title)
+	}{
+		{
+			name:    "simple message",
+			message: "How do I fix the login bug in the auth service",
+			want:    "How do I fix the login", // 6 words
+		},
+		{
+			name:    "markdown bold",
+			message: "**Fix the login bug** in the auth service now",
+			want:    "Fix the login bug in the",
+		},
+		{
+			name:    "markdown heading",
+			message: "## Fix the login bug\nMore details here",
+			want:    "Fix the login bug More details",
+		},
+		{
+			name:    "markdown link",
+			message: "Please review [the auth PR](https://github.com/org/repo/pull/123) soon",
+			want:    "Please review the auth PR soon",
+		},
+		{
+			name:    "bare URL stripped",
+			message: "https://example.com/page is the reference for this fix",
+			want:    "Is the reference for this fix",
+		},
+		{
+			name:    "inline code stripped",
+			message: "Call `getUserById` to fetch the user record",
+			want:    "Call to fetch the user record",
+		},
+		{
+			name:    "fenced code block stripped",
+			message: "```go\nfunc foo() {}\n```\nThis implements the feature",
+			want:    "This implements the feature",
+		},
+		{
+			name:    "very short message returns empty",
+			message: "ok",
+			want:    "",
+		},
+		{
+			name:    "empty message returns empty",
+			message: "",
+			want:    "",
+		},
+		{
+			name:    "single char returns empty",
+			message: "x",
+			want:    "",
+		},
+		{
+			name:    "all URL returns empty",
+			message: "https://example.com/very/long/url/that/has/no/text",
+			want:    "",
+		},
+		{
+			name:    "all code block returns empty",
+			message: "```\nsome code here\n```",
+			want:    "",
+		},
+		{
+			name:    "very long message capped at 50 chars",
+			message: "Implement a comprehensive authentication system with OAuth2 support and MFA",
+			want:    "Implement a comprehensive authentication system...", // 47 chars + "..."
+		},
+		{
+			name:    "first letter capitalized",
+			message: "fix the broken test in the CI pipeline",
+			want:    "Fix the broken test in the",
+		},
+		{
+			name:    "leading punctuation stripped",
+			message: "...fix the broken test here",
+			want:    "Fix the broken test here",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GenerateQuickTitle(tt.message)
+			if got != tt.want {
+				t.Errorf("GenerateQuickTitle(%q) = %q, want %q", tt.message, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTitleGenerationConfig_Fields(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
