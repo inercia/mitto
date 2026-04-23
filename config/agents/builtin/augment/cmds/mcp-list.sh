@@ -4,28 +4,42 @@
 # Output: {"servers": [{"name": "...", "command": "...", "args": [...], "url": "..."}]}
 
 INPUT=$(cat 2>/dev/null || echo '{}')
-CONFIG_FILE="${HOME}/.augment/config.json"
 
-if [ ! -f "$CONFIG_FILE" ]; then
+# Check if auggie is available
+if ! command -v auggie &>/dev/null; then
     echo '{"servers": []}'
     exit 0
 fi
 
-python3 -c "
+# Extract optional workspace path from input
+WORKSPACE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('path',''))" 2>/dev/null)
+
+# Build auggie command
+if [ -n "$WORKSPACE_PATH" ]; then
+    AUGGIE_OUTPUT=$(auggie --workspace-root="$WORKSPACE_PATH" mcp list --json 2>/dev/null) || true
+else
+    AUGGIE_OUTPUT=$(auggie mcp list --json 2>/dev/null) || true
+fi
+
+if [ -z "$AUGGIE_OUTPUT" ]; then
+    echo '{"servers": []}'
+    exit 0
+fi
+
+# Transform auggie output to expected format (keep only name, command, args, url)
+echo "$AUGGIE_OUTPUT" | python3 -c "
 import json, sys
 try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-    servers = config.get('mcpServers', {})
+    data = json.load(sys.stdin)
     result = []
-    for name, cfg in servers.items():
-        entry = {'name': name}
-        if 'command' in cfg:
-            entry['command'] = cfg['command']
-        if 'args' in cfg:
-            entry['args'] = cfg['args']
-        if 'url' in cfg:
-            entry['url'] = cfg['url']
+    for s in data.get('servers', []):
+        entry = {'name': s['name']}
+        if 'command' in s:
+            entry['command'] = s['command']
+        if 'args' in s:
+            entry['args'] = s['args']
+        if 'url' in s:
+            entry['url'] = s['url']
         result.append(entry)
     print(json.dumps({'servers': result}))
 except Exception:
