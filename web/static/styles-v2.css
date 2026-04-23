@@ -728,6 +728,9 @@ a:hover {
 .v2-theme:not(.dark) .border-blue-500 {
   border-color: #dc2626 !important;
 }
+.v2-theme:not(.dark) .border-blue-400 {
+  border-color: #dc2626 !important;
+}
 .v2-theme:not(.dark) .border-l-blue-500 {
   border-left-color: #dc2626 !important;
 }
@@ -767,6 +770,9 @@ a:hover {
   color: #ff5c5c !important;
 }
 .v2-theme.dark .border-blue-500 {
+  border-color: #ff5c5c !important;
+}
+.v2-theme.dark .border-blue-400 {
   border-color: #ff5c5c !important;
 }
 .v2-theme.dark .border-l-blue-500 {

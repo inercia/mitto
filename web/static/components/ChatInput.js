@@ -2809,8 +2809,8 @@ ${activeUIPrompt.text || ""}</textarea
                             ...baseStyle,
                             backgroundColor:
                               baseStyle.backgroundColor ||
-                              "rgba(59, 130, 246, 0.25)",
-                            boxShadow: "inset 3px 0 0 0 #3b82f6",
+                              "rgba(220, 38, 38, 0.15)",
+                            boxShadow: "inset 3px 0 0 0 var(--accent)",
                           }
                         : baseStyle;
                       return html`
