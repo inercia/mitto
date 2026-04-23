@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Status check for Claude Code
 # Outputs JSON with agent installation and configuration status
 

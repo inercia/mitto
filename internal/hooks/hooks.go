@@ -24,20 +24,39 @@ const maxHookOutputBytes = 4096
 
 // limitedBuffer is an io.Writer that writes to an underlying bytes.Buffer
 // but stops accepting data once maxSize bytes have been written.
+// It is safe for concurrent use (stdout and stderr may write concurrently
+// when used with os/exec) and always reports the full input length to
+// avoid io.ErrShortWrite from io.MultiWriter.
 type limitedBuffer struct {
+	mu      sync.Mutex
 	buf     *bytes.Buffer
 	maxSize int
 }
 
 func (lb *limitedBuffer) Write(p []byte) (n int, err error) {
+	origLen := len(p)
+
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
 	remaining := lb.maxSize - lb.buf.Len()
 	if remaining <= 0 {
-		return len(p), nil // silently discard
+		return origLen, nil // silently discard
 	}
+
 	if len(p) > remaining {
 		p = p[:remaining]
 	}
-	return lb.buf.Write(p)
+
+	written, err := lb.buf.Write(p)
+	if err != nil {
+		return written, err
+	}
+	if written != len(p) {
+		return written, io.ErrShortWrite
+	}
+
+	return origLen, nil
 }
 
 // HookFailure contains information about a hook that failed to execute.

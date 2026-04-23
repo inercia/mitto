@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Install Claude Code CLI
 # Input: {} (none required)
 # Output: {"success": bool, "message": "...", "version": "..."}

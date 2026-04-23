@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # List MCP servers configured for Goose
 # Input: {"path": "/optional/workspace/path"} (optional, via stdin)
 # Output: {"servers": [...]}

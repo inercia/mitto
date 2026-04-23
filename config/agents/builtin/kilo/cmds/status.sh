@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Status check for Kilo Code
 # Outputs JSON with agent installation and configuration status
 

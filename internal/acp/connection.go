@@ -59,14 +59,16 @@ func NewConnection(
 	mittoEnv := BuildMittoEnv("", cwd, "", "")
 	expandedArgs := ExpandArgs(args, mittoEnv)
 	if logger != nil {
-		// Log only if any arg changed
+		changedIndices := make([]int, 0)
 		for i, orig := range args {
 			if orig != expandedArgs[i] {
-				logger.Info("expanded MITTO_* vars in ACP command args",
-					"original", args,
-					"expanded", expandedArgs)
-				break
+				changedIndices = append(changedIndices, i)
 			}
+		}
+		if len(changedIndices) > 0 {
+			logger.Debug("expanded MITTO_* vars in ACP command args",
+				"changed_indices", changedIndices,
+				"changed_count", len(changedIndices))
 		}
 	}
 	args = expandedArgs

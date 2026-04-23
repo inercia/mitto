@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Install Mistral Vibe
 # Input: {} (none required)
 # Output: {"success": bool, "message": "...", "version": "..."}

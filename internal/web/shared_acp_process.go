@@ -225,14 +225,17 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	mittoEnv := mittoAcp.BuildMittoEnv("", p.config.WorkingDir, p.config.ACPServer, "")
 	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
 	if p.logger != nil {
+		changedIndices := make([]int, 0)
 		for i, orig := range args {
 			if orig != expandedArgs[i] {
-				p.logger.Info("expanded MITTO_* vars in shared ACP command args",
-					"original", args,
-					"expanded", expandedArgs,
-					"acp_server", p.config.ACPServer)
-				break
+				changedIndices = append(changedIndices, i)
 			}
+		}
+		if len(changedIndices) > 0 {
+			p.logger.Debug("expanded MITTO_* vars in shared ACP command args",
+				"changed_indices", changedIndices,
+				"changed_count", len(changedIndices),
+				"acp_server", p.config.ACPServer)
 		}
 	}
 	args = expandedArgs
@@ -240,9 +243,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	originalCwd := acpCwd
 	acpCwd = mittoAcp.ExpandCommand(acpCwd, mittoEnv)
 	if acpCwd != originalCwd && p.logger != nil {
-		p.logger.Info("expanded MITTO_* vars in shared ACP cwd",
-			"original", originalCwd,
-			"expanded", acpCwd,
+		p.logger.Debug("expanded MITTO_* vars in shared ACP cwd",
 			"acp_server", p.config.ACPServer)
 	}
 

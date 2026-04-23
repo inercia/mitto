@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Install Goose
 # Input: {} (none required)
 # Output: {"success": bool, "message": "...", "version": "..."}

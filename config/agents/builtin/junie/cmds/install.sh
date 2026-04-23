@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Install Junie (JetBrains)
 # Input: {} (none required)
 # Output: {"success": bool, "message": "...", "version": "..."}

@@ -1587,14 +1587,17 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	mittoEnv := mittoAcp.BuildMittoEnv(bs.persistedID, workingDir, "", "")
 	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
 	if bs.logger != nil {
+		changedIndices := make([]int, 0)
 		for i, orig := range args {
 			if orig != expandedArgs[i] {
-				bs.logger.Info("expanded MITTO_* vars in ACP command args",
-					"original", args,
-					"expanded", expandedArgs,
-					"session_id", bs.persistedID)
-				break
+				changedIndices = append(changedIndices, i)
 			}
+		}
+		if len(changedIndices) > 0 {
+			bs.logger.Debug("expanded MITTO_* vars in ACP command args",
+				"changed_indices", changedIndices,
+				"changed_count", len(changedIndices),
+				"session_id", bs.persistedID)
 		}
 	}
 	args = expandedArgs
@@ -1602,9 +1605,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	originalCwd := acpCwd
 	acpCwd = mittoAcp.ExpandCommand(acpCwd, mittoEnv)
 	if acpCwd != originalCwd && bs.logger != nil {
-		bs.logger.Info("expanded MITTO_* vars in ACP cwd",
-			"original", originalCwd,
-			"expanded", acpCwd,
+		bs.logger.Debug("expanded MITTO_* vars in ACP cwd",
 			"session_id", bs.persistedID)
 	}
 

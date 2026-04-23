@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Install an MCP server for Goose
 # Input: {"name": "...", "command": "...", "args": [...], "url": "..."}
 # Output: {"success": bool, "message": "...", "name": "..."}

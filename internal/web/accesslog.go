@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -294,12 +295,15 @@ func (a *AccessLogger) Middleware(next http.Handler) http.Handler {
 			errorMsg = http.StatusText(wrapped.statusCode)
 		}
 
+		// Redact sensitive path segments (e.g., callback tokens) before logging
+		logPath := a.redactPath(r.URL.Path)
+
 		// Log the entry
 		a.Write(LogEntry{
 			Timestamp:    start,
 			ClientIP:     clientIP,
 			Method:       r.Method,
-			Path:         r.URL.Path,
+			Path:         logPath,
 			StatusCode:   wrapped.statusCode,
 			BytesWritten: wrapped.bytesWritten,
 			Duration:     time.Since(start),
@@ -372,4 +376,18 @@ func (a *AccessLogger) determineEventType(r *http.Request, statusCode int, isExt
 	}
 
 	return "" // Not a security-relevant event
+}
+
+// redactPath replaces sensitive path segments (such as callback tokens)
+// with "<redacted>" to prevent leaking secrets in access logs.
+func (a *AccessLogger) redactPath(path string) string {
+	// Redact callback tokens: /api/callback/<token> → /api/callback/<redacted>
+	callbackPrefix := "/api/callback/"
+	if a.apiPrefix != "" {
+		callbackPrefix = a.apiPrefix + callbackPrefix
+	}
+	if strings.HasPrefix(path, callbackPrefix) {
+		return callbackPrefix + "<redacted>"
+	}
+	return path
 }

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Status check for Goose
 # Outputs JSON with agent installation and configuration status
 

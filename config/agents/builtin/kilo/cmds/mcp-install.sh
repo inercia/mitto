@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Install an MCP server for Kilo
 # Input: {"name": "...", "command": "...", "args": [...], "url": "...", "path": "..."}
 # Output: {"success": bool, "message": "...", "name": "..."}
