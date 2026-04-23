@@ -48,14 +48,38 @@ func NewConnection(
 	logger *slog.Logger,
 	r *runner.Runner, // optional restricted runner
 ) (*Connection, error) {
-	// Parse command into args using shell-aware tokenization
+	// Parse command into args using shell-aware tokenization FIRST,
+	// then expand $MITTO_* references in each arg individually.
+	// This preserves paths with spaces as single arguments.
+	// Session ID and workspace UUID are not available in the CLI path.
 	args, err := ParseCommand(command)
 	if err != nil {
 		return nil, err
 	}
+	mittoEnv := BuildMittoEnv("", cwd, "", "")
+	expandedArgs := ExpandArgs(args, mittoEnv)
+	if logger != nil {
+		// Log only if any arg changed
+		for i, orig := range args {
+			if orig != expandedArgs[i] {
+				logger.Info("expanded MITTO_* vars in ACP command args",
+					"original", args,
+					"expanded", expandedArgs)
+				break
+			}
+		}
+	}
+	args = expandedArgs
 
-	// Build environment: start with current env, then merge server-specific vars
-	processEnv := mergeEnv(os.Environ(), env)
+	// Build environment: MITTO vars first, then user-configured env on top (user env takes precedence)
+	allEnv := make(map[string]string, len(mittoEnv)+len(env))
+	for k, v := range mittoEnv {
+		allEnv[k] = v
+	}
+	for k, v := range env {
+		allEnv[k] = v // user env overrides MITTO env
+	}
+	processEnv := mergeEnv(os.Environ(), allEnv)
 
 	var stdin runner.WriteCloser
 	var stdout runner.ReadCloser

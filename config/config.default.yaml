@@ -17,7 +17,7 @@
 #
 # Examples:
 #   - auggie:
-#       command: auggie --allow-indexing --acp
+#       command: auggie --workspace-root $MITTO_WORKING_DIR --allow-indexing --acp
 #   - claude-code:
 #       command: npx -y @agentclientprotocol/claude-agent-acp@latest
 acp: []

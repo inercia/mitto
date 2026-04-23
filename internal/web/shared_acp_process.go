@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -213,9 +214,36 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			"acp_server", p.config.ACPServer)
 	}
 
+	// Parse command using shell-aware tokenization FIRST,
+	// then expand $MITTO_* references in each arg individually.
+	// This preserves paths with spaces as single arguments.
+	// Session ID is empty for shared processes (they serve multiple sessions).
 	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
 		return "", fmt.Errorf("parse command: %w", err)
+	}
+	mittoEnv := mittoAcp.BuildMittoEnv("", p.config.WorkingDir, p.config.ACPServer, "")
+	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
+	if p.logger != nil {
+		for i, orig := range args {
+			if orig != expandedArgs[i] {
+				p.logger.Info("expanded MITTO_* vars in shared ACP command args",
+					"original", args,
+					"expanded", expandedArgs,
+					"acp_server", p.config.ACPServer)
+				break
+			}
+		}
+	}
+	args = expandedArgs
+	// Expand cwd (single string, not shlex-parsed)
+	originalCwd := acpCwd
+	acpCwd = mittoAcp.ExpandCommand(acpCwd, mittoEnv)
+	if acpCwd != originalCwd && p.logger != nil {
+		p.logger.Info("expanded MITTO_* vars in shared ACP cwd",
+			"original", originalCwd,
+			"expanded", acpCwd,
+			"acp_server", p.config.ACPServer)
 	}
 
 	var stdin runner.WriteCloser
@@ -290,6 +318,13 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("stderr pipe: %w", err)
 		}
+
+		// Set MITTO_* environment variables for the ACP subprocess
+		processEnv := os.Environ()
+		for k, v := range mittoEnv {
+			processEnv = append(processEnv, k+"="+v)
+		}
+		cmd.Env = processEnv
 
 		if err := cmd.Start(); err != nil {
 			return "", fmt.Errorf("failed to start ACP server: %w", err)

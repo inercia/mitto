@@ -9,4 +9,4 @@ license: "proprietary"
 install:
   method: "npx"
   package: "@augmentcode/auggie"
-  args: ["--acp"]
+  args: ["--workspace-root=$MITTO_WORKING_DIR", "--acp"]

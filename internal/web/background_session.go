@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -1576,10 +1577,35 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			"acp_session_id", acpSessionID)
 	}
 
-	// Parse command using shell-aware tokenization
+	// Parse command using shell-aware tokenization FIRST,
+	// then expand $MITTO_* references in each arg individually.
+	// This preserves paths with spaces as single arguments.
 	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
 		return "", &sessionError{err.Error()}
+	}
+	mittoEnv := mittoAcp.BuildMittoEnv(bs.persistedID, workingDir, "", "")
+	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
+	if bs.logger != nil {
+		for i, orig := range args {
+			if orig != expandedArgs[i] {
+				bs.logger.Info("expanded MITTO_* vars in ACP command args",
+					"original", args,
+					"expanded", expandedArgs,
+					"session_id", bs.persistedID)
+				break
+			}
+		}
+	}
+	args = expandedArgs
+	// Expand cwd (single string, not shlex-parsed)
+	originalCwd := acpCwd
+	acpCwd = mittoAcp.ExpandCommand(acpCwd, mittoEnv)
+	if acpCwd != originalCwd && bs.logger != nil {
+		bs.logger.Info("expanded MITTO_* vars in ACP cwd",
+			"original", originalCwd,
+			"expanded", acpCwd,
+			"session_id", bs.persistedID)
 	}
 
 	var stdin runner.WriteCloser
@@ -1667,6 +1693,13 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		if err != nil {
 			return "", &sessionError{"failed to create stderr pipe: " + err.Error()}
 		}
+
+		// Set MITTO_* environment variables for the ACP subprocess
+		processEnv := os.Environ()
+		for k, v := range mittoEnv {
+			processEnv = append(processEnv, k+"="+v)
+		}
+		cmd.Env = processEnv
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}
