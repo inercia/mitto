@@ -1755,6 +1755,7 @@ export function ChatInput({
                       <div class="px-4 pb-2 flex-1 min-h-0">
                         <textarea
                           ref=${textboxRef}
+                          autocorrect="off"
                           class="w-full h-full bg-slate-800/80 text-white text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border border-slate-600"
                           maxlength=${16384}
                           onInput=${(e) => setTextboxValue(e.target.value)}
@@ -2611,6 +2612,7 @@ ${activeUIPrompt.text || ""}</textarea
 
             <textarea
               ref=${textareaRef}
+              autocorrect="off"
               value=${text}
               onInput=${handleInput}
               onKeyDown=${handleKeyDown}

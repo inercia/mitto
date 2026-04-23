@@ -26,6 +26,7 @@ package main
 #include "notifications_darwin.h"
 #include "webviewlog_darwin.h"
 #include "cache_darwin.h"
+#include "textsubstitution_darwin.h"
 #include "power_darwin.h"
 #include "viewer_darwin.h"
 
@@ -637,6 +638,13 @@ func clearWebViewCache() {
 	C.clearWebViewCache()
 }
 
+// disableTextSubstitutions disables macOS automatic text substitutions
+// (smart dashes, smart quotes, text replacement) for this application.
+// Must be called before creating the WKWebView.
+func disableTextSubstitutions() {
+	C.disableTextSubstitutions()
+}
+
 // startNetworkPowerAssertion acquires a kIOPMAssertNetworkClientActive assertion
 // so macOS does not throttle or suspend the app's network activity when the
 // screen locks. Should be called when the external listener starts.
@@ -1221,6 +1229,10 @@ func run() error {
 	// Clear WKWebView cache before creating the webview
 	// This ensures fresh content is loaded, avoiding stale cached JavaScript/CSS
 	clearWebViewCache()
+
+	// Disable macOS automatic text substitutions (smart dashes, smart quotes, etc.)
+	// This prevents "--" from being converted to "—" in text inputs
+	disableTextSubstitutions()
 
 	// Create and run WebView
 	w := webview.New(false)
