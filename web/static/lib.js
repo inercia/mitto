@@ -362,6 +362,8 @@ export function computeAllSessions(activeSessions, storedSessions) {
         child_origin: s.child_origin || stored.child_origin || null,
         // Preserve isWaitingForChildren from stored session (set by global WebSocket session_waiting events)
         isWaitingForChildren: s.isWaitingForChildren || stored.isWaitingForChildren || false,
+        // Preserve isWaitingForUserInput from stored session (set by global WebSocket session_ui_prompt events)
+        isWaitingForUserInput: s.isWaitingForUserInput || stored.isWaitingForUserInput || false,
       };
     }
 
@@ -373,6 +375,7 @@ export function computeAllSessions(activeSessions, storedSessions) {
       acp_server: acpServer || s.acp_server,
       parent_session_id: s.parent_session_id || null,
       child_origin: s.child_origin || null,
+      isWaitingForUserInput: s.isWaitingForUserInput || false,
     };
   });
 
