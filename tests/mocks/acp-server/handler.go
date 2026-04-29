@@ -22,12 +22,16 @@ func (s *MockACPServer) handleMessage(line string) error {
 		return s.handleInitialize(req)
 	case "session/new", "acp/newSession":
 		return s.handleNewSession(req)
+	case "session/unstableResumeSession":
+		return s.handleUnstableResumeSession(req)
 	case "session/prompt", "acp/prompt":
 		return s.handlePrompt(req)
 	case "session/cancel", "acp/cancelPrompt":
 		return s.handleCancelPrompt(req)
 	case "session/set_mode", "session/setMode", "acp/setSessionMode":
 		return s.handleSetSessionMode(req)
+	case "session/unstableSetSessionModel":
+		return s.handleSetSessionModel(req)
 	case "shutdown":
 		return s.handleShutdown(req)
 	default:
@@ -48,6 +52,10 @@ func (s *MockACPServer) handleInitialize(req JSONRPCRequest) error {
 	result.Capabilities.Streaming = true
 	result.AgentCapabilities.Streaming = true
 	result.AgentCapabilities.PromptCapabilities.Image = true
+	// Advertise session resume capability
+	result.AgentCapabilities.SessionCapabilities = &SessionCapabilities{
+		Resume: &SessionResumeCapabilities{},
+	}
 
 	return s.sendResponse(req.ID, result)
 }
@@ -65,16 +73,76 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 	}
 
 	s.sessionID = fmt.Sprintf("mock-session-%d", time.Now().UnixNano())
-	s.currentMode = defaultModes.CurrentModeID // Reset to default mode
-	s.log("Created session: %s (workdir: %s, mode: %s)", s.sessionID, workdir, s.currentMode)
+	s.currentMode = defaultModes.CurrentModeID    // Reset to default mode
+	s.currentModel = defaultModels.CurrentModelId // Reset to default model
+	s.log("Created session: %s (workdir: %s, mode: %s, model: %s)", s.sessionID, workdir, s.currentMode, s.currentModel)
 
-	// Return session with modes
+	// Create session state with modes and models
+	modes := &SessionModeState{
+		CurrentModeID:  s.currentMode,
+		AvailableModes: defaultModes.AvailableModes,
+	}
+	models := &SessionModelState{
+		CurrentModelId:  s.currentModel,
+		AvailableModels: defaultModels.AvailableModels,
+	}
+
+	// Store session state for resume support
+	s.mu.Lock()
+	s.sessions[s.sessionID] = &SessionState{
+		SessionID:     s.sessionID,
+		Modes:         modes,
+		ConfigOptions: []SessionConfigOption{}, // Empty for now
+	}
+	s.mu.Unlock()
+
+	// Return session with modes and models
 	result := NewSessionResult{
 		SessionID: s.sessionID,
-		Modes: &SessionModeState{
-			CurrentModeID:  s.currentMode,
-			AvailableModes: defaultModes.AvailableModes,
-		},
+		Modes:     modes,
+		Models:    models,
+	}
+
+	return s.sendResponse(req.ID, result)
+}
+
+// handleUnstableResumeSession handles session resume requests.
+func (s *MockACPServer) handleUnstableResumeSession(req JSONRPCRequest) error {
+	var params UnstableResumeSessionRequest
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return s.sendError(req.ID, -32602, "Invalid params", nil)
+	}
+
+	s.log("Resume session requested: %s (cwd: %s)", params.SessionID, params.Cwd)
+
+	// Check if we have this session
+	s.mu.Lock()
+	sess, exists := s.sessions[string(params.SessionID)]
+	s.mu.Unlock()
+
+	if !exists {
+		s.log("Session not found: %s", params.SessionID)
+		return s.sendError(req.ID, -32000, fmt.Sprintf("session not found: %s (may have been garbage collected)", params.SessionID), nil)
+	}
+
+	// Restore the session as the current session
+	s.sessionID = string(params.SessionID)
+	if sess.Modes != nil {
+		s.currentMode = sess.Modes.CurrentModeID
+	}
+	s.log("Resumed session: %s (mode: %s, model: %s)", s.sessionID, s.currentMode, s.currentModel)
+
+	// Build models state for resume
+	models := &SessionModelState{
+		CurrentModelId:  s.currentModel,
+		AvailableModels: defaultModels.AvailableModels,
+	}
+
+	// Return session state without replaying history
+	result := UnstableResumeSessionResponse{
+		Modes:         sess.Modes,
+		Models:        models,
+		ConfigOptions: sess.ConfigOptions,
 	}
 
 	return s.sendResponse(req.ID, result)
@@ -124,6 +192,51 @@ func (s *MockACPServer) sendCurrentModeUpdate(modeID string) error {
 		CurrentModeUpdate: &SessionCurrentModeUpdate{
 			SessionUpdate: "current_mode_update",
 			CurrentModeID: modeID,
+		},
+	}
+
+	return s.sendNotification(notification)
+}
+
+// handleSetSessionModel handles session model change requests (UNSTABLE).
+func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
+	var params SetSessionModelParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return s.sendError(req.ID, -32602, "Invalid params", nil)
+	}
+
+	// Validate the model exists
+	validModel := false
+	for _, model := range defaultModels.AvailableModels {
+		if model.ModelId == params.ModelId {
+			validModel = true
+			break
+		}
+	}
+
+	if !validModel {
+		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid model: %s", params.ModelId), nil)
+	}
+
+	// Update the current model
+	s.currentModel = params.ModelId
+	s.log("Session model changed: %s -> %s", s.sessionID, s.currentModel)
+
+	// Send success response
+	if err := s.sendResponse(req.ID, SetSessionModelResult{}); err != nil {
+		return err
+	}
+
+	// Send notification about model change
+	notification := SessionNotification{
+		JSONRPC: "2.0",
+		Method:  "session/update",
+	}
+	notification.Params.SessionID = s.sessionID
+	notification.Params.Update = SessionUpdate{
+		CurrentModelUpdate: &SessionCurrentModelUpdate{
+			SessionUpdate:  "current_model_update",
+			CurrentModelId: params.ModelId,
 		},
 	}
 

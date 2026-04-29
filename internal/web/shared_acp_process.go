@@ -62,6 +62,9 @@ type SessionHandle struct {
 	Capabilities acp.AgentCapabilities
 	// Modes are the session mode state (from NewSession/LoadSession).
 	Modes *acp.SessionModeState
+	// Models are the available models (UNSTABLE, from NewSession/LoadSession/ResumeSession).
+	// Uses UnstableSessionModelState to unify both stable and unstable response variants.
+	Models *acp.UnstableSessionModelState
 	// ConfigOptions are the session config options (from NewSession/LoadSession).
 	ConfigOptions []SessionConfigOption
 	// Process is a reference to the parent SharedACPProcess.
@@ -461,10 +464,15 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	initResp, err := p.conn.Initialize(initCtx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
-			Fs: acp.FileSystemCapability{
+			Fs: acp.FileSystemCapabilities{
 				ReadTextFile:  true,
 				WriteTextFile: true,
 			},
+		},
+		ClientInfo: &acp.Implementation{
+			Name:    "mitto",
+			Title:   strPtr("Mitto"),
+			Version: "dev", // Use a constant for now, we'll improve this later
 		},
 	})
 	initDuration := time.Since(initStart)
@@ -493,14 +501,54 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	p.capabilities = &initResp.AgentCapabilities
 
 	if p.logger != nil {
-		p.logger.Info("Shared ACP process started",
+		logAttrs := []any{
 			"acp_server", p.config.ACPServer,
 			"command", acpCommand,
 			"cwd", acpCwd,
 			"protocol_version", initResp.ProtocolVersion,
 			"load_session", initResp.AgentCapabilities.LoadSession,
 			"process_start_ms", time.Since(processStart).Milliseconds(),
-			"initialize_rpc_ms", initDuration.Milliseconds())
+			"initialize_rpc_ms", initDuration.Milliseconds(),
+		}
+
+		// Add agent info if available
+		if initResp.AgentInfo != nil {
+			logAttrs = append(logAttrs,
+				"agent_name", initResp.AgentInfo.Name,
+				"agent_version", initResp.AgentInfo.Version)
+		}
+
+		// Add detailed capabilities
+		logAttrs = append(logAttrs,
+			"prompt_image", initResp.AgentCapabilities.PromptCapabilities.Image,
+			"prompt_audio", initResp.AgentCapabilities.PromptCapabilities.Audio,
+			"prompt_embedded_context", initResp.AgentCapabilities.PromptCapabilities.EmbeddedContext)
+
+		p.logger.Info("Shared ACP process started", logAttrs...)
+
+		// Log SessionCapabilities at DEBUG level
+		p.logger.Debug("Agent session capabilities",
+			"acp_server", p.config.ACPServer,
+			"resume_supported", initResp.AgentCapabilities.SessionCapabilities.Resume != nil,
+			"fork_supported", initResp.AgentCapabilities.SessionCapabilities.Fork != nil,
+			"list_supported", initResp.AgentCapabilities.SessionCapabilities.List != nil)
+
+		// Log Meta fields separately at DEBUG level if present
+		if len(initResp.Meta) > 0 {
+			p.logger.Debug("ACP initialize response meta",
+				"acp_server", p.config.ACPServer,
+				"meta", initResp.Meta)
+		}
+		if len(initResp.AgentCapabilities.Meta) > 0 {
+			p.logger.Debug("ACP agent capabilities meta",
+				"acp_server", p.config.ACPServer,
+				"meta", initResp.AgentCapabilities.Meta)
+		}
+		if initResp.AgentInfo != nil && len(initResp.AgentInfo.Meta) > 0 {
+			p.logger.Debug("ACP agent info meta",
+				"acp_server", p.config.ACPServer,
+				"meta", initResp.AgentInfo.Meta)
+		}
 	}
 
 	return "", nil
@@ -516,10 +564,21 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 	p.mu.RLock()
 	conn := p.conn
 	caps := p.capabilities
+	processDone := p.processDone
 	p.mu.RUnlock()
 
 	if conn == nil {
 		return nil, fmt.Errorf("shared ACP process is not running")
+	}
+
+	// Liveness check: fail fast if the OS process is already confirmed dead.
+	// This catches the race window between OS termination and detection (up to 2s).
+	if processDone != nil {
+		select {
+		case <-processDone:
+			return nil, fmt.Errorf("shared ACP process has exited")
+		default:
+		}
 	}
 
 	if cwd == "" {
@@ -546,6 +605,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		SessionID: string(sessResp.SessionId),
 		Process:   p,
 		Modes:     sessResp.Modes,
+		Models:    stableToUnstableModelState(sessResp.Models),
 	}
 	if caps != nil {
 		handle.Capabilities = *caps
@@ -575,11 +635,22 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	p.mu.RLock()
 	conn := p.conn
 	caps := p.capabilities
+	processDone := p.processDone
 	p.mu.RUnlock()
 
 	if conn == nil {
 		return nil, fmt.Errorf("shared ACP process is not running")
 	}
+
+	// Liveness check: fail fast if the OS process is already confirmed dead.
+	if processDone != nil {
+		select {
+		case <-processDone:
+			return nil, fmt.Errorf("shared ACP process has exited")
+		default:
+		}
+	}
+
 	if caps == nil || !caps.LoadSession {
 		return nil, fmt.Errorf("agent does not support session loading")
 	}
@@ -610,6 +681,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		SessionID:    acpSessionID,
 		Capabilities: *caps,
 		Modes:        loadResp.Modes,
+		Models:       stableToUnstableModelState(loadResp.Models),
 		Process:      p,
 	}
 
@@ -618,6 +690,79 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 			"acp_session_id", acpSessionID,
 			"total_ms", time.Since(totalStart).Milliseconds(),
 			"rpc_load_session_ms", rpcDuration.Milliseconds())
+	}
+
+	return handle, nil
+}
+
+// ResumeSession attempts to resume an existing ACP session without replaying history.
+// This is faster than LoadSession but requires the agent to support session/resume
+// and still have the session in memory.
+func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
+	p.activeRPCs.Add(1)
+	defer p.activeRPCs.Add(-1)
+
+	totalStart := time.Now()
+
+	p.mu.RLock()
+	conn := p.conn
+	caps := p.capabilities
+	processDone := p.processDone
+	p.mu.RUnlock()
+
+	if conn == nil {
+		return nil, fmt.Errorf("shared ACP process is not running")
+	}
+
+	// Liveness check: fail fast if the OS process is already confirmed dead.
+	if processDone != nil {
+		select {
+		case <-processDone:
+			return nil, fmt.Errorf("shared ACP process has exited")
+		default:
+		}
+	}
+
+	// Check capability
+	if caps == nil || caps.SessionCapabilities.Resume == nil {
+		return nil, fmt.Errorf("agent does not support session resume (UNSTABLE API)")
+	}
+
+	if cwd == "" {
+		cwd = "."
+	}
+
+	rpcStart := time.Now()
+	resumeResp, err := conn.UnstableResumeSession(ctx, acp.UnstableResumeSessionRequest{
+		SessionId:  acp.SessionId(acpSessionID),
+		Cwd:        cwd,
+		McpServers: mcpServers,
+	})
+	rpcDuration := time.Since(rpcStart)
+
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Info("SharedACPProcess.ResumeSession failed (UNSTABLE API)",
+				"acp_session_id", acpSessionID,
+				"rpc_ms", rpcDuration.Milliseconds(),
+				"error", err)
+		}
+		return nil, fmt.Errorf("failed to resume session: %w", err)
+	}
+
+	handle := &SessionHandle{
+		SessionID:    acpSessionID,
+		Capabilities: *caps,
+		Modes:        resumeResp.Modes,
+		Models:       resumeResp.Models,
+		Process:      p,
+	}
+
+	if p.logger != nil {
+		p.logger.Info("Resumed ACP session on shared process (UNSTABLE API)",
+			"acp_session_id", acpSessionID,
+			"total_ms", time.Since(totalStart).Milliseconds(),
+			"rpc_resume_session_ms", rpcDuration.Milliseconds())
 	}
 
 	return handle, nil
@@ -862,4 +1007,32 @@ func (p *SharedACPProcess) Restart() error {
 	}
 
 	return nil
+}
+
+// strPtr returns a pointer to the given string.
+func strPtr(s string) *string {
+	return &s
+}
+
+// stableToUnstableModelState converts a *acp.SessionModelState (from NewSession/LoadSession)
+// to *acp.UnstableSessionModelState so both stable and unstable model state responses
+// can be stored in a unified field.
+func stableToUnstableModelState(m *acp.SessionModelState) *acp.UnstableSessionModelState {
+	if m == nil {
+		return nil
+	}
+	models := make([]acp.UnstableModelInfo, len(m.AvailableModels))
+	for i, mi := range m.AvailableModels {
+		models[i] = acp.UnstableModelInfo{
+			Meta:        mi.Meta,
+			Description: mi.Description,
+			ModelId:     acp.UnstableModelId(mi.ModelId),
+			Name:        mi.Name,
+		}
+	}
+	return &acp.UnstableSessionModelState{
+		Meta:            m.Meta,
+		AvailableModels: models,
+		CurrentModelId:  acp.UnstableModelId(m.CurrentModelId),
+	}
 }
