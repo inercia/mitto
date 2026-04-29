@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint deps-go deps-js deps tailwind build-mac-app clean-mac-app test-webviewlog build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean
+.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind build-mac-app clean-mac-app test-webviewlog build-mock-acp ci homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -162,9 +162,17 @@ fmt-docs-check: deps-js
 	@echo "Checking documentation formatting..."
 	npx prettier --check "docs/**/*.md"
 
-# Lint code (requires golangci-lint)
-lint:
+# Lint Go code (requires golangci-lint)
+lint-go:
 	golangci-lint run --timeout=5m
+
+# Lint frontend code (HTML, CSS, JavaScript)
+lint-frontend: deps-js
+	@echo "Linting frontend code..."
+	$(NPM) run lint:frontend
+
+# Lint all code
+lint: lint-go lint-frontend
 
 # =============================================================================
 # CI Target
@@ -181,19 +189,22 @@ ci: deps tailwind build-mock-acp build
 	@echo "Running CI checks locally..."
 	@echo "=============================================="
 	@echo ""
-	@echo "Step 1/5: Checking Go formatting..."
+	@echo "Step 1/6: Checking Go formatting..."
 	@$(MAKE) fmt-check
 	@echo ""
-	@echo "Step 2/5: Running golangci-lint..."
-	@$(MAKE) lint
+	@echo "Step 2/6: Running golangci-lint..."
+	@$(MAKE) lint-go
 	@echo ""
-	@echo "Step 3/5: Running Go unit tests..."
+	@echo "Step 3/6: Linting frontend code..."
+	@$(MAKE) lint-frontend
+	@echo ""
+	@echo "Step 4/6: Running Go unit tests..."
 	@$(MAKE) test-go
 	@echo ""
-	@echo "Step 4/5: Running JavaScript unit tests..."
+	@echo "Step 5/6: Running JavaScript unit tests..."
 	@$(MAKE) test-js
 	@echo ""
-	@echo "Step 5/5: Running integration tests..."
+	@echo "Step 6/6: Running integration tests..."
 	@MITTO_TEST_MODE=1 $(MAKE) test-integration
 	@echo ""
 	@echo "=============================================="
