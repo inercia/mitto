@@ -50,7 +50,7 @@ const (
 	BuiltinAgentsDirName = "builtin"
 
 	// WorkspaceConfigDirName is the name of the workspace-specific config directory.
-	// This directory is located at the root of a workspace (e.g., $WORKSPACE/.mitto/).
+	// This directory is located at the root of a workspace (e.g., $MITTO_WORKING_DIR/.mitto/).
 	WorkspaceConfigDirName = ".mitto"
 
 	// AuthSessionsFileName is the name of the auth sessions file.
@@ -342,14 +342,14 @@ func BuiltinAgentsDir() (string, error) {
 }
 
 // WorkspacePromptsDir returns the full path to the default workspace prompts directory.
-// This is $WORKSPACE/.mitto/prompts/ and is automatically searched for prompts
+// This is $MITTO_WORKING_DIR/.mitto/prompts/ and is automatically searched for prompts
 // when a workspace is active, without requiring explicit configuration in .mittorc.
 func WorkspacePromptsDir(workspaceRoot string) string {
 	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, PromptsDirName)
 }
 
 // WorkspaceProcessorsDir returns the full path to the default workspace processors directory.
-// This is $WORKSPACE/.mitto/processors/ and is automatically searched for processors
+// This is $MITTO_WORKING_DIR/.mitto/processors/ and is automatically searched for processors
 // when a workspace is active, without requiring explicit configuration in .mittorc.
 func WorkspaceProcessorsDir(workspaceRoot string) string {
 	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, ProcessorsDirName)

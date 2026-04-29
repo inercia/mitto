@@ -12,7 +12,8 @@ import (
 // VariableResolver handles variable substitution in paths.
 //
 // Supported variables:
-//   - $WORKSPACE or ${WORKSPACE} - Current workspace directory
+//   - $MITTO_WORKING_DIR or ${MITTO_WORKING_DIR} - Current workspace directory
+//   - $WORKSPACE or ${WORKSPACE} - Legacy alias for $MITTO_WORKING_DIR (backward compatible)
 //   - $HOME or ${HOME} - User's home directory
 //   - $MITTO_DIR or ${MITTO_DIR} - Mitto data directory
 //   - $USER or ${USER} - Current username
@@ -52,6 +53,10 @@ func NewVariableResolver(workspace string) (*VariableResolver, error) {
 // Also expands ~ to home directory.
 func (vr *VariableResolver) Resolve(path string) string {
 	// Replace variables (both $VAR and ${VAR} syntax)
+	// $MITTO_WORKING_DIR or ${MITTO_WORKING_DIR} - Current workspace directory
+	path = strings.ReplaceAll(path, "$MITTO_WORKING_DIR", vr.workspace)
+	path = strings.ReplaceAll(path, "${MITTO_WORKING_DIR}", vr.workspace)
+	// Legacy: keep $WORKSPACE support for backward compatibility
 	path = strings.ReplaceAll(path, "$WORKSPACE", vr.workspace)
 	path = strings.ReplaceAll(path, "${WORKSPACE}", vr.workspace)
 	path = strings.ReplaceAll(path, "$HOME", vr.home)

@@ -94,6 +94,10 @@ type WebPrompt struct {
 	// Sent to frontend for display purposes (e.g., showing why prompt is hidden).
 	// Actual filtering happens server-side.
 	EnabledWhen string `json:"enabledWhen,omitempty"`
+	// Enabled controls whether the prompt is active after merging.
+	// A nil value means enabled (default true). Only explicit false disables.
+	// This is used during merge to allow higher-priority sources to disable prompts.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -244,8 +248,8 @@ type BadgeClickActionConfig struct {
 	// Default: true (enabled by default)
 	Enabled *bool `json:"enabled,omitempty"`
 	// Command is the shell command to execute when the badge is clicked.
-	// Supports ${WORKSPACE} placeholder which is replaced with the workspace directory path.
-	// Default: "open ${WORKSPACE}" (opens the folder in Finder on macOS)
+	// Supports ${MITTO_WORKING_DIR} placeholder which is replaced with the workspace directory path.
+	// Default: "open ${MITTO_WORKING_DIR}" (opens the folder in Finder on macOS)
 	Command string `json:"command,omitempty"`
 }
 
@@ -259,10 +263,10 @@ func (c *BadgeClickActionConfig) GetEnabled() bool {
 }
 
 // GetCommand returns the command to execute.
-// Defaults to "open ${WORKSPACE}" if not set.
+// Defaults to "open ${MITTO_WORKING_DIR}" if not set.
 func (c *BadgeClickActionConfig) GetCommand() string {
 	if c == nil || c.Command == "" {
-		return "open ${WORKSPACE}"
+		return "open ${MITTO_WORKING_DIR}"
 	}
 	return c.Command
 }
@@ -811,7 +815,15 @@ func MergePrompts(globalFilePrompts, settingsPrompts, workspacePrompts []WebProm
 		}
 	}
 
-	return result
+	// Filter out disabled prompts after merge.
+	// Higher-priority sources can set Enabled=false to suppress same-named lower-priority prompts.
+	var filtered []WebPrompt
+	for _, p := range result {
+		if p.Enabled == nil || *p.Enabled {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
 }
 
 // ============================================================================
@@ -831,7 +843,7 @@ type RunnerRestrictions struct {
 	// WARNING: Setting to false will break network-based MCP servers.
 	AllowNetworking *bool `json:"allow_networking,omitempty" yaml:"allow_networking,omitempty"`
 
-	// AllowReadFolders lists folders that can be read (supports variables like $WORKSPACE, $HOME).
+	// AllowReadFolders lists folders that can be read (supports variables like $MITTO_WORKING_DIR, $HOME).
 	AllowReadFolders []string `json:"allow_read_folders,omitempty" yaml:"allow_read_folders,omitempty"`
 
 	// AllowWriteFolders lists folders that can be written (supports variables).
@@ -1093,6 +1105,14 @@ type rawConfig struct {
 	Permissions *struct {
 		AutoApprove *bool `yaml:"auto_approve"`
 	} `yaml:"permissions"`
+	// Session is the session storage/startup configuration
+	Session *struct {
+		MaxMessagesPerSession    int    `yaml:"max_messages_per_session"`
+		MaxSessionSizeBytes      int64  `yaml:"max_session_size_bytes"`
+		ArchiveRetentionPeriod   string `yaml:"archive_retention_period"`
+		AutoArchiveInactiveAfter string `yaml:"auto_archive_inactive_after"`
+		StartupStaggerMs         int    `yaml:"startup_stagger_ms"`
+	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
 		Enabled *bool  `yaml:"enabled"`
@@ -1181,12 +1201,13 @@ func Parse(data []byte) (*Config, error) {
 
 	// Populate global prompts (top-level)
 	for _, p := range raw.Prompts {
-		// Skip prompts with empty name or prompt text
-		if p.Name == "" || p.Prompt == "" {
+		// Skip prompts with empty name
+		if p.Name == "" {
 			continue
 		}
-		// Skip disabled prompts
-		if p.Enabled != nil && !*p.Enabled {
+		// Allow empty prompt text only when disabled (used to suppress same-named prompts)
+		isDisabled := p.Enabled != nil && !*p.Enabled
+		if p.Prompt == "" && !isDisabled {
 			continue
 		}
 		cfg.Prompts = append(cfg.Prompts, WebPrompt{
@@ -1197,6 +1218,7 @@ func Parse(data []byte) (*Config, error) {
 			Group:           p.Group,
 			EnabledWhenACP:  p.EnabledWhenACP,
 			EnabledWhen:     p.EnabledWhen,
+			Enabled:         p.Enabled,
 		})
 	}
 
@@ -1383,6 +1405,17 @@ func Parse(data []byte) (*Config, error) {
 	if raw.Permissions != nil {
 		cfg.Permissions = &PermissionsConfig{
 			AutoApprove: raw.Permissions.AutoApprove,
+		}
+	}
+
+	// Parse session config
+	if raw.Session != nil {
+		cfg.Session = &SessionConfig{
+			MaxMessagesPerSession:    raw.Session.MaxMessagesPerSession,
+			MaxSessionSizeBytes:      raw.Session.MaxSessionSizeBytes,
+			ArchiveRetentionPeriod:   raw.Session.ArchiveRetentionPeriod,
+			AutoArchiveInactiveAfter: raw.Session.AutoArchiveInactiveAfter,
+			StartupStaggerMs:         raw.Session.StartupStaggerMs,
 		}
 	}
 

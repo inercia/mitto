@@ -5,7 +5,7 @@
 #   - Linux: ~/.local/share/mitto/settings.json
 #   - Windows: %APPDATA%\Mitto\settings.json
 
-# ACP (Agent Communication Protocol) servers
+# ACP (Agent Client Protocol) servers
 # Configure your AI coding agents here, or use the "Discover Agents" button
 # in Settings to automatically detect installed agents on your system.
 #
@@ -243,9 +243,9 @@ restricted_runners:
   #   restrictions:
   #     allow_networking: true
   #     allow_read_folders:
-  #       - "$WORKSPACE"
+  #       - "$MITTO_WORKING_DIR"
   #     allow_write_folders:
-  #       - "$WORKSPACE"
+  #       - "$MITTO_WORKING_DIR"
 
   # sandbox-exec: macOS sandbox with reasonable defaults for MCP server compatibility
   sandbox-exec:
@@ -256,7 +256,7 @@ restricted_runners:
       # Folders the agent can read from
       # These paths ensure MCP servers can be found and executed
       allow_read_folders:
-        - "$WORKSPACE"              # Current workspace
+        - "$MITTO_WORKING_DIR"      # Current workspace
         - "$HOME/.config"           # MCP server configs
         - "$HOME/.local/bin"        # Local executables
         - "$HOME/.local/share"      # Local data files
@@ -270,7 +270,7 @@ restricted_runners:
 
       # Folders the agent can write to
       allow_write_folders:
-        - "$WORKSPACE"              # Current workspace
+        - "$MITTO_WORKING_DIR"      # Current workspace
         - "$HOME/.cache"            # Cache directory
         - "$TMPDIR"                 # Temporary files
 
@@ -285,7 +285,7 @@ restricted_runners:
 
       # Folders the agent can read from
       allow_read_folders:
-        - "$WORKSPACE"              # Current workspace
+        - "$MITTO_WORKING_DIR"      # Current workspace
         - "$HOME/.config"           # MCP server configs
         - "$HOME/.local/bin"        # Local executables
         - "$HOME/.local/share"      # Local data files
@@ -300,7 +300,7 @@ restricted_runners:
 
       # Folders the agent can write to
       allow_write_folders:
-        - "$WORKSPACE"              # Current workspace
+        - "$MITTO_WORKING_DIR"      # Current workspace
         - "$HOME/.cache"            # Cache directory
         - "$TMPDIR"                 # Temporary files
         - "/tmp"                    # Temporary files (fallback)
@@ -334,10 +334,10 @@ restricted_runners:
       # because the container has its own filesystem. The workspace is auto-mounted.
       # However, you can still use them to restrict access within the container.
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
 
       allow_write_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
 
     # Merge strategy: replace (don't merge with agent/workspace configs for Docker)
     # This is because Docker configuration is typically very specific
@@ -358,7 +358,7 @@ restricted_runners:
 #         restrictions:
 #           allow_networking: false  # WARNING: Breaks network-based MCP servers
 #           allow_read_folders:
-#             - "$WORKSPACE"
+#             - "$MITTO_WORKING_DIR"
 #         merge_strategy: "replace"  # Don't merge with global config
 #
 #   - name: docker-agent

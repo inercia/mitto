@@ -198,10 +198,14 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 		}
 	}
 
-	// Convert map to slice
+	// Convert map to slice, filtering out disabled prompts.
+	// Disabled prompts have already served their purpose of suppressing
+	// same-named prompts from lower-priority directories during merge.
 	prompts := make([]*PromptFile, 0, len(promptsByName))
 	for _, p := range promptsByName {
-		prompts = append(prompts, p)
+		if p.IsEnabled() {
+			prompts = append(prompts, p)
+		}
 	}
 
 	c.prompts = prompts

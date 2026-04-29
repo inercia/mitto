@@ -76,7 +76,7 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Use defaults
 		enabled = true
-		command = "open ${WORKSPACE}"
+		command = "open ${MITTO_WORKING_DIR}"
 	}
 
 	if !enabled {
@@ -87,9 +87,11 @@ func (s *Server) handleBadgeClick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Replace ${WORKSPACE} placeholder with the actual path
+	// Replace ${MITTO_WORKING_DIR} placeholder with the actual path
 	// Use quoted path to handle spaces and special characters safely
-	finalCommand := strings.ReplaceAll(command, "${WORKSPACE}", req.WorkspacePath)
+	finalCommand := strings.ReplaceAll(command, "${MITTO_WORKING_DIR}", req.WorkspacePath)
+	// Legacy: also support ${WORKSPACE} for backward compatibility
+	finalCommand = strings.ReplaceAll(finalCommand, "${WORKSPACE}", req.WorkspacePath)
 
 	// Execute the command using sh -c for shell interpretation
 	// This allows users to use pipes, redirects, etc. in their commands

@@ -68,6 +68,10 @@ type Settings struct {
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
 }
 
+// DefaultStartupStaggerMs is the default stagger delay in milliseconds between
+// session resumes on startup for sessions sharing the same ACP process.
+const DefaultStartupStaggerMs = 300
+
 // SessionConfig represents session storage configuration.
 type SessionConfig struct {
 	// MaxMessagesPerSession is the maximum number of messages to retain per conversation.
@@ -84,6 +88,11 @@ type SessionConfig struct {
 	// AutoArchiveInactiveAfter specifies how long a conversation must be inactive before being auto-archived.
 	// Values: "" (default - disabled), "1d", "1w", "1m", "3m" (1 day, 1 week, 1 month, 3 months)
 	AutoArchiveInactiveAfter string `json:"auto_archive_inactive_after,omitempty"`
+	// StartupStaggerMs is the delay in milliseconds between consecutive session resumes on startup
+	// for sessions sharing the same ACP process. This prevents overwhelming the ACP SDK's internal
+	// notification channel when many sessions resume simultaneously.
+	// Default: 0 (use DefaultStartupStaggerMs = 300 ms). Set to -1 to disable staggering entirely.
+	StartupStaggerMs int `json:"startup_stagger_ms,omitempty"`
 }
 
 // ArchiveRetentionNever is the value for keeping archived conversations forever.
@@ -106,6 +115,20 @@ func (c *SessionConfig) GetAutoArchiveInactiveAfter() string {
 		return ""
 	}
 	return c.AutoArchiveInactiveAfter
+}
+
+// GetStartupStaggerMs returns the stagger delay in milliseconds between consecutive session
+// resumes on startup for sessions sharing the same ACP process.
+// Returns DefaultStartupStaggerMs (300 ms) if not configured (0).
+// Returns 0 (no stagger) if explicitly set to -1.
+func (c *SessionConfig) GetStartupStaggerMs() int {
+	if c == nil || c.StartupStaggerMs == 0 {
+		return DefaultStartupStaggerMs
+	}
+	if c.StartupStaggerMs < 0 {
+		return 0
+	}
+	return c.StartupStaggerMs
 }
 
 // ScannerDefenseConfig holds configuration for the scanner defense system.

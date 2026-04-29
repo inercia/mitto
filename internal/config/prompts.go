@@ -138,6 +138,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		EnabledWhenACP:  p.EnabledWhenACP,
 		EnabledWhenMCP:  p.EnabledWhenMCP,
 		EnabledWhen:     p.EnabledWhen,
+		Enabled:         p.Enabled,
 	}
 }
 
@@ -264,7 +265,8 @@ func LoadPromptFile(promptsDir, relativePath string) (*PromptFile, error) {
 }
 
 // LoadPromptsFromDir loads all .md files from a directory recursively.
-// Files with enabled: false in front-matter are excluded.
+// Disabled prompts (enabled: false) are included so they can suppress same-named
+// prompts from lower-priority directories during the merge phase.
 // Returns an empty slice if the directory doesn't exist.
 func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 	// Check if directory exists
@@ -300,11 +302,6 @@ func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 		if err != nil {
 			// Log warning but continue with other files
 			// In production, this would use a logger
-			return nil
-		}
-
-		// Skip disabled prompts
-		if !prompt.IsEnabled() {
 			return nil
 		}
 

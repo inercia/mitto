@@ -219,9 +219,10 @@ This should not appear.
 		t.Fatalf("LoadPromptsFromDir failed: %v", err)
 	}
 
-	// Should have 2 prompts (root + git/commit, not disabled)
-	if len(prompts) != 2 {
-		t.Errorf("len(prompts) = %d, want 2", len(prompts))
+	// Should have 3 prompts (root + git/commit + disabled)
+	// LoadPromptsFromDir now includes disabled prompts so they can participate in merge
+	if len(prompts) != 3 {
+		t.Errorf("len(prompts) = %d, want 3", len(prompts))
 	}
 
 	// Check that we have the expected prompts
@@ -236,8 +237,17 @@ This should not appear.
 	if !names["Git Commit"] {
 		t.Error("Missing 'Git Commit'")
 	}
-	if names["Disabled"] {
-		t.Error("Disabled prompt should not be included")
+	if !names["Disabled"] {
+		t.Error("Missing 'Disabled' - disabled prompts should be included for merge")
+	}
+
+	// Verify the disabled prompt has IsEnabled() == false
+	for _, p := range prompts {
+		if p.Name == "Disabled" {
+			if p.IsEnabled() {
+				t.Error("'Disabled' prompt should have IsEnabled() == false")
+			}
+		}
 	}
 }
 

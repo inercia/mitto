@@ -66,7 +66,7 @@ func NewRunner(
 		workspaceConfigByType,
 	)
 
-	// Ensure $WORKSPACE is always in allow_write_folders for restricted runners.
+	// Ensure $MITTO_WORKING_DIR is always in allow_write_folders for restricted runners.
 	// This is a safety net so the agent can always write to its own workspace.
 	if resolved.Type != "exec" {
 		if resolved.Restrictions == nil {
@@ -74,7 +74,7 @@ func NewRunner(
 		}
 		hasWorkspace := false
 		for _, f := range resolved.Restrictions.AllowWriteFolders {
-			if f == "$WORKSPACE" || f == "${WORKSPACE}" {
+			if f == "$MITTO_WORKING_DIR" || f == "${MITTO_WORKING_DIR}" || f == "$WORKSPACE" || f == "${WORKSPACE}" {
 				hasWorkspace = true
 				break
 			}
@@ -82,7 +82,7 @@ func NewRunner(
 		if !hasWorkspace {
 			resolved.Restrictions.AllowWriteFolders = append(
 				resolved.Restrictions.AllowWriteFolders,
-				"$WORKSPACE",
+				"$MITTO_WORKING_DIR",
 			)
 		}
 	}

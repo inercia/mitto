@@ -38,7 +38,7 @@ var rootCmd = &cobra.Command{
 	Use:   "mitto",
 	Short: "Mitto - A CLI tool for interacting with ACP servers",
 	Long: `Mitto is a command-line interface for communicating with
-Agent Communication Protocol (ACP) servers.
+Agent Client Protocol (ACP) servers.
 
 It allows you to interactively chat with AI coding agents
 like auggie, claude-code, and others that implement ACP.`,
