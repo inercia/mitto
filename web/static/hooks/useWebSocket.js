@@ -78,6 +78,10 @@ const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Send keepalive every 5 seconds in native app
 const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Send keepalive every 10 seconds in browser
 const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
+// Cooldown period after stale client recovery. During this window, keepalive
+// will not re-trigger stale detection for the session, giving React state
+// and the auto-load prepend time to settle.
+const STALE_RECOVERY_COOLDOWN_MS = 30000; // 30 seconds
 const KEEPALIVE_MAX_MISSED_DEFAULT = 2; // Force reconnect after 2 missed keepalives
 const KEEPALIVE_MAX_MISSED_LARGE_SESSION = 4; // For sessions with 500+ events
 const LARGE_SESSION_SEQ_THRESHOLD = 500;
@@ -437,6 +441,11 @@ export function useWebSocket() {
   // reconnection storms during large event syncs (e.g., 790 events).
   // { sessionId: boolean }
   const pendingSyncRef = useRef({});
+
+  // Cooldown after stale recovery to prevent feedback loops.
+  // Maps sessionId → timestamp of last stale recovery.
+  // When set, keepalive skips stale detection for this session for STALE_RECOVERY_COOLDOWN_MS.
+  const staleRecoveryCooldownRef = useRef({});
 
   // Auto-clear timeout for pendingSyncRef to prevent indefinite suppression.
   // If events_loaded never arrives (e.g., server error, WebSocket drop),
@@ -1062,6 +1071,8 @@ export function useWebSocket() {
         status: isArchived ? "archived" : "active",
         isActive: !isArchived,
         isStreaming: !isArchived && (data.isStreaming || false),
+        isWaitingForChildren: data.isWaitingForChildren || false,
+        isWaitingForUserInput: data.isWaitingForUserInput || false,
         messageCount: data.messages?.length || 0,
         archived: isArchived,
         archive_pending: isArchivePending,
@@ -1075,7 +1086,7 @@ export function useWebSocket() {
     const fingerprint = result
       .map(
         (s) =>
-          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.status}`,
+          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}`,
       )
       .sort()
       .join("\n");
@@ -1827,7 +1838,14 @@ export function useWebSocket() {
             // Trigger a full reload by requesting initial events (no after_seq).
             // Skip if a sync is already in-flight — the response may fix the stale
             // state; if not, the next keepalive_ack will trigger another attempt.
-            if (pendingSyncRef.current[sessionId]) {
+            // Skip if we recently completed a stale recovery — React state and
+            // auto-load prepend need time to settle before we re-evaluate.
+            const lastRecovery = staleRecoveryCooldownRef.current[sessionId];
+            if (lastRecovery && Date.now() - lastRecovery < STALE_RECOVERY_COOLDOWN_MS) {
+              console.debug(
+                `[keepalive] Session ${sessionId} stale state detected but within recovery cooldown (${Math.round((Date.now() - lastRecovery) / 1000)}s ago) — skipping`,
+              );
+            } else if (pendingSyncRef.current[sessionId]) {
               console.debug(
                 `[keepalive] Session ${sessionId} stale state detected but sync already in-flight — skipping duplicate load_events`,
               );
@@ -2074,6 +2092,9 @@ export function useWebSocket() {
               console.log(
                 `[Stale client recovery] Replacing ${session.messages.length} stale messages with ${newMessages.length} fresh messages`,
               );
+              // Set cooldown to prevent keepalive from re-triggering stale detection
+              // while React state and auto-load prepend are settling.
+              staleRecoveryCooldownRef.current[sessionId] = Date.now();
             }
             messages = newMessages;
           } else {
@@ -2522,7 +2543,13 @@ export function useWebSocket() {
         // Defense-in-depth: the global events WS also handles this, but it may be
         // temporarily disconnected. Just set isRunning=true; no system message here
         // to avoid duplicating the one added by the global handler.
+        // Also updates config_options and agent_models that weren't available in the
+        // initial "connected" message due to the async ACP initialization timing race.
         console.log("ACP started for session (per-session WS):", sessionId);
+        // Update config options if provided in the acp_started message
+        if (msg.data.config_options) {
+          setConfigOptions(msg.data.config_options);
+        }
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -2534,6 +2561,16 @@ export function useWebSocket() {
               info: {
                 ...session.info,
                 acp_ready: true,
+                // Update image support capability
+                agent_supports_images:
+                  msg.data.agent_supports_images ??
+                  session.info?.agent_supports_images ??
+                  false,
+                // Update available commands
+                available_commands:
+                  msg.data.available_commands ??
+                  session.info?.available_commands ??
+                  [],
               },
             },
           };
@@ -2953,6 +2990,9 @@ export function useWebSocket() {
         // events_loaded will never arrive — without this, pendingSyncRef stays true
         // indefinitely, suppressing keepalive miss-counting after reconnection.
         clearPendingSync(sessionId);
+        // Clear the stale recovery cooldown so the fresh connection gets a clean
+        // stale detection check (the cooldown is only meaningful within a session).
+        delete staleRecoveryCooldownRef.current[sessionId];
 
         // Only delete the ref if it still points to this WebSocket (not a newer one)
         if (sessionWsRefs.current[sessionId] === ws) {
@@ -3539,6 +3579,34 @@ export function useWebSocket() {
             [msg.data.session_id]: {
               ...session,
               isWaitingForChildren: msg.data.is_waiting,
+            },
+          };
+        });
+        break;
+
+      case "session_ui_prompt":
+        // Update session waiting-for-user-input state
+        // This is broadcast when a session starts/stops blocking on a UI prompt
+        console.log(
+          `[global] Session UI prompt state changed: ${msg.data.session_id} -> ${msg.data.is_waiting}`,
+        );
+        // Update in stored sessions (for sidebar display)
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, isWaitingForUserInput: msg.data.is_waiting }
+              : s,
+          ),
+        );
+        // Also update in active sessions
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              isWaitingForUserInput: msg.data.is_waiting,
             },
           };
         });

@@ -140,6 +140,12 @@ const (
 	// Data: { "session_id": string, "is_waiting": bool }
 	WSMsgTypeSessionWaiting = "session_waiting"
 
+	// WSMsgTypeSessionUIPrompt notifies that a session's UI prompt state changed.
+	// This is broadcast when a session starts or stops waiting for user input
+	// (blocking UI prompts from MCP tools or permission requests).
+	// Data: { "session_id": string, "is_waiting": bool }
+	WSMsgTypeSessionUIPrompt = "session_ui_prompt"
+
 	// WSMsgTypeSessionSettingsUpdated notifies that a session's advanced settings changed.
 	// Sent on /api/events to all connected clients.
 	// Data: { "session_id": string, "settings": { "flag_name": bool, ... } }

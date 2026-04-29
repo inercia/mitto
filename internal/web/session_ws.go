@@ -413,6 +413,7 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 		data["agent_supports_images"] = bs.AgentSupportsImages()
 		data["workspace_uuid"] = bs.GetWorkspaceUUID()
 		data["acp_ready"] = bs.IsACPReady()
+
 	}
 
 	c.sendMessage(WSMsgTypeConnected, data)
@@ -1704,10 +1705,10 @@ func (c *SessionWSClient) tryAttachToSession() {
 		}
 	}
 
-	// Send a notification to the client that the session is now running
-	c.sendMessage(WSMsgTypeACPStarted, map[string]interface{}{
-		"session_id": c.sessionID,
-	})
+	// Send a notification to the client that the session is now running,
+	// including capability data (config_options, agent_models, etc.) that
+	// is now available after ACP finished loading.
+	c.sendMessage(WSMsgTypeACPStarted, c.buildACPStartedPayload())
 }
 
 // --- SessionObserver interface implementation ---
@@ -2208,17 +2209,37 @@ func (c *SessionWSClient) OnConfigOptionChanged(configID, value string) {
 	})
 }
 
+// buildACPStartedPayload creates the data payload for acp_started messages.
+// This includes config_options (which now includes the model option) and other
+// capability data that may not have been available in the initial "connected"
+// message (due to the async ACP initialization timing race).
+func (c *SessionWSClient) buildACPStartedPayload() map[string]interface{} {
+	data := map[string]interface{}{
+		"session_id": c.sessionID,
+	}
+	if c.bgSession != nil {
+		if configOptions := c.bgSession.ConfigOptions(); len(configOptions) > 0 {
+			data["config_options"] = configOptions
+		}
+		data["agent_supports_images"] = c.bgSession.AgentSupportsImages()
+		if commands := c.bgSession.AvailableCommands(); len(commands) > 0 {
+			data["available_commands"] = commands
+		}
+	}
+	return data
+}
+
 // OnACPStarted is called when the ACP connection for this session becomes ready.
 // This notifies the WebSocket client that the session is now running and ready for prompts.
+// It also includes config_options and agent_models that may not have been available when
+// the initial "connected" message was sent (e.g. due to async ACP resume taking ~3 seconds).
 func (c *SessionWSClient) OnACPStarted() {
 	if c.logger != nil {
 		c.logger.Debug("ACP started notification sent to client",
 			"session_id", c.sessionID,
 			"client_id", c.clientID)
 	}
-	c.sendMessage(WSMsgTypeACPStarted, map[string]interface{}{
-		"session_id": c.sessionID,
-	})
+	c.sendMessage(WSMsgTypeACPStarted, c.buildACPStartedPayload())
 }
 
 // OnACPStopped is called when the ACP connection for this session is stopped.

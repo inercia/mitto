@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -663,6 +664,15 @@ func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Tim
 	return sm.workspaceRCCache.GetLastModified(workingDir)
 }
 
+// InvalidateWorkspaceRC invalidates the cached workspace RC for the given directory,
+// forcing a reload on the next access.
+func (sm *SessionManager) InvalidateWorkspaceRC(workingDir string) {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return
+	}
+	sm.workspaceRCCache.Invalidate(workingDir)
+}
+
 // GetUserDataSchema returns the user data schema defined in the workspace's .mittorc file.
 // Returns nil if no .mittorc exists or if it has no user_data schema section.
 // A nil schema means no custom user data attributes are allowed (validation will reject any).
@@ -685,7 +695,10 @@ func (sm *SessionManager) GetUserDataSchema(workingDir string) *config.UserDataS
 		return nil
 	}
 
-	return rc.UserDataSchema
+	if rc.Metadata == nil {
+		return nil
+	}
+	return rc.Metadata.UserDataSchema
 }
 
 // AddWorkspace adds a new workspace to the manager.
@@ -1415,6 +1428,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 				})
 			}
 		},
+		OnUIPromptStateChanged: func(sessionID string, isWaiting bool) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
+					"session_id": sessionID,
+					"is_waiting": isWaiting,
+				})
+			}
+		},
 		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
@@ -1878,6 +1899,14 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 				})
 			}
 		},
+		OnUIPromptStateChanged: func(sessionID string, isWaiting bool) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
+					"session_id": sessionID,
+					"is_waiting": isWaiting,
+				})
+			}
+		},
 		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
@@ -2190,15 +2219,27 @@ func (sm *SessionManager) ClearCachedPlanState(sessionID string) {
 // ProcessPendingQueues checks all persisted sessions for queued messages and
 // auto-resumes sessions that have pending queue items and meet the criteria
 // for dequeuing (agent idle, delay elapsed). This is called on server startup.
+//
+// Sessions sharing the same ACP process (identified by working directory + ACP server)
+// are staggered by a configurable delay (session.startup_stagger_ms, default 300 ms)
+// to prevent overwhelming the ACP SDK's internal notification channel.
 func (sm *SessionManager) ProcessPendingQueues() {
 	sm.mu.RLock()
 	store := sm.store
 	globalConv := sm.globalConversations
+	mittoConfig := sm.mittoConfig
 	sm.mu.RUnlock()
 
 	if store == nil {
 		return
 	}
+
+	// Determine the stagger delay between resumes on the same shared ACP process.
+	staggerMs := config.DefaultStartupStaggerMs
+	if mittoConfig != nil && mittoConfig.Session != nil {
+		staggerMs = mittoConfig.Session.GetStartupStaggerMs()
+	}
+	staggerDelay := time.Duration(staggerMs) * time.Millisecond
 
 	// List all persisted sessions
 	sessions, err := store.List()
@@ -2208,6 +2249,30 @@ func (sm *SessionManager) ProcessPendingQueues() {
 		}
 		return
 	}
+
+	// Sort sessions by most recent activity first so that sessions the user interacted
+	// with recently become available sooner after restart. Prefer LastUserMessageAt;
+	// fall back to UpdatedAt when LastUserMessageAt is zero.
+	sort.Slice(sessions, func(i, j int) bool {
+		ti := sessions[i].LastUserMessageAt
+		if ti.IsZero() {
+			ti = sessions[i].UpdatedAt
+		}
+		tj := sessions[j].LastUserMessageAt
+		if tj.IsZero() {
+			tj = sessions[j].UpdatedAt
+		}
+		return ti.After(tj) // descending — newest first
+	})
+
+	// lastResumedForProcess tracks the last time a session was resumed for a given
+	// (workingDir, acpServer) pair — i.e., the shared ACP process key.
+	// Used to apply stagger delays only within the same ACP process.
+	type acpProcessKey struct {
+		workingDir string
+		acpServer  string
+	}
+	lastResumedForProcess := make(map[acpProcessKey]time.Time)
 
 	// Check each session for pending queue items
 	for _, meta := range sessions {
@@ -2251,14 +2316,40 @@ func (sm *SessionManager) ProcessPendingQueues() {
 		}
 
 		if sm.logger != nil {
+			lastActivity := meta.LastUserMessageAt
+			if lastActivity.IsZero() {
+				lastActivity = meta.UpdatedAt
+			}
 			sm.logger.Info("Found session with pending queue items",
 				"session_id", meta.SessionID,
 				"queue_length", queueLen,
-				"working_dir", meta.WorkingDir)
+				"working_dir", meta.WorkingDir,
+				"last_activity", lastActivity.Format(time.RFC3339))
 		}
 
-		// Resume the session to process its queue
-		// The session will check the delay before actually sending
+		// Apply stagger delay for sessions sharing the same ACP process.
+		// Sessions on the same (workingDir, acpServer) use the same SharedACPProcess;
+		// resuming them in rapid succession floods the ACP SDK notification channel.
+		if staggerDelay > 0 {
+			key := acpProcessKey{workingDir: meta.WorkingDir, acpServer: meta.ACPServer}
+			if last, ok := lastResumedForProcess[key]; ok {
+				elapsed := time.Since(last)
+				if elapsed < staggerDelay {
+					wait := staggerDelay - elapsed
+					if sm.logger != nil {
+						sm.logger.Debug("Staggering session resume to avoid ACP notification overflow",
+							"session_id", meta.SessionID,
+							"acp_server", meta.ACPServer,
+							"working_dir", meta.WorkingDir,
+							"wait_ms", wait.Milliseconds())
+					}
+					time.Sleep(wait)
+				}
+			}
+		}
+
+		// Resume the session to process its queue.
+		// The session will check the delay before actually sending.
 		bs, err := sm.ResumeSession(meta.SessionID, meta.Name, meta.WorkingDir)
 		if err != nil {
 			if sm.logger != nil {
@@ -2269,9 +2360,16 @@ func (sm *SessionManager) ProcessPendingQueues() {
 			continue
 		}
 
-		// Try to process the queued message immediately
-		// Note: On startup, the delay is skipped because lastResponseComplete is zero
-		// Run in a goroutine so we don't block startup
+		// Record the resume time for this ACP process key so the next session on the
+		// same process waits the full stagger interval.
+		if staggerDelay > 0 {
+			key := acpProcessKey{workingDir: meta.WorkingDir, acpServer: meta.ACPServer}
+			lastResumedForProcess[key] = time.Now()
+		}
+
+		// Try to process the queued message immediately.
+		// Note: On startup, the delay is skipped because lastResponseComplete is zero.
+		// Run in a goroutine so we don't block the stagger loop for other sessions.
 		go func(session *BackgroundSession, sessionID string) {
 			if session.TryProcessQueuedMessage() {
 				if sm.logger != nil {
