@@ -16,11 +16,13 @@ these attributes on individual conversations.
 Define the allowed user data fields in your workspace `.mittorc` file:
 
 ```yaml
-conversations:
+metadata:
   user_data:
     - name: "JIRA Ticket"
+      description: "The JIRA ticket for the current task"
       type: string
     - name: "Documentation URL"
+      description: "Link to related documentation"
       type: url
     - name: "Task Description"
       type: string
@@ -28,10 +30,11 @@ conversations:
 
 ### Field Properties
 
-| Property | Required | Description                               |
-| -------- | -------- | ----------------------------------------- |
-| `name`   | Yes      | The display name of the attribute         |
-| `type`   | No       | The attribute type (defaults to `string`) |
+| Property      | Required | Description                                                       |
+| ------------- | -------- | ----------------------------------------------------------------- |
+| `name`        | Yes      | The display name of the attribute                                 |
+| `description` | No       | Human-readable description (shown as tooltip/placeholder in UI)   |
+| `type`        | No       | The attribute type (defaults to `string`)                         |
 
 ### Supported Types
 
@@ -47,7 +50,7 @@ conversations:
 Track simple text metadata:
 
 ```yaml
-conversations:
+metadata:
   user_data:
     - name: "Project Name"
     - name: "Sprint"
@@ -61,7 +64,7 @@ Since `type` defaults to `string`, you can omit it for plain text fields.
 Track links with validation:
 
 ```yaml
-conversations:
+metadata:
   user_data:
     - name: "JIRA Ticket"
       type: url
@@ -89,7 +92,7 @@ rejected when saving.
 Combine different attribute types:
 
 ```yaml
-conversations:
+metadata:
   user_data:
     - name: "Task"
       type: string
@@ -122,13 +125,18 @@ conversations:
         Follow our coding standards.
         ---
 
-  # User data schema
+# Workspace metadata and user data schema
+metadata:
+  group: "MyTeam"
   user_data:
     - name: "JIRA Ticket"
+      description: "The JIRA ticket associated with the current work"
       type: url
     - name: "Feature Branch"
+      description: "The git feature branch name"
       type: string
     - name: "Sprint"
+      description: "The current sprint"
       type: string
 ```
 

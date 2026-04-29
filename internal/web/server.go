@@ -606,6 +606,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc(apiPrefix+"/api/workspaces/", s.handleWorkspaceDetail)
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
+	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
 	mux.HandleFunc(apiPrefix+"/api/agent-types", s.handleAgentTypes)
@@ -1333,6 +1334,16 @@ func (a *sessionManagerAdapter) BroadcastWaitingForChildren(sessionID string, is
 // DeleteChildSessions permanently deletes all child sessions when a parent is archived.
 func (a *sessionManagerAdapter) DeleteChildSessions(parentID string) {
 	a.sm.DeleteChildSessions(parentID)
+}
+
+// GetWorkspaces returns all configured workspaces.
+func (a *sessionManagerAdapter) GetWorkspaces() []configPkg.WorkspaceSettings {
+	return a.sm.GetWorkspaces()
+}
+
+// GetWorkspaceByUUID returns the workspace with the given UUID.
+func (a *sessionManagerAdapter) GetWorkspaceByUUID(uuid string) *configPkg.WorkspaceSettings {
+	return a.sm.GetWorkspaceByUUID(uuid)
 }
 
 // =============================================================================

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -159,7 +160,10 @@ func (fs *FileServer) serveFile(w http.ResponseWriter, r *http.Request, workspac
 			http.Error(w, "Render not supported for this file type", http.StatusBadRequest)
 			return
 		}
-		fs.serveRenderedMarkdown(w, realPath, relativePath)
+		wsUUID := r.URL.Query().Get("ws")
+		// Derive API prefix from the request path (e.g., "/mitto/api/files" → "/mitto")
+		apiPrefix := strings.TrimSuffix(r.URL.Path, "/api/files")
+		fs.serveRenderedMarkdown(w, realPath, relativePath, wsUUID, apiPrefix)
 		return
 	}
 
@@ -411,7 +415,11 @@ const maxMarkdownRenderSize = 10 * 1024 * 1024
 // This allows the page to render correctly both when:
 //   - Viewed directly in a browser (navigating to the render=html URL)
 //   - Embedded by viewer.html (which extracts the <article> content)
-func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, displayPath string) {
+//
+// When wsUUID is non-empty, relative image src paths are rewritten to use the
+// /api/files endpoint so they resolve correctly regardless of the page URL.
+// apiPrefix is the URL prefix (e.g., "/mitto") prepended to rewritten image URLs.
+func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, displayPath, wsUUID, apiPrefix string) {
 	// Read markdown content
 	content, err := os.ReadFile(realPath)
 	if err != nil {
@@ -436,6 +444,13 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 		return
 	}
 
+	// Rewrite relative image URLs so they resolve correctly when the page is
+	// viewed directly (the URL uses query params, not a path hierarchy).
+	if wsUUID != "" {
+		mdDir := filepath.Dir(displayPath)
+		htmlContent = rewriteRelativeImageURLs(htmlContent, wsUUID, mdDir, apiPrefix)
+	}
+
 	// Set headers
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -450,6 +465,54 @@ func (fs *FileServer) serveRenderedMarkdown(w http.ResponseWriter, realPath, dis
 	w.Write([]byte(renderedMarkdownPagePrefix))
 	w.Write([]byte(htmlContent))
 	w.Write([]byte(renderedMarkdownPageSuffix))
+}
+
+// imgSrcRegex matches the src attribute value inside an <img> tag.
+// It captures the attribute value to allow targeted replacement.
+// NOTE: An identical regex exists in internal/conversion/filelinks.go (FileLinker.RewriteImageURLs).
+// The duplication is intentional — the conversion package cannot import the web package.
+var imgSrcRegex = regexp.MustCompile(`(?i)<img\b[^>]*?\bsrc="([^"]*)"`)
+
+// rewriteRelativeImageURLs replaces relative img src paths in an HTML snippet
+// with absolute /api/files URLs so they resolve correctly regardless of the
+// URL of the page that embeds the HTML.
+//
+// Absolute URLs (http/https), data URIs, and protocol-relative URLs are left
+// unchanged. A path that would escape the workspace root (starts with "..")
+// after resolution is also left unchanged for security.
+func rewriteRelativeImageURLs(html, wsUUID, mdDir, apiPrefix string) string {
+	return imgSrcRegex.ReplaceAllStringFunc(html, func(match string) string {
+		submatches := imgSrcRegex.FindStringSubmatch(match)
+		if len(submatches) < 2 {
+			return match
+		}
+		src := submatches[1]
+
+		// Skip absolute URLs, data URIs, and protocol-relative URLs.
+		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") ||
+			strings.HasPrefix(src, "data:") || strings.HasPrefix(src, "//") ||
+			strings.HasPrefix(src, "/") {
+			return match
+		}
+
+		// Resolve the relative path against the markdown file's directory.
+		var resolved string
+		if mdDir != "" && mdDir != "." {
+			resolved = filepath.Join(mdDir, src)
+		} else {
+			resolved = src
+		}
+		resolved = filepath.Clean(resolved)
+
+		// Security: skip paths that escape the workspace root.
+		if strings.HasPrefix(resolved, "..") {
+			return match
+		}
+
+		// Build the API URL. Use &amp; so the attribute value is valid HTML.
+		apiURL := apiPrefix + "/api/files?ws=" + url.QueryEscape(wsUUID) + "&amp;path=" + url.QueryEscape(resolved)
+		return strings.Replace(match, `src="`+src+`"`, `src="`+apiURL+`"`, 1)
+	})
 }
 
 // renderedMarkdownPagePrefix is the HTML preamble for server-rendered markdown pages.

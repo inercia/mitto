@@ -409,11 +409,44 @@ function updateMermaidTheme(theme) {
 window.renderMermaidDiagrams = renderMermaidInContainer;
 window.updateMermaidTheme = updateMermaidTheme;
 
-// Register service worker for PWA installability
+// Register service worker for PWA installability.
+// - updateViaCache:"none" ensures the browser always fetches sw.js from the
+//   network, so updated service workers are picked up immediately.
+// - On updatefound, the new SW activates via skipWaiting() (in sw.js) and we
+//   reload the page so the new assets take effect.
+// - On visibility change we also check for updates, keeping long-lived PWA
+//   tabs (especially on iPadOS) from running stale code.
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch((err) => {
-    console.warn("Service worker registration failed:", err);
-  });
+  navigator.serviceWorker
+    .register("./sw.js", { updateViaCache: "none" })
+    .then((registration) => {
+      // When a new SW is found, reload once it activates
+      registration.addEventListener("updatefound", () => {
+        const newWorker = registration.installing;
+        if (newWorker) {
+          newWorker.addEventListener("statechange", () => {
+            if (
+              newWorker.state === "activated" &&
+              navigator.serviceWorker.controller
+            ) {
+              // New SW active and we had an old one — reload for fresh assets
+              window.location.reload();
+            }
+          });
+        }
+      });
+
+      // Check for SW updates when the page becomes visible again (handles
+      // iPadOS PWA suspend/resume and long-lived background tabs)
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          registration.update();
+        }
+      });
+    })
+    .catch((err) => {
+      console.warn("Service worker registration failed:", err);
+    });
 }
 
 // Load the app after preact is ready

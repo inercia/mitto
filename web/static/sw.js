@@ -2,7 +2,7 @@
 // Minimal service worker to enable PWA installability.
 // Currently provides basic offline shell caching — extend as needed.
 
-const CACHE_NAME = "mitto-v2";
+const CACHE_NAME = "mitto-v3";
 
 // App shell files to precache for offline support
 const APP_SHELL = [

@@ -1,10 +1,10 @@
 # ACP Servers
 
-This document covers configuration and setup for the AI coding agents that Mitto can connect to via the Agent Communication Protocol (ACP).
+This document covers configuration and setup for the AI coding agents that Mitto can connect to via the Agent Client Protocol (ACP).
 
 ## Overview
 
-ACP servers are AI coding agents that implement the Agent Communication Protocol. Mitto acts as an ACP client, connecting to these servers to provide a unified interface for interacting with different AI agents.
+ACP servers are AI coding agents that implement the Agent Client Protocol. Mitto acts as an ACP client, connecting to these servers to provide a unified interface for interacting with different AI agents.
 
 ## Configuration
 

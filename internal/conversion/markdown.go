@@ -164,6 +164,13 @@ func (c *Converter) Convert(markdown string) (string, error) {
 
 	result := buf.String()
 
+	// Rewrite relative <img src="..."> URLs before sanitization so they survive
+	// bluemonday's RequireParseableURLs check (relative paths have no scheme and
+	// would otherwise be stripped).  The rewritten URLs use the /api/files endpoint.
+	if c.fileLinker != nil {
+		result = c.fileLinker.RewriteImageURLs(result)
+	}
+
 	// Apply sanitization if configured
 	if c.sanitizer != nil {
 		result = c.sanitizer.Sanitize(result)

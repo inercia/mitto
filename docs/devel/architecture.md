@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Mitto is a command-line interface (CLI) client for the [Agent Communication Protocol (ACP)](https://agentcommunicationprotocol.dev/). It enables users to interact with AI coding agents such as Auggie, Claude Code, and other ACP-compatible servers through a terminal-based interface.
+Mitto is a command-line interface (CLI) client for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/). It enables users to interact with AI coding agents such as Auggie, Claude Code, and other ACP-compatible servers through a terminal-based interface.
 
 The project is written in Go and follows idiomatic Go project structure with clear separation of concerns between packages.
 

@@ -9,7 +9,7 @@ The restricted runner system (`internal/runner/`) sandboxes ACP agent execution.
 - **Opt-in sandboxing**: By default, Mitto uses the `exec` runner (no restrictions). Users explicitly configure restricted runners.
 - **Pipe-based communication**: All runner types use `RunWithPipes()` to preserve stdin/stdout for ACP JSON-RPC.
 - **Graceful fallback**: If a requested runner is unavailable (wrong platform, missing binary), Mitto falls back to `exec` and logs a warning.
-- **Variable substitution**: Paths in restrictions support runtime variables (`$WORKSPACE`, `$HOME`, etc.) resolved per-session.
+- **Variable substitution**: Paths in restrictions support runtime variables (`$MITTO_WORKING_DIR`, `$HOME`, etc.) resolved per-session.
 
 ## Architecture
 
@@ -32,7 +32,7 @@ internal/runner/
 | `Runner`           | `runner.go`    | Wraps `grrunner.Runner`, holds resolved config and fallback info    |
 | `ResolvedConfig`   | `runner.go`    | Fully resolved runner type + restrictions after hierarchy merge     |
 | `FallbackInfo`     | `runner.go`    | Records when fallback occurred: requested type, actual type, reason |
-| `VariableResolver` | `variables.go` | Resolves `$WORKSPACE`, `$HOME`, etc. in restriction paths           |
+| `VariableResolver` | `variables.go` | Resolves `$MITTO_WORKING_DIR`, `$HOME`, etc. in restriction paths           |
 
 ### Data Flow
 
@@ -124,9 +124,9 @@ The merge logic in `MergeRestrictions()`:
 
 ### Resolution Example
 
-Given global `sandbox-exec` config with `allow_networking: true` and `allow_read_folders: ["$WORKSPACE"]`, an agent config with `allow_networking: false` and `allow_read_folders: ["$HOME/.experimental"]` using `extend`, and a workspace config adding `allow_read_folders: ["$WORKSPACE/vendor"]`:
+Given global `sandbox-exec` config with `allow_networking: true` and `allow_read_folders: ["$MITTO_WORKING_DIR"]`, an agent config with `allow_networking: false` and `allow_read_folders: ["$HOME/.experimental"]` using `extend`, and a workspace config adding `allow_read_folders: ["$MITTO_WORKING_DIR/vendor"]`:
 
-**Result**: `allow_networking: false`, `allow_read_folders: ["$WORKSPACE", "$HOME/.experimental", "$WORKSPACE/vendor"]`
+**Result**: `allow_networking: false`, `allow_read_folders: ["$MITTO_WORKING_DIR", "$HOME/.experimental", "$MITTO_WORKING_DIR/vendor"]`
 
 ## Variable Substitution
 
@@ -134,7 +134,7 @@ Paths in restrictions support runtime variables resolved when the runner is crea
 
 | Variable                      | Source                                      | Example                               |
 | ----------------------------- | ------------------------------------------- | ------------------------------------- |
-| `$WORKSPACE` / `${WORKSPACE}` | Workspace directory passed to `NewRunner`   | `/Users/user/project`                 |
+| `$MITTO_WORKING_DIR` / `${MITTO_WORKING_DIR}` | Workspace directory passed to `NewRunner`   | `/Users/user/project`                 |
 | `$HOME` / `${HOME}`           | `os.UserHomeDir()`                          | `/Users/user`                         |
 | `$MITTO_DIR` / `${MITTO_DIR}` | `appdir.Dir()`                              | `~/Library/Application Support/Mitto` |
 | `$USER` / `${USER}`           | `$USER` env var (falls back to `$USERNAME`) | `user`                                |
@@ -239,7 +239,7 @@ func (r *Runner) RunWithPipes(ctx context.Context, command string, args []string
 
 **Why not `Run()`?** ACP requires bidirectional JSON-RPC over stdio. `Run()` captures output as a string; `RunWithPipes()` provides live pipe access.
 
-**Why cwd isn't supported**: When using a restricted runner, the `cwd` parameter is ignored (logged as warning). The workspace directory is made available through `$WORKSPACE` variable in `allow_read_folders`/`allow_write_folders` instead.
+**Why cwd isn't supported**: When using a restricted runner, the `cwd` parameter is ignored (logged as warning). The workspace directory is made available through `$MITTO_WORKING_DIR` variable in `allow_read_folders`/`allow_write_folders` instead.
 
 **Process lifecycle**: The caller must close stdin and call `wait()` for cleanup. Context cancellation kills the process. For restricted runner processes, `Connection.Close()` calls the stored `cancel` function.
 
@@ -258,7 +258,7 @@ func (r *Runner) RunWithPipes(ctx context.Context, command string, args []string
 
 ### Variable Tests (`variables_test.go`)
 
-- All supported variables (`$WORKSPACE`, `$HOME`, `$MITTO_DIR`, `$USER`, `$TMPDIR`)
+- All supported variables (`$MITTO_WORKING_DIR`, `$HOME`, `$MITTO_DIR`, `$USER`, `$TMPDIR`)
 - `~/` expansion
 - Both `$VAR` and `${VAR}` syntax
 
@@ -275,7 +275,7 @@ go test -tags integration ./internal/runner/...
 | Limitation                              | Details                                                                                                                                                                                |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **MCP server compatibility**            | Restricted runners can break MCP access. Agents may not reach MCP executables, configs, or network endpoints. Use `exec` if MCP servers are needed, or carefully allow required paths. |
-| **cwd not supported**                   | Restricted runners ignore the `cwd` parameter. Use `$WORKSPACE` in folder allowlists instead.                                                                                          |
+| **cwd not supported**                   | Restricted runners ignore the `cwd` parameter. Use `$MITTO_WORKING_DIR` in folder allowlists instead.                                                                                          |
 | **Platform-specific runners**           | `sandbox-exec` is macOS-only, `firejail` is Linux-only. Automatic fallback to `exec` if unavailable.                                                                                   |
 | **Docker requires pre-installed agent** | The agent binary must exist in the Docker image. Workspace is auto-mounted at the same path.                                                                                           |
 

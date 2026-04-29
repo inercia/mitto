@@ -570,7 +570,6 @@ a.mailto-link:hover {
 /* Blockquotes */
 .markdown-content blockquote {
   border-left: 4px solid #3b82f6;
-  padding-left: 1em;
   margin: 0.75em 0;
   color: #94a3b8;
   background: rgba(59, 130, 246, 0.1);
@@ -1383,6 +1382,20 @@ mitto-action {
    Action Toolbar (collapsible vertical toolbar for ChatInput)
    ============================================================================= */
 
+/* iOS PWA keyboard fix - ensure textarea can receive focus and show keyboard
+   in standalone (PWA) mode. Only target touch devices to avoid affecting the
+   macOS native WKWebView app, which may also match display-mode:standalone. */
+@media screen and (display-mode: standalone) and (pointer: coarse) {
+  textarea,
+  input[type="text"],
+  input[type="search"] {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    /* 16px prevents iOS auto-zoom on focus */
+    font-size: 16px;
+  }
+}
+
 /* Container class for the flex layout that holds the textarea */
 .chat-input-container {
   position: relative;
@@ -1492,6 +1505,19 @@ mitto-action {
   background: #3b82f6;
   border-color: #60a5fa;
   color: white;
+}
+
+
+/* UI Textbox textarea (mitto_ui_textbox) - base dark theme */
+.ui-textbox-textarea {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: #475569;
+  color: #ffffff;
+}
+.light .ui-textbox-textarea {
+  background: #f8fafc;
+  border-color: #d1d5db;
+  color: #18181b;
 }
 
 /* Textarea improving overlay */

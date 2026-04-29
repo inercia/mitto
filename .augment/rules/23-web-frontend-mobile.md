@@ -20,6 +20,8 @@ keywords:
   - localStorage stale
   - lastSeenSeq
   - lastKnownSeqRef
+  - stale recovery cooldown
+  - staleRecoveryCooldownRef
 ---
 
 # Mobile Wake Resync and Browser Handling
@@ -82,6 +84,14 @@ if (
 never carry over to the next connection.
 
 > See [Sequence Numbers — Frontend Responsibilities](../../docs/devel/websockets/sequence-numbers.md#frontend-responsibilities) for the full pattern.
+
+## Stale Client Recovery & Cooldown
+
+When the client has stale state (e.g., localStorage watermark of seq 735 but server only has 730 after a restart), the `events_loaded` handler detects `clientLastSeq > serverMaxSeq` and runs the **M1 fix**: clears the seq tracker, resets `lastKnownSeqRef` and localStorage, and replaces all messages with fresh data from the server.
+
+**Cooldown**: After stale recovery, a 30-second per-session cooldown (`staleRecoveryCooldownRef`) prevents the keepalive handler from re-triggering stale detection. Without this, React's async state batching can leave `getMaxSeq(sessionMessages)` returning the old stale value when the next keepalive fires (5 seconds later), creating a feedback loop of repeated stale recoveries. The cooldown is cleared on WebSocket close so fresh connections always get an unguarded stale check.
+
+> **See also**: [Sequence Numbers — M1 Fix](../../docs/devel/websockets/sequence-numbers.md#m1-client-side-deduplication) for the full reset logic, and [WebSocket Patterns — Stale Recovery Cooldown](../../.augment/rules/22-web-frontend-websocket.md#stale-recovery-cooldown) for the implementation pattern.
 
 ## Force Reconnect on Visibility Change
 

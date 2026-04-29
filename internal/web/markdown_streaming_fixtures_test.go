@@ -351,8 +351,9 @@ func TestStreamingFixtures_CodeBlockWithInactivityTimeout(t *testing.T) {
 	buffer.Write("func main() {\n")
 	buffer.Write("    fmt.Println(\"Hello\")\n")
 
-	// Wait for hard inactivity timeout
-	time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
+	// Wait for hard inactivity timeout for blocks
+	// (code block uses the longer inactivityFlushTimeoutInBlock)
+	time.Sleep(inactivityFlushTimeoutInBlock + 500*time.Millisecond)
 
 	mu.Lock()
 	countAfterTimeout := len(results)
@@ -1071,8 +1072,9 @@ func TestStreamingFixtures_ListSplitAtApostrophe(t *testing.T) {
 		buffer.Write(chunk)
 		// Very long delay after list item 1 to trigger inactivity timeout
 		if i == 2 { // After "'s a\n"
-			t.Logf("Waiting %v to trigger hard inactivity timeout...", inactivityFlushTimeout+500*time.Millisecond)
-			time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
+			// List uses the longer inactivityFlushTimeoutInBlock
+			t.Logf("Waiting %v to trigger hard inactivity timeout...", inactivityFlushTimeoutInBlock+500*time.Millisecond)
+			time.Sleep(inactivityFlushTimeoutInBlock + 500*time.Millisecond)
 
 			// After the hard timeout, the content SHOULD have been flushed to prevent loss
 			mu.Lock()

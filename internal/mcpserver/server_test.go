@@ -4769,6 +4769,67 @@ func TestHandleUIOptions_MissingSessionID(t *testing.T) {
 	}
 }
 
+func TestHandleUIOptions_TruncatesLongLabels(t *testing.T) {
+	longLabel := strings.Repeat("a", 100)       // 100 chars, exceeds 80
+	longDesc := strings.Repeat("b", 250)        // 250 chars, exceeds 200
+	longQuestion := strings.Repeat("q", 600)    // 600 chars, exceeds 500
+
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{
+			RequestID: "req-trunc",
+			OptionID:  "0",
+			Label:     string([]rune(longLabel)[:79]) + "…",
+		},
+	}
+	srv, sessionID := newServerWithUIPrompter(t, mock)
+
+	ctx := context.Background()
+	input := UIOptionsInput{
+		SelfID:   sessionID,
+		Question: longQuestion,
+		Options: []UIOptionsItem{
+			{Label: longLabel, Description: longDesc},
+		},
+	}
+
+	_, _, err := srv.handleUIOptions(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("handleUIOptions returned error: %v", err)
+	}
+
+	call := mock.lastCall()
+
+	// Verify question was truncated to 500 runes (499 + ellipsis)
+	questionRunes := []rune(call.Question)
+	if len(questionRunes) > 500 {
+		t.Errorf("Expected question truncated to ≤500 runes, got %d", len(questionRunes))
+	}
+	if questionRunes[len(questionRunes)-1] != '…' {
+		t.Errorf("Expected question to end with ellipsis, got: %q", string(questionRunes[len(questionRunes)-1]))
+	}
+
+	// Verify label was truncated to 80 runes (79 + ellipsis)
+	if len(call.Options) == 0 {
+		t.Fatal("Expected at least one option in call")
+	}
+	labelRunes := []rune(call.Options[0].Label)
+	if len(labelRunes) > 80 {
+		t.Errorf("Expected label truncated to ≤80 runes, got %d", len(labelRunes))
+	}
+	if labelRunes[len(labelRunes)-1] != '…' {
+		t.Errorf("Expected label to end with ellipsis, got: %q", string(labelRunes[len(labelRunes)-1]))
+	}
+
+	// Verify description was truncated to 200 runes (199 + ellipsis)
+	descRunes := []rune(call.Options[0].Description)
+	if len(descRunes) > 200 {
+		t.Errorf("Expected description truncated to ≤200 runes, got %d", len(descRunes))
+	}
+	if descRunes[len(descRunes)-1] != '…' {
+		t.Errorf("Expected description to end with ellipsis, got: %q", string(descRunes[len(descRunes)-1]))
+	}
+}
+
 // =============================================================================
 // handleUIForm Tests
 // =============================================================================

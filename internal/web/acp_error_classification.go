@@ -52,6 +52,10 @@ const (
 	// RestartReasonUnexpectedExit indicates the process exited unexpectedly outside of prompt handling.
 	RestartReasonUnexpectedExit RestartReason = "unexpected_exit"
 
+	// RestartReasonResumeFailure indicates the process was found dead when a session tried to resume
+	// after the app was backgrounded or the system slept (e.g. broken pipe, file already closed).
+	RestartReasonResumeFailure RestartReason = "resume_failure"
+
 	// RestartReasonUnknown indicates the restart reason could not be determined.
 	RestartReasonUnknown RestartReason = "unknown"
 )
@@ -223,6 +227,22 @@ func formatClassifiedError(classified *ACPClassifiedError) string {
 		return fmt.Sprintf("%s. %s", classified.UserMessage, classified.UserGuidance)
 	}
 	return classified.UserMessage
+}
+
+// isACPConnectionError reports whether err is a recoverable ACP pipe/connection
+// error that can be resolved by restarting the underlying OS process.
+// Used to detect the post-sleep/resume race condition where the OS has killed
+// the ACP subprocess but the Go connection object still appears alive.
+func isACPConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "file already closed") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "shared ACP process has exited") ||
+		strings.Contains(msg, "shared ACP process is not running")
 }
 
 // backoffDelay calculates an exponential backoff delay with jitter.

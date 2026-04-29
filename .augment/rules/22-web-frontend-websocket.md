@@ -33,6 +33,8 @@ keywords:
   - isSeqDuplicate
   - M1 fix
   - isStaleClientState
+  - staleRecoveryCooldownRef
+  - STALE_RECOVERY_COOLDOWN_MS
   - lastSentSeq
   - race condition
   - zombie connection
@@ -183,6 +185,23 @@ When detected: full reload (discard client messages, use server data), reset seq
 | `clientSeq > serverSeq`         | Client stale -> full reload       |
 | `clientSeq < serverSeq - tol.`  | Client behind -> request missing  |
 | `clientSeq ~ serverSeq`         | In sync -> no action              |
+
+### Stale Recovery Cooldown
+
+After stale recovery completes, a per-session cooldown (`staleRecoveryCooldownRef`) prevents re-triggering for `STALE_RECOVERY_COOLDOWN_MS` (30 seconds). This prevents a feedback loop where React state batching and the auto-load `setTimeout` leave `getMaxSeq(sessionMessages)` returning stale values when the next keepalive fires:
+
+```javascript
+// Set on stale recovery:
+staleRecoveryCooldownRef.current[sessionId] = Date.now();
+
+// Checked in keepalive_ack before triggering stale detection:
+const lastRecovery = staleRecoveryCooldownRef.current[sessionId];
+if (lastRecovery && (Date.now() - lastRecovery) < STALE_RECOVERY_COOLDOWN_MS) {
+  break; // Skip — within cooldown window
+}
+```
+
+Cleared on WebSocket close so fresh connections get a clean stale check.
 
 ## Three-Tier Deduplication
 

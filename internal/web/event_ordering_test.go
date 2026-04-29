@@ -683,8 +683,9 @@ func TestEventOrdering_InactivityTimeoutFlushesContent(t *testing.T) {
 	// Send item 4 with unmatched bold
 	sendAgentMessage(t, client, ctx, "4. **Real-time\n")
 
-	// Wait longer than the hard inactivity timeout
-	time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
+	// Wait longer than the hard inactivity timeout for blocks
+	// (list uses the longer inactivityFlushTimeoutInBlock)
+	time.Sleep(inactivityFlushTimeoutInBlock + 500*time.Millisecond)
 
 	// Hard timeout SHOULD have flushed to prevent content loss
 	events := collector.getEvents()

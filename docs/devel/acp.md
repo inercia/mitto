@@ -1,6 +1,6 @@
 # ACP Architecture
 
-This document covers how Mitto manages ACP (Agent Communication Protocol) processes,
+This document covers how Mitto manages ACP (Agent Client Protocol) processes,
 sessions, and the multiplexing architecture that enables multiple conversations to
 share a single AI agent process.
 

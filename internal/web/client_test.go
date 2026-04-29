@@ -544,10 +544,10 @@ func TestWebClient_TerminalMethods(t *testing.T) {
 		t.Errorf("WaitForTerminalExit failed: %v", err)
 	}
 
-	// KillTerminalCommand
-	_, err = client.KillTerminalCommand(ctx, acp.KillTerminalCommandRequest{})
+	// KillTerminal
+	_, err = client.KillTerminal(ctx, acp.KillTerminalRequest{})
 	if err != nil {
-		t.Errorf("KillTerminalCommand failed: %v", err)
+		t.Errorf("KillTerminal failed: %v", err)
 	}
 }
 

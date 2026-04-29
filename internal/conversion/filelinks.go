@@ -661,6 +661,74 @@ func (fl *FileLinker) createLink(displayPath, realPath string, isDir bool) strin
 	return fmt.Sprintf(`<a href="%s" class="%s">%s</a>`, linkURL, class, escapedDisplay)
 }
 
+// imgSrcRegex matches the src attribute value inside an <img> tag.
+// It captures the src value so it can be targeted for replacement.
+// NOTE: An identical regex exists in internal/web/file_server.go (rewriteRelativeImageURLs).
+// The duplication is intentional — the web package cannot import the conversion package
+// for that specific use, and the conversion package cannot import the web package.
+var imgSrcRegex = regexp.MustCompile(`(?i)<img\b[^>]*?\bsrc="([^"]*)"`)
+
+// RewriteImageURLs rewrites relative <img src="..."> URLs in an HTML snippet to use
+// the /api/files endpoint before HTML sanitization strips them.
+//
+// Bluemonday's RequireParseableURLs(true) strips src attributes whose value has no
+// recognised URL scheme (http/https/data/file). Relative paths produced by Goldmark
+// (e.g. src="charts/portfolio-5d.png") therefore get silently removed. This method
+// replaces them with absolute /api/files?ws=...&path=... URLs so they survive
+// sanitization and resolve correctly in the browser.
+//
+// The method is a no-op when the FileLinker is not enabled or WorkspaceUUID is empty.
+func (fl *FileLinker) RewriteImageURLs(html string) string {
+	if !fl.config.Enabled || fl.config.WorkspaceUUID == "" {
+		return html
+	}
+
+	return imgSrcRegex.ReplaceAllStringFunc(html, func(match string) string {
+		submatches := imgSrcRegex.FindStringSubmatch(match)
+		if len(submatches) < 2 {
+			return match
+		}
+		src := submatches[1]
+
+		// Skip absolute URLs, data URIs, protocol-relative URLs, and root-relative paths.
+		srcLower := strings.ToLower(src)
+		if strings.HasPrefix(srcLower, "http://") ||
+			strings.HasPrefix(srcLower, "https://") ||
+			strings.HasPrefix(srcLower, "data:") ||
+			strings.HasPrefix(srcLower, "//") ||
+			strings.HasPrefix(srcLower, "/") {
+			return match
+		}
+
+		// Resolve the relative path against the working directory.
+		var resolved string
+		if fl.config.WorkingDir != "" {
+			resolved = filepath.Join(fl.config.WorkingDir, src)
+		} else {
+			resolved = src
+		}
+		resolved = filepath.Clean(resolved)
+
+		// Security: reject paths that escape the workspace root.
+		if strings.HasPrefix(resolved, "..") {
+			return match
+		}
+
+		// Make the path relative again (strip the working directory prefix) so
+		// it can be passed as the ?path= parameter (FileServer expects relative paths).
+		if fl.config.WorkingDir != "" {
+			rel, err := filepath.Rel(fl.config.WorkingDir, resolved)
+			if err == nil {
+				resolved = rel
+			}
+		}
+
+		// Build the API URL. Use &amp; so the value is valid inside an HTML attribute.
+		apiURL := fl.config.APIPrefix + "/api/files?ws=" + url.QueryEscape(fl.config.WorkspaceUUID) + "&amp;path=" + url.QueryEscape(resolved)
+		return strings.Replace(match, `src="`+src+`"`, `src="`+apiURL+`"`, 1)
+	})
+}
+
 // cleanURLTrailingPunctuation removes trailing punctuation from URLs.
 // This handles cases where punctuation at the end of a sentence gets captured in the URL.
 func cleanURLTrailingPunctuation(urlStr string) string {

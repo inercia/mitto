@@ -384,6 +384,8 @@ setLastSeenSeq(sessionId, 0); // Clear localStorage mirror
 
 After the stale reset, `updateLastKnownSeq` repopulates all three tiers from the fresh events sent by the server. From that point the watermark is again accurate for future reconnects.
 
+**Stale Recovery Cooldown**: After the M1 fix runs, a per-session cooldown (`staleRecoveryCooldownRef[sessionId] = Date.now()`) prevents the keepalive handler from re-triggering stale detection for 30 seconds (`STALE_RECOVERY_COOLDOWN_MS`). This addresses a feedback loop where React's async state batching and the 100ms auto-load `setTimeout` can leave `getMaxSeq(sessionMessages)` returning the old stale value when the next keepalive fires (5s later), causing repeated M1 fix cycles. The cooldown is cleared on WebSocket close so a fresh connection gets an unguarded stale check.
+
 ## Testing the Contract
 
 The following tests verify the sequence number contract:

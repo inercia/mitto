@@ -400,9 +400,9 @@ func (c *WebClient) WaitForTerminalExit(ctx context.Context, params acp.WaitForT
 	return webTerminalStub.WaitForTerminalExit(ctx, params)
 }
 
-// KillTerminalCommand handles requests to kill terminal commands.
-func (c *WebClient) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-	return webTerminalStub.KillTerminalCommand(ctx, params)
+// KillTerminal handles requests to kill terminals.
+func (c *WebClient) KillTerminal(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
+	return webTerminalStub.KillTerminal(ctx, params)
 }
 
 // FlushMarkdown forces a flush of any buffered content (markdown and pending events).

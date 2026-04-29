@@ -69,6 +69,24 @@ User clicks Unarchive → PATCH /api/sessions/{id} archived=false
 → ResumeSession() → Broadcast "acp_started" (or "acp_start_failed")
 ```
 
+## Auto-Archive of Inactive Sessions
+
+The `PeriodicRunner` can automatically archive sessions that have been inactive for a configured period.
+Sessions that are **excluded** from auto-archiving:
+
+- **Already archived sessions** — Skipped (they're already archived)
+- **Child sessions** — Handled via parent cascade deletion only
+- **Periodic sessions** — Sessions with **enabled** periodic prompts are never auto-archived (they should remain active indefinitely)
+
+To configure auto-archive:
+
+```yaml
+session:
+  auto_archive_inactive_after: "1w"  # Archive after 1 week of inactivity
+```
+
+**Implementation**: See `checkAutoArchive()` in `internal/web/periodic_runner.go`
+
 ## Critical: Don't Resume Archived Sessions on WebSocket Connect
 
 ```go

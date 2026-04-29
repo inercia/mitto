@@ -40,7 +40,7 @@ install yet another AI coding agent...
 
 🤖 **Agents & Workspaces**
 
-- **Multi-Agent Support** — Connect to Claude Code, Copilot CLI, Auggie or any [ACP-compatible](https://agentcommunicationprotocol.dev/) agent
+- **Multi-Agent Support** — Connect to Claude Code, Copilot CLI, Auggie or any [ACP-compatible](https://agentclientprotocol.com/) agent
 - **Multi-Workspace Support** — Configure multiple ACP agents and workspaces, each with their own settings, prompts, and processors
 
 💬 **Conversations**

@@ -28,7 +28,7 @@ higher-priority sources override lower-priority ones.
 | 2           | Global prompts directory      | `MITTO_DIR/prompts/*.md`         |
 | 3           | Additional prompts dirs       | `prompts_dirs` in settings       |
 | 4           | User settings file            | `MITTO_DIR/settings.yaml`        |
-| 5           | Default workspace prompts dir | `$WORKSPACE/.mitto/prompts/*.md` |
+| 5           | Default workspace prompts dir | `$MITTO_WORKING_DIR/.mitto/prompts/*.md` |
 | 6           | Workspace prompts dirs        | `prompts_dirs` in `.mittorc`     |
 | 7 (highest) | Workspace `.mittorc` prompts  | `prompts:` in `.mittorc`         |
 

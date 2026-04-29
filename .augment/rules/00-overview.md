@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Mitto Project Overview
 
-Mitto is a CLI client for the Agent Communication Protocol (ACP). It enables terminal-based interaction with AI coding agents like Auggie and Claude Code.
+Mitto is a CLI client for the Agent Client Protocol (ACP). It enables terminal-based interaction with AI coding agents like Auggie and Claude Code.
 
 ## Architecture Documentation
 

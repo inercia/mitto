@@ -182,6 +182,34 @@ func (c *Client) DeleteSession(sessionID string) error {
 	return nil
 }
 
+// ArchiveSession archives or unarchives a session.
+func (c *Client) ArchiveSession(sessionID string, archive bool) error {
+	body, err := json.Marshal(map[string]interface{}{
+		"archived": archive,
+	})
+	if err != nil {
+		return fmt.Errorf("archive session: marshal: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, c.apiURL("/api/sessions/"+url.PathEscape(sessionID)), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("archive session: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("archive session: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("archive session: status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // --- Image API ---
 
 // ImageInfo represents an uploaded image.

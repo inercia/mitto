@@ -350,6 +350,7 @@ func TestMarkdownBuffer_CodeBlockNoTimeoutFlush(t *testing.T) {
 // TestMarkdownBuffer_CodeBlockInactivityTimeout tests that the hard inactivity timeout
 // DOES flush content even while inside a code block.
 // This ensures content is displayed if the agent stops mid-block.
+// Inside a code block, the longer inactivityFlushTimeoutInBlock applies.
 func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	var results []string
 	var mu sync.Mutex
@@ -365,8 +366,8 @@ func TestMarkdownBuffer_CodeBlockInactivityTimeout(t *testing.T) {
 	buffer.Write("func main() {\n")
 	buffer.Write("    fmt.Println(\"Hello\")\n")
 
-	// Wait longer than the hard inactivity timeout
-	time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
+	// Wait longer than the hard inactivity timeout for blocks
+	time.Sleep(inactivityFlushTimeoutInBlock + 500*time.Millisecond)
 
 	mu.Lock()
 	countAfterTimeout := len(results)

@@ -444,6 +444,12 @@ void setupSwipeGestureRecognizer(void) {
         // Monitor scroll wheel events to detect two-finger swipe gestures
         // We track the full gesture from start to end to accumulate the total delta
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel handler:^NSEvent *(NSEvent *event) {
+            // Only process events from the main window to avoid interfering with viewer windows
+            NSWindow *mainWindow = [NSApplication sharedApplication].mainWindow;
+            if (!mainWindow || ![event.window isEqual:mainWindow]) {
+                return event;
+            }
+
             // Only process trackpad events (not mouse scroll wheel)
             // Trackpad events have a phase, mouse events don't
             if (event.phase == NSEventPhaseNone && event.momentumPhase == NSEventPhaseNone) {

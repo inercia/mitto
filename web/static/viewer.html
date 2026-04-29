@@ -331,6 +331,12 @@
         font-size: 13px;
         border-radius: 8px;
       }
+      .bottom-bar .btn:disabled {
+        opacity: 0.3;
+        cursor: default;
+        pointer-events: none;
+      }
+      .bottom-bar-spacer { flex: 1; }
 
       /* Diff styles */
       .diff-container {
@@ -415,8 +421,14 @@
       <div id="diffContent" class="diff-container" style="display: none"></div>
     </div>
 
-    <!-- Bottom bar: Download, Refresh, Open, Close -->
+    <!-- Bottom bar: Back, [spacer], Download, Refresh, Open, Close -->
     <div class="bottom-bar">
+      <button class="btn btn-icon" id="backBtn" title="Go back" disabled>
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M7.78 12.53a.75.75 0 0 1-1.06 0L2.47 8.28a.75.75 0 0 1 0-1.06l4.25-4.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L4.81 7h7.44a.75.75 0 0 1 0 1.5H4.81l2.97 2.97a.75.75 0 0 1 0 1.06Z"/>
+        </svg>
+      </button>
+      <div class="bottom-bar-spacer"></div>
       <button class="btn btn-icon" id="downloadBtn" title="Download file">
         <svg viewBox="0 0 16 16" fill="currentColor">
           <path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14Z"/>
@@ -473,6 +485,15 @@
       // Set up refresh button - reload the page to get fresh file content
       document.getElementById("refreshBtn").addEventListener("click", () => {
         window.location.reload();
+      });
+
+      // Set up back button - navigate back in history (enabled only when there's history)
+      // Back button — enabled only when referrer is another viewer page (internal navigation)
+      const backBtn = document.getElementById("backBtn");
+      const hasViewerHistory = document.referrer && document.referrer.includes("viewer.html");
+      backBtn.disabled = !hasViewerHistory;
+      backBtn.addEventListener("click", () => {
+        window.history.back();
       });
 
       // Parse URL parameters - support both new format (ws=UUID) and legacy (workspace=path)
@@ -826,6 +847,21 @@
 
             const markdownEl = document.getElementById("markdownContent");
             markdownEl.innerHTML = htmlContent;
+
+            // Rewrite relative image src attributes to use the file server API.
+            // The browser resolves src relative to viewer.html's URL, not the markdown
+            // file's directory, so we must make all relative paths absolute API URLs.
+            markdownEl.querySelectorAll('img').forEach(img => {
+              const src = img.getAttribute('src');
+              if (!src) return;
+              // Skip absolute URLs, absolute paths, data URIs, and protocol-relative URLs
+              if (/^(https?:\/\/|data:|\/\/|\/)/i.test(src)) return;
+              const resolved = resolveWorkspacePath(src);
+              if (resolved) {
+                img.src = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`;
+              }
+            });
+
             showRendered();
 
             // Handle mermaid diagrams
@@ -919,33 +955,89 @@
           }
 
           // Resolve a relative href against the current file's directory in the workspace.
+          // Handles URL-encoded characters, special characters, double-encoding, and various edge cases.
           function resolveWorkspacePath(href) {
-            const hashIdx = href.indexOf("#");
-            const linkPath = hashIdx >= 0 ? href.substring(0, hashIdx) : href;
-            const fragment = hashIdx >= 0 ? href.substring(hashIdx) : "";
-            if (!linkPath) return null; // pure fragment
+            // Handle null/undefined/empty input
+            if (!href || typeof href !== 'string') return null;
 
+            // Trim leading/trailing whitespace
+            href = href.trim();
+            if (!href) return null;
+
+            // Decode URL-encoded characters FIRST (e.g., %20 for spaces, %23 for #)
+            // This is important because %23 (encoded #) should become a real fragment separator
+            // Only decode once to avoid double-decoding issues
+            try {
+              href = decodeURIComponent(href);
+            } catch (e) {
+              // If decoding fails (malformed %), use original href
+              console.warn("Failed to decode URL:", href, e);
+              // Continue with original href
+            }
+
+            // Extract fragment (hash) AFTER decoding
+            // This way %23 in the original URL becomes # and is properly treated as a fragment
+            const hashIdx = href.indexOf("#");
+            let linkPath = hashIdx >= 0 ? href.substring(0, hashIdx) : href;
+            const fragment = hashIdx >= 0 ? href.substring(hashIdx) : "";
+
+            // Pure fragment (no path)
+            if (!linkPath) return null;
+
+            // Trim the path (in case of spaces at edges)
+            linkPath = linkPath.trim();
+            if (!linkPath) return null;
+
+            // Get current directory from the global 'path' variable
             const currentDir = path.includes("/")
               ? path.substring(0, path.lastIndexOf("/"))
               : "";
 
+            // Resolve absolute vs relative paths
             let resolved;
             if (linkPath.startsWith("/")) {
+              // Absolute path (relative to workspace root)
               resolved = linkPath.substring(1);
             } else {
+              // Relative path (relative to current file's directory)
               resolved = currentDir ? currentDir + "/" + linkPath : linkPath;
             }
 
-            // Normalize ../ and ./
+            // Normalize path:
+            // - Remove empty components (from double slashes //)
+            // - Resolve . (current directory)
+            // - Resolve .. (parent directory)
+            // - Preserve case exactly
             const parts = resolved.split("/");
             const normalized = [];
+
             for (const part of parts) {
-              if (part === "." || part === "") continue;
-              if (part === ".." && normalized.length > 0) { normalized.pop(); continue; }
-              if (part === "..") continue;
+              // Skip empty parts (from // or leading/trailing slashes)
+              if (part === "" || part === ".") {
+                continue;
+              }
+
+              // Handle parent directory (..)
+              if (part === "..") {
+                // Only pop if there's something to go back to
+                if (normalized.length > 0) {
+                  normalized.pop();
+                }
+                // If we're already at the root, .. is a no-op
+                continue;
+              }
+
+              // Normal path component - preserve exactly as-is (case-sensitive)
               normalized.push(part);
             }
-            return { path: normalized.join("/"), fragment };
+
+            // Join normalized parts
+            const finalPath = normalized.join("/");
+
+            return {
+              path: finalPath,
+              fragment: fragment
+            };
           }
 
           // Check if a file exists in the workspace via HEAD request.

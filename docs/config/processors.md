@@ -23,7 +23,7 @@ The processors directory is created automatically when Mitto starts.
 ### Workspace-Local Processors
 
 In addition to the global processors directory, Mitto automatically loads processors
-from the workspace directory at `$WORKSPACE/.mitto/processors/`. This allows
+from the workspace directory at `$MITTO_WORKING_DIR/.mitto/processors/`. This allows
 per-project processor configuration that travels with the repository.
 
 Additional workspace processor directories can be configured via `.mittorc`:

@@ -999,6 +999,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Name: "mitto_ui_options",
 		Description: "Present a list of options to the user as an expandable menu and wait for their selection. " +
 			"Each option can have a short label and an optional longer description. " +
+			"Option labels should be short (max 80 characters) and descriptions concise (max 200 characters); longer values will be truncated. " +
 			"Optionally allows the user to type free text instead of selecting a predefined option. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
@@ -1665,17 +1666,31 @@ func (s *Server) handleUIOptions(ctx context.Context, req *mcp.CallToolRequest, 
 	if question == "" {
 		question = "Please select an option:"
 	}
+	const maxQuestionLen = 500
+	if len([]rune(question)) > maxQuestionLen {
+		question = string([]rune(question)[:maxQuestionLen-1]) + "…"
+	}
 
 	// Generate unique internal request ID for UI prompt
 	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
 
-	// Build options with IDs and descriptions
+	// Build options with IDs and descriptions, truncating long text
+	const maxLabelLen = 80
+	const maxDescLen = 200
 	options := make([]UIPromptOption, len(input.Options))
 	for i, item := range input.Options {
+		label := []rune(item.Label)
+		if len(label) > maxLabelLen {
+			label = append(label[:maxLabelLen-1], '…')
+		}
+		desc := []rune(item.Description)
+		if len(desc) > maxDescLen {
+			desc = append(desc[:maxDescLen-1], '…')
+		}
 		options[i] = UIPromptOption{
 			ID:          fmt.Sprintf("%d", i),
-			Label:       item.Label,
-			Description: item.Description,
+			Label:       string(label),
+			Description: string(desc),
 		}
 	}
 

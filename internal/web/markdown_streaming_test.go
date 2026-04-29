@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -648,7 +649,8 @@ func TestMarkdownBuffer_LargeContent(t *testing.T) {
 // The content will be flushed when Close() is called.
 func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 	t.Run("list_flushed_after_hard_inactivity", func(t *testing.T) {
-		// Lists SHOULD be flushed by the hard inactivity timeout (2s).
+		// Lists SHOULD be flushed by the hard inactivity timeout.
+		// Inside a list, the longer inactivityFlushTimeoutInBlock applies.
 		// This ensures content is displayed even if the agent stops mid-list.
 		// The soft timeout (200ms) still respects list boundaries.
 		var outputs []string
@@ -666,8 +668,8 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		buffer.Write("2. Second item\n")
 		// Agent stops responding here (no blank line to end list)
 
-		// Wait for hard inactivity timeout
-		time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
+		// Wait for hard inactivity timeout (in-block uses the longer timeout)
+		time.Sleep(inactivityFlushTimeoutInBlock + 500*time.Millisecond)
 
 		mu.Lock()
 		combined := strings.Join(outputs, "")
@@ -686,6 +688,7 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 
 	t.Run("code_block_flushed_after_hard_inactivity", func(t *testing.T) {
 		// Code blocks SHOULD be flushed by the hard inactivity timeout.
+		// Inside a code block, the longer inactivityFlushTimeoutInBlock applies.
 		// This ensures content is displayed even if the agent stops mid-block.
 		var outputs []string
 		var mu sync.Mutex
@@ -702,8 +705,8 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		buffer.Write("    print('world')\n")
 		// Agent stops responding here (no closing ```)
 
-		// Wait for hard inactivity timeout
-		time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
+		// Wait for hard inactivity timeout (in-block uses the longer timeout)
+		time.Sleep(inactivityFlushTimeoutInBlock + 500*time.Millisecond)
 
 		mu.Lock()
 		combined := strings.Join(outputs, "")
@@ -719,6 +722,7 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 
 	t.Run("table_flushed_after_hard_inactivity", func(t *testing.T) {
 		// Tables SHOULD be flushed by the hard inactivity timeout.
+		// Inside a table, the longer inactivityFlushTimeoutInBlock applies.
 		// This ensures content is displayed even if the agent stops mid-table.
 		var outputs []string
 		var mu sync.Mutex
@@ -735,8 +739,8 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		buffer.Write("| 1 | 2 |\n")
 		// Agent stops responding here (no blank line to end table)
 
-		// Wait for hard inactivity timeout
-		time.Sleep(inactivityFlushTimeout + 500*time.Millisecond)
+		// Wait for hard inactivity timeout (in-block uses the longer timeout)
+		time.Sleep(inactivityFlushTimeoutInBlock + 500*time.Millisecond)
 
 		mu.Lock()
 		combined := strings.Join(outputs, "")
@@ -745,6 +749,55 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		// Content SHOULD have been flushed by hard timeout
 		if !strings.Contains(combined, "<table>") {
 			t.Error("expected table to be flushed after hard inactivity timeout")
+		}
+
+		buffer.Close()
+	})
+
+	t.Run("inactivity_timer_resets_on_each_write", func(t *testing.T) {
+		// Verify that the hard inactivity timeout resets on each Write,
+		// so a table that takes longer than inactivityFlushTimeout total
+		// but receives data continuously is NOT force-flushed mid-block.
+		var outputs []string
+		var mu sync.Mutex
+
+		buffer := NewMarkdownBuffer(func(html string) {
+			mu.Lock()
+			outputs = append(outputs, html)
+			mu.Unlock()
+		})
+
+		// Write table header
+		buffer.Write("| H1 | H2 |\n")
+		buffer.Write("|---|---|\n")
+
+		// Write rows with gaps shorter than inactivityFlushTimeoutInBlock but
+		// total time exceeding inactivityFlushTimeout (10s).
+		// Use 4 writes spaced 3s apart = 12s total > 10s.
+		for i := 0; i < 4; i++ {
+			time.Sleep(3 * time.Second)
+			buffer.Write(fmt.Sprintf("| %d | data |\n", i))
+		}
+
+		mu.Lock()
+		outputCount := len(outputs)
+		mu.Unlock()
+
+		// Should NOT have flushed mid-table since each write resets the timer
+		if outputCount > 0 {
+			t.Errorf("expected no mid-table flushes, got %d", outputCount)
+		}
+
+		// End the table and flush
+		buffer.Write("\n\n")
+		time.Sleep(300 * time.Millisecond)
+
+		mu.Lock()
+		combined := strings.Join(outputs, "")
+		mu.Unlock()
+
+		if !strings.Contains(combined, "<table>") {
+			t.Error("expected table to be present in output after table ended")
 		}
 
 		buffer.Close()

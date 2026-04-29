@@ -1285,6 +1285,18 @@ a:hover {
   color: #e5e7eb !important;
 }
 
+/* UI Textbox textarea (mitto_ui_textbox) */
+.v2-theme:not(.dark) .ui-textbox-textarea {
+  background: #f8fafc !important;
+  border-color: #d1d5db !important;
+  color: #18181b !important;
+}
+.v2-theme.dark .ui-textbox-textarea {
+  background: rgba(30, 41, 59, 0.8) !important;
+  border-color: #475569 !important;
+  color: #e5e7eb !important;
+}
+
 /* =============================================================================
    UI Form (mitto_ui_form) - Form Element Styling
    ============================================================================= */
@@ -1330,7 +1342,6 @@ a:hover {
 .ui-form-content input[type="time"]:focus,
 .ui-form-content select:focus,
 .ui-form-content textarea:focus {
-  ring: 2px;
   outline: 2px solid #3b82f6;
   outline-offset: -1px;
 }
