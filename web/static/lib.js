@@ -216,8 +216,30 @@ const TOOL_ACTION_PREFIXES = [
 ];
 
 /**
+ * Returns true if the given string looks like a file path.
+ * Requires at least one "/" separator, a file extension, and not a version number.
+ * @param {string} s
+ * @returns {boolean}
+ */
+function looksLikeFilePath(s) {
+  const hasExtension = /\.[a-zA-Z0-9]+$/.test(s);
+  const hasPathSeparator = s.includes("/");
+  const looksLikeVersion = /^v?\d+\.\d+/.test(s);
+  return (
+    hasExtension &&
+    (hasPathSeparator || s.startsWith("./") || s.startsWith("../")) &&
+    !looksLikeVersion
+  );
+}
+
+/**
  * Parses a tool title and returns segments with file paths identified.
  * Each segment is either plain text or a file path that can be linked.
+ *
+ * Priority order for path detection:
+ *  1. Backtick- or single-quote-delimited content that looks like a file path
+ *  2. Action prefix (Read, Edit, …) followed by the rest of the title as a path
+ *  3. Regex matching (existing behaviour, no-delimiter case)
  *
  * @param {string} title - The tool title (e.g., "Edit src/main.js")
  * @returns {Array<{type: 'text'|'path', value: string}>} Array of segments
@@ -228,57 +250,104 @@ export function parseToolTitlePaths(title) {
   }
 
   const segments = [];
+
+  // ── Pass 1: split on backtick- or single-quote-delimited spans ──────────
+  // Regex captures: delimiter char, content inside, rest of string
+  const DELIMITED_RE = /([`'])(.*?)\1/g;
   let lastIndex = 0;
+  let delimMatch;
+  let hadDelimitedPath = false;
 
-  // Reset regex state
-  TOOL_TITLE_PATH_REGEX.lastIndex = 0;
+  DELIMITED_RE.lastIndex = 0;
+  while ((delimMatch = DELIMITED_RE.exec(title)) !== null) {
+    const before = title.slice(lastIndex, delimMatch.index);
+    const content = delimMatch[2]; // text inside delimiters
 
-  let match;
-  while ((match = TOOL_TITLE_PATH_REGEX.exec(title)) !== null) {
-    const path = match[1];
-    const matchStart = match.index;
-
-    // Add text before this match
-    if (matchStart > lastIndex) {
-      segments.push({
-        type: "text",
-        value: title.slice(lastIndex, matchStart),
-      });
+    // Process the text before this delimited span using pass-2/3 logic
+    if (before) {
+      _parseUndelimited(before, segments);
     }
 
-    // Check if this looks like a real file path:
-    // 1. Has a file extension
-    // 2. Contains at least one path separator OR starts with ./ or ../
-    // 3. Doesn't look like a version number (e.g., "v1.0")
-    const hasExtension = /\.[a-zA-Z0-9]+$/.test(path);
-    const hasPathSeparator = path.includes("/");
-    const looksLikeVersion = /^v?\d+\.\d+/.test(path);
-
-    if (
-      hasExtension &&
-      (hasPathSeparator || path.startsWith("./") || path.startsWith("../")) &&
-      !looksLikeVersion
-    ) {
-      segments.push({ type: "path", value: path });
+    if (looksLikeFilePath(content)) {
+      segments.push({ type: "path", value: content });
+      hadDelimitedPath = true;
     } else {
-      // Not a file path, treat as text
-      segments.push({ type: "text", value: path });
+      // Not a path — emit with original delimiters as plain text
+      segments.push({ type: "text", value: delimMatch[0] });
     }
 
-    lastIndex = matchStart + match[0].length;
+    lastIndex = delimMatch.index + delimMatch[0].length;
   }
 
-  // Add remaining text after last match
-  if (lastIndex < title.length) {
-    segments.push({ type: "text", value: title.slice(lastIndex) });
+  // Process any trailing text after the last delimiter
+  const tail = title.slice(lastIndex);
+  if (tail) {
+    if (hadDelimitedPath) {
+      // Already found a delimited path; treat tail as plain text to avoid
+      // double-matching the same content via regex.
+      if (tail) segments.push({ type: "text", value: tail });
+    } else {
+      _parseUndelimited(tail, segments);
+    }
   }
 
-  // If no segments were created, return the whole title as text
+  // If nothing was emitted, return the whole title as text
   if (segments.length === 0) {
     return [{ type: "text", value: title }];
   }
 
   return segments;
+}
+
+/**
+ * Parse a piece of text that has no backtick/quote delimiters.
+ * Tries action-prefix detection first, then regex matching.
+ * Pushes result segments into the provided array.
+ * @param {string} text
+ * @param {Array} segments
+ */
+function _parseUndelimited(text, segments) {
+  // ── Pass 2: action-prefix + remainder as path ────────────────────────────
+  // Match "Read ", "Edit ", etc. at the very start of `text`
+  const prefixPattern = new RegExp(
+    `^((?:${TOOL_ACTION_PREFIXES.join("|")})\\s+)(.+)$`
+  );
+  const prefixMatch = text.match(prefixPattern);
+  if (prefixMatch) {
+    const prefix = prefixMatch[1];
+    const remainder = prefixMatch[2].trim();
+    if (looksLikeFilePath(remainder)) {
+      segments.push({ type: "text", value: prefix });
+      segments.push({ type: "path", value: remainder });
+      return;
+    }
+  }
+
+  // ── Pass 3: original regex matching ─────────────────────────────────────
+  TOOL_TITLE_PATH_REGEX.lastIndex = 0;
+  let lastIdx = 0;
+  let match;
+  while ((match = TOOL_TITLE_PATH_REGEX.exec(text)) !== null) {
+    const path = match[1];
+    const matchStart = match.index;
+
+    if (matchStart > lastIdx) {
+      segments.push({ type: "text", value: text.slice(lastIdx, matchStart) });
+    }
+
+    if (looksLikeFilePath(path)) {
+      segments.push({ type: "path", value: path });
+    } else {
+      segments.push({ type: "text", value: path });
+    }
+
+    lastIdx = matchStart + match[0].length;
+  }
+
+  // Emit any remaining text (also handles the no-match case where lastIdx === 0)
+  if (lastIdx < text.length) {
+    segments.push({ type: "text", value: text.slice(lastIdx) });
+  }
 }
 
 // =============================================================================

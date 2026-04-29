@@ -135,6 +135,45 @@ func TestParseWorkspaceRC_InvalidYAML(t *testing.T) {
 	}
 }
 
+func TestParseWorkspaceRC_DisabledPromptNoContent(t *testing.T) {
+	yaml := `
+prompts:
+  - name: "Add tests"
+    enabled: false
+  - name: "Active Prompt"
+    prompt: "Do something"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+
+	if len(rc.Prompts) != 2 {
+		t.Fatalf("len(rc.Prompts) = %d, want 2", len(rc.Prompts))
+	}
+
+	// Disabled prompt should be included even without prompt text
+	disabled := rc.Prompts[0]
+	if disabled.Name != "Add tests" {
+		t.Errorf("disabled prompt name = %q, want %q", disabled.Name, "Add tests")
+	}
+	if disabled.Enabled == nil || *disabled.Enabled {
+		t.Error("disabled prompt should have Enabled = false")
+	}
+	if disabled.Prompt != "" {
+		t.Errorf("disabled prompt should have empty Prompt, got %q", disabled.Prompt)
+	}
+
+	// Active prompt should be included normally
+	active := rc.Prompts[1]
+	if active.Name != "Active Prompt" {
+		t.Errorf("active prompt name = %q, want %q", active.Name, "Active Prompt")
+	}
+	if active.Enabled != nil {
+		t.Error("active prompt should have nil Enabled (defaults to true)")
+	}
+}
+
 func TestParseWorkspaceRC_PromptsDirs(t *testing.T) {
 	yaml := `
 prompts_dirs:
@@ -597,9 +636,10 @@ conversations:
 
 func TestParseWorkspaceRC_UserDataSchema(t *testing.T) {
 	yaml := `
-conversations:
+metadata:
   user_data:
     - name: "JIRA ticket"
+      description: "The JIRA ticket for tracking"
       type: url
     - name: "Description"
       type: string
@@ -614,37 +654,119 @@ conversations:
 		t.Fatal("parseWorkspaceRC returned nil")
 	}
 
-	if rc.UserDataSchema == nil {
-		t.Fatal("UserDataSchema is nil")
+	if rc.Metadata == nil {
+		t.Fatal("Metadata is nil")
 	}
 
-	if len(rc.UserDataSchema.Fields) != 3 {
-		t.Fatalf("UserDataSchema.Fields count = %d, want 3", len(rc.UserDataSchema.Fields))
+	if rc.Metadata.UserDataSchema == nil {
+		t.Fatal("Metadata.UserDataSchema is nil")
 	}
 
-	// Check first field (JIRA ticket with url type)
-	if rc.UserDataSchema.Fields[0].Name != "JIRA ticket" {
-		t.Errorf("Field 0 name = %q, want %q", rc.UserDataSchema.Fields[0].Name, "JIRA ticket")
-	}
-	if rc.UserDataSchema.Fields[0].Type != UserDataTypeURL {
-		t.Errorf("Field 0 type = %q, want %q", rc.UserDataSchema.Fields[0].Type, UserDataTypeURL)
+	if len(rc.Metadata.UserDataSchema.Fields) != 3 {
+		t.Fatalf("Metadata.UserDataSchema.Fields count = %d, want 3", len(rc.Metadata.UserDataSchema.Fields))
 	}
 
-	// Check second field (Description with string type)
-	if rc.UserDataSchema.Fields[1].Name != "Description" {
-		t.Errorf("Field 1 name = %q, want %q", rc.UserDataSchema.Fields[1].Name, "Description")
+	// Check first field (JIRA ticket with url type and description)
+	if rc.Metadata.UserDataSchema.Fields[0].Name != "JIRA ticket" {
+		t.Errorf("Field 0 name = %q, want %q", rc.Metadata.UserDataSchema.Fields[0].Name, "JIRA ticket")
 	}
-	if rc.UserDataSchema.Fields[1].Type != UserDataTypeString {
-		t.Errorf("Field 1 type = %q, want %q", rc.UserDataSchema.Fields[1].Type, UserDataTypeString)
+	if rc.Metadata.UserDataSchema.Fields[0].Type != UserDataTypeURL {
+		t.Errorf("Field 0 type = %q, want %q", rc.Metadata.UserDataSchema.Fields[0].Type, UserDataTypeURL)
+	}
+	if rc.Metadata.UserDataSchema.Fields[0].Description != "The JIRA ticket for tracking" {
+		t.Errorf("Field 0 description = %q, want %q", rc.Metadata.UserDataSchema.Fields[0].Description, "The JIRA ticket for tracking")
+	}
+
+	// Check second field (Description with string type, no description)
+	if rc.Metadata.UserDataSchema.Fields[1].Name != "Description" {
+		t.Errorf("Field 1 name = %q, want %q", rc.Metadata.UserDataSchema.Fields[1].Name, "Description")
+	}
+	if rc.Metadata.UserDataSchema.Fields[1].Type != UserDataTypeString {
+		t.Errorf("Field 1 type = %q, want %q", rc.Metadata.UserDataSchema.Fields[1].Type, UserDataTypeString)
+	}
+	// Field without description should be empty
+	if rc.Metadata.UserDataSchema.Fields[1].Description != "" {
+		t.Errorf("Field 1 description = %q, want empty", rc.Metadata.UserDataSchema.Fields[1].Description)
 	}
 
 	// Check third field (Notes with empty type - defaults to string)
-	if rc.UserDataSchema.Fields[2].Name != "Notes" {
-		t.Errorf("Field 2 name = %q, want %q", rc.UserDataSchema.Fields[2].Name, "Notes")
+	if rc.Metadata.UserDataSchema.Fields[2].Name != "Notes" {
+		t.Errorf("Field 2 name = %q, want %q", rc.Metadata.UserDataSchema.Fields[2].Name, "Notes")
 	}
 	// Empty type is stored as-is; DefaultType() handles the conversion at validation time
-	if rc.UserDataSchema.Fields[2].Type != "" {
-		t.Errorf("Field 2 type = %q, want empty string", rc.UserDataSchema.Fields[2].Type)
+	if rc.Metadata.UserDataSchema.Fields[2].Type != "" {
+		t.Errorf("Field 2 type = %q, want empty string", rc.Metadata.UserDataSchema.Fields[2].Type)
+	}
+}
+
+func TestParseWorkspaceRC_Metadata(t *testing.T) {
+	yaml := `
+metadata:
+  description: |-
+    Mitto is a multi-agent coordination system.
+    It supports multiple workspaces.
+  url: https://github.com/inercia/mitto/
+  group: MyGroup
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+	if rc.Metadata == nil {
+		t.Fatal("Metadata is nil, want non-nil")
+	}
+	if rc.Metadata.Description != "Mitto is a multi-agent coordination system.\nIt supports multiple workspaces." {
+		t.Errorf("Description = %q, want multiline description", rc.Metadata.Description)
+	}
+	if rc.Metadata.URL != "https://github.com/inercia/mitto/" {
+		t.Errorf("URL = %q, want %q", rc.Metadata.URL, "https://github.com/inercia/mitto/")
+	}
+	if rc.Metadata.Group != "MyGroup" {
+		t.Errorf("Group = %q, want %q", rc.Metadata.Group, "MyGroup")
+	}
+}
+
+func TestParseWorkspaceRC_MetadataPartial(t *testing.T) {
+	yaml := `
+metadata:
+  description: "Just a description"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+	if rc.Metadata == nil {
+		t.Fatal("Metadata is nil, want non-nil")
+	}
+	if rc.Metadata.Description != "Just a description" {
+		t.Errorf("Description = %q, want %q", rc.Metadata.Description, "Just a description")
+	}
+	if rc.Metadata.URL != "" {
+		t.Errorf("URL = %q, want empty", rc.Metadata.URL)
+	}
+}
+
+func TestParseWorkspaceRC_NoMetadata(t *testing.T) {
+	yaml := `
+prompts:
+  - name: "Test"
+    prompt: "Test prompt"
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+	if rc.Metadata != nil {
+		t.Errorf("Metadata = %v, want nil", rc.Metadata)
 	}
 }
 
@@ -656,6 +778,7 @@ conversations:
       - when: first
         position: before
         text: "System context"
+metadata:
   user_data:
     - name: "Priority"
       type: string
@@ -677,14 +800,229 @@ conversations:
 		t.Fatalf("Processors count = %d, want 1", len(rc.Conversations.Processing.Processors))
 	}
 
-	// Check user data schema is also present
-	if rc.UserDataSchema == nil {
-		t.Fatal("UserDataSchema is nil")
+	// Check user data schema is present in metadata
+	if rc.Metadata == nil {
+		t.Fatal("Metadata is nil")
 	}
-	if len(rc.UserDataSchema.Fields) != 1 {
-		t.Fatalf("UserDataSchema.Fields count = %d, want 1", len(rc.UserDataSchema.Fields))
+	if rc.Metadata.UserDataSchema == nil {
+		t.Fatal("Metadata.UserDataSchema is nil")
 	}
-	if rc.UserDataSchema.Fields[0].Name != "Priority" {
-		t.Errorf("Field 0 name = %q, want %q", rc.UserDataSchema.Fields[0].Name, "Priority")
+	if len(rc.Metadata.UserDataSchema.Fields) != 1 {
+		t.Fatalf("Metadata.UserDataSchema.Fields count = %d, want 1", len(rc.Metadata.UserDataSchema.Fields))
+	}
+	if rc.Metadata.UserDataSchema.Fields[0].Name != "Priority" {
+		t.Errorf("Field 0 name = %q, want %q", rc.Metadata.UserDataSchema.Fields[0].Name, "Priority")
+	}
+}
+
+func TestParseWorkspaceRC_UserDataSchemaLegacy(t *testing.T) {
+	yaml := `
+conversations:
+  user_data:
+    - name: "JIRA ticket"
+      type: url
+    - name: "Description"
+      type: string
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+	if rc.Metadata == nil {
+		t.Fatal("Metadata is nil, want non-nil (from legacy user_data)")
+	}
+	if rc.Metadata.UserDataSchema == nil {
+		t.Fatal("Metadata.UserDataSchema is nil")
+	}
+	if len(rc.Metadata.UserDataSchema.Fields) != 2 {
+		t.Fatalf("Fields count = %d, want 2", len(rc.Metadata.UserDataSchema.Fields))
+	}
+	if rc.Metadata.UserDataSchema.Fields[0].Name != "JIRA ticket" {
+		t.Errorf("Field 0 name = %q, want %q", rc.Metadata.UserDataSchema.Fields[0].Name, "JIRA ticket")
+	}
+}
+
+func TestLoadWorkspaceRC_DotMittoDir(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mitto-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mittoDir := filepath.Join(tmpDir, ".mitto")
+	if err := os.MkdirAll(mittoDir, 0755); err != nil {
+		t.Fatalf("Failed to create .mitto dir: %v", err)
+	}
+
+	rcContent := `
+prompts:
+  - name: "DotMitto Prompt"
+    prompt: "Loaded from .mitto/mittorc"
+`
+	rcPath := filepath.Join(mittoDir, "mittorc")
+	if err := os.WriteFile(rcPath, []byte(rcContent), 0644); err != nil {
+		t.Fatalf("Failed to write .mitto/mittorc: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("LoadWorkspaceRC returned nil, want config from .mitto/mittorc")
+	}
+	if len(rc.Prompts) != 1 {
+		t.Fatalf("Prompts count = %d, want 1", len(rc.Prompts))
+	}
+	if rc.Prompts[0].Name != "DotMitto Prompt" {
+		t.Errorf("prompt name = %q, want %q", rc.Prompts[0].Name, "DotMitto Prompt")
+	}
+}
+
+func TestLoadWorkspaceRC_DotMittoDirYaml(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mitto-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mittoDir := filepath.Join(tmpDir, ".mitto")
+	if err := os.MkdirAll(mittoDir, 0755); err != nil {
+		t.Fatalf("Failed to create .mitto dir: %v", err)
+	}
+
+	rcContent := `
+prompts:
+  - name: "YAML Prompt"
+    prompt: "Loaded from .mitto/mitto.yaml"
+`
+	rcPath := filepath.Join(mittoDir, "mitto.yaml")
+	if err := os.WriteFile(rcPath, []byte(rcContent), 0644); err != nil {
+		t.Fatalf("Failed to write .mitto/mitto.yaml: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("LoadWorkspaceRC returned nil, want config from .mitto/mitto.yaml")
+	}
+	if len(rc.Prompts) != 1 {
+		t.Fatalf("Prompts count = %d, want 1", len(rc.Prompts))
+	}
+	if rc.Prompts[0].Name != "YAML Prompt" {
+		t.Errorf("prompt name = %q, want %q", rc.Prompts[0].Name, "YAML Prompt")
+	}
+}
+
+func TestLoadWorkspaceRC_PriorityOrder(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mitto-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mittoDir := filepath.Join(tmpDir, ".mitto")
+	if err := os.MkdirAll(mittoDir, 0755); err != nil {
+		t.Fatalf("Failed to create .mitto dir: %v", err)
+	}
+
+	// Create both .mittorc (higher priority) and .mitto/mitto.yaml (lower priority)
+	mittoRCContent := `
+prompts:
+  - name: "DotMittoRC Prompt"
+    prompt: "From .mittorc"
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, ".mittorc"), []byte(mittoRCContent), 0644); err != nil {
+		t.Fatalf("Failed to write .mittorc: %v", err)
+	}
+
+	yamlContent := `
+prompts:
+  - name: "YAML Prompt"
+    prompt: "From .mitto/mitto.yaml"
+`
+	if err := os.WriteFile(filepath.Join(mittoDir, "mitto.yaml"), []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("Failed to write .mitto/mitto.yaml: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("LoadWorkspaceRC returned nil")
+	}
+	if len(rc.Prompts) != 1 {
+		t.Fatalf("Prompts count = %d, want 1", len(rc.Prompts))
+	}
+	// .mittorc must win
+	if rc.Prompts[0].Name != "DotMittoRC Prompt" {
+		t.Errorf("prompt name = %q, want %q (expected .mittorc to win)", rc.Prompts[0].Name, "DotMittoRC Prompt")
+	}
+}
+
+func TestGetWorkspaceRCModTime_DotMittoDir(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "mitto-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mittoDir := filepath.Join(tmpDir, ".mitto")
+	if err := os.MkdirAll(mittoDir, 0755); err != nil {
+		t.Fatalf("Failed to create .mitto dir: %v", err)
+	}
+
+	rcPath := filepath.Join(mittoDir, "mittorc")
+	if err := os.WriteFile(rcPath, []byte("prompts: []\n"), 0644); err != nil {
+		t.Fatalf("Failed to write .mitto/mittorc: %v", err)
+	}
+
+	fi, statErr := os.Stat(rcPath)
+	if statErr != nil {
+		t.Fatalf("os.Stat failed: %v", statErr)
+	}
+
+	modTime := GetWorkspaceRCModTime(tmpDir)
+	if modTime.IsZero() {
+		t.Error("GetWorkspaceRCModTime returned zero time, want non-zero")
+	}
+	if !modTime.Equal(fi.ModTime()) {
+		t.Errorf("modTime = %v, want %v", modTime, fi.ModTime())
+	}
+}
+
+func TestParseWorkspaceRC_UserDataSchemaNewOverridesLegacy(t *testing.T) {
+	yaml := `
+metadata:
+  user_data:
+    - name: "New Field"
+      type: string
+conversations:
+  user_data:
+    - name: "Old Field"
+      type: url
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("parseWorkspaceRC returned nil")
+	}
+	if rc.Metadata == nil || rc.Metadata.UserDataSchema == nil {
+		t.Fatal("Metadata.UserDataSchema is nil")
+	}
+	// New location should win
+	if len(rc.Metadata.UserDataSchema.Fields) != 1 {
+		t.Fatalf("Fields count = %d, want 1", len(rc.Metadata.UserDataSchema.Fields))
+	}
+	if rc.Metadata.UserDataSchema.Fields[0].Name != "New Field" {
+		t.Errorf("Field 0 name = %q, want %q", rc.Metadata.UserDataSchema.Fields[0].Name, "New Field")
 	}
 }

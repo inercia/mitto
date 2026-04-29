@@ -87,7 +87,7 @@ export function AgentDiscoveryDialog({
     if (isOpen && mode === "settings") {
       handleScan();
     }
-  }, [isOpen, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOpen, mode]); // eslint-disable-line
 
   const toggleAgent = useCallback((dirName) => {
     setSelected((prev) => {

@@ -58,6 +58,7 @@ import {
   hasMarkdownContent,
   renderUserMarkdown,
   formatTimeAgo,
+  parseToolTitlePaths,
 } from "./lib.js";
 
 // =============================================================================
@@ -4977,5 +4978,123 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
     const hasImages = msg.images && msg.images.length > 0;
     expect(hasImages).toBeFalsy(); // Bug: images is undefined
     expect(msg.imageIds).toHaveLength(1); // The data was there, just wrong property
+  });
+});
+
+
+// =============================================================================
+// parseToolTitlePaths Tests
+// =============================================================================
+
+describe("parseToolTitlePaths", () => {
+  // Edge cases
+  test("returns empty text segment for null", () => {
+    expect(parseToolTitlePaths(null)).toEqual([{ type: "text", value: "" }]);
+  });
+
+  test("returns empty text segment for undefined", () => {
+    expect(parseToolTitlePaths(undefined)).toEqual([{ type: "text", value: "" }]);
+  });
+
+  test("returns empty text segment for empty string", () => {
+    expect(parseToolTitlePaths("")).toEqual([{ type: "text", value: "" }]);
+  });
+
+  // Basic paths without spaces (existing behaviour preserved)
+  test("detects simple relative path without spaces", () => {
+    const result = parseToolTitlePaths("Edit src/main.go");
+    expect(result).toEqual([
+      { type: "text", value: "Edit " },
+      { type: "path", value: "src/main.go" },
+    ]);
+  });
+
+  test("detects absolute path without spaces", () => {
+    const result = parseToolTitlePaths("Read /home/user/file.txt");
+    expect(result).toEqual([
+      { type: "text", value: "Read " },
+      { type: "path", value: "/home/user/file.txt" },
+    ]);
+  });
+
+  test("detects dotslash path without spaces", () => {
+    const result = parseToolTitlePaths("Write ./config.yaml");
+    expect(result).toEqual([
+      { type: "text", value: "Write " },
+      { type: "path", value: "./config.yaml" },
+    ]);
+  });
+
+  // Backtick-delimited paths with spaces
+  test("detects backtick-delimited path with spaces in directory name", () => {
+    const result = parseToolTitlePaths(
+      "Read `symbols/Alphabet Inc./analysis-2026-04-27.md`"
+    );
+    expect(result).toEqual([
+      { type: "text", value: "Read " },
+      { type: "path", value: "symbols/Alphabet Inc./analysis-2026-04-27.md" },
+    ]);
+  });
+
+  test("detects backtick-delimited path with no spaces", () => {
+    const result = parseToolTitlePaths("Read `src/main.go`");
+    expect(result).toEqual([
+      { type: "text", value: "Read " },
+      { type: "path", value: "src/main.go" },
+    ]);
+  });
+
+  // Single-quote-delimited paths with spaces
+  test("detects single-quote-delimited path with spaces", () => {
+    const result = parseToolTitlePaths(
+      "Edit 'My Documents/project/notes.md'"
+    );
+    expect(result).toEqual([
+      { type: "text", value: "Edit " },
+      { type: "path", value: "My Documents/project/notes.md" },
+    ]);
+  });
+
+  // Non-file-path backtick content should stay as text
+  test("treats backtick-delimited non-path as text", () => {
+    const result = parseToolTitlePaths("Run `npm install`");
+    expect(result).toEqual([
+      { type: "text", value: "Run " },
+      { type: "text", value: "`npm install`" },
+    ]);
+  });
+
+  test("treats backtick-delimited version number as text", () => {
+    const result = parseToolTitlePaths("Using `v1.2.3`");
+    // no slash → not a file path
+    const hasPath = result.some((s) => s.type === "path");
+    expect(hasPath).toBe(false);
+  });
+
+  // Action prefix + remainder as path (no delimiters, spaces in path)
+  test("detects path with spaces via action prefix + remainder", () => {
+    const result = parseToolTitlePaths(
+      "Read symbols/Alphabet Inc./analysis-2026-04-27.md"
+    );
+    expect(result).toEqual([
+      { type: "text", value: "Read " },
+      { type: "path", value: "symbols/Alphabet Inc./analysis-2026-04-27.md" },
+    ]);
+  });
+
+  // Multiple paths in one title (via backticks)
+  test("detects multiple backtick-delimited paths", () => {
+    const result = parseToolTitlePaths(
+      "Diff `src/a.go` and `src/b.go`"
+    );
+    const paths = result.filter((s) => s.type === "path").map((s) => s.value);
+    expect(paths).toContain("src/a.go");
+    expect(paths).toContain("src/b.go");
+  });
+
+  // Plain text with no path at all
+  test("returns single text segment when no path found", () => {
+    const result = parseToolTitlePaths("List files");
+    expect(result).toEqual([{ type: "text", value: "List files" }]);
   });
 });

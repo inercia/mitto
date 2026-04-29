@@ -95,6 +95,7 @@ import {
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
 import { SettingsDialog } from "./components/SettingsDialog.js";
+import { WorkspacesDialog } from "./components/WorkspacesDialog.js";
 import { AgentDiscoveryDialog } from "./components/AgentDiscoveryDialog.js";
 import { QueueDropdown } from "./components/QueueDropdown.js";
 import {
@@ -125,6 +126,7 @@ import {
   RobotIcon,
   PersonIcon,
   HourglassIcon,
+  QuestionMarkIcon,
   QueueIcon,
   PinIcon,
   PinFilledIcon,
@@ -1512,6 +1514,13 @@ function SessionItem({
                         </span>
                       `
                     : null}
+                  ${session.isWaitingForUserInput
+                    ? html`
+                        <span class="flex-shrink-0 text-purple-400 animate-pulse" title="Waiting for user input">
+                          <${QuestionMarkIcon} className="w-4 h-4" />
+                        </span>
+                      `
+                    : null}
                 </div>
               </div>
               ${isStreaming || hasChildStreaming
@@ -1529,9 +1538,17 @@ function SessionItem({
                   ? html`
                       <span
                         class="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"
+                        title="Active"
                       ></span>
                     `
-                  : null}
+                  : !isArchived
+                    ? html`
+                        <span
+                          class="w-2 h-2 bg-amber-400 rounded-full flex-shrink-0"
+                          title="Not connected"
+                        ></span>
+                      `
+                    : null}
               ${workingDir &&
               !hideBadge &&
               html`
@@ -1663,6 +1680,7 @@ function SessionList({
   fontSize,
   onToggleFontSize,
   onShowSettings,
+  onShowWorkspaces,
   onShowKeyboardShortcuts,
   configReadonly = false,
   rcFilePath = null,
@@ -1982,6 +2000,15 @@ function SessionList({
     const map = new Map();
     allSessions.forEach((s) => {
       if (s.isWaitingForChildren) map.set(s.session_id, true);
+    });
+    return map;
+  }, [allSessions]);
+
+  // Build a lookup map of session_id → true for sessions currently waiting for user input.
+  const uiPromptMap = useMemo(() => {
+    const map = new Map();
+    allSessions.forEach((s) => {
+      if (s.isWaitingForUserInput) map.set(s.session_id, true);
     });
     return map;
   }, [allSessions]);
@@ -2594,6 +2621,7 @@ function SessionList({
                         ...session,
                         isStreaming: streamingMap.has(session.session_id),
                         isWaitingForChildren: waitingMap.has(session.session_id),
+                        isWaitingForUserInput: uiPromptMap.has(session.session_id),
                       },
                       {
                         hideBadge: groupingMode === "workspace",
@@ -2628,6 +2656,7 @@ function SessionList({
                                     child.session_id,
                                   ),
                                   isWaitingForChildren: waitingMap.has(child.session_id),
+                                  isWaitingForUserInput: uiPromptMap.has(child.session_id),
                                 },
                                 {
                                   hideBadge: groupingMode === "workspace",
@@ -2760,6 +2789,7 @@ function SessionList({
                       ...session,
                       isStreaming: streamingMap.has(session.session_id),
                       isWaitingForChildren: waitingMap.has(session.session_id),
+                      isWaitingForUserInput: uiPromptMap.has(session.session_id),
                     },
                     {
                       hideBadge: false, // Show badge to display ACP server
@@ -2794,6 +2824,7 @@ function SessionList({
                                 ...child,
                                 isStreaming: streamingMap.has(child.session_id),
                                 isWaitingForChildren: waitingMap.has(child.session_id),
+                                isWaitingForUserInput: uiPromptMap.has(child.session_id),
                               },
                               {
                                 hideBadge: false, // Show badge to display ACP server
@@ -2866,6 +2897,7 @@ function SessionList({
               ...session,
               isStreaming: streamingMap.has(session.session_id),
               isWaitingForChildren: waitingMap.has(session.session_id),
+              isWaitingForUserInput: uiPromptMap.has(session.session_id),
             },
             {
               childCount: hasChildSessions ? session.children.length : 0,
@@ -2891,6 +2923,7 @@ function SessionList({
                         ...child,
                         isStreaming: streamingMap.has(child.session_id),
                         isWaitingForChildren: waitingMap.has(child.session_id),
+                        isWaitingForUserInput: uiPromptMap.has(child.session_id),
                       },
                       {
                         isSpawned: true,
@@ -3020,18 +3053,25 @@ function SessionList({
       <!-- Footer with settings, theme and font size toggles -->
       <div class="p-4 border-t border-slate-700">
         <div class="flex items-center justify-center gap-3">
-          <!-- Settings button (disabled with tooltip when using RC file, hidden when fully read-only without RC file) -->
+          <!-- Settings | Workspaces segmented button (disabled with tooltip when using RC file, hidden when fully read-only without RC file) -->
           ${!configReadonly
             ? html`
-                <button
-                  onClick=${onShowSettings}
-                  class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
-                  title="Settings"
-                >
-                  <${SettingsIcon}
-                    className="w-5 h-5 text-gray-400 hover:text-white"
-                  />
-                </button>
+                <div class="flex items-center">
+                  <button
+                    onClick=${onShowSettings}
+                    class="p-2 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                    title="Settings"
+                  >
+                    <${SettingsIcon} className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick=${onShowWorkspaces}
+                    class="p-2 hover:bg-slate-700 rounded-lg transition-colors text-gray-400 hover:text-white"
+                    title="Workspaces"
+                  >
+                    <${FolderIcon} className="w-4 h-4" />
+                  </button>
+                </div>
               `
             : rcFilePath
               ? html`
@@ -3212,6 +3252,7 @@ function App() {
     isOpen: false,
     forceOpen: false,
   }); // Settings dialog
+  const [workspacesDialog, setWorkspacesDialog] = useState({ isOpen: false }); // Workspaces management dialog
   const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({
     isOpen: false,
   }); // Keyboard shortcuts dialog
@@ -3261,7 +3302,7 @@ function App() {
 
   // Compute merged prompts: workspace prompts (highest priority) + global prompts + server-specific prompts
   // Workspace prompts override global/server prompts with the same name
-  // Prompts are filtered by the current ACP server TYPE using the "acps" field
+  // Prompts are filtered by the current ACP server TYPE using the "enabledWhenACP" field
   const predefinedPrompts = useMemo(() => {
     const currentAcpServerName = sessionInfo?.acp_server || "";
     // Look up the server's type from acpServersWithPrompts.
@@ -3276,17 +3317,17 @@ function App() {
     ).toLowerCase();
 
     // Helper to check if a prompt is allowed for the current ACP server type
-    // If acps is empty, the prompt is allowed for all servers
+    // If enabledWhenACP is empty, the prompt is allowed for all servers
     // Otherwise, check if the current server type is in the comma-separated list
     const isAllowedForACP = (prompt) => {
-      if (!prompt.acps || prompt.acps.trim() === "") {
+      if (!prompt.enabledWhenACP || prompt.enabledWhenACP.trim() === "") {
         return true; // No restriction, allowed for all
       }
       if (!currentAcpServerType) {
         return true; // No ACP server selected, show all prompts
       }
       // Parse comma-separated list and check for match (case-insensitive)
-      const allowedServers = prompt.acps
+      const allowedServers = prompt.enabledWhenACP
         .split(",")
         .map((s) => s.trim().toLowerCase());
       return allowedServers.includes(currentAcpServerType);
@@ -3333,9 +3374,21 @@ function App() {
 
     // Finally add workspace prompts (highest priority - override others with same name)
     // Workspace prompts are also filtered by ACP server AND required tools
+    // Note: workspace prompts with enabled:false are included to suppress same-named prompts
     for (const p of workspacePrompts) {
-      if (isAllowedForACP(p) && isRequiredToolsSatisfied(p)) {
+      if (p.enabled === false) {
+        // Disabled prompt: add to map to suppress same-named lower-priority prompts
         promptMap.set(p.name, { ...p, source: "workspace" });
+      } else if (isAllowedForACP(p) && isRequiredToolsSatisfied(p)) {
+        promptMap.set(p.name, { ...p, source: "workspace" });
+      }
+    }
+
+    // Remove disabled prompts after merge
+    // (higher-priority sources with enabled:false suppress same-named lower-priority prompts)
+    for (const [name, p] of promptMap) {
+      if (p.enabled === false) {
+        promptMap.delete(name);
       }
     }
 
@@ -4359,7 +4412,7 @@ function App() {
   ]);
 
   // Refetch global prompts when ACP server changes
-  // This ensures prompts with "acps" restrictions are filtered correctly per workspace
+  // This ensures prompts with "enabledWhenACP" restrictions are filtered correctly per workspace
   useEffect(() => {
     const acpServer = sessionInfo?.acp_server;
     // Skip if ACP server hasn't changed or isn't set yet
@@ -5143,6 +5196,11 @@ function App() {
     setSettingsDialog({ isOpen: true, forceOpen: false });
   };
 
+  const handleShowWorkspaces = () => {
+    if (configReadonly) return;
+    setWorkspacesDialog({ isOpen: true });
+  };
+
   const handleShowKeyboardShortcuts = () => {
     setKeyboardShortcutsDialog({ isOpen: true });
   };
@@ -5276,11 +5334,11 @@ function App() {
   useEffect(() => {
     if (!showQueueDropdown) return;
 
-    // Close when settings dialog opens
-    if (settingsDialog.isOpen) {
+    // Close when settings or workspaces dialog opens
+    if (settingsDialog.isOpen || workspacesDialog.isOpen) {
       setShowQueueDropdown(false);
     }
-  }, [showQueueDropdown, settingsDialog.isOpen]);
+  }, [showQueueDropdown, settingsDialog.isOpen, workspacesDialog.isOpen]);
 
   // Close queue dropdown when sidebar expands (on mobile)
   useEffect(() => {
@@ -5706,8 +5764,21 @@ function App() {
       <!-- Agent Discovery Dialog (first-run when no ACP servers configured) -->
       <${AgentDiscoveryDialog}
         isOpen=${showAgentDiscovery}
-        onClose=${() => {
+        onClose=${async () => {
           setShowAgentDiscovery(false);
+          // Check if ACP servers exist but no workspaces → open workspaces dialog
+          try {
+            invalidateConfigCache();
+            const config = await fetchConfig();
+            const hasServers = config?.acp_servers && config.acp_servers.length > 0;
+            const noWorkspaces = !config?.workspaces || config.workspaces.length === 0;
+            if (hasServers && noWorkspaces) {
+              setWorkspacesDialog({ isOpen: true });
+              return;
+            }
+          } catch (err) {
+            console.error("[AgentDiscovery] Failed to check config on close:", err);
+          }
           // Fall through to settings dialog so user can configure manually
           setSettingsDialog({ isOpen: true, forceOpen: true });
         }}
@@ -5721,6 +5792,12 @@ function App() {
               setAcpServersWithPrompts(config?.acp_servers || []);
               setGlobalPrompts(config?.prompts || []);
               refreshWorkspaces();
+              // If ACP servers exist but no workspaces, open workspaces dialog
+              const hasServers = config.acp_servers && config.acp_servers.length > 0;
+              const noWorkspaces = !config.workspaces || config.workspaces.length === 0;
+              if (hasServers && noWorkspaces) {
+                setWorkspacesDialog({ isOpen: true });
+              }
             }
           } catch (err) {
             console.error("[AgentDiscovery] Failed to refresh config:", err);
@@ -5774,6 +5851,17 @@ function App() {
           } catch (err) {
             console.error("Failed to reload config after save:", err);
           }
+        }}
+      />
+
+      <!-- Workspaces Dialog -->
+      <${WorkspacesDialog}
+        isOpen=${workspacesDialog.isOpen}
+        onClose=${() => setWorkspacesDialog({ isOpen: false })}
+        WorkspaceBadge=${WorkspaceBadge}
+        onSave=${async () => {
+          refreshWorkspaces();
+          invalidateConfigCache();
         }}
       />
 
@@ -6043,6 +6131,7 @@ function App() {
           fontSize=${fontSize}
           onToggleFontSize=${toggleFontSize}
           onShowSettings=${handleShowSettings}
+          onShowWorkspaces=${handleShowWorkspaces}
           onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
           configReadonly=${configReadonly}
           rcFilePath=${rcFilePath}
@@ -6074,6 +6163,7 @@ function App() {
               fontSize=${fontSize}
               onToggleFontSize=${toggleFontSize}
               onShowSettings=${handleShowSettings}
+              onShowWorkspaces=${handleShowWorkspaces}
               onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
               configReadonly=${configReadonly}
               rcFilePath=${rcFilePath}
@@ -6116,19 +6206,21 @@ function App() {
               : "No Active Session"}
           </h1>
           <div class="ml-auto flex items-center gap-2">
-            ${isStreaming &&
-            html`
-              <span
-                class="w-2 h-2 bg-blue-400 rounded-full animate-pulse"
-                title="Streaming"
-              ></span>
-            `}
-            <span
-              class="w-2 h-2 rounded-full ${connected
-                ? "bg-green-400"
-                : "bg-red-400"}"
-              title="${connected ? "Connected" : "Disconnected"}"
-            ></span>
+            ${isStreaming
+              ? html`
+                  <span
+                    class="w-2 h-2 bg-blue-400 rounded-full animate-pulse"
+                    title="Streaming"
+                  ></span>
+                `
+              : html`
+                  <span
+                    class="w-2 h-2 rounded-full ${connected
+                      ? "bg-green-400"
+                      : "bg-amber-400"}"
+                    title="${connected ? "Connected" : "Not connected"}"
+                  ></span>
+                `}
           </div>
         </div>
 

@@ -16,6 +16,7 @@ import {
 } from "./Icons.js";
 import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 import { formatTimeAgo } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 
@@ -270,6 +271,9 @@ export function ConversationPropertiesPanel({
   const [periodicConfig, setPeriodicConfig] = useState(null);
   const [callbackConfig, setCallbackConfig] = useState(null);
   const [callbackCopied, setCallbackCopied] = useState(false);
+
+  // Confirmation dialog state
+  const [confirmDialog, setConfirmDialog] = useState(null);
 
   // MCP Tools collapsible state
   const [isMcpToolsExpanded, setIsMcpToolsExpanded] = useState(false);
@@ -618,28 +622,44 @@ export function ConversationPropertiesPanel({
     }
   }, [callbackConfig]);
 
-  const handleRotateCallback = useCallback(async () => {
-    if (!confirm("Rotate callback URL? The old URL will stop working immediately.")) return;
-    const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
-      setCallbackConfig(data);
-      try {
-        await navigator.clipboard.writeText(data.callback_url);
-        setCallbackCopied(true);
-        setTimeout(() => setCallbackCopied(false), 2000);
-      } catch (e) {
-        console.warn("Failed to copy to clipboard:", e);
-      }
-    }
+  const handleRotateCallback = useCallback(() => {
+    setConfirmDialog({
+      title: "Rotate Callback URL",
+      message: "Rotate callback URL? The old URL will stop working immediately.",
+      confirmLabel: "Rotate",
+      confirmVariant: "danger",
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          setCallbackConfig(data);
+          try {
+            await navigator.clipboard.writeText(data.callback_url);
+            setCallbackCopied(true);
+            setTimeout(() => setCallbackCopied(false), 2000);
+          } catch (e) {
+            console.warn("Failed to copy to clipboard:", e);
+          }
+        }
+      },
+    });
   }, [sessionId]);
 
-  const handleRevokeCallback = useCallback(async () => {
-    if (!confirm("Revoke callback URL? It will stop working immediately.")) return;
-    const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "DELETE" });
-    if (res.ok) {
-      setCallbackConfig(null);
-    }
+  const handleRevokeCallback = useCallback(() => {
+    setConfirmDialog({
+      title: "Revoke Callback URL",
+      message: "Revoke callback URL? It will stop working immediately.",
+      confirmLabel: "Revoke",
+      confirmVariant: "danger",
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "DELETE" });
+        if (res.ok) {
+          setCallbackConfig(null);
+        }
+      },
+    });
   }, [sessionId]);
 
   // Check if schema has fields
@@ -678,28 +698,41 @@ export function ConversationPropertiesPanel({
 
   // Fixed overlay on the RIGHT side, above all other panels
   return html`
-    <div
-      class="fixed inset-0 z-50 flex"
-      onClick=${(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
-    >
-      <!-- Backdrop on the left -->
+    <${Fragment}>
       <div
-        class="flex-1 bg-black/50 properties-backdrop ${isClosing
-          ? "closing"
-          : ""}"
-        onClick=${handleClose}
-      />
-      <!-- Panel on the right -->
-      <div
-        class="w-80 bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full overflow-y-auto border-l border-slate-700 properties-panel ${isClosing
-          ? "closing"
-          : ""}"
+        class="fixed inset-0 z-50 flex"
+        onClick=${(e) => {
+          if (e.target === e.currentTarget) handleClose();
+        }}
       >
-        ${renderPanelContent()}
+        <!-- Backdrop on the left -->
+        <div
+          class="flex-1 bg-black/50 properties-backdrop ${isClosing
+            ? "closing"
+            : ""}"
+          onClick=${handleClose}
+        />
+        <!-- Panel on the right -->
+        <div
+          class="w-80 bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full overflow-y-auto border-l border-slate-700 properties-panel ${isClosing
+            ? "closing"
+            : ""}"
+        >
+          ${renderPanelContent()}
+        </div>
       </div>
-    </div>
+
+      <${ConfirmDialog}
+        isOpen=${!!confirmDialog}
+        title=${confirmDialog?.title || "Confirm"}
+        message=${confirmDialog?.message || ""}
+        confirmLabel=${confirmDialog?.confirmLabel || "Yes"}
+        cancelLabel=${confirmDialog?.cancelLabel || "Cancel"}
+        confirmVariant=${confirmDialog?.confirmVariant || "primary"}
+        onConfirm=${confirmDialog?.onConfirm}
+        onCancel=${() => setConfirmDialog(null)}
+      />
+    <//>
   `;
 
   function renderPanelContent() {
@@ -1224,7 +1257,7 @@ export function ConversationPropertiesPanel({
 
           return html`
             <div key=${field.name}>
-              <label class="block text-xs text-slate-500 mb-1">
+              <label class="block text-xs text-slate-500 mb-1" title=${field.description || ""}>
                 ${field.name}
               </label>
               ${isEditing
@@ -1249,9 +1282,11 @@ export function ConversationPropertiesPanel({
                           }, 150);
                         }}
                         disabled=${isSavingAttribute}
-                        placeholder=${field.type === "url"
-                          ? "https://..."
-                          : "Enter value..."}
+                        placeholder=${field.description
+                          ? field.description
+                          : field.type === "url"
+                            ? "https://..."
+                            : "Enter value..."}
                       />
                       <button
                         class="p-1 hover:bg-slate-700 rounded transition-colors text-green-400"

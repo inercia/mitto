@@ -1756,7 +1756,7 @@ export function ChatInput({
                         <textarea
                           ref=${textboxRef}
                           autocorrect="off"
-                          class="w-full h-full bg-slate-800/80 text-white text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border border-slate-600"
+                          class="ui-textbox-textarea w-full h-full text-sm font-mono rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 border"
                           maxlength=${16384}
                           onInput=${(e) => setTextboxValue(e.target.value)}
                         >
@@ -2612,7 +2612,11 @@ ${activeUIPrompt.text || ""}</textarea
 
             <textarea
               ref=${textareaRef}
-              autocorrect="off"
+              autocorrect=${isNativeApp() ? "off" : "on"}
+              autocomplete=${isNativeApp() ? "off" : "on"}
+              autocapitalize=${isNativeApp() ? "off" : "sentences"}
+              spellcheck=${isNativeApp() ? "false" : "true"}
+              ...${isNativeApp() ? {} : { inputmode: "text", enterkeyhint: sendKeyMode === "ctrl-enter" ? "enter" : "send" }}
               value=${text}
               onInput=${handleInput}
               onKeyDown=${handleKeyDown}
@@ -2628,7 +2632,7 @@ ${activeUIPrompt.text || ""}</textarea
               class="w-full bg-mitto-input-box text-white rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-200 ${periodicEnabled &&
               isPeriodicLocked
                 ? "max-h-[80px] overflow-y-auto"
-                : "max-h-[200px] overflow-y-hidden"} placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
+                : "max-h-[200px] overflow-y-auto"} placeholder-gray-400 placeholder:text-sm border border-slate-600 ${isFullyDisabled ||
               isReadOnly ||
               isImproving ||
               (periodicEnabled && isPeriodicLocked)

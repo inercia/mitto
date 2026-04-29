@@ -58,7 +58,7 @@ import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
  * then workspace-level folders below with [×] buttons.
  * In "replace" mode: only workspace folders are shown (inherited are hidden).
  */
-function FolderListEditor({
+export function FolderListEditor({
   folders,
   inheritedFolders,
   mode,
@@ -124,7 +124,7 @@ function FolderListEditor({
                 type="text"
                 value=${f}
                 onInput=${(e) => updateFolder(idx, e.target.value)}
-                placeholder=${placeholder || "$WORKSPACE"}
+                placeholder=${placeholder || "$MITTO_WORKING_DIR"}
                 class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <button
@@ -156,7 +156,7 @@ function FolderListEditor({
  * When a new top-level conversation is created in this workspace,
  * these child conversations will be auto-created with it.
  */
-function AutoChildrenEditor({
+export function AutoChildrenEditor({
   children,
   workspaces,
   currentWorkspaceUUID,
@@ -194,7 +194,7 @@ function AutoChildrenEditor({
               <button
                 type="button"
                 onClick=${addChild}
-                class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
+                class="text-xs px-2 py-1 bg-mitto-input-box hover:bg-blue-600 hover:text-white border border-mitto-border rounded-lg transition-colors"
               >
                 + Add Child
               </button>
@@ -219,14 +219,15 @@ function AutoChildrenEditor({
                 (child, idx) => html`
                   <div
                     key=${idx}
-                    class="flex items-center gap-2 p-2 bg-slate-700/30 rounded border border-slate-600/50"
+                    class="flex items-center gap-2 p-2 bg-mitto-input-box rounded-lg border border-mitto-border"
                   >
                     <input
                       type="text"
                       value=${child.title || ""}
                       placeholder="Child title"
                       onInput=${(e) => updateChild(idx, "title", e.target.value)}
-                      class="flex-1 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      style="height: 38px; box-sizing: border-box"
                     />
                     <select
                       value=${child.target_workspace_uuid || ""}
@@ -236,9 +237,9 @@ function AutoChildrenEditor({
                           "target_workspace_uuid",
                           e.target.value,
                         )}
-                      class="px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      style="height: 38px; box-sizing: border-box"
                     >
-                      <option value="">Same workspace</option>
                       ${targetOptions.map(
                         (ws) => html`
                           <option value=${ws.uuid}>
@@ -269,7 +270,7 @@ function AutoChildrenEditor({
  * RunnerRestrictionsEditor — per-workspace runner restriction overrides.
  * Shown when the workspace runner is not "exec".
  */
-function RunnerRestrictionsEditor({
+export function RunnerRestrictionsEditor({
   runnerType,
   config: runnerConfig,
   effectiveConfig,
@@ -431,7 +432,7 @@ function RunnerRestrictionsEditor({
               updateMergeMode(m, setReadMode, setWriteMode)}
             onFoldersChange=${(folders) =>
               updateRestriction("allow_read_folders", folders)}
-            placeholder="$WORKSPACE"
+            placeholder="$MITTO_WORKING_DIR"
           />
 
           <!-- Write folders -->
@@ -445,7 +446,7 @@ function RunnerRestrictionsEditor({
               updateMergeMode(m, setWriteMode, setReadMode)}
             onFoldersChange=${(folders) =>
               updateRestriction("allow_write_folders", folders)}
-            placeholder="$WORKSPACE"
+            placeholder="$MITTO_WORKING_DIR"
           />
 
           ${runnerType === "docker" &&
@@ -560,9 +561,9 @@ function WorkspaceEditForm({
     if (newRunner === "exec") {
       setRunnerConfig(null);
     } else if (!runnerConfig) {
-      // Pre-populate write folders with $WORKSPACE when first enabling restrictions
+      // Pre-populate write folders with $MITTO_WORKING_DIR when first enabling restrictions
       setRunnerConfig({
-        restrictions: { allow_write_folders: ["$WORKSPACE"] },
+        restrictions: { allow_write_folders: ["$MITTO_WORKING_DIR"] },
       });
     }
   };
@@ -1185,25 +1186,7 @@ export function SettingsDialog({
     () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
     [acpServers],
   );
-  // Group workspaces by display name (alphabetical), with ACP servers sorted within each group
-  const groupedWorkspaces = useMemo(() => {
-    const groups = new Map();
-    workspaces.forEach((ws) => {
-      const displayName = ws.name || getBasename(ws.working_dir);
-      if (!groups.has(displayName)) {
-        groups.set(displayName, []);
-      }
-      groups.get(displayName).push(ws);
-    });
-    // Sort workspaces within each group by ACP server name
-    groups.forEach((wsArray) => {
-      wsArray.sort((a, b) => (a.acp_server || "").localeCompare(b.acp_server || ""));
-    });
-    // Convert to array sorted by display name
-    return Array.from(groups.entries())
-      .sort(([nameA], [nameB]) => nameA.localeCompare(nameB))
-      .map(([displayName, wsArray]) => ({ displayName, workspaces: wsArray }));
-  }, [workspaces]);
+
   const [authEnabled, setAuthEnabled] = useState(false);
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -1223,12 +1206,6 @@ export function SettingsDialog({
   // Access log setting (enabled by default)
   const [accessLogEnabled, setAccessLogEnabled] = useState(true);
 
-  // Stored sessions for checking workspace usage
-  const [storedSessions, setStoredSessions] = useState([]);
-
-  // Orphaned workspaces (filtered out due to missing servers)
-  const [orphanedWorkspaces, setOrphanedWorkspaces] = useState([]);
-
   // Supported runners (fetched from server based on platform)
   const [supportedRunners, setSupportedRunners] = useState([]);
 
@@ -1238,12 +1215,6 @@ export function SettingsDialog({
   const [runnerDefaults, setRunnerDefaults] = useState({});
 
   // Form state for adding new items
-  const [showAddWorkspace, setShowAddWorkspace] = useState(false);
-  const [newWorkspacePath, setNewWorkspacePath] = useState("");
-  const [newWorkspaceServer, setNewWorkspaceServer] = useState("");
-  const [newWorkspaceRunner, setNewWorkspaceRunner] = useState("exec");
-  const [newWorkspaceName, setNewWorkspaceName] = useState("");
-
   const [showAddServer, setShowAddServer] = useState(false);
   const [newServerName, setNewServerName] = useState("");
   const [newServerCommand, setNewServerCommand] = useState("");
@@ -1254,9 +1225,6 @@ export function SettingsDialog({
 
   // Agent types for the type dropdown
   const [agentTypes, setAgentTypes] = useState([]);
-
-  // State for editing workspace (accordion-style, tracks workspaceKey being edited)
-  const [editingWorkspace, setEditingWorkspace] = useState(null);
 
   // Track server renames (oldName -> newName) so backend can update sessions
   const [serverRenames, setServerRenames] = useState({});
@@ -1289,7 +1257,7 @@ export function SettingsDialog({
   const [loginItemSupported, setLoginItemSupported] = useState(false);
   const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
   const [badgeClickCommand, setBadgeClickCommand] =
-    useState("open ${WORKSPACE}");
+    useState("open ${MITTO_WORKING_DIR}");
 
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
@@ -1452,7 +1420,6 @@ export function SettingsDialog({
       setWarning("");
       setSuccess("");
       loadConfig();
-      loadStoredSessions();
       loadSupportedRunners();
     }
   }, [isOpen]);
@@ -1464,21 +1431,6 @@ export function SettingsDialog({
       .then((data) => setAgentTypes(data.agent_types || []))
       .catch(() => setAgentTypes([]));
   }, []);
-
-  // Load stored sessions to check workspace usage
-  const loadStoredSessions = async () => {
-    try {
-      const res = await fetch(apiUrl("/api/sessions"), {
-        credentials: "same-origin",
-      });
-      if (res.ok) {
-        const sessions = await res.json();
-        setStoredSessions(sessions || []);
-      }
-    } catch (err) {
-      console.error("Failed to load stored sessions:", err);
-    }
-  };
 
   // Load supported runners from server
   const loadSupportedRunners = async () => {
@@ -1517,15 +1469,6 @@ export function SettingsDialog({
     } catch (err) {
       console.error("Failed to load runner defaults:", err);
     }
-  };
-
-  // Count conversations using a specific workspace
-  // If acpServer is provided, counts only sessions matching both directory AND server
-  const getWorkspaceConversationCount = (workingDir, acpServer) => {
-    if (acpServer) {
-      return storedSessions.filter((s) => s.working_dir === workingDir && s.acp_server === acpServer).length;
-    }
-    return storedSessions.filter((s) => s.working_dir === workingDir).length;
   };
 
   // Save prompts order to settings.json immediately
@@ -1643,7 +1586,6 @@ export function SettingsDialog({
       // - Must reference an existing ACP server
       const serverNames = new Set(servers.map((s) => s.name));
       const rawWorkspaces = config.workspaces || [];
-      const orphaned = []; // Track workspaces with missing servers
       const validWorkspaces = rawWorkspaces.filter((ws) => {
         // Check for valid working_dir
         if (
@@ -1660,19 +1602,11 @@ export function SettingsDialog({
             "Filtering out workspace with invalid/missing ACP server:",
             ws,
           );
-          // Track orphaned workspaces (those with missing servers)
-          if (ws.acp_server) {
-            orphaned.push({
-              working_dir: ws.working_dir,
-              missing_server: ws.acp_server,
-            });
-          }
           return false;
         }
         return true;
       });
       setWorkspaces(validWorkspaces);
-      setOrphanedWorkspaces(orphaned);
 
       // Load auth settings - check if external access is enabled
       // External access is enabled if any auth is configured OR host is 0.0.0.0
@@ -1728,7 +1662,7 @@ export function SettingsDialog({
         config.ui?.mac?.badge_click_action?.enabled !== false,
       );
       setBadgeClickCommand(
-        config.ui?.mac?.badge_click_action?.command || "open ${WORKSPACE}",
+        config.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
       );
 
       // Load notification permission status (macOS only) - used to show warning if denied
@@ -1820,10 +1754,6 @@ export function SettingsDialog({
         console.warn("Failed to load advanced flags:", err);
       }
 
-      // Set default server for new workspace
-      if (servers.length > 0) {
-        setNewWorkspaceServer(servers[0].name);
-      }
     } catch (err) {
       setError("Failed to load configuration: " + err.message);
     } finally {
@@ -1838,8 +1768,7 @@ export function SettingsDialog({
 
     // Validation
     if (workspaces.length === 0) {
-      setError("At least one workspace is required");
-      setActiveTab("workspaces");
+      setError("At least one workspace is required. Please open the Workspaces dialog to add one.");
       return;
     }
 
@@ -2165,242 +2094,13 @@ export function SettingsDialog({
     }
     // Always require at least one workspace
     if (workspaces.length === 0) {
-      setError("At least one workspace is required");
-      setActiveTab("workspaces");
+      setError("At least one workspace is required. Please open the Workspaces dialog to add one.");
       return;
     }
     onClose?.();
   };
 
-  // Workspace management
-  const addWorkspace = () => {
-    if (!newWorkspacePath.trim()) {
-      setError("Please enter a directory path");
-      return;
-    }
-    if (!newWorkspaceServer) {
-      setError("Please select an ACP server");
-      return;
-    }
 
-    // Find the ACP command for this server
-    const server = acpServers.find((s) => s.name === newWorkspaceServer);
-    if (!server) {
-      setError("Selected ACP server not found");
-      return;
-    }
-
-    // Check for duplicate (same path AND same server)
-    // Multiple workspaces can share the same path if they use different servers
-    const pathTrimmed = newWorkspacePath.trim();
-    if (workspaces.some((ws) => ws.working_dir === pathTrimmed && ws.acp_server === newWorkspaceServer)) {
-      setError("A workspace with this path and server already exists");
-      return;
-    }
-
-    setWorkspaces([
-      ...workspaces,
-      {
-        name: newWorkspaceName.trim() || undefined,
-        working_dir: pathTrimmed,
-        acp_server: newWorkspaceServer,
-        acp_command: server.command,
-        restricted_runner: newWorkspaceRunner,
-      },
-    ]);
-    setNewWorkspacePath("");
-    setNewWorkspaceName("");
-    setNewWorkspaceRunner("exec");
-    setShowAddWorkspace(false);
-    setError("");
-  };
-
-  // Helper to create a unique key for a workspace (for display/React keys)
-  // Uses UUID if available, otherwise falls back to working_dir + acp_server
-  const getWorkspaceKey = (ws) => {
-    return ws.uuid || `${ws.working_dir}|${ws.acp_server}`;
-  };
-
-  const removeWorkspace = (workspaceKey) => {
-    if (workspaces.length <= 1) {
-      setError("At least one workspace is required");
-      return;
-    }
-
-    // Find the workspace by key
-    const workspace = workspaces.find((ws) => getWorkspaceKey(ws) === workspaceKey);
-    if (!workspace) {
-      return;
-    }
-
-    // Check if any conversations are using this specific workspace (same dir AND server)
-    const conversationCount = getWorkspaceConversationCount(workspace.working_dir, workspace.acp_server);
-    if (conversationCount > 0) {
-      setError(
-        `Cannot remove workspace: ${conversationCount} conversation(s) are using it. Delete the conversations first.`,
-      );
-      return;
-    }
-
-    setWorkspaces(workspaces.filter((ws) => getWorkspaceKey(ws) !== workspaceKey));
-  };
-
-  // Find an alternative ACP server for a workspace (one that's NOT already used for the same folder)
-  // Returns the alternative server name, or null if none available
-  const getUnusedServerForFolder = (workingDir, currentServerName) => {
-    // Find all servers that are already used for this folder
-    const usedServers = new Set(
-      workspaces
-        .filter((ws) => ws.working_dir === workingDir)
-        .map((ws) => ws.acp_server)
-    );
-
-    // Find a server that is NOT already used for this folder
-    // Prefer servers other than the current one first
-    const altServer = acpServers.find(
-      (s) => s.name !== currentServerName && !usedServers.has(s.name)
-    );
-    if (altServer) {
-      return altServer.name;
-    }
-
-    // Fallback: any unused server (including current if it's somehow not in usedServers)
-    const anyUnusedServer = acpServers.find((s) => !usedServers.has(s.name));
-    return anyUnusedServer ? anyUnusedServer.name : null;
-  };
-
-  // Check if a workspace can be duplicated
-  // Returns true if there's at least one ACP server that's not already used for this folder
-  const canDuplicateWorkspace = (ws) => {
-    return getUnusedServerForFolder(ws.working_dir, ws.acp_server) !== null;
-  };
-
-  const duplicateWorkspace = (workspaceKey) => {
-    // Find the workspace by key
-    const workspace = workspaces.find((ws) => getWorkspaceKey(ws) === workspaceKey);
-    if (!workspace) {
-      return;
-    }
-
-    // Find an alternative ACP server that's not already used for this folder
-    const altServerName = getUnusedServerForFolder(
-      workspace.working_dir,
-      workspace.acp_server
-    );
-    if (!altServerName) {
-      setError(
-        "Cannot duplicate: all ACP servers are already used for this folder"
-      );
-      return;
-    }
-
-    // Find the command for the alternative server
-    const altServer = acpServers.find((s) => s.name === altServerName);
-    if (!altServer) {
-      setError("Cannot duplicate: alternative server not found");
-      return;
-    }
-
-    // Create the duplicate with the same folder but different ACP server
-    // Generate a unique UUID for the new workspace
-    const duplicate = {
-      uuid: crypto.randomUUID(),
-      working_dir: workspace.working_dir,
-      acp_server: altServerName,
-      acp_command: altServer.command,
-      restricted_runner: workspace.restricted_runner || "exec",
-      // Copy optional fields if they exist
-      ...(workspace.name && { name: workspace.name }),
-      ...(workspace.code && { code: workspace.code }),
-      ...(workspace.color && { color: workspace.color }),
-    };
-
-    // Add the duplicate after the original workspace
-    const index = workspaces.findIndex(
-      (ws) => getWorkspaceKey(ws) === workspaceKey
-    );
-    const newWorkspaces = [...workspaces];
-    newWorkspaces.splice(index + 1, 0, duplicate);
-    setWorkspaces(newWorkspaces);
-  };
-
-  // Update workspace color
-  const updateWorkspaceColor = (workspaceKey, color) => {
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? { ...ws, color: color || undefined } // undefined to omit from JSON if empty
-          : ws,
-      ),
-    );
-  };
-
-  // Update workspace friendly name
-  const updateWorkspaceName = (workspaceKey, name) => {
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? { ...ws, name: name || undefined } // undefined to omit from JSON if empty
-          : ws,
-      ),
-    );
-  };
-
-  // Update workspace code (three-letter abbreviation)
-  const updateWorkspaceCode = (workspaceKey, code) => {
-    // Ensure code is uppercase and max 3 characters
-    const sanitizedCode = (code || "").toUpperCase().slice(0, 3);
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? { ...ws, code: sanitizedCode || undefined } // undefined to omit from JSON if empty
-          : ws,
-      ),
-    );
-  };
-
-  // Update workspace restricted runner
-  const updateWorkspaceRunner = (workspaceKey, runner) => {
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? { ...ws, restricted_runner: runner || "exec" }
-          : ws,
-      ),
-    );
-  };
-
-  // Update workspace properties (called from WorkspaceEditForm)
-  const updateWorkspace = (workspaceKey, updates) => {
-    // Find the selected server to get its command
-    const selectedServer = acpServers.find(
-      (s) => s.name === updates.acp_server,
-    );
-    if (!selectedServer) {
-      setError("Selected ACP server not found");
-      return;
-    }
-
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? {
-              ...ws,
-              name: updates.name,
-              code: updates.code,
-              color: updates.color,
-              acp_server: updates.acp_server,
-              acp_command: selectedServer.command,
-              restricted_runner: updates.restricted_runner,
-              restricted_runner_config: updates.restricted_runner_config,
-              auto_approve: updates.auto_approve,
-              auto_children: updates.auto_children,
-            }
-          : ws,
-      ),
-    );
-    setEditingWorkspace(null);
-  };
 
   // ACP Server management
   const addServer = () => {
@@ -2530,9 +2230,8 @@ export function SettingsDialog({
       const moreCount = usedBy.length - workspacePaths.length;
       const moreText = moreCount > 0 ? ` and ${moreCount} more` : "";
       setError(
-        `Cannot delete "${serverName}": used by workspace(s): ${pathList}${moreText}. Remove or reassign these workspaces first.`,
+        `Cannot delete "${serverName}": used by workspace(s): ${pathList}${moreText}. Remove or reassign these workspaces first (use the Workspaces dialog).`,
       );
-      setActiveTab("workspaces"); // Switch to workspaces tab to help user fix the issue
       return;
     }
 
@@ -2608,7 +2307,6 @@ export function SettingsDialog({
   // Define navigation items for sidebar
   const navItems = [
     { id: "servers", label: "ACP Servers", icon: ServerIcon },
-    { id: "workspaces", label: "Workspaces", icon: FolderIcon },
     { id: "prompts", label: "Prompts", icon: LightningIcon },
     { id: "runners", label: "Runners", icon: LockIcon },
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
@@ -2676,395 +2374,6 @@ export function SettingsDialog({
                   </div>
                 `
               : html`
-                  <!-- Workspaces Tab -->
-                  ${activeTab === "workspaces" &&
-                  html`
-                    <div class="space-y-4">
-                      <!-- Workspace explanation -->
-                      <div
-                        class="p-3 bg-slate-800/50 rounded-lg border border-slate-700"
-                      >
-                        <p class="text-gray-300 text-sm leading-relaxed">
-                          A${" "}
-                          <span class="text-blue-400 font-medium"
-                            >Workspace</span
-                          >
-                          ${" "}pairs a directory with an ACP server. Each
-                          workspace allows you to work on a specific project
-                          with a chosen AI agent. You can configure multiple
-                          workspaces to work on different projects
-                          simultaneously.
-                        </p>
-                      </div>
-
-                      ${orphanedWorkspaces.length > 0 &&
-                      html`
-                        <div
-                          class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg"
-                        >
-                          <div class="flex items-start gap-2">
-                            <span class="text-amber-400 text-lg">⚠️</span>
-                            <div class="flex-1">
-                              <p
-                                class="text-amber-400 text-sm font-medium mb-1"
-                              >
-                                ${orphanedWorkspaces.length}
-                                workspace${orphanedWorkspaces.length > 1
-                                  ? "s"
-                                  : ""}
-                                removed due to missing
-                                server${orphanedWorkspaces.length > 1
-                                  ? "s"
-                                  : ""}
-                              </p>
-                              <p class="text-amber-300/80 text-xs mb-2">
-                                The following
-                                workspace${orphanedWorkspaces.length > 1
-                                  ? "s reference servers that no longer exist"
-                                  : " references a server that no longer exists"}.
-                                This can happen if a server was removed from
-                                your .mittorc file.
-                              </p>
-                              <ul class="text-xs text-amber-300/70 space-y-1">
-                                ${orphanedWorkspaces.map(
-                                  (ow, idx) => html`
-                                    <li
-                                      key=${`orphan-${idx}-${ow.working_dir}-${ow.missing_server}`}
-                                      class="flex items-center gap-1"
-                                    >
-                                      <span class="text-amber-400">•</span>
-                                      <span
-                                        class="font-mono truncate"
-                                        title=${ow.working_dir}
-                                        >${ow.working_dir}</span
-                                      >
-                                      <span class="text-amber-500/70">→</span>
-                                      <span class="text-red-400/80"
-                                        >${ow.missing_server}</span
-                                      >
-                                      <span class="text-amber-500/50"
-                                        >(missing)</span
-                                      >
-                                    </li>
-                                  `,
-                                )}
-                              </ul>
-                            </div>
-                          </div>
-                        </div>
-                      `}
-
-                      <div class="flex items-center justify-between">
-                        <p class="text-gray-400 text-sm">
-                          Configured workspaces:
-                        </p>
-                        <button
-                          onClick=${() =>
-                            acpServers.length > 0 &&
-                            setShowAddWorkspace(!showAddWorkspace)}
-                          disabled=${acpServers.length === 0}
-                          class="p-1.5 rounded-lg transition-colors ${acpServers.length ===
-                          0
-                            ? "opacity-50 cursor-not-allowed"
-                            : "hover:bg-slate-700"} ${showAddWorkspace
-                            ? "bg-slate-700"
-                            : ""}"
-                          title=${acpServers.length === 0
-                            ? "Add an ACP server first"
-                            : "Add Workspace"}
-                        >
-                          <${PlusIcon} className="w-5 h-5" />
-                        </button>
-                      </div>
-                      ${acpServers.length === 0 &&
-                      html`
-                        <div
-                          class="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-400 text-sm"
-                        >
-                          ⚠️ Add an ACP server first before creating workspaces.
-                        </div>
-                      `}
-                      ${showAddWorkspace &&
-                      html`
-                        <div
-                          class="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-3"
-                        >
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Display Name</label
-                            >
-                            <input
-                              type="text"
-                              value=${newWorkspaceName}
-                              onInput=${(e) => {
-                                setNewWorkspaceName(e.target.value);
-                              }}
-                              placeholder="My Project"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                            <p class="text-xs text-gray-500 mt-1">
-                              Optional friendly name shown in the UI
-                            </p>
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Directory Path</label
-                            >
-                            <div class="flex gap-2">
-                              <input
-                                type="text"
-                                value=${newWorkspacePath}
-                                onInput=${(e) => {
-                                  setNewWorkspacePath(e.target.value);
-                                  setError("");
-                                }}
-                                placeholder="/path/to/project"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                              ${hasNativeFolderPicker() &&
-                              html`
-                                <button
-                                  type="button"
-                                  onClick=${async () => {
-                                    const path = await pickFolder();
-                                    if (path) {
-                                      setNewWorkspacePath(path);
-                                    }
-                                  }}
-                                  class="px-3 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm transition-colors whitespace-nowrap"
-                                >
-                                  Browse…
-                                </button>
-                              `}
-                            </div>
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >ACP Server</label
-                            >
-                            <select
-                              value=${newWorkspaceServer}
-                              onChange=${(e) => {
-                                setNewWorkspaceServer(e.target.value);
-                                setError("");
-                              }}
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            >
-                              ${sortedAcpServers.map(
-                                (srv) => html`
-                                  <option key=${srv.name} value=${srv.name}>
-                                    ${srv.name}
-                                  </option>
-                                `,
-                              )}
-                            </select>
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Sandbox Type</label
-                            >
-                            <select
-                              value=${newWorkspaceRunner}
-                              onChange=${(e) => {
-                                setNewWorkspaceRunner(e.target.value);
-                                setError("");
-                              }}
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              title="Choose the runner type for sandboxing agent execution"
-                            >
-                              ${supportedRunners
-                                .filter((r) => r.supported)
-                                .map(
-                                  (r) =>
-                                    html`<option value=${r.type}>
-                                      ${r.label}
-                                    </option>`,
-                                )}
-                            </select>
-                            <p class="text-xs text-gray-500 mt-1">
-                              Controls how the agent is sandboxed. "exec" runs
-                              with no restrictions (recommended for most users).
-                            </p>
-                          </div>
-                          ${error &&
-                          html`
-                            <div
-                              class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
-                            >
-                              ⚠️ ${error}
-                            </div>
-                          `}
-                          <div class="flex justify-end gap-2">
-                            <button
-                              onClick=${() => {
-                                setShowAddWorkspace(false);
-                                setNewWorkspacePath("");
-                                setNewWorkspaceName("");
-                                setNewWorkspaceRunner("exec");
-                                setError("");
-                              }}
-                              class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              onClick=${addWorkspace}
-                              class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
-                            >
-                              Add
-                            </button>
-                          </div>
-                        </div>
-                      `}
-                      ${workspaces.length === 0
-                        ? html`
-                            <div class="text-center py-8 text-gray-500">
-                              <${FolderIcon}
-                                className="w-12 h-12 mx-auto mb-2 opacity-50"
-                              />
-                              <p>No workspaces configured.</p>
-                              <p class="text-xs mt-1">
-                                Click + to add a workspace.
-                              </p>
-                            </div>
-                          `
-                        : html`
-                            <div class="space-y-3">
-                              ${groupedWorkspaces.map(({ displayName: groupName, workspaces: wsGroup }) => {
-                                const isGrouped = wsGroup.length > 1;
-                                return html`
-                                  <div key=${groupName} class="space-y-1">
-                                    <div class="px-2 py-1 text-xs font-medium text-gray-400 flex items-center gap-2">
-                                      <span class="truncate">${groupName}</span>
-                                      <span class="text-gray-500">(${wsGroup.length})</span>
-                                    </div>
-                                    ${wsGroup.map((ws) => {
-                                      const wsKey = getWorkspaceKey(ws);
-                                      const isEditing = editingWorkspace === wsKey;
-                                      return html`
-                                        <div
-                                          key=${wsKey}
-                                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isEditing
-                                            ? ""
-                                            : "hover:bg-slate-700/30"} transition-colors group ml-4"
-                                        >
-                                          ${isEditing
-                                            ? html`
-                                                <!-- Editing mode: show name/path info and edit form -->
-                                                <div class="flex items-center gap-3">
-                                                  <${WorkspaceBadge}
-                                                    path=${ws.working_dir}
-                                                    customColor=${ws.color}
-                                                    customCode=${ws.code}
-                                                    customName=${ws.name}
-                                                    size="sm"
-                                                  />
-                                                  <div class="flex-1 min-w-0">
-                                                    <div
-                                                      class="font-medium text-sm flex items-center gap-2"
-                                                    >
-                                                      ${ws.name ||
-                                                      getBasename(ws.working_dir)}
-                                                      <span
-                                                        class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
-                                                      >
-                                                        ${ws.acp_server}
-                                                      </span>
-                                                    </div>
-                                                    <div
-                                                      class="text-xs text-gray-500 truncate"
-                                                      title=${ws.working_dir}
-                                                    >
-                                                      ${ws.working_dir}
-                                                    </div>
-                                                  </div>
-                                                </div>
-                                                <${WorkspaceEditForm}
-                                                  workspace=${ws}
-                                                  acpServers=${acpServers}
-                                                  allWorkspaces=${workspaces}
-                                                  supportedRunners=${supportedRunners}
-                                                  getWorkspaceVisualInfo=${getWorkspaceVisualInfo}
-                                                  getBasename=${getBasename}
-                                                  onSave=${(updates) =>
-                                                    updateWorkspace(wsKey, updates)}
-                                                  onCancel=${() =>
-                                                    setEditingWorkspace(null)}
-                                                />
-                                              `
-                                            : html`
-                                                <!-- Collapsed view: show info and action buttons -->
-                                                <div class="flex items-center gap-3">
-                                                  <${WorkspaceBadge}
-                                                    path=${ws.working_dir}
-                                                    customColor=${ws.color}
-                                                    customCode=${ws.code}
-                                                    customName=${ws.name}
-                                                    size="sm"
-                                                  />
-                                                  <div class="flex-1 min-w-0">
-                                                    <div
-                                                      class="font-medium text-sm flex items-center gap-2"
-                                                    >
-                                                      <span
-                                                        class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
-                                                        title="ACP Server"
-                                                      >
-                                                        ${ws.acp_server}
-                                                      </span>
-                                                    </div>
-                                                    <div
-                                                      class="text-xs text-gray-500 truncate"
-                                                      title=${ws.working_dir}
-                                                    >
-                                                      ${ws.working_dir}
-                                                    </div>
-                                                  </div>
-                                                  <!-- Action buttons (visible on hover) -->
-                                                  ${canDuplicateWorkspace(ws) &&
-                                                  html`
-                                                    <button
-                                                      onClick=${() =>
-                                                        duplicateWorkspace(wsKey)}
-                                                      class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                      title="Duplicate workspace"
-                                                    >
-                                                      <${DuplicateIcon}
-                                                        className="w-4 h-4"
-                                                      />
-                                                    </button>
-                                                  `}
-                                                  <button
-                                                    onClick=${() =>
-                                                      setEditingWorkspace(wsKey)}
-                                                    class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                    title="Edit workspace"
-                                                  >
-                                                    <${EditIcon} className="w-4 h-4" />
-                                                  </button>
-                                                  <button
-                                                    onClick=${() =>
-                                                      removeWorkspace(wsKey)}
-                                                    class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                    title="Remove workspace"
-                                                  >
-                                                    <${TrashIcon}
-                                                      className="w-4 h-4"
-                                                    />
-                                                  </button>
-                                                </div>
-                                              `}
-                                        </div>
-                                      `;
-                                    })}
-                                  </div>
-                                `;
-                              })}
-                            </div>
-                          `}
-                    </div>
-                  `}
-
                   <!-- ACP Servers Tab -->
                   ${activeTab === "servers" &&
                   html`
@@ -3842,7 +3151,7 @@ export function SettingsDialog({
                                                   });
                                                 }}
                                                 class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                placeholder="$WORKSPACE"
+                                                placeholder="$MITTO_WORKING_DIR"
                                               />
                                               <button
                                                 type="button"
@@ -3974,7 +3283,7 @@ export function SettingsDialog({
                                                   });
                                                 }}
                                                 class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                placeholder="$WORKSPACE"
+                                                placeholder="$MITTO_WORKING_DIR"
                                               />
                                               <button
                                                 type="button"
@@ -4351,7 +3660,7 @@ export function SettingsDialog({
                             >${" "}
                             Per-workspace settings can enable auto-approve even
                             when this global setting is off. Configure
-                            workspace-specific settings in the Workspaces tab.
+                            workspace-specific settings in the Workspaces dialog.
                           </p>
                         </div>
 
@@ -5285,14 +4594,14 @@ export function SettingsDialog({
                                   value=${badgeClickCommand}
                                   onInput=${(e) =>
                                     setBadgeClickCommand(e.target.value)}
-                                  placeholder="open \${WORKSPACE}"
+                                  placeholder="open \${MITTO_WORKING_DIR}"
                                   class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                                 />
                               </div>
                               <p class="text-xs text-gray-500">
                                 Use${" "}
                                 <code class="bg-slate-600 px-1 rounded"
-                                  >\${WORKSPACE}</code
+                                  >\${MITTO_WORKING_DIR}</code
                                 >${" "} as placeholder for the workspace path
                               </p>
                             </div>

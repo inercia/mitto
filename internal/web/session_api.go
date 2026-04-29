@@ -1237,3 +1237,98 @@ func (s *Server) handleEffectiveRunnerConfig(w http.ResponseWriter, r *http.Requ
 
 	writeJSONOK(w, resp)
 }
+
+// handleWorkspaceMetadata dispatches GET and PUT requests for workspace metadata.
+func (s *Server) handleWorkspaceMetadata(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleWorkspaceMetadataGet(w, r)
+	case http.MethodPut:
+		s.handleWorkspaceMetadataPut(w, r)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+// handleWorkspaceMetadataGet handles GET /api/workspace-metadata?working_dir=...
+// Returns workspace metadata (description, URL) from the .mittorc file.
+func (s *Server) handleWorkspaceMetadataGet(w http.ResponseWriter, r *http.Request) {
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		http.Error(w, "working_dir query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	workingDir = strings.TrimSpace(workingDir)
+
+	// Validate that this is a known workspace
+	workspace := s.sessionManager.GetWorkspace(workingDir)
+	if workspace == nil {
+		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		return
+	}
+
+	// Load workspace RC file
+	rc, err := config.LoadWorkspaceRC(workingDir)
+	if err != nil {
+		// Log error but return empty metadata
+		if s.logger != nil {
+			s.logger.Warn("Failed to load workspace RC for metadata", "working_dir", workingDir, "error", err)
+		}
+		writeJSONOK(w, map[string]interface{}{})
+		return
+	}
+
+	if rc == nil || rc.Metadata == nil {
+		writeJSONOK(w, map[string]interface{}{})
+		return
+	}
+
+	writeJSONOK(w, rc.Metadata)
+}
+
+// handleWorkspaceMetadataPut handles PUT /api/workspace-metadata.
+// Saves description and URL to the workspace .mittorc file.
+func (s *Server) handleWorkspaceMetadataPut(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		WorkingDir  string `json:"working_dir"`
+		Description string `json:"description"`
+		URL         string `json:"url"`
+		Group       string `json:"group"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.WorkingDir == "" {
+		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		return
+	}
+	req.WorkingDir = strings.TrimSpace(req.WorkingDir)
+
+	// Validate that this is a known workspace
+	workspace := s.sessionManager.GetWorkspace(req.WorkingDir)
+	if workspace == nil {
+		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		return
+	}
+
+	if err := config.SaveWorkspaceMetadata(req.WorkingDir, req.Description, req.URL, req.Group); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to save workspace metadata", "working_dir", req.WorkingDir, "error", err)
+		}
+		http.Error(w, "Failed to save metadata: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Invalidate the workspace RC cache so subsequent reads pick up the new data
+	if s.sessionManager != nil {
+		s.sessionManager.InvalidateWorkspaceRC(req.WorkingDir)
+	}
+
+	if s.logger != nil {
+		s.logger.Info("Workspace metadata saved", "working_dir", req.WorkingDir)
+	}
+
+	writeJSONOK(w, map[string]string{"status": "ok"})
+}

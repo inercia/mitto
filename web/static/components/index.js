@@ -4,6 +4,7 @@
 export { Message } from "./Message.js";
 export { ChatInput } from "./ChatInput.js";
 export { SettingsDialog } from "./SettingsDialog.js";
+export { WorkspacesDialog } from "./WorkspacesDialog.js";
 export { ConfirmDialog } from "./ConfirmDialog.js";
 export { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 export { SavePromptDialog } from "./SavePromptDialog.js";
