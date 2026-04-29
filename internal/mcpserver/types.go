@@ -653,6 +653,7 @@ type ConversationWaitInput struct {
 	ConversationID string `json:"conversation_id"`           // Target conversation to wait on
 	What           string `json:"what"`                      // Condition to wait for: "agent_responded"
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min)
+	Workspace      string `json:"workspace,omitempty"`       // Optional workspace UUID for cross-workspace operations
 }
 
 // ConversationWaitOutput is the output for mitto_conversation_wait tool.

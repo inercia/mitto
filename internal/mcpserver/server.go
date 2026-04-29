@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,11 @@ type SessionManager interface {
 	BroadcastWaitingForChildren(sessionID string, isWaiting bool)
 	// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
 	DeleteChildSessions(parentID string)
+	// GetWorkspaces returns all configured workspaces.
+	GetWorkspaces() []config.WorkspaceSettings
+	// GetWorkspaceByUUID returns the workspace with the given UUID.
+	// Returns nil if no workspace with that UUID exists.
+	GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings
 }
 
 // BackgroundSession interface for session info.
@@ -571,6 +577,93 @@ func (s *Server) checkSessionFlag(sessionID string, flagName string) bool {
 	return session.GetFlagValue(meta.AdvancedSettings, flagName)
 }
 
+// confirmCrossWorkspaceOperation shows a blocking confirmation dialog to the user
+// before allowing a cross-workspace operation. This is a security gate that cannot
+// be bypassed — it does NOT require the "can_prompt_user" flag.
+//
+// Returns nil if the user approves, or an error if denied, timed out, or UI unavailable.
+func (s *Server) confirmCrossWorkspaceOperation(
+	ctx context.Context,
+	callerSessionID string,
+	operationDescription string, // e.g., "create a new conversation"
+	targetWorkspace *config.WorkspaceSettings,
+) error {
+	// Get the caller's registered session
+	reg := s.getSession(callerSessionID)
+	if reg == nil {
+		return fmt.Errorf("session not found or not running: %s", callerSessionID)
+	}
+
+	// UIPrompter must be available (requires connected UI)
+	if reg.uiPrompter == nil {
+		return fmt.Errorf("cross-workspace operations require a connected UI (no headless support)")
+	}
+
+	// Build human-readable workspace label
+	workspaceLabel := targetWorkspace.Name
+	if workspaceLabel == "" {
+		workspaceLabel = filepath.Base(targetWorkspace.WorkingDir)
+	}
+
+	// Get caller's session name for the dialog
+	callerName := callerSessionID
+	s.mu.RLock()
+	store := s.store
+	s.mu.RUnlock()
+	if store != nil {
+		if meta, err := store.GetMetadata(callerSessionID); err == nil && meta.Name != "" {
+			callerName = meta.Name
+		}
+	}
+
+	question := fmt.Sprintf(
+		"Conversation %q wants to %s in workspace %q (%s). Allow?",
+		callerName,
+		operationDescription,
+		workspaceLabel,
+		targetWorkspace.WorkingDir,
+	)
+
+	uiRequestID := uuid.New().String()
+	promptReq := UIPromptRequest{
+		RequestID: uiRequestID,
+		Type:      UIPromptTypeOptions,
+		Question:  question,
+		Options: []UIPromptOption{
+			{ID: "yes", Label: "Yes", Style: UIPromptOptionStyleSuccess},
+			{ID: "no", Label: "No", Style: UIPromptOptionStyleDanger},
+		},
+		TimeoutSeconds: 60,
+		Blocking:       true,
+	}
+
+	s.logger.Info("Cross-workspace confirmation requested",
+		"caller_session", callerSessionID,
+		"operation", operationDescription,
+		"target_workspace", targetWorkspace.UUID,
+		"target_path", targetWorkspace.WorkingDir)
+
+	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
+	if err != nil {
+		return fmt.Errorf("failed to display confirmation dialog: %w", err)
+	}
+
+	if resp.TimedOut {
+		return fmt.Errorf("cross-workspace operation timed out waiting for user confirmation")
+	}
+
+	if resp.OptionID != "yes" {
+		return fmt.Errorf("cross-workspace operation denied by user")
+	}
+
+	s.logger.Info("Cross-workspace operation approved by user",
+		"caller_session", callerSessionID,
+		"operation", operationDescription,
+		"target_workspace", targetWorkspace.UUID)
+
+	return nil
+}
+
 // RegisterPendingRequest registers a pending request for session correlation.
 // This is called by the ACP/web layer when it sees a tool_call event for
 // mitto_get_current_session. The MCP handler then uses WaitForPendingRequest
@@ -855,6 +948,17 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Name:        "mitto_get_runtime_info",
 		Description: "Get runtime information including OS, architecture, log file paths, data directories, and process info",
 	}, s.createGetRuntimeInfoHandler())
+
+	// mitto_workspace_list tool - always available
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_workspace_list",
+		Description: "List all configured workspaces with their settings and metadata. " +
+			"Returns workspace UUID, display name, working directory, ACP server, " +
+			"and optional metadata from the workspace .mittorc file (description, URL, group, user data schema). " +
+			"Optionally filter by activity: 'active' returns only workspaces with at least one non-archived conversation, " +
+			"'archived' returns only workspaces where all conversations are archived (excludes workspaces with zero conversations). " +
+			"Omit filter to return all workspaces. Always available.",
+	}, s.createListWorkspacesHandler())
 }
 
 // selfIDNote is the standard note about self_id for tools that require session identification.
@@ -885,6 +989,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Send a message/prompt to an EXISTING conversation (identified by conversation_id). " +
 			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
 			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_new'. " +
+			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
@@ -936,6 +1041,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"but you can specify a different one via the optional 'acp_server' parameter (must have a workspace configured for the current folder) " +
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
+			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
+			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
 			selfIDNote,
@@ -947,6 +1054,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Get detailed properties of a specific conversation by conversation_id. " +
 			"Returns metadata, status, and runtime info including whether the agent is currently replying. " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
+			"Optionally specify a 'workspace' UUID to access a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
 	}, s.handleGetConversation)
 
@@ -990,6 +1098,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Wait until something happens in a conversation. " +
 			"Currently supports: 'agent_responded' — blocks until the agent finishes responding. " +
 			"Returns immediately if the condition is already met (e.g., agent is not currently responding). " +
+			"Optionally specify a 'workspace' UUID when waiting on a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
 	}, s.handleConversationWait)
 
@@ -1027,6 +1136,110 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 // ListConversationsOutput wraps the list of conversations for MCP output schema compliance.
 type ListConversationsOutput struct {
 	Conversations []ConversationInfo `json:"conversations"`
+}
+
+// WorkspaceInfo contains information about a single workspace for MCP tool output.
+type WorkspaceInfo struct {
+	UUID       string                    `json:"uuid"`
+	Name       string                    `json:"name,omitempty"`
+	WorkingDir string                    `json:"working_dir"`
+	ACPServer  string                    `json:"acp_server"`
+	Metadata   *config.WorkspaceMetadata `json:"metadata,omitempty"`
+}
+
+// WorkspaceListInput is the input for the mitto_workspace_list tool.
+type WorkspaceListInput struct {
+	Filter string `json:"filter,omitempty"` // Optional: "active", "archived", or empty for all
+}
+
+// WorkspaceListOutput is the output for the mitto_workspace_list tool.
+type WorkspaceListOutput struct {
+	Workspaces []WorkspaceInfo `json:"workspaces"`
+}
+
+// createListWorkspacesHandler creates the handler for mitto_workspace_list tool.
+func (s *Server) createListWorkspacesHandler() mcp.ToolHandlerFor[WorkspaceListInput, WorkspaceListOutput] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input WorkspaceListInput) (*mcp.CallToolResult, WorkspaceListOutput, error) {
+		s.mu.RLock()
+		sm := s.sessionManager
+		s.mu.RUnlock()
+
+		if sm == nil {
+			return nil, WorkspaceListOutput{}, fmt.Errorf("session manager not available")
+		}
+
+		// Build workspace activity map if filtering is requested
+		var wsHasNonArchived map[string]bool // workingDir → has at least one non-archived session
+		var wsHasAnySessions map[string]bool // workingDir → has at least one session (any state)
+		if input.Filter == "active" || input.Filter == "archived" {
+			s.mu.RLock()
+			store := s.store
+			s.mu.RUnlock()
+
+			if store == nil {
+				return nil, WorkspaceListOutput{}, fmt.Errorf("session store not available (required for filtering)")
+			}
+
+			sessions, err := store.List()
+			if err != nil {
+				return nil, WorkspaceListOutput{}, fmt.Errorf("failed to list sessions for filtering: %w", err)
+			}
+
+			wsHasNonArchived = make(map[string]bool)
+			wsHasAnySessions = make(map[string]bool)
+			for _, meta := range sessions {
+				if meta.WorkingDir == "" {
+					continue
+				}
+				wsHasAnySessions[meta.WorkingDir] = true
+				if !meta.Archived {
+					wsHasNonArchived[meta.WorkingDir] = true
+				}
+			}
+		} else if input.Filter != "" {
+			return nil, WorkspaceListOutput{}, fmt.Errorf("invalid filter value %q: must be \"active\", \"archived\", or omitted", input.Filter)
+		}
+
+		workspaces := sm.GetWorkspaces()
+		infos := make([]WorkspaceInfo, 0, len(workspaces))
+
+		for _, ws := range workspaces {
+			// Apply filter
+			if input.Filter == "active" {
+				if !wsHasNonArchived[ws.WorkingDir] {
+					continue // skip: no non-archived sessions
+				}
+			} else if input.Filter == "archived" {
+				if !wsHasAnySessions[ws.WorkingDir] || wsHasNonArchived[ws.WorkingDir] {
+					continue // skip: no sessions at all OR has non-archived sessions
+				}
+			}
+
+			info := WorkspaceInfo{
+				UUID:       ws.UUID,
+				Name:       ws.Name,
+				WorkingDir: ws.WorkingDir,
+				ACPServer:  ws.ACPServer,
+			}
+
+			// Load .mittorc metadata if workspace has a working directory
+			if ws.WorkingDir != "" {
+				rc, err := config.LoadWorkspaceRC(ws.WorkingDir)
+				if err != nil {
+					s.logger.Warn("Failed to load workspace .mittorc",
+						"working_dir", ws.WorkingDir,
+						"error", err)
+				}
+				if rc != nil && rc.Metadata != nil {
+					info.Metadata = rc.Metadata
+				}
+			}
+
+			infos = append(infos, info)
+		}
+
+		return nil, WorkspaceListOutput{Workspaces: infos}, nil
+	}
 }
 
 // createListConversationsHandler creates the handler for list_conversations tool.
@@ -1226,6 +1439,7 @@ type SendPromptToConversationInput struct {
 	SelfID         string `json:"self_id"`         // YOUR session ID (the caller), not the target
 	ConversationID string `json:"conversation_id"` // Target conversation ID to send prompt to
 	Prompt         string `json:"prompt"`
+	Workspace      string `json:"workspace,omitempty"` // Optional workspace UUID for cross-workspace operations
 }
 
 func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.CallToolRequest, input SendPromptToConversationInput) (*mcp.CallToolResult, SendPromptOutput, error) {
@@ -1281,6 +1495,50 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 			Success: false,
 			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
 		}, nil
+	}
+
+	// Cross-workspace support: if workspace UUID is provided, validate and confirm
+	if input.Workspace != "" {
+		if s.sessionManager == nil {
+			return nil, SendPromptOutput{Success: false, Error: "session manager not available"}, nil
+		}
+		targetWS := s.sessionManager.GetWorkspaceByUUID(input.Workspace)
+		if targetWS == nil {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   fmt.Sprintf("workspace not found: %s", input.Workspace),
+			}, nil
+		}
+
+		// Validate conversation belongs to the specified workspace
+		if targetMeta.WorkingDir != targetWS.WorkingDir {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   fmt.Sprintf("conversation %s does not belong to workspace %s", input.ConversationID, input.Workspace),
+			}, nil
+		}
+
+		// Check if cross-workspace (caller's workspace differs from target)
+		sourceMeta, err := store.GetMetadata(realSessionID)
+		if err != nil {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   fmt.Sprintf("failed to get source session metadata: %v", err),
+			}, nil
+		}
+		if sourceMeta.WorkingDir != targetWS.WorkingDir {
+			// Permission check: requires can_interact_other_workspaces flag
+			if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+				return nil, SendPromptOutput{
+					Success: false,
+					Error: fmt.Sprintf("cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+						session.FlagCanInteractOtherWorkspaces),
+				}, nil
+			}
+			if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "send a prompt to a conversation", targetWS); err != nil {
+				return nil, SendPromptOutput{Success: false, Error: err.Error()}, nil
+			}
+		}
 	}
 
 	// Get the queue for the target conversation
@@ -1427,6 +1685,7 @@ func (s *Server) handleUIOptions(ctx context.Context, req *mcp.CallToolRequest, 
 		Question:            question,
 		Options:             options,
 		TimeoutSeconds:      timeout,
+		Blocking:            true,
 		AllowFreeText:       input.AllowFreeText,
 		FreeTextPlaceholder: input.FreeTextPlaceholder,
 	}
@@ -1719,8 +1978,8 @@ func computeUnifiedDiff(original, edited, originalName, editedName string) strin
 	editedLines := strings.Split(edited, "\n")
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("--- %s\n", originalName))
-	result.WriteString(fmt.Sprintf("+++ %s\n", editedName))
+	fmt.Fprintf(&result, "--- %s\n", originalName)
+	fmt.Fprintf(&result, "+++ %s\n", editedName)
 
 	m, n := len(originalLines), len(editedLines)
 
@@ -1771,11 +2030,11 @@ func computeUnifiedDiff(original, edited, originalName, editedName string) strin
 	for _, op := range ops {
 		switch op.op {
 		case ' ':
-			result.WriteString(fmt.Sprintf(" %s\n", op.line))
+			fmt.Fprintf(&result, " %s\n", op.line)
 		case '-':
-			result.WriteString(fmt.Sprintf("-%s\n", op.line))
+			fmt.Fprintf(&result, "-%s\n", op.line)
 		case '+':
-			result.WriteString(fmt.Sprintf("+%s\n", op.line))
+			fmt.Fprintf(&result, "+%s\n", op.line)
 		}
 	}
 
@@ -1788,6 +2047,7 @@ type ConversationStartInput struct {
 	Title         string `json:"title,omitempty"`          // Optional title for the new conversation
 	InitialPrompt string `json:"initial_prompt,omitempty"` // Optional initial message to queue
 	ACPServer     string `json:"acp_server,omitempty"`     // Optional ACP server name (defaults to parent's server)
+	Workspace     string `json:"workspace,omitempty"`      // Optional workspace UUID for cross-workspace operations
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
@@ -1848,6 +2108,38 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			sourceMeta.ParentSessionID)
 	}
 
+	// Cross-workspace support: if workspace UUID is provided, resolve and potentially confirm
+	var targetWorkspace *config.WorkspaceSettings
+	if input.Workspace != "" {
+		// Cannot specify both workspace and acp_server
+		if input.ACPServer != "" {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"cannot specify both 'workspace' and 'acp_server' — workspace already determines the ACP server")
+		}
+
+		// Resolve workspace UUID
+		if s.sessionManager == nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf("session manager not available")
+		}
+		targetWorkspace = s.sessionManager.GetWorkspaceByUUID(input.Workspace)
+		if targetWorkspace == nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf("workspace not found: %s", input.Workspace)
+		}
+
+		// Check if this is a cross-workspace operation (different working directory)
+		if targetWorkspace.WorkingDir != sourceMeta.WorkingDir {
+			// Permission check: requires can_interact_other_workspaces flag
+			if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+				return nil, ConversationStartOutput{}, fmt.Errorf(
+					"cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+					session.FlagCanInteractOtherWorkspaces)
+			}
+			if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "create a new conversation", targetWorkspace); err != nil {
+				return nil, ConversationStartOutput{}, err
+			}
+		}
+	}
+
 	// Check max child conversations limit
 	// This prevents a single session from spawning too many children and exhausting resources.
 	// Auto-children (from workspace config) are excluded from the count.
@@ -1887,46 +2179,55 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
-	// Determine which ACP server to use
-	acpServerName := sourceMeta.ACPServer // Default: inherit from parent
-	if input.ACPServer != "" {
-		// Validate the requested ACP server exists in config
-		s.mu.RLock()
-		cfg := s.config
-		s.mu.RUnlock()
+	// Determine which ACP server and working directory to use.
+	var acpServerName string
+	var targetWorkingDir string
+	if targetWorkspace != nil {
+		// Cross-workspace: use the target workspace's server and directory.
+		acpServerName = targetWorkspace.ACPServer
+		targetWorkingDir = targetWorkspace.WorkingDir
+	} else {
+		acpServerName = sourceMeta.ACPServer // Default: inherit from parent
+		targetWorkingDir = sourceMeta.WorkingDir
+		if input.ACPServer != "" {
+			// Validate the requested ACP server exists in config
+			s.mu.RLock()
+			cfg := s.config
+			s.mu.RUnlock()
 
-		if cfg == nil {
-			return nil, ConversationStartOutput{}, fmt.Errorf("server configuration not available")
-		}
-		if _, err := cfg.GetServer(input.ACPServer); err != nil {
-			return nil, ConversationStartOutput{}, fmt.Errorf(
-				"ACP server '%s' not found. Available servers: %v",
-				input.ACPServer, cfg.ServerNames())
-		}
-		acpServerName = input.ACPServer
-	}
-
-	// Validate that a workspace exists for the folder + ACP server combination.
-	// Conversations can only run in defined workspaces (folder + ACP server pairs).
-	if s.sessionManager != nil {
-		workspaces := s.sessionManager.GetWorkspacesForFolder(sourceMeta.WorkingDir)
-		found := false
-		for _, ws := range workspaces {
-			if ws.ACPServer == acpServerName {
-				found = true
-				break
+			if cfg == nil {
+				return nil, ConversationStartOutput{}, fmt.Errorf("server configuration not available")
 			}
+			if _, err := cfg.GetServer(input.ACPServer); err != nil {
+				return nil, ConversationStartOutput{}, fmt.Errorf(
+					"ACP server '%s' not found. Available servers: %v",
+					input.ACPServer, cfg.ServerNames())
+			}
+			acpServerName = input.ACPServer
 		}
-		if !found {
-			availableServers := make([]string, 0, len(workspaces))
+
+		// Validate that a workspace exists for the folder + ACP server combination.
+		// Conversations can only run in defined workspaces (folder + ACP server pairs).
+		if s.sessionManager != nil {
+			workspaces := s.sessionManager.GetWorkspacesForFolder(sourceMeta.WorkingDir)
+			found := false
 			for _, ws := range workspaces {
-				availableServers = append(availableServers, ws.ACPServer)
+				if ws.ACPServer == acpServerName {
+					found = true
+					break
+				}
 			}
-			return nil, ConversationStartOutput{}, fmt.Errorf(
-				"no workspace configured for folder %q with ACP server %q. "+
-					"Available ACP servers for this folder: %v. "+
-					"Create a workspace for this folder+server pair in Settings first",
-				sourceMeta.WorkingDir, acpServerName, availableServers)
+			if !found {
+				availableServers := make([]string, 0, len(workspaces))
+				for _, ws := range workspaces {
+					availableServers = append(availableServers, ws.ACPServer)
+				}
+				return nil, ConversationStartOutput{}, fmt.Errorf(
+					"no workspace configured for folder %q with ACP server %q. "+
+						"Available ACP servers for this folder: %v. "+
+						"Create a workspace for this folder+server pair in Settings first",
+					sourceMeta.WorkingDir, acpServerName, availableServers)
+			}
 		}
 	}
 
@@ -1950,7 +2251,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		SessionID:        newSessionID,
 		Name:             input.Title,
 		ACPServer:        acpServerName,
-		WorkingDir:       sourceMeta.WorkingDir,
+		WorkingDir:       targetWorkingDir,
 		ParentSessionID:  realSessionID,          // Mark this session as a child
 		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
@@ -1965,7 +2266,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		"new_session_id", newSessionID,
 		"parent_session_id", realSessionID,
 		"acp_server", acpServerName,
-		"working_dir", sourceMeta.WorkingDir,
+		"working_dir", targetWorkingDir,
 		"title", input.Title)
 
 	// Re-fetch metadata to get timestamps set by Create()
@@ -1981,7 +2282,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	var bs BackgroundSession
 	if s.sessionManager != nil {
 		var resumeErr error
-		bs, resumeErr = s.sessionManager.ResumeSession(newSessionID, input.Title, sourceMeta.WorkingDir)
+		bs, resumeErr = s.sessionManager.ResumeSession(newSessionID, input.Title, targetWorkingDir)
 		if resumeErr != nil {
 			s.logger.Error("Failed to start ACP for new conversation",
 				"session_id", newSessionID,
@@ -1998,7 +2299,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			newSessionID,
 			input.Title,
 			acpServerName,
-			sourceMeta.WorkingDir,
+			targetWorkingDir,
 			realSessionID,                  // parent_session_id
 			string(session.ChildOriginMCP), // child_origin
 		)
@@ -2037,8 +2338,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 
 // GetConversationInput is the input for mitto_get_conversation tool.
 type GetConversationInput struct {
-	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
-	ConversationID string `json:"conversation_id"` // Target conversation ID to get properties for
+	SelfID         string `json:"self_id"`             // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"`     // Target conversation ID to get properties for
+	Workspace      string `json:"workspace,omitempty"` // Optional workspace UUID for cross-workspace operations
 }
 
 // GetConversationOutput is the output for mitto_get_conversation tool.
@@ -2082,6 +2384,40 @@ func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolReq
 	meta, err := store.GetMetadata(input.ConversationID)
 	if err != nil {
 		return nil, GetConversationOutput{}, fmt.Errorf("conversation not found: %s", input.ConversationID)
+	}
+
+	// Cross-workspace support: if workspace UUID is provided, validate and confirm
+	if input.Workspace != "" {
+		if s.sessionManager == nil {
+			return nil, GetConversationOutput{}, fmt.Errorf("session manager not available")
+		}
+		targetWS := s.sessionManager.GetWorkspaceByUUID(input.Workspace)
+		if targetWS == nil {
+			return nil, GetConversationOutput{}, fmt.Errorf("workspace not found: %s", input.Workspace)
+		}
+
+		// Validate conversation belongs to the specified workspace
+		if meta.WorkingDir != targetWS.WorkingDir {
+			return nil, GetConversationOutput{}, fmt.Errorf(
+				"conversation %s does not belong to workspace %s", input.ConversationID, input.Workspace)
+		}
+
+		// Check if cross-workspace (caller's workspace differs from target)
+		sourceMeta, err := store.GetMetadata(realSessionID)
+		if err != nil {
+			return nil, GetConversationOutput{}, fmt.Errorf("failed to get source session metadata: %v", err)
+		}
+		if sourceMeta.WorkingDir != targetWS.WorkingDir {
+			// Permission check: requires can_interact_other_workspaces flag
+			if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+				return nil, GetConversationOutput{}, fmt.Errorf(
+					"cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+					session.FlagCanInteractOtherWorkspaces)
+			}
+			if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "view a conversation", targetWS); err != nil {
+				return nil, GetConversationOutput{}, err
+			}
+		}
 	}
 
 	// Build unified conversation details
@@ -2605,6 +2941,46 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 	if s.sessionManager == nil {
 		return nil, ConversationWaitOutput{Error: "session manager not available"}, nil
 	}
+
+	// Cross-workspace support: if workspace UUID is provided, validate and confirm
+	if input.Workspace != "" {
+		targetWS := s.sessionManager.GetWorkspaceByUUID(input.Workspace)
+		if targetWS == nil {
+			return nil, ConversationWaitOutput{
+				Error: fmt.Sprintf("workspace not found: %s", input.Workspace),
+			}, nil
+		}
+
+		s.mu.RLock()
+		store := s.store
+		s.mu.RUnlock()
+
+		if store != nil {
+			// Validate the target conversation belongs to the workspace
+			targetMeta, err := store.GetMetadata(input.ConversationID)
+			if err == nil && targetMeta.WorkingDir != targetWS.WorkingDir {
+				return nil, ConversationWaitOutput{
+					Error: fmt.Sprintf("conversation %s does not belong to workspace %s", input.ConversationID, input.Workspace),
+				}, nil
+			}
+
+			// Check if cross-workspace (caller's workspace differs from target)
+			sourceMeta, err := store.GetMetadata(realSessionID)
+			if err == nil && sourceMeta.WorkingDir != targetWS.WorkingDir {
+				// Permission check: requires can_interact_other_workspaces flag
+				if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+					return nil, ConversationWaitOutput{
+						Error: fmt.Sprintf("cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+							session.FlagCanInteractOtherWorkspaces),
+					}, nil
+				}
+				if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "wait on a conversation", targetWS); err != nil {
+					return nil, ConversationWaitOutput{Error: err.Error()}, nil
+				}
+			}
+		}
+	}
+
 	targetBS := s.sessionManager.GetSession(input.ConversationID)
 	if targetBS == nil {
 		return nil, ConversationWaitOutput{

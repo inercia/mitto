@@ -427,6 +427,8 @@ func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived
 func (m *mockSessionManager) BroadcastSessionDeleted(sessionID string)                     {}
 func (m *mockSessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {}
 func (m *mockSessionManager) DeleteChildSessions(parentID string)                          {}
+func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings                    { return nil }
+func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -2029,13 +2031,10 @@ func TestConversationDelete_Success(t *testing.T) {
 		t.Errorf("Expected conversation ID %s, got %s", childIDs[0], output.ConversationID)
 	}
 
-	// Verify the child is archived
-	meta, err := store.GetMetadata(childIDs[0])
-	if err != nil {
-		t.Fatalf("Failed to get metadata: %v", err)
-	}
-	if !meta.Archived {
-		t.Error("Expected child to be archived after delete")
+	// Verify the child is permanently deleted (not just archived)
+	_, err = store.GetMetadata(childIDs[0])
+	if err == nil {
+		t.Fatal("Expected session to be deleted (not found), but GetMetadata succeeded")
 	}
 }
 
@@ -2262,6 +2261,332 @@ func TestListConversationsFiltering(t *testing.T) {
 	})
 }
 
+// =============================================================================
+// Workspace List Tests
+// =============================================================================
+
+// mockSessionManagerForWorkspaces is a minimal SessionManager mock for workspace list tests.
+type mockSessionManagerForWorkspaces struct {
+	workspaces []config.WorkspaceSettings
+}
+
+func (m *mockSessionManagerForWorkspaces) GetSession(sessionID string) BackgroundSession {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaces) ListRunningSessions() []string { return nil }
+func (m *mockSessionManagerForWorkspaces) CloseSessionGracefully(sessionID, reason string, timeout time.Duration) bool {
+	return true
+}
+func (m *mockSessionManagerForWorkspaces) CloseSession(sessionID, reason string) {}
+func (m *mockSessionManagerForWorkspaces) ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error) {
+	return nil, nil
+}
+func (m *mockSessionManagerForWorkspaces) GetWorkspacesForFolder(folder string) []config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
+}
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionArchived(sessionID string, archived bool) {}
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionDeleted(sessionID string)                 {}
+func (m *mockSessionManagerForWorkspaces) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
+}
+func (m *mockSessionManagerForWorkspaces) DeleteChildSessions(parentID string) {}
+func (m *mockSessionManagerForWorkspaces) GetWorkspaces() []config.WorkspaceSettings {
+	return m.workspaces
+}
+func (m *mockSessionManagerForWorkspaces) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {
+	return nil
+}
+
+func TestListWorkspaces_Empty(t *testing.T) {
+	mockSM := &mockSessionManagerForWorkspaces{
+		workspaces: []config.WorkspaceSettings{},
+	}
+
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{SessionManager: mockSM},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	handler := srv.createListWorkspacesHandler()
+	_, output, err := handler(context.Background(), nil, WorkspaceListInput{})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if output.Workspaces == nil {
+		t.Fatal("expected non-nil Workspaces slice")
+	}
+	if len(output.Workspaces) != 0 {
+		t.Errorf("expected 0 workspaces, got %d", len(output.Workspaces))
+	}
+}
+
+func TestListWorkspaces_WithWorkspaces(t *testing.T) {
+	// Workspace 1: temp dir with a .mittorc containing metadata
+	ws1Dir := t.TempDir()
+	mittoRC := `metadata:
+  description: "Test project description"
+  url: "https://github.com/test/project"
+  group: "TestGroup"
+  user_data:
+    - name: "JIRA Ticket"
+      description: "The JIRA ticket"
+      type: url
+    - name: "Sprint"
+      description: "Current sprint"
+      type: string
+`
+	if err := os.WriteFile(ws1Dir+"/.mittorc", []byte(mittoRC), 0644); err != nil {
+		t.Fatalf("Failed to write .mittorc: %v", err)
+	}
+
+	// Workspace 2: temp dir with NO .mittorc
+	ws2Dir := t.TempDir()
+
+	mockSM := &mockSessionManagerForWorkspaces{
+		workspaces: []config.WorkspaceSettings{
+			{UUID: "ws-1", Name: "Project A", WorkingDir: ws1Dir, ACPServer: "auggie"},
+			{UUID: "ws-2", Name: "", WorkingDir: ws2Dir, ACPServer: "claude-code"},
+		},
+	}
+
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{SessionManager: mockSM},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	handler := srv.createListWorkspacesHandler()
+	_, output, err := handler(context.Background(), nil, WorkspaceListInput{})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if len(output.Workspaces) != 2 {
+		t.Fatalf("expected 2 workspaces, got %d", len(output.Workspaces))
+	}
+
+	// Find workspace by UUID since map iteration order is non-deterministic
+	wsMap := make(map[string]WorkspaceInfo)
+	for _, ws := range output.Workspaces {
+		wsMap[ws.UUID] = ws
+	}
+
+	// Check workspace 1 - should have metadata
+	ws1, ok := wsMap["ws-1"]
+	if !ok {
+		t.Fatal("workspace ws-1 not found in output")
+	}
+	if ws1.Name != "Project A" {
+		t.Errorf("ws-1 name: expected 'Project A', got %q", ws1.Name)
+	}
+	if ws1.ACPServer != "auggie" {
+		t.Errorf("ws-1 acp_server: expected 'auggie', got %q", ws1.ACPServer)
+	}
+	if ws1.Metadata == nil {
+		t.Fatal("ws-1 expected non-nil metadata")
+	}
+	if ws1.Metadata.Description != "Test project description" {
+		t.Errorf("ws-1 metadata description: expected 'Test project description', got %q", ws1.Metadata.Description)
+	}
+	if ws1.Metadata.URL != "https://github.com/test/project" {
+		t.Errorf("ws-1 metadata url: expected 'https://github.com/test/project', got %q", ws1.Metadata.URL)
+	}
+	if ws1.Metadata.Group != "TestGroup" {
+		t.Errorf("ws-1 metadata group: expected 'TestGroup', got %q", ws1.Metadata.Group)
+	}
+	if ws1.Metadata.UserDataSchema == nil {
+		t.Fatal("ws-1 expected non-nil user_data_schema")
+	}
+	if len(ws1.Metadata.UserDataSchema.Fields) != 2 {
+		t.Errorf("ws-1 expected 2 user_data_schema fields, got %d", len(ws1.Metadata.UserDataSchema.Fields))
+	}
+
+	// Check workspace 2 - should have nil metadata (no .mittorc)
+	ws2, ok := wsMap["ws-2"]
+	if !ok {
+		t.Fatal("workspace ws-2 not found in output")
+	}
+	if ws2.ACPServer != "claude-code" {
+		t.Errorf("ws-2 acp_server: expected 'claude-code', got %q", ws2.ACPServer)
+	}
+	if ws2.Metadata != nil {
+		t.Errorf("ws-2 expected nil metadata (no .mittorc), got %+v", ws2.Metadata)
+	}
+}
+
+func TestListWorkspaces_NoSessionManager(t *testing.T) {
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{}, // no SessionManager
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	handler := srv.createListWorkspacesHandler()
+	_, _, err = handler(context.Background(), nil, WorkspaceListInput{})
+	if err == nil {
+		t.Fatal("expected error when session manager is nil, got nil")
+	}
+}
+
+func TestListWorkspaces_FilterActive(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	mockSM := &mockSessionManagerForWorkspaces{
+		workspaces: []config.WorkspaceSettings{
+			{UUID: "ws-1", WorkingDir: dir1, ACPServer: "auggie"},
+			{UUID: "ws-2", WorkingDir: dir2, ACPServer: "claude-code"},
+		},
+	}
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// dir1: one non-archived session → should be "active"
+	if err := store.Create(session.Metadata{SessionID: "s1", WorkingDir: dir1, Archived: false}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	// dir2: one archived session only → should NOT be "active"
+	if err := store.Create(session.Metadata{SessionID: "s2", WorkingDir: dir2, Archived: true}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	srv.store = store
+
+	handler := srv.createListWorkspacesHandler()
+	_, output, err := handler(context.Background(), nil, WorkspaceListInput{Filter: "active"})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if len(output.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace, got %d", len(output.Workspaces))
+	}
+	if output.Workspaces[0].UUID != "ws-1" {
+		t.Errorf("expected ws-1, got %s", output.Workspaces[0].UUID)
+	}
+}
+
+func TestListWorkspaces_FilterArchived(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	mockSM := &mockSessionManagerForWorkspaces{
+		workspaces: []config.WorkspaceSettings{
+			{UUID: "ws-1", WorkingDir: dir1, ACPServer: "auggie"},
+			{UUID: "ws-2", WorkingDir: dir2, ACPServer: "claude-code"},
+		},
+	}
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// dir1: one non-archived session → should NOT be "archived"
+	if err := store.Create(session.Metadata{SessionID: "s1", WorkingDir: dir1, Archived: false}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	// dir2: one archived session only → should be "archived"
+	if err := store.Create(session.Metadata{SessionID: "s2", WorkingDir: dir2, Archived: true}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	srv.store = store
+
+	handler := srv.createListWorkspacesHandler()
+	_, output, err := handler(context.Background(), nil, WorkspaceListInput{Filter: "archived"})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if len(output.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace, got %d", len(output.Workspaces))
+	}
+	if output.Workspaces[0].UUID != "ws-2" {
+		t.Errorf("expected ws-2, got %s", output.Workspaces[0].UUID)
+	}
+}
+
+func TestListWorkspaces_FilterArchivedExcludesEmpty(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir() // no sessions
+
+	mockSM := &mockSessionManagerForWorkspaces{
+		workspaces: []config.WorkspaceSettings{
+			{UUID: "ws-1", WorkingDir: dir1, ACPServer: "auggie"},
+			{UUID: "ws-2", WorkingDir: dir2, ACPServer: "claude-code"},
+		},
+	}
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// dir1: one archived session → qualifies as "archived"
+	if err := store.Create(session.Metadata{SessionID: "s1", WorkingDir: dir1, Archived: true}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	// dir2: no sessions → must be excluded from "archived" filter
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	srv.store = store
+
+	handler := srv.createListWorkspacesHandler()
+	_, output, err := handler(context.Background(), nil, WorkspaceListInput{Filter: "archived"})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if len(output.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace (ws-2 excluded), got %d", len(output.Workspaces))
+	}
+	if output.Workspaces[0].UUID != "ws-1" {
+		t.Errorf("expected ws-1, got %s", output.Workspaces[0].UUID)
+	}
+}
+
+func TestListWorkspaces_FilterInvalid(t *testing.T) {
+	mockSM := &mockSessionManagerForWorkspaces{
+		workspaces: []config.WorkspaceSettings{},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	handler := srv.createListWorkspacesHandler()
+	_, _, err = handler(context.Background(), nil, WorkspaceListInput{Filter: "bogus"})
+	if err == nil {
+		t.Fatal("expected error for invalid filter value, got nil")
+	}
+}
+
 func TestConversationDelete_ChildOfDifferentParent(t *testing.T) {
 	// Create parent1 with a child, then try to delete child from parent2
 	srv, store, _, childIDs := setupParentChildSessions(t, 1)
@@ -2359,10 +2684,12 @@ func (m *mockSessionManagerForWait) GetWorkspacesForFolder(string) []config.Work
 }
 func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)    {}
-func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)           {}
-func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool) {}
-func (m *mockSessionManagerForWait) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool)               {}
+func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                      {}
+func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)            {}
+func (m *mockSessionManagerForWait) DeleteChildSessions(string)                          {}
+func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings           { return nil }
+func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -3035,10 +3362,14 @@ func (m *mockSessionManagerForChildren) GetWorkspacesForFolder(string) []config.
 }
 func (m *mockSessionManagerForChildren) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool)    {}
-func (m *mockSessionManagerForChildren) BroadcastSessionDeleted(string)           {}
-func (m *mockSessionManagerForChildren) BroadcastWaitingForChildren(string, bool) {}
-func (m *mockSessionManagerForChildren) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool)     {}
+func (m *mockSessionManagerForChildren) BroadcastSessionDeleted(string)            {}
+func (m *mockSessionManagerForChildren) BroadcastWaitingForChildren(string, bool)  {}
+func (m *mockSessionManagerForChildren) DeleteChildSessions(string)                {}
+func (m *mockSessionManagerForChildren) GetWorkspaces() []config.WorkspaceSettings { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
+	return nil
+}
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -3216,6 +3547,12 @@ func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, 
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerForChildrenMutable) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForChildrenMutable) GetWorkspaces() []config.WorkspaceSettings {
+	return nil
+}
+func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
+	return nil
+}
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -3494,10 +3831,14 @@ func (m *mockSessionManagerForAutoResume) GetWorkspacesForFolder(string) []confi
 }
 func (m *mockSessionManagerForAutoResume) BroadcastSessionCreated(string, string, string, string, string, string) {
 }
-func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool)    {}
-func (m *mockSessionManagerForAutoResume) BroadcastSessionDeleted(string)           {}
-func (m *mockSessionManagerForAutoResume) BroadcastWaitingForChildren(string, bool) {}
-func (m *mockSessionManagerForAutoResume) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool)     {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionDeleted(string)            {}
+func (m *mockSessionManagerForAutoResume) BroadcastWaitingForChildren(string, bool)  {}
+func (m *mockSessionManagerForAutoResume) DeleteChildSessions(string)                {}
+func (m *mockSessionManagerForAutoResume) GetWorkspaces() []config.WorkspaceSettings { return nil }
+func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
+	return nil
+}
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -3988,10 +4329,10 @@ func TestArchiveConversation_ChildDelegatesToDelete(t *testing.T) {
 		t.Error("Expected Archived=true in output")
 	}
 
-	// Verify child IS archived (delegated to delete handler)
-	meta, _ := store.GetMetadata(childID)
-	if !meta.Archived {
-		t.Error("Child should be archived after parent's archive request")
+	// Verify child is permanently deleted (delegated to delete handler)
+	_, err = store.GetMetadata(childID)
+	if err == nil {
+		t.Error("Expected child to be permanently deleted after parent's archive request, but GetMetadata succeeded")
 	}
 }
 
@@ -4868,5 +5209,823 @@ func TestHandleUIForm_BlockingFlagSet(t *testing.T) {
 	call := mock.lastCall()
 	if !call.Blocking {
 		t.Error("Expected Blocking=true on form prompt request")
+	}
+}
+
+// =============================================================================
+// Cross-Workspace Tests
+// =============================================================================
+
+// mockSessionManagerCrossWorkspace is a SessionManager mock that supports GetWorkspaceByUUID lookups.
+type mockSessionManagerCrossWorkspace struct {
+	workspaces       map[string]*config.WorkspaceSettings // UUID → workspace
+	workspaceFolders []config.WorkspaceSettings
+	broadcastCalls   []broadcastCall
+	sessions         map[string]BackgroundSession
+}
+
+func (m *mockSessionManagerCrossWorkspace) GetSession(sessionID string) BackgroundSession {
+	if m.sessions == nil {
+		return nil
+	}
+	return m.sessions[sessionID]
+}
+
+func (m *mockSessionManagerCrossWorkspace) ListRunningSessions() []string { return nil }
+func (m *mockSessionManagerCrossWorkspace) CloseSessionGracefully(string, string, time.Duration) bool {
+	return true
+}
+func (m *mockSessionManagerCrossWorkspace) CloseSession(string, string) {}
+func (m *mockSessionManagerCrossWorkspace) ResumeSession(string, string, string) (BackgroundSession, error) {
+	return nil, nil
+}
+
+func (m *mockSessionManagerCrossWorkspace) GetWorkspacesForFolder(folder string) []config.WorkspaceSettings {
+	var result []config.WorkspaceSettings
+	for _, ws := range m.workspaceFolders {
+		if ws.WorkingDir == folder {
+			result = append(result, ws)
+		}
+	}
+	return result
+}
+
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
+	m.broadcastCalls = append(m.broadcastCalls, broadcastCall{
+		sessionID:       sessionID,
+		name:            name,
+		acpServer:       acpServer,
+		workingDir:      workingDir,
+		parentSessionID: parentSessionID,
+	})
+}
+
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionArchived(string, bool)    {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionDeleted(string)           {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastWaitingForChildren(string, bool) {}
+func (m *mockSessionManagerCrossWorkspace) DeleteChildSessions(string)               {}
+
+func (m *mockSessionManagerCrossWorkspace) GetWorkspaces() []config.WorkspaceSettings {
+	var result []config.WorkspaceSettings
+	for _, ws := range m.workspaces {
+		result = append(result, *ws)
+	}
+	return result
+}
+
+func (m *mockSessionManagerCrossWorkspace) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {
+	if m.workspaces == nil {
+		return nil
+	}
+	return m.workspaces[uuid]
+}
+
+// setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
+// Returns the server, store, source session ID, target session ID.
+func setupCrossWorkspaceServer(t *testing.T, prompter UIPrompter, flags map[string]bool) (*Server, *session.Store, string, string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sourceID := session.GenerateSessionID()
+	sourceMeta := session.Metadata{
+		SessionID:        sourceID,
+		Name:             "Source Session",
+		ACPServer:        "test-server",
+		WorkingDir:       "/workspace-a",
+		AdvancedSettings: flags,
+	}
+	if err := store.Create(sourceMeta); err != nil {
+		t.Fatalf("Failed to create source session: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	targetMeta := session.Metadata{
+		SessionID:  targetID,
+		Name:       "Target Session",
+		ACPServer:  "other-server",
+		WorkingDir: "/workspace-b",
+	}
+	if err := store.Create(targetMeta); err != nil {
+		t.Fatalf("Failed to create target session: %v", err)
+	}
+
+	targetWS := &config.WorkspaceSettings{
+		UUID:       "ws-target-uuid",
+		Name:       "Target Workspace",
+		ACPServer:  "other-server",
+		WorkingDir: "/workspace-b",
+	}
+
+	mockSM := &mockSessionManagerCrossWorkspace{
+		workspaces: map[string]*config.WorkspaceSettings{
+			"ws-target-uuid": targetWS,
+		},
+		workspaceFolders: []config.WorkspaceSettings{
+			{ACPServer: "test-server", WorkingDir: "/workspace-a"},
+			{ACPServer: "other-server", WorkingDir: "/workspace-b"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(sourceID, prompter, logger); err != nil {
+		t.Fatalf("Failed to register source session: %v", err)
+	}
+	if err := srv.RegisterSession(targetID, nil, logger); err != nil {
+		t.Fatalf("Failed to register target session: %v", err)
+	}
+
+	return srv, store, sourceID, targetID
+}
+
+// --- Group 1: confirmCrossWorkspaceOperation directly ---
+
+func TestConfirmCrossWorkspace_Approved(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "yes"},
+	}
+	srv, _, sourceID, _ := setupCrossWorkspaceServer(t, mock, nil)
+
+	targetWS := &config.WorkspaceSettings{
+		UUID:       "ws-target-uuid",
+		Name:       "Target Workspace",
+		WorkingDir: "/workspace-b",
+	}
+
+	err := srv.confirmCrossWorkspaceOperation(context.Background(), sourceID, "view a conversation", targetWS)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Verify the prompt was blocking with Yes/No options
+	call := mock.lastCall()
+	if !call.Blocking {
+		t.Error("Expected Blocking=true")
+	}
+	if call.TimeoutSeconds != 60 {
+		t.Errorf("Expected TimeoutSeconds=60, got=%d", call.TimeoutSeconds)
+	}
+}
+
+func TestConfirmCrossWorkspace_Denied(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "no"},
+	}
+	srv, _, sourceID, _ := setupCrossWorkspaceServer(t, mock, nil)
+
+	targetWS := &config.WorkspaceSettings{UUID: "ws-target-uuid", Name: "Target", WorkingDir: "/workspace-b"}
+
+	err := srv.confirmCrossWorkspaceOperation(context.Background(), sourceID, "view", targetWS)
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "denied by user") {
+		t.Errorf("Expected 'denied by user' error, got: %v", err)
+	}
+}
+
+func TestConfirmCrossWorkspace_Timeout(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{TimedOut: true},
+	}
+	srv, _, sourceID, _ := setupCrossWorkspaceServer(t, mock, nil)
+
+	targetWS := &config.WorkspaceSettings{UUID: "ws-target-uuid", Name: "Target", WorkingDir: "/workspace-b"}
+
+	err := srv.confirmCrossWorkspaceOperation(context.Background(), sourceID, "view", targetWS)
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("Expected 'timed out' error, got: %v", err)
+	}
+}
+
+func TestConfirmCrossWorkspace_NoUI(t *testing.T) {
+	// Register session with nil UIPrompter
+	srv, _, sourceID, _ := setupCrossWorkspaceServer(t, nil, nil)
+
+	targetWS := &config.WorkspaceSettings{UUID: "ws-target-uuid", Name: "Target", WorkingDir: "/workspace-b"}
+
+	err := srv.confirmCrossWorkspaceOperation(context.Background(), sourceID, "view", targetWS)
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "connected UI") {
+		t.Errorf("Expected 'connected UI' error, got: %v", err)
+	}
+}
+
+func TestConfirmCrossWorkspace_SessionNotFound(t *testing.T) {
+	srv, _, _, _ := setupCrossWorkspaceServer(t, nil, nil)
+
+	targetWS := &config.WorkspaceSettings{UUID: "ws-target-uuid", Name: "Target", WorkingDir: "/workspace-b"}
+
+	err := srv.confirmCrossWorkspaceOperation(context.Background(), "nonexistent-session-id", "view", targetWS)
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "session not found") {
+		t.Errorf("Expected 'session not found' error, got: %v", err)
+	}
+}
+
+// --- Group 2: handleGetConversation with workspace ---
+
+func TestGetConversation_CrossWorkspace_Approved(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "yes"},
+	}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Workspace:      "ws-target-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation returned error: %v", err)
+	}
+	if output.SessionID != targetID {
+		t.Errorf("Expected SessionID=%s, got=%s", targetID, output.SessionID)
+	}
+
+	// Verify UI confirmation was shown
+	if len(mock.calls) != 1 {
+		t.Errorf("Expected 1 UI prompt call, got %d", len(mock.calls))
+	}
+}
+
+func TestGetConversation_CrossWorkspace_Denied(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "no"},
+	}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Workspace:      "ws-target-uuid",
+	})
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "denied by user") {
+		t.Errorf("Expected 'denied by user', got: %v", err)
+	}
+}
+
+func TestGetConversation_SameWorkspace_NoConfirmation(t *testing.T) {
+	mock := &mockUIPrompter{}
+
+	// Create a setup where source and target are in the same workspace
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sourceID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  sourceID,
+		Name:       "Source",
+		ACPServer:  "test-server",
+		WorkingDir: "/same-workspace",
+	}); err != nil {
+		t.Fatalf("Failed to create source: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  targetID,
+		Name:       "Target",
+		ACPServer:  "test-server",
+		WorkingDir: "/same-workspace",
+	}); err != nil {
+		t.Fatalf("Failed to create target: %v", err)
+	}
+
+	mockSM := &mockSessionManagerCrossWorkspace{
+		workspaces: map[string]*config.WorkspaceSettings{
+			"ws-same": {UUID: "ws-same", Name: "Same WS", ACPServer: "test-server", WorkingDir: "/same-workspace"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(sourceID, mock, logger); err != nil {
+		t.Fatalf("Failed to register source: %v", err)
+	}
+	if err := srv.RegisterSession(targetID, nil, logger); err != nil {
+		t.Fatalf("Failed to register target: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Workspace:      "ws-same",
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation returned error: %v", err)
+	}
+	if output.SessionID != targetID {
+		t.Errorf("Expected SessionID=%s, got=%s", targetID, output.SessionID)
+	}
+
+	// No confirmation should be needed for same workspace
+	if len(mock.calls) != 0 {
+		t.Errorf("Expected 0 UI prompt calls for same workspace, got %d", len(mock.calls))
+	}
+}
+
+func TestGetConversation_WorkspaceNotFound(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Workspace:      "nonexistent-uuid",
+	})
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "workspace not found") {
+		t.Errorf("Expected 'workspace not found', got: %v", err)
+	}
+}
+
+func TestGetConversation_ConversationNotInWorkspace(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "yes"},
+	}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	// Add a workspace that has a different WorkingDir than the target conversation
+	srv.sessionManager.(*mockSessionManagerCrossWorkspace).workspaces["ws-other"] = &config.WorkspaceSettings{
+		UUID:       "ws-other",
+		Name:       "Other WS",
+		ACPServer:  "test-server",
+		WorkingDir: "/completely-different-dir",
+	}
+
+	ctx := context.Background()
+	_, _, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Workspace:      "ws-other", // target is in /workspace-b, not /completely-different-dir
+	})
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not belong") {
+		t.Errorf("Expected 'does not belong' error, got: %v", err)
+	}
+}
+
+// --- Group 3: handleSendPrompt with workspace ---
+
+func TestSendPrompt_CrossWorkspace_Approved(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "yes"},
+	}
+	srv, store, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanSendPrompt:              true,
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Prompt:         "Hello cross-workspace",
+		Workspace:      "ws-target-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+
+	// Verify message was queued
+	queueLen, _ := store.Queue(targetID).Len()
+	if queueLen != 1 {
+		t.Errorf("Expected 1 message in queue, got %d", queueLen)
+	}
+
+	// Verify UI confirmation was shown
+	if len(mock.calls) != 1 {
+		t.Errorf("Expected 1 UI prompt call, got %d", len(mock.calls))
+	}
+}
+
+func TestSendPrompt_CrossWorkspace_Denied(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "no"},
+	}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanSendPrompt:              true,
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Prompt:         "Hello cross-workspace",
+		Workspace:      "ws-target-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if output.Success {
+		t.Error("Expected failure when cross-workspace denied")
+	}
+	if !strings.Contains(output.Error, "denied by user") {
+		t.Errorf("Expected 'denied by user', got: %s", output.Error)
+	}
+}
+
+func TestSendPrompt_WorkspaceNotFound(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanSendPrompt:              true,
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Prompt:         "Hello",
+		Workspace:      "nonexistent-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if output.Success {
+		t.Error("Expected failure")
+	}
+	if !strings.Contains(output.Error, "workspace not found") {
+		t.Errorf("Expected 'workspace not found', got: %s", output.Error)
+	}
+}
+
+// --- Group 4: handleConversationStart with workspace ---
+
+func TestConversationStart_CrossWorkspace_Approved(t *testing.T) {
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "yes"},
+	}
+	srv, _, sourceID, _ := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanStartConversation:       true,
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:    sourceID,
+		Title:     "Cross WS Conversation",
+		Workspace: "ws-target-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart returned error: %v", err)
+	}
+	if output.SessionID == "" {
+		t.Fatal("Expected session ID in output")
+	}
+	// The new session should use the target workspace's ACP server and working dir
+	if output.ACPServer != "other-server" {
+		t.Errorf("Expected ACPServer='other-server', got=%s", output.ACPServer)
+	}
+	if output.WorkingDir != "/workspace-b" {
+		t.Errorf("Expected WorkingDir='/workspace-b', got=%s", output.WorkingDir)
+	}
+}
+
+func TestConversationStart_WorkspaceAndACPServer_Conflict(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, _ := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanStartConversation: true,
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:    sourceID,
+		Title:     "Should Fail",
+		Workspace: "ws-target-uuid",
+		ACPServer: "some-server",
+	})
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot specify both") {
+		t.Errorf("Expected 'cannot specify both' error, got: %v", err)
+	}
+}
+
+func TestConversationStart_WorkspaceNotFound(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, _ := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanStartConversation: true,
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:    sourceID,
+		Title:     "Should Fail",
+		Workspace: "nonexistent-uuid",
+	})
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "workspace not found") {
+		t.Errorf("Expected 'workspace not found' error, got: %v", err)
+	}
+}
+
+// --- Group 5: handleConversationWait with workspace ---
+
+func TestConversationWait_CrossWorkspace_WorkspaceNotFound(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, nil)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationWait(ctx, nil, ConversationWaitInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		What:           "agent_responded",
+		Workspace:      "nonexistent-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationWait returned error: %v", err)
+	}
+	if output.Error == "" {
+		t.Fatal("Expected error in output")
+	}
+	if !strings.Contains(output.Error, "workspace not found") {
+		t.Errorf("Expected 'workspace not found', got: %s", output.Error)
+	}
+}
+
+func TestConversationWait_CrossWorkspace_NotBelonging(t *testing.T) {
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, nil)
+
+	// Add a workspace with a different WorkingDir
+	srv.sessionManager.(*mockSessionManagerCrossWorkspace).workspaces["ws-wrong"] = &config.WorkspaceSettings{
+		UUID:       "ws-wrong",
+		Name:       "Wrong WS",
+		ACPServer:  "test-server",
+		WorkingDir: "/wrong-dir",
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationWait(ctx, nil, ConversationWaitInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		What:           "agent_responded",
+		Workspace:      "ws-wrong", // target is in /workspace-b, not /wrong-dir
+	})
+	if err != nil {
+		t.Fatalf("handleConversationWait returned error: %v", err)
+	}
+	if output.Error == "" {
+		t.Fatal("Expected error in output")
+	}
+	if !strings.Contains(output.Error, "does not belong") {
+		t.Errorf("Expected 'does not belong' error, got: %s", output.Error)
+	}
+}
+
+// =============================================================================
+// FlagCanInteractOtherWorkspaces tests
+// =============================================================================
+
+func TestGetConversation_CrossWorkspace_FlagDisabled(t *testing.T) {
+	// Flag NOT set — cross-workspace get should be rejected before confirmation
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, nil)
+
+	ctx := context.Background()
+	_, _, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Workspace:      "ws-target-uuid",
+	})
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Can interact with other workspaces") {
+		t.Errorf("Expected flag error, got: %v", err)
+	}
+	// No UI confirmation should have been shown
+	if len(mock.calls) != 0 {
+		t.Errorf("Expected 0 UI prompt calls, got %d", len(mock.calls))
+	}
+}
+
+func TestGetConversation_CrossWorkspace_FlagEnabled(t *testing.T) {
+	// Flag IS set — cross-workspace get should proceed to UI confirmation
+	mock := &mockUIPrompter{
+		response: UIPromptResponse{OptionID: "yes"},
+	}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanInteractOtherWorkspaces: true,
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Workspace:      "ws-target-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation returned error: %v", err)
+	}
+	if output.SessionID != targetID {
+		t.Errorf("Expected SessionID=%s, got=%s", targetID, output.SessionID)
+	}
+	// UI confirmation should have been shown once
+	if len(mock.calls) != 1 {
+		t.Errorf("Expected 1 UI prompt call, got %d", len(mock.calls))
+	}
+}
+
+func TestGetConversation_SameWorkspace_FlagNotNeeded(t *testing.T) {
+	// Same workspace — flag should NOT be checked
+	mock := &mockUIPrompter{}
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sourceID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  sourceID,
+		Name:       "Source",
+		ACPServer:  "test-server",
+		WorkingDir: "/same-workspace",
+		// FlagCanInteractOtherWorkspaces NOT set
+	}); err != nil {
+		t.Fatalf("Failed to create source: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  targetID,
+		Name:       "Target",
+		ACPServer:  "test-server",
+		WorkingDir: "/same-workspace",
+	}); err != nil {
+		t.Fatalf("Failed to create target: %v", err)
+	}
+
+	mockSM := &mockSessionManagerCrossWorkspace{
+		workspaces: map[string]*config.WorkspaceSettings{
+			"ws-same": {UUID: "ws-same", Name: "Same WS", ACPServer: "test-server", WorkingDir: "/same-workspace"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(sourceID, mock, logger); err != nil {
+		t.Fatalf("Failed to register source: %v", err)
+	}
+	if err := srv.RegisterSession(targetID, nil, logger); err != nil {
+		t.Fatalf("Failed to register target: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Workspace:      "ws-same",
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation returned error: %v", err)
+	}
+	if output.SessionID != targetID {
+		t.Errorf("Expected SessionID=%s, got=%s", targetID, output.SessionID)
+	}
+	// No confirmation or flag check for same-workspace
+	if len(mock.calls) != 0 {
+		t.Errorf("Expected 0 UI prompt calls, got %d", len(mock.calls))
+	}
+}
+
+func TestSendPrompt_CrossWorkspace_FlagDisabled(t *testing.T) {
+	// FlagCanInteractOtherWorkspaces NOT set — cross-workspace send should be rejected
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanSendPrompt: true,
+		// FlagCanInteractOtherWorkspaces intentionally NOT set
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		Prompt:         "Hello cross-workspace",
+		Workspace:      "ws-target-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if output.Success {
+		t.Error("Expected failure when flag disabled")
+	}
+	if !strings.Contains(output.Error, "Can interact with other workspaces") {
+		t.Errorf("Expected flag error, got: %s", output.Error)
+	}
+	// No UI confirmation should have been shown
+	if len(mock.calls) != 0 {
+		t.Errorf("Expected 0 UI prompt calls, got %d", len(mock.calls))
+	}
+}
+
+func TestConversationStart_CrossWorkspace_FlagDisabled(t *testing.T) {
+	// FlagCanInteractOtherWorkspaces NOT set — cross-workspace start should be rejected
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, _ := setupCrossWorkspaceServer(t, mock, map[string]bool{
+		session.FlagCanStartConversation: true,
+		// FlagCanInteractOtherWorkspaces intentionally NOT set
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:    sourceID,
+		Title:     "Cross WS Conversation",
+		Workspace: "ws-target-uuid",
+	})
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Can interact with other workspaces") {
+		t.Errorf("Expected flag error, got: %v", err)
+	}
+	// No UI confirmation should have been shown
+	if len(mock.calls) != 0 {
+		t.Errorf("Expected 0 UI prompt calls, got %d", len(mock.calls))
+	}
+}
+
+func TestConversationWait_CrossWorkspace_FlagDisabled(t *testing.T) {
+	// FlagCanInteractOtherWorkspaces NOT set — cross-workspace wait should be rejected
+	mock := &mockUIPrompter{}
+	srv, _, sourceID, targetID := setupCrossWorkspaceServer(t, mock, nil)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationWait(ctx, nil, ConversationWaitInput{
+		SelfID:         sourceID,
+		ConversationID: targetID,
+		What:           "agent_responded",
+		Workspace:      "ws-target-uuid",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationWait returned error: %v", err)
+	}
+	if output.Error == "" {
+		t.Fatal("Expected error in output")
+	}
+	if !strings.Contains(output.Error, "Can interact with other workspaces") {
+		t.Errorf("Expected flag error, got: %s", output.Error)
+	}
+	// No UI confirmation should have been shown
+	if len(mock.calls) != 0 {
+		t.Errorf("Expected 0 UI prompt calls, got %d", len(mock.calls))
 	}
 }
