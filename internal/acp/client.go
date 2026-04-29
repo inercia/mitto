@@ -1,4 +1,4 @@
-// Package acp provides ACP (Agent Communication Protocol) client implementation.
+// Package acp provides ACP (Agent Client Protocol) client implementation.
 package acp
 
 import (

@@ -588,8 +588,8 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		OnWaitForTerminalExit: func(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
 			return auxTerminalStub.WaitForTerminalExit(ctx, params)
 		},
-		OnKillTerminalCommand: func(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-			return auxTerminalStub.KillTerminalCommand(ctx, params)
+		OnKillTerminal: func(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
+			return auxTerminalStub.KillTerminal(ctx, params)
 		},
 	}
 	process.RegisterSession(acp.SessionId(sessionHandle.SessionID), callbacks)

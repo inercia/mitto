@@ -34,8 +34,8 @@ func (c *Client) WaitForTerminalExit(ctx context.Context, params acp.WaitForTerm
 	return terminalStub.WaitForTerminalExit(ctx, params)
 }
 
-// KillTerminalCommand handles requests to kill terminal commands.
-func (c *Client) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-	c.print("\n🖥️  KillTerminalCommand: %v\n", params)
-	return terminalStub.KillTerminalCommand(ctx, params)
+// KillTerminal handles requests to kill terminals.
+func (c *Client) KillTerminal(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
+	c.print("\n🖥️  KillTerminal: %v\n", params)
+	return terminalStub.KillTerminal(ctx, params)
 }

@@ -209,10 +209,15 @@ func (c *Connection) Initialize(ctx context.Context) error {
 	initResp, err := c.conn.Initialize(ctx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
-			Fs: acp.FileSystemCapability{
+			Fs: acp.FileSystemCapabilities{
 				ReadTextFile:  true,
 				WriteTextFile: true,
 			},
+		},
+		ClientInfo: &acp.Implementation{
+			Name:    "mitto",
+			Title:   strPtr("Mitto"),
+			Version: "dev", // Use a constant for now, we'll improve this later
 		},
 	})
 	if err != nil {
@@ -221,6 +226,42 @@ func (c *Connection) Initialize(ctx context.Context) error {
 
 	// Store agent capabilities for later use
 	c.capabilities = &initResp.AgentCapabilities
+
+	// Log agent information if available
+	if initResp.AgentInfo != nil && c.logger != nil {
+		c.logger.Info("Agent connected",
+			"agent_name", initResp.AgentInfo.Name,
+			"agent_title", initResp.AgentInfo.Title,
+			"agent_version", initResp.AgentInfo.Version)
+	}
+
+	// Log agent capabilities
+	if c.logger != nil {
+		c.logger.Debug("Agent capabilities",
+			"load_session", initResp.AgentCapabilities.LoadSession,
+			"prompt_image", initResp.AgentCapabilities.PromptCapabilities.Image,
+			"prompt_audio", initResp.AgentCapabilities.PromptCapabilities.Audio,
+			"prompt_embedded_context", initResp.AgentCapabilities.PromptCapabilities.EmbeddedContext,
+			"mcp_http", initResp.AgentCapabilities.McpCapabilities.Http,
+			"mcp_sse", initResp.AgentCapabilities.McpCapabilities.Sse)
+
+		// Log SessionCapabilities at DEBUG level
+		c.logger.Debug("Agent session capabilities",
+			"resume_supported", initResp.AgentCapabilities.SessionCapabilities.Resume != nil,
+			"fork_supported", initResp.AgentCapabilities.SessionCapabilities.Fork != nil,
+			"list_supported", initResp.AgentCapabilities.SessionCapabilities.List != nil)
+
+		// Log Meta fields if present (for future protocol extensions)
+		if len(initResp.Meta) > 0 {
+			c.logger.Debug("Agent initialize response meta", "meta", initResp.Meta)
+		}
+		if len(initResp.AgentCapabilities.Meta) > 0 {
+			c.logger.Debug("Agent capabilities meta", "meta", initResp.AgentCapabilities.Meta)
+		}
+		if initResp.AgentInfo != nil && len(initResp.AgentInfo.Meta) > 0 {
+			c.logger.Debug("Agent info meta", "meta", initResp.AgentInfo.Meta)
+		}
+	}
 
 	c.client.print("✅ Connected (protocol v%v)\n", initResp.ProtocolVersion)
 	return nil
@@ -346,4 +387,9 @@ func indexByte(s string, c byte) int {
 		}
 	}
 	return -1
+}
+
+// strPtr returns a pointer to the given string.
+func strPtr(s string) *string {
+	return &s
 }

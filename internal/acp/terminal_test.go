@@ -109,7 +109,7 @@ func TestClient_KillTerminalCommand(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	_, err := client.KillTerminalCommand(ctx, acp.KillTerminalCommandRequest{
+	_, err := client.KillTerminal(ctx, acp.KillTerminalRequest{
 		TerminalId: "term-1",
 	})
 
@@ -118,7 +118,7 @@ func TestClient_KillTerminalCommand(t *testing.T) {
 	}
 
 	// Should log the operation
-	if !strings.Contains(output.String(), "KillTerminalCommand") {
-		t.Errorf("output should contain 'KillTerminalCommand', got %q", output.String())
+	if !strings.Contains(output.String(), "KillTerminal") {
+		t.Errorf("output should contain 'KillTerminal', got %q", output.String())
 	}
 }
