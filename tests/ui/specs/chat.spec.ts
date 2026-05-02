@@ -77,7 +77,7 @@ test.describe("Chat Input", () => {
     await page.keyboard.press("Enter");
 
     // The message should appear in the chat (proving it was sent)
-    await expect(page.locator(`text=${testMessage}`)).toBeVisible({
+    await expect(page.locator(`text=${testMessage}`).first()).toBeVisible({
       timeout: 5000,
     });
   });
@@ -148,7 +148,7 @@ test.describe("Message Display", () => {
     await page.locator(selectors.sendButton).click();
 
     // Message should appear in the chat
-    await expect(page.locator(`text=${testMessage}`)).toBeVisible({
+    await expect(page.locator(`text=${testMessage}`).first()).toBeVisible({
       timeout: 5000,
     });
   });
@@ -165,8 +165,9 @@ test.describe("Message Display", () => {
     await textarea.fill(testMessage);
     await page.locator(selectors.sendButton).click();
 
-    // Wait for message to appear
-    await expect(page.locator(`text=${testMessage}`)).toBeVisible({
+    // Wait for message to appear (use .first() to avoid strict mode violation since
+    // the same text may appear in multiple places like sidebar and message content)
+    await expect(page.locator(`text=${testMessage}`).first()).toBeVisible({
       timeout: 5000,
     });
 
@@ -329,7 +330,7 @@ test.describe("Message Send Flow", () => {
 
     // Message should appear (may be truncated in display)
     await expect(
-      page.locator(`text=${testMessage.substring(0, 50)}`),
+      page.locator(`text=${testMessage.substring(0, 50)}`).first(),
     ).toBeVisible({
       timeout: timeouts.shortAction,
     });
@@ -354,7 +355,7 @@ test.describe("Message Send Flow", () => {
 
     // Message should appear (HTML should be escaped)
     await expect(
-      page.locator(`text=${testMessage.substring(0, 20)}`),
+      page.locator(`text=${testMessage.substring(0, 20)}`).first(),
     ).toBeVisible({
       timeout: timeouts.shortAction,
     });
@@ -615,12 +616,23 @@ test.describe("Scroll to Bottom Button", () => {
 
     // Verify scroll position is at bottom
     // scrollTop near scrollHeight-clientHeight = at visual bottom (newest messages)
+    // Use the same container selection as scrollInfo: find the overflow-y-auto that has message-enter children
     const isAtBottom = await page.evaluate(() => {
+      const containers = document.querySelectorAll(".overflow-y-auto");
+      for (const c of containers) {
+        if (c.querySelector(".message-enter")) {
+          const container = c as HTMLElement;
+          const maxScroll = container.scrollHeight - container.clientHeight;
+          const threshold = 100;
+          return container.scrollTop >= maxScroll - threshold;
+        }
+      }
+      // Fallback: use first container
       const container = document.querySelector(".overflow-y-auto");
       if (!container) return false;
       const maxScroll = container.scrollHeight - container.clientHeight;
       const threshold = 100;
-      return container.scrollTop >= maxScroll - threshold;
+      return (container as HTMLElement).scrollTop >= maxScroll - threshold;
     });
     expect(isAtBottom).toBe(true);
   });

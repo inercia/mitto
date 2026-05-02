@@ -4843,3 +4843,17 @@ func (bs *BackgroundSession) GetActiveUIPrompt() *UIPromptRequest {
 	req := bs.activePrompt.request
 	return &req
 }
+
+// UINotify sends a fire-and-forget notification to all UI observers.
+// This implements the mcpserver.UIPrompter interface (UINotify method).
+// Unlike UIPrompt, this is non-blocking — it dispatches the notification
+// to all observers and returns immediately without waiting for any response.
+func (bs *BackgroundSession) UINotify(req UINotifyRequest) error {
+	if bs.IsClosed() {
+		return fmt.Errorf("session is closed")
+	}
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnNotification(req)
+	})
+	return nil
+}

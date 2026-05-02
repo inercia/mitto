@@ -2259,3 +2259,23 @@ func (c *SessionWSClient) OnUIPromptDismiss(requestID string, reason string) {
 		"reason":     reason,
 	})
 }
+
+// OnNotification is called when an MCP tool sends a fire-and-forget notification.
+// It sends the notification to the frontend WebSocket client without waiting for a response.
+func (c *SessionWSClient) OnNotification(req UINotifyRequest) {
+	if c.logger != nil {
+		c.logger.Debug("Notification sent to client",
+			"session_id", c.sessionID,
+			"client_id", c.clientID,
+			"title", req.Title,
+			"style", req.Style)
+	}
+	c.sendMessage(WSMsgTypeNotification, map[string]interface{}{
+		"session_id": c.sessionID,
+		"title":      req.Title,
+		"message":    req.Message,
+		"style":      req.Style,
+		"sound":      req.Sound,
+		"native":     req.Native,
+	})
+}

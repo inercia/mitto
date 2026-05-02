@@ -389,6 +389,12 @@ const (
 	// Data: { "workspace_uuid": string, "tools": []MCPToolInfo }
 	WSMsgTypeMCPToolsAvailable = "mcp_tools_available"
 
+	// WSMsgTypeNotification sends a fire-and-forget notification to the client.
+	// Triggered by the mitto_ui_notify MCP tool. No response is expected from the client.
+	// Data: { "session_id": string, "title": string, "message": string, "style": string, "sound": bool, "native": bool }
+	// style is one of: "info", "success", "warning", "error"
+	WSMsgTypeNotification = "notification"
+
 	// WSMsgTypeEnabledWhenMCPStatus notifies the frontend about required tool pattern availability.
 	// Sent after checking which required tool patterns are satisfied in the workspace.
 	// This is sent progressively as retries discover newly-available tools.

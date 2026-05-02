@@ -1578,6 +1578,16 @@ export function useWebSocket() {
         break;
       }
 
+      case "notification": {
+        // Fire-and-forget notification from mitto_ui_notify MCP tool
+        console.log("[Notification] Received:", msg.data);
+        // Dispatch a custom event for the app to handle (toast + optional sound/native)
+        window.dispatchEvent(
+          new CustomEvent("mitto:notification", { detail: msg.data }),
+        );
+        break;
+      }
+
       case "ui_prompt_dismiss":
         // Dismiss an active UI prompt (timeout, cancelled, or replaced)
         console.log("[UIPrompt] Received ui_prompt_dismiss message:", {

@@ -4515,6 +4515,8 @@ func (m *mockUIPrompter) UIPrompt(_ context.Context, req UIPromptRequest) (UIPro
 
 func (m *mockUIPrompter) DismissPrompt(_ string) {}
 
+func (m *mockUIPrompter) UINotify(_ UINotifyRequest) error { return nil }
+
 func (m *mockUIPrompter) lastCall() UIPromptRequest {
 	m.mu.Lock()
 	defer m.mu.Unlock()

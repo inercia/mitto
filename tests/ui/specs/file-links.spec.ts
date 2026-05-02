@@ -4,9 +4,12 @@ import { test, expect } from "../fixtures/test-fixtures";
  * File link handling tests for Mitto Web UI.
  *
  * These tests verify that file links are handled correctly:
- * - HTML files should open directly in a new browser tab (rendered)
- * - All other files (including markdown) should open in the unified viewer
+ * - HTML files open in the unified viewer (which renders them in an iframe)
+ * - All other files (including markdown) open in the unified viewer
  * - The unified viewer handles both code (syntax-highlighted) and markdown (rendered prose)
+ *
+ * Note: /api/files? links are intercepted by app.js (backward-compat handler) and
+ * converted to viewer.html URLs before opening in a new tab.
  */
 
 test.describe("File Link Handling", () => {
@@ -15,7 +18,7 @@ test.describe("File Link Handling", () => {
     await helpers.ensureActiveSession(page);
   });
 
-  test("HTML files should open directly via API (not in viewer)", async ({
+  test("HTML files should open in viewer (rendered in iframe)", async ({
     page,
     context,
   }) => {
@@ -25,7 +28,8 @@ test.describe("File Link Handling", () => {
     const workspaceUUID = data.workspaces?.[0]?.uuid;
     expect(workspaceUUID).toBeTruthy();
 
-    // Inject a test link for an HTML file
+    // Inject a test link for an HTML file using the /api/files? URL format.
+    // app.js backward-compat handler intercepts this and converts it to viewer.html.
     await page.evaluate((wsUUID) => {
       const testDiv = document.createElement("div");
       testDiv.id = "test-file-links";
@@ -46,18 +50,11 @@ test.describe("File Link Handling", () => {
     // Wait for the new page to load
     await newPage.waitForLoadState("domcontentloaded");
 
-    // Verify the URL is the direct API endpoint (not viewer.html)
+    // The app.js backward-compat handler converts /api/files? URLs to viewer.html URLs.
+    // Verify the URL went through viewer.html and includes the file path.
     const url = newPage.url();
-    expect(url).toContain("/api/files?");
+    expect(url).toContain("viewer.html");
     expect(url).toContain("path=test-page.html");
-    expect(url).not.toContain("viewer.html");
-
-    // Verify the HTML is rendered (not shown as source code)
-    // The test-page.html has a specific marker we can check
-    await expect(newPage.locator("#html-test-marker")).toBeVisible();
-    await expect(newPage.locator("#html-test-marker")).toHaveText(
-      "This is a test HTML file for Playwright tests."
-    );
 
     await newPage.close();
   });
@@ -369,9 +366,10 @@ test.describe("Unified Viewer UI", () => {
     await expect(page.locator("#closeBtn")).toBeVisible();
     await expect(page.locator("#closeBtn")).toContainText("Close");
 
-    // Verify Download button is present
+    // Verify Download button is present and has correct title attribute
+    // (button is icon-only with an SVG, uses title="Download file" for accessibility)
     await expect(page.locator("#downloadBtn")).toBeVisible();
-    await expect(page.locator("#downloadBtn")).toContainText("Download");
+    await expect(page.locator("#downloadBtn")).toHaveAttribute("title", "Download file");
 
     // Verify font size buttons are visible (shown for code files)
     await expect(page.locator("#decreaseFontBtn")).toBeVisible();

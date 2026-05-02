@@ -354,6 +354,10 @@ func (m *mockSessionObserver) OnUIPromptDismiss(requestID string, reason string)
 	// no-op for testing
 }
 
+func (m *mockSessionObserver) OnNotification(req UINotifyRequest) {
+	// no-op for testing
+}
+
 func (m *mockSessionObserver) getACPStoppedReasons() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1863,6 +1867,9 @@ func (o *trackingObserver) OnUIPromptDismiss(requestID string, reason string) {
 		o.onUIPromptDismiss(requestID, reason)
 	}
 }
+
+func (o *trackingObserver) OnNotification(req UINotifyRequest) {}
+
 
 // =============================================================================
 // GetMaxAssignedSeq Tests

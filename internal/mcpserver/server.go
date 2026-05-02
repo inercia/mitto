@@ -1033,6 +1033,17 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleUIForm)
 
+	// mitto_ui_notify - Send a non-blocking notification to the user
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_ui_notify",
+		Description: "Send a notification to the user. Unlike other UI tools, this is non-blocking — " +
+			"it sends the notification and returns immediately without waiting for user interaction. " +
+			"Useful for informing the user about progress, completion, errors, or other events. " +
+			"style can be: 'info' (default, blue), 'success' (green), 'warning' (amber), 'error' (red). " +
+			"Requires 'Can prompt user' flag to be enabled. " +
+			selfIDNote,
+	}, s.handleUINotify)
+
 	// mitto_conversation_new - Start a new conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_new",
@@ -2000,6 +2011,86 @@ func (s *Server) handleUIForm(ctx context.Context, req *mcp.CallToolRequest, inp
 		Submitted: true,
 		Values:    values,
 	}, nil
+}
+
+func (s *Server) handleUINotify(_ context.Context, req *mcp.CallToolRequest, input UINotifyInput) (*mcp.CallToolResult, UINotifyOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, UINotifyOutput{}, fmt.Errorf("self_id is required")
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, UINotifyOutput{}, fmt.Errorf(
+			"session not found: the self_id '%s' could not be resolved",
+			input.SelfID,
+		)
+	}
+
+	// Check if session is registered and get the UIPrompter
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, UINotifyOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
+	}
+
+	// Permission check
+	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
+		return nil, UINotifyOutput{}, permissionError("mitto_ui_notify", session.FlagCanPromptUser, "Can prompt user")
+	}
+
+	// Check if UIPrompter is available
+	if reg.uiPrompter == nil {
+		return nil, UINotifyOutput{}, fmt.Errorf("UI notifications are not available (no UI connected)")
+	}
+
+	// Validate title
+	if input.Title == "" {
+		return nil, UINotifyOutput{}, fmt.Errorf("title is required")
+	}
+
+	// Validate and default style
+	style := input.Style
+	switch style {
+	case "info", "success", "warning", "error":
+		// valid
+	case "":
+		style = "info"
+	default:
+		return nil, UINotifyOutput{}, fmt.Errorf("style must be one of: 'info', 'success', 'warning', 'error' (got '%s')", style)
+	}
+
+	// Truncate fields to reasonable limits
+	const maxTitleLen = 200
+	const maxMessageLen = 1000
+	title := []rune(input.Title)
+	if len(title) > maxTitleLen {
+		title = append(title[:maxTitleLen-1], '…')
+	}
+	message := []rune(input.Message)
+	if len(message) > maxMessageLen {
+		message = append(message[:maxMessageLen-1], '…')
+	}
+
+	notifyReq := UINotifyRequest{
+		Title:   string(title),
+		Message: string(message),
+		Style:   style,
+		Sound:   input.Sound,
+		Native:  input.Native,
+	}
+
+	s.logger.Debug("UI notify dispatched",
+		"session_id", realSessionID,
+		"title", notifyReq.Title,
+		"style", style)
+
+	// Fire-and-forget — UINotify is non-blocking
+	if err := reg.uiPrompter.UINotify(notifyReq); err != nil {
+		return nil, UINotifyOutput{}, fmt.Errorf("failed to send notification: %w", err)
+	}
+
+	return nil, UINotifyOutput{Success: true}, nil
 }
 
 // computeUnifiedDiff generates a simple unified diff between two texts.

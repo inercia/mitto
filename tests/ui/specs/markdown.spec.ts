@@ -212,7 +212,7 @@ test.describe("Mermaid Diagram Rendering", () => {
     await page.locator(selectors.sendButton).click();
 
     // Confirm the prompt was accepted — user message should appear in the chat
-    await expect(page.locator("text=Show mermaid diagram")).toBeVisible({
+    await expect(page.locator("text=Show mermaid diagram").first()).toBeVisible({
       timeout: timeouts.shortAction,
     });
 

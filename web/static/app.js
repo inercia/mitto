@@ -3189,6 +3189,7 @@ function App() {
   const [acpStartFailedError, setAcpStartFailedError] = useState(null); // { session_id, error }
   const [acpPermanentError, setAcpPermanentError] = useState(null); // { session_id, error, user_message, user_guidance, command }
   const [hookFailedError, setHookFailedError] = useState(null); // { name, exit_code, error }
+  const [notificationToast, setNotificationToast] = useState(null); // { title, message, style } from mitto_ui_notify
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   // Per-session draft text: { sessionId: draftText } - null key for "no session" state
@@ -3458,6 +3459,53 @@ function App() {
     };
   }, []);
 
+  // Ref to track mitto_ui_notify notification toast hide timer
+  const notificationToastTimerRef = useRef(null);
+
+  // Listen for mitto:notification events dispatched by useWebSocket
+  useEffect(() => {
+    const handleNotification = (event) => {
+      const data = event.detail;
+      if (!data) return;
+
+      // Play sound if requested (reuse the agent-completed sound)
+      if (data.sound && window.mittoAgentCompletedSoundEnabled) {
+        playAgentCompletedSound();
+      }
+
+      // Show native notification if requested and available (macOS app only)
+      if (
+        data.native &&
+        window.mittoNativeNotificationsEnabled &&
+        typeof window.mittoShowNativeNotification === "function"
+      ) {
+        window.mittoShowNativeNotification(
+          data.title || "Notification",
+          data.message || "",
+          data.session_id || "",
+        );
+      }
+
+      // Show in-app toast
+      setNotificationToast({ title: data.title, message: data.message, style: data.style || "info" });
+
+      // Clear any existing auto-hide timer
+      if (notificationToastTimerRef.current) {
+        clearTimeout(notificationToastTimerRef.current);
+      }
+      // Auto-hide: 8 seconds for errors, 5 seconds for others
+      const delay = data.style === "error" ? 8000 : 5000;
+      notificationToastTimerRef.current = setTimeout(() => {
+        setNotificationToast(null);
+        notificationToastTimerRef.current = null;
+      }, delay);
+    };
+    window.addEventListener("mitto:notification", handleNotification);
+    return () => {
+      window.removeEventListener("mitto:notification", handleNotification);
+    };
+  }, []);
+
   // Cleanup timers on unmount
   useEffect(() => {
     return () => {
@@ -3472,6 +3520,9 @@ function App() {
       }
       if (hookFailedTimerRef.current) {
         clearTimeout(hookFailedTimerRef.current);
+      }
+      if (notificationToastTimerRef.current) {
+        clearTimeout(notificationToastTimerRef.current);
       }
     };
   }, []);
@@ -5892,6 +5943,49 @@ function App() {
                 ${hookFailedError.error}
               </div>
             </div>
+          </div>
+        </div>
+      `}
+
+      <!-- mitto_ui_notify notification toast -->
+      ${notificationToast &&
+      html`
+        <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-enter">
+          <div
+            class="flex flex-col gap-1 px-4 py-3 rounded-lg shadow-lg max-w-md ${notificationToast.style ===
+              "error"
+              ? "bg-red-600 text-white"
+              : notificationToast.style === "warning"
+                ? "bg-amber-500 text-white"
+                : notificationToast.style === "success"
+                  ? "bg-green-600 text-white"
+                  : "bg-blue-600 text-white"}"
+          >
+            <div class="flex items-center gap-2">
+              <span class="text-lg"
+                >${notificationToast.style === "error"
+                  ? "❌"
+                  : notificationToast.style === "warning"
+                    ? "⚠️"
+                    : notificationToast.style === "success"
+                      ? "✅"
+                      : "ℹ️"}</span
+              >
+              <span class="text-sm font-medium">${notificationToast.title}</span>
+              <button
+                onClick=${() => setNotificationToast(null)}
+                class="ml-auto text-white/80 hover:text-white"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+            ${notificationToast.message &&
+            html`
+              <div class="text-xs opacity-90 ml-7 break-words">
+                ${notificationToast.message}
+              </div>
+            `}
           </div>
         </div>
       `}

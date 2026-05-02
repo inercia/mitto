@@ -182,6 +182,22 @@ type UIPromptResponse struct {
 	Aborted bool `json:"aborted,omitempty"`
 }
 
+// UINotifyRequest is sent to the UI to display a non-blocking notification.
+// Unlike UIPromptRequest, this is fire-and-forget — no response is expected.
+type UINotifyRequest struct {
+	// Title is the notification title (required, max 200 chars).
+	Title string `json:"title"`
+	// Message is the optional body text (max 1000 chars).
+	Message string `json:"message,omitempty"`
+	// Style determines the visual appearance: "info", "success", "warning", "error".
+	// Defaults to "info".
+	Style string `json:"style,omitempty"`
+	// Sound requests an audible notification sound when true.
+	Sound bool `json:"sound,omitempty"`
+	// Native requests a native OS notification in addition to the in-app toast.
+	Native bool `json:"native,omitempty"`
+}
+
 // UIPrompter allows MCP tools to display interactive prompts in the UI.
 // The BackgroundSession implements this interface to bridge MCP tools
 // with WebSocket-connected UI clients.
@@ -197,4 +213,9 @@ type UIPrompter interface {
 	// DismissPrompt cancels any active prompt with the given request ID.
 	// This is called when the prompt should be dismissed (e.g., session activity).
 	DismissPrompt(requestID string)
+
+	// UINotify sends a fire-and-forget notification to the UI.
+	// Unlike UIPrompt, this is non-blocking — it returns immediately after
+	// dispatching the notification to all observers without waiting for a response.
+	UINotify(req UINotifyRequest) error
 }

@@ -379,6 +379,21 @@ type UIFormOutput struct {
 	Values    map[string]string `json:"values,omitempty"` // field name → value
 }
 
+// UINotifyInput is the input for the mitto_ui_notify tool.
+type UINotifyInput struct {
+	SelfID  string `json:"self_id"`           // YOUR session ID (the caller)
+	Title   string `json:"title"`             // Notification title (required)
+	Message string `json:"message,omitempty"` // Optional body text
+	Style   string `json:"style,omitempty"`   // "info" (default), "success", "warning", "error"
+	Sound   bool   `json:"sound,omitempty"`   // Play notification sound
+	Native  bool   `json:"native,omitempty"`  // Show native OS notification if available
+}
+
+// UINotifyOutput is the output for the mitto_ui_notify tool.
+type UINotifyOutput struct {
+	Success bool `json:"success"`
+}
+
 // =============================================================================
 // Parent-Child Task Coordination Types
 // =============================================================================
