@@ -360,117 +360,6 @@ This is a test prompt with a group.
 	}
 }
 
-func TestIsAllowedForACP_EmptyACPs(t *testing.T) {
-	prompt := &PromptFile{Name: "Test", EnabledWhenACP: ""}
-
-	// Empty ACPs means allowed for all
-	if !prompt.IsAllowedForACP("auggie") {
-		t.Error("IsAllowedForACP('auggie') = false, want true for empty ACPs")
-	}
-	if !prompt.IsAllowedForACP("claude-code") {
-		t.Error("IsAllowedForACP('claude-code') = false, want true for empty ACPs")
-	}
-	if !prompt.IsAllowedForACP("") {
-		t.Error("IsAllowedForACP('') = false, want true for empty ACPs")
-	}
-}
-
-func TestIsAllowedForACP_SingleACP(t *testing.T) {
-	prompt := &PromptFile{Name: "Test", EnabledWhenACP: "claude-code"}
-
-	if !prompt.IsAllowedForACP("claude-code") {
-		t.Error("IsAllowedForACP('claude-code') = false, want true")
-	}
-	if prompt.IsAllowedForACP("auggie") {
-		t.Error("IsAllowedForACP('auggie') = true, want false")
-	}
-	// Empty ACP server should allow all prompts
-	if !prompt.IsAllowedForACP("") {
-		t.Error("IsAllowedForACP('') = false, want true for empty server")
-	}
-}
-
-func TestIsAllowedForACP_MultipleACPs(t *testing.T) {
-	prompt := &PromptFile{Name: "Test", EnabledWhenACP: "auggie, claude-code, custom-acp"}
-
-	if !prompt.IsAllowedForACP("auggie") {
-		t.Error("IsAllowedForACP('auggie') = false, want true")
-	}
-	if !prompt.IsAllowedForACP("claude-code") {
-		t.Error("IsAllowedForACP('claude-code') = false, want true")
-	}
-	if !prompt.IsAllowedForACP("custom-acp") {
-		t.Error("IsAllowedForACP('custom-acp') = false, want true")
-	}
-	if prompt.IsAllowedForACP("other-acp") {
-		t.Error("IsAllowedForACP('other-acp') = true, want false")
-	}
-}
-
-func TestIsAllowedForACP_CaseInsensitive(t *testing.T) {
-	prompt := &PromptFile{Name: "Test", EnabledWhenACP: "Claude-Code"}
-
-	if !prompt.IsAllowedForACP("claude-code") {
-		t.Error("IsAllowedForACP('claude-code') = false, want true (case insensitive)")
-	}
-	if !prompt.IsAllowedForACP("CLAUDE-CODE") {
-		t.Error("IsAllowedForACP('CLAUDE-CODE') = false, want true (case insensitive)")
-	}
-}
-
-func TestFilterPromptsByACP(t *testing.T) {
-	prompts := []*PromptFile{
-		{Name: "All ACPs", EnabledWhenACP: ""},
-		{Name: "Claude Only", EnabledWhenACP: "claude-code"},
-		{Name: "Auggie Only", EnabledWhenACP: "auggie"},
-		{Name: "Both", EnabledWhenACP: "claude-code, auggie"},
-	}
-
-	// Filter for auggie
-	filtered := FilterPromptsByACP(prompts, "auggie")
-	if len(filtered) != 3 {
-		t.Errorf("FilterPromptsByACP(auggie) returned %d prompts, want 3", len(filtered))
-	}
-
-	// Check that "Claude Only" is not in the filtered list
-	for _, p := range filtered {
-		if p.Name == "Claude Only" {
-			t.Error("FilterPromptsByACP(auggie) should not include 'Claude Only'")
-		}
-	}
-
-	// Filter for claude-code
-	filtered = FilterPromptsByACP(prompts, "claude-code")
-	if len(filtered) != 3 {
-		t.Errorf("FilterPromptsByACP(claude-code) returned %d prompts, want 3", len(filtered))
-	}
-
-	// Check that "Auggie Only" is not in the filtered list
-	for _, p := range filtered {
-		if p.Name == "Auggie Only" {
-			t.Error("FilterPromptsByACP(claude-code) should not include 'Auggie Only'")
-		}
-	}
-
-	// Empty ACP server should return all prompts
-	filtered = FilterPromptsByACP(prompts, "")
-	if len(filtered) != 4 {
-		t.Errorf("FilterPromptsByACP('') returned %d prompts, want 4", len(filtered))
-	}
-
-	// Empty prompts should return empty
-	filtered = FilterPromptsByACP([]*PromptFile{}, "auggie")
-	if len(filtered) != 0 {
-		t.Errorf("FilterPromptsByACP on empty slice returned %d prompts, want 0", len(filtered))
-	}
-
-	// Nil prompts should return nil
-	filtered = FilterPromptsByACP(nil, "auggie")
-	if filtered != nil {
-		t.Errorf("FilterPromptsByACP(nil) = %v, want nil", filtered)
-	}
-}
-
 func TestIsSpecificToACP(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -498,40 +387,7 @@ func TestIsSpecificToACP(t *testing.T) {
 	}
 }
 
-func TestMatchToolPattern(t *testing.T) {
-	tests := []struct {
-		name     string
-		pattern  string
-		toolName string
-		want     bool
-	}{
-		{"exact match", "exact_tool", "exact_tool", true},
-		{"exact no match", "exact_tool", "other_tool", false},
-		{"wildcard suffix match", "jira_*", "jira_search", true},
-		{"wildcard suffix match 2", "jira_*", "jira_get_issue", true},
-		{"wildcard suffix no match", "jira_*", "slack_post_message", false},
-		{"wildcard prefix match", "*_search", "jira_search", true},
-		{"wildcard prefix no match", "*_search", "jira_get_issue", false},
-		{"wildcard middle match", "jira_*_search", "jira_advanced_search", true},
-		{"wildcard middle no match", "jira_*_search", "jira_get_issue", false},
-		{"case insensitive pattern", "JIRA_*", "jira_search", true},
-		{"case insensitive tool", "jira_*", "JIRA_SEARCH", true},
-		{"empty pattern", "", "jira_search", false},
-		{"empty tool", "jira_*", "", false},
-		{"both empty", "", "", false},
-		{"star only matches all", "*", "anything", true},
-		{"star only matches empty-ish", "*", "a", true},
-	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := MatchToolPattern(tt.pattern, tt.toolName)
-			if got != tt.want {
-				t.Errorf("MatchToolPattern(%q, %q) = %v, want %v", tt.pattern, tt.toolName, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestCollectRequiredToolPatterns(t *testing.T) {
 	prompts := []*PromptFile{
@@ -578,35 +434,7 @@ func TestCollectRequiredToolPatterns_Empty(t *testing.T) {
 	}
 }
 
-func TestAreEnabledWhenMCPSatisfied(t *testing.T) {
-	satisfied := map[string]bool{
-		"jira_*":  true,
-		"slack_*": true,
-	}
 
-	tests := []struct {
-		name          string
-		requiredTools string
-		satisfiedMap  map[string]bool
-		want          bool
-	}{
-		{"empty required tools", "", satisfied, true},
-		{"all satisfied", "jira_*,slack_*", satisfied, true},
-		{"some not satisfied", "jira_*,github_*", satisfied, false},
-		{"none satisfied", "github_*", satisfied, false},
-		{"empty patterns map", "jira_*", map[string]bool{}, false},
-		{"whitespace in patterns", " jira_* , slack_* ", satisfied, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := AreEnabledWhenMCPSatisfied(tt.requiredTools, tt.satisfiedMap)
-			if got != tt.want {
-				t.Errorf("AreEnabledWhenMCPSatisfied(%q, %v) = %v, want %v", tt.requiredTools, tt.satisfiedMap, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestParsePromptFile_WithEnabledWhenMCP(t *testing.T) {
 	data := []byte(`---
@@ -696,3 +524,33 @@ func TestFilterPromptsSpecificToACP(t *testing.T) {
 		t.Errorf("FilterPromptsSpecificToACP(nil) = %v, want nil", filtered)
 	}
 }
+
+func TestTranslateShorthandToEnabledWhen(t *testing.T) {
+	tests := []struct {
+		name           string
+		enabledWhenACP string
+		enabledWhenMCP string
+		enabledWhen    string
+		want           string
+	}{
+		{"empty", "", "", "", ""},
+		{"acp single", "auggie", "", "", `acp.matchesServer("auggie")`},
+		{"acp multiple", "auggie, claude-code", "", "", `acp.matchesServer(["auggie", "claude-code"])`},
+		{"mcp single", "", "mitto_*", "", `tools.hasPattern("mitto_*")`},
+		{"mcp multiple", "", "jira_*, mitto_*", "", `tools.hasAllPatterns(["jira_*", "mitto_*"])`},
+		{"acp + mcp", "auggie", "mitto_*", "", `acp.matchesServer("auggie") && tools.hasPattern("mitto_*")`},
+		{"all three", "auggie", "mitto_*", "session.isChild", `acp.matchesServer("auggie") && tools.hasPattern("mitto_*") && session.isChild`},
+		{"only enabledWhen", "", "", "session.isChild", "session.isChild"},
+		{"mcp + existing", "", "jira_*", "parent.exists", `tools.hasPattern("jira_*") && parent.exists`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TranslateShorthandToEnabledWhen(tt.enabledWhenACP, tt.enabledWhenMCP, tt.enabledWhen)
+			if got != tt.want {
+				t.Errorf("TranslateShorthandToEnabledWhen(%q, %q, %q) = %q, want %q",
+					tt.enabledWhenACP, tt.enabledWhenMCP, tt.enabledWhen, got, tt.want)
+			}
+		})
+	}
+}
+

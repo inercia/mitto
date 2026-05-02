@@ -61,6 +61,9 @@ const (
 	PromptSourceSettings PromptSource = "settings"
 	// PromptSourceWorkspace indicates the prompt was defined in a workspace .mittorc file
 	PromptSourceWorkspace PromptSource = "workspace"
+	// PromptSourceBuiltin indicates the prompt was loaded from the builtin prompts directory
+	// (MITTO_DIR/prompts/builtin/). These prompts are read-only and can only be disabled.
+	PromptSourceBuiltin PromptSource = "builtin"
 )
 
 // WebPrompt represents a predefined prompt for the web interface.
@@ -84,16 +87,15 @@ type WebPrompt struct {
 	// EnabledWhenACP is an optional comma-separated list of ACP server names this prompt applies to.
 	// If empty, the prompt works with all ACP servers.
 	// Example: "auggie, claude-code" means only show this prompt for those ACP servers.
-	// This is included so the frontend can filter prompts client-side.
-	EnabledWhenACP string `json:"enabledWhenACP,omitempty"`
+	// Filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
+	EnabledWhenACP string `json:"-"`
 	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for this prompt.
 	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
-	// Sent to frontend so it can filter prompts based on tool availability.
-	EnabledWhenMCP string `json:"enabledWhenMCP,omitempty"`
+	// Filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
+	EnabledWhenMCP string `json:"-"`
 	// EnabledWhen is an optional CEL expression for conditional visibility.
-	// Sent to frontend for display purposes (e.g., showing why prompt is hidden).
-	// Actual filtering happens server-side.
-	EnabledWhen string `json:"enabledWhen,omitempty"`
+	// Actual filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
+	EnabledWhen string `json:"-"`
 	// Enabled controls whether the prompt is active after merging.
 	// A nil value means enabled (default true). Only explicit false disables.
 	// This is used during merge to allow higher-priority sources to disable prompts.
@@ -826,6 +828,45 @@ func MergePrompts(globalFilePrompts, settingsPrompts, workspacePrompts []WebProm
 	return filtered
 }
 
+// MergePromptsKeepDisabled combines prompts from multiple sources with proper priority,
+// but unlike MergePrompts, it does NOT filter out disabled prompts.
+// This is needed when returning workspace prompts to the frontend, because
+// disabled entries (enabled: false) must reach the frontend so it can use them
+// to suppress same-named global/builtin prompts in the prompts menu.
+func MergePromptsKeepDisabled(globalFilePrompts, settingsPrompts, workspacePrompts []WebPrompt) []WebPrompt {
+	seen := make(map[string]bool)
+	var result []WebPrompt
+
+	// Add workspace prompts first (highest priority)
+	for _, p := range workspacePrompts {
+		if p.Name != "" && !seen[p.Name] {
+			p.Source = PromptSourceWorkspace
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
+	// Add settings prompts (medium priority)
+	for _, p := range settingsPrompts {
+		if p.Name != "" && !seen[p.Name] {
+			p.Source = PromptSourceSettings
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
+	// Add global file prompts (lowest priority)
+	for _, p := range globalFilePrompts {
+		if p.Name != "" && !seen[p.Name] {
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
+	return result
+}
+
+
 // ============================================================================
 // Restricted Runner Types
 //
@@ -982,6 +1023,7 @@ type rawACPServerConfig struct {
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		EnabledWhenACP  string `yaml:"enabledWhenACP"`
+		EnabledWhenMCP  string `yaml:"enabledWhenMCP"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -999,6 +1041,7 @@ type rawConfig struct {
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		EnabledWhenACP  string `yaml:"enabledWhenACP"`
+		EnabledWhenMCP  string `yaml:"enabledWhenMCP"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1185,15 +1228,21 @@ func Parse(data []byte) (*Config, error) {
 				if p.Enabled != nil && !*p.Enabled {
 					continue
 				}
-				acpServer.Prompts = append(acpServer.Prompts, WebPrompt{
+				wp := WebPrompt{
 					Name:            p.Name,
 					Prompt:          p.Prompt,
 					BackgroundColor: p.BackgroundColor,
 					Description:     p.Description,
 					Group:           p.Group,
 					EnabledWhenACP:  p.EnabledWhenACP,
+					EnabledWhenMCP:  p.EnabledWhenMCP,
 					EnabledWhen:     p.EnabledWhen,
-				})
+				}
+				// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
+				if wp.EnabledWhenACP != "" || wp.EnabledWhenMCP != "" {
+					wp.EnabledWhen = TranslateShorthandToEnabledWhen(wp.EnabledWhenACP, wp.EnabledWhenMCP, wp.EnabledWhen)
+				}
+				acpServer.Prompts = append(acpServer.Prompts, wp)
 			}
 			cfg.ACPServers = append(cfg.ACPServers, acpServer)
 		}
@@ -1210,16 +1259,22 @@ func Parse(data []byte) (*Config, error) {
 		if p.Prompt == "" && !isDisabled {
 			continue
 		}
-		cfg.Prompts = append(cfg.Prompts, WebPrompt{
+		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,
 			BackgroundColor: p.BackgroundColor,
 			Description:     p.Description,
 			Group:           p.Group,
 			EnabledWhenACP:  p.EnabledWhenACP,
+			EnabledWhenMCP:  p.EnabledWhenMCP,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
-		})
+		}
+		// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
+		if wp.EnabledWhenACP != "" || wp.EnabledWhenMCP != "" {
+			wp.EnabledWhen = TranslateShorthandToEnabledWhen(wp.EnabledWhenACP, wp.EnabledWhenMCP, wp.EnabledWhen)
+		}
+		cfg.Prompts = append(cfg.Prompts, wp)
 	}
 
 	// Populate prompts directories
