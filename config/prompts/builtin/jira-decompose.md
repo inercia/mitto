@@ -3,8 +3,7 @@ name: "JIRA: decompose"
 description: "Break a JIRA ticket into sub-tickets and create them automatically"
 backgroundColor: "#E1BEE7"
 group: "JIRA"
-enabledWhen: "!session.isChild"
-enabledWhenMCP: jira_*
+enabledWhen: '!session.isChild && tools.hasPattern("jira_*")'
 ---
 
 ## Session Context

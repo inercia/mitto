@@ -1,3 +1,4 @@
+##########################################################################################
 # Builtin processor: suggests delegating coding tasks to faster models.
 #
 # This processor activates only for ACP servers tagged with "reasoning" or whose
@@ -8,7 +9,8 @@
 # your mitto config, or rename them to include a keyword like "opus", "o3", etc.
 #
 # Uses the same CEL context as prompt enabledWhen expressions.
-# Also requires mitto_conversation_* MCP tools to be available (enabledWhenMCP).
+# Also requires mitto_conversation_* MCP tools to be available (tools.hasPattern CEL).
+##########################################################################################
 name: delegate-to-coder
 description: "Suggests delegating coding tasks to a faster model when using a premium reasoning model"
 enabled: true

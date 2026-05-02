@@ -1,3 +1,4 @@
+##########################################################################################
 # Builtin processor: checks if Mitto MCP tools are available and suggests installation.
 #
 # This processor appends a note asking the agent to verify MCP tool availability
@@ -5,6 +6,7 @@
 # and re-runs periodically to re-check.
 #
 # Uses text-mode (no external command).
+##########################################################################################
 name: check-mcp-tools
 description: "Checks if Mitto MCP tools are available and suggests installation"
 enabled: true

@@ -1,3 +1,4 @@
+##########################################################################################
 # Builtin processor: delegates Playwright browser automation to a faster model.
 #
 # When using a premium reasoning model (Opus, o3, etc.) and Playwright MCP tools
@@ -14,6 +15,7 @@
 #
 # To activate, tag your premium ACP servers with "reasoning" in your mitto config,
 # or use a name containing "opus", "o3", etc.
+##########################################################################################
 name: delegate-playwright
 description: "Delegates Playwright browser automation to a faster model when using a premium reasoning model"
 enabled: true
@@ -24,13 +26,13 @@ rerun:
   afterTime: 30m
   afterSentMsgs: 20
 enabledWhen: >-
-  acp.tags.exists(t, t == "reasoning")
+  (acp.tags.exists(t, t == "reasoning")
   || acp.tags.exists(t, t == "thinking")
   || acp.name.contains("opus")
   || acp.name.contains("o3")
   || acp.name.contains("deep-research")
-  || acp.name.contains("codex")
-enabledWhenMCP: "browser_*, mitto_conversation_*"
+  || acp.name.contains("codex"))
+  && tools.hasAllPatterns(["browser_*", "mitto_conversation_*"])
 text: |
   ---
   [Playwright Delegation Guidance]

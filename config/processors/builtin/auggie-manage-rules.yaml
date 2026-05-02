@@ -1,0 +1,110 @@
+##########################################################################################
+# Builtin processor: generates and maintains Augment rules files for a workspace.
+#
+# On first run, dispatches a prompt to an auxiliary AI agent that explores the workspace
+# and generates comprehensive .augment/rules/ files. On subsequent runs (every 15
+# messages), it reviews recent conversation history and updates the rules with new
+# patterns, conventions, and lessons learned.
+#
+# Fire-and-forget: the auxiliary agent works in the background while the main
+# conversation continues normally.
+#
+# Disabled by default — enable per workspace in the Workspaces dialog or .mittorc.
+# Only activates when the ACP server is Auggie.
+##########################################################################################
+name: auggie-manage-rules
+description: "Generate and maintain .augment/rules/ files from workspace analysis and conversations"
+enabled: false
+when: first
+priority: 200
+timeout: 300s
+on_error: skip
+rerun:
+  afterSentMsgs: 15
+
+# Only for Auggie sessions, skip periodic prompts
+enabledWhen: 'acp.matchesServer("auggie") && !session.isPeriodic'
+
+prompt: |
+  You manage `.augment/rules` files for this workspace.
+
+  Working directory: @mitto:working_dir
+
+  ## If no `.augment/rules/` files exist yet
+
+  Explore the workspace and generate comprehensive rules files:
+
+  1. **Explore**: Read configs, entry points, tests, and key source files in parallel.
+     Understand the project's purpose, tech stack, architecture, conventions, and patterns.
+
+  2. **Generate** rules files with this structure:
+
+     ```markdown
+     ---
+     description: Brief description
+     globs:
+       - "**/*.ext"
+     alwaysApply: true  # Optional
+     ---
+     # Rule Title
+     Content...
+     ```
+
+     Recommended files:
+     - **00-overview.md** - Project overview (`alwaysApply: true`)
+     - **01-[language]-conventions.md** - Naming, formatting, idioms, error handling
+     - **02-[component].md** - Per major subsystem: architecture, patterns, operations
+     - **0N-testing.md** - Test organization, naming, patterns, how to run
+     - **0N-config.md** - Config formats, env variables, settings loading
+
+  3. Create `.augment/rules/` if needed. Keep each file <200 lines.
+
+  ## If `.augment/rules/` files already exist
+
+  Review the recent conversation messages below and update rules based on insights
+  and lessons learned:
+
+  1. Add new architectural patterns or components introduced
+  2. Document new conventions, best practices, or anti-patterns discovered
+  3. Update outdated or incomplete sections
+  4. Add sections for uncovered areas (new packages, APIs, patterns)
+  5. Ensure examples reflect current codebase
+
+  If no meaningful updates are needed, do nothing — do NOT modify any files.
+
+  ## Size and Scope Control
+
+  Rules files must stay lean and focused. They are loaded into every AI conversation,
+  so bloated rules waste context and degrade quality.
+
+  - **Hard limit**: Each individual file MUST stay under 150 lines. If a file grows
+    beyond this, split it or aggressively trim.
+  - **Total budget**: Aim for no more than ~10 rules files total. Fewer, focused files
+    are better than many overlapping ones.
+  - **Prune ruthlessly**: On every update, actively look for content to remove:
+    - Outdated patterns that no longer match the codebase
+    - Redundant entries that repeat information already in other files
+    - Obvious guidance that any competent AI would follow without being told
+    - Verbose examples that could be shortened without losing clarity
+  - **Never duplicate docs**: If the project has its own documentation, reference it
+    by path instead of copying content into rules files.
+  - **Prefer tables over prose** for quick-reference material.
+  - Consider splitting large files into focused, scope-specific files. Goal: focused
+    rules files loaded only when their topic is relevant.
+
+  ## Content Guidelines
+
+  - Be specific: include file paths, function names, exact patterns
+  - Show code examples demonstrating correct usage
+  - Make rules actionable for coding decisions
+  - Include common pitfalls and anti-pattern examples
+  - Reference existing repo docs rather than duplicating
+
+  === Recent Conversation ===
+  @mitto:messages
+
+messages:
+  scope: since-last-run
+  roles: [user, agent]
+  max_messages: 30
+  max_tokens: 8000

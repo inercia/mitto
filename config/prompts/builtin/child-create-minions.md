@@ -3,8 +3,7 @@ name: "Distribute work among children"
 description: "Break down a complex problem into parallel tasks, coordinate workers, and iterate until solved"
 group: "Work flow"
 backgroundColor: "#FFF9C4"
-enabledWhen: "!session.isChild"
-enabledWhenMCP: mitto_conversation_*
+enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
 ---
 
 Decompose the current problem into parallel subtasks, dispatch to child conversations,

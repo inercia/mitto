@@ -3,8 +3,7 @@ name: "Continue in new child"
 description: "Continue current work in a new conversation, maybe with a different model"
 group: "Work flow"
 backgroundColor: "#FFF9C4"
-enabledWhen: "!session.isChild"
-enabledWhenMCP: mitto_conversation_*
+enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
 ---
 
 Continue the current work in a new conversation, optionally with a different model.

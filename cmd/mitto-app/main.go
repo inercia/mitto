@@ -1401,11 +1401,16 @@ func run() error {
 	// Start health monitor if external address is configured
 	var healthMonitor *hooks.HealthMonitor
 	if cfg != nil && cfg.Web.Hooks.ExternalAddress != "" && upHook != nil {
+		apiPrefix := config.DefaultAPIPrefix
+		if cfg.Web.APIPrefix != "" {
+			apiPrefix = cfg.Web.APIPrefix
+		}
 		healthMonitor = hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
-			Address:  cfg.Web.Hooks.ExternalAddress,
-			UpHook:   cfg.Web.Hooks.Up,
-			DownHook: cfg.Web.Hooks.Down,
-			Port:     hookPort,
+			Address:   cfg.Web.Hooks.ExternalAddress,
+			APIPrefix: apiPrefix,
+			UpHook:    cfg.Web.Hooks.Up,
+			DownHook:  cfg.Web.Hooks.Down,
+			Port:      hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
 				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 			},

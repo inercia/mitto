@@ -1,0 +1,100 @@
+##########################################################################################
+# Builtin processor: automatically identifies user data from conversations.
+#
+# This prompt-mode processor examines user messages and tries to detect values for the
+# user data fields defined in the workspace's .mittorc schema. It uses the field names
+# and descriptions from the schema to guide identification, then calls the
+# mitto_conversation_update MCP tool to set the detected values.
+#
+# Fire-and-forget: the auxiliary agent works in the background while the main
+# conversation continues normally.
+#
+# Disabled by default — enable per workspace in the Workspaces dialog or .mittorc.
+# Only activates when the workspace has a user data schema defined.
+##########################################################################################
+name: identify-user-data
+description: "Detects user data values from conversations and sets them via MCP"
+enabled: false
+when: first
+priority: 190
+timeout: 120s
+on_error: skip
+rerun:
+  afterSentMsgs: 5
+
+# Only activate when the workspace has a user data schema and this isn't a periodic prompt
+enabledWhen: 'workspace.hasUserDataSchema && !session.isPeriodic'
+
+prompt: |
+  You are a metadata extractor. Your job is to analyze the conversation messages below
+  and identify values for the workspace's user data fields.
+
+  ## Session Info
+
+  Session ID: @mitto:session_id
+  Working Directory: @mitto:working_dir
+
+  ## User Data Schema
+
+  The workspace defines these user data fields. Each field has a name, description,
+  and type. Use the **description** to understand what kind of value to look for:
+
+  ```json
+  @mitto:user_data_schema
+  ```
+
+  ## Current User Data
+
+  These values are already set for this conversation (may be empty if nothing has been
+  identified yet):
+
+  ```json
+  @mitto:user_data
+  ```
+
+  ## Your Task
+
+  1. Read through the conversation messages below carefully.
+  2. For each field in the schema, check whether the messages contain information that
+     matches the field's description.
+  3. **Only extract values you are confident about.** Do not guess or fabricate values.
+     If a field's value cannot be clearly identified from the messages, skip it.
+  4. Compare with the current user data. Only update fields that:
+     - Have a new value that wasn't set before, OR
+     - Have a value that has clearly changed based on the conversation
+  5. If you find values to set, use the `mitto_conversation_update` MCP tool:
+
+     ```
+     mitto_conversation_update({
+       "self_id": "<your session id>",
+       "conversation_id": "@mitto:session_id",
+       "user_data": [
+         {"name": "<field name>", "value": "<detected value>"}
+       ]
+     })
+     ```
+
+     Use `user_data_merge: true` (the default) so existing values are preserved.
+
+  6. If no new or changed values are found, do nothing — do NOT call any tools.
+
+  ## Guidelines
+
+  - Field names must match the schema exactly (case-sensitive).
+  - For `url` type fields, ensure the value is a valid URL with a scheme (e.g., https://).
+  - For `string` type fields, extract concise, clean values — no surrounding quotes or
+    extra whitespace.
+  - Look for explicit mentions: ticket numbers, branch names, URLs, project identifiers,
+    sprint names, etc.
+  - Also look for implicit references: "I'm working on PROJ-123" implies a ticket field,
+    "push to feature/login" implies a branch field.
+  - Prefer the most recent mention if a value appears multiple times with different values.
+
+  === Conversation Messages ===
+  @mitto:messages
+
+messages:
+  scope: since-last-run
+  roles: [user]
+  max_messages: 15
+  max_tokens: 4000

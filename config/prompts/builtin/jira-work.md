@@ -3,8 +3,7 @@ name: "JIRA: start work"
 description: "Pick a JIRA ticket from the active sprint and spawn parallel Mitto conversations to implement it"
 backgroundColor: "#BBDEFB"
 group: "JIRA"
-enabledWhen: "!session.isChild"
-enabledWhenMCP: jira_*, mitto_conversation_*
+enabledWhen: '!session.isChild && permissions.canStartConversation && permissions.canSendPrompt && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
 ---
 
 ## Session Context
