@@ -429,6 +429,8 @@ func (m *mockSessionManager) BroadcastWaitingForChildren(sessionID string, isWai
 func (m *mockSessionManager) DeleteChildSessions(parentID string)                          {}
 func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings                    { return nil }
 func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
+func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName string)     {}
+func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema   { return nil }
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -2297,6 +2299,11 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspaces() []config.WorkspaceSett
 func (m *mockSessionManagerForWorkspaces) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionRenamed(sessionID string, newName string) {
+}
+func (m *mockSessionManagerForWorkspaces) GetUserDataSchema(workingDir string) *config.UserDataSchema {
+	return nil
+}
 
 func TestListWorkspaces_Empty(t *testing.T) {
 	mockSM := &mockSessionManagerForWorkspaces{
@@ -2690,6 +2697,8 @@ func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)   
 func (m *mockSessionManagerForWait) DeleteChildSessions(string)                          {}
 func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings           { return nil }
 func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
+func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
+func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema     { return nil }
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -3370,6 +3379,8 @@ func (m *mockSessionManagerForChildren) GetWorkspaces() []config.WorkspaceSettin
 func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)          {}
+func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema { return nil }
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -3553,6 +3564,8 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaces() []config.Workspac
 func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string)          {}
+func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema { return nil }
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -3839,6 +3852,8 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaces() []config.WorkspaceSett
 func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
+func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string)          {}
+func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema { return nil }
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -5340,6 +5355,8 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceByUUID(uuid string) *conf
 	}
 	return m.workspaces[uuid]
 }
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string)          {}
+func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema { return nil }
 
 // setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
 // Returns the server, store, source session ID, target session ID.

@@ -317,6 +317,35 @@ type DeleteConversationOutput struct {
 	Error          string `json:"error,omitempty"`
 }
 
+// ConversationUpdateInput is the input for mitto_conversation_update tool.
+type ConversationUpdateInput struct {
+	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"` // Target conversation to update
+
+	// Patchable properties — all optional, only non-nil fields are applied
+	Name *string `json:"name,omitempty"` // Update conversation title
+
+	// User data — optional, only applied if non-nil
+	UserData      []UserDataAttributeUpdate `json:"user_data,omitempty"`       // User data attributes to set
+	UserDataMerge *bool                     `json:"user_data_merge,omitempty"` // If true (default), merge with existing; if false, replace all
+}
+
+// UserDataAttributeUpdate represents a single user data attribute to set.
+type UserDataAttributeUpdate struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// ConversationUpdateOutput is the output for mitto_conversation_update tool.
+type ConversationUpdateOutput struct {
+	Success        bool                      `json:"success"`
+	ConversationID string                    `json:"conversation_id,omitempty"`
+	Updated        []string                  `json:"updated,omitempty"`   // List of property names that were changed
+	Name           string                    `json:"name,omitempty"`      // Current name after update
+	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"` // Current user data after update
+	Error          string                    `json:"error,omitempty"`
+}
+
 // UITextboxInput is the input for the mitto_ui_textbox tool.
 type UITextboxInput struct {
 	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)

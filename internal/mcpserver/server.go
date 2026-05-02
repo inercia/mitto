@@ -156,6 +156,10 @@ type SessionManager interface {
 	// GetWorkspaceByUUID returns the workspace with the given UUID.
 	// Returns nil if no workspace with that UUID exists.
 	GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings
+	// BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
+	BroadcastSessionRenamed(sessionID string, newName string)
+	// GetUserDataSchema returns the user data schema for a workspace.
+	GetUserDataSchema(workingDir string) *config.UserDataSchema
 }
 
 // BackgroundSession interface for session info.
@@ -1092,6 +1096,17 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Deleted conversations become read-only and will no longer accept prompts. " +
 			selfIDNote,
 	}, s.handleDeleteConversation)
+
+	// mitto_conversation_update - Update properties of a conversation
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_update",
+		Description: "Update properties of a conversation. " +
+			"Supports partial updates — only specified fields are changed, others are left untouched. " +
+			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes). " +
+			"User data is validated against the workspace's schema defined in .mittorc. " +
+			"Set 'user_data_merge' to true (default) to merge with existing attributes, or false to replace all. " +
+			selfIDNote,
+	}, s.handleConversationUpdate)
 
 	// mitto_conversation_wait - Wait until something happens in a conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
@@ -2899,6 +2914,179 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 		Success:        true,
 		ConversationID: input.ConversationID,
 	}, nil
+}
+
+func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallToolRequest, input ConversationUpdateInput) (*mcp.CallToolResult, ConversationUpdateOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, ConversationUpdateOutput{Success: false, Error: "self_id is required"}, nil
+	}
+
+	// Validate conversation_id
+	if input.ConversationID == "" {
+		return nil, ConversationUpdateOutput{Success: false, Error: "conversation_id is required"}, nil
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, ConversationUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
+		}, nil
+	}
+
+	// Check if source session is registered
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, ConversationUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found or not running: %s", realSessionID),
+		}, nil
+	}
+
+	s.mu.RLock()
+	store := s.store
+	sm := s.sessionManager
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, ConversationUpdateOutput{Success: false, Error: "session store not available"}, nil
+	}
+
+	// Verify target conversation exists
+	meta, err := store.GetMetadata(input.ConversationID)
+	if err != nil {
+		return nil, ConversationUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
+		}, nil
+	}
+
+	var updated []string
+
+	// Update name if provided
+	if input.Name != nil {
+		if err := store.UpdateMetadata(input.ConversationID, func(m *session.Metadata) {
+			m.Name = *input.Name
+		}); err != nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("failed to update name: %v", err),
+			}, nil
+		}
+		updated = append(updated, "name")
+
+		// Broadcast rename to all connected WebSocket clients
+		if sm != nil {
+			sm.BroadcastSessionRenamed(input.ConversationID, *input.Name)
+		}
+
+		s.logger.Info("Conversation renamed via MCP",
+			"source_session", realSessionID,
+			"target_conversation", input.ConversationID,
+			"new_name", *input.Name)
+	}
+
+	// Update user data if provided
+	if len(input.UserData) > 0 {
+		// Determine merge mode (default: true)
+		merge := input.UserDataMerge == nil || *input.UserDataMerge
+
+		var finalAttrs []session.UserDataAttribute
+		if merge {
+			// Load existing user data and merge
+			existing, err := store.GetUserData(input.ConversationID)
+			if err == nil && existing != nil {
+				attrMap := make(map[string]string)
+				var orderedNames []string
+				seen := make(map[string]bool)
+				for _, a := range existing.Attributes {
+					attrMap[a.Name] = a.Value
+					if !seen[a.Name] {
+						orderedNames = append(orderedNames, a.Name)
+						seen[a.Name] = true
+					}
+				}
+				for _, a := range input.UserData {
+					attrMap[a.Name] = a.Value
+					if !seen[a.Name] {
+						orderedNames = append(orderedNames, a.Name)
+						seen[a.Name] = true
+					}
+				}
+				for _, name := range orderedNames {
+					finalAttrs = append(finalAttrs, session.UserDataAttribute{Name: name, Value: attrMap[name]})
+				}
+			} else {
+				for _, a := range input.UserData {
+					finalAttrs = append(finalAttrs, session.UserDataAttribute{Name: a.Name, Value: a.Value})
+				}
+			}
+		} else {
+			// Replace mode
+			for _, a := range input.UserData {
+				finalAttrs = append(finalAttrs, session.UserDataAttribute{Name: a.Name, Value: a.Value})
+			}
+		}
+
+		userData := &session.UserData{Attributes: finalAttrs}
+
+		// Validate against workspace schema
+		if sm != nil {
+			schema := sm.GetUserDataSchema(meta.WorkingDir)
+			if err := userData.Validate(schema); err != nil {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   fmt.Sprintf("user_data validation error: %v", err),
+				}, nil
+			}
+		}
+
+		// Save user data
+		if err := store.SetUserData(input.ConversationID, userData); err != nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("failed to save user data: %v", err),
+			}, nil
+		}
+		updated = append(updated, "user_data")
+
+		s.logger.Info("User data updated via MCP",
+			"source_session", realSessionID,
+			"target_conversation", input.ConversationID,
+			"attributes_count", len(finalAttrs),
+			"merge", merge)
+	}
+
+	// Check if anything was actually updated
+	if len(updated) == 0 {
+		return nil, ConversationUpdateOutput{
+			Success: false,
+			Error:   "no properties to update: specify at least one of 'name', 'user_data'",
+		}, nil
+	}
+
+	// Build output with current state
+	output := ConversationUpdateOutput{
+		Success:        true,
+		ConversationID: input.ConversationID,
+		Updated:        updated,
+	}
+
+	// Read back current name
+	if currentMeta, err := store.GetMetadata(input.ConversationID); err == nil {
+		output.Name = currentMeta.Name
+	}
+
+	// Read back current user data
+	if currentData, err := store.GetUserData(input.ConversationID); err == nil && currentData != nil {
+		for _, a := range currentData.Attributes {
+			output.UserData = append(output.UserData, UserDataAttributeUpdate{Name: a.Name, Value: a.Value})
+		}
+	}
+
+	return nil, output, nil
 }
 
 // =============================================================================
