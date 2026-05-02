@@ -46,6 +46,21 @@ type ProcessorInput struct {
 	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.
 	// Used for @mitto:periodic variable substitution.
 	IsPeriodic bool `json:"is_periodic,omitempty"`
+	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
+	// Used for permissions.* CEL context in enabledWhen expressions.
+	AdvancedSettings map[string]bool `json:"-"`
+	// LastRunMessageIndex is the index into History at which the current prompt-mode
+	// processor last ran. Used for since-last-run scope. Set by the Manager during Apply.
+	LastRunMessageIndex int `json:"-"`
+	// HasUserDataSchema indicates whether the workspace has a user data schema.
+	// Used for workspace.hasUserDataSchema CEL variable.
+	HasUserDataSchema bool `json:"-"`
+	// UserDataSchemaJSON is the JSON representation of the workspace user data schema.
+	// Used for @mitto:user_data_schema variable substitution.
+	UserDataSchemaJSON string `json:"-"`
+	// UserDataJSON is the JSON representation of the current session's user data.
+	// Used for @mitto:user_data variable substitution.
+	UserDataJSON string `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.

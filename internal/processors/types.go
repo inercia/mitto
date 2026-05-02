@@ -1,14 +1,16 @@
 // Package processors provides a unified message processor pipeline for Mitto.
-// It supports two modes:
+// It supports three modes:
 //   - Text-mode: simple prepend/append of static text (no external command).
 //   - Command-mode: execute an external command to transform the message.
+//   - Prompt-mode: send a prompt to an auxiliary ACP session as fire-and-forget.
 //
 // Text-mode processors are typically created from config.MessageProcessor entries
-// via Manager.AddTextProcessors. Command-mode processors are loaded from YAML files
-// in the MITTO_DIR/processors/ directory.
+// via Manager.AddTextProcessors. Command-mode and prompt-mode processors are loaded
+// from YAML files in the MITTO_DIR/processors/ directory.
 package processors
 
 import (
+	"context"
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
@@ -50,6 +52,20 @@ const (
 	WorkingDirHook WorkingDirType = "hook"
 )
 
+// ProcessorSource indicates where a processor was loaded from.
+type ProcessorSource string
+
+const (
+	// ProcessorSourceGlobal is a processor from MITTO_DIR/processors/.
+	ProcessorSourceGlobal ProcessorSource = "global"
+	// ProcessorSourceBuiltin is a processor from MITTO_DIR/processors/builtin/.
+	ProcessorSourceBuiltin ProcessorSource = "builtin"
+	// ProcessorSourceWorkspace is a processor from .mitto/processors/ (workspace-local).
+	ProcessorSourceWorkspace ProcessorSource = "workspace"
+	// ProcessorSourceConfig is a text-mode processor from settings/config.
+	ProcessorSourceConfig ProcessorSource = "config"
+)
+
 // ErrorHandling defines how errors are handled.
 type ErrorHandling string
 
@@ -69,6 +85,62 @@ const (
 	DefaultWorkingDir  = WorkingDirSession
 	DefaultErrorHandle = ErrorSkip
 )
+
+// MessagesScope defines which slice of conversation history to include.
+type MessagesScope string
+
+const (
+	// MessagesScopeLastMessage includes only the current message.
+	MessagesScopeLastMessage MessagesScope = "last-message"
+	// MessagesScopeLastN includes the last N messages (controlled by MaxMessages).
+	MessagesScopeLastN MessagesScope = "last-n"
+	// MessagesScopeSinceLastRun includes messages since this processor last ran in this conversation.
+	MessagesScopeSinceLastRun MessagesScope = "since-last-run"
+	// MessagesScopeAll includes the full conversation history (subject to caps).
+	MessagesScopeAll MessagesScope = "all"
+)
+
+// MessagesConfig configures which conversation messages to include in a prompt-mode processor.
+type MessagesConfig struct {
+	// Scope defines what slice of history to include. Default: "since-last-run".
+	Scope MessagesScope `yaml:"scope,omitempty" json:"scope,omitempty"`
+	// Roles filters messages by role. Valid values: "user", "agent". Default: both.
+	Roles []string `yaml:"roles,omitempty" json:"roles,omitempty"`
+	// MaxMessages is the maximum number of messages to include. Default: 50.
+	MaxMessages int `yaml:"max_messages,omitempty" json:"max_messages,omitempty"`
+	// MaxTokens is an approximate token cap (chars/4). 0 means no limit. Default: 0.
+	MaxTokens int `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+}
+
+// GetScope returns the scope, defaulting to MessagesScopeSinceLastRun.
+func (mc *MessagesConfig) GetScope() MessagesScope {
+	if mc == nil || mc.Scope == "" {
+		return MessagesScopeSinceLastRun
+	}
+	return mc.Scope
+}
+
+// GetMaxMessages returns the max messages cap, defaulting to 50.
+func (mc *MessagesConfig) GetMaxMessages() int {
+	if mc == nil || mc.MaxMessages <= 0 {
+		return 50
+	}
+	return mc.MaxMessages
+}
+
+// GetRoles returns the roles filter, defaulting to both user and agent.
+func (mc *MessagesConfig) GetRoles() []string {
+	if mc == nil || len(mc.Roles) == 0 {
+		return []string{"user", "agent"}
+	}
+	return mc.Roles
+}
+
+// PromptFunc is a callback for executing prompt-mode processors.
+// Injected by the web layer to bridge the processor pipeline with auxiliary sessions.
+// The function dispatches the prompt to an auxiliary session and returns immediately
+// (fire-and-forget). Returns error only if the prompt couldn't be dispatched.
+type PromptFunc func(ctx context.Context, workspaceUUID, processorName, prompt string) error
 
 // Processor represents a loaded processor definition.
 type Processor struct {
@@ -95,6 +167,16 @@ type Processor struct {
 
 	// Text is the static text to insert (text-mode only, used when Command is empty).
 	Text string `yaml:"text,omitempty" json:"text,omitempty"`
+
+	// Prompt is the prompt template to send to an auxiliary ACP session (prompt-mode only).
+	// When set, Command and Text must be empty. The processor runs in fire-and-forget mode:
+	// the prompt is dispatched to a workspace-scoped auxiliary session and the pipeline
+	// continues immediately without waiting for the agent's response.
+	// Supports @mitto:variable substitution including @mitto:messages for conversation history.
+	Prompt string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
+	// Messages configures which conversation messages to include when @mitto:messages
+	// is used in the prompt template. Only applicable to prompt-mode processors.
+	Messages *MessagesConfig `yaml:"messages,omitempty" json:"messages,omitempty"`
 
 	// Input defines what to send to stdin: "message", "conversation", "none".
 	Input InputType `yaml:"input,omitempty" json:"input,omitempty"`
@@ -136,6 +218,8 @@ type Processor struct {
 	FilePath string `yaml:"-" json:"-"`
 	// HookDir is the directory containing the processor file (set internally).
 	HookDir string `yaml:"-" json:"-"`
+	// Source indicates where this processor was loaded from (set internally).
+	Source ProcessorSource `yaml:"-" json:"source,omitempty"`
 }
 
 // RerunConfig configures automatic re-run for "when: first" processors.
@@ -181,6 +265,13 @@ func (r *RerunConfig) Validate() error {
 // executing any external command.
 func (h *Processor) IsTextMode() bool {
 	return h.Command == "" && h.Text != ""
+}
+
+// IsPromptMode returns true if this processor operates in prompt-mode.
+// Prompt-mode processors send a prompt to an auxiliary ACP session as fire-and-forget.
+// They have a non-empty Prompt field and empty Command and Text fields.
+func (h *Processor) IsPromptMode() bool {
+	return h.Command == "" && h.Text == "" && h.Prompt != ""
 }
 
 // Duration is a wrapper for time.Duration that supports YAML unmarshaling.

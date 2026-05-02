@@ -4,8 +4,10 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // IsEnabled returns true if the processor is enabled.
@@ -17,8 +19,12 @@ func (h *Processor) IsEnabled() bool {
 }
 
 // GetTimeout returns the processor's timeout, using the default if not set.
+// Prompt-mode processors use a higher default of 120s to allow time for dispatch.
 func (h *Processor) GetTimeout() Duration {
 	if h.Timeout == 0 {
+		if h.IsPromptMode() {
+			return Duration(120 * time.Second)
+		}
 		return Duration(DefaultTimeout)
 	}
 	return h.Timeout
@@ -85,7 +91,6 @@ const (
 	SkipReasonNone            SkipReason = ""
 	SkipReasonDisabled        SkipReason = "disabled"
 	SkipReasonEnabledWhen     SkipReason = "enabledWhen_false"
-	SkipReasonEnabledWhenMCP  SkipReason = "enabledWhenMCP_unsatisfied"
 	SkipReasonWhenFirst       SkipReason = "when=first_not_first_message"
 	SkipReasonWhenExceptFirst SkipReason = "when=all-except-first_is_first_message"
 	SkipReasonWhenUnknown     SkipReason = "unknown_when_condition"
@@ -125,15 +130,6 @@ func (h *Processor) ShouldApply(isFirstMessage bool, input *ProcessorInput) (boo
 		}
 	}
 
-	// Check enabledWhenMCP tool patterns
-	if h.EnabledWhenMCP != "" && input != nil {
-		// Build satisfied patterns map from available tool names
-		satisfiedPatterns := buildSatisfiedPatterns(h.EnabledWhenMCP, input.MCPToolNames)
-		if !config.AreEnabledWhenMCPSatisfied(h.EnabledWhenMCP, satisfiedPatterns) {
-			return false, SkipReasonEnabledWhenMCP
-		}
-	}
-
 	// Check when condition
 	switch h.When {
 	case config.ProcessorWhenFirst:
@@ -163,6 +159,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.Name = input.SessionName
 	ctx.Session.IsChild = input.ParentSessionID != ""
 	ctx.Session.ParentID = input.ParentSessionID
+	ctx.Session.IsPeriodic = input.IsPeriodic
 
 	// ACP context — get tags from the current server in AvailableACPServers
 	ctx.ACP.Name = input.ACPServer
@@ -180,6 +177,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	// Workspace context
 	ctx.Workspace.UUID = input.WorkspaceUUID
 	ctx.Workspace.Folder = input.WorkingDir
+	ctx.Workspace.HasUserDataSchema = input.HasUserDataSchema
 
 	// Parent context
 	if input.ParentSessionID != "" {
@@ -205,29 +203,15 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 		ctx.Tools.Names = input.MCPToolNames
 	}
 
-	return ctx
-}
+	// Permissions context - resolve flags with defaults
+	ctx.Permissions.CanDoIntrospection = session.GetFlagValue(input.AdvancedSettings, session.FlagCanDoIntrospection)
+	ctx.Permissions.CanSendPrompt = session.GetFlagValue(input.AdvancedSettings, session.FlagCanSendPrompt)
+	ctx.Permissions.CanPromptUser = session.GetFlagValue(input.AdvancedSettings, session.FlagCanPromptUser)
+	ctx.Permissions.CanStartConversation = session.GetFlagValue(input.AdvancedSettings, session.FlagCanStartConversation)
+	ctx.Permissions.CanInteractOtherWorkspaces = session.GetFlagValue(input.AdvancedSettings, session.FlagCanInteractOtherWorkspaces)
+	ctx.Permissions.AutoApprovePermissions = session.GetFlagValue(input.AdvancedSettings, session.FlagAutoApprovePermissions)
 
-// buildSatisfiedPatterns checks each comma-separated pattern in enabledWhenMCP
-// against the available tool names and returns a map of pattern → satisfied.
-func buildSatisfiedPatterns(enabledWhenMCP string, toolNames []string) map[string]bool {
-	satisfied := make(map[string]bool)
-	for _, pattern := range strings.Split(enabledWhenMCP, ",") {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			continue
-		}
-		for _, name := range toolNames {
-			if config.MatchToolPattern(pattern, name) {
-				satisfied[pattern] = true
-				break
-			}
-		}
-		if !satisfied[pattern] {
-			satisfied[pattern] = false
-		}
-	}
-	return satisfied
+	return ctx
 }
 
 // ResolveCommand resolves the command path.

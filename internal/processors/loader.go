@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/inercia/mitto/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -135,9 +136,34 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 	if proc.Name == "" {
 		return nil, fmt.Errorf("processor name is required")
 	}
-	// A processor must have either a command (command-mode) or text (text-mode).
-	if proc.Command == "" && proc.Text == "" {
-		return nil, fmt.Errorf("processor must specify either 'command' or 'text'")
+	// A processor must have either a command (command-mode), text (text-mode), or prompt (prompt-mode).
+	if proc.Command == "" && proc.Text == "" && proc.Prompt == "" {
+		return nil, fmt.Errorf("processor must specify either 'command', 'text', or 'prompt'")
+	}
+	// Prompt-mode: Command and Text must be empty when Prompt is set.
+	if proc.Prompt != "" && (proc.Command != "" || proc.Text != "") {
+		return nil, fmt.Errorf("processor with 'prompt' must not specify 'command' or 'text'")
+	}
+	// Messages is only valid for prompt-mode processors.
+	if proc.Messages != nil && proc.Prompt == "" {
+		return nil, fmt.Errorf("processor 'messages' is only valid when 'prompt' is set")
+	}
+	// Validate Messages.Scope if set.
+	if proc.Messages != nil && proc.Messages.Scope != "" {
+		switch proc.Messages.Scope {
+		case MessagesScopeLastMessage, MessagesScopeLastN, MessagesScopeSinceLastRun, MessagesScopeAll:
+			// valid
+		default:
+			return nil, fmt.Errorf("invalid messages scope %q: must be one of 'last-message', 'last-n', 'since-last-run', 'all'", proc.Messages.Scope)
+		}
+	}
+	// Validate Messages.Roles if set.
+	if proc.Messages != nil {
+		for _, role := range proc.Messages.Roles {
+			if role != "user" && role != "agent" {
+				return nil, fmt.Errorf("invalid messages role %q: must be 'user' or 'agent'", role)
+			}
+		}
 	}
 	if proc.When == "" {
 		return nil, fmt.Errorf("processor 'when' is required")
@@ -156,6 +182,12 @@ func (l *Loader) loadProcessorFile(path string) (*Processor, error) {
 	// Set internal fields
 	proc.FilePath = path
 	proc.HookDir = filepath.Dir(path)
+
+	// Translate enabledWhenMCP to enabledWhen CEL expression for backward compatibility.
+	// Processors do not support enabledWhenACP, so pass empty string for that parameter.
+	if proc.EnabledWhenMCP != "" {
+		proc.EnabledWhen = config.TranslateShorthandToEnabledWhen("", proc.EnabledWhenMCP, proc.EnabledWhen)
+	}
 
 	return &proc, nil
 }

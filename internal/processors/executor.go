@@ -71,7 +71,7 @@ func (e *Executor) Execute(ctx context.Context, proc *Processor, input *Processo
 	err := cmd.Run()
 	duration := time.Since(start)
 
-	e.logger.Debug("processor executed",
+	e.logger.Info("processor executed",
 		"name", proc.Name,
 		"duration", duration,
 		"exit_code", cmd.ProcessState.ExitCode(),

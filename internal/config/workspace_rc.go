@@ -41,6 +41,10 @@ type WorkspaceRC struct {
 	// Paths can be absolute or relative (resolved against the workspace directory).
 	// These directories are searched in addition to the default .mitto/processors/ directory.
 	ProcessorsDirs []string `json:"processors_dirs,omitempty"`
+	// ProcessorOverrides is the list of processor enabled/disabled overrides for this workspace.
+	// Each entry has a name and an enabled flag. Used when a processor YAML file cannot be
+	// edited in-place (e.g. global or builtin processor). Mirrors the prompts pattern.
+	ProcessorOverrides []ProcessorOverride `json:"processor_overrides,omitempty"`
 	// Conversations contains workspace-specific conversation processing configuration.
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 	// RestrictedRunners contains per-runner-type overrides for this workspace.
@@ -55,6 +59,14 @@ type WorkspaceRC struct {
 	// FileModTime is the modification time of the .mittorc file when loaded.
 	// Used to detect file changes efficiently.
 	FileModTime time.Time `json:"-"`
+}
+
+// ProcessorOverride represents a per-processor enabled/disabled override in .mittorc.
+// Mirrors the prompts pattern: entries with just {name, enabled} override the
+// processor's default enabled state from its YAML file.
+type ProcessorOverride struct {
+	Name    string `json:"name" yaml:"name"`
+	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
 // GetRunnerConfigForType returns the runner config for a specific runner type.
@@ -86,6 +98,15 @@ type rawWorkspaceRC struct {
 	PromptsDirs []string `yaml:"prompts_dirs"`
 	// ProcessorsDirs is a list of additional directories to search for processor files
 	ProcessorsDirs []string `yaml:"processors_dirs"`
+	// DisabledProcessors is the legacy list of processor names disabled for this workspace.
+	// Kept for backward compatibility — new code uses ProcessorOverrides instead.
+	DisabledProcessors []string `yaml:"disabled_processors"`
+	// ProcessorOverrides is the list of processor enabled/disabled overrides.
+	// Mirrors the prompts pattern: [{name: "xxx", enabled: true/false}].
+	ProcessorOverrides []struct {
+		Name    string `yaml:"name"`
+		Enabled *bool  `yaml:"enabled"`
+	} `yaml:"processors"`
 	// Conversations section for message processing and user data schema
 	Conversations *struct {
 		Processing *struct {
@@ -289,6 +310,232 @@ func SaveWorkspaceMetadata(workspaceDir, description, url, group string) error {
 	return nil
 }
 
+// SaveWorkspaceRCPromptEnabled updates the enabled state of a prompt in the workspace .mittorc file.
+// When disabling (enabled=false): adds or updates the entry with {name: promptName, enabled: false}.
+// When re-enabling (enabled=true): removes the entry with that name from the prompts array
+// (since nil/missing means enabled by default). If the prompts array becomes empty, removes the key.
+// Only updates the prompts section; all other sections are preserved.
+func SaveWorkspaceRCPromptEnabled(workspaceDir, promptName string, enabled bool) error {
+	if workspaceDir == "" {
+		return fmt.Errorf("workspace directory is required")
+	}
+	if promptName == "" {
+		return fmt.Errorf("prompt name is required")
+	}
+
+	// Find existing .mittorc file path, or use default
+	rcPath, _, err := FindWorkspaceRCPath(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to check workspace config: %w", err)
+	}
+	if rcPath == "" {
+		rcPath = filepath.Join(workspaceDir, WorkspaceRCFileName)
+	}
+
+	// Read existing file content (may not exist yet)
+	var content map[string]interface{}
+	data, err := os.ReadFile(rcPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read workspace config: %w", err)
+	}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &content); err != nil {
+			return fmt.Errorf("failed to parse workspace config: %w", err)
+		}
+	}
+	if content == nil {
+		content = make(map[string]interface{})
+	}
+
+	// Get or create prompts section as []interface{}
+	var prompts []interface{}
+	if p, ok := content["prompts"]; ok {
+		if pSlice, ok := p.([]interface{}); ok {
+			prompts = pSlice
+		}
+	}
+
+	if !enabled {
+		// Disabling: find existing entry or append a new one
+		found := false
+		for i, entry := range prompts {
+			if m, ok := entry.(map[string]interface{}); ok {
+				if n, ok := m["name"]; ok && n == promptName {
+					m["enabled"] = false
+					prompts[i] = m
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			prompts = append(prompts, map[string]interface{}{
+				"name":    promptName,
+				"enabled": false,
+			})
+		}
+		content["prompts"] = prompts
+	} else {
+		// Re-enabling: remove the entry with that name
+		var filtered []interface{}
+		for _, entry := range prompts {
+			if m, ok := entry.(map[string]interface{}); ok {
+				if n, ok := m["name"]; ok && n == promptName {
+					continue // skip this entry
+				}
+			}
+			filtered = append(filtered, entry)
+		}
+		if len(filtered) == 0 {
+			delete(content, "prompts")
+		} else {
+			content["prompts"] = filtered
+		}
+	}
+
+	// Marshal and write back
+	out, err := yaml.Marshal(content)
+	if err != nil {
+		return fmt.Errorf("failed to marshal workspace config: %w", err)
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(rcPath), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	if err := os.WriteFile(rcPath, out, 0644); err != nil {
+		return fmt.Errorf("failed to write workspace config: %w", err)
+	}
+
+	return nil
+}
+
+// SaveWorkspaceRCProcessorEnabled updates the enabled state of a processor in the workspace .mittorc file.
+// Mirrors the prompts pattern: uses a "processors:" section with [{name, enabled}] entries.
+// When changing state: adds or updates the entry with {name: processorName, enabled: value}.
+// When restoring default (enabled=true for a normally-enabled processor): removes the entry.
+// If the processors array becomes empty, removes the key.
+// Also cleans up any legacy "disabled_processors" entries for backward compatibility.
+// Only updates the processors section; all other sections are preserved.
+func SaveWorkspaceRCProcessorEnabled(workspaceDir, processorName string, enabled bool) error {
+	if workspaceDir == "" {
+		return fmt.Errorf("workspace directory is required")
+	}
+	if processorName == "" {
+		return fmt.Errorf("processor name is required")
+	}
+
+	// Find existing .mittorc file path, or use default
+	rcPath, _, err := FindWorkspaceRCPath(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to check workspace config: %w", err)
+	}
+	if rcPath == "" {
+		rcPath = filepath.Join(workspaceDir, WorkspaceRCFileName)
+	}
+
+	// Read existing file content (may not exist yet)
+	var content map[string]interface{}
+	data, err := os.ReadFile(rcPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read workspace config: %w", err)
+	}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &content); err != nil {
+			return fmt.Errorf("failed to parse workspace config: %w", err)
+		}
+	}
+	if content == nil {
+		content = make(map[string]interface{})
+	}
+
+	// Get or create processors section as []interface{} (mirrors prompts pattern)
+	var processors []interface{}
+	if p, ok := content["processors"]; ok {
+		if pSlice, ok := p.([]interface{}); ok {
+			processors = pSlice
+		}
+	}
+
+	// Find existing entry or add/update
+	found := false
+	for i, entry := range processors {
+		if m, ok := entry.(map[string]interface{}); ok {
+			if n, ok := m["name"]; ok && n == processorName {
+				m["enabled"] = enabled
+				processors[i] = m
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		processors = append(processors, map[string]interface{}{
+			"name":    processorName,
+			"enabled": enabled,
+		})
+	}
+
+	if len(processors) == 0 {
+		delete(content, "processors")
+	} else {
+		content["processors"] = processors
+	}
+
+	// Clean up legacy disabled_processors: remove this name if present
+	if v, ok := content["disabled_processors"]; ok {
+		if list, ok := v.([]interface{}); ok {
+			var filtered []interface{}
+			for _, entry := range list {
+				if s, ok := entry.(string); ok && s == processorName {
+					continue
+				}
+				filtered = append(filtered, entry)
+			}
+			if len(filtered) == 0 {
+				delete(content, "disabled_processors")
+			} else {
+				content["disabled_processors"] = filtered
+			}
+		}
+	}
+	// Clean up legacy enabled_processors if present
+	if v, ok := content["enabled_processors"]; ok {
+		if list, ok := v.([]interface{}); ok {
+			var filtered []interface{}
+			for _, entry := range list {
+				if s, ok := entry.(string); ok && s == processorName {
+					continue
+				}
+				filtered = append(filtered, entry)
+			}
+			if len(filtered) == 0 {
+				delete(content, "enabled_processors")
+			} else {
+				content["enabled_processors"] = filtered
+			}
+		}
+	}
+
+	// Marshal and write back
+	out, err := yaml.Marshal(content)
+	if err != nil {
+		return fmt.Errorf("failed to marshal workspace config: %w", err)
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(rcPath), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	if err := os.WriteFile(rcPath, out, 0644); err != nil {
+		return fmt.Errorf("failed to write workspace config: %w", err)
+	}
+
+	return nil
+}
+
 // parseWorkspaceRC parses the YAML data from a workspace .mittorc file.
 func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 	var raw rawWorkspaceRC
@@ -312,7 +559,7 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 		if p.Prompt == "" && !isDisabled {
 			continue
 		}
-		rc.Prompts = append(rc.Prompts, WebPrompt{
+		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,
 			BackgroundColor: p.BackgroundColor,
@@ -322,7 +569,12 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			EnabledWhenMCP:  p.EnabledWhenMCP,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
-		})
+		}
+		// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
+		if wp.EnabledWhenACP != "" || wp.EnabledWhenMCP != "" {
+			wp.EnabledWhen = TranslateShorthandToEnabledWhen(wp.EnabledWhenACP, wp.EnabledWhenMCP, wp.EnabledWhen)
+		}
+		rc.Prompts = append(rc.Prompts, wp)
 	}
 
 	// Copy prompts directories
@@ -330,6 +582,35 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 
 	// Copy processors directories
 	rc.ProcessorsDirs = raw.ProcessorsDirs
+
+	// Copy processor overrides from the new "processors:" section.
+	for _, p := range raw.ProcessorOverrides {
+		if p.Name == "" {
+			continue
+		}
+		rc.ProcessorOverrides = append(rc.ProcessorOverrides, ProcessorOverride{
+			Name:    p.Name,
+			Enabled: p.Enabled,
+		})
+	}
+	// Backward compatibility: migrate legacy "disabled_processors:" entries.
+	// Convert each disabled name into a ProcessorOverride with enabled=false,
+	// but only if not already overridden by the new format.
+	if len(raw.DisabledProcessors) > 0 {
+		overridden := make(map[string]bool)
+		for _, o := range rc.ProcessorOverrides {
+			overridden[o.Name] = true
+		}
+		for _, name := range raw.DisabledProcessors {
+			if !overridden[name] {
+				f := false
+				rc.ProcessorOverrides = append(rc.ProcessorOverrides, ProcessorOverride{
+					Name:    name,
+					Enabled: &f,
+				})
+			}
+		}
+	}
 
 	// Copy conversations config
 	if raw.Conversations != nil && raw.Conversations.Processing != nil {
