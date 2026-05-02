@@ -4,8 +4,11 @@ package hooks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +31,7 @@ const (
 // HealthMonitorConfig contains the configuration for a HealthMonitor.
 type HealthMonitorConfig struct {
 	Address   string
+	APIPrefix string // URL prefix for API endpoints (e.g., "/mitto")
 	UpHook    config.WebHook
 	DownHook  config.WebHook
 	Port      int
@@ -193,23 +197,29 @@ func (m *HealthMonitor) run(ctx context.Context) {
 	}
 }
 
-// checkHealth performs an HTTP GET to the external address.
-// Returns true if the response status is 2xx or 3xx.
+// checkHealth performs an HTTP GET to the health endpoint at the external address.
+// It constructs the URL by appending the API prefix + "/api/health" to the configured address.
+// Returns true only if the response is a valid JSON object with a "status" field,
+// which distinguishes a real Mitto response from proxy error pages (e.g., Cloudflare).
 func (m *HealthMonitor) checkHealth(ctx context.Context) bool {
 	logger := logging.Hook()
+
+	// Construct health check URL from base address + API prefix + health path
+	healthURL := m.buildHealthURL()
 
 	client := &http.Client{
 		Timeout: monitorRequestTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Don't follow redirects — a redirect response means the server is reachable
+			// Don't follow redirects — a redirect means the tunnel proxy is responding,
+			// not necessarily that Mitto is reachable
 			return http.ErrUseLastResponse
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.cfg.Address, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
 		logger.Error("Failed to create health check request",
-			"address", m.cfg.Address,
+			"url", healthURL,
 			"error", err,
 		)
 		return false
@@ -218,22 +228,77 @@ func (m *HealthMonitor) checkHealth(ctx context.Context) bool {
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Debug("Health check failed",
-			"address", m.cfg.Address,
+			"url", healthURL,
 			"error", err,
 		)
 		return false
 	}
 	defer resp.Body.Close()
 
-	// 2xx and 3xx are considered healthy
-	healthy := resp.StatusCode >= 200 && resp.StatusCode < 400
-	if !healthy {
-		logger.Debug("Health check unhealthy status",
-			"address", m.cfg.Address,
+	// Must be 200 OK (not just 2xx/3xx, since proxies can return 200 with error pages)
+	if resp.StatusCode != http.StatusOK {
+		logger.Debug("Health check non-200 status",
+			"url", healthURL,
 			"status", resp.StatusCode,
+		)
+		return false
+	}
+
+	// Read and validate the response body as JSON from Mitto's health endpoint
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		logger.Debug("Health check failed to read body",
+			"url", healthURL,
+			"error", err,
+		)
+		return false
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		logger.Debug("Health check response is not valid JSON (likely proxy error page)",
+			"url", healthURL,
+			"error", err,
+			"body_preview", truncateString(string(body), 200),
+		)
+		return false
+	}
+
+	// Verify the response contains a "status" field — this confirms it's from Mitto
+	status, ok := result["status"].(string)
+	if !ok || status == "" {
+		logger.Debug("Health check response missing 'status' field (not a Mitto response)",
+			"url", healthURL,
+			"body", string(body),
+		)
+		return false
+	}
+
+	// Check the actual health status
+	healthy := status == "healthy"
+	if !healthy {
+		logger.Debug("Health check reports unhealthy",
+			"url", healthURL,
+			"status", status,
 		)
 	}
 	return healthy
+}
+
+// buildHealthURL constructs the full health check URL from the base address and API prefix.
+// For example: "https://example.com" + "/mitto" + "/api/health" = "https://example.com/mitto/api/health"
+func (m *HealthMonitor) buildHealthURL() string {
+	base := strings.TrimRight(m.cfg.Address, "/")
+	prefix := m.cfg.APIPrefix // e.g., "/mitto" or ""
+	return base + prefix + "/api/health"
+}
+
+// truncateString truncates a string to maxLen characters, appending "..." if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // restartHooks stops the current up-hook, runs the down-hook, waits, then starts a new up-hook.

@@ -112,6 +112,13 @@ type SessionManager struct {
 	// Used to restore the agent plan panel when switching back to a conversation.
 	planState map[string][]PlanEntry
 
+	// waitingForChildrenMu protects waitingForChildren map.
+	waitingForChildrenMu sync.RWMutex
+	// waitingForChildren tracks which sessions are currently blocked on mitto_children_tasks_wait.
+	// This is in-memory only and is used to populate the session list API response so that
+	// the frontend can show the hourglass icon even after fetchStoredSessions() overwrites storedSessions.
+	waitingForChildren map[string]bool
+
 	// mcpServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	mcpServer *mcpserver.Server
@@ -152,6 +159,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		autoApprove:               autoApprove,
 		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
 		planState:                 make(map[string][]PlanEntry),
+		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
@@ -189,6 +197,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
 		apiPrefix:                 opts.APIPrefix,
 		planState:                 make(map[string][]PlanEntry),
+		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
@@ -628,6 +637,73 @@ func (sm *SessionManager) GetWorkspaceProcessorsDirs(workingDir string) []string
 	return rc.ProcessorsDirs
 }
 
+// GetProcessorManager returns the global processor manager.
+func (sm *SessionManager) GetProcessorManager() *processors.Manager {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.processorManager
+}
+
+// GetWorkspaceProcessorOverrides returns the processor enabled/disabled overrides from the
+// workspace's .mittorc file. Returns nil if no .mittorc exists or if it has no overrides.
+func (sm *SessionManager) GetWorkspaceProcessorOverrides(workingDir string) []config.ProcessorOverride {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return nil
+	}
+
+	rc, err := sm.workspaceRCCache.Get(workingDir)
+	if err != nil {
+		return nil
+	}
+
+	if rc == nil {
+		return nil
+	}
+
+	return rc.ProcessorOverrides
+}
+
+// GetWorkspaceProcessorManager returns the merged processor manager for a given workspace dir,
+// combining global processors with workspace-specific ones from .mitto/processors/ and processors_dirs.
+// This is used by the workspace processors API to list all applicable processors.
+func (sm *SessionManager) GetWorkspaceProcessorManager(workingDir string) *processors.Manager {
+	sm.mu.RLock()
+	procMgr := sm.processorManager
+	sm.mu.RUnlock()
+
+	if procMgr == nil || workingDir == "" {
+		return procMgr
+	}
+
+	return sm.loadWorkspaceProcessors(procMgr, workingDir)
+}
+
+// GetWorkspaceAllProcessorDirs returns all processor directories applicable to a workspace:
+// the default .mitto/processors/ dir plus any extras from .mittorc processors_dirs.
+func (sm *SessionManager) GetWorkspaceAllProcessorDirs(workingDir string) []string {
+	if workingDir == "" {
+		return nil
+	}
+
+	var dirs []string
+
+	// 1. Default .mitto/processors/ directory
+	defaultDir := appdir.WorkspaceProcessorsDir(workingDir)
+	dirs = append(dirs, defaultDir)
+
+	// 2. Additional processors_dirs from .mittorc
+	if extraDirs := sm.GetWorkspaceProcessorsDirs(workingDir); len(extraDirs) > 0 {
+		for _, dir := range extraDirs {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(workingDir, dir)
+			}
+			dirs = append(dirs, dir)
+		}
+	}
+
+	return dirs
+}
+
 // loadWorkspaceProcessors clones the processor manager with workspace-specific
 // processors loaded from .mitto/processors/ and any processors_dirs in .mittorc.
 // Returns the original manager if no workspace processors are found.
@@ -1055,9 +1131,44 @@ func (sm *SessionManager) BroadcastSessionDeleted(sessionID string) {
 	}
 }
 
+// BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
+// This is called when a session is renamed (e.g., via MCP tools).
+func (sm *SessionManager) BroadcastSessionRenamed(sessionID string, newName string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
+		"session_id": sessionID,
+		"name":       newName,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session renamed",
+			"session_id", sessionID,
+			"name", newName,
+			"clients", em.ClientCount())
+	}
+}
+
 // BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
 // This is called when a parent session starts or stops blocking on mitto_children_tasks_wait.
 func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
+	// Track the state so it can be included in the session list API response.
+	// This ensures fetchStoredSessions() returns accurate waiting state even after
+	// a full session list refresh overwrites the frontend's storedSessions.
+	sm.waitingForChildrenMu.Lock()
+	if isWaiting {
+		sm.waitingForChildren[sessionID] = true
+	} else {
+		delete(sm.waitingForChildren, sessionID)
+	}
+	sm.waitingForChildrenMu.Unlock()
+
 	sm.mu.RLock()
 	em := sm.eventsManager
 	sm.mu.RUnlock()
@@ -1077,6 +1188,13 @@ func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaitin
 			"is_waiting", isWaiting,
 			"clients", em.ClientCount())
 	}
+}
+
+// IsWaitingForChildren returns whether a session is currently blocked on mitto_children_tasks_wait.
+func (sm *SessionManager) IsWaitingForChildren(sessionID string) bool {
+	sm.waitingForChildrenMu.RLock()
+	defer sm.waitingForChildrenMu.RUnlock()
+	return sm.waitingForChildren[sessionID]
 }
 
 // childArchiveTimeout is the timeout for gracefully closing child sessions when a parent is archived.
@@ -1303,6 +1421,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 
 	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
 	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
+
+	// Apply workspace-level processor overrides from .mittorc processors section.
+	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
+		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
+	}
 
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
@@ -1801,6 +1924,11 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 
 	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
 	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
+
+	// Apply workspace-level processor overrides from .mittorc processors section.
+	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
+		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
+	}
 
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig

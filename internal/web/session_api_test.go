@@ -384,7 +384,8 @@ func TestHandleWorkspacePrompts_MethodNotAllowed(t *testing.T) {
 		sessionManager: NewSessionManager("", "", false, nil),
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/prompts", nil)
+	// PUT is not supported (GET, POST, DELETE are)
+	req := httptest.NewRequest(http.MethodPut, "/api/workspaces/prompts", nil)
 	w := httptest.NewRecorder()
 
 	server.handleWorkspacePrompts(w, req)
@@ -1985,5 +1986,266 @@ func TestHandleSessionPeriodic_TopLevelAllowed(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("PUT periodic on top-level: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+// makePrompt is a helper for constructing config.WebPrompt in tests.
+func makePrompt(name string, opts ...func(*config.WebPrompt)) config.WebPrompt {
+	p := config.WebPrompt{Name: name, Prompt: "Do something useful."}
+	for _, opt := range opts {
+		opt(&p)
+	}
+	return p
+}
+
+
+
+func withEnabledWhen(v string) func(*config.WebPrompt) {
+	return func(p *config.WebPrompt) { p.EnabledWhen = v }
+}
+
+func TestFilterPromptsByEnabled(t *testing.T) {
+	server := &Server{} // minimal server – no logger needed for these tests
+
+	tests := []struct {
+		name     string
+		prompts  []config.WebPrompt
+		ctx      *config.PromptEnabledContext
+		wantNames []string
+	}{
+		// 1. Nil context returns all prompts unchanged
+		{
+			name: "nil context returns all prompts",
+			prompts: []config.WebPrompt{
+				makePrompt("a", withEnabledWhen(`acp.matchesServer("auggie")`)),
+				makePrompt("b", withEnabledWhen("session.isChild")),
+			},
+			ctx:       nil,
+			wantNames: []string{"a", "b"},
+		},
+		// 2. No conditions — always included
+		{
+			name:      "no conditions always included",
+			prompts:   []config.WebPrompt{makePrompt("plain")},
+			ctx:       &config.PromptEnabledContext{},
+			wantNames: []string{"plain"},
+		},
+		// 3a. acp.matchesServer name match — included
+		{
+			name:    "acp_matchesServer name match included",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("auggie")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "auggie", Type: "augment"},
+			},
+			wantNames: []string{"p"},
+		},
+		// 3b. acp.matchesServer name mismatch — excluded
+		{
+			name:    "acp_matchesServer name mismatch excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("auggie")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "claude", Type: "claude"},
+			},
+			wantNames: nil,
+		},
+		// 4. acp.matchesServer type match
+		{
+			name:    "acp_matchesServer type match included",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("augment")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "auggie", Type: "augment"},
+			},
+			wantNames: []string{"p"},
+		},
+		// 5. acp.matchesServer list of servers
+		{
+			name:    "acp_matchesServer list match",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer(["auggie", "claude-code"])`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "claude-code", Type: "claude"},
+			},
+			wantNames: []string{"p"},
+		},
+		// 6. acp.matchesServer case insensitive
+		{
+			name:    "acp_matchesServer case insensitive",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("Auggie")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "auggie", Type: "augment"},
+			},
+			wantNames: []string{"p"},
+		},
+		// 7. acp.matchesServer fail-open when no ACP active
+		{
+			name:    "acp_matchesServer fail-open no acp active",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("auggie")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "", Type: ""},
+			},
+			wantNames: []string{"p"},
+		},
+		// 8. tools.hasPattern satisfied
+		{
+			name:    "tools_hasPattern satisfied",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: []string{"mitto_conversation_new", "other_tool"}},
+			},
+			wantNames: []string{"p"},
+		},
+		// 9. tools.hasPattern unsatisfied
+		{
+			name:    "tools_hasPattern unsatisfied",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: []string{"other_tool"}},
+			},
+			wantNames: nil,
+		},
+		// 10. tools.hasAllPatterns all satisfied
+		{
+			name:    "tools_hasAllPatterns all satisfied",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: []string{"mitto_foo", "jira_bar"}},
+			},
+			wantNames: []string{"p"},
+		},
+		// 11. tools.hasAllPatterns partially satisfied — excluded
+		{
+			name:    "tools_hasAllPatterns partially satisfied excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+			},
+			wantNames: nil,
+		},
+		// 12. tools.hasPattern empty tools — excluded
+		{
+			name:    "tools_hasPattern empty tools excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: nil},
+			},
+			wantNames: nil,
+		},
+		// 13. enabledWhen CEL true expression
+		{
+			name:    "enabledWhen CEL true expression included",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("session.isChild"))},
+			ctx: &config.PromptEnabledContext{
+				Session: config.SessionContext{IsChild: true},
+			},
+			wantNames: []string{"p"},
+		},
+		// 14. enabledWhen CEL false expression
+		{
+			name:    "enabledWhen CEL false expression excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("session.isChild"))},
+			ctx: &config.PromptEnabledContext{
+				Session: config.SessionContext{IsChild: false},
+			},
+			wantNames: nil,
+		},
+		// 15. enabledWhen CEL complex expression
+		{
+			name: "enabledWhen CEL complex expression included",
+			prompts: []config.WebPrompt{
+				makePrompt("p", withEnabledWhen(`"reasoning" in acp.tags`)),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Tags: []string{"reasoning", "fast"}},
+			},
+			wantNames: []string{"p"},
+		},
+		// 16. enabledWhen CEL invalid expression (fail-open)
+		{
+			name:      "enabledWhen CEL invalid expression fail-open",
+			prompts:   []config.WebPrompt{makePrompt("p", withEnabledWhen("this is not valid CEL !!"))},
+			ctx:       &config.PromptEnabledContext{},
+			wantNames: []string{"p"},
+		},
+		// 17. Combined: acp.matchesServer + tools.hasPattern + CEL all pass
+		{
+			name: "combined acp_matchesServer and tools_hasPattern and CEL all pass",
+			prompts: []config.WebPrompt{
+				makePrompt("p",
+					withEnabledWhen(`acp.matchesServer("auggie") && tools.hasPattern("mitto_*") && !session.isChild`),
+				),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP:     config.ACPContext{Name: "auggie", Type: "augment"},
+				Tools:   config.ToolsContext{Names: []string{"mitto_conversation_new"}},
+				Session: config.SessionContext{IsChild: false},
+			},
+			wantNames: []string{"p"},
+		},
+		// 18. Combined: acp.matchesServer passes, tools.hasPattern fails
+		{
+			name: "combined acp_matchesServer passes tools_hasPattern fails excluded",
+			prompts: []config.WebPrompt{
+				makePrompt("p",
+					withEnabledWhen(`acp.matchesServer("auggie") && tools.hasPattern("jira_*")`),
+				),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP:   config.ACPContext{Name: "auggie", Type: "augment"},
+				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+			},
+			wantNames: nil,
+		},
+		// 19. Combined: acp.matchesServer fails — whole expression excluded
+		{
+			name: "combined acp_matchesServer fails excluded",
+			prompts: []config.WebPrompt{
+				makePrompt("p",
+					withEnabledWhen(`acp.matchesServer("claude") && tools.hasPattern("mitto_*") && true`),
+				),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP:   config.ACPContext{Name: "auggie", Type: "augment"},
+				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+			},
+			wantNames: nil,
+		},
+		// 20. Mixed prompts — some pass, some fail, order preserved
+		{
+			name: "mixed prompts correct order",
+			prompts: []config.WebPrompt{
+				makePrompt("included-1"),
+				makePrompt("excluded-acp", withEnabledWhen(`acp.matchesServer("claude")`)),
+				makePrompt("included-2", withEnabledWhen("!session.isChild")),
+				makePrompt("excluded-mcp", withEnabledWhen(`tools.hasPattern("jira_*")`)),
+				makePrompt("included-3", withEnabledWhen(`acp.matchesServer("auggie")`)),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP:     config.ACPContext{Name: "auggie", Type: "augment"},
+				Tools:   config.ToolsContext{Names: []string{"mitto_foo"}},
+				Session: config.SessionContext{IsChild: false},
+			},
+			wantNames: []string{"included-1", "included-2", "included-3"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := server.filterPromptsByEnabled(tc.prompts, tc.ctx)
+
+			// Extract names for easy comparison
+			var gotNames []string
+			for _, p := range got {
+				gotNames = append(gotNames, p.Name)
+			}
+
+			if len(gotNames) != len(tc.wantNames) {
+				t.Errorf("got %v, want %v", gotNames, tc.wantNames)
+				return
+			}
+			for i := range gotNames {
+				if gotNames[i] != tc.wantNames[i] {
+					t.Errorf("got[%d] = %q, want %q (full: got %v want %v)", i, gotNames[i], tc.wantNames[i], gotNames, tc.wantNames)
+				}
+			}
+		})
 	}
 }

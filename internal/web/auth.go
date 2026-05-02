@@ -702,6 +702,7 @@ var publicAPIPaths = map[string]bool{
 	"/api/csrf-token":        true, // CSRF token endpoint must be accessible before login
 	"/api/supported-runners": true, // Platform information endpoint (no sensitive data)
 	"/api/auth-info":         true, // Auth info endpoint must be accessible before login (used by login page)
+	"/api/health":            true, // Health check must be accessible without auth for tunnel monitoring
 }
 
 // isPublicPath checks if a path is public (no auth required).

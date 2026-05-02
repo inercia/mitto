@@ -120,10 +120,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetConfig handles GET {prefix}/api/config.
-// Supports optional query parameter:
-//   - acp_server: If specified, global file prompts are filtered to only include prompts
-//     that are allowed for this ACP server type (based on the "acps" front-matter field).
-//     The server's type is looked up from config; if no type is set, the name is used.
+// Supports optional query parameters:
+//   - acp_server: If specified, per-server prompts are included (prompts with acps: field
+//     targeting this server). The server's type is looked up from config; if no type is set,
+//     the name is used.
+//   - session_id: If specified, merged prompts are further filtered using
+//     filterPromptsByEnabled (enabledWhenACP, enabledWhenMCP, enabledWhen CEL)
+//     with the context of the given session.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	// Get optional acp_server parameter for filtering global file prompts.
 	// We need to resolve the server type for filtering (type falls back to name).
@@ -163,15 +166,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 		// Merge prompts from global files and settings
 		// Global file prompts (MITTO_DIR/prompts/*.md) have lower priority than settings prompts
-		// If acpServerType is specified, filter global file prompts by ACP server type
 		var globalFilePrompts []configPkg.WebPrompt
 		if s.config.PromptsCache != nil {
 			var err error
-			if acpServerType != "" {
-				globalFilePrompts, err = s.config.PromptsCache.GetWebPromptsForACP(acpServerType)
-			} else {
-				globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
-			}
+			globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
 			if err != nil && s.logger != nil {
 				s.logger.Warn("Failed to load global file prompts", "error", err)
 			}
@@ -179,6 +177,15 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		// Merge: settings prompts override global file prompts by name
 		// Note: workspace prompts are handled separately via /api/workspace-prompts
 		mergedPrompts := configPkg.MergePrompts(globalFilePrompts, s.config.MittoConfig.Prompts, nil)
+
+		// Filter by session context if session_id is provided
+		sessionID := r.URL.Query().Get("session_id")
+		if sessionID != "" {
+			if visCtx := s.buildPromptEnabledContext(sessionID); visCtx != nil {
+				mergedPrompts = s.filterPromptsByEnabled(mergedPrompts, visCtx)
+			}
+		}
+
 		response["prompts"] = mergedPrompts
 
 		// Convert ACP servers to JSON-friendly format

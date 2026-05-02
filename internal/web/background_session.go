@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -294,6 +295,14 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		auxiliaryManager:        cfg.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     cfg.AvailableACPServers, // Pre-computed workspace server list
 	}
+
+	// Wire prompt-mode processor execution to auxiliary sessions
+	if bs.processorManager != nil && bs.auxiliaryManager != nil {
+		bs.processorManager.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
+			return bs.auxiliaryManager.PromptProcessorAsync(ctx, workspaceUUID, processorName, prompt)
+		})
+	}
+
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
 
@@ -467,6 +476,14 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		auxiliaryManager:        config.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     config.AvailableACPServers, // Pre-computed workspace server list
 	}
+
+	// Wire prompt-mode processor execution to auxiliary sessions
+	if bs.processorManager != nil && bs.auxiliaryManager != nil {
+		bs.processorManager.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
+			return bs.auxiliaryManager.PromptProcessorAsync(ctx, workspaceUUID, processorName, prompt)
+		})
+	}
+
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
 
@@ -504,6 +521,13 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			bs.nextSeq = maxSeq + 1
 		} else {
 			bs.nextSeq = eventCount + 1
+		}
+
+		// Restore processor activation stats from persisted metadata
+		if bs.processorManager != nil {
+			if meta, err := config.Store.GetMetadata(config.PersistedID); err == nil {
+				bs.processorManager.SetStats(meta.ProcessorActivations, meta.ProcessorLastActivation)
+			}
 		}
 	} else {
 		// No store - initialize nextSeq to 1 to prevent seq=0 errors
@@ -1144,6 +1168,50 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 	return history + message
 }
 
+// buildProcessorHistory reads session events and returns a slice of HistoryEntry structs.
+// This is used to populate ProcessorInput.History for processors that need conversation
+// context (InputConversation processors and prompt-mode processors using @mitto:messages).
+func (bs *BackgroundSession) buildProcessorHistory() []processors.HistoryEntry {
+	if bs.store == nil || bs.persistedID == "" {
+		return nil
+	}
+
+	events, err := bs.store.ReadEvents(bs.persistedID)
+	if err != nil {
+		if bs.logger != nil {
+			bs.logger.Warn("Failed to read events for processor history", "error", err)
+		}
+		return nil
+	}
+
+	var entries []processors.HistoryEntry
+	for _, event := range events {
+		data, err := session.DecodeEventData(event)
+		if err != nil {
+			continue
+		}
+		switch event.Type {
+		case session.EventTypeUserPrompt:
+			if d, ok := data.(session.UserPromptData); ok && d.Message != "" {
+				entries = append(entries, processors.HistoryEntry{
+					Role:    "user",
+					Content: d.Message,
+				})
+			}
+		case session.EventTypeAgentMessage:
+			if d, ok := data.(session.AgentMessageData); ok && d.Text != "" {
+				// Agent messages are stored as HTML; strip tags for plain text context
+				entries = append(entries, processors.HistoryEntry{
+					Role:    "assistant",
+					Content: session.StripHTML(d.Text),
+				})
+			}
+		}
+	}
+
+	return entries
+}
+
 // killACPProcess terminates the ACP process and cleans up resources.
 // It handles both direct execution (acpCmd) and runner-based execution.
 // In shared-process mode, it only unregisters this session from the MultiplexClient —
@@ -1292,6 +1360,15 @@ type RestartStats struct {
 	ReasonCounts    map[RestartReason]int // Count of restarts by reason
 	LastRestartTime time.Time             // Timestamp of most recent restart
 	LastReason      RestartReason         // Reason for most recent restart
+}
+
+// GetProcessorStats returns processor statistics for this session.
+// Returns: processor count, total pipeline activations, last activation time.
+func (bs *BackgroundSession) GetProcessorStats() (count int, activations int, lastAt time.Time) {
+	if bs.processorManager == nil {
+		return 0, 0, time.Time{}
+	}
+	return bs.processorManager.ProcessorCount(), bs.processorManager.TotalActivations(), bs.processorManager.LastActivationAt()
 }
 
 // GetRestartStats returns statistics about ACP process restarts for telemetry.
@@ -2798,11 +2875,13 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	// Best-effort: unavailable fields substitute to "".
 	var sessionName, acpServer, parentSessionID, parentSessionName string
 	var childSessions []processors.ChildSession
+	var advancedSettings map[string]bool
 	if bs.store != nil && bs.persistedID != "" {
 		if sessionMeta, metaErr := bs.store.GetMetadata(bs.persistedID); metaErr == nil {
 			sessionName = sessionMeta.Name
 			acpServer = sessionMeta.ACPServer
 			parentSessionID = sessionMeta.ParentSessionID
+			advancedSettings = sessionMeta.AdvancedSettings
 		}
 		// Resolve parent session name for @mitto:parent variable
 		if parentSessionID != "" {
@@ -2834,6 +2913,39 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		}
 	}
 
+	// Check if any processor needs conversation history (InputConversation or prompt-mode).
+	// Prompt-mode processors may use @mitto:messages which requires history to be populated.
+	var processorHistory []processors.HistoryEntry
+	if bs.processorManager != nil {
+		for _, proc := range bs.processorManager.Processors() {
+			if proc.GetInput() == processors.InputConversation || proc.IsPromptMode() {
+				processorHistory = bs.buildProcessorHistory()
+				break
+			}
+		}
+	}
+
+	// Populate user data schema and current user data for processor variables
+	var hasUserDataSchema bool
+	var userDataSchemaJSON string
+	var userDataJSON string
+	if bs.workingDir != "" {
+		if rc, err := config.LoadWorkspaceRC(bs.workingDir); err == nil && rc != nil &&
+			rc.Metadata != nil && rc.Metadata.UserDataSchema != nil && len(rc.Metadata.UserDataSchema.Fields) > 0 {
+			hasUserDataSchema = true
+			if schemaBytes, err := json.Marshal(rc.Metadata.UserDataSchema.Fields); err == nil {
+				userDataSchemaJSON = string(schemaBytes)
+			}
+		}
+	}
+	if bs.store != nil && bs.persistedID != "" {
+		if ud, err := bs.store.GetUserData(bs.persistedID); err == nil && ud != nil && len(ud.Attributes) > 0 {
+			if udBytes, err := json.Marshal(ud.Attributes); err == nil {
+				userDataJSON = string(udBytes)
+			}
+		}
+	}
+
 	processorInput := &processors.ProcessorInput{
 		Message:             message,
 		IsFirstMessage:      isFirst,
@@ -2848,6 +2960,11 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		ChildSessions:       childSessions,
 		MCPToolNames:        mcpToolNames,
 		IsPeriodic:          meta.SenderID == "periodic-runner",
+		AdvancedSettings:    advancedSettings,
+		History:             processorHistory,
+		HasUserDataSchema:   hasUserDataSchema,
+		UserDataSchemaJSON:  userDataSchemaJSON,
+		UserDataJSON:        userDataJSON,
 	}
 
 	if bs.processorManager != nil {
@@ -2857,7 +2974,17 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				bs.logger.Error("Processor execution failed", "error", procErr)
 			}
 			// Continue with original message on processor failure
-		} else if procResult != nil {
+		} else {
+			// Persist processor activation count to metadata after each successful Apply
+			if bs.store != nil && bs.persistedID != "" {
+				_, procActivations, procLastAt := bs.GetProcessorStats()
+				_ = bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+					m.ProcessorActivations = procActivations
+					m.ProcessorLastActivation = procLastAt
+				})
+			}
+		}
+		if procResult != nil {
 			promptMessage = procResult.Message
 
 			// Convert processor attachments to content blocks

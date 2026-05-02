@@ -606,6 +606,9 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc(apiPrefix+"/api/workspaces/", s.handleWorkspaceDetail)
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
+	mux.HandleFunc(apiPrefix+"/api/workspace-prompts/toggle-enabled", s.handleWorkspacePromptsToggleEnabled)
+	mux.HandleFunc(apiPrefix+"/api/workspace-processors", s.handleWorkspaceProcessors)
+	mux.HandleFunc(apiPrefix+"/api/workspace-processors/toggle-enabled", s.handleWorkspaceProcessorsToggleEnabled)
 	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
@@ -1240,10 +1243,11 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 	// Start new monitor if external address is configured and up hook exists
 	if hooksConfig.ExternalAddress != "" && hooksConfig.Up.Command != "" && s.hookPort > 0 {
 		m := hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
-			Address:  hooksConfig.ExternalAddress,
-			UpHook:   hooksConfig.Up,
-			DownHook: hooksConfig.Down,
-			Port:     s.hookPort,
+			Address:   hooksConfig.ExternalAddress,
+			APIPrefix: s.apiPrefix,
+			UpHook:    hooksConfig.Up,
+			DownHook:  hooksConfig.Down,
+			Port:      s.hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
 				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 			},
@@ -1344,6 +1348,16 @@ func (a *sessionManagerAdapter) GetWorkspaces() []configPkg.WorkspaceSettings {
 // GetWorkspaceByUUID returns the workspace with the given UUID.
 func (a *sessionManagerAdapter) GetWorkspaceByUUID(uuid string) *configPkg.WorkspaceSettings {
 	return a.sm.GetWorkspaceByUUID(uuid)
+}
+
+// BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastSessionRenamed(sessionID string, newName string) {
+	a.sm.BroadcastSessionRenamed(sessionID, newName)
+}
+
+// GetUserDataSchema returns the user data schema for a workspace.
+func (a *sessionManagerAdapter) GetUserDataSchema(workingDir string) *configPkg.UserDataSchema {
+	return a.sm.GetUserDataSchema(workingDir)
 }
 
 // =============================================================================
