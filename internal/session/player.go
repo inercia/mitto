@@ -23,6 +23,12 @@ func stripHTML(s string) string {
 	return htmlpkg.UnescapeString(htmlStripper.Sanitize(s))
 }
 
+// StripHTML removes all HTML tags and decodes HTML entities to plain text.
+// This is the exported version of stripHTML for use by other packages.
+func StripHTML(s string) string {
+	return stripHTML(s)
+}
+
 // eventDataTypes maps event types to their corresponding data struct types.
 // This registry is used by DecodeEventData to avoid duplicate switch statements.
 var eventDataTypes = map[EventType]reflect.Type{
