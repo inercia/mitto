@@ -74,6 +74,18 @@ prompt: |
   === User Messages ===
   @mitto:messages
 
+  ## Notification
+
+  After completing your work, if you added any new preferences to AGENTS.md, call
+  `mitto_ui_notify` with:
+  - `self_id`: "@mitto:session_id"
+  - `title`: "📝 Preferences Saved"
+  - `message`: a brief summary, e.g. "Memorized 2 new preferences"
+  - `style`: "info"
+
+  If no new preferences were found and no files were modified, do NOT send any
+  notification — stay completely silent.
+
 messages:
   scope: since-last-run
   roles: [user]

@@ -103,6 +103,17 @@ prompt: |
   === Recent Conversation ===
   @mitto:messages
 
+  ## Notification
+
+  After completing your work, if you created or updated any rules files, call
+  `mitto_ui_notify` with:
+  - `self_id`: "@mitto:session_id"
+  - `title`: "✏️ Rules Updated"
+  - `message`: a brief summary, e.g. "Updated 3 rules files with new patterns"
+  - `style`: "success"
+
+  If no changes were needed, do NOT send any notification — stay completely silent.
+
 messages:
   scope: since-last-run
   roles: [user, agent]

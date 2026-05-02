@@ -93,6 +93,17 @@ prompt: |
   === Conversation Messages ===
   @mitto:messages
 
+  ## Notification
+
+  After completing your work, if you called `mitto_conversation_update` to set any
+  user data fields, also call `mitto_ui_notify` with:
+  - `self_id`: "@mitto:session_id"
+  - `title`: "🏷️ Metadata Detected"
+  - `message`: a brief summary, e.g. "Updated 2 user data fields"
+  - `style`: "info"
+
+  If no fields were updated, do NOT send any notification — stay completely silent.
+
 messages:
   scope: since-last-run
   roles: [user]
