@@ -1082,7 +1082,6 @@ function SessionItem({
   onRename,
   onDelete,
   onArchive,
-  onPeriodic,
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
@@ -1143,62 +1142,6 @@ function SessionItem({
     : isSessionStreaming
       ? "Wait for response to complete"
       : null;
-
-  // Toggle periodic prompt enabled/disabled
-  const handleTogglePeriodic = useCallback(
-    async (e) => {
-      if (e) e.stopPropagation();
-      try {
-        // Get current periodic config first
-        const getResponse = await secureFetch(
-          apiUrl(`/api/sessions/${session.session_id}/periodic`),
-        );
-        if (getResponse.status === 404) {
-          // No periodic configured - create one with enabled=false (unlocked/paused)
-          // User will configure prompt in the textarea and lock it to enable periodic runs
-          // Default to 1 hour - frequent enough to be useful, but not overwhelming
-          const createResponse = await secureFetch(
-            apiUrl(`/api/sessions/${session.session_id}/periodic`),
-            {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                prompt: "(pending)", // Placeholder - user must set via lock button
-                frequency: { value: 1, unit: "hours" },
-                enabled: false, // Start unlocked - user must lock to enable periodic runs
-              }),
-            },
-          );
-          if (!createResponse.ok) {
-            console.error("Failed to create periodic config");
-          } else {
-            // Server broadcasts the update - also notify parent to switch tabs
-            if (onPeriodic) onPeriodic(session, true);
-          }
-          return;
-        }
-        if (!getResponse.ok) {
-          console.error("Failed to get periodic config");
-          return;
-        }
-        // Periodic config exists - DELETE to convert back to regular conversation
-        // This removes periodic entirely (regardless of locked/unlocked state)
-        const response = await secureFetch(
-          apiUrl(`/api/sessions/${session.session_id}/periodic`),
-          { method: "DELETE" },
-        );
-        if (!response.ok) {
-          console.error("Failed to delete periodic config");
-        } else {
-          // Server broadcasts the update - also notify parent to switch tabs
-          if (onPeriodic) onPeriodic(session, false);
-        }
-      } catch (err) {
-        console.error("Failed to toggle periodic:", err);
-      }
-    },
-    [session.session_id, onPeriodic],
-  );
 
   // Get working_dir from session, or fall back to global map
   const workingDir =
@@ -1380,18 +1323,6 @@ function SessionItem({
       icon: html`<${EditIcon} />`,
       onClick: () => handleRename(),
     },
-    // Hide periodic option for archived sessions and child (spawned) sessions
-    ...(isArchived || isSpawned
-      ? []
-      : [
-          {
-            label: isPeriodicEnabled ? "Disable Periodic" : "Enable Periodic",
-            icon: isPeriodicEnabled
-              ? html`<${PeriodicFilledIcon} />`
-              : html`<${PeriodicIcon} />`,
-            onClick: () => handleTogglePeriodic(),
-          },
-        ]),
     {
       label: "Delete",
       icon: html`<${TrashIcon} />`,
@@ -1626,22 +1557,6 @@ function SessionItem({
                 >
                   <${EditIcon} className="w-4 h-4" />
                 </button>
-                ${!isArchived &&
-                html`<button
-                  onClick=${handleTogglePeriodic}
-                  class="p-1.5 ${isPeriodicEnabled
-                    ? "bg-white hover:bg-gray-100 dark:bg-slate-600 dark:hover:bg-slate-500"
-                    : "bg-slate-700 hover:bg-slate-600"} rounded transition-colors ${isPeriodicEnabled
-                    ? "text-blue-600 dark:text-blue-400"
-                    : "text-gray-300 hover:text-white"}"
-                  title="${isPeriodicEnabled
-                    ? "Periodic enabled - click to disable"
-                    : "Periodic disabled - click to enable"}"
-                >
-                  ${isPeriodicEnabled
-                    ? html`<${PeriodicFilledIcon} className="w-4 h-4" />`
-                    : html`<${PeriodicIcon} className="w-4 h-4" />`}
-                </button>`}
                 <button
                   onClick=${handleDelete}
                   class="p-1.5 bg-slate-700 hover:bg-red-600 rounded transition-colors text-gray-300 hover:text-white"
@@ -1672,7 +1587,6 @@ function SessionList({
   onRename,
   onDelete,
   onArchive,
-  onPeriodic,
   onClose,
   workspaces,
   theme,
@@ -2421,7 +2335,6 @@ function SessionList({
         onRename=${onRename}
         onDelete=${onDelete}
         onArchive=${onArchive}
-        onPeriodic=${onPeriodic}
         workspaceColor=${workspace?.color || null}
         workspaceCode=${workspace?.code || null}
         workspaceName=${workspace?.name || null}
@@ -2469,13 +2382,13 @@ function SessionList({
       }
 
       if (workspace) {
-        onNewSession(workspace);
+        onNewSession(workspace, null, filterTab);
       } else {
         // Fallback to default new session behavior
-        onNewSession();
+        onNewSession(null, null, filterTab);
       }
     },
-    [groupingMode, workspaces, onNewSession],
+    [groupingMode, workspaces, onNewSession, filterTab],
   );
 
   // Handle creating a new session in a specific folder group
@@ -2490,16 +2403,16 @@ function SessionList({
 
       if (matchingWorkspaces.length === 1) {
         // Single workspace - create session directly
-        onNewSession(matchingWorkspaces[0]);
+        onNewSession(matchingWorkspaces[0], null, filterTab);
       } else if (matchingWorkspaces.length > 1) {
         // Multiple workspaces - show dialog filtered to this folder
-        onNewSession(null, workingDir);
+        onNewSession(null, workingDir, filterTab);
       } else {
         // Fallback
-        onNewSession();
+        onNewSession(null, null, filterTab);
       }
     },
-    [workspaces, onNewSession],
+    [workspaces, onNewSession, filterTab],
   );
 
   // Render grouped sessions with collapsible headers
@@ -2579,7 +2492,7 @@ function SessionList({
                 ></span>
               `}
               ${groupingMode === "workspace" &&
-              filterTab === FILTER_TAB.CONVERSATIONS &&
+              (filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
               html`
                 <button
                   onClick=${(e) => handleNewSessionInGroup(group.key, e)}
@@ -2749,7 +2662,7 @@ function SessionList({
                   title="Agent responding in this folder"
                 ></span>
               `}
-              ${filterTab === FILTER_TAB.CONVERSATIONS &&
+              ${(filterTab === FILTER_TAB.CONVERSATIONS || filterTab === FILTER_TAB.PERIODIC) &&
               html`
                 <button
                   onClick=${(e) => handleNewSessionInFolder(folder.workingDir, e)}
@@ -2966,7 +2879,7 @@ function SessionList({
             ${getGroupingIcon()}
           </button>
           <button
-            onClick=${() => onNewSession()}
+            onClick=${() => onNewSession(null, null, filterTab)}
             class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
             title="New Conversation"
           >
@@ -3197,7 +3110,6 @@ function App() {
     activeUIPrompt,
     sendUIPromptAnswer,
     mcpTools,
-    requiredToolsStatus,
   } = useWebSocket();
 
   const [showSidebar, setShowSidebar] = useState(false);
@@ -3248,6 +3160,7 @@ function App() {
     session: null,
   });
   const [workspaceDialog, setWorkspaceDialog] = useState({ isOpen: false }); // Workspace selector for new session
+  const [pendingPeriodicTab, setPendingPeriodicTab] = useState(null); // Track if new session should be periodic
   const [settingsDialog, setSettingsDialog] = useState({
     isOpen: false,
     forceOpen: false,
@@ -3256,10 +3169,7 @@ function App() {
   const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({
     isOpen: false,
   }); // Keyboard shortcuts dialog
-  const [globalPrompts, setGlobalPrompts] = useState([]); // Global prompts from web.prompts
-  const [globalPromptsACPServer, setGlobalPromptsACPServer] = useState(null); // ACP server used when fetching global prompts
-  const [acpServersWithPrompts, setAcpServersWithPrompts] = useState([]); // ACP servers with their per-server prompts
-  const [workspacePrompts, setWorkspacePrompts] = useState([]); // Workspace-specific prompts from .mittorc
+  const [workspacePrompts, setWorkspacePrompts] = useState([]); // All prompts for current workspace (merged from all sources by backend)
   const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
   const [workspacePromptsLastModified, setWorkspacePromptsLastModified] =
     useState(null); // Last-Modified header for conditional requests
@@ -3300,122 +3210,10 @@ function App() {
     [activeSessions, storedSessions],
   );
 
-  // Compute merged prompts: workspace prompts (highest priority) + global prompts + server-specific prompts
-  // Workspace prompts override global/server prompts with the same name
-  // Prompts are filtered by the current ACP server TYPE using the "enabledWhenACP" field
-  const predefinedPrompts = useMemo(() => {
-    const currentAcpServerName = sessionInfo?.acp_server || "";
-    // Look up the server's type from acpServersWithPrompts.
-    // Servers with the same type share prompts (e.g., auggie-fast and auggie-smart
-    // can both have type "auggie" to share prompts with acps: auggie).
-    const currentServerConfig = acpServersWithPrompts.find(
-      (s) => s.name === currentAcpServerName,
-    );
-    // Use type if specified, otherwise fall back to name (consistent with backend behavior)
-    const currentAcpServerType = (
-      currentServerConfig?.type || currentAcpServerName
-    ).toLowerCase();
-
-    // Helper to check if a prompt is allowed for the current ACP server type
-    // If enabledWhenACP is empty, the prompt is allowed for all servers
-    // Otherwise, check if the current server type is in the comma-separated list
-    const isAllowedForACP = (prompt) => {
-      if (!prompt.enabledWhenACP || prompt.enabledWhenACP.trim() === "") {
-        return true; // No restriction, allowed for all
-      }
-      if (!currentAcpServerType) {
-        return true; // No ACP server selected, show all prompts
-      }
-      // Parse comma-separated list and check for match (case-insensitive)
-      const allowedServers = prompt.enabledWhenACP
-        .split(",")
-        .map((s) => s.trim().toLowerCase());
-      return allowedServers.includes(currentAcpServerType);
-    };
-
-    // Helper to check if a prompt's required tools are satisfied
-    // If required_tools is empty, the prompt is always shown
-    // Otherwise, ALL patterns must be satisfied (true in requiredToolsStatus)
-    const isRequiredToolsSatisfied = (prompt) => {
-      if (!prompt.required_tools || prompt.required_tools.trim() === "") {
-        return true; // No tool requirements
-      }
-      const patterns = prompt.required_tools
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (patterns.length === 0) return true;
-      return patterns.every((p) => requiredToolsStatus[p] === true);
-    };
-
-    // Build a map of prompt names to prompts, with workspace prompts having highest priority
-    const promptMap = new Map();
-
-    // First add global prompts (lowest priority), filtered by ACP server AND required tools
-    for (const p of globalPrompts) {
-      if (isAllowedForACP(p) && isRequiredToolsSatisfied(p)) {
-        promptMap.set(p.name, { ...p, source: "global" });
-      }
-    }
-
-    // Then add server-specific prompts (medium priority)
-    if (sessionInfo?.acp_server && acpServersWithPrompts.length > 0) {
-      const server = acpServersWithPrompts.find(
-        (s) => s.name === sessionInfo.acp_server,
-      );
-      if (server?.prompts?.length > 0) {
-        for (const p of server.prompts) {
-          if (isAllowedForACP(p) && isRequiredToolsSatisfied(p)) {
-            promptMap.set(p.name, { ...p, source: "server" });
-          }
-        }
-      }
-    }
-
-    // Finally add workspace prompts (highest priority - override others with same name)
-    // Workspace prompts are also filtered by ACP server AND required tools
-    // Note: workspace prompts with enabled:false are included to suppress same-named prompts
-    for (const p of workspacePrompts) {
-      if (p.enabled === false) {
-        // Disabled prompt: add to map to suppress same-named lower-priority prompts
-        promptMap.set(p.name, { ...p, source: "workspace" });
-      } else if (isAllowedForACP(p) && isRequiredToolsSatisfied(p)) {
-        promptMap.set(p.name, { ...p, source: "workspace" });
-      }
-    }
-
-    // Remove disabled prompts after merge
-    // (higher-priority sources with enabled:false suppress same-named lower-priority prompts)
-    for (const [name, p] of promptMap) {
-      if (p.enabled === false) {
-        promptMap.delete(name);
-      }
-    }
-
-    // Convert map back to array, maintaining order: workspace first, then server, then global
-    const result = [];
-    // Add workspace prompts first (visually distinct section)
-    for (const p of workspacePrompts) {
-      const entry = promptMap.get(p.name);
-      if (entry && entry.source === "workspace") {
-        result.push(entry);
-      }
-    }
-    // Add remaining prompts (server + global that weren't overridden)
-    for (const [name, entry] of promptMap) {
-      if (entry.source !== "workspace") {
-        result.push(entry);
-      }
-    }
-
-    return result;
-  }, [
-    globalPrompts,
-    sessionInfo?.acp_server,
-    acpServersWithPrompts,
-    workspacePrompts,
-    requiredToolsStatus,
-  ]);
+  // Predefined prompts: the backend's /api/workspace-prompts endpoint now returns
+  // all prompts fully merged (global + server-specific + workspace) and filtered.
+  // The frontend just uses them directly — no client-side merge needed.
+  const predefinedPrompts = workspacePrompts;
 
   // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected
@@ -4116,15 +3914,6 @@ function App() {
   useEffect(() => {
     fetchConfig()
       .then((config) => {
-        // Load global prompts from top-level prompts
-        if (config?.prompts) {
-          setGlobalPrompts(config.prompts);
-        }
-        // Store ACP servers with their per-server prompts
-        if (config?.acp_servers) {
-          console.log("[config] ACP servers with prompts:", config.acp_servers);
-          setAcpServersWithPrompts(config.acp_servers);
-        }
         // Track if config is read-only (loaded from --config file or RC file)
         if (config?.config_readonly) {
           setConfigReadonly(true);
@@ -4287,9 +4076,12 @@ function App() {
       }
 
       try {
+        const sessionParam = activeSessionId
+          ? `&session_id=${encodeURIComponent(activeSessionId)}`
+          : "";
         const res = await authFetch(
           apiUrl(
-            `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}`,
+            `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}${sessionParam}`,
           ),
           { headers },
         );
@@ -4320,7 +4112,7 @@ function App() {
         }
       }
     },
-    [workspacePromptsDir, workspacePromptsLastModified],
+    [workspacePromptsDir, workspacePromptsLastModified, activeSessionId],
   );
 
   // Fetch workspace prompts when the active session's working_dir changes
@@ -4382,24 +4174,10 @@ function App() {
       console.log("[prompts] File watcher detected changes:", event.detail);
 
       // Refresh workspace prompts (force refresh to skip conditional request)
+      // The backend merges all sources (global + server + workspace), so this is all we need.
       if (sessionInfo?.working_dir) {
         fetchWorkspacePrompts(sessionInfo.working_dir, true);
       }
-
-      // Refresh global prompts (force-bypass cache since files changed on disk)
-      const acpServer = sessionInfo?.acp_server;
-      fetchConfig(acpServer || null, /* force */ true)
-        .then((config) => {
-          if (config?.prompts) {
-            setGlobalPrompts(config.prompts);
-          }
-          if (config?.acp_servers) {
-            setAcpServersWithPrompts(config.acp_servers);
-          }
-        })
-        .catch((err) => {
-          console.error("Failed to refresh prompts after file change:", err);
-        });
     };
 
     window.addEventListener("mitto:prompts_changed", handlePromptsChanged);
@@ -4407,29 +4185,8 @@ function App() {
       window.removeEventListener("mitto:prompts_changed", handlePromptsChanged);
   }, [
     sessionInfo?.working_dir,
-    sessionInfo?.acp_server,
     fetchWorkspacePrompts,
   ]);
-
-  // Refetch global prompts when ACP server changes
-  // This ensures prompts with "enabledWhenACP" restrictions are filtered correctly per workspace
-  useEffect(() => {
-    const acpServer = sessionInfo?.acp_server;
-    // Skip if ACP server hasn't changed or isn't set yet
-    if (!acpServer || acpServer === globalPromptsACPServer) return;
-
-    // Fetch global prompts filtered by ACP server (uses cache when fresh)
-    fetchConfig(acpServer)
-      .then((config) => {
-        if (config?.prompts) {
-          setGlobalPrompts(config.prompts);
-          setGlobalPromptsACPServer(acpServer);
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to fetch global prompts for ACP server:", err);
-      });
-  }, [sessionInfo?.acp_server, globalPromptsACPServer]);
 
   // Follow system theme state - persisted to localStorage
   const [followSystemTheme, setFollowSystemTheme] = useState(() => {
@@ -4582,7 +4339,17 @@ function App() {
       // If following system preference (default for new users)
       if (followSystem === null || followSystem === "true") {
         if (typeof window !== "undefined" && window.matchMedia) {
-          return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            return true;
+          }
+        }
+        // Auto-enable on mobile/tablet (iPad reports as Macintosh with touch support)
+        if (typeof navigator !== "undefined") {
+          const ua = navigator.userAgent || "";
+          if (/iPad|iPhone|iPod|Android/i.test(ua) ||
+              (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))) {
+            return true;
+          }
         }
       }
       // Otherwise use saved explicit preference
@@ -4592,6 +4359,16 @@ function App() {
     // Fallback: check OS preference
     if (typeof window !== "undefined" && window.matchMedia) {
       return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    }
+    // Auto-enable on mobile/tablet devices to save battery —
+    // backdrop-filter blur causes sustained GPU compositing work
+    // even when idle, draining battery on iPad and similar devices.
+    if (typeof navigator !== "undefined") {
+      const ua = navigator.userAgent || "";
+      if (/iPad|iPhone|iPod|Android/i.test(ua) ||
+          (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))) {
+        return true;
+      }
     }
     return false;
   });
@@ -4949,11 +4726,30 @@ function App() {
   // Ref for the chat input component to allow focusing from native menu
   const chatInputRef = useRef(null);
 
+  // Helper to configure a newly created session as periodic
+  const applyPeriodicConfig = async (sessionId) => {
+    try {
+      await secureFetch(apiUrl(`/api/sessions/${sessionId}/periodic`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: "(pending)",
+          frequency: { value: 1, unit: "hours" },
+          enabled: false,
+        }),
+      });
+    } catch (e) {
+      console.error("Failed to create periodic config:", e);
+    }
+  };
+
   // Expose global functions for native macOS menu integration
   useEffect(() => {
     // New Conversation - called from native Cmd+N menu
     window.mittoNewConversation = async () => {
       // Use handleNewSession logic to support workspace selection
+      const currentTab = getFilterTab();
+      const isPeriodic = currentTab === FILTER_TAB.PERIODIC;
       if (workspaces.length === 0) {
         // No workspaces configured - open settings dialog (unless config is read-only)
         if (!configReadonly) {
@@ -4963,6 +4759,7 @@ function App() {
         return;
       }
       if (workspaces.length > 1) {
+        setPendingPeriodicTab(currentTab);
         setWorkspaceDialog({ isOpen: true });
       } else {
         // Single workspace - create session directly with workspace info
@@ -4971,6 +4768,9 @@ function App() {
           workingDir: ws.working_dir,
           acpServer: ws.acp_server,
         });
+        if (result?.sessionId && isPeriodic) {
+          await applyPeriodicConfig(result.sessionId);
+        }
         // If session creation failed due to no workspace configured, open settings
         if (
           result?.errorCode === "no_workspace_configured" &&
@@ -5087,7 +4887,9 @@ function App() {
     reconnectAllSessionsStaggered,
   ]);
 
-  const handleNewSession = async (workspace = null, folderFilter = null) => {
+  const handleNewSession = async (workspace = null, folderFilter = null, currentFilterTab = null) => {
+    const isPeriodic = currentFilterTab === FILTER_TAB.PERIODIC;
+
     // If a specific workspace is provided, create session directly in that workspace
     if (workspace) {
       setShowSidebar(false);
@@ -5095,6 +4897,9 @@ function App() {
         workingDir: workspace.working_dir,
         acpServer: workspace.acp_server,
       });
+      if (result?.sessionId && isPeriodic) {
+        await applyPeriodicConfig(result.sessionId);
+      }
       // If session creation failed due to no workspace configured, open settings
       if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
@@ -5121,6 +4926,9 @@ function App() {
           workingDir: filteredWs[0].working_dir,
           acpServer: filteredWs[0].acp_server,
         });
+        if (result?.sessionId && isPeriodic) {
+          await applyPeriodicConfig(result.sessionId);
+        }
         if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
         } else {
@@ -5129,6 +4937,7 @@ function App() {
           }, 100);
         }
       } else if (filteredWs.length > 1) {
+        setPendingPeriodicTab(currentFilterTab);
         setWorkspaceDialog({ isOpen: true, filteredWorkspaces: filteredWs });
         setShowSidebar(false);
       }
@@ -5145,6 +4954,7 @@ function App() {
     }
     // If multiple workspaces, show workspace selector
     if (workspaces.length > 1) {
+      setPendingPeriodicTab(currentFilterTab);
       setWorkspaceDialog({ isOpen: true });
       setShowSidebar(false);
     } else {
@@ -5155,6 +4965,9 @@ function App() {
         workingDir: ws.working_dir,
         acpServer: ws.acp_server,
       });
+      if (result?.sessionId && isPeriodic) {
+        await applyPeriodicConfig(result.sessionId);
+      }
       // If session creation failed due to no workspace configured, open settings
       if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
@@ -5171,10 +4984,15 @@ function App() {
 
   const handleWorkspaceSelect = async (workspace) => {
     setWorkspaceDialog({ isOpen: false });
+    const isPeriodic = pendingPeriodicTab === FILTER_TAB.PERIODIC;
+    setPendingPeriodicTab(null);
     const result = await newSession({
       workingDir: workspace.working_dir,
       acpServer: workspace.acp_server,
     });
+    if (result?.sessionId && isPeriodic) {
+      await applyPeriodicConfig(result.sessionId);
+    }
     // If session creation failed due to no workspace configured, open settings (unless config is read-only)
     if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
       setSettingsDialog({ isOpen: true, forceOpen: true });
@@ -5591,30 +5409,13 @@ function App() {
     [sendPrompt, trackUserMessageForPlanExpiration, activeSessionId],
   );
 
-  // Handler for prompts dropdown open - refreshes both global and workspace prompts
+  // Handler for prompts dropdown open - refreshes workspace prompts (which now include all sources)
   const handlePromptsOpen = useCallback(() => {
-    // Refresh workspace prompts
     if (sessionInfo?.working_dir) {
       fetchWorkspacePrompts(sessionInfo.working_dir, false);
     }
-
-    // Refresh global prompts (uses cache when fresh)
-    const acpServer = sessionInfo?.acp_server;
-    fetchConfig(acpServer || null)
-      .then((config) => {
-        if (config?.prompts) {
-          setGlobalPrompts(config.prompts);
-        }
-        if (config?.acp_servers) {
-          setAcpServersWithPrompts(config.acp_servers);
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to refresh global prompts:", err);
-      });
   }, [
     sessionInfo?.working_dir,
-    sessionInfo?.acp_server,
     fetchWorkspacePrompts,
   ]);
 
@@ -5728,16 +5529,6 @@ function App() {
     }
   };
 
-  const handlePeriodicSession = (session, isPeriodic) => {
-    // When enabling periodic, switch to periodic tab and select the session
-    // When disabling periodic, switch to conversations tab and select the session
-    if (isPeriodic) {
-      setFilterTab(FILTER_TAB.PERIODIC);
-    } else {
-      setFilterTab(FILTER_TAB.CONVERSATIONS);
-    }
-    switchSession(session.session_id);
-  };
 
   return html`
     <div class="h-screen-safe flex">
@@ -5789,8 +5580,6 @@ function App() {
           try {
             const config = await fetchConfig();
             if (config) {
-              setAcpServersWithPrompts(config?.acp_servers || []);
-              setGlobalPrompts(config?.prompts || []);
               refreshWorkspaces();
               // If ACP servers exist but no workspaces, open workspaces dialog
               const hasServers = config.acp_servers && config.acp_servers.length > 0;
@@ -5819,10 +5608,6 @@ function App() {
           try {
             const config = await fetchConfig();
             if (config) {
-              // Reload global prompts (use empty array if not present)
-              setGlobalPrompts(config?.prompts || []);
-              // Reload ACP servers with their per-server prompts
-              setAcpServersWithPrompts(config?.acp_servers || []);
               // Reload UI settings
               setConfirmDeleteSession(
                 config?.ui?.confirmations?.delete_session !== false,
@@ -6124,7 +5909,6 @@ function App() {
           onRename=${handleOpenSessionProperties}
           onDelete=${handleDeleteSession}
           onArchive=${handleArchiveSession}
-          onPeriodic=${handlePeriodicSession}
           workspaces=${workspaces}
           theme=${theme}
           onToggleTheme=${toggleTheme}
@@ -6155,7 +5939,6 @@ function App() {
               onRename=${handleOpenSessionProperties}
               onDelete=${handleDeleteSession}
               onArchive=${handleArchiveSession}
-              onPeriodic=${handlePeriodicSession}
               onClose=${() => setShowSidebar(false)}
               workspaces=${workspaces}
               theme=${theme}

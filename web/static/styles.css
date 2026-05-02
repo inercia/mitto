@@ -1753,6 +1753,21 @@ mitto-action {
   will-change: auto;
 }
 
+/* Disable backdrop-filter blur on reduced animations — these cause sustained
+   GPU compositing work even when idle, draining battery on mobile devices.
+   Covers both CSS backdrop-filter and Tailwind backdrop-blur-* utilities. */
+.reduce-animations .swipe-arrow-indicator__content {
+  backdrop-filter: none;
+}
+
+.reduce-animations .action-toolbar-overlay {
+  backdrop-filter: none;
+}
+
+.reduce-animations [class*="backdrop-blur"] {
+  backdrop-filter: none;
+}
+
 /* Also respect OS-level reduced motion preference directly via media query.
    This provides a CSS-only baseline before JavaScript loads. */
 @media (prefers-reduced-motion: reduce) {
@@ -1784,5 +1799,17 @@ mitto-action {
     animation: none;
     opacity: 1;
     will-change: auto;
+  }
+
+  .swipe-arrow-indicator__content {
+    backdrop-filter: none;
+  }
+
+  .action-toolbar-overlay {
+    backdrop-filter: none;
+  }
+
+  [class*="backdrop-blur"] {
+    backdrop-filter: none;
   }
 }

@@ -1063,9 +1063,9 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         <textarea
           value=${text}
           onInput=${(e) => setText(e.target.value)}
-          rows="3"
+          rows="8"
           disabled=${readOnly}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none ${readOnly
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
@@ -1229,23 +1229,7 @@ export function SettingsDialog({
   // Track server renames (oldName -> newName) so backend can update sessions
   const [serverRenames, setServerRenames] = useState({});
 
-  // Prompts state
-  const [prompts, setPrompts] = useState([]);
-  // Sorted prompts for display (alphabetical by name)
-  const sortedPrompts = useMemo(
-    () => [...prompts].sort((a, b) => (a.name || "").localeCompare(b.name || "")),
-    [prompts],
-  );
-  const [showAddPrompt, setShowAddPrompt] = useState(false);
-  const [newPromptName, setNewPromptName] = useState("");
-  const [newPromptText, setNewPromptText] = useState("");
-  const [newPromptColor, setNewPromptColor] = useState("");
-  const [newPromptGroup, setNewPromptGroup] = useState("");
-  const [editingPrompt, setEditingPrompt] = useState(null);
 
-  // Prompt drag-and-drop state
-  const [draggedPromptIndex, setDraggedPromptIndex] = useState(null);
-  const [dragOverPromptIndex, setDragOverPromptIndex] = useState(null);
 
   // UI settings state (macOS only)
   const [agentCompletedSound, setAgentCompletedSound] = useState(false);
@@ -1471,90 +1455,7 @@ export function SettingsDialog({
     }
   };
 
-  // Save prompts order to settings.json immediately
-  const savePromptsOrder = async (newPrompts) => {
-    try {
-      // Get current config first (cached read is fine for this read-before-write)
-      const config = await fetchConfig();
 
-      // Build the config object with updated prompts
-      const webConfig = {
-        host: config.web?.host || "127.0.0.1",
-        external_port: config.web?.external_port || 0,
-        auth: config.web?.auth || null,
-        hooks: config.web?.hooks || null,
-      };
-
-      // Filter prompts to only save settings-based prompts (not file-based ones)
-      const settingsPrompts = newPrompts
-        .filter((p) => !p.source || p.source === "settings")
-        .map(({ source, ...rest }) => rest); // Remove source field before saving
-
-      const saveConfig = {
-        workspaces: config.workspaces || [],
-        acp_servers: config.acp_servers || [],
-        prompts: settingsPrompts,
-        web: webConfig,
-        ui: config.ui || {},
-      };
-
-      await secureFetch(apiUrl("/api/config"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(saveConfig),
-      });
-      // Config changed on disk — invalidate cache so next read is fresh.
-      invalidateConfigCache();
-    } catch (err) {
-      console.error("Failed to save prompts order:", err);
-    }
-  };
-
-  // Prompt drag-and-drop handlers
-  const handlePromptDragStart = (e, index) => {
-    setDraggedPromptIndex(index);
-    e.dataTransfer.effectAllowed = "move";
-    // Set drag image data (required for Firefox)
-    e.dataTransfer.setData("text/plain", index.toString());
-  };
-
-  const handlePromptDragEnd = () => {
-    setDraggedPromptIndex(null);
-    setDragOverPromptIndex(null);
-  };
-
-  const handlePromptDragOver = (e, index) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (draggedPromptIndex !== null && index !== draggedPromptIndex) {
-      setDragOverPromptIndex(index);
-    }
-  };
-
-  const handlePromptDragLeave = () => {
-    setDragOverPromptIndex(null);
-  };
-
-  const handlePromptDrop = (e, dropIndex) => {
-    e.preventDefault();
-    if (draggedPromptIndex === null || draggedPromptIndex === dropIndex) {
-      setDraggedPromptIndex(null);
-      setDragOverPromptIndex(null);
-      return;
-    }
-
-    // Reorder prompts
-    const newPrompts = [...prompts];
-    const [draggedItem] = newPrompts.splice(draggedPromptIndex, 1);
-    newPrompts.splice(dropIndex, 0, draggedItem);
-
-    setPrompts(newPrompts);
-    setDraggedPromptIndex(null);
-    setDragOverPromptIndex(null);
-
-    // Save immediately
-    savePromptsOrder(newPrompts);
-  };
 
   const loadConfig = async () => {
     setLoading(true);
@@ -1644,9 +1545,6 @@ export function SettingsDialog({
 
       // Load access log setting (enabled by default)
       setAccessLogEnabled(config.web?.access_log?.enabled !== false);
-
-      // Load prompts from top-level (not under web)
-      setPrompts(config.prompts || []);
 
       // Load UI settings (macOS only)
       setAgentCompletedSound(
@@ -1929,13 +1827,6 @@ export function SettingsDialog({
         auto_archive_inactive_after: autoArchiveInactiveAfter,
       };
 
-      // Filter prompts to only save settings-based prompts (not file-based ones)
-      // Prompts with source='settings' or no source (new prompts) should be saved
-      // Prompts with source='file' or source='workspace' should not be saved to settings.json
-      const settingsPrompts = prompts
-        .filter((p) => !p.source || p.source === "settings")
-        .map(({ source, ...rest }) => rest); // Remove source field before saving
-
       // ACP servers are saved with source field so backend can filter out RC file servers
       // (RC file servers are managed in .mittorc, not settings.json)
       const acpServersToSave = acpServers.map((srv) => {
@@ -1973,7 +1864,7 @@ export function SettingsDialog({
       const config = {
         workspaces: workspaces,
         acp_servers: acpServersToSave,
-        prompts: settingsPrompts, // Only settings-based prompts
+        prompts: [], // Prompts are now managed per-workspace, not in global settings
         web: webConfig,
         ui: uiConfig,
         conversations: conversationsConfig,
@@ -2307,7 +2198,6 @@ export function SettingsDialog({
   // Define navigation items for sidebar
   const navItems = [
     { id: "servers", label: "ACP Servers", icon: ServerIcon },
-    { id: "prompts", label: "Prompts", icon: LightningIcon },
     { id: "runners", label: "Runners", icon: LockIcon },
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
@@ -2668,316 +2558,7 @@ export function SettingsDialog({
                     </div>
                   `}
 
-                  <!-- Prompts Tab -->
-                  ${activeTab === "prompts" &&
-                  html`
-                    <div class="space-y-4">
-                      <div class="flex items-center justify-between">
-                        <p class="text-gray-400 text-sm">
-                          Predefined prompts appear as quick-access buttons in
-                          the chat input.
-                        </p>
-                        <button
-                          onClick=${() => setShowAddPrompt(!showAddPrompt)}
-                          class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddPrompt
-                            ? "bg-slate-700"
-                            : ""}"
-                          title="Add Prompt"
-                        >
-                          <${PlusIcon} className="w-5 h-5" />
-                        </button>
-                      </div>
-
-                      <!-- Add New Prompt Form -->
-                      ${showAddPrompt &&
-                      html`
-                        <div
-                          class="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-3"
-                        >
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Button Label</label
-                            >
-                            <input
-                              type="text"
-                              value=${newPromptName}
-                              onInput=${(e) => setNewPromptName(e.target.value)}
-                              placeholder="e.g., Continue"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Prompt Text</label
-                            >
-                            <textarea
-                              value=${newPromptText}
-                              onInput=${(e) => setNewPromptText(e.target.value)}
-                              placeholder="e.g., Please continue with the current task."
-                              rows="3"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                            />
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Group (optional)</label
-                            >
-                            <input
-                              type="text"
-                              value=${newPromptGroup}
-                              onInput=${(e) => setNewPromptGroup(e.target.value)}
-                              placeholder="e.g., Tasks, Code Quality"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Background Color (optional)</label
-                            >
-                            <div class="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value=${newPromptColor || "#334155"}
-                                onInput=${(e) =>
-                                  setNewPromptColor(e.target.value)}
-                                class="w-10 h-10 rounded cursor-pointer border border-slate-600"
-                                title="Choose background color"
-                              />
-                              <input
-                                type="text"
-                                value=${newPromptColor}
-                                onInput=${(e) =>
-                                  setNewPromptColor(e.target.value)}
-                                placeholder="#E8F5E9"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                              />
-                              ${newPromptColor &&
-                              html`
-                                <button
-                                  type="button"
-                                  onClick=${() => setNewPromptColor("")}
-                                  class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
-                                  title="Clear color"
-                                >
-                                  <svg
-                                    class="w-4 h-4 text-gray-400"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      stroke-linecap="round"
-                                      stroke-linejoin="round"
-                                      stroke-width="2"
-                                      d="M6 18L18 6M6 6l12 12"
-                                    />
-                                  </svg>
-                                </button>
-                              `}
-                            </div>
-                          </div>
-                          <div class="flex justify-end gap-2">
-                            <button
-                              onClick=${() => {
-                                setShowAddPrompt(false);
-                                setNewPromptName("");
-                                setNewPromptText("");
-                                setNewPromptColor("");
-                                setNewPromptGroup("");
-                              }}
-                              class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              onClick=${() => {
-                                if (
-                                  newPromptName.trim() &&
-                                  newPromptText.trim()
-                                ) {
-                                  const newPrompt = {
-                                    name: newPromptName.trim(),
-                                    prompt: newPromptText.trim(),
-                                  };
-                                  if (newPromptColor) {
-                                    newPrompt.backgroundColor = newPromptColor;
-                                  }
-                                  if (newPromptGroup.trim()) {
-                                    newPrompt.group = newPromptGroup.trim();
-                                  }
-                                  setPrompts([...prompts, newPrompt]);
-                                  setNewPromptName("");
-                                  setNewPromptText("");
-                                  setNewPromptColor("");
-                                  setNewPromptGroup("");
-                                  setShowAddPrompt(false);
-                                }
-                              }}
-                              disabled=${!newPromptName.trim() ||
-                              !newPromptText.trim()}
-                              class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50"
-                            >
-                              Add Prompt
-                            </button>
-                          </div>
-                        </div>
-                      `}
-
-                      <!-- Prompts List -->
-                      <div class="space-y-2">
-                        ${prompts.length === 0
-                          ? html`
-                              <div
-                                class="p-4 text-center text-gray-500 text-sm"
-                              >
-                                No prompts configured. Click + to add one.
-                              </div>
-                            `
-                          : sortedPrompts.map((prompt) => {
-                              // Find original index in the unsorted prompts array
-                              const originalIndex = prompts.findIndex(
-                                (p) =>
-                                  p.name === prompt.name &&
-                                  p.prompt === prompt.prompt,
-                              );
-                              return html`
-                                <div
-                                  key=${prompt.name}
-                                  class="p-3 bg-slate-700/20 rounded-lg border transition-all border-slate-600/50"
-                                >
-                                  ${editingPrompt === originalIndex
-                                    ? html`
-                                        <${PromptEditForm}
-                                          prompt=${prompt}
-                                          readOnly=${prompt.source === "file" ||
-                                          prompt.source === "workspace"}
-                                          onSave=${(name, text, bgColor, group) => {
-                                            const updated = [...prompts];
-                                            updated[originalIndex] = {
-                                              ...prompts[originalIndex],
-                                              name,
-                                              prompt: text,
-                                            };
-                                            if (bgColor) {
-                                              updated[originalIndex]
-                                                .backgroundColor = bgColor;
-                                            }
-                                            if (group && group.trim()) {
-                                              updated[originalIndex].group = group.trim();
-                                            } else {
-                                              delete updated[originalIndex].group;
-                                            }
-                                            setPrompts(updated);
-                                            setEditingPrompt(null);
-                                          }}
-                                          onCancel=${() =>
-                                            setEditingPrompt(null)}
-                                        />
-                                      `
-                                    : html`
-                                        <div
-                                          class="flex items-start justify-between gap-3"
-                                        >
-                                          <div
-                                            class="flex items-center gap-2 flex-1 min-w-0"
-                                          >
-                                            ${prompt.backgroundColor &&
-                                            html`
-                                              <div
-                                                class="w-4 h-4 rounded flex-shrink-0 border border-slate-500"
-                                                style=${{
-                                                  backgroundColor:
-                                                    prompt.backgroundColor,
-                                                }}
-                                                title=${prompt.backgroundColor}
-                                              />
-                                            `}
-                                            <div class="flex-1 min-w-0">
-                                              <div
-                                                class="font-medium text-sm text-blue-400 flex items-center gap-2"
-                                              >
-                                                ${prompt.name}
-                                                ${prompt.source === "file" &&
-                                                html`
-                                                  <span
-                                                    class="text-xs px-1.5 py-0.5 bg-slate-600 text-gray-300 rounded"
-                                                    title="Loaded from file (read-only)"
-                                                    >file</span
-                                                  >
-                                                `}
-                                                ${prompt.source ===
-                                                  "workspace" &&
-                                                html`
-                                                  <span
-                                                    class="text-xs px-1.5 py-0.5 bg-purple-600/50 text-purple-200 rounded"
-                                                    title="Defined in workspace .mittorc (read-only)"
-                                                    >workspace</span
-                                                  >
-                                                `}
-                                              </div>
-                                              <div
-                                                class="text-xs text-gray-500 mt-1 truncate"
-                                              >
-                                                ${prompt.prompt}
-                                              </div>
-                                            </div>
-                                          </div>
-                                          <div class="flex items-center gap-1">
-                                            ${prompt.source !== "file" &&
-                                            prompt.source !== "workspace"
-                                              ? html`
-                                                  <button
-                                                    onClick=${() =>
-                                                      setEditingPrompt(
-                                                        originalIndex,
-                                                      )}
-                                                    class="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                                                    title="Edit"
-                                                  >
-                                                    <${EditIcon}
-                                                      className="w-4 h-4 text-gray-400"
-                                                    />
-                                                  </button>
-                                                  <button
-                                                    onClick=${() => {
-                                                      const updated =
-                                                        prompts.filter(
-                                                          (_, i) =>
-                                                            i !== originalIndex,
-                                                        );
-                                                      setPrompts(updated);
-                                                    }}
-                                                    class="p-1.5 hover:bg-red-500/20 rounded transition-colors"
-                                                    title="Delete"
-                                                  >
-                                                    <${TrashIcon}
-                                                      className="w-4 h-4 text-gray-400 hover:text-red-400"
-                                                    />
-                                                  </button>
-                                                `
-                                              : html`
-                                                  <button
-                                                    onClick=${() =>
-                                                      setEditingPrompt(
-                                                        originalIndex,
-                                                      )}
-                                                    class="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                                                    title="View"
-                                                  >
-                                                    <${EditIcon}
-                                                      className="w-4 h-4 text-gray-500"
-                                                    />
-                                                  </button>
-                                                `}
-                                          </div>
-                                        </div>
-                                      `}
-                                </div>
-                              `;
-                            })}
-                      </div>
-                    </div>
-                  `}
+                  <!-- (Prompts are managed per-workspace in WorkspacesDialog) -->
 
                   <!-- Runners Tab -->
                   ${activeTab === "runners" &&

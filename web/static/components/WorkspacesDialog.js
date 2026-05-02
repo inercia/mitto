@@ -24,6 +24,9 @@ import {
   ChevronRightIcon,
   ChevronDownIcon,
   ServerIcon,
+  EditIcon,
+  PlusIcon,
+  RobotIcon,
 } from "./Icons.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -69,6 +72,25 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const [editMetaDescription, setEditMetaDescription] = useState("");
   const [editMetaUrl, setEditMetaUrl] = useState("");
   const [editMetaGroup, setEditMetaGroup] = useState("");
+
+  // Folder prompts state (for the Prompts tab)
+  const [folderPrompts, setFolderPrompts] = useState([]);
+  const [promptsLoading, setPromptsLoading] = useState(false);
+  const [showAddPrompt, setShowAddPrompt] = useState(false);
+  const [editingPromptIndex, setEditingPromptIndex] = useState(null);
+  const [editPromptName, setEditPromptName] = useState("");
+  const [editPromptText, setEditPromptText] = useState("");
+  const [editPromptColor, setEditPromptColor] = useState("");
+  const [editPromptGroup, setEditPromptGroup] = useState("");
+  const [newPromptName, setNewPromptName] = useState("");
+  const [newPromptText, setNewPromptText] = useState("");
+  const [newPromptColor, setNewPromptColor] = useState("");
+  const [newPromptGroup, setNewPromptGroup] = useState("");
+  const [promptSaving, setPromptSaving] = useState(false);
+
+  // Folder processors state (for the Processors tab)
+  const [folderProcessors, setFolderProcessors] = useState([]);
+  const [processorsLoading, setProcessorsLoading] = useState(false);
 
   // Confirmation dialog state: { message, title, confirmLabel, confirmVariant, onConfirm }
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -506,12 +528,145 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     return getUnusedServer(firstWs.working_dir, null) !== null;
   }, [selectedFolder, groupedWorkspaces, workspaces, acpServers]);
 
+  // Load prompts when a folder is selected and the Prompts tab is active
+  useEffect(() => {
+    if (!selectedFolder || activeTab !== "prompts") return;
+    const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
+    const firstWs = folderGroup?.workspaces[0];
+    if (!firstWs?.working_dir) return;
+
+    setPromptsLoading(true);
+    secureFetch(apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(firstWs.working_dir)}&include_global=true`))
+      .then((r) => r.json())
+      .then((data) => { setFolderPrompts(data.prompts || []); })
+      .catch((err) => console.error("Failed to load prompts:", err))
+      .finally(() => setPromptsLoading(false));
+  }, [selectedFolder, activeTab, groupedWorkspaces]);
+
+  // Helper to get the first workspace dir for the selected folder
+  const getSelectedFolderDir = () => {
+    const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
+    return folderGroup?.workspaces[0]?.working_dir || null;
+  };
+
+  // Load (reload) prompts for the selected folder
+  const reloadFolderPrompts = async (workingDir) => {
+    const res = await secureFetch(apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&include_global=true`));
+    const data = await res.json();
+    setFolderPrompts(data.prompts || []);
+  };
+
+  // Create or update a workspace prompt file
+  const saveWorkspacePrompt = async (promptData) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    setPromptSaving(true);
+    try {
+      const res = await secureFetch(apiUrl("/api/workspace-prompts"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dir: workingDir, ...promptData }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await reloadFolderPrompts(workingDir);
+    } catch (err) {
+      setError("Failed to save prompt: " + err.message);
+    } finally {
+      setPromptSaving(false);
+    }
+  };
+
+  // Delete a workspace prompt file by name
+  const deleteWorkspacePrompt = async (promptName) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    try {
+      const res = await secureFetch(
+        apiUrl(`/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}&name=${encodeURIComponent(promptName)}`),
+        { method: "DELETE" }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      await reloadFolderPrompts(workingDir);
+    } catch (err) {
+      setError("Failed to delete prompt: " + err.message);
+    }
+  };
+
+  // Load processors when a folder is selected and the Processors tab is active
+  useEffect(() => {
+    if (!selectedFolder || activeTab !== "processors") return;
+    const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
+    const firstWs = folderGroup?.workspaces[0];
+    if (!firstWs?.working_dir) return;
+
+    setProcessorsLoading(true);
+    secureFetch(apiUrl(`/api/workspace-processors?dir=${encodeURIComponent(firstWs.working_dir)}`))
+      .then((r) => r.json())
+      .then((data) => { setFolderProcessors(data.processors || []); })
+      .catch((err) => console.error("Failed to load processors:", err))
+      .finally(() => setProcessorsLoading(false));
+  }, [selectedFolder, activeTab, groupedWorkspaces]);
+
+  // Reload processors for the selected folder
+  const reloadFolderProcessors = async (workingDir) => {
+    const res = await secureFetch(apiUrl(`/api/workspace-processors?dir=${encodeURIComponent(workingDir)}`));
+    const data = await res.json();
+    setFolderProcessors(data.processors || []);
+  };
+
+  // Toggle enabled state for a processor via the toggle-enabled endpoint.
+  const toggleProcessorEnabled = async (processor) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    try {
+      const res = await secureFetch(apiUrl("/api/workspace-processors/toggle-enabled"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dir: workingDir,
+          name: processor.name,
+          enabled: !processor.enabled,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await reloadFolderProcessors(workingDir);
+    } catch (err) {
+      setError("Failed to toggle processor: " + err.message);
+    }
+  };
+
+  // Toggle enabled state for a prompt using the dedicated toggle-enabled endpoint.
+  // If a .md file exists in .mitto/prompts/, its frontmatter is updated in-place.
+  // If not, the state is recorded in the workspace .mittorc file.
+  const togglePromptEnabled = async (prompt) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    const isCurrentlyEnabled = prompt.enabled !== false;
+    try {
+      const res = await secureFetch(apiUrl("/api/workspace-prompts/toggle-enabled"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dir: workingDir,
+          name: prompt.name,
+          enabled: !isCurrentlyEnabled,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await reloadFolderPrompts(workingDir);
+    } catch (err) {
+      setError("Failed to toggle prompt: " + err.message);
+    }
+  };
+
   if (!isOpen) return null;
 
   // Different tab sets for folder vs workspace
   const folderTabs = [
     { id: "general", label: "General" },
+    { id: "metadata", label: "Metadata" },
     { id: "prompts", label: "Prompts" },
+    { id: "processors", label: "Processors" },
     { id: "children", label: "Children" },
   ];
 
@@ -764,47 +919,330 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                               </div>
                             </div>
                           </div>
-                          <div class="mt-4">
-                            <div class="mb-3">
-                              <label class="block text-sm text-gray-400 mb-1">Description</label>
-                              <textarea
-                                value=${editMetaDescription}
-                                onInput=${(e) => setEditMetaDescription(e.target.value)}
-                                placeholder="A description of this workspace/project..."
-                                rows="3"
-                                class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-vertical"
-                              />
-                            </div>
-                            <div>
-                              <label class="block text-sm text-gray-400 mb-1">URL</label>
-                              <input
-                                type="url"
-                                value=${editMetaUrl}
-                                onInput=${(e) => setEditMetaUrl(e.target.value)}
-                                placeholder="https://github.com/..."
-                                class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                style="height: 38px; box-sizing: border-box"
-                              />
-                            </div>
-                            <div class="mt-3">
-                              <label class="block text-sm text-gray-400 mb-1">Group</label>
-                              <input
-                                type="text"
-                                value=${editMetaGroup}
-                                onInput=${(e) => setEditMetaGroup(e.target.value)}
-                                placeholder="e.g., CGW, Infrastructure, Frontend..."
-                                class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                style="height: 38px; box-sizing: border-box"
-                              />
-                            </div>
+                        </div>
+                      `}
+
+                      <!-- Folder Metadata tab -->
+                      ${activeTab === "metadata" && html`
+                        <div class="space-y-4">
+                          <div>
+                            <label class="block text-sm text-gray-400 mb-1">Description</label>
+                            <textarea
+                              value=${editMetaDescription}
+                              onInput=${(e) => setEditMetaDescription(e.target.value)}
+                              placeholder="A description of this workspace/project..."
+                              rows="3"
+                              class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-vertical"
+                            />
                           </div>
+                          <div>
+                            <label class="block text-sm text-gray-400 mb-1">URL</label>
+                            <input
+                              type="url"
+                              value=${editMetaUrl}
+                              onInput=${(e) => setEditMetaUrl(e.target.value)}
+                              placeholder="https://github.com/..."
+                              class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              style="height: 38px; box-sizing: border-box"
+                            />
+                          </div>
+                          <div>
+                            <label class="block text-sm text-gray-400 mb-1">Group</label>
+                            <input
+                              type="text"
+                              value=${editMetaGroup}
+                              onInput=${(e) => setEditMetaGroup(e.target.value)}
+                              placeholder="e.g., CGW, Infrastructure, Frontend..."
+                              class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              style="height: 38px; box-sizing: border-box"
+                            />
+                          </div>
+
+                          <!-- User Data Schema -->
+                          ${folderMetadata?.user_data_schema?.fields?.length > 0 && html`
+                            <div class="mt-6 pt-4 border-t border-mitto-border">
+                              <h3 class="text-sm font-medium text-gray-300 mb-3">User Data</h3>
+                              <p class="text-xs text-gray-500 mb-3">
+                                Custom data attributes defined in the workspace <code class="text-gray-400">.mittorc</code> file. These can be set on individual conversations.
+                              </p>
+                              <div class="border border-mitto-border rounded-lg overflow-hidden">
+                                <table class="w-full text-sm">
+                                  <thead>
+                                    <tr class="bg-slate-800/50">
+                                      <th class="text-left px-3 py-2 text-gray-400 font-medium border-b border-mitto-border">Name</th>
+                                      <th class="text-left px-3 py-2 text-gray-400 font-medium border-b border-mitto-border">Data Type</th>
+                                      <th class="text-left px-3 py-2 text-gray-400 font-medium border-b border-mitto-border">Description</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    ${folderMetadata.user_data_schema.fields.map((field, i) => html`
+                                      <tr key=${field.name} class="${i % 2 === 0 ? 'bg-slate-800/20' : ''}">
+                                        <td class="px-3 py-2 text-gray-300 font-mono text-xs">${field.name}</td>
+                                        <td class="px-3 py-2 text-gray-400">
+                                          <span class="inline-block px-1.5 py-0.5 bg-slate-700 rounded text-xs font-mono">${field.type || 'string'}</span>
+                                        </td>
+                                        <td class="px-3 py-2 text-gray-500 text-xs">${field.description || '—'}</td>
+                                      </tr>
+                                    `)}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          `}
                         </div>
                       `}
 
                       <!-- Folder Prompts tab -->
                       ${activeTab === "prompts" && html`
-                        <div class="text-sm text-gray-400">
-                          <p>Workspace-specific prompts are not yet configurable here.</p>
+                        <div class="space-y-4">
+                          <div class="flex items-center justify-between">
+                            <p class="text-sm text-gray-400">
+                              Manage prompts for this workspace. Built-in prompts are read-only but can be disabled.
+                            </p>
+                            <button
+                              onClick=${() => setShowAddPrompt(!showAddPrompt)}
+                              class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddPrompt ? 'bg-slate-700' : ''}"
+                              title="Add Prompt"
+                            >
+                              <${PlusIcon} className="w-5 h-5" />
+                            </button>
+                          </div>
+
+                          ${showAddPrompt && html`
+                            <div class="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-3">
+                              <div>
+                                <label class="block text-sm text-gray-400 mb-1">Button Label</label>
+                                <input type="text" value=${newPromptName} onInput=${(e) => setNewPromptName(e.target.value)}
+                                  placeholder="e.g., Continue"
+                                  class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                              </div>
+                              <div>
+                                <label class="block text-sm text-gray-400 mb-1">Prompt Text</label>
+                                <textarea value=${newPromptText} onInput=${(e) => setNewPromptText(e.target.value)}
+                                  placeholder="e.g., Please continue with the current task."
+                                  rows="8"
+                                  class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                                />
+                              </div>
+                              <div>
+                                <label class="block text-sm text-gray-400 mb-1">Group (optional)</label>
+                                <input type="text" value=${newPromptGroup} onInput=${(e) => setNewPromptGroup(e.target.value)}
+                                  placeholder="e.g., Tasks, Code Quality"
+                                  class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                              </div>
+                              <div>
+                                <label class="block text-sm text-gray-400 mb-1">Background Color (optional)</label>
+                                <div class="flex items-center gap-2">
+                                  <input type="color" value=${newPromptColor || '#334155'} onInput=${(e) => setNewPromptColor(e.target.value)}
+                                    class="w-10 h-10 rounded cursor-pointer border border-slate-600"
+                                  />
+                                  <input type="text" value=${newPromptColor} onInput=${(e) => setNewPromptColor(e.target.value)}
+                                    placeholder="#E8F5E9"
+                                    class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                  />
+                                </div>
+                              </div>
+                              <div class="flex justify-end gap-2">
+                                <button onClick=${() => { setShowAddPrompt(false); setNewPromptName(""); setNewPromptText(""); setNewPromptColor(""); setNewPromptGroup(""); }}
+                                  class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors">Cancel</button>
+                                <button onClick=${async () => {
+                                    await saveWorkspacePrompt({ name: newPromptName.trim(), prompt: newPromptText.trim(), backgroundColor: newPromptColor || undefined, group: newPromptGroup.trim() || undefined, enabled: true });
+                                    setShowAddPrompt(false); setNewPromptName(""); setNewPromptText(""); setNewPromptColor(""); setNewPromptGroup("");
+                                  }}
+                                  disabled=${!newPromptName.trim() || !newPromptText.trim() || promptSaving}
+                                  class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50">
+                                  ${promptSaving ? 'Saving...' : 'Add Prompt'}
+                                </button>
+                              </div>
+                            </div>
+                          `}
+
+                          ${promptsLoading
+                            ? html`<div class="flex items-center justify-center p-4"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
+                            : html`
+                              <div class="space-y-2">
+                                ${folderPrompts.length === 0
+                                  ? html`<div class="p-4 text-center text-gray-500 text-sm">No prompts found. Click + to add a workspace prompt.</div>`
+                                  : [...folderPrompts].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((prompt, idx) => {
+                                      const isBuiltin = prompt.source === "builtin" || prompt.source === "file";
+                                      const isEnabled = prompt.enabled !== false;
+                                      return html`
+                                        <div key=${prompt.name} class="p-3 bg-slate-700/20 rounded-lg border transition-all ${isEnabled ? 'border-slate-600/50' : 'border-slate-600/30 opacity-60'}">
+                                          ${editingPromptIndex === idx
+                                            ? html`
+                                              <div class="space-y-3">
+                                                <div>
+                                                  <label class="block text-xs text-gray-400 mb-1">Button Label</label>
+                                                  <input type="text" value=${isBuiltin ? prompt.name : editPromptName}
+                                                    onInput=${(e) => !isBuiltin && setEditPromptName(e.target.value)}
+                                                    disabled=${isBuiltin}
+                                                    class="w-full px-2 py-1.5 bg-slate-700 rounded text-sm ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
+                                                  />
+                                                </div>
+                                                <div>
+                                                  <label class="block text-xs text-gray-400 mb-1">Prompt Text</label>
+                                                  <textarea rows="8"
+                                                    value=${isBuiltin ? prompt.prompt : editPromptText}
+                                                    onInput=${(e) => !isBuiltin && setEditPromptText(e.target.value)}
+                                                    disabled=${isBuiltin}
+                                                    class="w-full px-2 py-1.5 bg-slate-700 rounded text-sm resize-y ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
+                                                  />
+                                                </div>
+                                                <div>
+                                                  <label class="block text-xs text-gray-400 mb-1">Group (optional)</label>
+                                                  <input type="text" value=${isBuiltin ? (prompt.group || '') : editPromptGroup}
+                                                    onInput=${(e) => !isBuiltin && setEditPromptGroup(e.target.value)}
+                                                    disabled=${isBuiltin}
+                                                    placeholder="e.g., Tasks, Code Quality"
+                                                    class="w-full px-2 py-1.5 bg-slate-700 rounded text-sm ${isBuiltin ? 'opacity-60 cursor-not-allowed' : 'focus:outline-none focus:ring-2 focus:ring-blue-500'}"
+                                                  />
+                                                </div>
+                                                ${!isBuiltin && html`
+                                                  <div>
+                                                    <label class="block text-xs text-gray-400 mb-1">Background Color (optional)</label>
+                                                    <div class="flex items-center gap-2">
+                                                      <input type="color" value=${editPromptColor || '#334155'}
+                                                        onInput=${(e) => setEditPromptColor(e.target.value)}
+                                                        class="w-8 h-8 rounded cursor-pointer border border-slate-600"
+                                                      />
+                                                      <input type="text" value=${editPromptColor}
+                                                        onInput=${(e) => setEditPromptColor(e.target.value)}
+                                                        placeholder="#E8F5E9"
+                                                        class="flex-1 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                                                      />
+                                                    </div>
+                                                  </div>
+                                                `}
+                                                <div class="flex justify-end gap-2">
+                                                  <button onClick=${() => setEditingPromptIndex(null)}
+                                                    class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors">
+                                                    ${isBuiltin ? 'Close' : 'Cancel'}
+                                                  </button>
+                                                  ${!isBuiltin && html`
+                                                    <button onClick=${async () => {
+                                                        await saveWorkspacePrompt({
+                                                          name: editPromptName.trim(),
+                                                          prompt: editPromptText.trim(),
+                                                          backgroundColor: editPromptColor || undefined,
+                                                          group: editPromptGroup.trim() || undefined,
+                                                          enabled: prompt.enabled !== false,
+                                                        });
+                                                        setEditingPromptIndex(null);
+                                                      }}
+                                                      disabled=${!editPromptName.trim() || !editPromptText.trim() || promptSaving}
+                                                      class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50">
+                                                      ${promptSaving ? 'Saving...' : 'Save'}
+                                                    </button>
+                                                  `}
+                                                </div>
+                                              </div>
+                                            `
+                                            : html`
+                                              <div class="flex items-center gap-3">
+                                                <input type="checkbox" checked=${isEnabled}
+                                                  onChange=${() => togglePromptEnabled(prompt)}
+                                                  class="rounded border-slate-600 text-blue-500 focus:ring-blue-500 flex-shrink-0"
+                                                  title=${isEnabled ? "Disable this prompt" : "Enable this prompt"}
+                                                />
+                                                ${prompt.backgroundColor && html`
+                                                  <div class="w-5 h-5 rounded-sm flex-shrink-0 border border-slate-600" style="background-color: ${prompt.backgroundColor}" />
+                                                `}
+                                                <div class="flex-1 min-w-0">
+                                                  <div class="flex items-center gap-2">
+                                                    <span class="text-sm font-medium ${isEnabled ? 'text-blue-400' : 'text-gray-500'}">${prompt.name}</span>
+                                                    <span class="text-xs px-1.5 py-0.5 rounded ${isBuiltin ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}">
+                                                      ${isBuiltin ? 'built-in' : 'workspace'}
+                                                    </span>
+                                                  </div>
+                                                  ${prompt.description && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${prompt.description}</p>`}
+                                                  ${!prompt.description && prompt.prompt && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${prompt.prompt.slice(0, 80)}${prompt.prompt.length > 80 ? '...' : ''}</p>`}
+                                                </div>
+                                                <div class="flex items-center gap-1 flex-shrink-0">
+                                                  <button onClick=${() => {
+                                                      if (editingPromptIndex === idx) {
+                                                        setEditingPromptIndex(null);
+                                                      } else {
+                                                        setEditPromptName(prompt.name || "");
+                                                        setEditPromptText(prompt.prompt || "");
+                                                        setEditPromptColor(prompt.backgroundColor || "");
+                                                        setEditPromptGroup(prompt.group || "");
+                                                        setEditingPromptIndex(idx);
+                                                      }
+                                                    }}
+                                                    class="p-1.5 hover:bg-slate-700 rounded transition-colors" title=${isBuiltin ? "View" : "Edit"}>
+                                                    <${EditIcon} className="w-4 h-4 ${isBuiltin ? 'text-gray-500' : 'text-gray-400'}" />
+                                                  </button>
+                                                  ${!isBuiltin && html`
+                                                    <button onClick=${() => deleteWorkspacePrompt(prompt.name)}
+                                                      class="p-1.5 hover:bg-red-500/20 rounded transition-colors" title="Delete">
+                                                      <${TrashIcon} className="w-4 h-4 text-gray-400 hover:text-red-400" />
+                                                    </button>
+                                                  `}
+                                                </div>
+                                              </div>
+                                            `}
+                                        </div>
+                                      `;
+                                    })
+                                }
+                              </div>
+                            `
+                          }
+                        </div>
+                      `}
+
+                      <!-- Folder Processors tab -->
+                      ${activeTab === "processors" && html`
+                        <div class="space-y-4">
+                          <p class="text-sm text-gray-400">
+                            Manage processors for this workspace. Global processors can be disabled per workspace.
+                          </p>
+
+                          ${processorsLoading
+                            ? html`<div class="flex items-center justify-center p-4"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
+                            : html`
+                              <div class="space-y-2">
+                                ${folderProcessors.length === 0
+                                  ? html`<div class="p-4 text-center text-gray-500 text-sm">No processors found for this workspace.</div>`
+                                  : folderProcessors.map((proc) => {
+                                      const isWorkspace = proc.source === "workspace";
+                                      const isEnabled = proc.enabled !== false;
+                                      const isPromptMode = proc.mode === "prompt";
+                                      const sourceLabel = isWorkspace ? "workspace" : (proc.source === "builtin" ? "built-in" : "global");
+                                      const sourceBadgeClass = isWorkspace
+                                        ? "bg-green-500/20 text-green-400"
+                                        : (proc.source === "builtin" ? "bg-blue-500/20 text-blue-400" : "bg-orange-500/20 text-orange-400");
+                                      const borderClass = isPromptMode
+                                        ? "border-purple-500/30"
+                                        : (isEnabled ? "border-slate-600/50" : "border-slate-600/30 opacity-60");
+                                      return html`
+                                        <div key=${proc.name} class="p-3 bg-slate-700/20 rounded-lg border transition-all ${borderClass} ${!isEnabled && !isPromptMode ? 'opacity-60' : ''}">
+                                          <div class="flex items-center gap-3">
+                                            <input type="checkbox" checked=${isEnabled}
+                                              onChange=${() => toggleProcessorEnabled(proc)}
+                                              class="rounded border-slate-600 text-blue-500 focus:ring-blue-500 flex-shrink-0"
+                                              title=${isEnabled ? "Disable this processor" : "Enable this processor"}
+                                            />
+                                            <div class="flex-1 min-w-0">
+                                              <div class="flex items-center gap-2">
+                                                ${isPromptMode && html`<${RobotIcon} className="w-4 h-4 text-purple-400 flex-shrink-0" />`}
+                                                <span class="text-sm font-medium font-mono ${isEnabled ? 'text-blue-400' : 'text-gray-500'}">${proc.name}</span>
+                                                <span class="text-xs px-1.5 py-0.5 rounded ${sourceBadgeClass}">${sourceLabel}</span>
+                                                ${isPromptMode && html`<span class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">prompt</span>`}
+                                                ${proc.when && html`<span class="text-xs text-gray-500">when: ${proc.when}</span>`}
+                                              </div>
+                                              ${proc.description && html`<p class="text-xs text-gray-500 mt-0.5 truncate">${proc.description}</p>`}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      `;
+                                    })
+                                }
+                              </div>
+                            `
+                          }
                         </div>
                       `}
 

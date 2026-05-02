@@ -1592,17 +1592,15 @@ export function ChatInput({
     [activeUIPrompt, onUIPromptAnswer],
   );
 
-  // Debug logging for action buttons
-  if (actionButtons && actionButtons.length > 0) {
-    console.log("[ActionButtons] ChatInput received buttons:", {
-      count: actionButtons.length,
-      labels: actionButtons.map((b) => b.label),
-      isStreaming,
-      isReadOnly,
-      noSession,
-      willRender: hasActionButtons && !isStreaming && !isReadOnly && !noSession,
-    });
-  }
+  // Debug logging for action buttons — only log when buttons actually change
+  useEffect(() => {
+    if (actionButtons && actionButtons.length > 0) {
+      console.log("[ActionButtons] ChatInput received buttons:", {
+        count: actionButtons.length,
+        labels: actionButtons.map((b) => b.label),
+      });
+    }
+  }, [actionButtons]);
 
   // Handle action button click - populate the textarea with the response text
   const handleActionButtonClick = useCallback(

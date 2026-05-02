@@ -429,10 +429,13 @@ export function computeAllSessions(activeSessions, storedSessions) {
         parent_session_id: s.parent_session_id || stored.parent_session_id || null,
         // Preserve child_origin for child session icon rendering (lightning/robot/person)
         child_origin: s.child_origin || stored.child_origin || null,
-        // Preserve isWaitingForChildren from stored session (set by global WebSocket session_waiting events)
-        isWaitingForChildren: s.isWaitingForChildren || stored.isWaitingForChildren || false,
-        // Preserve isWaitingForUserInput from stored session (set by global WebSocket session_ui_prompt events)
-        isWaitingForUserInput: s.isWaitingForUserInput || stored.isWaitingForUserInput || false,
+        // For isWaitingForChildren: active session is authoritative.
+        // Do NOT OR with stored.isWaitingForChildren — fetchStoredSessions() can
+        // clobber storedSessions with API data that lacks this runtime field,
+        // and the OR with stale stored data can keep the hourglass icon stuck.
+        isWaitingForChildren: s.isWaitingForChildren || false,
+        // Same rationale as isWaitingForChildren above.
+        isWaitingForUserInput: s.isWaitingForUserInput || false,
       };
     }
 

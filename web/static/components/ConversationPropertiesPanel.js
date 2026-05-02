@@ -790,7 +790,11 @@ export function ConversationPropertiesPanel({
               `
             : html`
                 <div class="flex items-center gap-2 group">
-                  <span class="flex-1 text-sm truncate">
+                  <span
+                    class="flex-1 text-sm truncate cursor-pointer hover:text-blue-400 transition-colors"
+                    onClick=${handleStartEditTitle}
+                    title="Click to edit title"
+                  >
                     ${sessionInfo?.name || "New conversation"}
                   </span>
                   <button
@@ -878,6 +882,27 @@ export function ConversationPropertiesPanel({
             ${formatTimeAgo(sessionInfo.created_at)}
           </span>`}
         </div>
+
+        <!-- Processor Stats -->
+        ${(sessionInfo?.processor_count > 0 || sessionInfo?.processor_activations > 0) &&
+        html`
+          <div class="flex items-center gap-3 text-sm text-slate-400">
+            <span title="Number of active processors"
+              >${sessionInfo.processor_count} processors</span
+            >
+            ${sessionInfo?.processor_activations > 0 &&
+            html`<span title="Total processor pipeline activations"
+              >${sessionInfo.processor_activations} activations</span
+            >`}
+            ${sessionInfo?.processor_last_activation &&
+            html`<span
+              title=${new Date(
+                sessionInfo.processor_last_activation,
+              ).toLocaleString()}
+              >last ${formatTimeAgo(sessionInfo.processor_last_activation)}</span
+            >`}
+          </div>
+        `}
 
         <!-- Session Config Options Section -->
         <!-- Renders all config options dynamically based on type -->

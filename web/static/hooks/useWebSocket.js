@@ -288,9 +288,6 @@ export function useWebSocket() {
   const [acpServers, setAcpServers] = useState([]);
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
-  // Required tools pattern status per workspace UUID: { [workspaceUUID]: { [pattern]: bool } }
-  const [workspaceRequiredToolsStatus, setWorkspaceRequiredToolsStatus] =
-    useState({});
 
   // Track background session completions for toast notifications
   // { sessionId, sessionName, timestamp }
@@ -1011,15 +1008,19 @@ export function useWebSocket() {
     if (!activeSessionId || !sessionActionButtons) {
       return [];
     }
-    if (sessionActionButtons.length > 0) {
-      console.log("[ActionButtons] Buttons updated:", {
-        sessionId: activeSessionId,
-        buttonCount: sessionActionButtons.length,
-        buttons: sessionActionButtons.map((b) => b.label),
-      });
-    }
     return sessionActionButtons;
   }, [sessionActionButtons, activeSessionId]);
+
+  // Log when action buttons actually change (not inside useMemo)
+  useEffect(() => {
+    if (actionButtons.length > 0) {
+      console.log("[ActionButtons] Buttons updated:", {
+        sessionId: activeSessionId,
+        buttonCount: actionButtons.length,
+        buttons: actionButtons.map((b) => b.label),
+      });
+    }
+  }, [actionButtons, activeSessionId]);
 
   // Get all active sessions as array for sidebar
   // Memoized with structural fingerprint to prevent unnecessary re-renders
@@ -1177,8 +1178,8 @@ export function useWebSocket() {
                 runner_type: msg.data.runner_type || session.info?.runner_type,
                 runner_restricted:
                   msg.data.runner_restricted ?? session.info?.runner_restricted,
-                // Preserve archived flag from existing session info (set by switchSession)
-                archived: session.info?.archived || false,
+                // Use server-sent archived flag, falling back to existing session info
+                archived: msg.data.archived ?? session.info?.archived ?? false,
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
                 // Periodic enabled state from server
@@ -1189,6 +1190,10 @@ export function useWebSocket() {
                 workspace_uuid: msg.data.workspace_uuid ?? null,
                 // ACP readiness: false until acp_started event or explicit true in connected msg
                 acp_ready: msg.data.acp_ready ?? false,
+                // Processor stats
+                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
+                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,
@@ -1476,10 +1481,6 @@ export function useWebSocket() {
             return prev;
           }
 
-          console.log(
-            "[ActionButtons] Storing buttons for session:",
-            sessionId,
-          );
           return {
             ...prev,
             [sessionId]: {
@@ -1642,7 +1643,18 @@ export function useWebSocket() {
           }
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: false },
+            [sessionId]: {
+              ...session,
+              messages,
+              isStreaming: false,
+              // Update processor stats from prompt_complete
+              info: {
+                ...session.info,
+                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
+                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+              },
+            },
           };
         });
 
@@ -1758,6 +1770,32 @@ export function useWebSocket() {
           });
         }
 
+        // Update processor stats from keepalive_ack (periodic refresh)
+        if (msg.data?.processor_count !== undefined) {
+          setSessions((prev) => {
+            const session = prev[sessionId];
+            if (!session) return prev;
+            const newInfo = {
+              ...session.info,
+              processor_count: msg.data.processor_count,
+              processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+              processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+            };
+            // Only update if something changed to avoid unnecessary re-renders
+            if (
+              newInfo.processor_count === session.info?.processor_count &&
+              newInfo.processor_activations === session.info?.processor_activations &&
+              newInfo.processor_last_activation === session.info?.processor_last_activation
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [sessionId]: { ...session, info: newInfo },
+            };
+          });
+        }
+
         // Sync queue length from keepalive (for multi-tab sync and mobile wake recovery)
         // Only update if this is the active session to avoid unnecessary state updates
         if (
@@ -1796,12 +1834,39 @@ export function useWebSocket() {
           });
         }
 
+        // Update processor stats from keepalive (provides periodic refresh of activation counts)
+        if (msg.data?.processor_count !== undefined) {
+          setSessions((prev) => {
+            const session = prev[sessionId];
+            if (!session) return prev;
+            return {
+              ...prev,
+              [sessionId]: {
+                ...session,
+                info: {
+                  ...session.info,
+                  processor_count: msg.data.processor_count,
+                  processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+                  processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                },
+              },
+            };
+          });
+        }
+
         // Sync is_running state (detect if background session disconnected)
         // This is useful for showing a "reconnect" indicator in the UI
+        // Also syncs acp_ready to match is_running — this prevents the
+        // "Reconnecting to AI agent..." banner from getting stuck when the
+        // client misses the acp_started event (e.g., race during unarchive).
         const serverIsRunning = msg.data?.is_running ?? true;
-        if (currentSession?.isRunning !== serverIsRunning) {
+        const clientAcpReady = currentSession?.info?.acp_ready ?? false;
+        if (
+          currentSession?.isRunning !== serverIsRunning ||
+          clientAcpReady !== serverIsRunning
+        ) {
           console.log(
-            `[keepalive] Session ${sessionId} running state sync: ${currentSession?.isRunning} -> ${serverIsRunning}`,
+            `[keepalive] Session ${sessionId} running state sync: isRunning=${currentSession?.isRunning}->${serverIsRunning}, acp_ready=${clientAcpReady}->${serverIsRunning}`,
           );
           setSessions((prev) => {
             const session = prev[sessionId];
@@ -1811,6 +1876,10 @@ export function useWebSocket() {
               [sessionId]: {
                 ...session,
                 isRunning: serverIsRunning,
+                info: {
+                  ...session.info,
+                  acp_ready: serverIsRunning,
+                },
               },
             };
           });
@@ -2571,6 +2640,10 @@ export function useWebSocket() {
                   msg.data.available_commands ??
                   session.info?.available_commands ??
                   [],
+                // Update processor stats (may have changed since connected message)
+                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
+                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
               },
             },
           };
@@ -3154,8 +3227,14 @@ export function useWebSocket() {
           updateGlobalWorkingDir(s.session_id, s.working_dir);
         }
       });
-      setStoredSessions(data || []);
-      return data || [];
+      // Map server-side snake_case field to frontend camelCase so that the
+      // hourglass icon survives fetchStoredSessions() overwriting storedSessions.
+      const mapped = (data || []).map((s) => ({
+        ...s,
+        isWaitingForChildren: s.is_waiting_for_children || false,
+      }));
+      setStoredSessions(mapped);
+      return mapped;
     } catch (err) {
       console.error("Failed to fetch sessions:", err);
       return [];
@@ -3732,6 +3811,7 @@ export function useWebSocket() {
         // This is broadcast to all clients after unarchiving a session
         console.log("ACP started for session:", msg.data?.session_id);
         // Update session state to allow prompts
+        // Must also set acp_ready to dismiss the "Reconnecting to AI agent..." banner
         setSessions((prev) => {
           const session = prev[msg.data?.session_id];
           if (!session) return prev;
@@ -3740,6 +3820,10 @@ export function useWebSocket() {
             [msg.data.session_id]: {
               ...session,
               isRunning: true,
+              info: {
+                ...session.info,
+                acp_ready: true,
+              },
               // Add a system message to inform the user
               messages: [
                 ...session.messages,
@@ -3824,37 +3908,14 @@ export function useWebSocket() {
             [msg.data.workspace_uuid]: msg.data.tools || [],
           }));
         }
+        // Signal that prompts should be re-fetched: backend filters using new MCP tool context
+        window.dispatchEvent(
+          new CustomEvent("mitto:prompts_changed", {
+            detail: { reason: "mcp_tools_available" },
+          }),
+        );
         break;
 
-      case "required_tools_status":
-        // Server notifies about required tool pattern availability for a workspace.
-        // Sent progressively as retries discover newly-available tools.
-        // Merge results: only upgrade false→true, never downgrade true→false.
-        console.log(
-          "[MCP] Required tools status for workspace:",
-          msg.data.workspace_uuid,
-          "patterns:",
-          msg.data.patterns,
-        );
-        if (msg.data.workspace_uuid && msg.data.patterns) {
-          setWorkspaceRequiredToolsStatus((prev) => {
-            const existing = prev[msg.data.workspace_uuid] || {};
-            const merged = { ...existing };
-            for (const [pattern, available] of Object.entries(
-              msg.data.patterns,
-            )) {
-              // Only upgrade to true, never downgrade
-              if (available || !(pattern in merged)) {
-                merged[pattern] = available;
-              }
-            }
-            return {
-              ...prev,
-              [msg.data.workspace_uuid]: merged,
-            };
-          });
-        }
-        break;
     }
   }, []);
 
@@ -5299,13 +5360,6 @@ export function useWebSocket() {
     return workspaceMcpTools[uuid] || [];
   }, [sessionInfo, workspaceMcpTools]);
 
-  // Required tools pattern status for the currently active session's workspace
-  const requiredToolsStatus = useMemo(() => {
-    const uuid = sessionInfo?.workspace_uuid;
-    if (!uuid) return {};
-    return workspaceRequiredToolsStatus[uuid] || {};
-  }, [sessionInfo, workspaceRequiredToolsStatus]);
-
   return {
     connected: eventsConnected,
     messages,
@@ -5329,7 +5383,6 @@ export function useWebSocket() {
     actionButtons,
     sessionInfo,
     mcpTools,
-    requiredToolsStatus,
     activeSessionId,
     activeSessions,
     storedSessions,
