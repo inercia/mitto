@@ -63,8 +63,12 @@ func TestSomething(t *testing.T) {
 ### Mock ACP Server
 
 ```bash
-make build-mock-acp
+make build-mock-acp  # Always rebuild after changes!
 ```
+
+**Structure**: `main.go` (entry point, stdin/stdout loop), `types.go` (protocol types), `handler.go` (request handlers), `sender.go` (thread-safe sending).
+
+**Scenario matching**: Prompt text matched against regex patterns in `tests/fixtures/responses/*.json`. If images detected, mock responds with acknowledgment before checking scenarios.
 
 ### In-Process Test Setup
 

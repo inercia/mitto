@@ -132,6 +132,22 @@ useEffect(() => {
 }, [isOpen, onClose]);
 ```
 
+## Prompts: Single Source of Truth
+
+The backend's `/api/workspace-prompts` endpoint returns **all** prompts fully merged and filtered. The frontend uses them directly — no client-side merge needed:
+
+```javascript
+const predefinedPrompts = workspacePrompts; // Direct from API
+```
+
+**Anti-pattern**: Don't re-introduce separate `globalPrompts` or `acpServersWithPrompts` state. See `07-prompts.md` for the full architecture.
+
+## Adding New Session Capabilities to Frontend
+
+1. **`useWebSocket.js`** — In `case "connected":` handler, add to session.info
+2. **`app.js`** — Pass as prop: `myCapability=${sessionInfo?.my_capability ?? false}`
+3. **Component** — Accept prop with default, use for conditional rendering
+
 ## Dual Validation (Frontend + Backend)
 
 For destructive operations, validate in both layers. Frontend for immediate feedback, backend for security.

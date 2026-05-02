@@ -116,6 +116,25 @@ func TestHandleUploadImageFromPath_NonLocalhost(t *testing.T) {
 }
 ```
 
+## BackgroundSession (`background_session.go`)
+
+This is the most complex file (~3500 lines). Key patterns:
+
+### Observer Pattern
+- `SessionObserver` interface in `observer.go`; register via `AddObserver()` (requires `LoadEvents` first)
+- `bs.notifyObservers(func(o SessionObserver) { o.OnXxx(...) })`
+- `OnAgentMessage(seq, html)` requires seq number and persists to `events.jsonl`
+- `OnError(message)` is for user-facing warnings (no seq needed)
+
+### PromptWithMeta Flow
+1. Validate capabilities → 2. Load images from disk, base64 encode → 3. Run command processors → 4. Build `finalBlocks` array → 5. Launch goroutine to send to ACP → 6. Stream response
+
+### Adding New Features
+1. Add private field + public getter on `BackgroundSession`
+2. Set during ACP initialization (in `doStartACPProcess`)
+3. Check in `PromptWithMeta` with appropriate guards
+4. Expose via `sendSessionConnected()` in `session_ws.go`
+
 ## Structured Logging
 
 ```go
