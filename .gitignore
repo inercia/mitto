@@ -176,3 +176,4 @@ test-results/
 *.db
 .beads-credential-key
 .augment/settings.local.json
+tests/ui/test-results-auth/
