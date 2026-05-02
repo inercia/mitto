@@ -17,6 +17,10 @@ const (
 	PurposeQueueTitle    = "queue-title"
 	PurposeMCPCheck      = "mcp-check"
 	PurposeMCPTools      = "mcp-tools"
+
+	// PurposeProcessorPrefix is the prefix for processor-scoped auxiliary sessions.
+	// Each prompt-mode processor gets its own session: "processor:<name>".
+	PurposeProcessorPrefix = "processor:"
 )
 
 // MCPToolInfo represents information about a single MCP tool.
@@ -436,6 +440,15 @@ func (m *WorkspaceAuxiliaryManager) CheckRequiredToolPatterns(ctx context.Contex
 	}
 
 	return result, nil
+}
+
+// PromptProcessorAsync sends a prompt to a processor-specific auxiliary session
+// as fire-and-forget. The prompt is dispatched and the method returns immediately
+// without waiting for the agent's response. Returns error only if the prompt
+// couldn't be dispatched (no process, no session).
+func (m *WorkspaceAuxiliaryManager) PromptProcessorAsync(ctx context.Context, workspaceUUID, processorName, prompt string) error {
+	purpose := PurposeProcessorPrefix + processorName
+	return m.provider.PromptAuxiliaryAsync(ctx, workspaceUUID, purpose, prompt)
 }
 
 // Close closes all auxiliary sessions managed by this manager.

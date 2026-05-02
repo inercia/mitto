@@ -514,6 +514,77 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	return response, nil
 }
 
+// PromptAuxiliaryAsync sends a prompt to an auxiliary session without waiting for the response.
+// The session is created on-demand if it doesn't exist and reused for subsequent requests.
+// The prompt is dispatched and the method returns immediately — the agent processes in the background.
+// The session mutex is held until the agent finishes, ensuring subsequent prompts are serialized.
+// This implements the auxiliary.ProcessProvider interface.
+func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceUUID, purpose, message string) error {
+	if m.DisableAuxiliary {
+		return fmt.Errorf("auxiliary sessions disabled")
+	}
+
+	// Check context before doing any work
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before auxiliary async prompt: %w", err)
+	}
+
+	// Get or create the auxiliary session
+	auxState, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, purpose)
+	if err != nil {
+		return fmt.Errorf("failed to get auxiliary session: %w", err)
+	}
+
+	// Try to acquire the mutex with context cancellation support
+	acquired := make(chan struct{})
+	go func() {
+		auxState.mu.Lock()
+		close(acquired)
+	}()
+
+	select {
+	case <-acquired:
+		// Successfully acquired the lock — we'll release it in the background goroutine
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled while waiting for auxiliary session lock: %w", ctx.Err())
+	}
+
+	// Update last used time
+	auxState.lastUsed = time.Now()
+
+	// Use the dedicated aux process if available, otherwise fall back to the main process.
+	process := m.getAuxProcess(workspaceUUID)
+	if process == nil {
+		process = m.GetProcess(workspaceUUID)
+	}
+	if process == nil {
+		auxState.mu.Unlock()
+		return fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
+	}
+
+	// Reset the response buffer
+	auxState.client.reset()
+
+	if m.logger != nil {
+		m.logger.Info("Dispatching async auxiliary prompt",
+			"workspace_uuid", workspaceUUID,
+			"purpose", purpose,
+			"prompt_length", len(message))
+	}
+
+	// Fire-and-forget: send the prompt and release the lock in the background when the agent finishes.
+	// This ensures subsequent prompts to the same session are serialized.
+	// process.Prompt blocks until the agent completes, so the lock is held for the duration.
+	go func() {
+		defer auxState.mu.Unlock()
+		waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		_, _ = process.Prompt(waitCtx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
+	}()
+
+	return nil
+}
+
 // getOrCreateAuxiliarySession returns an existing auxiliary session or creates a new one.
 // The entire function holds auxMu to prevent a TOCTOU race where two concurrent callers
 // both observe a missing entry and each create a duplicate session.
