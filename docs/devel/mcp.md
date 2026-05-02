@@ -383,36 +383,43 @@ Returns:
 - Remove failed children before retrying with new instructions
 - Tidy up the conversation list after a multi-iteration workflow completes
 
-#### `mitto_conversation_userdata_set`
+#### `mitto_conversation_update`
 
-Set a user data attribute in the calling conversation. The key must be defined in the workspace's user data schema (`.mittorc` under `metadata.user_data`).
+Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction).
 
-| Parameter    | Type   | Required | Description                                  |
-| ------------ | ------ | -------- | -------------------------------------------- |
-| `session_id` | string | Yes      | Source session ID (your session)             |
-| `key`        | string | Yes      | Attribute name (must be in schema)           |
-| `value`      | string | Yes      | Value to set (validated against schema type) |
+| Parameter         | Type                            | Required | Description                                                    |
+| ----------------- | ------------------------------- | -------- | -------------------------------------------------------------- |
+| `self_id`         | string                          | Yes      | Your session ID                                                |
+| `conversation_id` | string                          | Yes      | Target conversation to update                                  |
+| `name`            | string                          | No       | New conversation title (omit to leave unchanged)               |
+| `user_data`       | `[{name, value}]`               | No       | User data attributes to set (validated against workspace schema) |
+| `user_data_merge` | bool                            | No       | If `true` (default), merge with existing attributes; if `false`, replace all |
 
 Returns:
 
-| Field     | Description                                |
-| --------- | ------------------------------------------ |
-| `success` | Whether the attribute was set              |
-| `key`     | The key that was set                       |
-| `value`   | The value that was set                     |
-| `error`   | Error message if validation/setting failed |
+| Field             | Description                                     |
+| ----------------- | ----------------------------------------------- |
+| `success`         | Whether the update succeeded                    |
+| `conversation_id` | The updated conversation's ID                   |
+| `updated`         | List of property names that were changed         |
+| `name`            | Current name after update                       |
+| `user_data`       | Current user data attributes after update       |
+| `error`           | Error message if update failed                  |
 
-**Schema validation:**
+**User data validation:**
 
-- If no schema is defined for the workspace, the tool fails
-- If the key is not in the schema, the tool fails
-- If the value doesn't match the field type (e.g., invalid URL for `url` type), the tool fails
+- Values are validated against the workspace schema (`.mittorc` under `metadata.user_data`)
+- If the workspace has no schema, any user data update is rejected
+- If a field name is not in the schema, the update is rejected
+- If a value doesn't match the field type (e.g., invalid URL for `url` type), the update is rejected
+
+**Merge behavior (default):** When `user_data_merge` is `true` (or omitted), existing attributes are preserved and only the specified attributes are added or updated. When `false`, the full attribute set is replaced.
 
 **Example use cases:**
 
-- Update ticket/issue references from within the conversation
-- Set metadata like priority or status
-- Store references to external resources (URLs)
+- Rename a conversation from within an agent
+- Set or update JIRA ticket, sprint, or branch metadata from within a conversation
+- Processors that auto-detect user data values from conversation messages
 
 #### `mitto_children_tasks_wait`
 
@@ -526,7 +533,7 @@ Session-scoped tools check permissions at runtime:
 | `can_interact_other_workspaces` | `mitto_conversation_new`, `mitto_conversation_get`, `mitto_conversation_send_prompt`, `mitto_conversation_wait` (only when `workspace` parameter targets a different workspace) |
 
 **Note:** `mitto_conversation_list` is **always available** (no permission check).
-`mitto_conversation_get_current`, `mitto_conversation_get`, `mitto_conversation_wait`, and `mitto_conversation_userdata_set` require the session to be registered (running) but no flag check.
+`mitto_conversation_get_current`, `mitto_conversation_get`, `mitto_conversation_wait`, and `mitto_conversation_update` require the session to be registered (running) but no flag check.
 Cross-workspace operations require the `can_interact_other_workspaces` flag AND user confirmation. The confirmation dialog is NOT gated by `can_prompt_user` — it is a mandatory security gate.
 
 ## Configuring AI Agents

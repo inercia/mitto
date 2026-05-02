@@ -4,12 +4,13 @@ Mitto has a unified message processing pipeline that transforms user messages be
 
 ## Architecture Overview
 
-The pipeline is managed by a single `processors.Manager` that merges two types of processors into a priority-sorted(stable) list:
+The pipeline is managed by a single `processors.Manager` that merges three types of processors into a priority-sorted(stable) list:
 
 1. **Text-mode Processors** (from `config.MessageProcessor`) — Lightweight, declarative text prepend/append rules defined in YAML configuration. These run at priority 0 by default.
 2. **Command-mode Processors** (from `internal/processors/`) — External command-based transformations that can run arbitrary scripts, produce attachments, and fully replace messages. These run at priority 100 by default.
+3. **Prompt-mode Processors** (from `internal/processors/`) — Fire-and-forget prompts dispatched to a workspace-scoped auxiliary AI agent. They do not modify the outgoing message. The prompt is assembled with filtered conversation history (`@mitto:messages`) and sent asynchronously via `PromptFunc`. These typically run at priority 200.
 
-Both types share the same `when` condition types (`first`, `all`, `all-except-first`) from the `config.ProcessorWhen` type. Text-mode processors from config are merged into the unified pipeline via `Manager.CloneWithTextProcessors()`, which returns a per-session copy to avoid data races on the shared Manager instance.
+All types share the same `when` condition types (`first`, `all`, `all-except-first`) from the `config.ProcessorWhen` type. Text-mode processors from config are merged into the unified pipeline via `Manager.CloneWithTextProcessors()`, which returns a per-session copy to avoid data races on the shared Manager instance.
 
 ## Processing Flow
 
@@ -36,6 +37,10 @@ sequenceDiagram
             ProcMgr->>ProcMgr: Execute external command
             ProcMgr->>ProcMgr: Apply output (transform/prepend/append/discard)
             ProcMgr->>ProcMgr: Collect attachments
+        else Prompt-mode processor (priority 200)
+            ProcMgr->>ProcMgr: Build prompt with @mitto:messages
+            ProcMgr-)AuxAgent: PromptFunc (fire-and-forget)
+            Note over ProcMgr,AuxAgent: Pipeline continues immediately
         end
     end
     ProcMgr-->>Session: ProcessorResult {message, attachments}
@@ -126,7 +131,7 @@ sequenceDiagram
 
     Note over M,L: Startup (once)
     M->>L: Load()
-    L->>L: Walk MITTO_DIR/processors/*.yaml
+    L->>L: Walk MITTO_DIR/processors/*.yaml + .mitto/processors/
     L->>L: Parse YAML, validate, sort by priority
     L-->>M: []*Processor (sorted)
 
@@ -252,15 +257,17 @@ source "$MITTO_PROCESSOR_DIR/helpers.sh"
 
 ### Key Types
 
-| Type              | File          | Purpose                                   |
-| ----------------- | ------------- | ----------------------------------------- |
-| `Processor`       | `types.go`    | Processor definition (parsed from YAML)   |
-| `Manager`         | `apply.go`    | High-level load + apply interface         |
-| `Loader`          | `loader.go`   | Discovers and parses processor YAML files |
-| `Executor`        | `executor.go` | Runs a single processor as subprocess     |
-| `ProcessorInput`  | `input.go`    | Context sent to processor stdin           |
-| `ProcessorOutput` | `input.go`    | Parsed result from processor stdout       |
-| `Attachment`      | `input.go`    | File attachment from processor            |
+| Type              | File             | Purpose                                   |
+| ----------------- | ---------------- | ----------------------------------------- |
+| `Processor`       | `types.go`       | Processor definition (parsed from YAML)   |
+| `ProcessorSource` | `types.go`       | Source enum: `global`, `builtin`, `workspace`, `config` |
+| `Manager`         | `apply.go`       | High-level load + apply interface         |
+| `Loader`          | `loader.go`      | Discovers and parses processor YAML files |
+| `Executor`        | `executor.go`    | Runs a single processor as subprocess     |
+| `ProcessorInput`  | `input.go`       | Context sent to processor stdin           |
+| `ProcessorOutput` | `input.go`       | Parsed result from processor stdout       |
+| `Attachment`      | `input.go`       | File attachment from processor            |
+| `WebProcessor`    | `session_api.go` | API response type for workspace processors endpoint |
 
 ## Variable Substitution
 
@@ -364,6 +371,67 @@ A command processor YAML that uses a variable in its `text` field is also suppor
 ### CLI Mode
 
 In CLI mode (`internal/cmd/cli.go`), all session metadata variables (`@mitto:session_id`, `@mitto:session_name`, `@mitto:parent_session_id`, `@mitto:workspace_uuid`, `@mitto:acp_server`) substitute to empty string since there is no backing session store. `@mitto:working_dir` substitutes to the CLI working directory.
+
+## Workspace Processor Management
+
+### Source Tracking
+
+Each processor carries a `Source` field (`ProcessorSource` type in `types.go`) indicating where it was loaded from:
+
+| Source      | Constant                   | Set when                                                               |
+| ----------- | -------------------------- | ---------------------------------------------------------------------- |
+| `global`    | `ProcessorSourceGlobal`    | Loaded from `MITTO_DIR/processors/`                                    |
+| `builtin`   | `ProcessorSourceBuiltin`   | Loaded from `MITTO_DIR/processors/builtin/`                            |
+| `workspace` | `ProcessorSourceWorkspace` | Loaded from `.mitto/processors/` via `CloneWithDirProcessors`          |
+| `config`    | `ProcessorSourceConfig`    | Text-mode processors from `.mittorc` configuration                     |
+
+Source stamping happens in `apply.go`:
+- `Load()` stamps `ProcessorSourceGlobal` on all loaded processors
+- `AddTextProcessors()` stamps `ProcessorSourceConfig`
+- `CloneWithDirProcessors()` stamps `ProcessorSourceWorkspace`
+
+### Enable/Disable API
+
+Two REST endpoints manage processor enabled state per workspace:
+
+| Endpoint                                      | Method | Description                                                  |
+| --------------------------------------------- | ------ | ------------------------------------------------------------ |
+| `/api/workspace-processors?dir=...`           | GET    | List all processors for a workspace with source and enabled state |
+| `/api/workspace-processors/toggle-enabled`    | PUT    | Toggle a processor's enabled state                           |
+
+**GET response** includes processors sorted by source (workspace first, then global) and name, with the `processors` overrides from `.mittorc` applied.
+
+**PUT request body:**
+```json
+{
+  "dir": "/path/to/workspace",
+  "name": "processor-name",
+  "enabled": false
+}
+```
+
+Toggle logic:
+- **Workspace YAML files**: Updates `enabled` field directly via `UpdateProcessorFileEnabled()` in `yaml_update.go`
+- **Global/builtin processors**: Records in `.mittorc` `processors` section (list of `{name, enabled}` entries) via `SaveWorkspaceRCProcessorEnabled()`. Mirrors the prompts pattern.
+- Cache is invalidated via `SessionManager.InvalidateWorkspaceRC()` after each toggle
+
+### Processor Statistics
+
+The `Manager` tracks runtime statistics (thread-safe):
+
+| Field              | Type        | Description                                          |
+| ------------------ | ----------- | ---------------------------------------------------- |
+| `totalActivations` | `int`       | Total calls to `Apply()` or `applyWithRerun()`       |
+| `lastActivationAt` | `time.Time` | Timestamp of the most recent activation              |
+
+Getters: `ProcessorCount()`, `TotalActivations()`, `LastActivationAt()`.
+
+Stats are sent to the frontend via:
+- `connected` WebSocket message (initial values)
+- `prompt_complete` message (after each prompt)
+- `keepalive_ack` message (periodic refresh)
+
+Fields in WebSocket payloads: `processor_count`, `processor_activations`, `processor_last_activation`.
 
 ## Integration Points
 
