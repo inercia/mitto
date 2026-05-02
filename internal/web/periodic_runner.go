@@ -466,39 +466,51 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 			"prompt_preview", truncatePrompt(periodic.Prompt, 100))
 	}
 
-	// Send the prompt with metadata indicating it's periodic
-	// Using a special sender ID to identify periodic prompts
+	// Use OnComplete callback to defer RecordSent until the prompt actually finishes.
+	// PromptWithMeta is async — it returns nil immediately. Without OnComplete,
+	// RecordSent would advance the schedule even if the prompt later fails
+	// (e.g., ACP process crash).
 	meta := PromptMeta{
 		SenderID: "periodic-runner",
 		PromptID: "", // No client to confirm delivery to
+		OnComplete: func(err error) {
+			if err != nil {
+				if r.logger != nil {
+					r.logger.Warn("Periodic prompt failed, schedule not advanced",
+						"session_id", sessionID,
+						"session_name", sessionName,
+						"error", err)
+				}
+				return
+			}
+
+			// Prompt completed successfully — now update the schedule
+			if err := periodicStore.RecordSent(); err != nil {
+				if r.logger != nil {
+					r.logger.Warn("Failed to update periodic last_sent_at",
+						"session_id", sessionID,
+						"error", err)
+				}
+			} else {
+				// Log the new schedule (useful for debugging catch-up behavior)
+				if r.logger != nil {
+					if updated, err := periodicStore.Get(); err == nil && updated.NextScheduledAt != nil {
+						r.logger.Debug("Periodic schedule updated after delivery",
+							"session_id", sessionID,
+							"next_scheduled_at", updated.NextScheduledAt)
+					}
+				}
+			}
+		},
 	}
 
 	if err := bs.PromptWithMeta(periodic.Prompt, meta); err != nil {
 		return err
 	}
 
-	// Notify about the periodic prompt delivery
+	// Notify about the periodic prompt delivery (the prompt is now queued/started)
 	if r.onPeriodicStarted != nil {
 		r.onPeriodicStarted(sessionID, sessionName)
-	}
-
-	// Update last_sent_at and next_scheduled_at
-	if err := periodicStore.RecordSent(); err != nil {
-		// Log but don't fail - the prompt was sent successfully
-		if r.logger != nil {
-			r.logger.Warn("Failed to update periodic last_sent_at",
-				"session_id", sessionID,
-				"error", err)
-		}
-	} else {
-		// Log the new schedule (useful for debugging catch-up behavior)
-		if r.logger != nil {
-			if updated, err := periodicStore.Get(); err == nil && updated.NextScheduledAt != nil {
-				r.logger.Debug("Periodic schedule updated after delivery",
-					"session_id", sessionID,
-					"next_scheduled_at", updated.NextScheduledAt)
-			}
-		}
 	}
 
 	return nil
