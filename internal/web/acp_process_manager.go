@@ -180,6 +180,15 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	}
 
 	m.processes[workspace.UUID] = p
+
+	// Register restart callback so auxiliary sessions are invalidated when the
+	// shared process restarts (e.g., after an OOM crash during streaming).
+	// The callback captures workspaceUUID by value for use after m.mu is released.
+	wuuid := workspace.UUID
+	p.SetOnRestart(func() {
+		m.invalidateAuxiliarySessions(wuuid)
+	})
+
 	// Release lock before pre-warming: prewarmAuxiliarySessions calls GetProcess
 	// which also acquires m.mu, so the lock must be released first.
 	m.mu.Unlock()
@@ -292,6 +301,14 @@ func (m *ACPProcessManager) GetOrCreateAuxProcess(workspace *config.WorkspaceSet
 	}
 
 	m.auxProcesses[workspace.UUID] = p
+
+	// Register restart callback so auxiliary sessions are invalidated when the
+	// dedicated aux process restarts (e.g., after a crash).
+	wuuid := workspace.UUID
+	p.SetOnRestart(func() {
+		m.invalidateAuxiliarySessions(wuuid)
+	})
+
 	m.mu.Unlock()
 
 	if m.logger != nil {

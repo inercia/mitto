@@ -75,8 +75,10 @@ const DefaultStartupStaggerMs = 300
 // SessionConfig represents session storage configuration.
 type SessionConfig struct {
 	// MaxMessagesPerSession is the maximum number of messages to retain per conversation.
-	// When exceeded, oldest messages are pruned. Default: 0 (unlimited)
-	// Not exposed in the Settings dialog.
+	// When exceeded, oldest messages are automatically pruned after each new event.
+	// Default: 2000 (applied at runtime by SessionManager when not explicitly set).
+	// Set to a negative value to disable auto-pruning entirely.
+	// Exposed in the Settings dialog under Conversations > Conversation History.
 	MaxMessagesPerSession int `json:"max_messages_per_session,omitempty"`
 	// MaxSessionSizeBytes is the maximum total size in bytes for a session's stored data.
 	// When exceeded, oldest messages are pruned. Default: 0 (unlimited)

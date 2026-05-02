@@ -110,6 +110,10 @@ type SharedACPProcess struct {
 	restartCount int
 	restartTimes []time.Time
 
+	// onRestart is called after a successful Restart(), allowing the process manager
+	// to invalidate caches (e.g., auxiliary sessions) that reference old session IDs.
+	onRestart func()
+
 	// Logger
 	logger *slog.Logger
 }
@@ -1006,7 +1010,19 @@ func (p *SharedACPProcess) Restart() error {
 			"command", p.config.ACPCommand)
 	}
 
+	// Notify the process manager so it can invalidate stale auxiliary sessions.
+	if p.onRestart != nil {
+		p.onRestart()
+	}
+
 	return nil
+}
+
+// SetOnRestart registers a callback that is called after a successful Restart().
+// This allows the process manager to invalidate caches (e.g., auxiliary sessions)
+// that reference old session IDs from the previous process instance.
+func (p *SharedACPProcess) SetOnRestart(fn func()) {
+	p.onRestart = fn
 }
 
 // strPtr returns a pointer to the given string.

@@ -261,6 +261,11 @@ type BackgroundSessionConfig struct {
 
 	// SharedProcess is the shared ACP process for this workspace (nil = legacy per-session process).
 	SharedProcess *SharedACPProcess
+
+	// PruneConfig is the pruning configuration for the session recorder.
+	// When set, the recorder automatically prunes old events after each recording
+	// to keep the session within the configured limits (max messages, max size).
+	PruneConfig *session.PruneConfig
 }
 
 // NewBackgroundSession creates a new background session.
@@ -314,6 +319,10 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		bs.recorder = session.NewRecorder(cfg.Store)
 		bs.persistedID = bs.recorder.SessionID()
 		bs.store = cfg.Store
+		// Set pruning configuration so the recorder auto-prunes after each event
+		if cfg.PruneConfig != nil {
+			bs.recorder.SetPruneConfig(cfg.PruneConfig)
+		}
 		if err := bs.recorder.Start(cfg.ACPServer, cfg.WorkingDir, cfg.WorkspaceUUID); err != nil {
 			cancel()
 			return nil, err
@@ -493,6 +502,10 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	// Resume recorder for the existing session
 	if config.Store != nil {
 		bs.recorder = session.NewRecorderWithID(config.Store, config.PersistedID)
+		// Set pruning configuration so the recorder auto-prunes after each event
+		if config.PruneConfig != nil {
+			bs.recorder.SetPruneConfig(config.PruneConfig)
+		}
 		if err := bs.recorder.Resume(); err != nil {
 			cancel()
 			return nil, &sessionError{"failed to resume session recording: " + err.Error()}

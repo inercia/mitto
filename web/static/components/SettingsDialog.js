@@ -1254,6 +1254,7 @@ export function SettingsDialog({
 
   // Auto-archive inactive period setting
   const [autoArchiveInactiveAfter, setAutoArchiveInactiveAfter] = useState("");
+  const [maxMessagesPerSession, setMaxMessagesPerSession] = useState(2000);
 
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
@@ -1598,6 +1599,16 @@ export function SettingsDialog({
         config.session?.auto_archive_inactive_after || "",
       );
 
+      // Load max messages per session (default 2000).
+      // Backend: 0 = not configured (use default), negative = disabled.
+      // UI: 0 = unlimited (no pruning), positive = limit.
+      const rawMaxMessages = config.session?.max_messages_per_session;
+      if (rawMaxMessages != null && rawMaxMessages < 0) {
+        setMaxMessagesPerSession(0); // Disabled → show as "unlimited" (0)
+      } else {
+        setMaxMessagesPerSession(rawMaxMessages || 2000);
+      }
+
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
         config.conversations?.action_buttons?.enabled !== false,
@@ -1821,10 +1832,15 @@ export function SettingsDialog({
         }),
       };
 
-      // Build session config with archive retention period and auto-archive inactive period
+      // Build session config with archive retention period, auto-archive inactive period,
+      // and max messages per session (auto-pruning).
+      // UI: 0 = unlimited (no pruning) → backend: -1 (disabled).
+      // UI: positive = limit → backend: same value.
       const sessionConfig = {
         archive_retention_period: archiveRetentionPeriod,
         auto_archive_inactive_after: autoArchiveInactiveAfter,
+        max_messages_per_session:
+          maxMessagesPerSession === 0 ? -1 : maxMessagesPerSession,
       };
 
       // ACP servers are saved with source field so backend can filter out RC file servers
@@ -3318,6 +3334,42 @@ export function SettingsDialog({
                               <option value="1m">After 1 month</option>
                               <option value="3m">After 3 months</option>
                             </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Conversation History Limits -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Conversation History
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Max messages per conversation
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Automatically prune oldest messages when a
+                                conversation exceeds this limit. Prevents
+                                excessive memory usage in long-running
+                                conversations. Set to 0 for unlimited.
+                              </div>
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100000"
+                              step="100"
+                              value=${maxMessagesPerSession}
+                              onChange=${(e) =>
+                                setMaxMessagesPerSession(
+                                  parseInt(e.target.value, 10) || 0,
+                                )}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm w-24 text-center focus:ring-blue-500 focus:border-blue-500"
+                            />
                           </div>
                         </div>
                       </div>

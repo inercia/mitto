@@ -24,6 +24,14 @@ import (
 // This limits running sessions (those with an active ACP process), not stored/archived sessions.
 const MaxSessions = 64
 
+// DefaultMaxMessagesPerSession is the default maximum number of messages to retain per session.
+// When exceeded, the oldest messages are automatically pruned after each new event is recorded.
+// This prevents unbounded session growth (especially for periodic sessions) which can cause
+// OOM crashes when many large sessions share a single ACP process.
+// Can be overridden via settings.json or .mitterc with "max_messages_per_session".
+// Set to 0 in settings to disable automatic pruning.
+const DefaultMaxMessagesPerSession = 2000
+
 // ErrTooManySessions is returned when the session limit is reached.
 var ErrTooManySessions = errors.New("maximum number of sessions reached")
 
@@ -542,6 +550,39 @@ func (sm *SessionManager) GetDefaultWorkspace() *config.WorkspaceSettings {
 
 // buildAvailableACPServers returns the list of ACP servers that have workspaces
 // configured for the given folder, using the same logic as the MCP tool
+
+// buildPruneConfig builds a PruneConfig from the global settings.
+// If no explicit max_messages_per_session is configured, it applies
+// DefaultMaxMessagesPerSession to prevent unbounded session growth.
+// Returns nil only if pruning is explicitly disabled (max_messages_per_session set to 0
+// with no max_session_size_bytes).
+func (sm *SessionManager) buildPruneConfig() *session.PruneConfig {
+	maxMessages := DefaultMaxMessagesPerSession
+	var maxSizeBytes int64
+
+	if sm.mittoConfig != nil && sm.mittoConfig.Session != nil {
+		sc := sm.mittoConfig.Session
+		if sc.MaxMessagesPerSession > 0 {
+			// Explicit positive value overrides default
+			maxMessages = sc.MaxMessagesPerSession
+		} else if sc.MaxMessagesPerSession < 0 {
+			// Negative value disables message-count pruning
+			maxMessages = 0
+		}
+		// 0 means "not set" — keep default
+		maxSizeBytes = sc.MaxSessionSizeBytes
+	}
+
+	if maxMessages == 0 && maxSizeBytes <= 0 {
+		return nil
+	}
+
+	return &session.PruneConfig{
+		MaxMessages:  maxMessages,
+		MaxSizeBytes: maxSizeBytes,
+	}
+}
+
 // (mitto_conversation_get_current). Each entry includes the server name, type,
 // and tags, plus whether it is the currently active server for the session.
 //
@@ -1518,6 +1559,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 
 	configDuration := time.Since(createStart)
 
+	// Build pruning configuration from global settings (with default)
+	pruneConfig := sm.buildPruneConfig()
+
 	// Build available ACP servers list for this workspace folder (used in @mitto:variable substitution).
 	availableServers := sm.buildAvailableACPServers(workingDir, acpServer)
 
@@ -1542,7 +1586,8 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		AvailableACPServers: availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
+		SharedProcess:       sharedProcess,  // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,    // Auto-pruning configuration (nil = no auto-pruning)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -1992,6 +2037,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// Falling back again would risk mixing different ACP servers on the same folder.
 	sharedProcess := sm.getSharedProcess(foundWs, r)
 
+	// Build pruning configuration from global settings (with default)
+	pruneConfig := sm.buildPruneConfig()
+
 	// Build available ACP servers list for this workspace folder (used in @mitto:variable substitution).
 	resumeAvailableServers := sm.buildAvailableACPServers(workingDir, acpServer)
 
@@ -2018,7 +2066,8 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		AvailableACPServers: resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
+		SharedProcess:       sharedProcess,  // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,    // Auto-pruning configuration (nil = no auto-pruning)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
