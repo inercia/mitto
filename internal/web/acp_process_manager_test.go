@@ -239,3 +239,154 @@ func TestAuxiliaryClient_ResponseCollection(t *testing.T) {
 		t.Errorf("After reset, getResponse() = %q, want empty string", got)
 	}
 }
+
+// ---- mapsEqual tests ----
+
+func TestMapsEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		a    map[string]string
+		b    map[string]string
+		want bool
+	}{
+		{"both nil", nil, nil, true},
+		{"nil vs empty", nil, map[string]string{}, true},
+		{"empty vs nil", map[string]string{}, nil, true},
+		{"both empty", map[string]string{}, map[string]string{}, true},
+		{"identical", map[string]string{"A": "1", "B": "2"}, map[string]string{"A": "1", "B": "2"}, true},
+		{"different values", map[string]string{"A": "1"}, map[string]string{"A": "2"}, false},
+		{"different keys", map[string]string{"A": "1"}, map[string]string{"B": "1"}, false},
+		{"different lengths", map[string]string{"A": "1"}, map[string]string{"A": "1", "B": "2"}, false},
+		{"subset a of b", map[string]string{"A": "1"}, map[string]string{"A": "1", "B": "2"}, false},
+		{"one nil one non-empty", nil, map[string]string{"A": "1"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mapsEqual(tc.a, tc.b); got != tc.want {
+				t.Errorf("mapsEqual(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---- sharedProcessConfigMatchesWorkspace tests ----
+
+func TestSharedProcessConfigMatchesWorkspace_NilInputs(t *testing.T) {
+	if sharedProcessConfigMatchesWorkspace(nil, &config.WorkspaceSettings{}) {
+		t.Error("nil process should not match")
+	}
+	p := &SharedACPProcess{config: SharedACPProcessConfig{ACPServer: "test"}}
+	if sharedProcessConfigMatchesWorkspace(p, nil) {
+		t.Error("nil workspace should not match")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_MatchesWithoutEnv(t *testing.T) {
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			ACPCwd:     "/cwd",
+		},
+	}
+	ws := &config.WorkspaceSettings{
+		ACPServer:  "Auggie",
+		ACPCommand: "auggie --acp",
+		ACPCwd:     "/cwd",
+	}
+	if !sharedProcessConfigMatchesWorkspace(p, ws) {
+		t.Error("expected match when all fields match (no env)")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_MatchesWithEnv(t *testing.T) {
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			Env:        map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
+		},
+	}
+	ws := &config.WorkspaceSettings{
+		ACPServer:  "Auggie",
+		ACPCommand: "auggie --acp",
+		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
+	}
+	if !sharedProcessConfigMatchesWorkspace(p, ws) {
+		t.Error("expected match when all fields including Env match")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_EnvChanged(t *testing.T) {
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			Env:        map[string]string{"NODE_OPTIONS": "--max-old-space-size=4096"},
+		},
+	}
+	ws := &config.WorkspaceSettings{
+		ACPServer:  "Auggie",
+		ACPCommand: "auggie --acp",
+		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
+	}
+	if sharedProcessConfigMatchesWorkspace(p, ws) {
+		t.Error("should NOT match when Env values differ — process must be recreated")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_EnvAdded(t *testing.T) {
+	// Process was started without env, workspace now has env — should NOT match
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			Env:        nil,
+		},
+	}
+	ws := &config.WorkspaceSettings{
+		ACPServer:  "Auggie",
+		ACPCommand: "auggie --acp",
+		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
+	}
+	if sharedProcessConfigMatchesWorkspace(p, ws) {
+		t.Error("should NOT match when env was added to config — process must be recreated")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_EnvRemoved(t *testing.T) {
+	// Process was started with env, workspace no longer has env — should NOT match
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp",
+			Env:        map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
+		},
+	}
+	ws := &config.WorkspaceSettings{
+		ACPServer:  "Auggie",
+		ACPCommand: "auggie --acp",
+		ACPEnv:     nil,
+	}
+	if sharedProcessConfigMatchesWorkspace(p, ws) {
+		t.Error("should NOT match when env was removed from config — process must be recreated")
+	}
+}
+
+func TestSharedProcessConfigMatchesWorkspace_CommandDiffers(t *testing.T) {
+	p := &SharedACPProcess{
+		config: SharedACPProcessConfig{
+			ACPServer:  "Auggie",
+			ACPCommand: "auggie --acp --model opus4.5",
+			Env:        map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
+		},
+	}
+	ws := &config.WorkspaceSettings{
+		ACPServer:  "Auggie",
+		ACPCommand: "auggie --acp --model opus4.6",
+		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192"},
+	}
+	if sharedProcessConfigMatchesWorkspace(p, ws) {
+		t.Error("should NOT match when command differs")
+	}
+}

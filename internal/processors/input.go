@@ -18,8 +18,6 @@ type ProcessorInput struct {
 	SessionID string `json:"session_id"`
 	// WorkingDir is the session's working directory.
 	WorkingDir string `json:"working_dir"`
-	// History contains previous conversation turns (only for InputConversation).
-	History []HistoryEntry `json:"history,omitempty"`
 
 	// Session metadata for variable substitution
 	// ParentSessionID is the parent conversation ID (empty if this is a root session).
@@ -49,9 +47,6 @@ type ProcessorInput struct {
 	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`
-	// LastRunMessageIndex is the index into History at which the current prompt-mode
-	// processor last ran. Used for since-last-run scope. Set by the Manager during Apply.
-	LastRunMessageIndex int `json:"-"`
 	// HasUserDataSchema indicates whether the workspace has a user data schema.
 	// Used for workspace.hasUserDataSchema CEL variable.
 	HasUserDataSchema bool `json:"-"`
@@ -88,14 +83,6 @@ type ChildSession struct {
 	IsAutoChild bool `json:"is_auto_child,omitempty"`
 	// ChildOrigin indicates how the child was created: "auto", "mcp", or "human".
 	ChildOrigin string `json:"child_origin,omitempty"`
-}
-
-// HistoryEntry represents a single turn in the conversation history.
-type HistoryEntry struct {
-	// Role is either "user" or "assistant".
-	Role string `json:"role"`
-	// Content is the message content.
-	Content string `json:"content"`
 }
 
 // ProcessorOutput contains the result of processor execution.

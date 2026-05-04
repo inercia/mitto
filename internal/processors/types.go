@@ -86,56 +86,6 @@ const (
 	DefaultErrorHandle = ErrorSkip
 )
 
-// MessagesScope defines which slice of conversation history to include.
-type MessagesScope string
-
-const (
-	// MessagesScopeLastMessage includes only the current message.
-	MessagesScopeLastMessage MessagesScope = "last-message"
-	// MessagesScopeLastN includes the last N messages (controlled by MaxMessages).
-	MessagesScopeLastN MessagesScope = "last-n"
-	// MessagesScopeSinceLastRun includes messages since this processor last ran in this conversation.
-	MessagesScopeSinceLastRun MessagesScope = "since-last-run"
-	// MessagesScopeAll includes the full conversation history (subject to caps).
-	MessagesScopeAll MessagesScope = "all"
-)
-
-// MessagesConfig configures which conversation messages to include in a prompt-mode processor.
-type MessagesConfig struct {
-	// Scope defines what slice of history to include. Default: "since-last-run".
-	Scope MessagesScope `yaml:"scope,omitempty" json:"scope,omitempty"`
-	// Roles filters messages by role. Valid values: "user", "agent". Default: both.
-	Roles []string `yaml:"roles,omitempty" json:"roles,omitempty"`
-	// MaxMessages is the maximum number of messages to include. Default: 50.
-	MaxMessages int `yaml:"max_messages,omitempty" json:"max_messages,omitempty"`
-	// MaxTokens is an approximate token cap (chars/4). 0 means no limit. Default: 0.
-	MaxTokens int `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
-}
-
-// GetScope returns the scope, defaulting to MessagesScopeSinceLastRun.
-func (mc *MessagesConfig) GetScope() MessagesScope {
-	if mc == nil || mc.Scope == "" {
-		return MessagesScopeSinceLastRun
-	}
-	return mc.Scope
-}
-
-// GetMaxMessages returns the max messages cap, defaulting to 50.
-func (mc *MessagesConfig) GetMaxMessages() int {
-	if mc == nil || mc.MaxMessages <= 0 {
-		return 50
-	}
-	return mc.MaxMessages
-}
-
-// GetRoles returns the roles filter, defaulting to both user and agent.
-func (mc *MessagesConfig) GetRoles() []string {
-	if mc == nil || len(mc.Roles) == 0 {
-		return []string{"user", "agent"}
-	}
-	return mc.Roles
-}
-
 // PromptFunc is a callback for executing prompt-mode processors.
 // Injected by the web layer to bridge the processor pipeline with auxiliary sessions.
 // The function dispatches the prompt to an auxiliary session and returns immediately
@@ -172,11 +122,8 @@ type Processor struct {
 	// When set, Command and Text must be empty. The processor runs in fire-and-forget mode:
 	// the prompt is dispatched to a workspace-scoped auxiliary session and the pipeline
 	// continues immediately without waiting for the agent's response.
-	// Supports @mitto:variable substitution including @mitto:messages for conversation history.
+	// Supports @mitto:variable substitution.
 	Prompt string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
-	// Messages configures which conversation messages to include when @mitto:messages
-	// is used in the prompt template. Only applicable to prompt-mode processors.
-	Messages *MessagesConfig `yaml:"messages,omitempty" json:"messages,omitempty"`
 
 	// Input defines what to send to stdin: "message", "conversation", "none".
 	Input InputType `yaml:"input,omitempty" json:"input,omitempty"`

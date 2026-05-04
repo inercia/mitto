@@ -28,7 +28,7 @@ text: |
   [Child Conversation Cleanup Reminder]
   You have @mitto:mcp_children_count active child conversations that were created
   by you. Consider deleting child conversations you no longer need using
-  `mitto_conversation_delete_mitto` to free up resources.
+  `mitto_conversation_delete` to free up resources.
 
   Your MCP-created children: @mitto:mcp_children
 

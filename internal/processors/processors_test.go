@@ -1558,15 +1558,6 @@ text: "global"
 	}
 }
 
-// makeHistory creates a []HistoryEntry from alternating role/content pairs.
-func makeHistory(entries ...string) []HistoryEntry {
-	var h []HistoryEntry
-	for i := 0; i+1 < len(entries); i += 2 {
-		h = append(h, HistoryEntry{Role: entries[i], Content: entries[i+1]})
-	}
-	return h
-}
-
 func TestProcessorIsPromptMode(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1614,288 +1605,13 @@ func TestProcessorIsPromptMode(t *testing.T) {
 	}
 }
 
-func TestMessagesConfigDefaults(t *testing.T) {
-	t.Run("GetScope nil → since-last-run", func(t *testing.T) {
-		var mc *MessagesConfig
-		if got := mc.GetScope(); got != MessagesScopeSinceLastRun {
-			t.Errorf("GetScope() = %q, want %q", got, MessagesScopeSinceLastRun)
-		}
-	})
-	t.Run("GetScope empty struct → since-last-run", func(t *testing.T) {
-		mc := &MessagesConfig{}
-		if got := mc.GetScope(); got != MessagesScopeSinceLastRun {
-			t.Errorf("GetScope() = %q, want %q", got, MessagesScopeSinceLastRun)
-		}
-	})
-	t.Run("GetScope explicit value → returns it", func(t *testing.T) {
-		mc := &MessagesConfig{Scope: MessagesScopeAll}
-		if got := mc.GetScope(); got != MessagesScopeAll {
-			t.Errorf("GetScope() = %q, want %q", got, MessagesScopeAll)
-		}
-	})
-	t.Run("GetMaxMessages nil → 50", func(t *testing.T) {
-		var mc *MessagesConfig
-		if got := mc.GetMaxMessages(); got != 50 {
-			t.Errorf("GetMaxMessages() = %d, want 50", got)
-		}
-	})
-	t.Run("GetMaxMessages 0 → 50", func(t *testing.T) {
-		mc := &MessagesConfig{MaxMessages: 0}
-		if got := mc.GetMaxMessages(); got != 50 {
-			t.Errorf("GetMaxMessages() = %d, want 50", got)
-		}
-	})
-	t.Run("GetMaxMessages explicit value → returns it", func(t *testing.T) {
-		mc := &MessagesConfig{MaxMessages: 10}
-		if got := mc.GetMaxMessages(); got != 10 {
-			t.Errorf("GetMaxMessages() = %d, want 10", got)
-		}
-	})
-	t.Run("GetRoles nil → [user agent]", func(t *testing.T) {
-		var mc *MessagesConfig
-		got := mc.GetRoles()
-		if len(got) != 2 || got[0] != "user" || got[1] != "agent" {
-			t.Errorf("GetRoles() = %v, want [user agent]", got)
-		}
-	})
-	t.Run("GetRoles explicit value → returns it", func(t *testing.T) {
-		mc := &MessagesConfig{Roles: []string{"user"}}
-		got := mc.GetRoles()
-		if len(got) != 1 || got[0] != "user" {
-			t.Errorf("GetRoles() = %v, want [user]", got)
-		}
-	})
-}
-
-func TestFormatMessages(t *testing.T) {
-	t.Run("empty history", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeAll}}
-		input := &ProcessorInput{}
-		got := formatMessages(proc, input)
-		if got != "(no conversation history available)" {
-			t.Errorf("got %q, want '(no conversation history available)'", got)
-		}
-	})
-
-	t.Run("scope last-message", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeLastMessage}}
-		input := &ProcessorInput{
-			History: makeHistory("user", "first", "assistant", "second", "user", "third"),
-		}
-		got := formatMessages(proc, input)
-		if !strings.Contains(got, "third") {
-			t.Errorf("expected last message 'third', got %q", got)
-		}
-		if strings.Contains(got, "first") || strings.Contains(got, "second") {
-			t.Errorf("expected only last message, but got earlier messages in %q", got)
-		}
-	})
-
-	t.Run("scope last-n MaxMessages=3", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeLastN, MaxMessages: 3}}
-		input := &ProcessorInput{
-			History: makeHistory(
-				"user", "msg1",
-				"assistant", "msg2",
-				"user", "msg3",
-				"assistant", "msg4",
-				"user", "msg5",
-			),
-		}
-		got := formatMessages(proc, input)
-		if strings.Contains(got, "msg1") || strings.Contains(got, "msg2") {
-			t.Errorf("should not contain msg1/msg2, got %q", got)
-		}
-		if !strings.Contains(got, "msg3") || !strings.Contains(got, "msg5") {
-			t.Errorf("should contain msg3..msg5, got %q", got)
-		}
-	})
-
-	t.Run("scope since-last-run", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeSinceLastRun}}
-		input := &ProcessorInput{
-			History: makeHistory(
-				"user", "msg0",
-				"assistant", "msg1",
-				"user", "msg2",
-				"assistant", "msg3",
-				"user", "msg4",
-			),
-			LastRunMessageIndex: 2,
-		}
-		got := formatMessages(proc, input)
-		if strings.Contains(got, "msg0") || strings.Contains(got, "msg1") {
-			t.Errorf("should not include messages before index 2, got %q", got)
-		}
-		if !strings.Contains(got, "msg2") || !strings.Contains(got, "msg4") {
-			t.Errorf("should include msg2..msg4, got %q", got)
-		}
-	})
-
-	t.Run("scope all", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeAll}}
-		input := &ProcessorInput{
-			History: makeHistory("user", "alpha", "assistant", "beta", "user", "gamma"),
-		}
-		got := formatMessages(proc, input)
-		if !strings.Contains(got, "alpha") || !strings.Contains(got, "beta") || !strings.Contains(got, "gamma") {
-			t.Errorf("scope all should include all messages, got %q", got)
-		}
-	})
-
-	t.Run("role filtering user only", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeAll, Roles: []string{"user"}}}
-		input := &ProcessorInput{
-			History: makeHistory("user", "user-message", "assistant", "assistant-message"),
-		}
-		got := formatMessages(proc, input)
-		if !strings.Contains(got, "user-message") {
-			t.Errorf("should contain user-message, got %q", got)
-		}
-		if strings.Contains(got, "assistant-message") {
-			t.Errorf("should not contain assistant-message, got %q", got)
-		}
-	})
-
-	t.Run("role filtering agent only", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeAll, Roles: []string{"agent"}}}
-		input := &ProcessorInput{
-			History: makeHistory("user", "user-message", "assistant", "assistant-message"),
-		}
-		got := formatMessages(proc, input)
-		if strings.Contains(got, "user-message") {
-			t.Errorf("should not contain user-message, got %q", got)
-		}
-		if !strings.Contains(got, "assistant-message") {
-			t.Errorf("agent role should match assistant history entries, got %q", got)
-		}
-	})
-
-	t.Run("MaxMessages cap", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeAll, MaxMessages: 3}}
-		history := make([]HistoryEntry, 10)
-		for i := range history {
-			role := "user"
-			if i%2 == 1 {
-				role = "assistant"
-			}
-			history[i] = HistoryEntry{Role: role, Content: fmt.Sprintf("msg%d", i)}
-		}
-		input := &ProcessorInput{History: history}
-		got := formatMessages(proc, input)
-		for i := 0; i < 7; i++ {
-			if strings.Contains(got, fmt.Sprintf("msg%d", i)) {
-				t.Errorf("msg%d should have been dropped by MaxMessages cap, got %q", i, got)
-			}
-		}
-		for i := 7; i < 10; i++ {
-			if !strings.Contains(got, fmt.Sprintf("msg%d", i)) {
-				t.Errorf("msg%d should be included (last 3), got %q", i, got)
-			}
-		}
-	})
-
-	t.Run("MaxTokens cap", func(t *testing.T) {
-		// role="user",      content="a" → 4+1+10=15 chars
-		// role="assistant", content="b" → 9+1+10=20 chars
-		// role="user",      content="c" → 4+1+10=15 chars
-		// maxTokens=4 → maxChars=16
-		// newest-first scan: "c"(15)<=16 include; "b": 15+20=35>16 stop → only "c"
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeAll, MaxTokens: 4}}
-		input := &ProcessorInput{
-			History: makeHistory("user", "a", "assistant", "b", "user", "c"),
-		}
-		got := formatMessages(proc, input)
-		if strings.Contains(got, "[User]: a") || strings.Contains(got, "[Assistant]: b") {
-			t.Errorf("older messages should be truncated by MaxTokens, got %q", got)
-		}
-		if !strings.Contains(got, "[User]: c") {
-			t.Errorf("newest message should survive MaxTokens cap, got %q", got)
-		}
-	})
-
-	t.Run("no matching messages after filtering", func(t *testing.T) {
-		proc := &Processor{Messages: &MessagesConfig{Scope: MessagesScopeAll, Roles: []string{"agent"}}}
-		input := &ProcessorInput{
-			History: makeHistory("user", "only user messages here"),
-		}
-		got := formatMessages(proc, input)
-		if got != "(no matching conversation history)" {
-			t.Errorf("got %q, want '(no matching conversation history)'", got)
-		}
-	})
-}
-
-func TestBuildPromptWithMessages(t *testing.T) {
-	history := makeHistory("user", "first message", "assistant", "first response")
-
-	t.Run("@mitto:messages substituted", func(t *testing.T) {
-		proc := &Processor{
-			Prompt:   "Here is the history: @mitto:messages",
-			Messages: &MessagesConfig{Scope: MessagesScopeAll},
-		}
-		input := &ProcessorInput{History: history}
-		got := buildPromptWithMessages(proc, input)
-		if !strings.Contains(got, "first message") {
-			t.Errorf("expected messages substituted, got %q", got)
-		}
-		if strings.Contains(got, "@mitto:messages") {
-			t.Errorf("@mitto:messages placeholder should be replaced, got %q", got)
-		}
-	})
-
-	t.Run("@mitto:session_id substituted", func(t *testing.T) {
-		proc := &Processor{
-			Prompt:   "Session: @mitto:session_id",
-			Messages: &MessagesConfig{Scope: MessagesScopeAll},
-		}
-		input := &ProcessorInput{SessionID: "sess-42", History: history}
-		got := buildPromptWithMessages(proc, input)
-		if !strings.Contains(got, "sess-42") {
-			t.Errorf("expected session_id substituted, got %q", got)
-		}
-		if strings.Contains(got, "@mitto:session_id") {
-			t.Errorf("@mitto:session_id should be replaced, got %q", got)
-		}
-	})
-
-	t.Run("both @mitto:messages and @mitto:session_id substituted", func(t *testing.T) {
-		proc := &Processor{
-			Prompt:   "Session @mitto:session_id history: @mitto:messages",
-			Messages: &MessagesConfig{Scope: MessagesScopeAll},
-		}
-		input := &ProcessorInput{SessionID: "sess-99", History: history}
-		got := buildPromptWithMessages(proc, input)
-		if !strings.Contains(got, "sess-99") {
-			t.Errorf("expected session_id substituted, got %q", got)
-		}
-		if !strings.Contains(got, "first message") {
-			t.Errorf("expected messages substituted, got %q", got)
-		}
-	})
-
-	t.Run("no variables returned as-is", func(t *testing.T) {
-		proc := &Processor{
-			Prompt:   "No variables here, just plain text.",
-			Messages: &MessagesConfig{Scope: MessagesScopeAll},
-		}
-		input := &ProcessorInput{History: history}
-		got := buildPromptWithMessages(proc, input)
-		if got != "No variables here, just plain text." {
-			t.Errorf("expected prompt unchanged, got %q", got)
-		}
-	})
-}
-
 func TestLoaderPromptModeValidation(t *testing.T) {
 	t.Run("valid prompt-mode processor", func(t *testing.T) {
 		dir := t.TempDir()
 		writeYAML(t, dir, "valid.yaml", `
 name: valid-prompt
 when: all
-prompt: "Analyze: @mitto:messages"
-messages:
-  scope: all
+prompt: "Use mitto_conversation_history to retrieve messages."
 `)
 		loader := NewLoader(dir, nil)
 		procs, err := loader.Load()
@@ -1945,65 +1661,6 @@ text: "some text"
 			t.Errorf("expected 0 processors (bad file skipped), got %d", len(procs))
 		}
 	})
-
-	t.Run("messages without prompt → validation error (file skipped)", func(t *testing.T) {
-		dir := t.TempDir()
-		writeYAML(t, dir, "bad.yaml", `
-name: bad-proc
-when: all
-text: "some text"
-messages:
-  scope: all
-`)
-		loader := NewLoader(dir, nil)
-		procs, err := loader.Load()
-		if err != nil {
-			t.Fatalf("Load() should not error: %v", err)
-		}
-		if len(procs) != 0 {
-			t.Errorf("expected 0 processors (bad file skipped), got %d", len(procs))
-		}
-	})
-
-	t.Run("invalid messages scope → validation error (file skipped)", func(t *testing.T) {
-		dir := t.TempDir()
-		writeYAML(t, dir, "bad.yaml", `
-name: bad-proc
-when: all
-prompt: "Analyze this"
-messages:
-  scope: invalid-scope
-`)
-		loader := NewLoader(dir, nil)
-		procs, err := loader.Load()
-		if err != nil {
-			t.Fatalf("Load() should not error: %v", err)
-		}
-		if len(procs) != 0 {
-			t.Errorf("expected 0 processors (bad file skipped), got %d", len(procs))
-		}
-	})
-
-	t.Run("invalid messages role → validation error (file skipped)", func(t *testing.T) {
-		dir := t.TempDir()
-		writeYAML(t, dir, "bad.yaml", `
-name: bad-proc
-when: all
-prompt: "Analyze this"
-messages:
-  roles:
-    - user
-    - invalid-role
-`)
-		loader := NewLoader(dir, nil)
-		procs, err := loader.Load()
-		if err != nil {
-			t.Fatalf("Load() should not error: %v", err)
-		}
-		if len(procs) != 0 {
-			t.Errorf("expected 0 processors (bad file skipped), got %d", len(procs))
-		}
-	})
 }
 
 func TestManagerRoutesPromptModeToApplyWithRerun(t *testing.T) {
@@ -2012,10 +1669,7 @@ func TestManagerRoutesPromptModeToApplyWithRerun(t *testing.T) {
 		{
 			Name:   "test-prompt",
 			When:   config.ProcessorWhenAll,
-			Prompt: "Analyze: @mitto:messages",
-			Messages: &MessagesConfig{
-				Scope: MessagesScopeAll,
-			},
+			Prompt: "Analyze the session @mitto:session_id",
 		},
 	}
 
@@ -2029,10 +1683,7 @@ func TestManagerRoutesPromptModeToApplyWithRerun(t *testing.T) {
 		Message:        "hello",
 		IsFirstMessage: true,
 		WorkspaceUUID:  "ws-123",
-		History: []HistoryEntry{
-			{Role: "user", Content: "first message"},
-			{Role: "assistant", Content: "first response"},
-		},
+		SessionID:      "sess-abc",
 	}
 
 	result, err := mgr.Apply(context.Background(), input)
@@ -2047,11 +1698,137 @@ func TestManagerRoutesPromptModeToApplyWithRerun(t *testing.T) {
 	// Wait for async dispatch
 	select {
 	case prompt := <-called:
-		if !strings.Contains(prompt, "first message") {
-			t.Errorf("expected prompt to contain history, got %q", prompt)
+		if !strings.Contains(prompt, "sess-abc") {
+			t.Errorf("expected prompt to contain substituted session_id, got %q", prompt)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("PromptFunc was not called within timeout")
+	}
+}
+
+func TestPromptModeSingleNotBatched(t *testing.T) {
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{
+		{
+			Name:   "solo-proc",
+			When:   config.ProcessorWhenAll,
+			Prompt: "Solo prompt",
+		},
+	}
+
+	type call struct {
+		name   string
+		prompt string
+	}
+	calls := make(chan call, 5)
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		calls <- call{name: procName, prompt: prompt}
+		return nil
+	})
+
+	input := &ProcessorInput{
+		Message:        "hello",
+		IsFirstMessage: true,
+		WorkspaceUUID:  "ws-single",
+	}
+
+	_, err := mgr.Apply(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	select {
+	case c := <-calls:
+		// Single processor: dispatched with its own name, no batch header.
+		if c.name != "solo-proc" {
+			t.Errorf("expected name %q, got %q", "solo-proc", c.name)
+		}
+		if strings.Contains(c.prompt, "We would like to fulfill") {
+			t.Errorf("single processor should not use batch header, got prompt %q", c.prompt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc was not called within timeout")
+	}
+
+	// Ensure only one call was made.
+	select {
+	case c := <-calls:
+		t.Errorf("expected exactly 1 promptFunc call, got a second: name=%q", c.name)
+	default:
+		// Good — no extra calls.
+	}
+}
+
+func TestPromptModeBatching(t *testing.T) {
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{
+		{
+			Name:   "proc-alpha",
+			When:   config.ProcessorWhenAll,
+			Prompt: "Alpha task prompt",
+		},
+		{
+			Name:   "proc-beta",
+			When:   config.ProcessorWhenAll,
+			Prompt: "Beta task prompt",
+		},
+	}
+
+	type call struct {
+		name   string
+		prompt string
+	}
+	calls := make(chan call, 5)
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		calls <- call{name: procName, prompt: prompt}
+		return nil
+	})
+
+	input := &ProcessorInput{
+		Message:        "hello",
+		IsFirstMessage: true,
+		WorkspaceUUID:  "ws-batch",
+	}
+
+	_, err := mgr.Apply(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	select {
+	case c := <-calls:
+		// Should be a single batched call, not two separate calls.
+		if !strings.Contains(c.name, "proc-alpha") {
+			t.Errorf("combined name should contain proc-alpha, got %q", c.name)
+		}
+		if !strings.Contains(c.name, "proc-beta") {
+			t.Errorf("combined name should contain proc-beta, got %q", c.name)
+		}
+		if !strings.Contains(c.prompt, "We would like to fulfill the following requirements:") {
+			t.Errorf("batched prompt should have header, got %q", c.prompt)
+		}
+		if !strings.Contains(c.prompt, "Alpha task prompt") {
+			t.Errorf("batched prompt should contain alpha prompt, got %q", c.prompt)
+		}
+		if !strings.Contains(c.prompt, "Beta task prompt") {
+			t.Errorf("batched prompt should contain beta prompt, got %q", c.prompt)
+		}
+		if !strings.Contains(c.prompt, "## Requirement 1: proc-alpha") {
+			t.Errorf("batched prompt should have requirement header for proc-alpha, got %q", c.prompt)
+		}
+		if !strings.Contains(c.prompt, "## Requirement 2: proc-beta") {
+			t.Errorf("batched prompt should have requirement header for proc-beta, got %q", c.prompt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc was not called within timeout")
+	}
+
+	// Ensure only ONE call was made (not two separate calls).
+	select {
+	case c := <-calls:
+		t.Errorf("expected exactly 1 batched promptFunc call, got a second: name=%q", c.name)
+	default:
+		// Good — only one combined call.
 	}
 }
 

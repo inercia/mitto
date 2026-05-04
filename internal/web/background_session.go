@@ -1181,50 +1181,6 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 	return history + message
 }
 
-// buildProcessorHistory reads session events and returns a slice of HistoryEntry structs.
-// This is used to populate ProcessorInput.History for processors that need conversation
-// context (InputConversation processors and prompt-mode processors using @mitto:messages).
-func (bs *BackgroundSession) buildProcessorHistory() []processors.HistoryEntry {
-	if bs.store == nil || bs.persistedID == "" {
-		return nil
-	}
-
-	events, err := bs.store.ReadEvents(bs.persistedID)
-	if err != nil {
-		if bs.logger != nil {
-			bs.logger.Warn("Failed to read events for processor history", "error", err)
-		}
-		return nil
-	}
-
-	var entries []processors.HistoryEntry
-	for _, event := range events {
-		data, err := session.DecodeEventData(event)
-		if err != nil {
-			continue
-		}
-		switch event.Type {
-		case session.EventTypeUserPrompt:
-			if d, ok := data.(session.UserPromptData); ok && d.Message != "" {
-				entries = append(entries, processors.HistoryEntry{
-					Role:    "user",
-					Content: d.Message,
-				})
-			}
-		case session.EventTypeAgentMessage:
-			if d, ok := data.(session.AgentMessageData); ok && d.Text != "" {
-				// Agent messages are stored as HTML; strip tags for plain text context
-				entries = append(entries, processors.HistoryEntry{
-					Role:    "assistant",
-					Content: session.StripHTML(d.Text),
-				})
-			}
-		}
-	}
-
-	return entries
-}
-
 // killACPProcess terminates the ACP process and cleans up resources.
 // It handles both direct execution (acpCmd) and runner-based execution.
 // In shared-process mode, it only unregisters this session from the MultiplexClient —
@@ -2121,6 +2077,12 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 		// Fallback to Load (slow path with history replay)
 		if supportsLoad {
+			// Suppress event processing during Load to prevent notification queue overflow.
+			// The agent replays the entire conversation history as notifications; with large
+			// sessions this can exceed the SDK's 1024-entry queue before the consumer
+			// (markdown conversion + persistence) can drain it. The events are historical
+			// and already persisted, so discarding them is safe.
+			bs.acpClient.SetLoadingSession(true)
 			loadCtx, loadCancel := context.WithTimeout(initCtx, 30*time.Second)
 			loadResp, err := bs.acpConn.LoadSession(loadCtx, acp.LoadSessionRequest{
 				SessionId:  acp.SessionId(acpSessionID),
@@ -2128,6 +2090,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				McpServers: mcpServers,
 			})
 			loadCancel()
+			bs.acpClient.SetLoadingSession(false)
 			if err == nil {
 				bs.acpID = acpSessionID
 				bs.resumeMethod = "load"
@@ -2369,9 +2332,13 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 
 		// Fallback to Load (slow path with history replay)
 		if handle == nil && supportsLoad {
+			// Suppress event processing during Load to prevent notification queue overflow.
+			// See comment in startACPProcess for details.
+			bs.acpClient.SetLoadingSession(true)
 			loadCtx, loadCancel := context.WithTimeout(bs.ctx, 30*time.Second)
 			handle, err = sharedProcess.LoadSession(loadCtx, acpSessionID, workingDir, mcpServers)
 			loadCancel()
+			bs.acpClient.SetLoadingSession(false)
 			if err != nil {
 				logFields := []any{
 					"acp_session_id", acpSessionID,
@@ -2926,18 +2893,6 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		}
 	}
 
-	// Check if any processor needs conversation history (InputConversation or prompt-mode).
-	// Prompt-mode processors may use @mitto:messages which requires history to be populated.
-	var processorHistory []processors.HistoryEntry
-	if bs.processorManager != nil {
-		for _, proc := range bs.processorManager.Processors() {
-			if proc.GetInput() == processors.InputConversation || proc.IsPromptMode() {
-				processorHistory = bs.buildProcessorHistory()
-				break
-			}
-		}
-	}
-
 	// Populate user data schema and current user data for processor variables
 	var hasUserDataSchema bool
 	var userDataSchemaJSON string
@@ -2974,7 +2929,6 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		MCPToolNames:        mcpToolNames,
 		IsPeriodic:          meta.SenderID == "periodic-runner",
 		AdvancedSettings:    advancedSettings,
-		History:             processorHistory,
 		HasUserDataSchema:   hasUserDataSchema,
 		UserDataSchemaJSON:  userDataSchemaJSON,
 		UserDataJSON:        userDataJSON,
@@ -3833,7 +3787,11 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 			Data:      session.AgentMessageData{Text: html},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist agent message", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist agent message", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist agent message", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3881,7 +3839,11 @@ func (bs *BackgroundSession) onAgentThought(seq int64, text string) {
 			Data:      session.AgentThoughtData{Text: text},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist agent thought", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist agent thought", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist agent thought", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3909,7 +3871,11 @@ func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 			},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist tool call", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist tool call", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist tool call", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3967,7 +3933,11 @@ func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) 
 			},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist tool call update", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist tool call update", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist tool call update", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -4000,7 +3970,11 @@ func (bs *BackgroundSession) onPlan(seq int64, entries []PlanEntry) {
 			Data:      session.PlanData{Entries: sessionEntries},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist plan", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist plan", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist plan", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -4029,7 +4003,11 @@ func (bs *BackgroundSession) onFileWrite(seq int64, path string, size int) {
 			Data:      session.FileOperationData{Path: path, Size: size},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist file write", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist file write", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist file write", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -4053,7 +4031,11 @@ func (bs *BackgroundSession) onFileRead(seq int64, path string, size int) {
 			Data:      session.FileOperationData{Path: path, Size: size},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist file read", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist file read", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist file read", "seq", seq, "error", err)
+			}
 		}
 	}
 

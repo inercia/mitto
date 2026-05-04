@@ -10,6 +10,7 @@
 name: check-mcp-tools
 description: "Checks if Mitto MCP tools are available and suggests installation"
 enabled: true
+enabledWhen: '!tools.hasPattern("mitto_*")'
 when: first
 position: append
 priority: 15

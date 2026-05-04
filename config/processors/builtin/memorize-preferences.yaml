@@ -72,7 +72,15 @@ prompt: |
   any files.
 
   === User Messages ===
-  @mitto:messages
+
+  Use the `mitto_conversation_history` MCP tool to retrieve recent user messages.
+  Call it with:
+  - `self_id`: your session ID (from `mitto_conversation_get_current`)
+  - `conversation_id`: "@mitto:session_id"
+  - `event_types`: ["user_prompt"]
+  - `last_n`: 20
+
+  Review these messages for user preferences and conventions.
 
   ## Notification
 
@@ -81,13 +89,7 @@ prompt: |
   - `self_id`: "@mitto:session_id"
   - `title`: "📝 Preferences Saved"
   - `message`: a brief summary, e.g. "Memorized 2 new preferences"
-  - `style`: "info"
+  - `style`: "success"
 
   If no new preferences were found and no files were modified, do NOT send any
   notification — stay completely silent.
-
-messages:
-  scope: since-last-run
-  roles: [user]
-  max_messages: 20
-  max_tokens: 4000

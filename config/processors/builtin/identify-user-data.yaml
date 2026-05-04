@@ -54,7 +54,7 @@ prompt: |
 
   ## Your Task
 
-  1. Read through the conversation messages below carefully.
+  1. Go through the latest messages in the conversation history.
   2. For each field in the schema, check whether the messages contain information that
      matches the field's description.
   3. **Only extract values you are confident about.** Do not guess or fabricate values.
@@ -91,7 +91,15 @@ prompt: |
   - Prefer the most recent mention if a value appears multiple times with different values.
 
   === Conversation Messages ===
-  @mitto:messages
+
+  Use the `mitto_conversation_history` MCP tool to retrieve recent messages.
+  Call it with:
+  - `self_id`: your session ID (from `mitto_conversation_get_current`)
+  - `conversation_id`: "@mitto:session_id"
+  - `event_types`: ["user_prompt"]
+  - `last_n`: 15
+
+  Review these messages for user data field values.
 
   ## Notification
 
@@ -100,12 +108,6 @@ prompt: |
   - `self_id`: "@mitto:session_id"
   - `title`: "🏷️ Metadata Detected"
   - `message`: a brief summary, e.g. "Updated 2 user data fields"
-  - `style`: "info"
+  - `style`: "success"
 
   If no fields were updated, do NOT send any notification — stay completely silent.
-
-messages:
-  scope: since-last-run
-  roles: [user]
-  max_messages: 15
-  max_tokens: 4000

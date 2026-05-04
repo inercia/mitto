@@ -47,6 +47,10 @@ type SharedACPProcessConfig struct {
 	// WorkingDir is the workspace's project directory (e.g., /Users/.../myproject).
 	// Used as the cwd for auxiliary sessions so the agent discovers MCP servers.
 	WorkingDir string
+	// Env is a map of environment variables to set when starting the ACP server.
+	// These are merged with the current environment (server-specific vars take precedence).
+	// Comes from the ACP server definition in settings.json.
+	Env map[string]string
 	// Runner is an optional restricted runner for sandboxed execution.
 	Runner *runner.Runner
 	// Logger for process-level logging.
@@ -327,12 +331,28 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			return "", fmt.Errorf("stderr pipe: %w", err)
 		}
 
-		// Set MITTO_* environment variables for the ACP subprocess
+		// Set environment variables for the ACP subprocess:
+		// 1. Start with current process environment
+		// 2. Add server-specific env vars (from ACP server definition in settings.json)
+		// 3. Add MITTO_* env vars (these take final precedence)
 		processEnv := os.Environ()
+		for k, v := range p.config.Env {
+			processEnv = append(processEnv, k+"="+v)
+		}
 		for k, v := range mittoEnv {
 			processEnv = append(processEnv, k+"="+v)
 		}
 		cmd.Env = processEnv
+
+		if p.logger != nil && len(p.config.Env) > 0 {
+			envKeys := make([]string, 0, len(p.config.Env))
+			for k := range p.config.Env {
+				envKeys = append(envKeys, k)
+			}
+			p.logger.Info("Applied server-specific environment variables",
+				"env_keys", envKeys,
+				"acp_server", p.config.ACPServer)
+		}
 
 		if err := cmd.Start(); err != nil {
 			return "", fmt.Errorf("failed to start ACP server: %w", err)

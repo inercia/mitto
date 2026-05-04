@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -28,6 +29,15 @@ type WebClient struct {
 	autoApprove bool
 	seqProvider SeqProvider
 	logger      *slog.Logger
+
+	// isLoadingSession is set to true during LoadSession to suppress event processing.
+	// During Load, the agent replays the entire conversation history as ACP notifications.
+	// With large sessions (hundreds of exchanges), this produces thousands of events that
+	// overwhelm the SDK's bounded notification queue (1024 entries) because the consumer
+	// (markdown conversion, persistence, pruning) is slower than the producer.
+	// When true, SessionUpdate returns immediately — the events are historical and already
+	// persisted by Mitto, so discarding them is safe.
+	isLoadingSession atomic.Bool
 
 	// Callbacks for file operations (not buffered)
 	onFileWrite          func(seq int64, path string, size int)
@@ -171,6 +181,15 @@ func NewWebClient(config WebClientConfig) *WebClient {
 	return c
 }
 
+// SetLoadingSession controls whether the WebClient suppresses event processing.
+// Set to true before calling LoadSession, and false after it returns.
+// During Load, the agent replays the entire conversation history as notifications.
+// Discarding them prevents the SDK's notification queue (1024 entries) from overflowing
+// when the consumer (markdown conversion + persistence) can't keep up.
+func (c *WebClient) SetLoadingSession(loading bool) {
+	c.isLoadingSession.Store(loading)
+}
+
 // SessionUpdate handles streaming updates from the agent.
 // Sequence numbers are assigned at emit time (not receive time) to ensure
 // contiguous numbers without gaps from coalesced chunks.
@@ -179,6 +198,13 @@ func NewWebClient(config WebClientConfig) *WebClient {
 // in the middle of a markdown block (list, table, code block) and emitted
 // after the block completes. This prevents tool calls from breaking lists.
 func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
+	// During LoadSession, discard all replayed history events to prevent
+	// notification queue overflow. These events are historical — Mitto already
+	// has them persisted in events.jsonl.
+	if c.isLoadingSession.Load() {
+		return nil
+	}
+
 	// Log event arrival time from ACP SDK (DEBUG level only).
 	// This helps diagnose whether events arrive in bursts from ACP or are delayed in our processing.
 	receiveTime := time.Now()

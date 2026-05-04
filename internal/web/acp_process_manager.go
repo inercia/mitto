@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +46,11 @@ type ACPProcessManager struct {
 	// Used in tests to avoid interference with mock ACP servers.
 	DisableAuxiliary bool
 
+	// MCPServerURL is the URL of Mitto's MCP server (e.g., "http://127.0.0.1:5757/mcp").
+	// When set, processor auxiliary sessions get a stdio MCP proxy so the agent
+	// can call Mitto tools like mitto_ui_notify.
+	MCPServerURL string
+
 	logger *slog.Logger
 
 	// GC fields — see acp_process_gc.go
@@ -75,9 +82,28 @@ func sharedProcessConfigMatchesWorkspace(p *SharedACPProcess, workspace *config.
 	if p == nil || workspace == nil {
 		return false
 	}
-	return p.config.ACPServer == workspace.ACPServer &&
-		p.config.ACPCommand == workspace.ACPCommand &&
-		p.config.ACPCwd == workspace.ACPCwd
+	if p.config.ACPServer != workspace.ACPServer ||
+		p.config.ACPCommand != workspace.ACPCommand ||
+		p.config.ACPCwd != workspace.ACPCwd {
+		return false
+	}
+	// Compare environment variables — a change to Env (e.g., NODE_OPTIONS)
+	// should trigger process recreation so the new values take effect.
+	return mapsEqual(p.config.Env, workspace.ACPEnv)
+}
+
+// mapsEqual returns true if two string maps have identical key-value pairs.
+// Two nil maps are considered equal, as are a nil and an empty map.
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // NewACPProcessManager creates a new process manager.
@@ -162,6 +188,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		ACPCwd:     workspace.ACPCwd,
 		ACPServer:  workspace.ACPServer,
 		WorkingDir: workspace.WorkingDir,
+		Env:        workspace.ACPEnv,
 		Runner:     r,
 		Logger:     processLogger,
 	})
@@ -642,7 +669,27 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		auxCwd = "."
 	}
 
-	sessionHandle, err := process.NewSession(ctx, auxCwd, []acp.McpServer{})
+	// Build MCP servers list. Processor auxiliary sessions get a stdio MCP proxy
+	// so the agent can call Mitto tools (e.g., mitto_ui_notify for notifications).
+	mcpServers := []acp.McpServer{} // Must be empty array, not nil — ACP validates this
+	if strings.HasPrefix(purpose, auxiliary.PurposeProcessorPrefix) && m.MCPServerURL != "" {
+		if exe, err := os.Executable(); err == nil {
+			mcpServers = []acp.McpServer{{
+				Stdio: &acp.McpServerStdio{
+					Name:    "mitto",
+					Command: exe,
+					Args:    []string{"mcp", "--proxy-to", m.MCPServerURL},
+					Env:     []acp.EnvVariable{}, // Must be empty array, not nil — ACP validates this
+				},
+			}}
+			if m.logger != nil {
+				m.logger.Debug("Auxiliary processor session will use MCP proxy",
+					"purpose", purpose,
+					"mcp_url", m.MCPServerURL)
+			}
+		}
+	}
+	sessionHandle, err := process.NewSession(ctx, auxCwd, mcpServers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auxiliary session: %w", err)
 	}

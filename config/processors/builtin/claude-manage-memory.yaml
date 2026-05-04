@@ -23,7 +23,7 @@ rerun:
   afterSentMsgs: 15
 
 # Only for Claude Code sessions, skip periodic prompts
-enabledWhen: 'acp.matchesServer("claude-code") && !session.isPeriodic'
+enabledWhen: 'acp.matchesServerType("claude-code") && !session.isPeriodic'
 
 prompt: |
   You manage Claude Code memory files for this workspace.
@@ -106,7 +106,15 @@ prompt: |
   - Reference existing repo docs rather than duplicating
 
   === Recent Conversation ===
-  @mitto:messages
+
+  Use the `mitto_conversation_history` MCP tool to retrieve the recent conversation.
+  Call it with:
+  - `self_id`: your session ID (from `mitto_conversation_get_current`)
+  - `conversation_id`: "@mitto:session_id"
+  - `event_types`: ["user_prompt", "agent_message"]
+  - `last_n`: 30
+
+  Review these messages for patterns, conventions, and lessons learned.
 
   ## Notification
 
@@ -119,8 +127,4 @@ prompt: |
 
   If no changes were needed, do NOT send any notification — stay completely silent.
 
-messages:
-  scope: since-last-run
-  roles: [user, agent]
-  max_messages: 30
-  max_tokens: 8000
+

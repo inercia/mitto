@@ -12,6 +12,13 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
+// pendingPromptDispatch holds a prompt-mode processor ready for dispatch.
+type pendingPromptDispatch struct {
+	name    string
+	prompt  string
+	timeout time.Duration
+}
+
 // ProcessorResult contains the result of applying processors to a message.
 type ProcessorResult struct {
 	// Message is the transformed message text.
@@ -99,7 +106,6 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			IsFirstMessage:      input.IsFirstMessage,
 			SessionID:           input.SessionID,
 			WorkingDir:          input.WorkingDir,
-			History:             input.History,
 			ParentSessionID:     input.ParentSessionID,
 			SessionName:         input.SessionName,
 			ACPServer:           input.ACPServer,
@@ -208,9 +214,8 @@ type Manager struct {
 
 // processorRunState tracks when a processor last ran, for rerun scheduling.
 type processorRunState struct {
-	lastRunTime         time.Time
-	messagesSince       int
-	lastRunMessageIndex int // Index into History at which this processor last ran
+	lastRunTime   time.Time
+	messagesSince int
 }
 
 // NewManager creates a new processor manager.
@@ -549,6 +554,9 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 	applied := 0
 	skipped := 0
 
+	// Collect prompt-mode processors for batched dispatch after the loop.
+	var pendingPrompts []pendingPromptDispatch
+
 	for _, proc := range m.processors {
 		// Determine effective isFirstMessage for this processor
 		effectiveIsFirst := origIsFirst
@@ -590,7 +598,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			}
 			input.Message = result.Message
 		} else if proc.IsPromptMode() {
-			// Prompt-mode: fire-and-forget dispatch to auxiliary ACP session.
+			// Prompt-mode: collect for batched dispatch after loop.
 			if m.promptFunc == nil {
 				m.logger.Warn("prompt-mode processor skipped: no PromptFunc configured",
 					"name", proc.Name,
@@ -598,30 +606,16 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				continue
 			}
 
-			// Set LastRunMessageIndex from rerun state so formatMessages can use it.
-			if state, ok := m.rerunState[proc.Name]; ok {
-				input.LastRunMessageIndex = state.lastRunMessageIndex
-			} else {
-				input.LastRunMessageIndex = 0 // First run: include all history
-			}
-
-			// Build the prompt with history substitution.
-			assembledPrompt := buildPromptWithMessages(proc, input)
+			// Build the prompt with variable substitution.
+			assembledPrompt := SubstituteVariables(proc.Prompt, input)
 			procTimeout := proc.GetTimeout().Duration()
 
-			// Dispatch in goroutine — fire-and-forget, pipeline continues immediately.
-			go func(name, wsUUID, prompt string, timeout time.Duration) {
-				bgCtx, cancel := context.WithTimeout(context.Background(), timeout)
-				defer cancel()
-				if err := m.promptFunc(bgCtx, wsUUID, name, prompt); err != nil {
-					if m.logger != nil {
-						m.logger.Error("prompt-mode processor dispatch failed",
-							"name", name,
-							"error", err,
-						)
-					}
-				}
-			}(proc.Name, input.WorkspaceUUID, assembledPrompt, procTimeout)
+			// Collect for batched dispatch.
+			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
+				name:    proc.Name,
+				prompt:  assembledPrompt,
+				timeout: procTimeout,
+			})
 
 			// Update rerun tracking for prompt-mode processors.
 			if m.rerunState == nil {
@@ -630,11 +624,10 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			if _, ok := m.rerunState[proc.Name]; !ok {
 				m.rerunState[proc.Name] = &processorRunState{}
 			}
-			m.rerunState[proc.Name].lastRunMessageIndex = len(input.History)
 			m.rerunState[proc.Name].lastRunTime = time.Now()
 			m.rerunState[proc.Name].messagesSince = 0
 
-			m.logger.Info("prompt-mode processor dispatched (fire-and-forget)",
+			m.logger.Info("prompt-mode processor collected for dispatch",
 				"name", proc.Name,
 				"prompt_len", len(assembledPrompt),
 			)
@@ -645,7 +638,6 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				IsFirstMessage:      input.IsFirstMessage,
 				SessionID:           input.SessionID,
 				WorkingDir:          input.WorkingDir,
-				History:             input.History,
 				ParentSessionID:     input.ParentSessionID,
 				ParentSessionName:   input.ParentSessionName,
 				SessionName:         input.SessionName,
@@ -677,6 +669,11 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				messagesSince: 0,
 			}
 		}
+	}
+
+	// Dispatch collected prompt-mode processors.
+	if len(pendingPrompts) > 0 {
+		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts)
 	}
 
 	// Increment message counters for all rerun-tracked processors that didn't fire
@@ -724,6 +721,75 @@ func (m *Manager) updateRerunState(wasFirstMessage bool) {
 	}
 }
 
+// dispatchPromptBatch dispatches prompt-mode processors as fire-and-forget.
+// If there is a single processor, it dispatches directly with the processor name.
+// If there are multiple processors, it combines their prompts into a single
+// request and dispatches to a shared "batch" auxiliary session.
+func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPromptDispatch) {
+	if len(prompts) == 0 {
+		return
+	}
+
+	if len(prompts) == 1 {
+		// Single processor — dispatch directly.
+		p := prompts[0]
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), p.timeout)
+			defer cancel()
+			if err := m.promptFunc(bgCtx, workspaceUUID, p.name, p.prompt); err != nil {
+				if m.logger != nil {
+					m.logger.Error("prompt-mode processor dispatch failed",
+						"name", p.name,
+						"error", err,
+					)
+				}
+			}
+		}()
+		m.logger.Info("prompt-mode processor dispatched (single)",
+			"name", prompts[0].name,
+			"prompt_len", len(prompts[0].prompt),
+		)
+		return
+	}
+
+	// Multiple processors — combine into a single prompt.
+	var sb strings.Builder
+	sb.WriteString("We would like to fulfill the following requirements:\n\n")
+	maxTimeout := time.Duration(0)
+	var names []string
+	for i, p := range prompts {
+		fmt.Fprintf(&sb, "## Requirement %d: %s\n\n", i+1, p.name)
+		sb.WriteString(p.prompt)
+		sb.WriteString("\n\n")
+		if p.timeout > maxTimeout {
+			maxTimeout = p.timeout
+		}
+		names = append(names, p.name)
+	}
+
+	combinedName := strings.Join(names, "+")
+	combinedPrompt := sb.String()
+
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), maxTimeout)
+		defer cancel()
+		if err := m.promptFunc(bgCtx, workspaceUUID, combinedName, combinedPrompt); err != nil {
+			if m.logger != nil {
+				m.logger.Error("batched prompt-mode processor dispatch failed",
+					"names", combinedName,
+					"error", err,
+				)
+			}
+		}
+	}()
+
+	m.logger.Info("prompt-mode processors dispatched (batched)",
+		"names", combinedName,
+		"count", len(prompts),
+		"combined_prompt_len", len(combinedPrompt),
+	)
+}
+
 // ProcessorsDir returns the processors directory path.
 func (m *Manager) ProcessorsDir() string {
 	return m.processorsDir
@@ -747,127 +813,6 @@ func (m *Manager) LastActivationAt() time.Time {
 	m.statsMu.Lock()
 	defer m.statsMu.Unlock()
 	return m.lastActivationAt
-}
-
-// buildPromptWithMessages assembles the final prompt for a prompt-mode processor.
-// It substitutes @mitto:messages with filtered conversation history and applies
-// standard @mitto:variable substitution.
-func buildPromptWithMessages(proc *Processor, input *ProcessorInput) string {
-	prompt := proc.Prompt
-
-	// Build the messages context and substitute @mitto:messages placeholder.
-	messagesText := formatMessages(proc, input)
-	prompt = strings.ReplaceAll(prompt, "@mitto:messages", messagesText)
-
-	// Apply standard variable substitution for all other @mitto: variables.
-	prompt = SubstituteVariables(prompt, input)
-
-	return prompt
-}
-
-// formatMessages filters and formats conversation history based on the processor's
-// MessagesConfig. It applies scope, role filtering, and token/message caps.
-func formatMessages(proc *Processor, input *ProcessorInput) string {
-	if len(input.History) == 0 {
-		return "(no conversation history available)"
-	}
-
-	cfg := proc.Messages
-	scope := cfg.GetScope()
-	roles := cfg.GetRoles()
-	maxMsgs := cfg.GetMaxMessages()
-	maxTokens := 0
-	if cfg != nil {
-		maxTokens = cfg.MaxTokens
-	}
-
-	// Determine the slice of history based on scope.
-	var messages []HistoryEntry
-	switch scope {
-	case MessagesScopeLastMessage:
-		if len(input.History) > 0 {
-			messages = input.History[len(input.History)-1:]
-		}
-	case MessagesScopeLastN:
-		start := len(input.History) - maxMsgs
-		if start < 0 {
-			start = 0
-		}
-		messages = input.History[start:]
-	case MessagesScopeSinceLastRun:
-		startIdx := input.LastRunMessageIndex
-		if startIdx >= len(input.History) {
-			startIdx = len(input.History) - 1
-		}
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		messages = input.History[startIdx:]
-	case MessagesScopeAll:
-		messages = input.History
-	default:
-		messages = input.History
-	}
-
-	// Build a role set for filtering. Accept "agent" as an alias for "assistant"
-	// since HistoryEntry uses "assistant" while MessagesConfig uses "agent".
-	roleSet := make(map[string]bool)
-	for _, r := range roles {
-		roleSet[r] = true
-		if r == "agent" {
-			roleSet["assistant"] = true
-		}
-	}
-
-	var filtered []HistoryEntry
-	for _, msg := range messages {
-		if roleSet[msg.Role] {
-			filtered = append(filtered, msg)
-		}
-	}
-
-	// Apply max_messages cap (keep the most recent messages).
-	if len(filtered) > maxMsgs {
-		filtered = filtered[len(filtered)-maxMsgs:]
-	}
-
-	// Apply max_tokens cap (approximate: 4 chars per token, keep most recent).
-	if maxTokens > 0 {
-		maxChars := maxTokens * 4
-		totalChars := 0
-		startIdx := len(filtered)
-		for i := len(filtered) - 1; i >= 0; i-- {
-			msgLen := len(filtered[i].Role) + len(filtered[i].Content) + 10 // overhead
-			if totalChars+msgLen > maxChars {
-				break
-			}
-			totalChars += msgLen
-			startIdx = i
-		}
-		filtered = filtered[startIdx:]
-	}
-
-	if len(filtered) == 0 {
-		return "(no matching conversation history)"
-	}
-
-	// Format messages as labelled blocks.
-	var sb strings.Builder
-	for i, msg := range filtered {
-		if i > 0 {
-			sb.WriteString("\n\n")
-		}
-		role := msg.Role
-		switch role {
-		case "agent", "assistant":
-			role = "Assistant"
-		case "user":
-			role = "User"
-		}
-		sb.WriteString(fmt.Sprintf("[%s]: %s", role, msg.Content))
-	}
-
-	return sb.String()
 }
 
 // ToACPAttachments converts processor attachments to a format suitable for ACP.

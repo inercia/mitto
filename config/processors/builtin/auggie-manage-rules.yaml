@@ -20,10 +20,10 @@ priority: 200
 timeout: 300s
 on_error: skip
 rerun:
-  afterSentMsgs: 15
+  afterSentMsgs: 10
 
 # Only for Auggie sessions, skip periodic prompts
-enabledWhen: 'acp.matchesServer("auggie") && !session.isPeriodic'
+enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'
 
 prompt: |
   You manage `.augment/rules` files for this workspace.
@@ -101,7 +101,15 @@ prompt: |
   - Reference existing repo docs rather than duplicating
 
   === Recent Conversation ===
-  @mitto:messages
+
+  Use the `mitto_conversation_history` MCP tool to retrieve the recent conversation.
+  Call it with:
+  - `self_id`: your session ID (from `mitto_conversation_get_current`)
+  - `conversation_id`: "@mitto:session_id"
+  - `event_types`: ["user_prompt", "agent_message"]
+  - `last_n`: 10
+
+  Review these messages for patterns, conventions, and lessons learned.
 
   ## Notification
 
@@ -113,9 +121,3 @@ prompt: |
   - `style`: "success"
 
   If no changes were needed, do NOT send any notification — stay completely silent.
-
-messages:
-  scope: since-last-run
-  roles: [user, agent]
-  max_messages: 30
-  max_tokens: 8000
