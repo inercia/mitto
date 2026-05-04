@@ -119,17 +119,27 @@ func (m *Manager) GetAgent(dirName string, source ...string) (*AgentDefinition, 
 }
 
 // GetAgentByACPId returns an agent definition by its ACP ID.
+// It first tries to match by metadata acpId, then falls back to matching
+// by directory name (e.g., ACP type "augment" matches agent dir "augment"
+// even though its acpId is "auggie").
 func (m *Manager) GetAgentByACPId(acpId string) (*AgentDefinition, error) {
 	agents, err := m.ListAgents()
 	if err != nil {
 		return nil, err
 	}
+	// Primary: match by acpId metadata
 	for _, a := range agents {
 		if a.Metadata.ACPId == acpId {
 			return a, nil
 		}
 	}
-	return nil, fmt.Errorf("agent with ACP ID %q not found", acpId)
+	// Fallback: match by directory name
+	for _, a := range agents {
+		if a.DirName == acpId {
+			return a, nil
+		}
+	}
+	return nil, fmt.Errorf("agent with acpId %q not found", acpId)
 }
 
 // ListAgentNames returns just the directory names of all agents (deduplicated).
