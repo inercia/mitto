@@ -221,7 +221,7 @@ const TOOL_ACTION_PREFIXES = [
  * @param {string} s
  * @returns {boolean}
  */
-function looksLikeFilePath(s) {
+export function looksLikeFilePath(s) {
   const hasExtension = /\.[a-zA-Z0-9]+$/.test(s);
   const hasPathSeparator = s.includes("/");
   const looksLikeVersion = /^v?\d+\.\d+/.test(s);

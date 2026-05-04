@@ -7,6 +7,8 @@ const { html, useState, useEffect, useCallback, useRef } = window.preact;
 import { CloseIcon, EditIcon, CheckIcon } from "./Icons.js";
 import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
+import { looksLikeFilePath } from "../lib.js";
+import { isNativeApp, getAPIPrefix } from "../utils/index.js";
 
 /**
  * UserDataPanel - Right-side overlay panel for viewing/editing user data attributes.
@@ -299,14 +301,51 @@ export function UserDataPanel({ isOpen, onClose, sessionId, sessionInfo }) {
                               ${value}
                             </a>
                           `
-                        : html`
-                            <span
-                              class="flex-1 text-sm truncate ${!value ? "text-slate-500 italic" : ""}"
-                              title=${value}
-                            >
-                              ${value || "Not set"}
-                            </span>
-                          `}
+                        : (() => {
+                            // Check if value looks like a file path
+                            if (value && looksLikeFilePath(value)) {
+                              const apiPrefix = getAPIPrefix();
+                              const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
+                              const wsPath = window.mittoCurrentWorkspace || "";
+                              const relativePath = value.replace(/^\.\//, "");
+                              let viewerUrl = null;
+                              if (workspaceUUID) {
+                                viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+                                if (wsPath) {
+                                  viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
+                                }
+                              }
+                              const href = viewerUrl || "#";
+                              return html`
+                                <a
+                                  href=${href}
+                                  class="file-link flex-1 text-sm text-blue-400 hover:underline truncate"
+                                  title=${value}
+                                  onClick=${(e) => {
+                                    e.preventDefault();
+                                    if (!viewerUrl) return;
+                                    if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+                                      const fullUrl = new URL(viewerUrl, window.location.origin).href;
+                                      window.mittoOpenViewer(fullUrl);
+                                    } else {
+                                      window.open(viewerUrl, "_blank", "noopener,noreferrer");
+                                    }
+                                  }}
+                                >
+                                  ${value}
+                                </a>
+                              `;
+                            }
+                            // Regular text value
+                            return html`
+                              <span
+                                class="flex-1 text-sm truncate ${!value ? "text-slate-500 italic" : ""}"
+                                title=${value}
+                              >
+                                ${value || "Not set"}
+                              </span>
+                            `;
+                          })()}
                       <button
                         class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100"
                         onClick=${() => handleStartEditAttribute({ name: field.name, value })}
