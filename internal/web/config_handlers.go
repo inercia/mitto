@@ -397,7 +397,17 @@ func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("Failed to improve prompt",
 			"error", err,
 			"workspace_uuid", req.WorkspaceUUID)
-		http.Error(w, "Failed to improve prompt", http.StatusInternalServerError)
+		errMsg := err.Error()
+		var userMsg string
+		if strings.Contains(errMsg, "broken pipe") ||
+			strings.Contains(errMsg, "peer disconnected") ||
+			strings.Contains(errMsg, "connection reset") ||
+			strings.Contains(errMsg, "process has exited") {
+			userMsg = "The AI agent process crashed. Please try again in a moment."
+		} else {
+			userMsg = "Failed to improve prompt"
+		}
+		http.Error(w, userMsg, http.StatusInternalServerError)
 		return
 	}
 

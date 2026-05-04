@@ -1050,7 +1050,9 @@ export function ChatInput({
         if (err.name === "AbortError") {
           setImproveError("Request timed out. Please try again.");
         } else {
-          setImproveError(err.message || "Failed to improve prompt");
+          const msg = err.message || "Failed to improve prompt";
+          const hasCrashHint = msg.includes("crashed") || msg.includes("try again");
+          setImproveError(hasCrashHint ? msg : msg + " \u2014 please try again.");
         }
         setTimeout(() => setImproveError(null), 5000);
       }
