@@ -258,9 +258,20 @@ func NewServer(config Config) (*Server, error) {
 		apiPrefix = config.MittoConfig.Web.APIPrefix
 	}
 
+	// Reconcile workspace ACPEnv from server definitions.
+	// workspaces.json may not have ACPEnv if it was saved before this feature existed,
+	// so we resolve it from the current ACP server configuration on every startup.
+	workspaces := config.Workspaces // Use direct field, not GetWorkspaces() which creates legacy workspace
+	if config.MittoConfig != nil && len(workspaces) > 0 {
+		for i := range workspaces {
+			if srv, err := config.MittoConfig.GetServer(workspaces[i].ACPServer); err == nil {
+				workspaces[i].ACPEnv = srv.Env
+			}
+		}
+	}
+
 	// Create session manager with workspace support
 	var sessionMgr *SessionManager
-	workspaces := config.Workspaces // Use direct field, not GetWorkspaces() which creates legacy workspace
 	if len(workspaces) > 0 || !config.FromCLI {
 		// Use new options-based constructor for workspace persistence support
 		sessionMgr = NewSessionManagerWithOptions(SessionManagerOptions{
@@ -520,6 +531,9 @@ func NewServer(config Config) (*Server, error) {
 				logger.Warn("Failed to start MCP server", "error", err)
 			} else {
 				logger.Info("MCP server started", "port", mcpSrv.Port())
+				// Set MCP URL on process manager so auxiliary processor sessions
+				// can use a stdio proxy to access Mitto tools.
+				acpProcessMgr.MCPServerURL = fmt.Sprintf("http://127.0.0.1:%d/mcp", mcpSrv.Port())
 			}
 			// Pass MCP server to session manager for session registration
 			sessionMgr.SetGlobalMCPServer(mcpSrv)
@@ -609,6 +623,7 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc(apiPrefix+"/api/workspace-prompts/toggle-enabled", s.handleWorkspacePromptsToggleEnabled)
 	mux.HandleFunc(apiPrefix+"/api/workspace-processors", s.handleWorkspaceProcessors)
 	mux.HandleFunc(apiPrefix+"/api/workspace-processors/toggle-enabled", s.handleWorkspaceProcessorsToggleEnabled)
+	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-tools", s.handleWorkspaceMCPTools)
 	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
 	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
 	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)

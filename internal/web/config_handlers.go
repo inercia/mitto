@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inercia/mitto/internal/agents"
 	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/runner"
@@ -644,10 +645,14 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		s.sessionManager.SetGlobalConversations(settings.Conversations)
 	}
 
-	// Update workspaces - need to resolve ACP commands
+	// Update workspaces - need to resolve ACP commands and environment variables
 	acpCommandMap := make(map[string]string)
+	acpEnvMap := make(map[string]map[string]string)
 	for _, srv := range newACPServers {
 		acpCommandMap[srv.Name] = srv.Command
+		if len(srv.Env) > 0 {
+			acpEnvMap[srv.Name] = srv.Env
+		}
 	}
 
 	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
@@ -656,6 +661,11 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		// from the server map (since the frontend may not have the latest command).
 		newWorkspaces[i] = ws
 		newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
+		newWorkspaces[i].ACPEnv = acpEnvMap[ws.ACPServer]
+		// Apply user-provided command override if set
+		if ws.ACPCommandOverride != "" {
+			newWorkspaces[i].ACPCommand = ws.ACPCommandOverride
+		}
 	}
 	s.sessionManager.SetWorkspaces(newWorkspaces)
 	s.config.Workspaces = newWorkspaces
@@ -946,4 +956,86 @@ func checkRunnerSupport(runnerType string) string {
 		}
 	}
 	return ""
+}
+
+// handleWorkspaceMCPTools handles GET /api/workspace-mcp-tools?acp_server=...&dir=...
+// Returns MCP tools available for the workspace's ACP server type by running
+// the agent's mcp-list.sh script.
+func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	acpServerName := r.URL.Query().Get("acp_server")
+	workingDir := r.URL.Query().Get("dir")
+
+	if acpServerName == "" {
+		http.Error(w, "acp_server query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	// Resolve ACP server type from config
+	var acpType string
+	if s.config.MittoConfig != nil {
+		acpType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpType == "" {
+		acpType = acpServerName // fallback
+	}
+
+	// Get agents directory
+	agentsDir, err := appdir.AgentsDir()
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{
+			"servers":    []interface{}{},
+			"error":      "Failed to get agents directory: " + err.Error(),
+			"agent_name": "",
+		})
+		return
+	}
+
+	// Find agent by ACP ID
+	mgr := agents.NewManager(agentsDir, s.logger)
+	agent, err := mgr.GetAgentByACPId(acpType)
+	if err != nil {
+		// No matching agent found - not an error, just no MCP tools
+		writeJSONOK(w, map[string]interface{}{
+			"servers":    []interface{}{},
+			"agent_name": "",
+			"message":    fmt.Sprintf("No agent definition found for ACP type %q", acpType),
+		})
+		return
+	}
+
+	// Check if agent has mcp-list command
+	if !agent.HasCommand(agents.CommandMCPList) {
+		writeJSONOK(w, map[string]interface{}{
+			"servers":    []interface{}{},
+			"agent_name": agent.Metadata.DisplayName,
+			"message":    "Agent does not support MCP listing",
+		})
+		return
+	}
+
+	// Run mcp-list.sh with workspace path
+	input := &agents.MCPListInput{}
+	if workingDir != "" {
+		input.Path = workingDir
+	}
+
+	output, err := mgr.ListMCPServers(r.Context(), agent.DirName, input)
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{
+			"servers":    []interface{}{},
+			"agent_name": agent.Metadata.DisplayName,
+			"error":      "Failed to list MCP servers: " + err.Error(),
+		})
+		return
+	}
+
+	writeJSONOK(w, map[string]interface{}{
+		"servers":    output.Servers,
+		"agent_name": agent.Metadata.DisplayName,
+	})
 }

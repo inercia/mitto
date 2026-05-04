@@ -81,6 +81,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 			webWorkspaces[i] = config.WorkspaceSettings{
 				ACPServer:  ws.ServerName,
 				ACPCommand: ws.Server.Command,
+				ACPEnv:     ws.Server.Env,
 				WorkingDir: ws.Dir,
 			}
 			// Ensure workspace has a UUID for auxiliary sessions
