@@ -241,6 +241,7 @@ func isACPConnectionError(err error) bool {
 	return strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "file already closed") ||
 		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "peer disconnected") ||
 		strings.Contains(msg, "shared ACP process has exited") ||
 		strings.Contains(msg, "shared ACP process is not running")
 }

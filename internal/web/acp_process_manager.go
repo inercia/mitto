@@ -516,19 +516,8 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 
 	// Try to acquire the mutex with context cancellation support
 	// This prevents indefinite blocking if a previous request is stuck
-	acquired := make(chan struct{})
-	go func() {
-		auxState.mu.Lock()
-		close(acquired)
-	}()
-
-	select {
-	case <-acquired:
-		// Successfully acquired the lock
-		defer auxState.mu.Unlock()
-	case <-ctx.Done():
-		// Context cancelled while waiting for lock
-		return "", fmt.Errorf("context cancelled while waiting for auxiliary session lock: %w", ctx.Err())
+	if err := acquireAuxLock(ctx, auxState); err != nil {
+		return "", err
 	}
 
 	// Update last used time
@@ -541,6 +530,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 		process = m.GetProcess(workspaceUUID)
 	}
 	if process == nil {
+		auxState.mu.Unlock()
 		return "", fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
 	}
 
@@ -550,11 +540,68 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	// Send prompt to the auxiliary session
 	_, err = process.Prompt(ctx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
 	if err != nil {
-		return "", fmt.Errorf("auxiliary prompt failed: %w", err)
+		// Always release the lock before returning or retrying.
+		auxState.mu.Unlock()
+
+		if !isACPConnectionError(err) {
+			return "", fmt.Errorf("auxiliary prompt failed: %w", err)
+		}
+
+		// The underlying ACP process died. Invalidate the stale session,
+		// wait briefly for the process to potentially auto-restart, then retry once.
+		if m.logger != nil {
+			m.logger.Warn("Auxiliary prompt hit connection error, retrying after session invalidation",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose,
+				"error", err)
+		}
+		m.invalidateAuxSession(workspaceUUID, purpose)
+
+		// Wait 1 second for the process to auto-restart, honouring context cancellation.
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("context cancelled while waiting to retry auxiliary prompt: %w", ctx.Err())
+		case <-time.After(time.Second):
+		}
+
+		// Re-acquire a fresh session and its lock.
+		auxState, err = m.getOrCreateAuxiliarySession(ctx, workspaceUUID, purpose)
+		if err != nil {
+			return "", fmt.Errorf("failed to get auxiliary session on retry: %w", err)
+		}
+
+		if err := acquireAuxLock(ctx, auxState); err != nil {
+			return "", err
+		}
+
+		auxState.lastUsed = time.Now()
+
+		process = m.getAuxProcess(workspaceUUID)
+		if process == nil {
+			process = m.GetProcess(workspaceUUID)
+		}
+		if process == nil {
+			auxState.mu.Unlock()
+			return "", fmt.Errorf("shared process for workspace %s disappeared on retry (process may have exited)", workspaceUUID)
+		}
+
+		auxState.client.reset()
+		_, err = process.Prompt(ctx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
+		if err != nil {
+			auxState.mu.Unlock()
+			if m.logger != nil {
+				m.logger.Error("Auxiliary prompt failed after retry",
+					"workspace_uuid", workspaceUUID,
+					"purpose", purpose,
+					"error", err)
+			}
+			return "", fmt.Errorf("auxiliary prompt failed: %w", err)
+		}
 	}
 
-	// Get the collected response
+	// Get the collected response (lock is still held here)
 	response := auxState.client.getResponse()
+	auxState.mu.Unlock()
 	return response, nil
 }
 
@@ -800,6 +847,42 @@ func (m *ACPProcessManager) invalidateAuxiliarySessions(workspaceUUID string) {
 		m.logger.Info("Invalidated stale auxiliary sessions due to process recreation",
 			"workspace_uuid", workspaceUUID,
 			"count", count)
+	}
+}
+
+// invalidateAuxSession removes a single cached auxiliary session entry,
+// forcing a new session to be created on the next PromptAuxiliary call.
+// This is more surgical than invalidateAuxiliarySessions which removes all sessions for a workspace.
+// Must be called WITHOUT holding auxMu.
+func (m *ACPProcessManager) invalidateAuxSession(workspaceUUID, purpose string) {
+	key := auxSessionKey{workspaceUUID: workspaceUUID, purpose: purpose}
+	m.auxMu.Lock()
+	defer m.auxMu.Unlock()
+	if _, ok := m.auxSessions[key]; ok {
+		delete(m.auxSessions, key)
+		if m.logger != nil {
+			m.logger.Info("Invalidated stale auxiliary session for retry",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose)
+		}
+	}
+}
+
+// acquireAuxLock acquires the auxiliary session mutex with context cancellation support.
+// This prevents indefinite blocking if a previous request is stuck.
+// The caller is responsible for calling auxState.mu.Unlock() when done.
+func acquireAuxLock(ctx context.Context, auxState *auxiliarySessionState) error {
+	acquired := make(chan struct{})
+	go func() {
+		auxState.mu.Lock()
+		close(acquired)
+	}()
+
+	select {
+	case <-acquired:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled while waiting for auxiliary session lock: %w", ctx.Err())
 	}
 }
 
