@@ -24,6 +24,10 @@ import (
 // This limits running sessions (those with an active ACP process), not stored/archived sessions.
 const MaxSessions = 64
 
+// ACPStartFailureThreshold is the number of consecutive ACP start failures after which
+// a session is automatically archived to prevent infinite retry loops on app restart.
+const ACPStartFailureThreshold = 3
+
 // DefaultMaxMessagesPerSession is the default maximum number of messages to retain per session.
 // When exceeded, the oldest messages are automatically pruned after each new event is recorded.
 // This prevents unbounded session growth (especially for periodic sessions) which can cause
@@ -1586,8 +1590,8 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		AvailableACPServers: availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess,  // Shared ACP process (nil = legacy mode)
-		PruneConfig:         pruneConfig,    // Auto-pruning configuration (nil = no auto-pruning)
+		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,   // Auto-pruning configuration (nil = no auto-pruning)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -2066,8 +2070,8 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		AvailableACPServers: resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
-		SharedProcess:       sharedProcess,  // Shared ACP process (nil = legacy mode)
-		PruneConfig:         pruneConfig,    // Auto-pruning configuration (nil = no auto-pruning)
+		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,   // Auto-pruning configuration (nil = no auto-pruning)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
@@ -2106,8 +2110,49 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		},
 	})
 	if err != nil {
+		// Persist the failure count and auto-archive if threshold is reached.
+		if store != nil {
+			var failureCount int
+			updateErr := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+				m.ACPStartFailureCount++
+				failureCount = m.ACPStartFailureCount
+				if failureCount >= ACPStartFailureThreshold {
+					m.Archived = true
+					m.ArchivedAt = time.Now()
+				}
+			})
+			if updateErr != nil && sm.logger != nil {
+				sm.logger.Warn("Failed to update ACP start failure count",
+					"session_id", sessionID,
+					"error", updateErr)
+			} else if failureCount >= ACPStartFailureThreshold {
+				if sm.logger != nil {
+					sm.logger.Warn("Session auto-archived after repeated ACP start failures",
+						"session_id", sessionID,
+						"failure_count", failureCount,
+						"threshold", ACPStartFailureThreshold)
+				}
+				sm.BroadcastSessionArchived(sessionID, true)
+			} else if sm.logger != nil {
+				sm.logger.Warn("ACP start failed, incremented failure count",
+					"session_id", sessionID,
+					"failure_count", failureCount,
+					"threshold", ACPStartFailureThreshold)
+			}
+		}
 		signalDone(nil, err)
 		return nil, err
+	}
+
+	// ACP started successfully — reset the failure counter.
+	if store != nil {
+		if updateErr := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+			m.ACPStartFailureCount = 0
+		}); updateErr != nil && sm.logger != nil {
+			sm.logger.Warn("Failed to reset ACP start failure count",
+				"session_id", sessionID,
+				"error", updateErr)
+		}
 	}
 
 	sm.mu.Lock()

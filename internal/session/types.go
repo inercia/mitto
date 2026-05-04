@@ -207,28 +207,28 @@ type SessionEndData struct {
 
 // Metadata contains session metadata stored separately from the event log.
 type Metadata struct {
-	SessionID         string          `json:"session_id"`
-	Name              string          `json:"name,omitempty"` // User-friendly session name
-	ACPServer         string          `json:"acp_server"`
-	ACPSessionID      string          `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
-	WorkingDir        string          `json:"working_dir"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
-	LastUserMessageAt time.Time       `json:"last_user_message_at,omitempty"` // Time of last user prompt
-	EventCount        int             `json:"event_count"`
-	MaxSeq            int64           `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
-	Status            SessionStatus   `json:"status"`
-	Description       string          `json:"description,omitempty"`
-	Pinned            bool            `json:"pinned,omitempty"`            // Deprecated: use Archived instead. If true, session cannot be deleted
-	Archived          bool            `json:"archived,omitempty"`          // If true, session is archived (hidden from main list by default)
-	ArchivedAt        time.Time       `json:"archived_at,omitempty"`       // Time when session was archived (cleared when unarchived)
-	RunnerType        string          `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
-	RunnerRestricted  bool            `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
-	CurrentModeID     string          `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
-	AdvancedSettings       map[string]bool `json:"advanced_settings,omitempty"`        // Per-session feature flags (flag name → enabled)
-	ProcessorActivations   int             `json:"processor_activations,omitempty"`     // Cumulative processor pipeline activation count
-	ProcessorLastActivation time.Time      `json:"processor_last_activation,omitempty"` // When processors were last activated
-	ParentSessionID        string          `json:"parent_session_id,omitempty"`         // Session ID that created this session via MCP (prevents infinite recursion)
+	SessionID               string          `json:"session_id"`
+	Name                    string          `json:"name,omitempty"` // User-friendly session name
+	ACPServer               string          `json:"acp_server"`
+	ACPSessionID            string          `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
+	WorkingDir              string          `json:"working_dir"`
+	CreatedAt               time.Time       `json:"created_at"`
+	UpdatedAt               time.Time       `json:"updated_at"`
+	LastUserMessageAt       time.Time       `json:"last_user_message_at,omitempty"` // Time of last user prompt
+	EventCount              int             `json:"event_count"`
+	MaxSeq                  int64           `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
+	Status                  SessionStatus   `json:"status"`
+	Description             string          `json:"description,omitempty"`
+	Pinned                  bool            `json:"pinned,omitempty"`                    // Deprecated: use Archived instead. If true, session cannot be deleted
+	Archived                bool            `json:"archived,omitempty"`                  // If true, session is archived (hidden from main list by default)
+	ArchivedAt              time.Time       `json:"archived_at,omitempty"`               // Time when session was archived (cleared when unarchived)
+	RunnerType              string          `json:"runner_type,omitempty"`               // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted        bool            `json:"runner_restricted,omitempty"`         // Whether the runner has restrictions enabled
+	CurrentModeID           string          `json:"current_mode_id,omitempty"`           // Current session mode ID (e.g., "ask", "code", "architect")
+	AdvancedSettings        map[string]bool `json:"advanced_settings,omitempty"`         // Per-session feature flags (flag name → enabled)
+	ProcessorActivations    int             `json:"processor_activations,omitempty"`     // Cumulative processor pipeline activation count
+	ProcessorLastActivation time.Time       `json:"processor_last_activation,omitempty"` // When processors were last activated
+	ParentSessionID         string          `json:"parent_session_id,omitempty"`         // Session ID that created this session via MCP (prevents infinite recursion)
 	// IsAutoChild indicates this session was auto-created with its parent
 	// (via auto_children workspace config). Auto-children are cascade-deleted
 	// when their parent is deleted. MCP-created children (this field is false)
@@ -239,6 +239,11 @@ type Metadata struct {
 	// Empty string means this is a top-level session (not a child).
 	// Possible values: ChildOriginAuto, ChildOriginMCP, ChildOriginHuman.
 	ChildOrigin ChildOrigin `json:"child_origin,omitempty"`
+	// ACPStartFailureCount tracks consecutive ACP process start failures across restarts.
+	// Incremented each time ResumeSession fails to start the ACP process.
+	// Reset to 0 on successful start. When it reaches ACPStartFailureThreshold,
+	// the session is auto-archived to prevent infinite retry loops.
+	ACPStartFailureCount int `json:"acp_start_failure_count,omitempty"`
 }
 
 // ChildOrigin represents how a child conversation was created.
