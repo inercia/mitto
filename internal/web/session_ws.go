@@ -1047,6 +1047,20 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 					"after_seq", afterSeq,
 					"observer_count", c.bgSession.ObserverCount())
 			}
+			// Re-send any active UI prompt to the newly connected client.
+			// This handles the case where a page reload occurs while a blocking
+			// UI prompt (e.g., mitto_ui_options) is waiting for user input.
+			// Without this, the prompt dialog is lost and the session appears stuck.
+			if activePrompt := c.bgSession.GetActiveUIPrompt(); activePrompt != nil {
+				if c.logger != nil {
+					c.logger.Info("Re-sending active UI prompt to reconnected client",
+						"session_id", c.sessionID,
+						"client_id", c.clientID,
+						"request_id", activePrompt.RequestID,
+						"prompt_type", activePrompt.Type)
+				}
+				c.OnUIPrompt(*activePrompt)
+			}
 		}
 		c.initialLoadMu.Unlock()
 
@@ -1632,6 +1646,19 @@ func (c *SessionWSClient) tryAttachToSession() {
 				"session_id", c.sessionID,
 				"acp_id", bs.GetACPID(),
 				"observer_count", bs.ObserverCount())
+		}
+		// Re-send any active UI prompt to the newly attached client.
+		// This handles the case where a session is unarchived while a blocking
+		// UI prompt is waiting, ensuring the dialog appears for the client.
+		if activePrompt := bs.GetActiveUIPrompt(); activePrompt != nil {
+			if c.logger != nil {
+				c.logger.Info("Re-sending active UI prompt to attached client",
+					"session_id", c.sessionID,
+					"client_id", c.clientID,
+					"request_id", activePrompt.RequestID,
+					"prompt_type", activePrompt.Type)
+			}
+			c.OnUIPrompt(*activePrompt)
 		}
 	} else {
 		if c.logger != nil {
