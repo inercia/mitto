@@ -62,6 +62,10 @@ type WorkspaceSettings struct {
 	// ACPCwd is the working directory for the ACP server process.
 	// If empty, the ACP process inherits the current working directory.
 	ACPCwd string `json:"acp_cwd,omitempty" yaml:"acp_cwd,omitempty"`
+	// ACPEnv is a map of environment variables to set when starting the ACP server.
+	// These are resolved from the ACP server configuration and merged with the
+	// current environment (server-specific vars take precedence).
+	ACPEnv map[string]string `json:"acp_env,omitempty" yaml:"acp_env,omitempty"`
 	// WorkingDir is the absolute path to the working directory
 	WorkingDir string `json:"working_dir" yaml:"working_dir"`
 	// RestrictedRunner is the runner type to use for this workspace.

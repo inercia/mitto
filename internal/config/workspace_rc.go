@@ -310,6 +310,93 @@ func SaveWorkspaceMetadata(workspaceDir, description, url, group string) error {
 	return nil
 }
 
+// SaveWorkspaceUserDataSchema saves the user data schema to the workspace .mittorc file.
+// It finds the existing .mittorc file using the standard search order, or creates a new
+// .mittorc file in the workspace root if none exists. Only the metadata.user_data
+// section is updated; other sections (prompts, conversations, metadata.description, etc.) are preserved.
+func SaveWorkspaceUserDataSchema(workspaceDir string, fields []UserDataSchemaField) error {
+	if workspaceDir == "" {
+		return fmt.Errorf("workspace directory is required")
+	}
+
+	// Find existing .mittorc file path, or use default
+	rcPath, _, err := FindWorkspaceRCPath(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to check workspace config: %w", err)
+	}
+	if rcPath == "" {
+		rcPath = filepath.Join(workspaceDir, WorkspaceRCFileName)
+	}
+
+	// Read existing file content (may not exist yet)
+	var content map[string]interface{}
+	data, err := os.ReadFile(rcPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read workspace config: %w", err)
+	}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &content); err != nil {
+			return fmt.Errorf("failed to parse workspace config: %w", err)
+		}
+	}
+	if content == nil {
+		content = make(map[string]interface{})
+	}
+
+	// Get or create metadata section
+	var metadata map[string]interface{}
+	if m, ok := content["metadata"]; ok {
+		if mMap, ok := m.(map[string]interface{}); ok {
+			metadata = mMap
+		}
+	}
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	// Set or delete user_data in metadata section
+	if len(fields) == 0 {
+		delete(metadata, "user_data")
+	} else {
+		userDataSlice := make([]map[string]interface{}, 0, len(fields))
+		for _, f := range fields {
+			entry := map[string]interface{}{
+				"name": f.Name,
+				"type": string(f.Type),
+			}
+			if f.Description != "" {
+				entry["description"] = f.Description
+			}
+			userDataSlice = append(userDataSlice, entry)
+		}
+		metadata["user_data"] = userDataSlice
+	}
+
+	// If metadata section is now empty, remove it; otherwise update it
+	if len(metadata) == 0 {
+		delete(content, "metadata")
+	} else {
+		content["metadata"] = metadata
+	}
+
+	// Marshal and write back
+	out, err := yaml.Marshal(content)
+	if err != nil {
+		return fmt.Errorf("failed to marshal workspace config: %w", err)
+	}
+
+	// Ensure parent directory exists (for .mitto/mittorc case)
+	if err := os.MkdirAll(filepath.Dir(rcPath), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	if err := os.WriteFile(rcPath, out, 0644); err != nil {
+		return fmt.Errorf("failed to write workspace config: %w", err)
+	}
+
+	return nil
+}
+
 // SaveWorkspaceRCPromptEnabled updates the enabled state of a prompt in the workspace .mittorc file.
 // When disabling (enabled=false): adds or updates the entry with {name: promptName, enabled: false}.
 // When re-enabling (enabled=true): removes the entry with that name from the prompts array

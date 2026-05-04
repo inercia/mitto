@@ -352,3 +352,76 @@ func TestSaveWorkspaces(t *testing.T) {
 		t.Errorf("loaded[0].WorkingDir = %q, want %q", loaded[0].WorkingDir, "/test/path")
 	}
 }
+
+func TestWorkspaceSettings_ACPEnv_JSONRoundTrip(t *testing.T) {
+	w := WorkspaceSettings{
+		ACPServer:  "auggie",
+		ACPCommand: "auggie --acp",
+		ACPEnv:     map[string]string{"NODE_OPTIONS": "--max-old-space-size=8192", "FOO": "bar"},
+		WorkingDir: "/proj",
+	}
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got WorkspaceSettings
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(got.ACPEnv) != 2 {
+		t.Fatalf("ACPEnv has %d entries, want 2", len(got.ACPEnv))
+	}
+	if got.ACPEnv["NODE_OPTIONS"] != "--max-old-space-size=8192" {
+		t.Errorf("ACPEnv[NODE_OPTIONS] = %q, want %q", got.ACPEnv["NODE_OPTIONS"], "--max-old-space-size=8192")
+	}
+	if got.ACPEnv["FOO"] != "bar" {
+		t.Errorf("ACPEnv[FOO] = %q, want %q", got.ACPEnv["FOO"], "bar")
+	}
+}
+
+func TestWorkspaceSettings_ACPEnv_JSONOmitempty(t *testing.T) {
+	// When ACPEnv is nil, it should be omitted from JSON
+	w := WorkspaceSettings{
+		ACPServer:  "auggie",
+		ACPCommand: "auggie --acp",
+		WorkingDir: "/proj",
+	}
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := raw["acp_env"]; ok {
+		t.Error("acp_env should be omitted from JSON when nil")
+	}
+}
+
+func TestLoadWorkspacesFromFile_WithACPEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workspaces.json")
+	content := `{"workspaces":[{
+		"acp_server":"auggie",
+		"acp_command":"auggie --acp",
+		"working_dir":"/proj1",
+		"acp_env":{"NODE_OPTIONS":"--max-old-space-size=8192"}
+	}]}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	workspaces, err := LoadWorkspacesFromFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(workspaces) != 1 {
+		t.Fatalf("got %d workspaces, want 1", len(workspaces))
+	}
+	if workspaces[0].ACPEnv == nil {
+		t.Fatal("ACPEnv should not be nil")
+	}
+	if workspaces[0].ACPEnv["NODE_OPTIONS"] != "--max-old-space-size=8192" {
+		t.Errorf("ACPEnv[NODE_OPTIONS] = %q, want %q", workspaces[0].ACPEnv["NODE_OPTIONS"], "--max-old-space-size=8192")
+	}
+}
