@@ -707,3 +707,42 @@ type ConversationWaitOutput struct {
 	TimedOut bool   `json:"timed_out,omitempty"` // True if the wait timed out before the condition was met
 	Error    string `json:"error,omitempty"`
 }
+
+// =============================================================================
+// Conversation History Types
+// =============================================================================
+
+// ConversationHistoryInput is the input for mitto_conversation_history tool.
+type ConversationHistoryInput struct {
+	SelfID         string   `json:"self_id"`                   // YOUR session ID (the caller)
+	ConversationID string   `json:"conversation_id,omitempty"` // Target conversation (defaults to self if omitted)
+	EventTypes     []string `json:"event_types,omitempty"`     // Filter by event types (omit for all)
+	TextContains   string   `json:"text_contains,omitempty"`   // Only events with text matching this (case-insensitive)
+	TextExcludes   string   `json:"text_excludes,omitempty"`   // Exclude events with text matching this (case-insensitive)
+	AfterSeq       int64    `json:"after_seq,omitempty"`       // Only events with seq > this
+	BeforeSeq      int64    `json:"before_seq,omitempty"`      // Only events with seq < this
+	LastN          int      `json:"last_n,omitempty"`          // Return last N matching events (default: 50, max: 200)
+	Offset         int      `json:"offset,omitempty"`          // Skip this many from the end (for pagination backward)
+	IncludeData    *bool    `json:"include_data,omitempty"`    // Include full event data (default: true)
+	ToolName       string   `json:"tool_name,omitempty"`       // For tool_call events: filter by tool name/title substring
+}
+
+// ConversationHistoryOutput is the output for mitto_conversation_history tool.
+type ConversationHistoryOutput struct {
+	Success        bool                       `json:"success"`
+	ConversationID string                     `json:"conversation_id,omitempty"`
+	TotalEvents    int                        `json:"total_events"`    // Total events in session (before filtering)
+	ReturnedEvents int                        `json:"returned_events"` // Number of events returned
+	Events         []ConversationHistoryEvent `json:"events"`          // Must be empty array, not nil — ACP validates this
+	HasMore        bool                       `json:"has_more,omitempty"`
+	Error          string                     `json:"error,omitempty"`
+}
+
+// ConversationHistoryEvent is a single event in the history response.
+type ConversationHistoryEvent struct {
+	Seq       int64       `json:"seq"`
+	Type      string      `json:"type"`
+	Timestamp string      `json:"timestamp"`      // ISO 8601
+	Summary   string      `json:"summary"`        // Human-readable one-liner
+	Data      interface{} `json:"data,omitempty"` // Full event data (if include_data is true)
+}

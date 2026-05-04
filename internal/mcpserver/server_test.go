@@ -3564,8 +3564,10 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaces() []config.Workspac
 func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string)          {}
-func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema { return nil }
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema {
+	return nil
+}
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -3852,8 +3854,10 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaces() []config.WorkspaceSett
 func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string)          {}
-func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema { return nil }
+func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema {
+	return nil
+}
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -4787,9 +4791,9 @@ func TestHandleUIOptions_MissingSessionID(t *testing.T) {
 }
 
 func TestHandleUIOptions_TruncatesLongLabels(t *testing.T) {
-	longLabel := strings.Repeat("a", 100)       // 100 chars, exceeds 80
-	longDesc := strings.Repeat("b", 250)        // 250 chars, exceeds 200
-	longQuestion := strings.Repeat("q", 600)    // 600 chars, exceeds 500
+	longLabel := strings.Repeat("a", 100)    // 100 chars, exceeds 80
+	longDesc := strings.Repeat("b", 250)     // 250 chars, exceeds 200
+	longQuestion := strings.Repeat("q", 600) // 600 chars, exceeds 500
 
 	mock := &mockUIPrompter{
 		response: UIPromptResponse{
@@ -5357,8 +5361,10 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceByUUID(uuid string) *conf
 	}
 	return m.workspaces[uuid]
 }
-func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string)          {}
-func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema { return nil }
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema {
+	return nil
+}
 
 // setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
 // Returns the server, store, source session ID, target session ID.
@@ -6107,5 +6113,456 @@ func TestConversationWait_CrossWorkspace_FlagDisabled(t *testing.T) {
 	// No UI confirmation should have been shown
 	if len(mock.calls) != 0 {
 		t.Errorf("Expected 0 UI prompt calls, got %d", len(mock.calls))
+	}
+}
+
+// =============================================================================
+// TestConversationHistory tests
+// =============================================================================
+
+// setupHistoryServer creates a server with a session populated with test events.
+func setupHistoryServer(t *testing.T) (srv *Server, sessionID string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sessionID = session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		Name:       "History Test",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	// Append a set of diverse events.
+	boolTrue := true
+	title1 := "Read file"
+	statusDone := "done"
+	events := []session.Event{
+		{Type: session.EventTypeUserPrompt, Data: session.UserPromptData{Message: "Hello agent, please help me"}},
+		{Type: session.EventTypeAgentMessage, Data: session.AgentMessageData{Text: "<p>Sure, I can help!</p>"}},
+		{Type: session.EventTypeAgentThought, Data: session.AgentThoughtData{Text: "Analyzing the request"}},
+		{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "tc-1", Title: "Read file", Status: "running"}},
+		{Type: session.EventTypeToolCallUpdate, Data: session.ToolCallUpdateData{ToolCallID: "tc-1", Title: &title1, Status: &statusDone}},
+		{Type: session.EventTypePlan, Data: session.PlanData{Entries: []session.PlanEntry{
+			{Content: "Step one", Priority: "high", Status: "pending"},
+			{Content: "Step two", Priority: "low", Status: "pending"},
+		}}},
+		{Type: session.EventTypePermission, Data: session.PermissionData{Title: "Execute command", SelectedOption: "yes", Outcome: "approved"}},
+		{Type: session.EventTypeFileRead, Data: session.FileOperationData{Path: "/tmp/test.txt", Content: "file content"}},
+		{Type: session.EventTypeFileWrite, Data: session.FileOperationData{Path: "/tmp/output.txt"}},
+		{Type: session.EventTypeError, Data: session.ErrorData{Message: "Something went wrong"}},
+		{Type: session.EventTypeSessionStart, Data: session.SessionStartData{SessionID: sessionID, ACPServer: "test-server"}},
+		{Type: session.EventTypeSessionEnd, Data: session.SessionEndData{Reason: "user_quit"}},
+		// Second user prompt for filtering tests
+		{Type: session.EventTypeUserPrompt, Data: session.UserPromptData{Message: "Search for errors in the log"}},
+		// Tool call with searchable name
+		{Type: session.EventTypeToolCall, Data: session.ToolCallData{
+			ToolCallID: "tc-2",
+			Title:      "ListDirectory",
+			Status:     "completed",
+			RawInput:   map[string]interface{}{"path": "/tmp"},
+			RawOutput:  map[string]interface{}{"files": []string{"a.txt", "b.txt"}},
+		}},
+		// A boolean unused but prevents lint warning
+		{Type: session.EventTypePermission, Data: session.PermissionData{Title: fmt.Sprintf("Bool:%v", boolTrue), Outcome: "denied"}},
+	}
+
+	for _, e := range events {
+		if err := store.AppendEvent(sessionID, e); err != nil {
+			t.Fatalf("Failed to append event: %v", err)
+		}
+	}
+
+	srv, err = NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(sessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register session: %v", err)
+	}
+
+	return srv, sessionID
+}
+
+func TestConversationHistory_BasicRetrieval(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		LastN:  200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success, got error: %s", out.Error)
+	}
+	if out.TotalEvents != 15 {
+		t.Errorf("TotalEvents = %d, want 15", out.TotalEvents)
+	}
+	if out.ReturnedEvents != 15 {
+		t.Errorf("ReturnedEvents = %d, want 15", out.ReturnedEvents)
+	}
+	if len(out.Events) != 15 {
+		t.Errorf("len(Events) = %d, want 15", len(out.Events))
+	}
+	if out.HasMore {
+		t.Error("HasMore should be false when all events are returned")
+	}
+	// Events slice must never be nil (ACP requirement)
+	if out.Events == nil {
+		t.Error("Events must be a non-nil slice")
+	}
+}
+
+func TestConversationHistory_DefaultsToSelf(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	// Omit ConversationID — should default to self
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		LastN:  5,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	if out.ConversationID != sessionID {
+		t.Errorf("ConversationID = %s, want %s", out.ConversationID, sessionID)
+	}
+}
+
+func TestConversationHistory_EventTypeFilter(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID:     sessionID,
+		EventTypes: []string{"user_prompt"},
+		LastN:      200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	if out.ReturnedEvents != 2 {
+		t.Errorf("ReturnedEvents = %d, want 2 (two user_prompt events)", out.ReturnedEvents)
+	}
+	for _, e := range out.Events {
+		if e.Type != "user_prompt" {
+			t.Errorf("expected only user_prompt events, got %s", e.Type)
+		}
+	}
+}
+
+func TestConversationHistory_TextContains(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	// Search for events mentioning "error"
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID:       sessionID,
+		TextContains: "error",
+		LastN:        200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	// Should match: ErrorData "Something went wrong" (no) ... wait:
+	// "error" in ErrorData message "Something went wrong" — no match.
+	// "Search for errors in the log" — matches "error"
+	// Let's be more specific: look for "wrong"
+	_, out2, _ := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID:       sessionID,
+		TextContains: "wrong",
+		LastN:        200,
+	})
+	if out2.ReturnedEvents != 1 {
+		t.Errorf("TextContains 'wrong': ReturnedEvents = %d, want 1", out2.ReturnedEvents)
+	}
+	if len(out2.Events) > 0 && out2.Events[0].Type != "error" {
+		t.Errorf("Expected error event, got %s", out2.Events[0].Type)
+	}
+}
+
+func TestConversationHistory_TextExcludes(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	// Get tool_call events but exclude those mentioning "ListDirectory"
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID:       sessionID,
+		EventTypes:   []string{"tool_call"},
+		TextExcludes: "listdirectory",
+		LastN:        200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	// 2 tool_call events: "Read file" and "ListDirectory". Excluding "listdirectory" → 1 remains.
+	if out.ReturnedEvents != 1 {
+		t.Errorf("ReturnedEvents = %d, want 1", out.ReturnedEvents)
+	}
+}
+
+func TestConversationHistory_SeqRange(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	// Events 3..5 (after_seq=2, before_seq=6)
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID:    sessionID,
+		AfterSeq:  2,
+		BeforeSeq: 6,
+		LastN:     200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	// Should return events with seq 3, 4, 5
+	if out.ReturnedEvents != 3 {
+		t.Errorf("ReturnedEvents = %d, want 3 (seq 3,4,5)", out.ReturnedEvents)
+	}
+	for _, e := range out.Events {
+		if e.Seq <= 2 || e.Seq >= 6 {
+			t.Errorf("Event seq %d outside expected range (3..5)", e.Seq)
+		}
+	}
+}
+
+func TestConversationHistory_LastNPagination(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	// Request last 5 events
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		LastN:  5,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	if out.ReturnedEvents != 5 {
+		t.Errorf("ReturnedEvents = %d, want 5", out.ReturnedEvents)
+	}
+	if !out.HasMore {
+		t.Error("HasMore should be true when there are more events")
+	}
+	// Should be the LAST 5 events (highest seq numbers)
+	lastSeq := out.Events[len(out.Events)-1].Seq
+	if lastSeq != 15 {
+		t.Errorf("Last event seq = %d, want 15 (most recent)", lastSeq)
+	}
+}
+
+func TestConversationHistory_Offset(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	// Get last 5 events
+	_, page1, _ := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		LastN:  5,
+		Offset: 0,
+	})
+	// Get the previous 5 events (offset=5)
+	_, page2, _ := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		LastN:  5,
+		Offset: 5,
+	})
+
+	if page1.ReturnedEvents != 5 {
+		t.Errorf("page1 ReturnedEvents = %d, want 5", page1.ReturnedEvents)
+	}
+	if page2.ReturnedEvents != 5 {
+		t.Errorf("page2 ReturnedEvents = %d, want 5", page2.ReturnedEvents)
+	}
+
+	// Page1 and page2 should contain different events
+	p1seqs := make(map[int64]bool)
+	for _, e := range page1.Events {
+		p1seqs[e.Seq] = true
+	}
+	for _, e := range page2.Events {
+		if p1seqs[e.Seq] {
+			t.Errorf("Seq %d appears in both pages", e.Seq)
+		}
+	}
+	// Page 2 events should have lower seq numbers than page 1
+	maxPage2Seq := page2.Events[len(page2.Events)-1].Seq
+	minPage1Seq := page1.Events[0].Seq
+	if maxPage2Seq >= minPage1Seq {
+		t.Errorf("Page 2 events should precede page 1: maxPage2=%d, minPage1=%d", maxPage2Seq, minPage1Seq)
+	}
+}
+
+func TestConversationHistory_ToolNameFilter(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID:   sessionID,
+		ToolName: "list",
+		LastN:    200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	// Only "ListDirectory" matches "list"
+	if out.ReturnedEvents != 1 {
+		t.Errorf("ReturnedEvents = %d, want 1", out.ReturnedEvents)
+	}
+	if len(out.Events) > 0 {
+		data := out.Events[0].Data
+		if data == nil {
+			t.Error("Expected event data to be present")
+		}
+	}
+}
+
+func TestConversationHistory_IncludeDataFalse(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	falseVal := false
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID:      sessionID,
+		LastN:       5,
+		IncludeData: &falseVal,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	for _, e := range out.Events {
+		if e.Data != nil {
+			t.Errorf("Event %d: Data should be nil when include_data=false", e.Seq)
+		}
+	}
+}
+
+func TestConversationHistory_Summaries(t *testing.T) {
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		LastN:  200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find events by type and check summaries
+	summaryByType := make(map[string]string)
+	for _, e := range out.Events {
+		if _, seen := summaryByType[e.Type]; !seen {
+			summaryByType[e.Type] = e.Summary
+		}
+	}
+
+	checks := []struct {
+		eventType string
+		contains  string
+	}{
+		{"user_prompt", "Hello agent"},
+		{"agent_message", "Sure, I can help"},
+		{"agent_thought", "Analyzing"},
+		{"tool_call", "[running]"},
+		{"tool_call_update", "Update:"},
+		{"plan", "Plan: 2 entries"},
+		{"permission", "approved"},
+		{"file_read", "Read:"},
+		{"file_write", "Write:"},
+		{"error", "Something went wrong"},
+		{"session_start", "Session started"},
+		{"session_end", "Session ended:"},
+	}
+
+	for _, c := range checks {
+		summary, ok := summaryByType[c.eventType]
+		if !ok {
+			t.Errorf("No event of type %s found", c.eventType)
+			continue
+		}
+		if !strings.Contains(summary, c.contains) {
+			t.Errorf("Summary for %s = %q, want to contain %q", c.eventType, summary, c.contains)
+		}
+	}
+}
+
+func TestConversationHistory_MissingSelfID(t *testing.T) {
+	srv, _ := setupHistoryServer(t)
+	ctx := context.Background()
+
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Success {
+		t.Error("Expected failure when self_id is missing")
+	}
+	if !strings.Contains(out.Error, "self_id is required") {
+		t.Errorf("Expected self_id error, got: %s", out.Error)
+	}
+	// Events must still be a non-nil empty slice
+	if out.Events == nil {
+		t.Error("Events must be non-nil even on error")
+	}
+}
+
+func TestConversationHistory_DefaultLastN(t *testing.T) {
+	// Verify that omitting last_n defaults to historyDefaultLastN (50)
+	srv, sessionID := setupHistoryServer(t)
+	ctx := context.Background()
+
+	// With only 15 events, all should be returned regardless of default
+	_, out, err := srv.handleConversationHistory(ctx, nil, ConversationHistoryInput{
+		SelfID: sessionID,
+		// LastN omitted — should default to 50
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success: %s", out.Error)
+	}
+	// All 15 events fit within default 50
+	if out.ReturnedEvents != 15 {
+		t.Errorf("ReturnedEvents = %d, want 15", out.ReturnedEvents)
 	}
 }
