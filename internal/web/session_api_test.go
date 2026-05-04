@@ -1998,8 +1998,6 @@ func makePrompt(name string, opts ...func(*config.WebPrompt)) config.WebPrompt {
 	return p
 }
 
-
-
 func withEnabledWhen(v string) func(*config.WebPrompt) {
 	return func(p *config.WebPrompt) { p.EnabledWhen = v }
 }
@@ -2008,16 +2006,16 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 	server := &Server{} // minimal server – no logger needed for these tests
 
 	tests := []struct {
-		name     string
-		prompts  []config.WebPrompt
-		ctx      *config.PromptEnabledContext
+		name      string
+		prompts   []config.WebPrompt
+		ctx       *config.PromptEnabledContext
 		wantNames []string
 	}{
 		// 1. Nil context returns all prompts unchanged
 		{
 			name: "nil context returns all prompts",
 			prompts: []config.WebPrompt{
-				makePrompt("a", withEnabledWhen(`acp.matchesServer("auggie")`)),
+				makePrompt("a", withEnabledWhen(`acp.matchesServerType("augment")`)),
 				makePrompt("b", withEnabledWhen("session.isChild")),
 			},
 			ctx:       nil,
@@ -2030,55 +2028,55 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			ctx:       &config.PromptEnabledContext{},
 			wantNames: []string{"plain"},
 		},
-		// 3a. acp.matchesServer name match — included
+		// 3a. acp.matchesServerType type match — included
 		{
-			name:    "acp_matchesServer name match included",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("auggie")`))},
+			name:    "acp_matchesServerType type match included",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
-				ACP: config.ACPContext{Name: "auggie", Type: "augment"},
+				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 3b. acp.matchesServer name mismatch — excluded
+		// 3b. acp.matchesServerType display name does not match — excluded
 		{
-			name:    "acp_matchesServer name mismatch excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("auggie")`))},
+			name:    "acp_matchesServerType display name does not match excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("Auggie (Opus 4.6)")`))},
 			ctx: &config.PromptEnabledContext{
-				ACP: config.ACPContext{Name: "claude", Type: "claude"},
+				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: nil,
 		},
-		// 4. acp.matchesServer type match
+		// 4. acp.matchesServerType type match with different display name
 		{
-			name:    "acp_matchesServer type match included",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("augment")`))},
+			name:    "acp_matchesServerType type match different display name",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
-				ACP: config.ACPContext{Name: "auggie", Type: "augment"},
+				ACP: config.ACPContext{Name: "Auggie (Sonnet 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 5. acp.matchesServer list of servers
+		// 5. acp.matchesServerType list of server types
 		{
-			name:    "acp_matchesServer list match",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer(["auggie", "claude-code"])`))},
+			name:    "acp_matchesServerType list match",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType(["augment", "claude-code"])`))},
 			ctx: &config.PromptEnabledContext{
-				ACP: config.ACPContext{Name: "claude-code", Type: "claude"},
+				ACP: config.ACPContext{Name: "Claude Code (Opus 4.6)", Type: "claude-code"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 6. acp.matchesServer case insensitive
+		// 6. acp.matchesServerType case insensitive (matches type)
 		{
-			name:    "acp_matchesServer case insensitive",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("Auggie")`))},
+			name:    "acp_matchesServerType case insensitive",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("AUGMENT")`))},
 			ctx: &config.PromptEnabledContext{
-				ACP: config.ACPContext{Name: "auggie", Type: "augment"},
+				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 7. acp.matchesServer fail-open when no ACP active
+		// 7. acp.matchesServerType fail-open when no ACP active
 		{
-			name:    "acp_matchesServer fail-open no acp active",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServer("auggie")`))},
+			name:    "acp_matchesServerType fail-open no acp active",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "", Type: ""},
 			},
@@ -2165,45 +2163,45 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			ctx:       &config.PromptEnabledContext{},
 			wantNames: []string{"p"},
 		},
-		// 17. Combined: acp.matchesServer + tools.hasPattern + CEL all pass
+		// 17. Combined: acp.matchesServerType + tools.hasPattern + CEL all pass
 		{
-			name: "combined acp_matchesServer and tools_hasPattern and CEL all pass",
+			name: "combined acp_matchesServerType and tools_hasPattern and CEL all pass",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServer("auggie") && tools.hasPattern("mitto_*") && !session.isChild`),
+					withEnabledWhen(`acp.matchesServerType("augment") && tools.hasPattern("mitto_*") && !session.isChild`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
-				ACP:     config.ACPContext{Name: "auggie", Type: "augment"},
+				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 				Tools:   config.ToolsContext{Names: []string{"mitto_conversation_new"}},
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"p"},
 		},
-		// 18. Combined: acp.matchesServer passes, tools.hasPattern fails
+		// 18. Combined: acp.matchesServerType passes, tools.hasPattern fails
 		{
-			name: "combined acp_matchesServer passes tools_hasPattern fails excluded",
+			name: "combined acp_matchesServerType passes tools_hasPattern fails excluded",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServer("auggie") && tools.hasPattern("jira_*")`),
+					withEnabledWhen(`acp.matchesServerType("augment") && tools.hasPattern("jira_*")`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
-				ACP:   config.ACPContext{Name: "auggie", Type: "augment"},
+				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
 		},
-		// 19. Combined: acp.matchesServer fails — whole expression excluded
+		// 19. Combined: acp.matchesServerType fails — whole expression excluded
 		{
-			name: "combined acp_matchesServer fails excluded",
+			name: "combined acp_matchesServerType fails excluded",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServer("claude") && tools.hasPattern("mitto_*") && true`),
+					withEnabledWhen(`acp.matchesServerType("claude") && tools.hasPattern("mitto_*") && true`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
-				ACP:   config.ACPContext{Name: "auggie", Type: "augment"},
+				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
@@ -2213,13 +2211,13 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name: "mixed prompts correct order",
 			prompts: []config.WebPrompt{
 				makePrompt("included-1"),
-				makePrompt("excluded-acp", withEnabledWhen(`acp.matchesServer("claude")`)),
+				makePrompt("excluded-acp", withEnabledWhen(`acp.matchesServerType("claude")`)),
 				makePrompt("included-2", withEnabledWhen("!session.isChild")),
 				makePrompt("excluded-mcp", withEnabledWhen(`tools.hasPattern("jira_*")`)),
-				makePrompt("included-3", withEnabledWhen(`acp.matchesServer("auggie")`)),
+				makePrompt("included-3", withEnabledWhen(`acp.matchesServerType("augment")`)),
 			},
 			ctx: &config.PromptEnabledContext{
-				ACP:     config.ACPContext{Name: "auggie", Type: "augment"},
+				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 				Tools:   config.ToolsContext{Names: []string{"mitto_foo"}},
 				Session: config.SessionContext{IsChild: false},
 			},

@@ -1870,7 +1870,6 @@ func (o *trackingObserver) OnUIPromptDismiss(requestID string, reason string) {
 
 func (o *trackingObserver) OnNotification(req UINotifyRequest) {}
 
-
 // =============================================================================
 // GetMaxAssignedSeq Tests
 // =============================================================================
