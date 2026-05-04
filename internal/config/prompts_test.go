@@ -387,8 +387,6 @@ func TestIsSpecificToACP(t *testing.T) {
 	}
 }
 
-
-
 func TestCollectRequiredToolPatterns(t *testing.T) {
 	prompts := []*PromptFile{
 		{Name: "P1", EnabledWhenMCP: "jira_*,slack_*"},
@@ -433,8 +431,6 @@ func TestCollectRequiredToolPatterns_Empty(t *testing.T) {
 		t.Errorf("CollectRequiredToolPatterns(nil) returned %v, want empty", patterns)
 	}
 }
-
-
 
 func TestParsePromptFile_WithEnabledWhenMCP(t *testing.T) {
 	data := []byte(`---
@@ -534,12 +530,12 @@ func TestTranslateShorthandToEnabledWhen(t *testing.T) {
 		want           string
 	}{
 		{"empty", "", "", "", ""},
-		{"acp single", "auggie", "", "", `acp.matchesServer("auggie")`},
-		{"acp multiple", "auggie, claude-code", "", "", `acp.matchesServer(["auggie", "claude-code"])`},
+		{"acp single", "auggie", "", "", `acp.matchesServerType("auggie")`},
+		{"acp multiple", "auggie, claude-code", "", "", `acp.matchesServerType(["auggie", "claude-code"])`},
 		{"mcp single", "", "mitto_*", "", `tools.hasPattern("mitto_*")`},
 		{"mcp multiple", "", "jira_*, mitto_*", "", `tools.hasAllPatterns(["jira_*", "mitto_*"])`},
-		{"acp + mcp", "auggie", "mitto_*", "", `acp.matchesServer("auggie") && tools.hasPattern("mitto_*")`},
-		{"all three", "auggie", "mitto_*", "session.isChild", `acp.matchesServer("auggie") && tools.hasPattern("mitto_*") && session.isChild`},
+		{"acp + mcp", "auggie", "mitto_*", "", `acp.matchesServerType("auggie") && tools.hasPattern("mitto_*")`},
+		{"all three", "auggie", "mitto_*", "session.isChild", `acp.matchesServerType("auggie") && tools.hasPattern("mitto_*") && session.isChild`},
 		{"only enabledWhen", "", "", "session.isChild", "session.isChild"},
 		{"mcp + existing", "", "jira_*", "parent.exists", `tools.hasPattern("jira_*") && parent.exists`},
 	}
@@ -553,4 +549,3 @@ func TestTranslateShorthandToEnabledWhen(t *testing.T) {
 		})
 	}
 }
-

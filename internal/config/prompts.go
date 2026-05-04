@@ -96,7 +96,7 @@ func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
 		}
 	}
 
-	// Check enabledWhen CEL expression for acp.matchesServer("serverName")
+	// Check enabledWhen CEL expression for acp.matchesServerType("serverType")
 	if p.EnabledWhen != "" {
 		lowerExpr := strings.ToLower(p.EnabledWhen)
 		lowerServer := strings.ToLower(acpServer)
@@ -451,8 +451,8 @@ func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 // into an enabledWhen CEL expression using convenience functions.
 // If enabledWhen is already set, the shorthand conditions are ANDed with it.
 // The shorthand fields are syntactic sugar for the underlying CEL functions:
-//   - enabledWhenACP: "auggie" → acp.matchesServer("auggie")
-//   - enabledWhenACP: "auggie, claude" → acp.matchesServer(["auggie", "claude"])
+//   - enabledWhenACP: "augment" → acp.matchesServerType("augment")
+//   - enabledWhenACP: "augment, claude-code" → acp.matchesServerType(["augment", "claude-code"])
 //   - enabledWhenMCP: "mitto_*" → tools.hasPattern("mitto_*")
 //   - enabledWhenMCP: "mitto_*, jira_*" → tools.hasAllPatterns(["mitto_*", "jira_*"])
 func TranslateShorthandToEnabledWhen(enabledWhenACP, enabledWhenMCP, existingEnabledWhen string) string {
@@ -461,13 +461,13 @@ func TranslateShorthandToEnabledWhen(enabledWhenACP, enabledWhenMCP, existingEna
 	if enabledWhenACP != "" {
 		servers := splitAndTrimCSV(enabledWhenACP)
 		if len(servers) == 1 {
-			parts = append(parts, fmt.Sprintf("acp.matchesServer(%q)", servers[0]))
+			parts = append(parts, fmt.Sprintf("acp.matchesServerType(%q)", servers[0]))
 		} else if len(servers) > 1 {
 			quoted := make([]string, len(servers))
 			for i, s := range servers {
 				quoted[i] = fmt.Sprintf("%q", s)
 			}
-			parts = append(parts, fmt.Sprintf("acp.matchesServer([%s])", strings.Join(quoted, ", ")))
+			parts = append(parts, fmt.Sprintf("acp.matchesServerType([%s])", strings.Join(quoted, ", ")))
 		}
 	}
 

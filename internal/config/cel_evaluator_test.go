@@ -134,17 +134,17 @@ func TestCELEvaluator_PermissionsContext(t *testing.T) {
 	withPerms := &PromptEnabledContext{
 		Session: SessionContext{ID: "sess-1", IsChild: false},
 		Permissions: PermissionsContext{
-			CanDoIntrospection:        true,
-			CanSendPrompt:             true,
-			CanPromptUser:             true,
-			CanStartConversation:      true,
+			CanDoIntrospection:         true,
+			CanSendPrompt:              true,
+			CanPromptUser:              true,
+			CanStartConversation:       true,
 			CanInteractOtherWorkspaces: false,
-			AutoApprovePermissions:    false,
+			AutoApprovePermissions:     false,
 		},
 	}
 
 	noPerms := &PromptEnabledContext{
-		Session: SessionContext{ID: "sess-2", IsChild: true, ParentID: "p1"},
+		Session:  SessionContext{ID: "sess-2", IsChild: true, ParentID: "p1"},
 		Children: ChildrenContext{Count: 1, Exists: true},
 		Permissions: PermissionsContext{
 			CanSendPrompt:        false,
@@ -182,13 +182,13 @@ func TestCELEvaluator_PermissionsContext(t *testing.T) {
 	}
 }
 
-// TestCELConvenienceFunctions validates acp.matchesServer, tools.hasAllPatterns,
+// TestCELConvenienceFunctions validates acp.matchesServerType, tools.hasAllPatterns,
 // and tools.hasAnyPattern CEL convenience functions.
 func TestCELConvenienceFunctions(t *testing.T) {
 	e := newTestEvaluator(t)
 
 	augCtx := &PromptEnabledContext{
-		ACP:   ACPContext{Name: "auggie", Type: "auggie"},
+		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 		Tools: ToolsContext{Available: true, Names: []string{"mitto_list", "jira_create_issue", "github_pr"}},
 	}
 	noACPCtx := &PromptEnabledContext{
@@ -196,7 +196,7 @@ func TestCELConvenienceFunctions(t *testing.T) {
 		Tools: ToolsContext{Available: true, Names: []string{"mitto_list"}},
 	}
 	emptyToolsCtx := &PromptEnabledContext{
-		ACP:   ACPContext{Name: "auggie", Type: "auggie"},
+		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 		Tools: ToolsContext{Available: false, Names: nil},
 	}
 
@@ -206,17 +206,17 @@ func TestCELConvenienceFunctions(t *testing.T) {
 		ctx  *PromptEnabledContext
 		want bool
 	}{
-		// acp.matchesServer — single string arg
-		{"matchesServer single name match", `acp.matchesServer("auggie")`, augCtx, true},
-		{"matchesServer single type match", `acp.matchesServer("auggie")`, augCtx, true},
-		{"matchesServer single no match", `acp.matchesServer("claude-code")`, augCtx, false},
-		{"matchesServer case insensitive", `acp.matchesServer("AUGGIE")`, augCtx, true},
-		{"matchesServer fail-open empty acp", `acp.matchesServer("anything")`, noACPCtx, true},
+		// acp.matchesServerType — matches type only, not display name
+		{"matchesServerType type match", `acp.matchesServerType("augment")`, augCtx, true},
+		{"matchesServerType display name does not match", `acp.matchesServerType("Auggie (Opus 4.6)")`, augCtx, false},
+		{"matchesServerType single no match", `acp.matchesServerType("claude-code")`, augCtx, false},
+		{"matchesServerType case insensitive", `acp.matchesServerType("AUGMENT")`, augCtx, true},
+		{"matchesServerType fail-open empty acp", `acp.matchesServerType("anything")`, noACPCtx, true},
 
-		// acp.matchesServer — list arg
-		{"matchesServer list one matches", `acp.matchesServer(["auggie", "claude-code"])`, augCtx, true},
-		{"matchesServer list none match", `acp.matchesServer(["cursor", "claude-code"])`, augCtx, false},
-		{"matchesServer empty list", `acp.matchesServer([])`, augCtx, false},
+		// acp.matchesServerType — list arg
+		{"matchesServerType list one matches", `acp.matchesServerType(["augment", "claude-code"])`, augCtx, true},
+		{"matchesServerType list none match", `acp.matchesServerType(["cursor", "claude-code"])`, augCtx, false},
+		{"matchesServerType empty list", `acp.matchesServerType([])`, augCtx, false},
 
 		// tools.hasAllPatterns — single string arg
 		{"hasAllPatterns single satisfied", `tools.hasAllPatterns("mitto_*")`, augCtx, true},
@@ -236,8 +236,8 @@ func TestCELConvenienceFunctions(t *testing.T) {
 		{"hasAnyPattern empty tools", `tools.hasAnyPattern(["mitto_*"])`, emptyToolsCtx, false},
 
 		// Combined expression
-		{"combined matchesServer and hasAllPatterns",
-			`acp.matchesServer("auggie") && tools.hasAllPatterns(["mitto_*", "jira_*"])`,
+		{"combined matchesServerType and hasAllPatterns",
+			`acp.matchesServerType("augment") && tools.hasAllPatterns(["mitto_*", "jira_*"])`,
 			augCtx, true},
 	}
 
@@ -263,12 +263,12 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}},
 		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
 		Permissions: PermissionsContext{
-			CanDoIntrospection:        true,
-			CanSendPrompt:             true,
-			CanPromptUser:             true,
-			CanStartConversation:      true,
+			CanDoIntrospection:         true,
+			CanSendPrompt:              true,
+			CanPromptUser:              true,
+			CanStartConversation:       true,
 			CanInteractOtherWorkspaces: true,
-			AutoApprovePermissions:    true,
+			AutoApprovePermissions:     true,
 		},
 	}
 

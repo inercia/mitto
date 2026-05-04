@@ -866,7 +866,6 @@ func MergePromptsKeepDisabled(globalFilePrompts, settingsPrompts, workspacePromp
 	return result
 }
 
-
 // ============================================================================
 // Restricted Runner Types
 //

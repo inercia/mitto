@@ -89,15 +89,15 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 			),
 		),
 
-		// Custom function: acp.matchesServer(server) bool / acp.matchesServer(servers_list) bool
-		// Returns true if the current ACP server matches any of the given names/types.
+		// Custom function: acp.matchesServerType(type) bool / acp.matchesServerType(types_list) bool
+		// Returns true if the current ACP server type matches any of the given types.
 		// Fail-open: returns true if no ACP server is active (acp.name == "").
-		cel.Function("acp.matchesServer",
-			cel.Overload("acp_matchesServer_string",
+		cel.Function("acp.matchesServerType",
+			cel.Overload("acp_matchesServerType_string",
 				[]*cel.Type{cel.StringType},
 				cel.BoolType,
 			),
-			cel.Overload("acp_matchesServer_list",
+			cel.Overload("acp_matchesServerType_list",
 				[]*cel.Type{cel.ListType(cel.StringType)},
 				cel.BoolType,
 			),
@@ -182,13 +182,13 @@ func (e *CELEvaluator) Evaluate(compiled *CompiledExpression, ctx *PromptEnabled
 				cel.UnaryBinding(toolsHasPatternImpl(ctx.Tools.Names)),
 			),
 		),
-		cel.Function("acp.matchesServer",
-			cel.Overload("acp_matchesServer_string",
+		cel.Function("acp.matchesServerType",
+			cel.Overload("acp_matchesServerType_string",
 				[]*cel.Type{cel.StringType},
 				cel.BoolType,
 				cel.FunctionBinding(acpMatchesServerImpl(ctx.ACP.Name, ctx.ACP.Type)),
 			),
-			cel.Overload("acp_matchesServer_list",
+			cel.Overload("acp_matchesServerType_list",
 				[]*cel.Type{cel.ListType(cel.StringType)},
 				cel.BoolType,
 				cel.FunctionBinding(acpMatchesServerImpl(ctx.ACP.Name, ctx.ACP.Type)),
@@ -318,7 +318,9 @@ func toolsHasPatternImpl(names []string) func(ref.Val) ref.Val {
 }
 
 // acpMatchesServerImpl returns a CEL FunctionOp that checks whether the current ACP
-// server matches any of the given server names or types (case-insensitive).
+// server type matches any of the given server types (case-insensitive).
+// Only compares against the server type (e.g., "augment", "claude-code"), not the
+// display name (e.g., "Auggie (Opus 4.6)").
 // Fail-open: if acpName is empty (no ACP server active), always returns true.
 func acpMatchesServerImpl(acpName, acpType string) func(args ...ref.Val) ref.Val {
 	return func(args ...ref.Val) ref.Val {
@@ -326,7 +328,7 @@ func acpMatchesServerImpl(acpName, acpType string) func(args ...ref.Val) ref.Val
 			return types.Bool(true)
 		}
 		for _, server := range extractStringArgs(args) {
-			if strings.EqualFold(server, acpName) || strings.EqualFold(server, acpType) {
+			if strings.EqualFold(server, acpType) {
 				return types.Bool(true)
 			}
 		}
