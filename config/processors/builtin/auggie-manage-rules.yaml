@@ -95,7 +95,7 @@ prompt: |
   ## Content Guidelines
 
   - Be specific: include file paths, function names, exact patterns
-  - Show code examples demonstrating correct usage
+  - Show SHORT code examples demonstrating correct usage. Prefer snippets.
   - Make rules actionable for coding decisions
   - Include common pitfalls and anti-pattern examples
   - Reference existing repo docs rather than duplicating
