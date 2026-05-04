@@ -51,22 +51,7 @@ result := LoadSettingsWithFallback()
 
 ### Source Tracking
 
-```go
-type ConfigItemSource string
-
-const (
-    SourceRCFile   ConfigItemSource = "rcfile"   // From ~/.mittorc
-    SourceSettings ConfigItemSource = "settings" // From settings.json
-    SourceDefault  ConfigItemSource = "default"  // From embedded defaults
-)
-
-// ACPServer has Source field:
-type ACPServer struct {
-    Name    string
-    Command string
-    Source  ConfigItemSource // Track origin
-}
-```
+`ConfigItemSource`: `"rcfile"` (from `~/.mittorc`), `"settings"` (from `settings.json`), `"default"` (embedded). `ACPServer.Source` tracks origin; UI hides edit/delete for `rcfile` servers.
 
 ## Key Functions
 
@@ -144,17 +129,11 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 
 ## WorkspaceSettings Override Pattern
 
-`WorkspaceSettings` supports `ACPCommandOverride` (`json:"acp_command_override,omitempty"`). In `applyConfigChanges`, after setting `ACPCommand` from the server map, apply any user override:
+`WorkspaceSettings.ACPCommandOverride` (`json:"acp_command_override,omitempty"`): set default from server map, then apply override if non-empty:
 
 ```go
 newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
-if ws.ACPCommandOverride != "" {
-    newWorkspaces[i].ACPCommand = ws.ACPCommandOverride
-}
+if ws.ACPCommandOverride != "" { newWorkspaces[i].ACPCommand = ws.ACPCommandOverride }
 ```
 
-This pattern (set default from server map, then apply override if non-empty) should be followed for any future `*Override` fields on `WorkspaceSettings`.
-
-## Generic Merger System
-
-See `internal/config/merger.go` for `GenericMerger[T]` — provides reusable config merging with `MergeStrategyUnion` or `MergeStrategyReplace`.
+Follow this same pattern for any future `*Override` fields. See `internal/config/merger.go` for `GenericMerger[T]` (reusable config merging with `MergeStrategyUnion` or `MergeStrategyReplace`).

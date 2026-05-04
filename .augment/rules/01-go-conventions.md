@@ -82,6 +82,12 @@ func (r *Recorder) Start() error {
 }
 ```
 
+## Explicit Lock Management in Retry Loops
+
+`defer mu.Unlock()` does **not** compose safely with manual unlock + retry. If the locked variable is reassigned during retry, defer fires on the wrong object → double-unlock panic.
+
+**Rule**: In retry loops that release and reacquire a lock, use **explicit `mu.Unlock()` on every exit path** instead of `defer`. Extract goroutine+select lock-acquisition into a helper (e.g. `acquireAuxLock`) to keep all retry paths clean. See `internal/web/acp_process_manager.go` for a real example.
+
 ## PID Checking
 
 ```go
