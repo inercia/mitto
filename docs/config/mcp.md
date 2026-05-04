@@ -27,6 +27,8 @@ These tools are **always available** and don't require special permissions:
 | `mitto_get_runtime_info`         | Get runtime info (OS, log paths, data directories, process info)          |
 | `mitto_conversation_get_current` | Get details about the current conversation                                |
 | `mitto_conversation_get`         | Get details about a specific conversation by ID                           |
+| `mitto_conversation_history`     | Search and retrieve conversation history events with filtering by type, text content, tool name, and sequence range. Supports pagination. |
+| `mitto_workspace_list`           | List all configured workspaces with their settings, metadata, and activity status. |
 
 ### UI Prompt Tools
 
@@ -37,6 +39,7 @@ These tools require the **"Can prompt user"** flag to be enabled:
 | `mitto_ui_options`         | Present an options menu with optional descriptions and free text input |
 | `mitto_ui_textbox`         | Present a text editing dialog to the user and wait for their changes. Returns the edited text or a diff. |
 | `mitto_ui_form`            | Present a sanitized HTML form to the user. Returns submitted field values as key-value pairs. |
+| `mitto_ui_notify`          | Send a non-blocking notification to the user. Supports styles: 'info', 'success', 'warning', 'error'. Can optionally play a sound or trigger a native OS notification. |
 
 ### Cross-Conversation Tools
 
@@ -57,6 +60,7 @@ These tools require the **"Can Send Prompt"** flag or appropriate permissions:
 | `mitto_conversation_archive`      | Archive or unarchive a conversation                                                    |
 | `mitto_conversation_delete`       | Delete a child conversation (caller must be parent)                                    |
 | `mitto_conversation_wait`         | Wait until an event occurs in a conversation (e.g., agent finishes responding)         |
+| `mitto_conversation_update`       | Update conversation properties such as title and user-defined metadata attributes.     |
 
 ### Parent-Child Task Coordination Tools
 

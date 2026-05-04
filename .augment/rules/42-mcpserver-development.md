@@ -22,26 +22,9 @@ The Mitto MCP server (`internal/mcpserver/`) provides a **single global server**
 
 ## Architecture
 
-All agents connect to the same MCP server at `http://127.0.0.1:5757/mcp`. Session-scoped tools use a `session_id` parameter to identify the target session.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Global MCP Server                        │
-│                  http://127.0.0.1:5757/mcp                  │
-├─────────────────────────────────────────────────────────────┤
-│  Global Tools (no session_id):                              │
-│  • mitto_conversation_list (always available)               │
-│  • mitto_get_config                                         │
-│  • mitto_get_runtime_info                                   │
-├─────────────────────────────────────────────────────────────┤
-│  Session-Scoped Tools (require session_id):                 │
-│  • mitto_conversation_get_current                           │
-│  • mitto_conversation_send_prompt                           │
-│  • mitto_ui_options (unified)                               │
-├─────────────────────────────────────────────────────────────┤
-│  Session Registry: Maps session_id → UIPrompter             │
-└─────────────────────────────────────────────────────────────┘
-```
+Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
+- **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
+- **Session-scoped tools** (require `self_id`): all UI prompts, conversation control, history
 
 ## Transport Modes
 
@@ -50,293 +33,89 @@ All agents connect to the same MCP server at `http://127.0.0.1:5757/mcp`. Sessio
 | **HTTP** (default) | Remote access, Auggie integration | `TransportModeHTTP`, runs on port 5757          |
 | **STDIO**          | Subprocess usage, Claude Desktop  | `TransportModeSTDIO`, reads/writes stdin/stdout |
 
-### HTTP Mode (Streamable HTTP)
+HTTP: `mcpserver.NewServer(Config{Mode: TransportModeHTTP, Address: "127.0.0.1:5757"}, sessionsDir, settingsPath).Start(ctx)`
 
-```go
-config := mcpserver.Config{
-    Mode:    mcpserver.TransportModeHTTP,
-    Address: "127.0.0.1:5757",
-}
-server := mcpserver.NewServer(config, sessionsDir, settingsPath)
-server.Start(ctx)
-```
-
-Client configuration (Auggie/Claude):
-
-```json
-{
-  "mcpServers": {
-    "mitto-debug": {
-      "url": "http://127.0.0.1:5757/mcp"
-    }
-  }
-}
-```
-
-### STDIO Mode
-
-```go
-config := mcpserver.Config{
-    Mode: mcpserver.TransportModeSTDIO,
-}
-server := mcpserver.NewServer(config, sessionsDir, settingsPath)
-server.RunSTDIO(ctx)  // Blocks until context cancelled
-```
-
-Client configuration:
-
-```json
-{
-  "mcpServers": {
-    "mitto-debug": {
-      "command": "/path/to/mitto",
-      "args": ["mcp", "--stdio"]
-    }
-  }
-}
-```
+STDIO: `server.RunSTDIO(ctx)` — blocks until context cancelled. Used by `mitto mcp --proxy-to <url>` for stdio MCP proxy.
 
 ## Adding New Tools
 
-### Tool Handler Pattern
-
-Tools must return a **struct** (not a slice or primitive) due to MCP SDK requirements:
+Handler signature (3-arg form — SDK unmarshals input automatically):
 
 ```go
-// ❌ WRONG: Returns slice - will panic
-func (s *Server) handleListItems(ctx context.Context, req mcp.CallToolRequest) ([]Item, error) {
-    return items, nil
-}
-
-// ✅ CORRECT: Returns struct wrapper
-type ListItemsOutput struct {
-    Items []Item `json:"items"`
-}
-
-func (s *Server) handleListItems(ctx context.Context, req mcp.CallToolRequest) (*ListItemsOutput, error) {
-    return &ListItemsOutput{Items: items}, nil
-}
-```
-
-### Registering Tools
-
-```go
-func (s *Server) registerTools() {
-    // Tool with no input parameters
-    mcp.AddTool(s.mcpServer, mcp.Tool{
-        Name:        "mitto_get_runtime_info",
-        Description: "Get runtime information including OS, architecture, log file paths",
-    }, s.handleGetRuntimeInfo)
-
-    // Tool with input parameters
-    mcp.AddTool(s.mcpServer, mcp.Tool{
-        Name:        "mitto_conversation_get",
-        Description: "Get details of a specific conversation",
-        InputSchema: mcp.ToolInputSchema{
-            Type: "object",
-            Properties: map[string]mcp.Property{
-                "session_id": {
-                    Type:        "string",
-                    Description: "The session ID to retrieve",
-                },
-            },
-            Required: []string{"session_id"},
-        },
-    }, s.handleGetConversation)
-}
-```
-
-### Input Parameter Handling
-
-```go
-type GetConversationInput struct {
-    SessionID string `json:"session_id"`
-}
-
-func (s *Server) handleGetConversation(ctx context.Context, req mcp.CallToolRequest) (*ConversationOutput, error) {
-    var input GetConversationInput
-    if err := json.Unmarshal(req.Params.Arguments, &input); err != nil {
-        return nil, fmt.Errorf("invalid input: %w", err)
-    }
-
-    if input.SessionID == "" {
-        return nil, fmt.Errorf("session_id is required")
-    }
-
-    // ... implementation
-}
-```
-
-## Output Types
-
-### Simple Output
-
-```go
-type RuntimeInfoOutput struct {
-    OS           string            `json:"os"`
-    Arch         string            `json:"arch"`
-    LogFiles     map[string]string `json:"log_files"`
-    SessionsDir  string            `json:"sessions_dir"`
-}
-```
-
-### List Output
-
-```go
-type ListConversationsOutput struct {
-    Conversations []ConversationInfo `json:"conversations"`
-}
-
-type ConversationInfo struct {
-    SessionID     string    `json:"session_id"`
-    Title         string    `json:"title"`
-    SessionFolder string    `json:"session_folder"`
-    MessageCount  int       `json:"message_count"`
-    IsRunning     bool      `json:"is_running"`
-    IsPrompting   bool      `json:"is_prompting"`
-    LastSeq       int       `json:"last_seq"`
-}
-```
-
-## Error Handling
-
-Return errors with context:
-
-```go
-func (s *Server) handleGetConversation(ctx context.Context, req mcp.CallToolRequest) (*ConversationOutput, error) {
-    // Validation errors
-    if input.SessionID == "" {
-        return nil, fmt.Errorf("session_id is required")
-    }
-
-    // Operation errors
-    metadata, err := s.loadMetadata(input.SessionID)
+func (s *Server) handleFoo(ctx context.Context, req *mcp.CallToolRequest, input FooInput) (*mcp.CallToolResult, FooOutput, error) {
+    // 1. Validate self_id
+    sessionID, err := s.resolveSessionID(ctx, req, input.SelfID)
     if err != nil {
-        return nil, fmt.Errorf("failed to load session %s: %w", input.SessionID, err)
+        return nil, FooOutput{Error: err.Error()}, nil
     }
-
-    return &ConversationOutput{...}, nil
+    // 2. Do work ...
+    return nil, FooOutput{Success: true}, nil
 }
 ```
 
-## Testing MCP Tools
-
-Use the MCP tools directly to test:
-
+Register:
+```go
+mcp.AddTool(mcpSrv, &mcp.Tool{Name: "mitto_foo", Description: "..." + selfIDNote}, s.handleFoo)
 ```
-# In an AI assistant with MCP configured
-Call get_runtime_info_mitto-debug to verify the server is running
-Call list_conversations_mitto-debug to see available sessions
+
+**Rules:**
+- Output must be a **struct** (not slice/primitive) — MCP SDK requirement
+- Initialize slice fields as `[]T{}` not nil — Go encodes nil as JSON `null`, ACP rejects that
+- `selfIDNote` constant is already defined in `server.go` — append it to Description
+
+**Reading session store:**
+```go
+s.mu.RLock()
+store := s.store
+s.mu.RUnlock()
+events, err := store.ReadEvents(sessionID)
+// Decode typed data:
+data := session.DecodeEventData(event)  // returns typed union; check each field
 ```
 
 See `40-debugging.md` for using MCP tools for debugging.
 
 ## Session Registration
 
-Sessions register with the global MCP server to enable session-scoped tools.
-
-### Registering a Session
+`BackgroundSession` registers/unregisters with the global MCP server:
 
 ```go
-// In BackgroundSession.startSessionMcpServer()
-
-// Register this session with the global MCP server
-if bs.globalMcpServer != nil {
-    bs.globalMcpServer.RegisterSession(bs.persistedID, bs, bs.logger)
-}
+bs.globalMcpServer.RegisterSession(bs.persistedID, bs, bs.logger)   // on start/unarchive
+bs.globalMcpServer.UnregisterSession(bs.persistedID)                 // on archive/delete
 ```
 
-### Unregistering a Session
+Session-scoped tool pattern: accept `session_id` param → `s.getSession(id)` → `s.checkSessionFlag(id, flag)` → use `reg.uiPrompter`.
 
-```go
-// In BackgroundSession.stopSessionMcpServer()
+New flags: define `const FlagXxx` in `internal/session/flags.go`, add to `AvailableFlags`, check with `checkSessionFlag()`.
 
-if bs.globalMcpServer != nil {
-    bs.globalMcpServer.UnregisterSession(bs.persistedID)
-}
-```
+**Key rules:**
+- No per-session MCP servers — all tools on the global server
+- All session-scoped tools require `session_id` parameter
 
-### Session-Scoped Tool Pattern
+## Processor Auxiliary Session MCP Access
 
-Session-scoped tools require a `session_id` parameter and check permissions at runtime:
-
-```go
-// Input type includes session_id
-type MyToolInput struct {
-    SessionID string `json:"session_id"`
-    // ... other parameters
-}
-
-func (s *Server) handleMyTool(
-    ctx context.Context,
-    req *mcp.CallToolRequest,
-    input MyToolInput,
-) (*mcp.CallToolResult, MyToolOutput, error) {
-    // 1. Validate session_id is provided
-    if input.SessionID == "" {
-        return nil, MyToolOutput{}, fmt.Errorf("session_id is required")
-    }
-
-    // 2. Check session is registered (running)
-    reg := s.getSession(input.SessionID)
-    if reg == nil {
-        return nil, MyToolOutput{}, fmt.Errorf("session not found: %s", input.SessionID)
-    }
-
-    // 3. Check permissions (if flag required)
-    if !s.checkSessionFlag(input.SessionID, session.FlagMyFeature) {
-        return nil, MyToolOutput{}, permissionError("my_tool", session.FlagMyFeature, "My Feature")
-    }
-
-    // 4. Use reg.uiPrompter for UI prompts
-    // 5. Implement the tool logic
-    return nil, output, nil
-}
-```
-
-### Adding New Flags
-
-1. Define the flag in `internal/session/flags.go`:
-
-```go
-const FlagNewFeature = "new_feature"
-
-var AvailableFlags = []FlagDefinition{
-    // ... existing flags ...
-    {
-        Name:        FlagNewFeature,
-        Label:       "New Feature",
-        Description: "Description for the UI",
-        Default:     false,
-    },
-}
-```
-
-2. Check the flag in tool handlers:
-
-```go
-if !s.checkSessionFlag(input.SessionID, session.FlagNewFeature) {
-    return nil, MyToolOutput{}, permissionError("my_tool", session.FlagNewFeature, "New Feature")
-}
-```
-
-### Session Lifecycle
-
-Sessions are registered/unregistered by `BackgroundSession`:
-
-| Event | Action |
-|-------|--------|
-| Session start | `registerWithGlobalMCP()` registers session |
-| Session archive | `unregisterFromGlobalMCP()` unregisters session |
-| Session unarchive | `registerWithGlobalMCP()` re-registers session |
-| Session delete | `unregisterFromGlobalMCP()` unregisters session |
-| Server shutdown | All sessions automatically unregistered |
-
-### Key Points
-
-- **No per-session MCP servers** - All tools are on the global server
-- **`session_id` parameter** - All session-scoped tools require this
-- **Permission checks at runtime** - Use `checkSessionFlag()` helper
-- **UI prompt routing** - Via registered `UIPrompter`
+Processor auxiliary sessions (purpose prefix `"processor:"`) get a stdio MCP proxy so the agent can call Mitto tools. Configured in `internal/web/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access.
 
 See `docs/devel/mcp.md` for detailed documentation.
+
+## Agents Package (`internal/agents`)
+
+Manages agent definitions loaded from `agents/builtin/<dir>/` directories. Each agent has `metadata.yaml` with an `acpId` field that maps from ACP server type to agent directory name.
+
+**Key gotcha:** ACP type ≠ agent directory name. Example: ACP type `"auggie"` → directory `"augment"` (matched via `acpId` in `metadata.yaml`). Always use `GetAgentByACPId` to resolve this mapping.
+
+```go
+mgr := agents.NewManager(agentsDir, logger)
+
+// Look up by ACP server type (NOT directory name)
+agent, err := mgr.GetAgentByACPId(acpType)  // acpType e.g. "auggie", "claude-code"
+
+// Check if agent supports a command
+if agent.HasCommand(agents.CommandMCPList) { ... }
+
+// Run mcp-list command (script reads optional JSON from stdin)
+output, err := mgr.ListMCPServers(ctx, agent.DirName, &agents.MCPListInput{Path: workingDir})
+// output.Servers: []MCPServer{Name, Command, Args, URL}
+```
+
+API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler in `config_handlers.go`). Returns `{servers, agent_name, error?, message?}`.

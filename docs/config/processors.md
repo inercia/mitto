@@ -213,8 +213,9 @@ for background tasks like extracting insights, updating documentation, or tracki
 preferences.
 
 Prompt-mode processors use the `prompt` field (mutually exclusive with `text` and
-`command`). The prompt template supports all standard `@mitto:variable` placeholders,
-plus `@mitto:messages` for injecting filtered conversation history.
+`command`). The prompt template supports all standard `@mitto:variable` placeholders.
+To access conversation history, the auxiliary agent calls the `mitto_conversation_history`
+MCP tool at runtime.
 
 ### Basic Structure
 
@@ -229,48 +230,15 @@ rerun:
   afterSentMsgs: 10
 
 prompt: |
-  Analyze the conversation messages below and extract key insights.
+  Analyze recent conversation messages and extract key insights.
   Save your findings to a file in the workspace.
 
   Session: @mitto:session_name
+  Session ID: @mitto:session_id
   Working directory: @mitto:working_dir
 
-  === Messages ===
-  @mitto:messages
-
-messages:
-  scope: since-last-run
-  roles: [user, agent]
-  max_messages: 30
-  max_tokens: 8000
+  Use the mitto_conversation_history MCP tool to retrieve recent messages.
 ```
-
-### Messages Configuration
-
-The `messages` block controls which conversation messages are injected at the
-`@mitto:messages` placeholder. All fields are optional with sensible defaults.
-
-| Field          | Type       | Default          | Description                                           |
-| -------------- | ---------- | ---------------- | ----------------------------------------------------- |
-| `scope`        | string     | `since-last-run` | Which messages to include (see scopes below)          |
-| `roles`        | string[]   | `[user, agent]`  | Include only these roles (`user`, `agent`/`assistant`) |
-| `max_messages` | int        | `50`             | Maximum number of messages to include                 |
-| `max_tokens`   | int        | _(unlimited)_    | Approximate token cap (4 chars ≈ 1 token)             |
-
-#### Message Scopes
-
-| Scope            | Description                                                    |
-| ---------------- | -------------------------------------------------------------- |
-| `since-last-run` | Messages since this processor last ran (default). Avoids processing the same messages twice. |
-| `last-message`   | Only the most recent message                                   |
-| `last-n`         | The last N messages (controlled by `max_messages`)             |
-| `all`            | Full conversation history                                      |
-
-#### Role Filtering
-
-Roles accept `user` and `agent` (or `assistant` — both are equivalent). For example,
-`roles: [user]` includes only the user's messages, filtering out agent responses. This
-is useful for processors that analyze what the user says rather than the full conversation.
 
 ### Key Differences from Text/Command Mode
 
@@ -278,7 +246,7 @@ is useful for processors that analyze what the user says rather than the full co
 - **Always asynchronous** — the pipeline never blocks waiting for the auxiliary agent
 - **Requires a workspace** — the auxiliary session is scoped to the workspace
 - **Requires an auxiliary ACP server** — configured in the workspace settings
-- **The `messages` block is only valid with `prompt`** — loader rejects it otherwise
+- **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
 
 ### Examples
 
@@ -303,13 +271,8 @@ prompt: |
   Review the recent conversation and write a brief progress summary.
   Append it to .mitto/progress.md in the workspace.
 
-  @mitto:messages
-
-messages:
-  scope: since-last-run
-  roles: [user, agent]
-  max_messages: 40
-  max_tokens: 6000
+  Session ID: @mitto:session_id
+  Use mitto_conversation_history to retrieve the last 40 user and agent messages.
 ```
 
 #### Extract action items from agent responses
@@ -325,15 +288,11 @@ rerun:
   afterSentMsgs: 10
 
 prompt: |
-  Look through the agent's responses below for any TODO items, action items,
+  Look through the agent's responses for any TODO items, action items,
   or follow-up tasks mentioned. Add new ones to .mitto/todos.md.
 
-  @mitto:messages
-
-messages:
-  scope: since-last-run
-  roles: [agent]
-  max_messages: 20
+  Session ID: @mitto:session_id
+  Use mitto_conversation_history to retrieve the last 20 agent messages.
 ```
 
 ## Full Configuration Schema
@@ -355,14 +314,8 @@ command: /path/to/script.sh # Command to execute (see Command Resolution)
 
 # --- Prompt-mode (use ONE of the three modes) ---
 prompt: | # Prompt template for auxiliary AI agent (fire-and-forget)
-  Analyze these messages: @mitto:messages
-
-# Messages configuration (prompt-mode only)
-messages:
-  scope: since-last-run   # "since-last-run", "last-message", "last-n", or "all"
-  roles: [user, agent]    # Which roles to include (default: both)
-  max_messages: 50         # Max messages to include (default: 50)
-  max_tokens: 8000         # Approximate token cap (optional)
+  Session: @mitto:session_id
+  Use mitto_conversation_history to retrieve messages and analyze them.
 
 # Optional fields
 description: "Adds context" # Description of what the processor does
@@ -408,7 +361,7 @@ expression must evaluate to `true`.
 **CEL context** — Same variables and functions as prompt `enabledWhen`:
 
 - `acp.name`, `acp.type`, `acp.tags`, `acp.autoApprove`
-- `acp.matchesServer("name")`, `acp.matchesServer(["a", "b"])`
+- `acp.matchesServerType("type")`, `acp.matchesServerType(["a", "b"])` — matches ACP server type only, not display name
 - `session.id`, `session.name`, `session.isChild`, `session.isAutoChild`, `session.parentId`, `session.isPeriodic`
 - `parent.exists`, `parent.name`, `parent.acpServer`
 - `children.count`, `children.exists`, `children.mcpCount`, `children.names`, `children.acpServers`
@@ -658,7 +611,7 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 | `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
 | `@mitto:children`              | Human-readable list of child sessions — see below                              |
 | `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
-| `@mitto:messages`              | Filtered conversation history (prompt-mode only). Controlled by the `messages` block — see [Messages Configuration](#messages-configuration). |
+
 
 ### `@mitto:available_acp_servers` format
 
@@ -846,9 +799,9 @@ Processors that timeout or exit with non-zero status are treated as errors.
 
 | Feature       | Text-Mode                    | Command-Mode                           | Prompt-Mode                                  |
 | ------------- | ---------------------------- | -------------------------------------- | -------------------------------------------- |
-| Configuration | `text` field in YAML         | `command` field + external script      | `prompt` field + optional `messages` block   |
-| Content       | Static text (with variables) | Dynamic via external commands          | Prompt template with `@mitto:messages`       |
-| Input         | None (text is inline)        | JSON via stdin                         | Conversation history via `messages` config   |
+| Configuration | `text` field in YAML         | `command` field + external script      | `prompt` field only                          |
+| Content       | Static text (with variables) | Dynamic via external commands          | Prompt template with `@mitto:variable` subs  |
+| Input         | None (text is inline)        | JSON via stdin                         | Conversation history via `mitto_conversation_history` MCP tool |
 | Output        | Modifies outgoing message    | Modifies outgoing message              | None (fire-and-forget to auxiliary agent)    |
 | Execution     | Synchronous                  | Synchronous                            | Asynchronous (pipeline continues immediately)|
 | Use case      | Context, reminders, rules    | Complex transformations, external data | Background analysis, preference tracking     |

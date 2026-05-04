@@ -1,5 +1,11 @@
-# Mitto workspace-specific configuration
-# Prompts are loaded from .mitto/prompts/ directory
-
+processors:
+    - enabled: true
+      name: auggie-manage-rules
+    - enabled: true
+      name: claude-manage-memory
+    - enabled: true
+      name: memorize-preferences
+    - enabled: true
+      name: identify-user-data
 prompts_dirs:
-  - .mitto/prompts
+    - .mitto/prompts

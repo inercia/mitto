@@ -142,25 +142,19 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 | CLI without `--dir` | `workspaces.json` | Saved on changes |
 | macOS app           | `workspaces.json` | Saved on changes |
 
-## Generic Merger System
+## WorkspaceSettings Override Pattern
 
-The `GenericMerger[T]` type in `internal/config/merger.go` provides reusable config merging:
+`WorkspaceSettings` supports `ACPCommandOverride` (`json:"acp_command_override,omitempty"`). In `applyConfigChanges`, after setting `ACPCommand` from the server map, apply any user override:
 
 ```go
-// Create a custom merger for any config type
-merger := &GenericMerger[MyType]{
-    KeyFunc:   func(item MyType) string { return item.Name },
-    SetSource: func(item *MyType, s ConfigItemSource) { item.Source = s },
-    GetSource: func(item MyType) ConfigItemSource { return item.Source },
-    Strategy:  MergeStrategyUnion, // or MergeStrategyReplace
+newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
+if ws.ACPCommandOverride != "" {
+    newWorkspaces[i].ACPCommand = ws.ACPCommandOverride
 }
-
-result := merger.Merge(rcItems, settingsItems)
-// result.Items - merged list
-// result.HasRCFileItems - true if any RC file items
-// result.HasSettingsItems - true if any settings items
 ```
 
-Strategies:
-- `MergeStrategyUnion`: Combine all, RC file overrides by key
-- `MergeStrategyReplace`: Use RC file items if any, else settings
+This pattern (set default from server map, then apply override if non-empty) should be followed for any future `*Override` fields on `WorkspaceSettings`.
+
+## Generic Merger System
+
+See `internal/config/merger.go` for `GenericMerger[T]` — provides reusable config merging with `MergeStrategyUnion` or `MergeStrategyReplace`.

@@ -109,3 +109,31 @@ clientLogger := logging.WithClient(logger, clientID, sessionID)
 - Use `logging.WithSession*` to avoid repeating `session_id` in every log call
 - Pass loggers down through constructors, not as method parameters
 - Use `Debug` for high-frequency events, `Info` for significant state changes
+- Use `Warn` (not `Error`) for expected race conditions during teardown — e.g. streaming goroutines delivering events after `recorder.End()` returns `"session not started"`:
+
+```go
+if strings.Contains(err.Error(), "session not started") {
+    bs.logger.Warn("Failed to persist tool call", "seq", seq, "error", err)
+} else {
+    bs.logger.Error("Failed to persist tool call", "seq", seq, "error", err)
+}
+```
+
+## JSON Marshaling: Nil vs Empty Slices
+
+`json.Marshal` encodes a nil slice as `null` and an empty slice as `[]`. ACP and other APIs that validate with JSON Schema will reject `null` where an array is required.
+
+```go
+// BAD — marshals as "mcpServers": null
+type SessionParams struct {
+    MCPServers []MCPServer `json:"mcpServers"`
+}
+params := SessionParams{} // MCPServers is nil
+
+// GOOD — marshals as "mcpServers": []
+params := SessionParams{
+    MCPServers: []MCPServer{}, // or: make([]MCPServer, 0)
+}
+```
+
+**Rule:** Always initialize slice fields that appear in JSON-serialized API request structs, even when empty. Do not rely on zero values for outbound JSON payloads. Mark intentional empty-slice inits with `// Must be empty array, not nil — ACP validates this`.

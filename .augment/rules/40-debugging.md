@@ -64,24 +64,47 @@ All logs in `~/Library/Logs/Mitto/` (macOS):
 ### Quick Commands
 
 ```bash
-tail -f ~/Library/Logs/Mitto/mitto.log ~/Library/Logs/Mitto/webview.log
-grep -i "level=ERROR" ~/Library/Logs/Mitto/mitto.log
+# mitto.log
+grep -i "level=ERROR\|level=WARN" ~/Library/Logs/Mitto/mitto.log | tail -100
+grep -i "panic\|fatal\|crash" ~/Library/Logs/Mitto/mitto.log
 grep "session_id=SESSION_ID" ~/Library/Logs/Mitto/mitto.log
+# webview.log (frontend / WKWebView)
+grep '\[ERROR\]' ~/Library/Logs/Mitto/webview.log | tail -50
+grep '\[WS\]' ~/Library/Logs/Mitto/webview.log | tail -50
+grep -i 'sync\|resync\|behind' ~/Library/Logs/Mitto/webview.log | tail -30
+# access.log (security / auth) — also check rotated: access.log.1
+grep -i 'fail\|invalid\|unauthorized' ~/Library/Logs/Mitto/access.log
+grep -i 'rate_limit' ~/Library/Logs/Mitto/access.log
+grep -v '127\.0\.0\.1\|::1' ~/Library/Logs/Mitto/access.log   # non-localhost
 ```
+
+### Processor Log Patterns
+
+```bash
+grep 'processor pipeline starting\|processor pipeline complete' ~/Library/Logs/Mitto/mitto.log | tail -20
+grep 'applying processor\|processor applied\|processor executed' ~/Library/Logs/Mitto/mitto.log | tail -30
+grep 'processor skipped\|processor rerun triggered' ~/Library/Logs/Mitto/mitto.log | tail -20
+grep 'processor execution failed\|processor returned error\|processor failed' ~/Library/Logs/Mitto/mitto.log
+```
+
+### Anomaly Detection Patterns
+
+| Anomaly                        | Log            | grep / indicator                                    |
+| ------------------------------ | -------------- | --------------------------------------------------- |
+| Sync loops                     | `mitto.log`    | `keepalive.*behind\|sync_request`                   |
+| Reconnection storms            | `webview.log`  | Multiple `[WS] connected` in short time             |
+| Stale client                   | `mitto.log`    | `client_max_seq` >> `server_max_seq`                |
+| Events after session end       | `mitto.log`    | `session_end` then more events same session         |
+| Duplicate session starts       | `mitto.log`    | Multiple `session_start` same `session_id`          |
+| Empty event loads              | `webview.log`  | `events_loaded.*eventCount=0` repeated              |
+| Orphan prompt_ack              | `webview.log`  | `prompt_ack` without preceding `prompt_request`     |
 
 ### Enable Debug Logging
 
 ```bash
 MITTO_LOG_LEVEL=debug /Applications/Mitto.app/Contents/MacOS/mitto-app
+# Note: mitto.log is disabled by default in CLI; webview.log is macOS app only
 ```
-
-### CLI vs macOS App
-
-| Feature            | CLI                    | macOS App  |
-| ------------------ | ---------------------- | ---------- |
-| Console output     | Always                 | Always     |
-| `mitto.log`        | Disabled by default    | Enabled    |
-| `webview.log`      | N/A                    | Enabled    |
 
 ## Debugging Workflow
 
@@ -96,16 +119,7 @@ MITTO_LOG_LEVEL=debug /Applications/Mitto.app/Contents/MacOS/mitto-app
 
 ## Event Types in events.jsonl
 
-| Type               | Description             |
-| ------------------ | ----------------------- |
-| `session_start`    | Session initialization  |
-| `user_prompt`      | User message            |
-| `agent_message`    | Agent response (HTML)   |
-| `agent_thought`    | Agent reasoning         |
-| `tool_call`        | Tool invocation         |
-| `tool_call_update` | Tool status update      |
-| `error`            | Error event             |
-| `session_end`      | Session termination     |
+`session_start` · `user_prompt` · `agent_message` · `agent_thought` · `tool_call` · `tool_call_update` · `error` · `session_end`
 
 ## Sequence Number Debugging
 
@@ -125,8 +139,8 @@ grep "seq=42" ~/Library/Logs/Mitto/webview.log ~/Library/Logs/Mitto/mitto.log
 | Streaming issues         | Seq gaps in events.jsonl, MarkdownBuffer flush |
 | Session not loading      | metadata.json validity, lock.json              |
 | WebSocket disconnections | webview.log for connection errors, access.log  |
-| ACP process crash loop   | mitto.log for `restart_count`, `error_class`, `reason`; see `15-web-backend-session-lifecycle.md` for crash recovery details |
-| WebSocket backpressure   | mitto.log for `"applying backpressure"` or `"client too slow"`; see `11-web-backend-sequences.md` for backpressure design |
+| ACP process crash loop   | mitto.log: `restart_count`, `error_class`, `reason` (see `15-web-backend-session-lifecycle.md`) |
+| WebSocket backpressure   | mitto.log: `"applying backpressure"`, `"client too slow"` (see `11-web-backend-sequences.md`)   |
 
 ## Replaying Events
 

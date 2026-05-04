@@ -520,6 +520,56 @@ Returns:
 - If the child reports multiple times, each report overwrites the previous one
 - Sessions without a `parent_session_id` cannot use this tool
 
+#### `mitto_conversation_history`
+
+Get and search through the conversation history of a session. Returns events with powerful filtering. Useful for recalling past decisions, finding specific tool calls, searching for errors, or reviewing what happened. Defaults to your own conversation if `conversation_id` is omitted.
+
+| Parameter         | Type     | Required | Description                                                         |
+| ----------------- | -------- | -------- | ------------------------------------------------------------------- |
+| `self_id`         | string   | Yes      | YOUR session ID (the caller)                                        |
+| `conversation_id` | string   | No       | Target conversation (defaults to self if omitted)                   |
+| `event_types`     | string[] | No       | Filter by event types (omit for all). Valid: `user_prompt`, `agent_message`, `agent_thought`, `tool_call`, `tool_call_update`, `plan`, `permission`, `file_read`, `file_write`, `error`, `session_start`, `session_end` |
+| `text_contains`   | string   | No       | Only events whose text content contains this substring (case-insensitive) |
+| `text_excludes`   | string   | No       | Exclude events whose text content contains this substring (case-insensitive) |
+| `after_seq`       | int      | No       | Only events with seq > this value                                   |
+| `before_seq`      | int      | No       | Only events with seq < this value                                   |
+| `last_n`          | int      | No       | Return last N matching events (default: 50, max: 200)               |
+| `offset`          | int      | No       | Skip this many matching events from the end (for backward pagination) |
+| `include_data`    | bool     | No       | Include full event data in results (default: true)                  |
+| `tool_name`       | string   | No       | For `tool_call` events: filter by tool name/title substring         |
+
+Returns:
+
+| Field             | Description                                             |
+| ----------------- | ------------------------------------------------------- |
+| `success`         | Whether the operation succeeded                         |
+| `conversation_id` | The conversation whose history was queried              |
+| `total_events`    | Total events in session (before filtering)              |
+| `returned_events` | Number of events returned                               |
+| `events`          | Array of `ConversationHistoryEvent` (see below)         |
+| `has_more`        | Whether there are more events before the returned range |
+| `error`           | Error message if the operation failed                   |
+
+Each event contains:
+
+| Field       | Description                                                |
+| ----------- | ---------------------------------------------------------- |
+| `seq`       | Sequence number                                            |
+| `type`      | Event type string                                          |
+| `timestamp` | ISO 8601 timestamp                                         |
+| `summary`   | Human-readable one-liner (always present, max 150 chars)   |
+| `data`      | Full event data (omitted when `include_data` is false)     |
+
+**Text search** covers the relevant field for each event type: message text for prompts, HTML content for agent messages, thought text, tool call titles and raw input/output, plan entry content, permission titles, file paths, error messages, etc.
+
+**Data truncation**: Long string fields in `data` are truncated to 2048 characters to keep response sizes manageable.
+
+**Example use cases:**
+- Search for all tool calls that read a specific file: `event_types: ["tool_call"], text_contains: "auth.go"`
+- Find all errors in a session: `event_types: ["error"]`
+- Get the last 10 user prompts: `event_types: ["user_prompt"], last_n: 10`
+- Browse history page by page: `last_n: 20, offset: 0` then `last_n: 20, offset: 20`
+
 ### Permission Flags
 
 Session-scoped tools check permissions at runtime:
@@ -533,7 +583,7 @@ Session-scoped tools check permissions at runtime:
 | `can_interact_other_workspaces` | `mitto_conversation_new`, `mitto_conversation_get`, `mitto_conversation_send_prompt`, `mitto_conversation_wait` (only when `workspace` parameter targets a different workspace) |
 
 **Note:** `mitto_conversation_list` is **always available** (no permission check).
-`mitto_conversation_get_current`, `mitto_conversation_get`, `mitto_conversation_wait`, and `mitto_conversation_update` require the session to be registered (running) but no flag check.
+`mitto_conversation_get_current`, `mitto_conversation_get`, `mitto_conversation_wait`, `mitto_conversation_update`, and `mitto_conversation_history` require the session to be registered (running) but no flag check.
 Cross-workspace operations require the `can_interact_other_workspaces` flag AND user confirmation. The confirmation dialog is NOT gated by `can_prompt_user` — it is a mandatory security gate.
 
 ## Configuring AI Agents

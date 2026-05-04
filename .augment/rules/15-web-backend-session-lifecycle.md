@@ -231,6 +231,23 @@ bs.recordRestart(RestartReasonCrashDuringPrompt)
 stats := bs.GetRestartStats() // TotalRestarts, RecentRestarts, ReasonCounts, LastReason
 ```
 
+### Auxiliary Session Invalidation After Restart
+
+When `SharedACPProcess.Restart()` succeeds, cached auxiliary sessions in `ACPProcessManager.auxSessions` become stale (the new process doesn't know old session IDs). The `onRestart` callback pattern handles this:
+
+```go
+// ACPProcessManager registers this when creating a process (before releasing m.mu):
+wuuid := workspace.UUID
+p.SetOnRestart(func() {
+    m.invalidateAuxiliarySessions(wuuid)  // Acquires auxMu only — no deadlock risk
+})
+// SharedACPProcess.Restart() calls p.onRestart() after successful restart.
+```
+
+- Both `GetOrCreateProcess()` and `GetOrCreateAuxProcess()` register this callback
+- Lock ordering is safe: `Restart()` does NOT hold `m.mu` when calling `onRestart`
+- Next `PromptAuxiliary()` call will create fresh sessions on the new process
+
 ### ACP Process Death Detection (Three-Layer)
 
 Fast crash detection avoids waiting for the ACP SDK's 60-second control request timeout:

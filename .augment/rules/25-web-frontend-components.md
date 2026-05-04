@@ -1,5 +1,5 @@
 ---
-description: Frontend UI components, custom hooks (useResizeHandle, useSwipeNavigation), ChatInput, QueueDropdown, Icons, component patterns
+description: Frontend UI components, custom hooks (useResizeHandle, useSwipeNavigation), ChatInput, QueueDropdown, Icons, side panels, component patterns
 globs:
   - "web/static/components/*.js"
   - "web/static/components/**/*"
@@ -19,6 +19,10 @@ keywords:
   - SessionItem
   - useResizeHandle
   - useSwipeNavigation
+  - ConversationPropertiesPanel
+  - UserDataPanel
+  - side panel
+  - overlay
   - component
   - hook
 ---
@@ -29,15 +33,17 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 
 ## Component Inventory
 
-| Component        | File                | Purpose                                              |
-| ---------------- | ------------------- | ---------------------------------------------------- |
-| `ChatInput`      | `ChatInput.js`      | Message composition, images, prompts dropdown, queue |
-| `QueueDropdown`  | `QueueDropdown.js`  | Queued messages panel with delete/move actions       |
-| `Message`        | `Message.js`        | Renders user/agent/tool/error messages               |
-| `SettingsDialog` | `SettingsDialog.js` | Configuration, workspaces, auth                      |
-| `Icons`          | `Icons.js`          | SVG icon components                                  |
-| `ContextMenu`    | `app.js`            | Right-click menus with viewport-aware positioning    |
-| `SessionItem`    | `app.js`            | Session list item with swipe, context menu, status   |
+| Component                    | File                              | Purpose                                              |
+| ---------------------------- | --------------------------------- | ---------------------------------------------------- |
+| `ChatInput`                  | `ChatInput.js`                    | Message composition, images, prompts dropdown, queue |
+| `QueueDropdown`              | `QueueDropdown.js`                | Queued messages panel with delete/move actions       |
+| `Message`                    | `Message.js`                      | Renders user/agent/tool/error messages               |
+| `SettingsDialog`             | `SettingsDialog.js`               | Configuration, workspaces, auth                      |
+| `Icons`                      | `Icons.js`                        | SVG icon components                                  |
+| `ConversationPropertiesPanel`| `ConversationPropertiesPanel.js`  | Right-side overlay panel for session properties      |
+| `UserDataPanel`              | `UserDataPanel.js`                | Right-side overlay panel for user data / metadata    |
+| `ContextMenu`                | `app.js`                          | Right-click menus with viewport-aware positioning    |
+| `SessionItem`                | `app.js`                          | Session list item with swipe, context menu, status   |
 
 ## ChatInput
 
@@ -58,23 +64,55 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 
 ## QueueDropdown
 
-### Resizable Height
-
-```javascript
-const { height, isDragging, handleProps } = useResizeHandle({
-    initialHeight: getQueueDropdownHeight(),
-    minHeight: 100, maxHeight: 500,
-    onDragEnd: (h) => setQueueDropdownHeight(h),
-});
-```
-
-### Auto-Close
-
-Closes after 5s inactivity. Paused on hover and during drag.
+Resizable via `useResizeHandle` (initialHeight: `getQueueDropdownHeight()`, min: 100, max: 500). Auto-closes after 5s inactivity; paused on hover and drag.
 
 ## Icons
 
-Naming: `[Name]Icon` (e.g., `TrashIcon`, `GripIcon`, `QueueIcon`).
+Naming: `[Name]Icon` (e.g., `TrashIcon`, `GripIcon`, `QueueIcon`, `TagIcon`).
+
+- Always use `CloseIcon` SVG — never plain text `✕`. Small: `w-4 h-4` (toasts), Large: `w-5 h-5` (dialogs)
+- `TagIcon` = user data / metadata panels
+
+## Side Panel Overlay Pattern
+
+`ConversationPropertiesPanel` and `UserDataPanel` share the same fixed-overlay structure. **Only one panel may be open at a time** — the parent (`app.js`) manages `activePanel` state and passes `isOpen` accordingly.
+
+### Animation Pattern (isClosing / shouldRender)
+
+```javascript
+const [isClosing, setIsClosing] = useState(false);
+const [shouldRender, setShouldRender] = useState(isOpen);
+
+useEffect(() => {
+  if (isOpen) { setShouldRender(true); setIsClosing(false); }
+  else if (shouldRender) {
+    setIsClosing(true);
+    const t = setTimeout(() => { setShouldRender(false); setIsClosing(false); }, 150);
+    return () => clearTimeout(t);
+  }
+}, [isOpen, shouldRender]);
+
+if (!shouldRender) return null;
+```
+
+### DOM Structure
+
+```javascript
+// Fixed right-side overlay: backdrop left, panel right
+html`<div class="fixed inset-0 z-50 flex">
+  <div class="flex-1 bg-black/50 properties-backdrop ${isClosing ? 'closing' : ''}"
+       onClick=${handleClose} />
+  <div class="w-80 bg-mitto-sidebar ... properties-panel ${isClosing ? 'closing' : ''}">
+    ${renderPanelContent()}
+  </div>
+</div>`
+```
+
+CSS classes `properties-panel` and `properties-backdrop` control slide-in/fade-in animations. Adding `closing` triggers the exit animation (150ms).
+
+### Icon Convention
+
+Use `TagIcon` for user data / metadata panels (defined in `Icons.js`).
 
 ## useResizeHandle Hook
 
@@ -87,55 +125,24 @@ const { height, isDragging, handleProps } = useResizeHandle({
 // Spread handleProps on resize handle element
 ```
 
-- Mouse + touch support
-- Dragging up increases height
-- Sets `user-select: none` and `cursor: ns-resize` during drag
+Mouse + touch support. Dragging up increases height. Sets `user-select: none` and `cursor: ns-resize` during drag.
 
 ## useSwipeNavigation Hook
 
 ```javascript
 useSwipeNavigation(containerRef, onSwipeLeft, onSwipeRight, {
-    threshold: 80, maxVertical: 80, edgeWidth: 40,
-    onEdgeSwipeRight: openSidebar,
+    threshold: 80, maxVertical: 80, edgeWidth: 40, onEdgeSwipeRight: openSidebar,
 });
 ```
 
-- Swipe must complete within 500ms
-- Horizontal > threshold, vertical < maxVertical
-- Edge swipes detected by start position within edgeWidth of screen edge
+Swipe completes within 500ms; horizontal > threshold, vertical < maxVertical; edge swipes by start position within `edgeWidth`.
 
 ## Creating New Hooks
 
-1. File naming: `use[Name].js`
-2. Export from `hooks/index.js`
-3. Use `window.preact` globals
-4. Always return cleanup from useEffect
-5. Include touch events for mobile
-
-
+File naming: `use[Name].js`. Export from `hooks/index.js`. Use `window.preact` globals. Return cleanup from useEffect. Include touch events for mobile.
 ## Session List: Parent-Child UI Rules
 
-### Accordion Mode for Children (Always On)
-
-Children groups **always** use accordion mode — only one parent's children can be expanded at a time. This is enforced in two ways, regardless of the global `single_expanded_group` config setting:
-
-**1. Expand toggle:** When expanding children of a conversation, children in all other conversations are automatically collapsed. Implemented in `handleToggleGroup`:
-```javascript
-const isParentGroup = groupKey.startsWith("parent:");
-if (willExpand && (getSingleExpandedGroupMode() || isParentGroup)) {
-  // Collapse all other groups in the same category
-}
-```
-
-**2. Session selection:** When clicking on any session that doesn't belong to the currently expanded "family" (parent + its children), all expanded parent-child groups are collapsed. Implemented via `handleSelectWithCollapse` which wraps `onSelect`:
-- `sessionFamilyMap` (useMemo) maps every session ID to its family's `parent:${id}` key
-- On select, finds expanded `parent:*` groups and collapses those that don't match the selected session's family
-
-Parent-child group keys use the format `parent:${session.session_id}`. These are kept separate from folder-level group keys so that toggling a session's children doesn't collapse the workspace folder.
-
-### Child Session Restrictions in UI
-
-These backend rules should be reflected in UI behavior:
-- **Children cannot be archived** — only deleted when parent is archived (cascade delete)
-- **Children cannot be made periodic** — only top-level sessions can have periodic config
-- **Children cannot be directly archived** — the archive action should be hidden or disabled for child sessions
+- Children accordion: only one parent's children expanded at a time (accordion mode always on for `parent:*` groups)
+- Group key format: `parent:${session.session_id}` — separate from folder-level keys
+- `sessionFamilyMap` (useMemo) maps session IDs to their family key; used in `handleSelectWithCollapse`
+- **Child restrictions**: cannot be archived, cannot be made periodic — hide/disable those actions in UI

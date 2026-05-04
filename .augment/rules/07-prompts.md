@@ -14,7 +14,6 @@ keywords:
   - workspace-prompts
   - enabledWhen
   - enabledWhenACP
-  - enabledWhenMCP
   - predefinedPrompts
   - toggle-enabled
   - prompts menu
@@ -56,13 +55,12 @@ description: "Review code for quality"
 group: "Code Quality"
 backgroundColor: "#4a90d9"
 enabled: true
-enabledWhenACP: "auggie, claude-code"
-enabledWhenMCP: "filesystem_*"
-enabledWhen: "has_mcp('filesystem')"
-acps: "auggie"
+enabledWhen: "acp.matchesServerType('augment') && tools.hasPattern('filesystem_*')"
 ---
 Please review the following code for quality, readability, and potential bugs.
 ```
+
+**Legacy shorthand fields** (`enabledWhenACP`, `enabledWhenMCP`) are still accepted for backward compatibility and are auto-translated to `enabledWhen` CEL expressions. Prefer `enabledWhen` for new prompts.
 
 ## Key Types
 
@@ -75,9 +73,9 @@ type WebPrompt struct {
     BackgroundColor string       `json:"backgroundColor,omitempty"`
     Source          PromptSource `json:"source,omitempty"`    // "builtin", "file", "settings", "workspace"
     Enabled         *bool        `json:"enabled,omitempty"`   // nil = enabled, false = disabled
-    EnabledWhenACP  string       `json:"-"`                   // Not serialized to JSON
-    EnabledWhenMCP  string       `json:"-"`
-    EnabledWhen     string       `json:"-"`
+    EnabledWhenACP  string       `json:"-"`                   // Legacy shorthand → auto-translated to EnabledWhen
+    EnabledWhenMCP  string       `json:"-"`                   // Legacy shorthand → auto-translated to EnabledWhen
+    EnabledWhen     string       `json:"-"`                   // CEL expression (preferred)
 }
 ```
 
@@ -135,22 +133,17 @@ const fetchWorkspacePrompts = useCallback(async (workingDir, forceRefresh) => {
 }, [...]);
 ```
 
-### Anti-Pattern: Client-Side Prompt Merge (Removed)
-```javascript
-// BAD (old pattern): 3-way merge of globalPrompts + acpServersWithPrompts + workspacePrompts
-// This was removed because it caused sync issues when disabled prompts were filtered server-side
-
-// GOOD (current): Backend merges everything, frontend just uses the result
-const predefinedPrompts = workspacePrompts;
-```
+**Anti-pattern**: Never do client-side prompt merging — backend does everything. `predefinedPrompts = workspacePrompts` only.
 
 ## Conditional Requests
 
-The workspace-prompts endpoint supports `If-Modified-Since` / `Last-Modified` headers for efficient polling. The 30-second interval refresh uses conditional requests to avoid transferring data when unchanged.
+The workspace-prompts endpoint supports `If-Modified-Since` / `Last-Modified` for efficient polling (30s interval).
 
 ## enabledWhen Filtering
 
-Server-side filtering via `filterPromptsByEnabled()` and `buildPromptEnabledContext()`:
-- `enabledWhenACP`: Comma-separated ACP server names
-- `enabledWhenMCP`: Comma-separated tool name patterns (glob)
-- `enabledWhen`: CEL expression evaluated with session context
+Server-side filtering via `filterPromptsByEnabled()` and `buildPromptEnabledContext()`.
+
+Prefer `enabledWhen` (CEL expression). Legacy shorthands are auto-translated at load time:
+- `enabledWhenACP: "augment"` → `acp.matchesServerType("augment")`
+- `enabledWhenACP: "augment, claude-code"` → `acp.matchesServerType(["augment", "claude-code"])`
+- `enabledWhenMCP: "mitto_*"` → `tools.hasPattern("mitto_*")` (legacy, prefer `enabledWhen`)

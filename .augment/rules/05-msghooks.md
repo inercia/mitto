@@ -2,132 +2,129 @@
 description: Command processors for pre/post processing, external command execution, message transformation
 globs:
   - "internal/processors/**/*"
+  - "config/processors/**/*"
 ---
 
-# Command Processors Package
+# Processors Package
 
-The `internal/processors` package provides external command-based processors for message transformation. Processors are loaded from YAML files in `MITTO_DIR/processors/` directory.
+The `internal/processors` package provides three processor modes for message pre/post-processing. Processors are loaded from YAML in `MITTO_DIR/processors/` and the embedded `config/processors/builtin/` directory.
 
-> **Note:** The old `hooks/` directory name is still supported for backward compatibility.
+> Full schema and CEL reference: `docs/config/processors.md`
 
-## Quick Reference
+## Three Processor Modes
 
-| Component    | Purpose                               |
-| ------------ | ------------------------------------- |
-| `Processor`  | Processor definition loaded from YAML |
-| `Loader`     | Loads and validates processor files   |
-| `Executor`   | Runs processors as external commands  |
-| `Apply*`     | Applies processors to messages        |
+Use **exactly one** of:
 
-## Processor Configuration
+| Field     | Mode        | How it works                                                           |
+| --------- | ----------- | ---------------------------------------------------------------------- |
+| `text`    | Text        | Static string injected into message (no process)                       |
+| `command` | Command     | External script executed; stdout transforms/prepends/appends message   |
+| `prompt`  | Prompt-mode | Prompt sent to auxiliary AI agent — **fire-and-forget**, non-blocking  |
 
-Processors are defined in YAML files in `MITTO_DIR/processors/*.yaml`:
+Prompt-mode processors are collected in a `pendingPrompts` slice during the pipeline run, then dispatched via `dispatchPromptBatch`:
+- **Single processor**: dispatched directly with its own name (fire-and-forget goroutine)
+- **Multiple processors**: combined into one prompt with a "We would like to fulfill the following requirements:" header, dispatched as a single batched request — only ONE auxiliary session is created
+
+Prompt-mode processor auxiliary sessions have access to Mitto's MCP tools (e.g., `mitto_ui_notify`) via a stdio MCP proxy, when `ACPProcessManager.MCPServerURL` is set. See `42-mcpserver-development.md` for the wiring pattern.
+
+## Key YAML Fields
 
 ```yaml
-name: system-prompt
-description: Prepends a system prompt to the first message
-when: first # first, all, all-except-first
-position: prepend # prepend, append
-priority: 100 # Lower = earlier execution
+name: my-processor
+when: first            # first | all | all-except-first
+priority: 100          # lower = earlier
+enabled: true          # false = never loads (build-time gate)
+enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'  # CEL runtime gate
+on_error: skip         # skip | fail
 
-command: ./generate-prompt.sh
-args: []
-input: message # message, conversation, none
-output: transform # transform, prepend, append, discard
+# Command-mode only:
+command: ./script.sh
+input: message         # message | conversation | none
+output: prepend        # transform | prepend | append | discard
 
-timeout: 5s
-working_dir: session # session, hook
-on_error: skip # skip, fail
+# Prompt-mode only:
+prompt: |
+  Analyze these messages: @mitto:messages   # legacy; see note below
+timeout: 300s
 
-# Optional: limit to specific workspaces
-workspaces:
-  - /path/to/project
+# Auto re-run for when:first processors:
+rerun:
+  afterSentMsgs: 15
 ```
 
-## Input Types
+## Two Enable Layers
 
-| Type           | Description                            |
-| -------------- | -------------------------------------- |
-| `message`      | Send message with basic context (JSON) |
-| `conversation` | Send full conversation history (JSON)  |
-| `none`         | Send nothing to stdin                  |
+| Layer         | Field          | Skip reason logged      | Effect                                 |
+| ------------- | -------------- | ----------------------- | -------------------------------------- |
+| Build-time    | `enabled: false` | not loaded at all      | Processor never appears in pipeline    |
+| Runtime (CEL) | `enabledWhen`  | `enabledWhen_false`     | Processor is loaded but skipped        |
 
-## Output Types
+When a processor has both `enabled: false` and `enabledWhen`, it is never loaded regardless of the CEL result.
 
-| Type        | Description                          |
-| ----------- | ------------------------------------ |
-| `transform` | Replace message entirely with stdout |
-| `prepend`   | Prepend stdout to message            |
-| `append`    | Append stdout to message             |
-| `discard`   | Ignore stdout (side-effect only)     |
+## `@mitto:messages` Substitution
 
-## Working Directory
+The `@mitto:messages` placeholder (plus `messages:` YAML block) is **supported for backward compatibility** in user-defined processors. Builtin processors have migrated to using the `mitto_conversation_history` MCP tool instead — the agent calls the tool directly to fetch filtered history. Do NOT add new `messages:` blocks to builtin YAML files.
 
-| Type      | Description                                    |
-| --------- | ---------------------------------------------- |
-| `session` | Use session's working directory                |
-| `hook`    | Use processor file's directory (for relative paths) |
+## Builtin Processors (`config/processors/builtin/`)
 
-## Processor Application Flow
+All builtins are **`enabled: false` by default**. Enable per workspace in the Workspaces dialog or `.mittorc`:
 
-```
-Message
-  ↓
-Load processors from MITTO_DIR/processors/*.yaml
-  ↓
-Filter by enabled, when, workspace
-  ↓
-Sort by priority (lower first)
-  ↓
-Execute each processor in order
-  ↓
-Transformed message
+```yaml
+# .mittorc
+processors:
+  - name: memorize-preferences
+    enabled: true
 ```
 
-## Error Handling
+| Processor             | Mode    | `enabledWhen` condition                                         | Purpose                            |
+| --------------------- | ------- | --------------------------------------------------------------- | ---------------------------------- |
+| `session-context`     | text    | _(none)_                                                        | Prepend session metadata           |
+| `check-mcp-tools`     | text    | `!tools.hasPattern("mitto_*")`                                  | Suggest MCP install if missing     |
+| `delegate-to-coder`   | text    | _(varies)_                                                      | Delegate work to coder session     |
+| `delegate-playwright` | text    | _(varies)_                                                      | Delegate Playwright tests          |
+| `cleanup-children`    | command | _(varies)_                                                      | Archive stale child sessions       |
+| `auggie-manage-rules` | prompt  | `acp.matchesServerType("augment") && !session.isPeriodic`       | Maintain `.augment/rules/` files   |
+| `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic`   | Maintain `CLAUDE.md` / `.claude/`  |
+| `memorize-preferences`| prompt  | `!session.isPeriodic`                                           | Save user prefs to `AGENTS.md`     |
+| `identify-user-data`  | prompt  | `workspace.hasUserDataSchema && !session.isPeriodic`            | Auto-fill workspace user data fields|
 
-| Mode   | Behavior                                          |
-| ------ | ------------------------------------------------- |
-| `skip` | Continue without the processor on error (default) |
-| `fail` | Abort the message on error                        |
+**Common skip reasons:**
+- `enabledWhen_false` — CEL expression evaluated to false (e.g., wrong server type, tools already present)
+- `check-mcp-tools` skipped when mitto tools already available → `tools.hasPattern("mitto_*")` is true
+- `auggie-manage-rules` skipped when using Claude Code → `acp.matchesServerType("augment")` is false
+- `identify-user-data` skipped when no user data schema in `.mittorc` → `workspace.hasUserDataSchema` is false
 
-## Key Patterns
+## CEL Context for `enabledWhen`
 
-### Command Resolution
+Key CEL variables/functions (full reference in `docs/config/processors.md`):
 
-Commands are resolved as follows:
+| Context            | Examples                                                                    |
+| ------------------ | --------------------------------------------------------------------------- |
+| `acp.*`            | `acp.matchesServerType("augment")`, `acp.name`, `acp.type`, `acp.tags`     |
+| `session.*`        | `session.isPeriodic`, `session.isChild`, `session.id`                       |
+| `workspace.*`      | `workspace.hasUserDataSchema`, `workspace.folder`                           |
+| `tools.*`          | `tools.hasPattern("mitto_*")`, `tools.hasAllPatterns(["a_*", "b_*"])`       |
 
-- `./ or ../` prefix → relative to processor file directory
+## Skip Reason Reference
+
+| Log `reason=`       | Cause                                                   |
+| ------------------- | ------------------------------------------------------- |
+| `enabled_false`     | `enabled: false` in YAML and no workspace override      |
+| `enabledWhen_false` | CEL expression evaluated to false                       |
+| `when_mismatch`     | `when: first` processor on a non-first message          |
+
+## Command Resolution
+
+- `./` or `../` prefix → relative to processor file directory
 - Absolute path → used as-is
 - Otherwise → PATH lookup
 
-```go
-func (p *Processor) ResolveCommand() string {
-    if strings.HasPrefix(p.Command, "./") || strings.HasPrefix(p.Command, "../") {
-        return filepath.Join(p.ProcessorDir, p.Command)
-    }
-    return p.Command
-}
-```
-
-### ShouldApply Logic
-
-Processors check enabled, workspace filter, and when condition:
-
-```go
-func (p *Processor) ShouldApply(isFirstMessage bool, workingDir string) bool {
-    if !p.IsEnabled() { return false }
-    // Check workspace filter...
-    // Check when condition (first, all, all-except-first)...
-}
-```
-
-### Default Values
+## Defaults
 
 | Field         | Default   |
 | ------------- | --------- |
 | `enabled`     | true      |
-| `timeout`     | 5s        |
+| `timeout`     | 5s (300s for prompt-mode) |
 | `priority`    | 100       |
 | `input`       | message   |
 | `output`      | transform |

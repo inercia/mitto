@@ -29,6 +29,7 @@ cmd/mitto/            → Entry point only (minimal code)
 cmd/mitto-app/        → macOS native app entry point
 internal/cmd/         → CLI commands (Cobra-based)
 internal/acp/         → ACP protocol client (SDK wrapper)
+internal/agents/      → Agent definitions (metadata, commands, mcp-list); Manager looks up agents by acpId
 internal/auxiliary/   → Hidden ACP session for utility tasks
 internal/client/      → Go client for Mitto REST API + WebSocket (used in tests)
 internal/config/      → Configuration loading (YAML/JSON)

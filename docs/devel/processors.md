@@ -8,7 +8,7 @@ The pipeline is managed by a single `processors.Manager` that merges three types
 
 1. **Text-mode Processors** (from `config.MessageProcessor`) — Lightweight, declarative text prepend/append rules defined in YAML configuration. These run at priority 0 by default.
 2. **Command-mode Processors** (from `internal/processors/`) — External command-based transformations that can run arbitrary scripts, produce attachments, and fully replace messages. These run at priority 100 by default.
-3. **Prompt-mode Processors** (from `internal/processors/`) — Fire-and-forget prompts dispatched to a workspace-scoped auxiliary AI agent. They do not modify the outgoing message. The prompt is assembled with filtered conversation history (`@mitto:messages`) and sent asynchronously via `PromptFunc`. These typically run at priority 200.
+3. **Prompt-mode Processors** (from `internal/processors/`) — Fire-and-forget prompts dispatched to a workspace-scoped auxiliary AI agent. They do not modify the outgoing message. The prompt template uses standard `@mitto:variable` substitution; the auxiliary agent retrieves conversation history at runtime via the `mitto_conversation_history` MCP tool. These typically run at priority 200.
 
 All types share the same `when` condition types (`first`, `all`, `all-except-first`) from the `config.ProcessorWhen` type. Text-mode processors from config are merged into the unified pipeline via `Manager.CloneWithTextProcessors()`, which returns a per-session copy to avoid data races on the shared Manager instance.
 
@@ -38,7 +38,7 @@ sequenceDiagram
             ProcMgr->>ProcMgr: Apply output (transform/prepend/append/discard)
             ProcMgr->>ProcMgr: Collect attachments
         else Prompt-mode processor (priority 200)
-            ProcMgr->>ProcMgr: Build prompt with @mitto:messages
+            ProcMgr->>ProcMgr: Build prompt (SubstituteVariables)
             ProcMgr-)AuxAgent: PromptFunc (fire-and-forget)
             Note over ProcMgr,AuxAgent: Pipeline continues immediately
         end

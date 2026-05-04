@@ -1073,6 +1073,7 @@ func run() error {
 				workspaces = append(workspaces, config.WorkspaceSettings{
 					ACPServer:  server.Name,
 					ACPCommand: server.Command,
+					ACPEnv:     server.Env,
 					WorkingDir: absPath,
 				})
 			}

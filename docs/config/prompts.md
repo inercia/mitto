@@ -266,7 +266,7 @@ description: "Pick a JIRA ticket and spawn parallel conversations"
 group: "JIRA"
 backgroundColor: "#BBDEFB"
 enabled: true
-enabledWhen: '!session.isChild && acp.matchesServer(["auggie", "claude-code"]) && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+enabledWhen: '!session.isChild && acp.matchesServerType(["augment", "claude-code"]) && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
 ---
 ```
 
@@ -494,16 +494,16 @@ immediately when a session starts.
 
 | Function                              | Returns | Description                                                   |
 | ------------------------------------- | ------- | ------------------------------------------------------------- |
-| `acp.matchesServer("name")`           | bool    | `true` if ACP name/type matches (case-insensitive, fail-open) |
-| `acp.matchesServer(["a", "b"])`       | bool    | `true` if ACP matches any of the listed servers               |
+| `acp.matchesServerType("type")`           | bool    | `true` if ACP type matches (case-insensitive, fail-open)      |
+| `acp.matchesServerType(["a", "b"])`       | bool    | `true` if ACP matches any of the listed servers               |
 | `tools.hasPattern("glob")`            | bool    | `true` if any tool matches the glob pattern                   |
 | `tools.hasAllPatterns(["g1", "g2"])`   | bool    | `true` if ALL glob patterns are satisfied                     |
 | `tools.hasAnyPattern(["g1", "g2"])`    | bool    | `true` if ANY glob pattern is satisfied                       |
 
 The glob pattern supports `*` (any characters) and `?` (single character).
 
-**`acp.matchesServer` details:**
-- Compares against both `acp.name` and `acp.type` (case-insensitive)
+**`acp.matchesServerType` details:**
+- Compares against `acp.type` only (case-insensitive), not the display name
 - **Fail-open**: Returns `true` when no ACP server is active (so prompts remain visible during startup)
 
 ### CEL Expression Examples
@@ -530,11 +530,11 @@ enabledWhen: "children.count == 0"
 #### ACP Server Filtering
 
 ```yaml
-# Only for a specific ACP server (case-insensitive, fail-open)
-enabledWhen: 'acp.matchesServer("auggie")'
+# Only for a specific ACP server type (case-insensitive, fail-open)
+enabledWhen: 'acp.matchesServerType("augment")'
 
-# Only for one of several servers
-enabledWhen: 'acp.matchesServer(["auggie", "claude-code"])'
+# Only for one of several server types
+enabledWhen: 'acp.matchesServerType(["augment", "claude-code"])'
 
 # Only for Claude-based servers (name prefix match)
 enabledWhen: 'acp.name.startsWith("Claude")'
@@ -622,8 +622,8 @@ enabledWhen: 'children.exists && permissions.canSendPrompt && tools.hasPattern("
 enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
 
 # "Improve Augment rules" - Update .augment/rules
-# Only when using Auggie (not Claude Code or other agents)
-enabledWhen: 'acp.matchesServer("auggie")'
+# Only when using Augment-type agents (not Claude Code or other agents)
+enabledWhen: 'acp.matchesServerType("augment")'
 
 # "Handoff to new conversation" - Continue in a new session
 # Only in parent conversations, requires Mitto tools
