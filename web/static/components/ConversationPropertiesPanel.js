@@ -257,16 +257,6 @@ export function ConversationPropertiesPanel({
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef(null);
 
-  // User data state
-  const [userData, setUserData] = useState({ attributes: [] });
-  const [userDataSchema, setUserDataSchema] = useState(null);
-  const [isLoadingUserData, setIsLoadingUserData] = useState(false);
-  const [editingAttribute, setEditingAttribute] = useState(null);
-  const [editedAttributeValue, setEditedAttributeValue] = useState("");
-  const [isSavingAttribute, setIsSavingAttribute] = useState(false);
-  const [userDataError, setUserDataError] = useState(null);
-  const attributeInputRef = useRef(null);
-
   // Periodic config state
   const [periodicConfig, setPeriodicConfig] = useState(null);
   const [callbackConfig, setCallbackConfig] = useState(null);
@@ -305,8 +295,6 @@ export function ConversationPropertiesPanel({
   // Reset state when session changes or panel closes
   useEffect(() => {
     setIsEditingTitle(false);
-    setEditingAttribute(null);
-    setUserDataError(null);
     setPeriodicConfig(null);
     setCallbackConfig(null);
     setCallbackCopied(false);
@@ -314,44 +302,23 @@ export function ConversationPropertiesPanel({
     setSavingFlags({});
   }, [sessionId, isOpen]);
 
-  // Fetch user data, schema, periodic config, and flags when panel opens
+  // Fetch periodic config, callback config, flags, and session settings when panel opens
   useEffect(() => {
-    if (!isOpen || !sessionId || !sessionInfo?.working_dir) return;
+    if (!isOpen || !sessionId) return;
 
     const fetchData = async () => {
-      setIsLoadingUserData(true);
       setIsLoadingFlags(true);
-      setUserDataError(null);
       setFlagsError(null);
 
       try {
-        // Fetch user data, schema, periodic config, callback config, available flags, and session settings in parallel
-        const [userDataRes, schemaRes, periodicRes, callbackRes, flagsRes, settingsRes] =
+        // Fetch periodic config, callback config, available flags, and session settings in parallel
+        const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
-            authFetch(apiUrl(`/api/sessions/${sessionId}/user-data`)),
-            authFetch(
-              apiUrl(
-                `/api/workspace/user-data-schema?working_dir=${encodeURIComponent(sessionInfo.working_dir)}`,
-              ),
-            ),
             authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`)),
             authFetch(apiUrl(`/api/sessions/${sessionId}/callback`)),
             authFetch(apiUrl("/api/advanced-flags")),
             authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
           ]);
-
-        if (userDataRes.ok) {
-          const data = await userDataRes.json();
-          setUserData(data);
-        }
-
-        if (schemaRes.ok) {
-          const schema = await schemaRes.json();
-          setUserDataSchema(schema);
-        } else if (schemaRes.status === 404) {
-          // No schema defined
-          setUserDataSchema({ fields: [] });
-        }
 
         if (periodicRes.ok) {
           const periodic = await periodicRes.json();
@@ -379,16 +346,14 @@ export function ConversationPropertiesPanel({
         }
       } catch (err) {
         console.error("Failed to fetch panel data:", err);
-        setUserDataError("Failed to load user data");
         setFlagsError("Failed to load settings");
       } finally {
-        setIsLoadingUserData(false);
         setIsLoadingFlags(false);
       }
     };
 
     fetchData();
-  }, [isOpen, sessionId, sessionInfo?.working_dir]);
+  }, [isOpen, sessionId]);
 
   // Focus title input when entering edit mode
   useEffect(() => {
@@ -397,14 +362,6 @@ export function ConversationPropertiesPanel({
       titleInputRef.current.select();
     }
   }, [isEditingTitle]);
-
-  // Focus attribute input when entering edit mode
-  useEffect(() => {
-    if (editingAttribute && attributeInputRef.current) {
-      attributeInputRef.current.focus();
-      attributeInputRef.current.select();
-    }
-  }, [editingAttribute]);
 
   // Listen for WebSocket session_settings_updated events to keep UI in sync
   useEffect(() => {
@@ -471,91 +428,6 @@ export function ConversationPropertiesPanel({
       }
     },
     [handleSaveTitle],
-  );
-
-  // Handle attribute edit start
-  const handleStartEditAttribute = useCallback((attr) => {
-    setEditingAttribute(attr.name);
-    setEditedAttributeValue(attr.value || "");
-  }, []);
-
-  // Handle attribute save
-  const handleSaveAttribute = useCallback(async () => {
-    if (!sessionId || isSavingAttribute || !editingAttribute) return;
-
-    setIsSavingAttribute(true);
-    setUserDataError(null);
-
-    try {
-      // Update the attribute in the list
-      const updatedAttributes = [...userData.attributes];
-      const existingIndex = updatedAttributes.findIndex(
-        (a) => a.name === editingAttribute,
-      );
-
-      if (existingIndex >= 0) {
-        updatedAttributes[existingIndex] = {
-          name: editingAttribute,
-          value: editedAttributeValue,
-        };
-      } else {
-        updatedAttributes.push({
-          name: editingAttribute,
-          value: editedAttributeValue,
-        });
-      }
-
-      const res = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/user-data`),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ attributes: updatedAttributes }),
-        },
-      );
-
-      if (res.ok) {
-        const data = await res.json();
-        setUserData(data);
-        setEditingAttribute(null);
-      } else {
-        const errorData = await res.json().catch(() => ({}));
-        setUserDataError(errorData.message || "Failed to save attribute");
-      }
-    } catch (err) {
-      console.error("Failed to save attribute:", err);
-      setUserDataError("Failed to save attribute");
-    } finally {
-      setIsSavingAttribute(false);
-    }
-  }, [
-    sessionId,
-    editingAttribute,
-    editedAttributeValue,
-    userData.attributes,
-    isSavingAttribute,
-  ]);
-
-  // Handle attribute key press
-  const handleAttributeKeyDown = useCallback(
-    (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        handleSaveAttribute();
-      } else if (e.key === "Escape") {
-        setEditingAttribute(null);
-      }
-    },
-    [handleSaveAttribute],
-  );
-
-  // Get attribute value by name
-  const getAttributeValue = useCallback(
-    (name) => {
-      const attr = userData.attributes.find((a) => a.name === name);
-      return attr?.value || "";
-    },
-    [userData.attributes],
   );
 
   // Handle flag value change
@@ -661,9 +533,6 @@ export function ConversationPropertiesPanel({
       },
     });
   }, [sessionId]);
-
-  // Check if schema has fields
-  const hasSchema = userDataSchema && userDataSchema.fields?.length > 0;
 
   // Animation state: track if we're closing to play exit animation
   const [isClosing, setIsClosing] = useState(false);
@@ -1146,14 +1015,6 @@ export function ConversationPropertiesPanel({
           </div>
         `}
 
-        <!-- User Data Section -->
-        <div>
-          <label class="block text-sm font-medium text-slate-400 mb-2">
-            User Data
-          </label>
-          ${renderUserDataSection()}
-        </div>
-
         <!-- Advanced Section (Collapsible) -->
         ${renderAdvancedSection()}
       </div>
@@ -1255,112 +1116,4 @@ export function ConversationPropertiesPanel({
     `;
   }
 
-  function renderUserDataSection() {
-    if (isLoadingUserData) {
-      return html` <div class="text-sm text-slate-500">Loading...</div> `;
-    }
-
-    if (!hasSchema) {
-      return html`
-        <div class="text-sm text-slate-500 italic">
-          No user data schema configured for this workspace.
-        </div>
-      `;
-    }
-
-    return html`
-      <div class="space-y-3">
-        ${userDataError &&
-        html`
-          <div class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1">
-            ${userDataError}
-          </div>
-        `}
-        ${userDataSchema.fields.map((field) => {
-          const value = getAttributeValue(field.name);
-          const isEditing = editingAttribute === field.name;
-
-          return html`
-            <div key=${field.name}>
-              <label class="block text-xs text-slate-500 mb-1" title=${field.description || ""}>
-                ${field.name}
-              </label>
-              ${isEditing
-                ? html`
-                    <div class="flex items-center gap-2">
-                      <input
-                        ref=${attributeInputRef}
-                        type=${field.type === "url" ? "url" : "text"}
-                        class="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
-                        value=${editedAttributeValue}
-                        onInput=${(e) =>
-                          setEditedAttributeValue(e.target.value)}
-                        onKeyDown=${handleAttributeKeyDown}
-                        onBlur=${() => {
-                          setTimeout(() => {
-                            if (
-                              editingAttribute === field.name &&
-                              !isSavingAttribute
-                            ) {
-                              setEditingAttribute(null);
-                            }
-                          }, 150);
-                        }}
-                        disabled=${isSavingAttribute}
-                        placeholder=${field.description
-                          ? field.description
-                          : field.type === "url"
-                            ? "https://..."
-                            : "Enter value..."}
-                      />
-                      <button
-                        class="p-1 hover:bg-slate-700 rounded transition-colors text-green-400"
-                        onClick=${handleSaveAttribute}
-                        title="Save"
-                        disabled=${isSavingAttribute}
-                      >
-                        <${CheckIcon} className="w-4 h-4" />
-                      </button>
-                    </div>
-                  `
-                : html`
-                    <div class="flex items-center gap-2 group">
-                      ${field.type === "url" && value
-                        ? html`
-                            <a
-                              href=${value}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              class="flex-1 text-sm text-blue-400 hover:underline truncate"
-                              title=${value}
-                            >
-                              ${value}
-                            </a>
-                          `
-                        : html`
-                            <span
-                              class="flex-1 text-sm truncate ${!value
-                                ? "text-slate-500 italic"
-                                : ""}"
-                              title=${value}
-                            >
-                              ${value || "Not set"}
-                            </span>
-                          `}
-                      <button
-                        class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100"
-                        onClick=${() =>
-                          handleStartEditAttribute({ name: field.name, value })}
-                        title="Edit"
-                      >
-                        <${EditIcon} className="w-4 h-4" />
-                      </button>
-                    </div>
-                  `}
-            </div>
-          `;
-        })}
-      </div>
-    `;
-  }
 }

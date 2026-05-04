@@ -10,6 +10,7 @@ export { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 export { SavePromptDialog } from "./SavePromptDialog.js";
 export { QueueDropdown } from "./QueueDropdown.js";
 export { ConversationPropertiesPanel } from "./ConversationPropertiesPanel.js";
+export { UserDataPanel } from "./UserDataPanel.js";
 
 // Icon components
 export {
@@ -44,4 +45,5 @@ export {
   ArchiveIcon,
   ArchiveFilledIcon,
   SearchIcon,
+  TagIcon,
 } from "./Icons.js";

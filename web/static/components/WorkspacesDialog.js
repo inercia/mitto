@@ -60,8 +60,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const [editRunner, setEditRunner] = useState("exec");
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
+  const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
   const [editAutoChildren, setEditAutoChildren] = useState([]);
   const [effectiveConfig, setEffectiveConfig] = useState(null);
+
+  const [mcpTools, setMcpTools] = useState(null);
+  const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
+  const [mcpToolsError, setMcpToolsError] = useState("");
 
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
@@ -72,6 +77,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const [editMetaDescription, setEditMetaDescription] = useState("");
   const [editMetaUrl, setEditMetaUrl] = useState("");
   const [editMetaGroup, setEditMetaGroup] = useState("");
+  const [editUserDataFields, setEditUserDataFields] = useState([]);
 
   // Folder prompts state (for the Prompts tab)
   const [folderPrompts, setFolderPrompts] = useState([]);
@@ -177,10 +183,13 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     if (!selectedWorkspace) return;
     setEditAcpServer(selectedWorkspace.acp_server || "");
     setEditAuxAcpServer(selectedWorkspace.auxiliary_acp_server || "");
+    setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
     setEditAutoApprove(selectedWorkspace.auto_approve === true);
     setEffectiveConfig(null);
+    setMcpTools(null);
+    setMcpToolsError("");
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
       secureFetch(apiUrl(`/api/workspaces/${selectedWorkspace.uuid}/effective-runner-config`))
@@ -211,6 +220,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     setEditMetaDescription("");
     setEditMetaUrl("");
     setEditMetaGroup("");
+    setEditUserDataFields([]);
     if (firstWs.working_dir) {
       setMetadataLoading(true);
       secureFetch(apiUrl(`/api/workspace-metadata?working_dir=${encodeURIComponent(firstWs.working_dir)}`))
@@ -220,18 +230,32 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
           setEditMetaDescription(data?.description || "");
           setEditMetaUrl(data?.url || "");
           setEditMetaGroup(data?.group || "");
+          setEditUserDataFields(
+            (data?.user_data_schema?.fields || []).map(f => ({
+              name: f.name || '',
+              type: f.type || 'string',
+              description: f.description || '',
+            }))
+          );
         })
         .catch(() => {
           setFolderMetadata(null);
           setEditMetaDescription("");
           setEditMetaUrl("");
           setEditMetaGroup("");
+          setEditUserDataFields([]);
         })
         .finally(() => {
           setMetadataLoading(false);
         });
     }
   }, [selectedFolder]);
+
+  useEffect(() => {
+    if (activeTab === "mcp" && selectedWorkspace && !selectedFolder) {
+      loadMcpTools(editAcpServer || selectedWorkspace.acp_server, selectedWorkspace.working_dir);
+    }
+  }, [activeTab, selectedWorkspaceKey, editAcpServer]);
 
   const loadData = async () => {
     setLoading(true);
@@ -291,6 +315,28 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
     };
   };
 
+  const loadMcpTools = useCallback(async (acpServer, workingDir) => {
+    setMcpToolsLoading(true);
+    setMcpToolsError("");
+    setMcpTools(null);
+    try {
+      const params = new URLSearchParams({ acp_server: acpServer });
+      if (workingDir) params.set("dir", workingDir);
+      const res = await secureFetch(apiUrl(`/api/workspace-mcp-tools?${params}`));
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data.error) {
+        setMcpToolsError(data.error);
+      }
+      setMcpTools(data);
+    } catch (err) {
+      setMcpToolsError("Failed to load MCP tools: " + err.message);
+      setMcpTools({ servers: [], agent_name: "" });
+    } finally {
+      setMcpToolsLoading(false);
+    }
+  }, []);
+
   // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
   const applyWorkspaceEdits = (ws) => {
     if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
@@ -303,6 +349,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
       restricted_runner: editRunner,
       restricted_runner_config: editRunner !== "exec" ? editRunnerConfig : undefined,
       auto_approve: editAutoApprove || undefined,
+      acp_command_override: editAcpCommandOverride || undefined,
     };
   };
 
@@ -366,6 +413,34 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
             }
           } catch (metaErr) {
             setError("Failed to save metadata: " + metaErr.message);
+            setSaving(false);
+            return;
+          }
+        }
+      }
+
+      // Save user data schema
+      if (selectedFolder) {
+        const folderGroup = groupedWorkspaces.find((g) => g.displayName === selectedFolder);
+        const folderWorkingDir = folderGroup?.workspaces[0]?.working_dir;
+        if (folderWorkingDir) {
+          // Filter out fields with empty names
+          const validFields = editUserDataFields.filter(f => f.name.trim() !== '');
+          try {
+            const schemaRes = await secureFetch(apiUrl("/api/workspace/user-data-schema"), {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                working_dir: folderWorkingDir,
+                fields: validFields,
+              }),
+            });
+            if (!schemaRes.ok) {
+              const schemaErr = await schemaRes.json().catch(() => ({}));
+              throw new Error(schemaErr.error || "Failed to save user data schema");
+            }
+          } catch (schemaErr) {
+            setError("Failed to save user data schema: " + schemaErr.message);
             setSaving(false);
             return;
           }
@@ -673,6 +748,7 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
   const workspaceTabs = [
     { id: "general", label: "General" },
     { id: "runner", label: "Runner" },
+    { id: "mcp", label: "MCP" },
   ];
 
 
@@ -958,37 +1034,79 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                             />
                           </div>
 
-                          <!-- User Data Schema -->
-                          ${folderMetadata?.user_data_schema?.fields?.length > 0 && html`
-                            <div class="mt-6 pt-4 border-t border-mitto-border">
-                              <h3 class="text-sm font-medium text-gray-300 mb-3">User Data</h3>
-                              <p class="text-xs text-gray-500 mb-3">
-                                Custom data attributes defined in the workspace <code class="text-gray-400">.mittorc</code> file. These can be set on individual conversations.
-                              </p>
-                              <div class="border border-mitto-border rounded-lg overflow-hidden">
-                                <table class="w-full text-sm">
-                                  <thead>
-                                    <tr class="bg-slate-800/50">
-                                      <th class="text-left px-3 py-2 text-gray-400 font-medium border-b border-mitto-border">Name</th>
-                                      <th class="text-left px-3 py-2 text-gray-400 font-medium border-b border-mitto-border">Data Type</th>
-                                      <th class="text-left px-3 py-2 text-gray-400 font-medium border-b border-mitto-border">Description</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    ${folderMetadata.user_data_schema.fields.map((field, i) => html`
-                                      <tr key=${field.name} class="${i % 2 === 0 ? 'bg-slate-800/20' : ''}">
-                                        <td class="px-3 py-2 text-gray-300 font-mono text-xs">${field.name}</td>
-                                        <td class="px-3 py-2 text-gray-400">
-                                          <span class="inline-block px-1.5 py-0.5 bg-slate-700 rounded text-xs font-mono">${field.type || 'string'}</span>
-                                        </td>
-                                        <td class="px-3 py-2 text-gray-500 text-xs">${field.description || '—'}</td>
-                                      </tr>
-                                    `)}
-                                  </tbody>
-                                </table>
+                          <!-- User Data Schema Editor -->
+                          <div class="mt-6 pt-4 border-t border-mitto-border">
+                            <div class="flex items-center justify-between mb-2">
+                              <div>
+                                <h3 class="text-sm font-medium text-gray-300">User Data Schema</h3>
+                                <p class="text-xs text-gray-500 mt-0.5">
+                                  Define custom data attributes for conversations in this workspace.
+                                </p>
                               </div>
+                              <button
+                                onClick=${() => setEditUserDataFields(prev => [...prev, { name: '', type: 'string', description: '' }])}
+                                class="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
+                                title="Add Field"
+                              >
+                                <${PlusIcon} className="w-3.5 h-3.5" />
+                                Add Field
+                              </button>
                             </div>
-                          `}
+                            ${editUserDataFields.length === 0 && html`
+                              <p class="text-xs text-gray-500 italic py-2">No fields defined. Click "Add Field" to create one.</p>
+                            `}
+                            ${editUserDataFields.length > 0 && html`
+                              <div class="space-y-2">
+                                ${editUserDataFields.map((field, i) => html`
+                                  <div key=${i} class="flex gap-2 items-start p-2 rounded-lg ${i % 2 === 0 ? 'bg-slate-800/30' : ''}">
+                                    <div class="flex-1 min-w-0">
+                                      <label class="block text-xs text-gray-500 mb-0.5">Name</label>
+                                      <input
+                                        type="text"
+                                        value=${field.name}
+                                        onInput=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, name: e.target.value } : f))}
+                                        placeholder="e.g., JIRA Ticket"
+                                        class="w-full bg-mitto-input border border-mitto-border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                        style="height: 28px; box-sizing: border-box"
+                                      />
+                                    </div>
+                                    <div class="w-24 flex-shrink-0">
+                                      <label class="block text-xs text-gray-500 mb-0.5">Type</label>
+                                      <select
+                                        value=${field.type}
+                                        onChange=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, type: e.target.value } : f))}
+                                        class="w-full bg-mitto-input border border-mitto-border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                        style="height: 28px; box-sizing: border-box"
+                                      >
+                                        <option value="string">string</option>
+                                        <option value="url">url</option>
+                                      </select>
+                                    </div>
+                                    <div class="flex-1 min-w-0">
+                                      <label class="block text-xs text-gray-500 mb-0.5">Description</label>
+                                      <input
+                                        type="text"
+                                        value=${field.description}
+                                        onInput=${(e) => setEditUserDataFields(prev => prev.map((f, idx) => idx === i ? { ...f, description: e.target.value } : f))}
+                                        placeholder="Optional description..."
+                                        class="w-full bg-mitto-input border border-mitto-border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                        style="height: 28px; box-sizing: border-box"
+                                      />
+                                    </div>
+                                    <div class="flex-shrink-0 pt-4">
+                                      <button
+                                        onClick=${() => setEditUserDataFields(prev => prev.filter((_, idx) => idx !== i))}
+                                        class="p-1 text-gray-500 hover:text-red-400 hover:bg-slate-700 rounded transition-colors"
+                                        title="Remove field"
+                                      >
+                                        <${TrashIcon} className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                `)}
+                              </div>
+                            `}
+                          </div>
                         </div>
                       `}
 
@@ -1305,6 +1423,18 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                         </select>
                       </div>
                       <div>
+                        <label class="block text-sm text-gray-400 mb-1">ACP Command Override (optional)</label>
+                        <input
+                          type="text"
+                          value=${editAcpCommandOverride}
+                          onInput=${(e) => setEditAcpCommandOverride(e.target.value)}
+                          placeholder=${(() => { const s = acpServers.find((s) => s.name === editAcpServer); return s ? s.command : ""; })()}
+                          class="w-full bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-600"
+                          style="height: 38px; box-sizing: border-box"
+                        />
+                        <p class="text-xs text-gray-500 mt-1">Custom command line for running the ACP server. Leave empty to use the default.</p>
+                      </div>
+                      <div>
                         <label class="block text-sm text-gray-400 mb-1">Auxiliary ACP Server (optional)</label>
                         <select
                           value=${editAuxAcpServer}
@@ -1358,6 +1488,46 @@ export function WorkspacesDialog({ isOpen, onClose, onSave, WorkspaceBadge }) {
                           onChange=${setEditRunnerConfig}
                         />
                       `}
+                    </div>
+                  `}
+
+                  <!-- Workspace MCP tab -->
+                  ${activeTab === "mcp" && html`
+                    <div class="space-y-4">
+                      <p class="text-sm text-gray-400">
+                        MCP servers configured for this workspace's ACP agent${mcpTools?.agent_name ? ` (${mcpTools.agent_name})` : ""}.
+                      </p>
+                      ${mcpToolsLoading
+                        ? html`<div class="flex items-center justify-center p-8"><${SpinnerIcon} className="w-5 h-5 animate-spin" /></div>`
+                        : mcpToolsError
+                          ? html`<div class="p-4 text-center text-yellow-400 text-sm">${mcpToolsError}</div>`
+                          : mcpTools?.servers?.length === 0
+                            ? html`<div class="p-4 text-center text-gray-500 text-sm">
+                                ${mcpTools?.message || "No MCP servers found for this agent."}
+                              </div>`
+                            : html`
+                              <div class="border border-mitto-border rounded-lg overflow-hidden">
+                                <table class="w-full text-sm">
+                                  <thead>
+                                    <tr class="bg-slate-800/50">
+                                      <th class="text-left px-4 py-2.5 text-gray-400 font-medium">Name</th>
+                                      <th class="text-left px-4 py-2.5 text-gray-400 font-medium">Command / URL</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    ${mcpTools?.servers?.map((srv, i) => html`
+                                      <tr key=${srv.name || i} class="border-t border-mitto-border hover:bg-slate-800/30">
+                                        <td class="px-4 py-2.5 font-medium">${srv.name}</td>
+                                        <td class="px-4 py-2.5 text-gray-400 font-mono text-xs truncate max-w-[400px]" title=${srv.url || [srv.command, ...(srv.args || [])].join(" ")}>
+                                          ${srv.url || [srv.command, ...(srv.args || [])].join(" ")}
+                                        </td>
+                                      </tr>
+                                    `)}
+                                  </tbody>
+                                </table>
+                              </div>
+                            `
+                      }
                     </div>
                   `}
                 </div>

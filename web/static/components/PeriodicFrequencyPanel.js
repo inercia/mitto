@@ -3,7 +3,7 @@
 
 const { useState, useEffect, useCallback, useMemo, html } = window.preact;
 
-import { PeriodicFilledIcon } from "./Icons.js";
+import { PeriodicFilledIcon, PlayFilledIcon } from "./Icons.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
@@ -377,7 +377,7 @@ export function PeriodicFrequencyPanel({
                         ></path>
                       </svg>
                     `
-                  : html`<${PeriodicFilledIcon}
+                  : html`<${PlayFilledIcon}
                       className="w-4 h-4 text-blue-600 dark:text-blue-400"
                     />`}
               </button>

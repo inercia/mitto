@@ -788,6 +788,23 @@ export function PeriodicFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Play filled icon for "run now" action
+ * Shows a filled circular badge with a white triangle (play arrow) inside
+ * Similar style to PeriodicFilledIcon but indicates "run/play" action
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PlayFilledIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" viewBox="0 0 24 24">
+      <!-- Filled circle background using currentColor (will be blue/colored) -->
+      <circle cx="12" cy="12" r="11" fill="currentColor" />
+      <!-- Play triangle in white for contrast against colored circle -->
+      <polygon points="9,6 19,12 9,18" fill="white" />
+    </svg>
+  `;
+}
+
+/**
  * List/no-grouping icon (horizontal lines)
  * @param {string} className - CSS classes (default: 'w-5 h-5')
  */
@@ -1024,6 +1041,28 @@ export function SearchIcon({ className = "w-5 h-5" }) {
         stroke-linejoin="round"
         stroke-width="2"
         d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Tag icon (for user data / metadata)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function TagIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"
       />
     </svg>
   `;

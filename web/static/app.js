@@ -103,6 +103,7 @@ import {
   AgentPlanIndicator,
 } from "./components/AgentPlanPanel.js";
 import { ConversationPropertiesPanel } from "./components/ConversationPropertiesPanel.js";
+import { UserDataPanel } from "./components/UserDataPanel.js";
 import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
 import {
   SpinnerIcon,
@@ -137,6 +138,7 @@ import {
   PeriodicFilledIcon,
   ChatBubbleIcon,
   LayersIcon,
+  TagIcon,
 } from "./components/Icons.js";
 
 // Import constants
@@ -3114,6 +3116,7 @@ function App() {
 
   const [showSidebar, setShowSidebar] = useState(false);
   const [showPropertiesPanel, setShowPropertiesPanel] = useState(false);
+  const [showUserDataPanel, setShowUserDataPanel] = useState(false);
   const [showQueueDropdown, setShowQueueDropdown] = useState(false);
   const [isDeletingQueueMessage, setIsDeletingQueueMessage] = useState(false);
   const [isMovingQueueMessage, setIsMovingQueueMessage] = useState(false);
@@ -5379,11 +5382,26 @@ function App() {
 
   // Properties panel handlers
   const handleTogglePropertiesPanel = useCallback(() => {
-    setShowPropertiesPanel((prev) => !prev);
+    setShowPropertiesPanel((prev) => {
+      if (!prev) setShowUserDataPanel(false); // Close user data if opening properties
+      return !prev;
+    });
   }, []);
 
   const handleClosePropertiesPanel = useCallback(() => {
     setShowPropertiesPanel(false);
+  }, []);
+
+  // User data panel handlers
+  const handleToggleUserDataPanel = useCallback(() => {
+    setShowUserDataPanel((prev) => {
+      if (!prev) setShowPropertiesPanel(false); // Close properties if opening user data
+      return !prev;
+    });
+  }, []);
+
+  const handleCloseUserDataPanel = useCallback(() => {
+    setShowUserDataPanel(false);
   }, []);
 
   // Track user messages for plan expiration - called when user sends a prompt
@@ -5474,6 +5492,7 @@ function App() {
     switchSession(sessionId);
     setShowSidebar(false);
     setShowPropertiesPanel(false);
+    setShowUserDataPanel(false);
   };
 
   // Handle badge click action - calls API to execute configured command
@@ -5807,10 +5826,10 @@ function App() {
               <span class="text-sm font-medium">Runner Not Supported</span>
               <button
                 onClick=${() => setRunnerFallbackWarning(null)}
-                class="ml-auto text-white/80 hover:text-white"
+                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
                 title="Dismiss"
               >
-                ✕
+                <${CloseIcon} className="w-4 h-4" />
               </button>
             </div>
             <div class="text-xs opacity-90 ml-7">
@@ -5845,10 +5864,10 @@ function App() {
               >
               <button
                 onClick=${() => setAcpStartFailedError(null)}
-                class="ml-auto text-white/80 hover:text-white"
+                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
                 title="Dismiss"
               >
-                ✕
+                <${CloseIcon} className="w-4 h-4" />
               </button>
             </div>
             <div class="text-xs opacity-90 ml-7">
@@ -5887,10 +5906,10 @@ function App() {
               >
               <button
                 onClick=${() => setAcpPermanentError(null)}
-                class="ml-auto text-white/80 hover:text-white"
+                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
                 title="Dismiss"
               >
-                ✕
+                <${CloseIcon} className="w-4 h-4" />
               </button>
             </div>
             ${acpPermanentError.user_guidance &&
@@ -5927,10 +5946,10 @@ function App() {
               <span class="text-sm font-medium">Hook Failed</span>
               <button
                 onClick=${() => setHookFailedError(null)}
-                class="ml-auto text-white/80 hover:text-white"
+                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
                 title="Dismiss"
               >
-                ✕
+                <${CloseIcon} className="w-4 h-4" />
               </button>
             </div>
             <div class="text-xs opacity-90 ml-7">
@@ -5974,10 +5993,10 @@ function App() {
               <span class="text-sm font-medium">${notificationToast.title}</span>
               <button
                 onClick=${() => setNotificationToast(null)}
-                class="ml-auto text-white/80 hover:text-white"
+                class="ml-auto p-1 text-white/80 hover:text-white rounded transition-colors"
                 title="Dismiss"
               >
-                ✕
+                <${CloseIcon} className="w-4 h-4" />
               </button>
             </div>
             ${notificationToast.message &&
@@ -6083,20 +6102,39 @@ function App() {
               : "No Active Session"}
           </h1>
           <div class="ml-auto flex items-center gap-2">
+            ${activeSessionId && html`
+              <button
+                onClick=${handleToggleUserDataPanel}
+                class="p-1.5 rounded-full ring-1 ring-slate-600 hover:ring-slate-500 hover:bg-slate-700 transition-colors ${showUserDataPanel ? "bg-slate-700 ring-slate-500" : ""}"
+                title="User Data"
+              >
+                <${TagIcon} className="w-3.5 h-3.5 text-slate-400" />
+              </button>
+            `}
             ${isStreaming
               ? html`
-                  <span
-                    class="w-2 h-2 bg-blue-400 rounded-full animate-pulse"
-                    title="Streaming"
-                  ></span>
+                  <button
+                    onClick=${handleTogglePropertiesPanel}
+                    class="p-1.5 rounded-full ring-1 ring-slate-600 hover:ring-slate-500 hover:bg-slate-700 transition-colors"
+                    title="Streaming — click to open properties"
+                  >
+                    <span
+                      class="w-2 h-2 bg-blue-400 rounded-full animate-pulse block"
+                    ></span>
+                  </button>
                 `
               : html`
-                  <span
-                    class="w-2 h-2 rounded-full ${connected
-                      ? "bg-green-400"
-                      : "bg-amber-400"}"
-                    title="${connected ? "Connected" : "Not connected"}"
-                  ></span>
+                  <button
+                    onClick=${handleTogglePropertiesPanel}
+                    class="p-1.5 rounded-full ring-1 ring-slate-600 hover:ring-slate-500 hover:bg-slate-700 transition-colors"
+                    title="${connected ? "Connected — click to open properties" : "Not connected — click to open properties"}"
+                  >
+                    <span
+                      class="w-2 h-2 rounded-full block ${connected
+                        ? "bg-green-400"
+                        : "bg-amber-400"}"
+                    ></span>
+                  </button>
                 `}
           </div>
         </div>
@@ -6396,6 +6434,14 @@ function App() {
         configOptions=${configOptions}
         onSetConfigOption=${setConfigOption}
         mcpTools=${mcpTools}
+      />
+
+      <!-- User Data Panel (fixed overlay on right) -->
+      <${UserDataPanel}
+        isOpen=${showUserDataPanel}
+        onClose=${handleCloseUserDataPanel}
+        sessionId=${activeSessionId}
+        sessionInfo=${sessionInfo}
       />
     </div>
   `;
