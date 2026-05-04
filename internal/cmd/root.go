@@ -51,14 +51,6 @@ like auggie, claude-code, and others that implement ACP.`,
 			return nil
 		}
 
-		// Skip config loading for mcp command in proxy mode (--proxy-to)
-		// The proxy is a simple STDIO-to-HTTP forwarder that doesn't need any config.
-		// Loading config triggers Keychain access on macOS, which is problematic
-		// when running as a subprocess spawned by an AI agent.
-		if cmd.Name() == "mcp" && cmd.Flags().Changed("proxy-to") {
-			return nil
-		}
-
 		// Initialize logging
 		// Priority: --log-level flag > --debug flag > default (info)
 		effectiveLogLevel := "info"
@@ -82,6 +74,15 @@ like auggie, claude-code, and others that implement ACP.`,
 			Components: components,
 		}); err != nil {
 			return fmt.Errorf("failed to initialize logging: %w", err)
+		}
+
+		// Skip config loading for mcp command entirely.
+		// In proxy mode (--proxy-to), it's a simple STDIO-to-HTTP forwarder.
+		// In standalone STDIO mode, it creates its own config from the sessions directory.
+		// Loading config triggers Keychain access on macOS, which hangs
+		// when running as a subprocess spawned by an AI agent (no TTY for prompts).
+		if cmd.Name() == "mcp" {
+			return nil
 		}
 
 		// Ensure Mitto directory exists
