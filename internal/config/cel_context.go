@@ -43,6 +43,10 @@ type WorkspaceContext struct {
 	Name string
 	// HasUserDataSchema indicates whether the workspace has a user data schema defined in .mittorc
 	HasUserDataSchema bool
+	// HasMittoRC indicates whether a .mittorc file exists in the workspace directory
+	HasMittoRC bool
+	// HasMetadataDescription indicates whether the workspace has a metadata description in .mittorc
+	HasMetadataDescription bool
 }
 
 // SessionContext holds current session context for CEL evaluation.

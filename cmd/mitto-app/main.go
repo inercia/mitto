@@ -663,6 +663,15 @@ func stopNetworkPowerAssertion() {
 	slog.Info("[Mitto] IOPMAssertion released")
 }
 
+// setProcessName sets the OS-level process name so Activity Monitor and WebKit
+// child processes (WebContent) display the correct app name instead of the URL.
+// Should be called as early as possible in app startup, before webview creation.
+func setProcessName(name string) {
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+	C.setProcessName(cName)
+}
+
 // setupMenu creates the native macOS menu bar with standard items.
 func setupMenu(appName string) {
 	cAppName := C.CString(appName)
@@ -967,6 +976,10 @@ func run() error {
 		return fmt.Errorf("failed to initialize logging: %w", err)
 	}
 	defer logging.Close()
+
+	// Set process name early so Activity Monitor and WebKit child processes
+	// (WebContent) display "Mitto" instead of the local server URL.
+	setProcessName(appName)
 
 	// Log startup info including log file location
 	if logConfig.FileLog != nil {

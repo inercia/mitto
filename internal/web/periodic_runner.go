@@ -167,8 +167,12 @@ func (r *PeriodicRunner) IsRunning() bool {
 
 // TriggerNow immediately delivers the periodic prompt for a session,
 // bypassing the normal schedule check. This is used for manual "run now" requests.
+// resetTimer controls whether RecordSent() is called after the prompt completes:
+//   - true  → the countdown resets from now (same as a normal scheduled run)
+//   - false → the existing next-run schedule is preserved unchanged
+//
 // Returns an error if the delivery fails or the session is not configured for periodic prompts.
-func (r *PeriodicRunner) TriggerNow(sessionID string) error {
+func (r *PeriodicRunner) TriggerNow(sessionID string, resetTimer bool) error {
 	if r.store == nil {
 		return ErrSessionStoreNotAvailable
 	}
@@ -231,7 +235,7 @@ func (r *PeriodicRunner) TriggerNow(sessionID string) error {
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta.Name, periodic, periodicStore)
+	return r.deliverPrompt(bs, meta.Name, periodic, periodicStore, resetTimer)
 }
 
 // pollLoop is the main polling loop that checks for due prompts.
@@ -442,8 +446,8 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 		return 0, 1, 0
 	}
 
-	// Deliver the prompt
-	if err := r.deliverPrompt(bs, meta.Name, periodic, periodicStore); err != nil {
+	// Deliver the prompt — normal scheduled runs always reset the timer.
+	if err := r.deliverPrompt(bs, meta.Name, periodic, periodicStore, true); err != nil {
 		if r.logger != nil {
 			r.logger.Error("Failed to deliver periodic prompt",
 				"session_id", sessionID,
@@ -456,13 +460,17 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 }
 
 // deliverPrompt sends the periodic prompt to the session.
-func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore) error {
+// resetTimer controls whether RecordSent() is called when the prompt completes:
+//   - true  → schedule advances from now (normal behaviour)
+//   - false → schedule is left untouched (manual "run now" without resetting the timer)
+func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, resetTimer bool) error {
 	sessionID := bs.GetSessionID()
 
 	if r.logger != nil {
 		r.logger.Debug("Delivering periodic prompt",
 			"session_id", sessionID,
 			"session_name", sessionName,
+			"reset_timer", resetTimer,
 			"prompt_preview", truncatePrompt(periodic.Prompt, 100))
 	}
 
@@ -480,6 +488,16 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 						"session_id", sessionID,
 						"session_name", sessionName,
 						"error", err)
+				}
+				return
+			}
+
+			if !resetTimer {
+				// Manual run with "keep schedule" — leave NextScheduledAt unchanged.
+				if r.logger != nil {
+					r.logger.Debug("Periodic prompt completed, timer not reset (manual run)",
+						"session_id", sessionID,
+						"session_name", sessionName)
 				}
 				return
 			}

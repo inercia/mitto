@@ -24,7 +24,7 @@ The Mitto MCP server (`internal/mcpserver/`) provides a **single global server**
 
 Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
 - **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
-- **Session-scoped tools** (require `self_id`): all UI prompts, conversation control, history
+- **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), periodic control (`mitto_conversation_set_periodic`, `mitto_conversation_run_periodic_now`)
 
 ## Transport Modes
 
@@ -91,6 +91,20 @@ New flags: define `const FlagXxx` in `internal/session/flags.go`, add to `Availa
 **Key rules:**
 - No per-session MCP servers — all tools on the global server
 - All session-scoped tools require `session_id` parameter
+- `SessionManager` interface (in `server.go`) has ~20 methods including workspace/prompt helpers (`GetWorkspacePrompts`, `GetWorkspacePromptsDirs`, `GetWorkspace`, etc.). When extending: add stub methods to **all 7 mock types** in `server_test.go`. Stubs returning nil/zero are acceptable for non-tested methods.
+
+## Optional Late-Bound Dependencies
+
+Some dependencies (e.g. `PeriodicRunner`) are initialized after the MCP server and wired in via setter methods rather than through `Dependencies`:
+
+```go
+// In internal/web/server.go — after s.periodicRunner.Start():
+if s.mcpServer != nil {
+    s.mcpServer.SetPeriodicRunner(s.periodicRunner)
+}
+```
+
+The `PeriodicRunner` interface (defined in `mcpserver/server.go`) is satisfied by `*web.PeriodicRunner`. Use setter methods (not `Dependencies`) when a dependency must exist before `NewServer()` completes but the dependency itself starts later.
 
 ## Processor Auxiliary Session MCP Access
 

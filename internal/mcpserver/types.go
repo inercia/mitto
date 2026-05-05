@@ -746,3 +746,75 @@ type ConversationHistoryEvent struct {
 	Summary   string      `json:"summary"`        // Human-readable one-liner
 	Data      interface{} `json:"data,omitempty"` // Full event data (if include_data is true)
 }
+
+// =============================================================================
+// Prompt Management Tool Types
+// =============================================================================
+
+// PromptListInput is the input for mitto_prompt_list tool.
+type PromptListInput struct {
+	SelfID    string `json:"self_id"`             // YOUR session ID (the caller)
+	Workspace string `json:"workspace,omitempty"` // Optional workspace UUID for cross-workspace access
+}
+
+// PromptInfo contains basic metadata about a prompt (without full text).
+type PromptInfo struct {
+	Name            string `json:"name"`
+	Description     string `json:"description,omitempty"`
+	Group           string `json:"group,omitempty"`
+	BackgroundColor string `json:"background_color,omitempty"`
+	Source          string `json:"source,omitempty"`  // "file", "settings", "workspace", "builtin"
+	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
+}
+
+// PromptListOutput is the output for mitto_prompt_list tool.
+type PromptListOutput struct {
+	Success    bool         `json:"success"`
+	Prompts    []PromptInfo `json:"prompts"`               // Must be empty array, not nil — ACP validates this
+	WorkingDir string       `json:"working_dir,omitempty"`
+	Error      string       `json:"error,omitempty"`
+}
+
+// PromptGetInput is the input for mitto_prompt_get tool.
+type PromptGetInput struct {
+	SelfID    string `json:"self_id"`             // YOUR session ID (the caller)
+	Name      string `json:"name"`                // Prompt name (case-insensitive match)
+	Workspace string `json:"workspace,omitempty"` // Optional workspace UUID
+}
+
+// PromptDetail contains full details about a prompt including text.
+type PromptDetail struct {
+	Name            string `json:"name"`
+	Prompt          string `json:"prompt"`                    // Full prompt text
+	Description     string `json:"description,omitempty"`
+	Group           string `json:"group,omitempty"`
+	BackgroundColor string `json:"background_color,omitempty"`
+	Source          string `json:"source,omitempty"` // "file", "settings", "workspace", "builtin"
+	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
+}
+
+// PromptGetOutput is the output for mitto_prompt_get tool.
+type PromptGetOutput struct {
+	Success bool          `json:"success"`
+	Prompt  *PromptDetail `json:"prompt,omitempty"`
+	Error   string        `json:"error,omitempty"`
+}
+
+// PromptUpdateInput is the input for mitto_prompt_update tool.
+type PromptUpdateInput struct {
+	SelfID          string `json:"self_id"`                   // YOUR session ID (the caller)
+	Name            string `json:"name"`                      // Prompt name to update (required)
+	Workspace       string `json:"workspace,omitempty"`       // Optional workspace UUID
+	Prompt          string `json:"prompt,omitempty"`          // New prompt text
+	Description     string `json:"description,omitempty"`    // New description
+	BackgroundColor string `json:"background_color,omitempty"` // New background color
+	Group           string `json:"group,omitempty"`           // New group
+	Enabled         *bool  `json:"enabled,omitempty"`         // Enable/disable
+}
+
+// PromptUpdateOutput is the output for mitto_prompt_update tool.
+type PromptUpdateOutput struct {
+	Success bool   `json:"success"`
+	Path    string `json:"path,omitempty"` // File path of saved/updated prompt
+	Error   string `json:"error,omitempty"`
+}

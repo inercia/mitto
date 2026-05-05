@@ -97,6 +97,7 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `auggie-manage-rules` | Generates and maintains `.augment/rules/` from workspace analysis and conversations (every 15 messages)   | `first` | prompt | **No** (opt-in; Auggie only)                       |
 | `claude-manage-memory`| Generates and maintains Claude Code memory files from workspace analysis and conversations (every 15 msgs)| `first` | prompt | **No** (opt-in; Claude Code only)                  |
 | `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 5 messages)                      | `first` | prompt | **No** (opt-in; requires `user_data` schema in `.mittorc`) |
+| `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | `first` | prompt | **No** (opt-in; only fires when `.mittorc` exists but lacks a description) |
 
 ### Managing Builtin Processors
 

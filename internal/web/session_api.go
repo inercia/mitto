@@ -893,23 +893,7 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeNoContent(w)
 }
 
-// slugifyPromptName converts a prompt name to a filesystem-safe slug.
-// e.g., "Add tests" → "add-tests"
-func slugifyPromptName(name string) string {
-	slug := strings.ToLower(name)
-	var result []byte
-	lastHyphen := false
-	for _, c := range slug {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			result = append(result, byte(c))
-			lastHyphen = false
-		} else if !lastHyphen {
-			result = append(result, '-')
-			lastHyphen = true
-		}
-	}
-	return strings.Trim(string(result), "-")
-}
+
 
 // handleWorkspacePrompts handles GET/POST/DELETE /api/workspace-prompts
 //
@@ -1225,7 +1209,7 @@ func (s *Server) handleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Reque
 
 	content := frontMatter.String() + req.Prompt
 
-	slug := slugifyPromptName(req.Name)
+	slug := config.SlugifyPromptName(req.Name)
 	if slug == "" {
 		slug = "prompt"
 	}
@@ -1314,7 +1298,7 @@ func (s *Server) handleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r *h
 	}
 
 	// Check if a dedicated prompt file exists in .mitto/prompts/
-	slug := slugifyPromptName(req.Name)
+	slug := config.SlugifyPromptName(req.Name)
 	promptsDir := appdir.WorkspacePromptsDir(req.Dir)
 	filePath := filepath.Join(promptsDir, slug+".md")
 

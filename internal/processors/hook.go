@@ -178,6 +178,8 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Workspace.UUID = input.WorkspaceUUID
 	ctx.Workspace.Folder = input.WorkingDir
 	ctx.Workspace.HasUserDataSchema = input.HasUserDataSchema
+	ctx.Workspace.HasMittoRC = input.HasMittoRC
+	ctx.Workspace.HasMetadataDescription = input.HasMetadataDescription
 
 	// Parent context
 	if input.ParentSessionID != "" {

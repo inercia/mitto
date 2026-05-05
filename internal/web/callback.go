@@ -213,7 +213,7 @@ func (s *Server) handleCallbackTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.periodicRunner.TriggerNow(sessionID); err != nil {
+	if err := s.periodicRunner.TriggerNow(sessionID, true); err != nil {
 		switch err {
 		case ErrSessionBusy:
 			writeErrorJSON(w, http.StatusConflict, "session_busy", "Session is currently processing")

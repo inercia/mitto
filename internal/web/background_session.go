@@ -2895,15 +2895,26 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 
 	// Populate user data schema and current user data for processor variables
 	var hasUserDataSchema bool
+	var hasMittoRC bool
+	var hasMetadataDescription bool
 	var userDataSchemaJSON string
 	var userDataJSON string
 	if bs.workingDir != "" {
-		if rc, err := config.LoadWorkspaceRC(bs.workingDir); err == nil && rc != nil &&
+		rc, rcErr := config.LoadWorkspaceRC(bs.workingDir)
+		if rcErr == nil && rc != nil &&
 			rc.Metadata != nil && rc.Metadata.UserDataSchema != nil && len(rc.Metadata.UserDataSchema.Fields) > 0 {
 			hasUserDataSchema = true
 			if schemaBytes, err := json.Marshal(rc.Metadata.UserDataSchema.Fields); err == nil {
 				userDataSchemaJSON = string(schemaBytes)
 			}
+		}
+		// Check if .mittorc exists (regardless of content)
+		if rcPath, _, err := config.FindWorkspaceRCPath(bs.workingDir); err == nil && rcPath != "" {
+			hasMittoRC = true
+		}
+		// Check if metadata description is set
+		if rcErr == nil && rc != nil && rc.Metadata != nil && rc.Metadata.Description != "" {
+			hasMetadataDescription = true
 		}
 	}
 	if bs.store != nil && bs.persistedID != "" {
@@ -2929,9 +2940,11 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		MCPToolNames:        mcpToolNames,
 		IsPeriodic:          meta.SenderID == "periodic-runner",
 		AdvancedSettings:    advancedSettings,
-		HasUserDataSchema:   hasUserDataSchema,
-		UserDataSchemaJSON:  userDataSchemaJSON,
-		UserDataJSON:        userDataJSON,
+		HasUserDataSchema:      hasUserDataSchema,
+		HasMittoRC:             hasMittoRC,
+		HasMetadataDescription: hasMetadataDescription,
+		UserDataSchemaJSON:     userDataSchemaJSON,
+		UserDataJSON:           userDataJSON,
 	}
 
 	if bs.processorManager != nil {

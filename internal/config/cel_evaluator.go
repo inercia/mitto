@@ -46,6 +46,8 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("workspace.folder", cel.StringType),
 		cel.Variable("workspace.name", cel.StringType),
 		cel.Variable("workspace.hasUserDataSchema", cel.BoolType),
+		cel.Variable("workspace.hasMittoRC", cel.BoolType),
+		cel.Variable("workspace.hasMetadataDescription", cel.BoolType),
 
 		// Session variables
 		cel.Variable("session.id", cel.StringType),
@@ -248,10 +250,12 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"acp.tags":        ctx.ACP.Tags,
 		"acp.autoApprove": ctx.ACP.AutoApprove,
 
-		"workspace.uuid":              ctx.Workspace.UUID,
-		"workspace.folder":            ctx.Workspace.Folder,
-		"workspace.name":              ctx.Workspace.Name,
-		"workspace.hasUserDataSchema": ctx.Workspace.HasUserDataSchema,
+		"workspace.uuid":                    ctx.Workspace.UUID,
+		"workspace.folder":                  ctx.Workspace.Folder,
+		"workspace.name":                    ctx.Workspace.Name,
+		"workspace.hasUserDataSchema":        ctx.Workspace.HasUserDataSchema,
+		"workspace.hasMittoRC":              ctx.Workspace.HasMittoRC,
+		"workspace.hasMetadataDescription":  ctx.Workspace.HasMetadataDescription,
 
 		"session.id":          ctx.Session.ID,
 		"session.name":        ctx.Session.Name,

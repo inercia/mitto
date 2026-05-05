@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -431,6 +432,10 @@ func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings         
 func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
 func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName string)     {}
 func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema   { return nil }
+func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt     { return nil }
+func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string           { return nil }
+func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time       { return time.Time{} }
+func (m *mockSessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings     { return nil }
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -2304,6 +2309,18 @@ func (m *mockSessionManagerForWorkspaces) BroadcastSessionRenamed(sessionID stri
 func (m *mockSessionManagerForWorkspaces) GetUserDataSchema(workingDir string) *config.UserDataSchema {
 	return nil
 }
+func (m *mockSessionManagerForWorkspaces) GetWorkspacePrompts(workingDir string) []config.WebPrompt {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaces) GetWorkspacePromptsDirs(workingDir string) []string {
+	return nil
+}
+func (m *mockSessionManagerForWorkspaces) GetWorkspaceRCLastModified(workingDir string) time.Time {
+	return time.Time{}
+}
+func (m *mockSessionManagerForWorkspaces) GetWorkspace(workingDir string) *config.WorkspaceSettings {
+	return nil
+}
 
 func TestListWorkspaces_Empty(t *testing.T) {
 	mockSM := &mockSessionManagerForWorkspaces{
@@ -2699,6 +2716,10 @@ func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings  
 func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
 func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema     { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt       { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string             { return nil }
+func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time         { return time.Time{} }
+func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings       { return nil }
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -3381,6 +3402,10 @@ func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.Works
 }
 func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)          {}
 func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt   { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string         { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.Time     { return time.Time{} }
+func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings   { return nil }
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -3566,6 +3591,18 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *confi
 }
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string) {}
 func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema {
+	return nil
+}
+func (m *mockSessionManagerForChildrenMutable) GetWorkspacePrompts(string) []config.WebPrompt {
+	return nil
+}
+func (m *mockSessionManagerForChildrenMutable) GetWorkspacePromptsDirs(string) []string {
+	return nil
+}
+func (m *mockSessionManagerForChildrenMutable) GetWorkspaceRCLastModified(string) time.Time {
+	return time.Time{}
+}
+func (m *mockSessionManagerForChildrenMutable) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
 
@@ -3856,6 +3893,18 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.Wor
 }
 func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string) {}
 func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema {
+	return nil
+}
+func (m *mockSessionManagerForAutoResume) GetWorkspacePrompts(string) []config.WebPrompt {
+	return nil
+}
+func (m *mockSessionManagerForAutoResume) GetWorkspacePromptsDirs(string) []string {
+	return nil
+}
+func (m *mockSessionManagerForAutoResume) GetWorkspaceRCLastModified(string) time.Time {
+	return time.Time{}
+}
+func (m *mockSessionManagerForAutoResume) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
 
@@ -5365,6 +5414,18 @@ func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, strin
 func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
 }
+func (m *mockSessionManagerCrossWorkspace) GetWorkspacePrompts(string) []config.WebPrompt {
+	return nil
+}
+func (m *mockSessionManagerCrossWorkspace) GetWorkspacePromptsDirs(string) []string {
+	return nil
+}
+func (m *mockSessionManagerCrossWorkspace) GetWorkspaceRCLastModified(string) time.Time {
+	return time.Time{}
+}
+func (m *mockSessionManagerCrossWorkspace) GetWorkspace(string) *config.WorkspaceSettings {
+	return nil
+}
 
 // setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
 // Returns the server, store, source session ID, target session ID.
@@ -6564,5 +6625,518 @@ func TestConversationHistory_DefaultLastN(t *testing.T) {
 	// All 15 events fit within default 50
 	if out.ReturnedEvents != 15 {
 		t.Errorf("ReturnedEvents = %d, want 15", out.ReturnedEvents)
+	}
+}
+
+
+// --- Prompt tool tests ---
+
+// mockSessionManagerForPrompts extends mockSessionManager with prompt data.
+type mockSessionManagerForPrompts struct {
+	mockSessionManager
+	prompts    []config.WebPrompt
+	workingDir string
+}
+
+func (m *mockSessionManagerForPrompts) GetWorkspacePrompts(workingDir string) []config.WebPrompt {
+	return m.prompts
+}
+
+func (m *mockSessionManagerForPrompts) GetWorkspace(workingDir string) *config.WorkspaceSettings {
+	if m.workingDir != "" {
+		return &config.WorkspaceSettings{WorkingDir: m.workingDir, ACPServer: "test"}
+	}
+	return nil
+}
+
+// setupPromptTestServer creates a server with a registered session for prompt tests.
+func setupPromptTestServer(t *testing.T, sm SessionManager) (*Server, string, *session.Store) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	meta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Test Session",
+		ACPServer:  "test-server",
+		WorkingDir: t.TempDir(), // separate temp dir as workspace
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:          store,
+		SessionManager: sm,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(meta.SessionID, nil, logger); err != nil {
+		t.Fatalf("Failed to register session: %v", err)
+	}
+
+	return srv, meta.SessionID, store
+}
+
+func TestPromptList_Success(t *testing.T) {
+	enabled := true
+	mockSM := &mockSessionManagerForPrompts{
+		prompts: []config.WebPrompt{
+			{Name: "Test Prompt", Description: "A test", Source: "workspace", Enabled: &enabled},
+			{Name: "Another", Group: "dev"},
+		},
+	}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+
+	// Set mockSM.workingDir to match session's working dir
+	meta, _ := store.GetMetadata(sessionID)
+	mockSM.workingDir = meta.WorkingDir
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptList(ctx, nil, PromptListInput{SelfID: sessionID})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Expected success, got error: %s", out.Error)
+	}
+	if len(out.Prompts) != 2 {
+		t.Fatalf("Expected 2 prompts, got %d", len(out.Prompts))
+	}
+	if out.Prompts[0].Name != "Test Prompt" {
+		t.Errorf("Expected 'Test Prompt', got %q", out.Prompts[0].Name)
+	}
+	if out.WorkingDir == "" {
+		t.Error("Expected working_dir to be set")
+	}
+}
+
+func TestPromptList_EmptyReturnsEmptyArray(t *testing.T) {
+	mockSM := &mockSessionManagerForPrompts{}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+	meta, _ := store.GetMetadata(sessionID)
+	mockSM.workingDir = meta.WorkingDir
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptList(ctx, nil, PromptListInput{SelfID: sessionID})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Expected success, got error: %s", out.Error)
+	}
+	// Must be empty array, not nil — ACP validates this
+	if out.Prompts == nil {
+		t.Fatal("Prompts must be empty slice, not nil")
+	}
+	if len(out.Prompts) != 0 {
+		t.Errorf("Expected 0 prompts, got %d", len(out.Prompts))
+	}
+}
+
+func TestPromptList_SessionNotFound(t *testing.T) {
+	srv, _, _ := setupPromptTestServer(t, &mockSessionManagerForPrompts{})
+	ctx := context.Background()
+	_, out, err := srv.handlePromptList(ctx, nil, PromptListInput{SelfID: "nonexistent"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if out.Success {
+		t.Fatal("Expected failure for nonexistent session")
+	}
+	if out.Error == "" {
+		t.Fatal("Expected error message")
+	}
+}
+
+func TestPromptGet_Success(t *testing.T) {
+	mockSM := &mockSessionManagerForPrompts{
+		prompts: []config.WebPrompt{
+			{Name: "My Prompt", Prompt: "Do something cool", Description: "Desc", Group: "tools"},
+		},
+	}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+	meta, _ := store.GetMetadata(sessionID)
+	mockSM.workingDir = meta.WorkingDir
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptGet(ctx, nil, PromptGetInput{SelfID: sessionID, Name: "My Prompt"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Expected success, got error: %s", out.Error)
+	}
+	if out.Prompt == nil {
+		t.Fatal("Expected prompt detail")
+	}
+	if out.Prompt.Name != "My Prompt" {
+		t.Errorf("Expected 'My Prompt', got %q", out.Prompt.Name)
+	}
+	if out.Prompt.Prompt != "Do something cool" {
+		t.Errorf("Expected prompt text, got %q", out.Prompt.Prompt)
+	}
+}
+
+func TestPromptGet_CaseInsensitive(t *testing.T) {
+	mockSM := &mockSessionManagerForPrompts{
+		prompts: []config.WebPrompt{
+			{Name: "My Prompt", Prompt: "text"},
+		},
+	}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+	meta, _ := store.GetMetadata(sessionID)
+	mockSM.workingDir = meta.WorkingDir
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptGet(ctx, nil, PromptGetInput{SelfID: sessionID, Name: "my prompt"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Case-insensitive match should succeed, got error: %s", out.Error)
+	}
+	if out.Prompt.Name != "My Prompt" {
+		t.Errorf("Expected original name 'My Prompt', got %q", out.Prompt.Name)
+	}
+}
+
+func TestPromptGet_NotFound(t *testing.T) {
+	mockSM := &mockSessionManagerForPrompts{
+		prompts: []config.WebPrompt{
+			{Name: "Existing", Prompt: "text"},
+		},
+	}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+	meta, _ := store.GetMetadata(sessionID)
+	mockSM.workingDir = meta.WorkingDir
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptGet(ctx, nil, PromptGetInput{SelfID: sessionID, Name: "nonexistent"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if out.Success {
+		t.Fatal("Expected failure for nonexistent prompt")
+	}
+	if !strings.Contains(out.Error, "not found") {
+		t.Errorf("Expected 'not found' in error, got: %s", out.Error)
+	}
+}
+
+func TestPromptGet_EmptyName(t *testing.T) {
+	srv, sessionID, _ := setupPromptTestServer(t, &mockSessionManagerForPrompts{})
+	ctx := context.Background()
+	_, out, err := srv.handlePromptGet(ctx, nil, PromptGetInput{SelfID: sessionID, Name: ""})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if out.Success {
+		t.Fatal("Expected failure for empty name")
+	}
+	if !strings.Contains(out.Error, "name is required") {
+		t.Errorf("Expected 'name is required' error, got: %s", out.Error)
+	}
+}
+
+func TestPromptUpdate_ContentUpdate(t *testing.T) {
+	workDir := t.TempDir()
+	mockSM := &mockSessionManagerForPrompts{workingDir: workDir}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+
+	// Override the session's WorkingDir to our temp dir
+	store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.WorkingDir = workDir
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handlePromptUpdate(ctx, nil, PromptUpdateInput{
+		SelfID:      sessionID,
+		Name:        "New Prompt",
+		Prompt:      "Hello world",
+		Description: "A greeting",
+		Group:       "greetings",
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Expected success, got error: %s", out.Error)
+	}
+	if out.Path == "" {
+		t.Fatal("Expected file path in output")
+	}
+
+	// Verify file was written
+	content, err := os.ReadFile(out.Path)
+	if err != nil {
+		t.Fatalf("Failed to read written file: %v", err)
+	}
+	s := string(content)
+	if !strings.Contains(s, "name: \"New Prompt\"") {
+		t.Errorf("Expected name in frontmatter, got:\n%s", s)
+	}
+	if !strings.Contains(s, "Hello world") {
+		t.Errorf("Expected prompt text in content, got:\n%s", s)
+	}
+	if !strings.Contains(s, "description: \"A greeting\"") {
+		t.Errorf("Expected description in frontmatter, got:\n%s", s)
+	}
+}
+
+func TestPromptUpdate_EmptyName(t *testing.T) {
+	srv, sessionID, _ := setupPromptTestServer(t, &mockSessionManagerForPrompts{})
+	ctx := context.Background()
+	_, out, err := srv.handlePromptUpdate(ctx, nil, PromptUpdateInput{SelfID: sessionID, Name: ""})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if out.Success {
+		t.Fatal("Expected failure for empty name")
+	}
+	if !strings.Contains(out.Error, "name is required") {
+		t.Errorf("Expected 'name is required', got: %s", out.Error)
+	}
+}
+
+func TestPromptUpdate_EnableDisableOnly(t *testing.T) {
+	workDir := t.TempDir()
+	mockSM := &mockSessionManagerForPrompts{workingDir: workDir}
+	srv, sessionID, store := setupPromptTestServer(t, mockSM)
+
+	store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.WorkingDir = workDir
+	})
+
+	// First create a prompt file so the enable/disable path uses UpdatePromptFileEnabled
+	promptsDir := filepath.Join(workDir, ".mitto", "prompts")
+	os.MkdirAll(promptsDir, 0o755)
+	promptFile := filepath.Join(promptsDir, "test-prompt.md")
+	os.WriteFile(promptFile, []byte("---\nname: \"Test Prompt\"\n---\nHello"), 0o644)
+
+	ctx := context.Background()
+	enabled := false
+	_, out, err := srv.handlePromptUpdate(ctx, nil, PromptUpdateInput{
+		SelfID:  sessionID,
+		Name:    "Test Prompt",
+		Enabled: &enabled,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("Expected success, got error: %s", out.Error)
+	}
+
+	// Verify the file was updated with enabled: false
+	content, err := os.ReadFile(promptFile)
+	if err != nil {
+		t.Fatalf("Failed to read file: %v", err)
+	}
+	if !strings.Contains(string(content), "enabled: false") {
+		t.Errorf("Expected 'enabled: false' in file, got:\n%s", string(content))
+	}
+}
+
+// =============================================================================
+// handleRunPeriodicNow Tests
+// =============================================================================
+
+// mockPeriodicRunner is a mock implementation of PeriodicRunner for testing.
+type mockPeriodicRunner struct {
+	mu         sync.Mutex
+	calls      []triggerNowCall
+	triggerErr error // if set, TriggerNow returns this error
+}
+
+type triggerNowCall struct {
+	sessionID  string
+	resetTimer bool
+}
+
+func (m *mockPeriodicRunner) TriggerNow(sessionID string, resetTimer bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, triggerNowCall{sessionID: sessionID, resetTimer: resetTimer})
+	return m.triggerErr
+}
+
+// setupRunPeriodicNowServer creates a server with a registered session and a mock runner.
+func setupRunPeriodicNowServer(t *testing.T) (*Server, string, *mockPeriodicRunner) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	sessionID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		Name:       "Test Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(sessionID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession failed: %v", err)
+	}
+
+	mock := &mockPeriodicRunner{}
+	srv.SetPeriodicRunner(mock)
+
+	return srv, sessionID, mock
+}
+
+func TestHandleRunPeriodicNow_ResetTimerTrue(t *testing.T) {
+	srv, sessionID, mock := setupRunPeriodicNowServer(t)
+
+	ctx := context.Background()
+	resetTimer := true
+	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+		SelfID:         sessionID,
+		ConversationID: sessionID,
+		ResetTimer:     &resetTimer,
+	})
+	if err != nil {
+		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+	}
+	if !out.Success {
+		t.Errorf("Expected success=true, got error: %s", out.Error)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.calls) != 1 {
+		t.Fatalf("Expected 1 TriggerNow call, got %d", len(mock.calls))
+	}
+	if !mock.calls[0].resetTimer {
+		t.Errorf("Expected resetTimer=true, got false")
+	}
+}
+
+func TestHandleRunPeriodicNow_ResetTimerFalse(t *testing.T) {
+	srv, sessionID, mock := setupRunPeriodicNowServer(t)
+
+	ctx := context.Background()
+	resetTimer := false
+	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+		SelfID:         sessionID,
+		ConversationID: sessionID,
+		ResetTimer:     &resetTimer,
+	})
+	if err != nil {
+		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+	}
+	if !out.Success {
+		t.Errorf("Expected success=true, got error: %s", out.Error)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.calls) != 1 {
+		t.Fatalf("Expected 1 TriggerNow call, got %d", len(mock.calls))
+	}
+	if mock.calls[0].resetTimer {
+		t.Errorf("Expected resetTimer=false, got true")
+	}
+	if mock.calls[0].sessionID != sessionID {
+		t.Errorf("Expected sessionID=%s, got %s", sessionID, mock.calls[0].sessionID)
+	}
+}
+
+func TestHandleRunPeriodicNow_DefaultsResetTimerToTrue(t *testing.T) {
+	srv, sessionID, mock := setupRunPeriodicNowServer(t)
+
+	ctx := context.Background()
+	// Do NOT set ResetTimer — should default to true
+	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+		SelfID:         sessionID,
+		ConversationID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+	}
+	if !out.Success {
+		t.Errorf("Expected success=true, got error: %s", out.Error)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.calls) != 1 {
+		t.Fatalf("Expected 1 TriggerNow call, got %d", len(mock.calls))
+	}
+	if !mock.calls[0].resetTimer {
+		t.Errorf("Expected resetTimer=true (default), got false")
+	}
+}
+
+func TestHandleRunPeriodicNow_NoPeriodicRunner(t *testing.T) {
+	srv, sessionID, _ := setupRunPeriodicNowServer(t)
+	// Remove the runner to simulate it not being available
+	srv.SetPeriodicRunner(nil)
+
+	ctx := context.Background()
+	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+		SelfID:         sessionID,
+		ConversationID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+	}
+	if out.Success {
+		t.Error("Expected failure when periodic runner is nil")
+	}
+	if out.Error == "" {
+		t.Error("Expected non-empty error message when periodic runner is nil")
+	}
+}
+
+func TestHandleRunPeriodicNow_MissingSelfID(t *testing.T) {
+	srv, _, _ := setupRunPeriodicNowServer(t)
+
+	ctx := context.Background()
+	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+		SelfID:         "",
+		ConversationID: "some-session",
+	})
+	if err != nil {
+		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+	}
+	if out.Success {
+		t.Error("Expected failure with empty self_id")
+	}
+}
+
+func TestHandleRunPeriodicNow_MissingConversationID(t *testing.T) {
+	srv, sessionID, _ := setupRunPeriodicNowServer(t)
+
+	ctx := context.Background()
+	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+		SelfID:         sessionID,
+		ConversationID: "",
+	})
+	if err != nil {
+		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+	}
+	if out.Success {
+		t.Error("Expected failure with empty conversation_id")
 	}
 }

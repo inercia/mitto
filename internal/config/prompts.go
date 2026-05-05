@@ -572,3 +572,21 @@ func UpdatePromptFileEnabled(filePath string, enabled bool) error {
 
 	return nil
 }
+
+// SlugifyPromptName converts a prompt name to a filesystem-safe slug.
+// e.g., "Add tests" → "add-tests"
+func SlugifyPromptName(name string) string {
+	slug := strings.ToLower(name)
+	var result []byte
+	lastHyphen := false
+	for _, c := range slug {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			result = append(result, byte(c))
+			lastHyphen = false
+		} else if !lastHyphen {
+			result = append(result, '-')
+			lastHyphen = true
+		}
+	}
+	return strings.Trim(string(result), "-")
+}

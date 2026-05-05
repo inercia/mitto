@@ -329,7 +329,7 @@ func TestTruncatePrompt(t *testing.T) {
 
 func TestPeriodicRunner_TriggerNow_NoStore(t *testing.T) {
 	runner := NewPeriodicRunner(nil, nil, nil)
-	err := runner.TriggerNow("test-session")
+	err := runner.TriggerNow("test-session", true)
 	if err != ErrSessionStoreNotAvailable {
 		t.Errorf("TriggerNow() error = %v, want %v", err, ErrSessionStoreNotAvailable)
 	}
@@ -343,7 +343,7 @@ func TestPeriodicRunner_TriggerNow_SessionNotFound(t *testing.T) {
 	defer store.Close()
 
 	runner := NewPeriodicRunner(store, nil, nil)
-	err = runner.TriggerNow("nonexistent-session")
+	err = runner.TriggerNow("nonexistent-session", true)
 	if err != session.ErrSessionNotFound {
 		t.Errorf("TriggerNow() error = %v, want %v", err, session.ErrSessionNotFound)
 	}
@@ -367,7 +367,7 @@ func TestPeriodicRunner_TriggerNow_NoPeriodicConfig(t *testing.T) {
 	}
 
 	runner := NewPeriodicRunner(store, nil, nil)
-	err = runner.TriggerNow(meta.SessionID)
+	err = runner.TriggerNow(meta.SessionID, true)
 	if err != session.ErrPeriodicNotFound {
 		t.Errorf("TriggerNow() error = %v, want %v", err, session.ErrPeriodicNotFound)
 	}
@@ -402,7 +402,7 @@ func TestPeriodicRunner_TriggerNow_NotEnabled(t *testing.T) {
 	}
 
 	runner := NewPeriodicRunner(store, nil, nil)
-	err = runner.TriggerNow(meta.SessionID)
+	err = runner.TriggerNow(meta.SessionID, true)
 	if err != ErrPeriodicNotEnabled {
 		t.Errorf("TriggerNow() error = %v, want %v", err, ErrPeriodicNotEnabled)
 	}
@@ -438,9 +438,76 @@ func TestPeriodicRunner_TriggerNow_NoSessionManager(t *testing.T) {
 
 	// Runner without session manager
 	runner := NewPeriodicRunner(store, nil, nil)
-	err = runner.TriggerNow(meta.SessionID)
+	err = runner.TriggerNow(meta.SessionID, true)
 	if err != ErrSessionManagerNotAvailable {
 		t.Errorf("TriggerNow() error = %v, want %v", err, ErrSessionManagerNotAvailable)
+	}
+}
+
+// TestPeriodicRunner_TriggerNow_NoResetTimer verifies that TriggerNow accepts
+// resetTimer=false and follows the same code path as resetTimer=true up to the
+// point where the session manager is needed. This ensures the flag is correctly
+// threaded through the call stack without being rejected early or panicking.
+// (Full end-to-end verification that RecordSent is skipped requires an active
+// ACP session and is covered by integration tests.)
+func TestPeriodicRunner_TriggerNow_NoResetTimer(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create a session with an enabled periodic config
+	meta := session.Metadata{
+		SessionID:  "test-no-reset-timer",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	periodicStore := store.Periodic(meta.SessionID)
+	err = periodicStore.Set(&session.PeriodicPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+
+	// Capture the initial schedule so we can verify it is not modified on error.
+	initialPeriodic, err := periodicStore.Get()
+	if err != nil {
+		t.Fatalf("periodicStore.Get() error = %v", err)
+	}
+	initialNextScheduled := initialPeriodic.NextScheduledAt
+
+	// Runner without session manager — should fail at ErrSessionManagerNotAvailable,
+	// identical to the resetTimer=true case. This verifies that resetTimer=false is
+	// accepted and reaches the same validation step without any early failure.
+	runner := NewPeriodicRunner(store, nil, nil)
+	err = runner.TriggerNow(meta.SessionID, false)
+	if err != ErrSessionManagerNotAvailable {
+		t.Errorf("TriggerNow() error = %v, want %v", err, ErrSessionManagerNotAvailable)
+	}
+
+	// Verify the schedule was not modified (error occurred before any delivery).
+	afterPeriodic, err := periodicStore.Get()
+	if err != nil {
+		t.Fatalf("periodicStore.Get() after error = %v", err)
+	}
+	switch {
+	case initialNextScheduled == nil && afterPeriodic.NextScheduledAt != nil:
+		t.Error("NextScheduledAt was unexpectedly set after error")
+	case initialNextScheduled != nil && afterPeriodic.NextScheduledAt == nil:
+		t.Error("NextScheduledAt was unexpectedly cleared after error")
+	case initialNextScheduled != nil && afterPeriodic.NextScheduledAt != nil:
+		if !initialNextScheduled.Equal(*afterPeriodic.NextScheduledAt) {
+			t.Errorf("NextScheduledAt changed unexpectedly: before=%v after=%v",
+				*initialNextScheduled, *afterPeriodic.NextScheduledAt)
+		}
 	}
 }
 

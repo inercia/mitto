@@ -56,8 +56,28 @@ const isMacApp = typeof window.mittoPickFolder === "function";
 | Cached JavaScript  | Old behavior after code change | Clear WKWebView cache       |
 | WebSocket zombie   | "Connected" but no messages    | Keepalive mechanism detects |
 | Different behavior | Works in browser, not in app   | Check Web Inspector console |
+| Process name in Activity Monitor | Shows as "https://127.0.0.1:XXXX" | Call `setProcessName("Mitto")` before `webview.New()` — WebContent child processes inherit name from parent |
 
 **Debugging**: Safari -> Develop -> Your Mac -> Mitto window (enable `setDeveloperExtrasEnabled(true)` in dev builds)
+
+### Setting the Process Name
+
+WKWebView spawns WebContent child processes that inherit the parent's display name. Without an explicit name, the URL shown in the WKWebView appears as the process name. Fix: call `[[NSProcessInfo processInfo] setProcessName:@"Mitto"]` **before** `webview.New()`:
+
+```objc
+// cmd/mitto-app/menu_darwin.m
+void setProcessName(const char* name) {
+    [[NSProcessInfo processInfo] setProcessName:[NSString stringWithUTF8String:name]];
+}
+```
+
+```go
+// cmd/mitto-app/main.go — early in run(), before webview.New()
+func setProcessName(name string) {
+    cName := C.CString(name); defer C.free(unsafe.Pointer(cName))
+    C.setProcessName(cName)
+}
+```
 
 ## Keyboard Shortcuts
 

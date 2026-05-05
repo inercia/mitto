@@ -1,0 +1,96 @@
+##########################################################################################
+# Builtin processor: automatically identifies workspace metadata from project files.
+#
+# This prompt-mode processor examines the project's files (README, package.json, git
+# remote URLs, etc.) and fills in the metadata.description and metadata.url fields in
+# the workspace's .mittorc file when they are missing.
+#
+# Fire-and-forget: the auxiliary agent works in the background while the main
+# conversation continues normally.
+#
+# Disabled by default — enable per workspace in the Workspaces dialog or .mittorc.
+# Only activates when a .mittorc file exists but lacks a metadata description.
+##########################################################################################
+name: identify-workspace-metadata
+description: "Analyzes the project and fills in workspace metadata (description, URL) in .mittorc"
+enabled: false
+when: first
+priority: 195
+timeout: 120s
+on_error: skip
+
+# Only activate when .mittorc exists but has no metadata description, and not periodic
+enabledWhen: 'workspace.hasMittoRC && !workspace.hasMetadataDescription && !session.isPeriodic'
+
+prompt: |
+  You are a workspace metadata curator. Your job is to analyze the project in the
+  current working directory and determine appropriate metadata for the workspace's
+  .mittorc configuration file.
+
+  ## Session Info
+
+  Working Directory: @mitto:working_dir
+
+  ## Your Task
+
+  Analyze the project to determine:
+
+  1. **Description**: A concise 1-2 sentence description of what the project is and does.
+     Look at:
+     - README.md or README files (the first paragraph or description section)
+     - package.json "description" field
+     - pyproject.toml or setup.py description
+     - Cargo.toml description
+     - go.mod module path (for context)
+     - Any other project manifest files
+
+  2. **URL**: The project's repository or homepage URL. Look at:
+     - Git remote URLs (`git remote -v` — convert SSH URLs to HTTPS)
+     - package.json "repository" or "homepage" fields
+     - pyproject.toml project URLs
+     - Cargo.toml repository field
+     - README badges or links
+
+  3. **Group**: An optional grouping label. Only set this if there's an obvious
+     organizational grouping (e.g., company name, team name). Skip if unclear.
+
+  ## How to Save
+
+  Once you have the metadata, you need to edit the .mittorc file directly.
+
+  Read the existing .mittorc file first to understand its current structure.
+  Then add or update ONLY the metadata section, preserving all other content.
+
+  The metadata section should look like:
+
+  ```yaml
+  metadata:
+    description: "Your determined description here"
+    url: "https://github.com/owner/repo"
+  ```
+
+  If the file already has a `metadata:` section (perhaps with `user_data`),
+  add the `description` and `url` fields to it without removing existing fields.
+
+  **Important**: Do NOT modify any other sections of the .mittorc file (prompts,
+  processors, conversations, etc.). Only add/update metadata.description and
+  metadata.url (and optionally metadata.group).
+
+  ## Guidelines
+
+  - Be concise: descriptions should be 1-2 sentences, not paragraphs
+  - Use HTTPS URLs, not SSH git URLs
+  - If you cannot determine a description from project files, do nothing
+  - If you cannot determine a URL, that's fine — just set the description
+  - Do NOT fabricate information — only use what you find in the project files
+
+  ## Notification
+
+  After completing your work, if you updated the .mittorc file, call
+  `mitto_ui_notify` with:
+  - `self_id`: your session ID (from `mitto_conversation_get_current`)
+  - `title`: "📋 Workspace Metadata Updated"
+  - `message`: a brief summary, e.g. "Added project description and URL to .mittorc"
+  - `style`: "success"
+
+  If no metadata could be determined, do NOT send any notification — stay silent.

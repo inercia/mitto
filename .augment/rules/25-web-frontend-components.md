@@ -38,6 +38,7 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `ChatInput`                  | `ChatInput.js`                    | Message composition, images, prompts dropdown, queue |
 | `QueueDropdown`              | `QueueDropdown.js`                | Queued messages panel with delete/move actions       |
 | `Message`                    | `Message.js`                      | Renders user/agent/tool/error messages               |
+| `ConfirmDialog`              | `ConfirmDialog.js`                | Reusable modal confirmation dialog; supports `children` prop for extra content below message |
 | `SettingsDialog`             | `SettingsDialog.js`               | Configuration, workspaces, auth                      |
 | `Icons`                      | `Icons.js`                        | SVG icon components                                  |
 | `ConversationPropertiesPanel`| `ConversationPropertiesPanel.js`  | Right-side overlay panel for session properties      |

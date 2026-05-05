@@ -570,6 +570,94 @@ Each event contains:
 - Get the last 10 user prompts: `event_types: ["user_prompt"], last_n: 10`
 - Browse history page by page: `last_n: 20, offset: 0` then `last_n: 20, offset: 20`
 
+#### `mitto_prompt_list`
+
+List all prompts available in a workspace, returning basic metadata for each but NOT the full prompt text. This reflects the merged/effective prompt list from all sources (global files, settings, ACP-specific, workspace directory, workspace inline).
+
+| Parameter   | Type   | Required | Description                                          |
+| ----------- | ------ | -------- | ---------------------------------------------------- |
+| `self_id`   | string | Yes      | YOUR session ID (the caller)                         |
+| `workspace` | string | No       | Optional workspace UUID for cross-workspace access   |
+
+Returns:
+
+| Field        | Description                                    |
+| ------------ | ---------------------------------------------- |
+| `success`    | Whether the operation succeeded                |
+| `prompts`    | Array of prompt metadata (see below)           |
+| `working_dir`| Working directory the prompts were loaded from |
+| `error`      | Error message if the operation failed          |
+
+Each prompt in `prompts` contains:
+
+| Field              | Description                                          |
+| ------------------ | ---------------------------------------------------- |
+| `name`             | Prompt display name                                  |
+| `description`      | Optional description                                 |
+| `group`            | Optional group name for organizing prompts           |
+| `background_color` | Optional hex color for the prompt button             |
+| `source`           | Origin: "file", "settings", "workspace", "builtin"  |
+| `enabled`          | Whether enabled (null = enabled, false = disabled)   |
+
+#### `mitto_prompt_get`
+
+Get full details for a specific prompt in a workspace, including the complete prompt text and all metadata. Prompt name matching is case-insensitive.
+
+| Parameter   | Type   | Required | Description                                          |
+| ----------- | ------ | -------- | ---------------------------------------------------- |
+| `self_id`   | string | Yes      | YOUR session ID (the caller)                         |
+| `name`      | string | Yes      | Prompt name (case-insensitive match)                 |
+| `workspace` | string | No       | Optional workspace UUID for cross-workspace access   |
+
+Returns:
+
+| Field     | Description                                    |
+| --------- | ---------------------------------------------- |
+| `success` | Whether the operation succeeded                |
+| `prompt`  | Full prompt details (see below)                |
+| `error`   | Error message if the operation failed          |
+
+The `prompt` object contains:
+
+| Field              | Description                                          |
+| ------------------ | ---------------------------------------------------- |
+| `name`             | Prompt display name                                  |
+| `prompt`           | Full prompt text                                     |
+| `description`      | Optional description                                 |
+| `group`            | Optional group name                                  |
+| `background_color` | Optional hex color                                   |
+| `source`           | Origin: "file", "settings", "workspace", "builtin"  |
+| `enabled`          | Whether enabled (null = enabled, false = disabled)   |
+
+#### `mitto_prompt_update`
+
+Update a prompt's details including its full text, description, group, color, and enabled status. If the prompt originates from a global source, the update is saved to the workspace-local `.mitto/prompts/` folder, creating a workspace-level override without modifying the global source. Can also create new prompts.
+
+| Parameter          | Type   | Required | Description                                     |
+| ------------------ | ------ | -------- | ----------------------------------------------- |
+| `self_id`          | string | Yes      | YOUR session ID (the caller)                    |
+| `name`             | string | Yes      | Prompt name to update or create                 |
+| `workspace`        | string | No       | Optional workspace UUID                         |
+| `prompt`           | string | No       | New prompt text                                 |
+| `description`      | string | No       | New description                                 |
+| `background_color` | string | No       | New background color (hex)                      |
+| `group`            | string | No       | New group name                                  |
+| `enabled`          | bool   | No       | Enable/disable the prompt                       |
+
+**Key behavior:**
+- If only `enabled` is provided: Uses optimized toggle logic (updates `.mitto/prompts/` frontmatter or `.mittorc`)
+- If content/metadata fields are provided: Writes a full prompt file to `.mitto/prompts/<slug>.md`
+- For global prompts: Creates a workspace-local override (does NOT modify the global source)
+- For new prompts: Creates them in `.mitto/prompts/`
+
+Returns:
+
+| Field     | Description                              |
+| --------- | ---------------------------------------- |
+| `success` | Whether the update succeeded             |
+| `path`    | File path of the saved/updated prompt    |
+| `error`   | Error message if the operation failed    |
+
 ### Permission Flags
 
 Session-scoped tools check permissions at runtime:
@@ -583,7 +671,7 @@ Session-scoped tools check permissions at runtime:
 | `can_interact_other_workspaces` | `mitto_conversation_new`, `mitto_conversation_get`, `mitto_conversation_send_prompt`, `mitto_conversation_wait` (only when `workspace` parameter targets a different workspace) |
 
 **Note:** `mitto_conversation_list` is **always available** (no permission check).
-`mitto_conversation_get_current`, `mitto_conversation_get`, `mitto_conversation_wait`, `mitto_conversation_update`, and `mitto_conversation_history` require the session to be registered (running) but no flag check.
+`mitto_conversation_get_current`, `mitto_conversation_get`, `mitto_conversation_wait`, `mitto_conversation_update`, `mitto_conversation_history`, `mitto_prompt_list`, `mitto_prompt_get`, and `mitto_prompt_update` require the session to be registered (running) but no flag check.
 Cross-workspace operations require the `can_interact_other_workspaces` flag AND user confirmation. The confirmation dialog is NOT gated by `can_prompt_user` — it is a mandatory security gate.
 
 ## Configuring AI Agents

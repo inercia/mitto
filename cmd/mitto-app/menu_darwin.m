@@ -639,3 +639,14 @@ void disableWindowFullscreen(void) {
                       dispatch_get_main_queue(), applyToAllWindows);
     }
 }
+
+// setProcessName sets the process name for the current process.
+// This affects how the process appears in Activity Monitor and how WebKit child
+// processes (WebContent) derive their display names.
+// Should be called as early as possible in app startup, before webview creation.
+void setProcessName(const char* name) {
+    @autoreleasepool {
+        NSString *appName = [NSString stringWithUTF8String:name];
+        [[NSProcessInfo processInfo] setProcessName:appName];
+    }
+}

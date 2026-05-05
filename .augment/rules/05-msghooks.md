@@ -87,12 +87,14 @@ processors:
 | `claude-manage-memory`| prompt  | `acp.matchesServerType("claude-code") && !session.isPeriodic`   | Maintain `CLAUDE.md` / `.claude/`  |
 | `memorize-preferences`| prompt  | `!session.isPeriodic`                                           | Save user prefs to `AGENTS.md`     |
 | `identify-user-data`  | prompt  | `workspace.hasUserDataSchema && !session.isPeriodic`            | Auto-fill workspace user data fields|
+| `identify-workspace-metadata` | prompt | `workspace.hasMittoRC && !workspace.hasMetadataDescription && !session.isPeriodic` | Auto-fill `metadata.description` and `metadata.url` in `.mittorc` |
 
 **Common skip reasons:**
 - `enabledWhen_false` — CEL expression evaluated to false (e.g., wrong server type, tools already present)
 - `check-mcp-tools` skipped when mitto tools already available → `tools.hasPattern("mitto_*")` is true
 - `auggie-manage-rules` skipped when using Claude Code → `acp.matchesServerType("augment")` is false
 - `identify-user-data` skipped when no user data schema in `.mittorc` → `workspace.hasUserDataSchema` is false
+- `identify-workspace-metadata` skipped when no `.mittorc` or description already set → `workspace.hasMittoRC && !workspace.hasMetadataDescription`
 
 ## CEL Context for `enabledWhen`
 
@@ -102,7 +104,7 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | ------------------ | --------------------------------------------------------------------------- |
 | `acp.*`            | `acp.matchesServerType("augment")`, `acp.name`, `acp.type`, `acp.tags`     |
 | `session.*`        | `session.isPeriodic`, `session.isChild`, `session.id`                       |
-| `workspace.*`      | `workspace.hasUserDataSchema`, `workspace.folder`                           |
+| `workspace.*`      | `workspace.hasUserDataSchema`, `workspace.hasMittoRC`, `workspace.hasMetadataDescription`, `workspace.folder` |
 | `tools.*`          | `tools.hasPattern("mitto_*")`, `tools.hasAllPatterns(["a_*", "b_*"])`       |
 
 ## Skip Reason Reference

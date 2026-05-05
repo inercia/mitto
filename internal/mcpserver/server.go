@@ -65,7 +65,9 @@ type Server struct {
 	mu             sync.RWMutex
 	store          *session.Store
 	config         *config.Config
+	promptsCache   *config.PromptsCache
 	sessionManager SessionManager
+	periodicRunner PeriodicRunner // Optional — for triggering periodic runs via MCP
 	running        bool
 	shutdown       bool
 
@@ -125,6 +127,9 @@ type Dependencies struct {
 	Config *config.Config
 	// SessionManager is optional - provides info about running sessions
 	SessionManager SessionManager
+	// PromptsCache provides cached access to global prompts from MITTO_DIR/prompts/.
+	// If nil, global file prompts are not loaded.
+	PromptsCache *config.PromptsCache
 }
 
 // SessionManager interface for checking session status and managing sessions.
@@ -160,6 +165,19 @@ type SessionManager interface {
 	BroadcastSessionRenamed(sessionID string, newName string)
 	// GetUserDataSchema returns the user data schema for a workspace.
 	GetUserDataSchema(workingDir string) *config.UserDataSchema
+	// GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
+	GetWorkspacePrompts(workingDir string) []config.WebPrompt
+	// GetWorkspacePromptsDirs returns the prompts_dirs defined in the workspace's .mittorc file.
+	GetWorkspacePromptsDirs(workingDir string) []string
+	// GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
+	GetWorkspaceRCLastModified(workingDir string) time.Time
+	// GetWorkspace returns the first workspace matching the working directory.
+	GetWorkspace(workingDir string) *config.WorkspaceSettings
+}
+
+// PeriodicRunner interface for triggering immediate periodic prompt delivery.
+type PeriodicRunner interface {
+	TriggerNow(sessionID string, resetTimer bool) error
 }
 
 // BackgroundSession interface for session info.
@@ -216,6 +234,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		mode:                  cfg.Mode,
 		store:                 deps.Store,
 		config:                deps.Config,
+		promptsCache:          deps.PromptsCache,
 		sessionManager:        deps.SessionManager,
 		sessions:              make(map[string]*registeredSession),
 		pendingRequests:       make(map[string][]*pendingRequest),
@@ -442,6 +461,17 @@ func (s *Server) UpdateDependencies(deps Dependencies) {
 	if deps.Config != nil {
 		s.config = deps.Config
 	}
+	if deps.PromptsCache != nil {
+		s.promptsCache = deps.PromptsCache
+	}
+}
+
+// SetPeriodicRunner sets the periodic runner for triggering periodic runs via MCP tools.
+// It may be called after NewServer since the periodic runner is created after the MCP server.
+func (s *Server) SetPeriodicRunner(runner PeriodicRunner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.periodicRunner = runner
 }
 
 // RegisterSession registers a session with the MCP server.
@@ -1087,6 +1117,18 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleSetPeriodic)
 
+	// mitto_conversation_run_periodic_now - Trigger immediate periodic run
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_run_periodic_now",
+		Description: "Trigger an immediate run of a periodic conversation's configured prompt, bypassing the normal schedule. " +
+			"The conversation must have periodic prompts configured and enabled. " +
+			"Use 'reset_timer' to control whether the countdown for the next scheduled run resets (default: true). " +
+			"When reset_timer is true, the next run is scheduled from now (as if a normal run just occurred). " +
+			"When reset_timer is false, the existing next-run schedule is preserved unchanged. " +
+			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
+			selfIDNote,
+	}, s.handleRunPeriodicNow)
+
 	// mitto_conversation_archive - Archive or unarchive a conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_archive",
@@ -1169,6 +1211,30 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Defaults to your own conversation if conversation_id is omitted. " +
 			selfIDNote,
 	}, s.handleConversationHistory)
+
+	// mitto_prompt_list - List all prompts in a workspace
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_prompt_list",
+		Description: "List all prompts available in a workspace, returning basic metadata for each (name, origin/source, enabled status, group, etc.) but NOT the full prompt text. " +
+			"This reflects the merged/effective prompt list from all sources (global, settings, ACP-specific, workspace directory, workspace inline). " +
+			"Defaults to the caller's workspace. " + selfIDNote,
+	}, s.handlePromptList)
+
+	// mitto_prompt_get - Get full details for a specific prompt
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_prompt_get",
+		Description: "Get full details for a specific prompt in a workspace, including the complete prompt text and all metadata (origin, enabled status, group, etc.). " +
+			"Prompt name matching is case-insensitive. " + selfIDNote,
+	}, s.handlePromptGet)
+
+	// mitto_prompt_update - Update a prompt's details
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_prompt_update",
+		Description: "Update a prompt's details including its full text, description, group, color, and enabled status. " +
+			"If the prompt originates from a global source, the update is saved to the workspace-local .mitto/prompts/ folder (creating a workspace-level override). " +
+			"If only the enabled field is provided, uses the optimized toggle-enabled logic (updates frontmatter or .mittorc). " +
+			"Can also create new prompts by specifying a name that doesn't exist yet. " + selfIDNote,
+	}, s.handlePromptUpdate)
 }
 
 // ListConversationsOutput wraps the list of conversations for MCP output schema compliance.
@@ -2723,6 +2789,80 @@ func (s *Server) handleSetPeriodic(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	return nil, output, nil
+}
+
+// RunPeriodicNowInput is the input for mitto_conversation_run_periodic_now tool.
+type RunPeriodicNowInput struct {
+	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"`           // Target conversation to trigger
+	ResetTimer     *bool  `json:"reset_timer,omitempty"`     // Whether to reset the countdown timer (default: true)
+}
+
+// RunPeriodicNowOutput is the output for mitto_conversation_run_periodic_now tool.
+type RunPeriodicNowOutput struct {
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+func (s *Server) handleRunPeriodicNow(ctx context.Context, req *mcp.CallToolRequest, input RunPeriodicNowInput) (*mcp.CallToolResult, RunPeriodicNowOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, RunPeriodicNowOutput{Error: "self_id is required"}, nil
+	}
+
+	// Validate conversation_id
+	if input.ConversationID == "" {
+		return nil, RunPeriodicNowOutput{Error: "conversation_id is required"}, nil
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, RunPeriodicNowOutput{
+			Error: fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
+		}, nil
+	}
+
+	// Check if source session is registered (must be running to use this tool)
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, RunPeriodicNowOutput{Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
+	}
+
+	// Check if periodic runner is available
+	s.mu.RLock()
+	runner := s.periodicRunner
+	s.mu.RUnlock()
+
+	if runner == nil {
+		return nil, RunPeriodicNowOutput{Error: "periodic runner not available"}, nil
+	}
+
+	// Determine reset_timer (default: true — same as normal scheduled runs)
+	resetTimer := true
+	if input.ResetTimer != nil {
+		resetTimer = *input.ResetTimer
+	}
+
+	// Trigger immediate delivery
+	if err := runner.TriggerNow(input.ConversationID, resetTimer); err != nil {
+		return nil, RunPeriodicNowOutput{Error: fmt.Sprintf("failed to trigger periodic run: %v", err)}, nil
+	}
+
+	msg := "Periodic prompt triggered successfully"
+	if !resetTimer {
+		msg += " (countdown timer preserved)"
+	} else {
+		msg += " (countdown timer reset)"
+	}
+
+	s.logger.Info("Periodic prompt triggered via MCP",
+		"source_session", realSessionID,
+		"target_conversation", input.ConversationID,
+		"reset_timer", resetTimer)
+
+	return nil, RunPeriodicNowOutput{Success: true, Message: msg}, nil
 }
 
 // ArchiveConversationInput is the input for mitto_conversation_archive tool.

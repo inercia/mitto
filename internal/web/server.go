@@ -521,6 +521,7 @@ func NewServer(config Config) (*Server, error) {
 				Store:          store,
 				Config:         config.MittoConfig,
 				SessionManager: &sessionManagerAdapter{sm: sessionMgr},
+				PromptsCache:   config.PromptsCache,
 			},
 		)
 		if err != nil {
@@ -584,6 +585,12 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	s.periodicRunner.Start()
+
+	// Wire up periodic runner to MCP server for the run-now tool.
+	// The periodic runner is created after the MCP server, so we use a setter.
+	if s.mcpServer != nil {
+		s.mcpServer.SetPeriodicRunner(s.periodicRunner)
+	}
 
 	// Build callback index from existing sessions
 	s.buildCallbackIndex()
@@ -1373,6 +1380,26 @@ func (a *sessionManagerAdapter) BroadcastSessionRenamed(sessionID string, newNam
 // GetUserDataSchema returns the user data schema for a workspace.
 func (a *sessionManagerAdapter) GetUserDataSchema(workingDir string) *configPkg.UserDataSchema {
 	return a.sm.GetUserDataSchema(workingDir)
+}
+
+// GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
+func (a *sessionManagerAdapter) GetWorkspacePrompts(workingDir string) []configPkg.WebPrompt {
+	return a.sm.GetWorkspacePrompts(workingDir)
+}
+
+// GetWorkspacePromptsDirs returns the prompts_dirs defined in the workspace's .mittorc file.
+func (a *sessionManagerAdapter) GetWorkspacePromptsDirs(workingDir string) []string {
+	return a.sm.GetWorkspacePromptsDirs(workingDir)
+}
+
+// GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
+func (a *sessionManagerAdapter) GetWorkspaceRCLastModified(workingDir string) time.Time {
+	return a.sm.GetWorkspaceRCLastModified(workingDir)
+}
+
+// GetWorkspace returns the first workspace matching the working directory.
+func (a *sessionManagerAdapter) GetWorkspace(workingDir string) *configPkg.WorkspaceSettings {
+	return a.sm.GetWorkspace(workingDir)
 }
 
 // =============================================================================

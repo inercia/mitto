@@ -115,29 +115,23 @@ When disabling prompt X:
 1. If `.mitto/prompts/X.md` exists → set `enabled: false` in frontmatter
 2. If not → add `{name: X, enabled: false}` to `.mittorc` prompts section
 
-When re-enabling:
-1. If `.md` file has `enabled: false` → remove the field from frontmatter
-2. If `.mittorc` has the entry → remove entry (clean up empty `prompts` key)
+When re-enabling: reverse (remove `enabled: false` from frontmatter or `.mittorc` entry).
 
-## Frontend Architecture (Simplified)
+## MCP Prompt Tools (`internal/mcpserver/prompts.go`)
 
-```javascript
-// app.js — Single source of truth from backend
-const [workspacePrompts, setWorkspacePrompts] = useState([]);
-const predefinedPrompts = workspacePrompts; // No client-side merge!
+Three MCP tools for managing prompts programmatically:
 
-// Refresh on: dropdown open, file watcher event, visibility change, 30s interval
-const fetchWorkspacePrompts = useCallback(async (workingDir, forceRefresh) => {
-  const res = await authFetch(`/api/workspace-prompts?dir=${dir}&session_id=${id}`);
-  setWorkspacePrompts(data?.prompts || []);
-}, [...]);
-```
+| Tool | Purpose |
+|------|---------|
+| `mitto_prompt_list` | List all merged prompts (metadata only, no text) |
+| `mitto_prompt_get` | Get full prompt details by name (case-insensitive) |
+| `mitto_prompt_update` | Create/update workspace-local prompt overrides |
 
-**Anti-pattern**: Never do client-side prompt merging — backend does everything. `predefinedPrompts = workspacePrompts` only.
+`loadMergedPrompts()` replicates the same 5-layer merge as the REST API. Updates always write to `.mitto/prompts/<slug>.md` (workspace-local override). Enable/disable-only updates use the optimized toggle path (`UpdatePromptFileEnabled` / `SaveWorkspaceRCPromptEnabled`). Name slugification via `config.SlugifyPromptName()`.
 
-## Conditional Requests
+## Frontend Architecture
 
-The workspace-prompts endpoint supports `If-Modified-Since` / `Last-Modified` for efficient polling (30s interval).
+**Anti-pattern**: Never do client-side prompt merging — backend does everything. `predefinedPrompts = workspacePrompts` only. Refresh on: dropdown open, file watcher event, visibility change, 30s interval. Supports `If-Modified-Since` / `Last-Modified` for efficient polling.
 
 ## enabledWhen Filtering
 
