@@ -188,9 +188,12 @@ func TestParse_EmptyACPServers(t *testing.T) {
 	yaml := `
 acp: []
 `
-	_, err := Parse([]byte(yaml))
-	if err == nil {
-		t.Error("expected error for empty ACP servers, got nil")
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error for empty ACP servers: %v", err)
+	}
+	if len(cfg.ACPServers) != 0 {
+		t.Errorf("expected 0 ACP servers, got %d", len(cfg.ACPServers))
 	}
 }
 
@@ -633,9 +636,12 @@ acp:
 
 func TestParseJSON_EmptyACPServers(t *testing.T) {
 	jsonConfig := `{"acp_servers": []}`
-	_, err := ParseJSON([]byte(jsonConfig))
-	if err == nil {
-		t.Error("expected error for empty ACP servers, got nil")
+	cfg, err := ParseJSON([]byte(jsonConfig))
+	if err != nil {
+		t.Fatalf("unexpected error for empty ACP servers: %v", err)
+	}
+	if len(cfg.ACPServers) != 0 {
+		t.Errorf("expected 0 ACP servers, got %d", len(cfg.ACPServers))
 	}
 }
 
@@ -1368,7 +1374,7 @@ ui:
   mac:
     badge_click_action:
       enabled: true
-      command: "code ${WORKSPACE}"
+      command: "code ${MITTO_WORKING_DIR}"
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -1387,9 +1393,9 @@ ui:
 		t.Error("UI.Mac.BadgeClickAction.GetEnabled() = false, want true")
 	}
 
-	if cfg.UI.Mac.BadgeClickAction.GetCommand() != "code ${WORKSPACE}" {
+	if cfg.UI.Mac.BadgeClickAction.GetCommand() != "code ${MITTO_WORKING_DIR}" {
 		t.Errorf("UI.Mac.BadgeClickAction.GetCommand() = %q, want %q",
-			cfg.UI.Mac.BadgeClickAction.GetCommand(), "code ${WORKSPACE}")
+			cfg.UI.Mac.BadgeClickAction.GetCommand(), "code ${MITTO_WORKING_DIR}")
 	}
 }
 
@@ -1427,7 +1433,7 @@ func TestBadgeClickActionConfig_Defaults(t *testing.T) {
 	if !nilConfig.GetEnabled() {
 		t.Error("nil config should return enabled=true by default")
 	}
-	if nilConfig.GetCommand() != "open ${WORKSPACE}" {
+	if nilConfig.GetCommand() != "open ${MITTO_WORKING_DIR}" {
 		t.Errorf("nil config should return default command, got %q", nilConfig.GetCommand())
 	}
 
@@ -1436,7 +1442,7 @@ func TestBadgeClickActionConfig_Defaults(t *testing.T) {
 	if !emptyConfig.GetEnabled() {
 		t.Error("empty config should return enabled=true by default")
 	}
-	if emptyConfig.GetCommand() != "open ${WORKSPACE}" {
+	if emptyConfig.GetCommand() != "open ${MITTO_WORKING_DIR}" {
 		t.Errorf("empty config should return default command, got %q", emptyConfig.GetCommand())
 	}
 }
@@ -1842,6 +1848,43 @@ func TestMergePrompts_SkipsEmptyNames(t *testing.T) {
 	}
 	if result[0].Name != "Valid" {
 		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "Valid")
+	}
+}
+
+func TestMergePrompts_DisabledOverride(t *testing.T) {
+	falseVal := false
+
+	// Workspace disabled prompt should suppress same-named global prompt
+	global := []WebPrompt{{Name: "Add tests", Prompt: "write tests"}}
+	workspace := []WebPrompt{{Name: "Add tests", Enabled: &falseVal}}
+	result := MergePrompts(global, nil, workspace)
+	if len(result) != 0 {
+		t.Errorf("expected 0 prompts (disabled override), got %d", len(result))
+	}
+
+	// Settings disabled prompt should suppress same-named global prompt
+	settings := []WebPrompt{{Name: "Add tests", Enabled: &falseVal}}
+	result = MergePrompts(global, settings, nil)
+	if len(result) != 0 {
+		t.Errorf("expected 0 prompts (settings disabled override), got %d", len(result))
+	}
+
+	// Non-disabled workspace prompt should still override global
+	trueVal := true
+	workspaceEnabled := []WebPrompt{{Name: "Add tests", Prompt: "workspace version", Enabled: &trueVal}}
+	result = MergePrompts(global, nil, workspaceEnabled)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(result))
+	}
+	if result[0].Prompt != "workspace version" {
+		t.Errorf("expected workspace version, got %q", result[0].Prompt)
+	}
+
+	// Disabled prompt with nil Enabled (default true) should not be filtered
+	defaultEnabled := []WebPrompt{{Name: "Add tests", Prompt: "default"}}
+	result = MergePrompts(defaultEnabled, nil, nil)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 prompt (nil Enabled = true), got %d", len(result))
 	}
 }
 

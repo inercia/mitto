@@ -28,3 +28,12 @@ var BuiltinProcessorsFS embed.FS
 
 // BuiltinProcessorsDir is the path within the embedded filesystem where processors are stored.
 const BuiltinProcessorsDir = "processors/builtin"
+
+// BuiltinAgentsFS contains the embedded builtin agents directory.
+// These agent configs are deployed to MITTO_DIR/agents/builtin/ on first run.
+//
+//go:embed all:agents/builtin
+var BuiltinAgentsFS embed.FS
+
+// BuiltinAgentsDir is the path within the embedded filesystem where agent configs are stored.
+const BuiltinAgentsDir = "agents/builtin"

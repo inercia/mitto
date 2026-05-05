@@ -104,6 +104,10 @@ func (m *mockObserver) OnUIPromptDismiss(requestID string, reason string) {
 	// no-op for testing
 }
 
+func (m *mockObserver) OnNotification(req UINotifyRequest) {
+	// no-op for testing
+}
+
 func TestSessionObserver_Interface(t *testing.T) {
 	// Verify mockObserver implements SessionObserver
 	var _ SessionObserver = (*mockObserver)(nil)

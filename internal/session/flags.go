@@ -46,6 +46,12 @@ var AvailableFlags = []FlagDefinition{
 		Default:     true, // Changed to true - new conversations can create child conversations by default
 	},
 	{
+		Name:        FlagCanInteractOtherWorkspaces,
+		Label:       "Can interact with other workspaces",
+		Description: "Allow this conversation to interact with conversations in other workspaces via MCP tools. When disabled, cross-workspace operations are rejected.",
+		Default:     false,
+	},
+	{
 		Name:        FlagAutoApprovePermissions,
 		Label:       "Auto-approve permissions",
 		Description: "Automatically approve all permission requests from the agent (file writes, command execution, etc.) without prompting",
@@ -74,6 +80,11 @@ const (
 	// while the parent exists. When the parent is deleted, orphaned children have this
 	// flag restored to the default value so they can start conversations again.
 	FlagCanStartConversation = "can_start_conversation"
+
+	// FlagCanInteractOtherWorkspaces controls whether the conversation can interact
+	// with conversations in other workspaces via MCP tools (mitto_conversation_new,
+	// mitto_conversation_get, mitto_conversation_send_prompt, mitto_conversation_wait).
+	FlagCanInteractOtherWorkspaces = "can_interact_other_workspaces"
 
 	// FlagAutoApprovePermissions controls whether permission requests from the agent
 	// are automatically approved without showing the permission dialog.

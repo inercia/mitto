@@ -14,7 +14,7 @@ restricted_runners:
     restrictions:
       allow_networking: true
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "$HOME/.config"
         - "/usr/local/bin"
         - "/usr/bin"
@@ -22,7 +22,7 @@ restricted_runners:
         - "/System/Library"
         - "/Library"
       allow_write_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "$HOME/.cache"
         - "/tmp"
     merge_strategy: "extend"
@@ -32,10 +32,10 @@ restricted_runners:
     restrictions:
       allow_networking: true
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "$HOME/.config"
       allow_write_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
     merge_strategy: "extend"
 
   # docker: Container isolation
@@ -47,9 +47,9 @@ restricted_runners:
         memory_limit: "512m"
         cpu_limit: "1.0"
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
       allow_write_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
     merge_strategy: "replace"
 
 # ACP servers for testing

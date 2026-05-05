@@ -88,6 +88,18 @@ useEffect(() => {
 }, [messages.length, isStreaming]);
 ```
 
+## Adding New Session Properties (Checklist)
+
+When adding a new field to session state (e.g., `periodic_enabled`), **three places** in the frontend must all be updated or the value will be silently dropped:
+
+| File | Location | What to add |
+|------|----------|-------------|
+| `useWebSocket.js` | `activeSessions = useMemo(...)` block (~line 1062) | Explicit field mapping from `data.info?.field` |
+| `useWebSocket.js` | Fingerprint string (~line 1090) | `\|${s.field}` so changes trigger re-renders |
+| `lib.js` | `computeAllSessions` "no stored session" case (~line 444) | Field with default value |
+
+**Anti-pattern**: WebSocket handler (`periodic_updated`) sets `sessions[id].info.periodic_enabled` correctly, but if `activeSessions` useMemo doesn't forward it, the property is lost when `computeAllSessions` runs.
+
 ## Settings Dialog Patterns
 
 ### State After Save

@@ -359,6 +359,22 @@ export function LightningIcon({ className = "w-4 h-4" }) {
   return html`
     <svg
       class="${className}"
+      fill="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+    </svg>
+  `;
+}
+
+/**
+ * Robot icon for MCP-spawned child conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function RobotIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
       fill="none"
       stroke="currentColor"
       viewBox="0 0 24 24"
@@ -367,7 +383,73 @@ export function LightningIcon({ className = "w-4 h-4" }) {
         stroke-linecap="round"
         stroke-linejoin="round"
         stroke-width="2"
-        d="M13 10V3L4 14h7v7l9-11h-7z"
+        d="M9 3v1m6-1v1M9 19v1m6-1v1M5 8h14a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2zM9 13h.01M15 13h.01"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Person icon for human-created child conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PersonIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Hourglass icon for parent conversations waiting for children
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function HourglassIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M5 3h14M5 21h14M7 3v4l5 5-5 5v4M17 3v4l-5 5 5 5v4"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Question mark circle icon for conversations waiting for user input
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function QuestionMarkIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
       />
     </svg>
   `;
@@ -706,6 +788,23 @@ export function PeriodicFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Play filled icon for "run now" action
+ * Shows a filled circular badge with a white triangle (play arrow) inside
+ * Similar style to PeriodicFilledIcon but indicates "run/play" action
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PlayFilledIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" viewBox="0 0 24 24">
+      <!-- Filled circle background using currentColor (will be blue/colored) -->
+      <circle cx="12" cy="12" r="11" fill="currentColor" />
+      <!-- Play triangle in white for contrast against colored circle -->
+      <polygon points="9,6 19,12 9,18" fill="white" />
+    </svg>
+  `;
+}
+
+/**
  * List/no-grouping icon (horizontal lines)
  * @param {string} className - CSS classes (default: 'w-5 h-5')
  */
@@ -919,6 +1018,51 @@ export function LayersIcon({ className = "w-5 h-5" }) {
         stroke-linejoin="round"
         stroke-width="2"
         d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
+      />
+    </svg>
+  `;
+}
+
+
+/**
+ * Search / magnifying glass icon
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function SearchIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Tag icon (for user data / metadata)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function TagIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"
       />
     </svg>
   `;

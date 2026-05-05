@@ -64,7 +64,7 @@ Wraps [go-restricted-runner](https://github.com/inercia/go-restricted-runner) fo
 
 | Variable      | Meaning                     |
 | ------------- | --------------------------- |
-| `$WORKSPACE`  | Current workspace directory |
+| `$MITTO_WORKING_DIR`  | Current workspace directory |
 | `$HOME`       | User home                   |
 | `$MITTO_DIR`  | Mitto data dir              |
 | `$TMPDIR`     | System temp dir             |

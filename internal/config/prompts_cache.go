@@ -198,10 +198,14 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 		}
 	}
 
-	// Convert map to slice
+	// Convert map to slice, filtering out disabled prompts.
+	// Disabled prompts have already served their purpose of suppressing
+	// same-named prompts from lower-priority directories during merge.
 	prompts := make([]*PromptFile, 0, len(promptsByName))
 	for _, p := range promptsByName {
-		prompts = append(prompts, p)
+		if p.IsEnabled() {
+			prompts = append(prompts, p)
+		}
 	}
 
 	c.prompts = prompts
@@ -224,27 +228,6 @@ func (c *PromptsCache) GetWebPrompts() ([]WebPrompt, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.webPrompts, nil
-}
-
-// GetWebPromptsForACP returns the cached prompts filtered by ACP server.
-// If acpServer is empty, returns all prompts (no filtering).
-func (c *PromptsCache) GetWebPromptsForACP(acpServer string) ([]WebPrompt, error) {
-	// Ensure cache is fresh
-	prompts, err := c.Get()
-	if err != nil {
-		return nil, err
-	}
-
-	// If no ACP server specified, return all prompts
-	if acpServer == "" {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-		return c.webPrompts, nil
-	}
-
-	// Filter prompts by ACP server
-	filtered := FilterPromptsByACP(prompts, acpServer)
-	return PromptsToWebPrompts(filtered), nil
 }
 
 // GetWebPromptsSpecificToACP returns prompts that are specifically targeted at the given ACP server.

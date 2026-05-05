@@ -1,12 +1,13 @@
 # Processors Configuration
 
 Mitto supports processors that transform messages before sending them to the ACP
-server. There are two modes:
+server. There are three modes:
 
 - **Text-mode** — Inject static text (with optional variable substitution) into messages. No external commands needed.
 - **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output.
+- **Prompt-mode** — Send a prompt (with conversation history) to a workspace-scoped auxiliary AI agent. Fire-and-forget: the pipeline continues immediately without waiting for the agent's response.
 
-Both modes are configured via YAML files and share the same triggering, priority, and conditional enablement features.
+All modes are configured via YAML files and share the same triggering, priority, and conditional enablement features.
 
 > **Note:** The old `hooks/` directory name is still supported for backward compatibility.
 
@@ -23,7 +24,7 @@ The processors directory is created automatically when Mitto starts.
 ### Workspace-Local Processors
 
 In addition to the global processors directory, Mitto automatically loads processors
-from the workspace directory at `$WORKSPACE/.mitto/processors/`. This allows
+from the workspace directory at `$MITTO_WORKING_DIR/.mitto/processors/`. This allows
 per-project processor configuration that travels with the repository.
 
 Additional workspace processor directories can be configured via `.mittorc`:
@@ -49,17 +50,54 @@ version overrides the global one. All processors are sorted by priority after me
 Use `mitto processors list --dir .mitto/processors` to preview how workspace processors
 merge with global ones.
 
+### Enabling and Disabling Processors per Workspace
+
+Processors can be enabled or disabled per workspace through the Web UI or the `.mittorc` file.
+
+**Web UI:** Open the Workspaces dialog (folder icon in sidebar footer), select a folder, and click the **Processors** tab. Each processor shows its source (workspace, global, or built-in) and has a toggle to enable or disable it.
+
+**`.mittorc` file:** To override the enabled state of a global or built-in processor for a specific workspace, add entries to the `processors` list:
+
+```yaml
+processors:
+  - name: delegate-to-coder
+    enabled: false
+  - name: memorize-preferences
+    enabled: true
+```
+
+This mirrors the same `{name, enabled}` pattern used by the `prompts` section. When re-enabling a processor that is enabled by default, you can remove the entry entirely — missing entries use the processor's default state.
+
+For workspace-local processors (from `.mitto/processors/`), the toggle updates the `enabled` field directly in the processor's YAML file.
+
+> **Backward compatibility:** The legacy `disabled_processors` list format is still read and automatically migrated to the new `processors` format when saving.
+
+**Source precedence:**
+
+| Source      | Badge Color | Description                                               |
+| ----------- | ----------- | --------------------------------------------------------- |
+| `workspace` | Green       | From `.mitto/processors/` in the workspace                |
+| `built-in`  | Blue        | Shipped with Mitto, in `MITTO_DIR/processors/builtin/`    |
+| `global`    | Orange      | User-created in `MITTO_DIR/processors/`                   |
+
 ## Builtin Processors
 
 Mitto ships with builtin processors that are automatically deployed to `MITTO_DIR/processors/builtin/` on first run. Like builtin prompts, they are embedded in the binary and kept in sync — if a new version of Mitto ships updated builtins, they are automatically updated on startup (content-based comparison).
 
 ### Included Builtin Processors
 
-| Processor           | Description                                                                                              | When    | Enabled                                       |
-| ------------------- | -------------------------------------------------------------------------------------------------------- | ------- | --------------------------------------------- |
-| `session-context`   | Injects session identity, parent/child relationships, and available agents into the first message        | `first` | Yes                                           |
-| `check-mcp-tools`   | Checks if Mitto MCP tools are available and suggests installation if missing                             | `first` | Yes                                           |
-| `delegate-to-coder` | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | Yes (only activates for matching ACP servers) |
+| Processor             | Description                                                                                              | When    | Mode   | Enabled                                            |
+| --------------------- | -------------------------------------------------------------------------------------------------------- | ------- | ------ | -------------------------------------------------- |
+| `session-context`     | Injects session identity, parent/child relationships, and available agents into the first message        | `first` | text   | Yes                                                |
+| `check-mcp-tools`     | Checks if Mitto MCP tools are available and suggests installation if missing                             | `first` | text   | Yes                                                |
+| `delegate-to-coder`   | Suggests delegating coding tasks to a faster model when using a premium reasoning model (Opus, o3, etc.) | `first` | text   | Yes (only activates for matching ACP servers)      |
+| `delegate-playwright` | Delegates Playwright browser automation to a faster model when using a premium reasoning model           | `first` | text   | Yes (requires smart model + `browser_*` MCP tools) |
+| `cleanup-children`    | Reminds the agent to clean up child conversations it no longer needs                                     | `first` | text   | Yes (requires ≥2 MCP-created children + delete tool) |
+| `memorize-preferences`| Extracts user preferences from conversations and saves them to AGENTS.md                                 | `first` | prompt | **No** (opt-in; enable in Workspaces dialog or `.mittorc`) |
+| `auggie-manage-rules` | Generates and maintains `.augment/rules/` from workspace analysis and conversations (every 15 messages)   | `first` | prompt | **No** (opt-in; Auggie only)                       |
+| `claude-manage-memory`| Generates and maintains Claude Code memory files from workspace analysis and conversations (every 15 msgs)| `first` | prompt | **No** (opt-in; Claude Code only)                  |
+| `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 5 messages)                      | `first` | prompt | **No** (opt-in; requires `user_data` schema in `.mittorc`) |
+| `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | `first` | prompt | **No** (opt-in; only fires when `.mittorc` exists but lacks a description) |
 
 ### Managing Builtin Processors
 
@@ -167,95 +205,192 @@ text: |
 Command-mode processors execute external commands to dynamically generate or transform
 message content. They use the `command` field and communicate via JSON on stdin/stdout.
 
+## Prompt-Mode Processors (Auxiliary AI Agent)
+
+Prompt-mode processors send a prompt to a workspace-scoped auxiliary AI agent. They are
+**fire-and-forget**: the prompt is dispatched asynchronously and the processor pipeline
+continues immediately without waiting for the agent's response. This makes them ideal
+for background tasks like extracting insights, updating documentation, or tracking
+preferences.
+
+Prompt-mode processors use the `prompt` field (mutually exclusive with `text` and
+`command`). The prompt template supports all standard `@mitto:variable` placeholders.
+To access conversation history, the auxiliary agent calls the `mitto_conversation_history`
+MCP tool at runtime.
+
+### Basic Structure
+
+```yaml
+name: my-analyzer
+description: "Analyzes conversations in the background"
+when: first
+priority: 200
+timeout: 120s
+on_error: skip
+rerun:
+  afterSentMsgs: 10
+
+prompt: |
+  Analyze recent conversation messages and extract key insights.
+  Save your findings to a file in the workspace.
+
+  Session: @mitto:session_name
+  Session ID: @mitto:session_id
+  Working directory: @mitto:working_dir
+
+  Use the mitto_conversation_history MCP tool to retrieve recent messages.
+```
+
+### Key Differences from Text/Command Mode
+
+- **No `position` or `output` fields** — prompt-mode processors don't modify the outgoing message
+- **Always asynchronous** — the pipeline never blocks waiting for the auxiliary agent
+- **Requires a workspace** — the auxiliary session is scoped to the workspace
+- **Requires an auxiliary ACP server** — configured in the workspace settings
+- **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
+
+### Examples
+
+#### Track user preferences automatically
+
+The built-in `memorize-preferences` processor (disabled by default) demonstrates this
+pattern — see [Builtin Processors](#builtin-processors).
+
+#### Summarize progress every 15 messages
+
+```yaml
+name: progress-summary
+description: "Summarizes session progress periodically"
+when: first
+priority: 200
+timeout: 120s
+on_error: skip
+rerun:
+  afterSentMsgs: 15
+
+prompt: |
+  Review the recent conversation and write a brief progress summary.
+  Append it to .mitto/progress.md in the workspace.
+
+  Session ID: @mitto:session_id
+  Use mitto_conversation_history to retrieve the last 40 user and agent messages.
+```
+
+#### Extract action items from agent responses
+
+```yaml
+name: action-items
+description: "Extracts TODO items from agent responses"
+when: first
+priority: 200
+timeout: 60s
+on_error: skip
+rerun:
+  afterSentMsgs: 10
+
+prompt: |
+  Look through the agent's responses for any TODO items, action items,
+  or follow-up tasks mentioned. Add new ones to .mitto/todos.md.
+
+  Session ID: @mitto:session_id
+  Use mitto_conversation_history to retrieve the last 20 agent messages.
+```
+
 ## Full Configuration Schema
 
-Each YAML file in the processors directory defines one processor. Use **either** `text` (text-mode)
-or `command` (command-mode) — not both.
+Each YAML file in the processors directory defines one processor. Use **either** `text` (text-mode),
+`command` (command-mode), or `prompt` (prompt-mode) — not more than one.
 
 ```yaml
 # Required fields
 name: my-processor # Human-readable identifier
 when: first # "first", "all", or "all-except-first"
 
-# --- Text-mode (use ONE of the two modes) ---
+# --- Text-mode (use ONE of the three modes) ---
 text: | # Static text to inject (no command needed)
   Your static content here.
 
-# --- Command-mode (use ONE of the two modes) ---
+# --- Command-mode (use ONE of the three modes) ---
 command: /path/to/script.sh # Command to execute (see Command Resolution)
+
+# --- Prompt-mode (use ONE of the three modes) ---
+prompt: | # Prompt template for auxiliary AI agent (fire-and-forget)
+  Session: @mitto:session_id
+  Use mitto_conversation_history to retrieve messages and analyze them.
 
 # Optional fields
 description: "Adds context" # Description of what the processor does
 enabled: true # Default: true
-position: prepend # "prepend" or "append" (default: prepend)
+position: prepend # "prepend" or "append" (default: prepend; text/command-mode only)
 priority: 100 # Execution order, lower = earlier (default: 100)
 
-# I/O configuration
+# I/O configuration (text/command-mode only; ignored for prompt-mode)
 input: message # "message", "conversation", or "none" (default: message)
 output: transform # "transform", "prepend", "append", "discard" (default: transform)
 
 # Execution settings
-timeout: 5s # Command timeout (default: 5s)
+timeout: 5s # Command timeout (default: 5s); also caps auxiliary agent time in prompt-mode
 working_dir: session # "session" or "hook" (default: session)
 on_error: skip # "skip" or "fail" (default: skip)
 
-# Environment variables (in addition to automatic ones)
+# Environment variables (in addition to automatic ones; text/command-mode only)
 environment:
   MY_VAR: "value"
 
 # CEL expression for conditional activation (empty = always apply)
 # Same context as prompt enabledWhen: acp.*, session.*, parent.*, children.*, workspace.*, tools.*
-enabledWhen: 'acp.tags.exists(t, t == "reasoning")'
-
-# MCP tool patterns required for this processor (empty = no requirements)
-# Comma-separated glob patterns; ALL patterns must be satisfied (AND logic)
-enabledWhenMCP: "mitto_conversation_*, jira_*"
+enabledWhen: 'acp.tags.exists(t, t == "reasoning") && tools.hasAllPatterns(["mitto_conversation_*", "jira_*"])'
 
 # Automatic re-run for "when: first" processors (refreshes context periodically)
 rerun:
   afterTime: 30m # re-run after 30 minutes since last run
   afterSentMsgs: 20 # re-run after 20 user messages since last run
+  afterTokens: 50000 # re-run after 50000 tokens consumed since last run
 ```
 
 ### Conditional Enablement
 
-Processors support the same family of `enabled*` fields as prompts:
+Processors support the same fields as prompts:
 
-| Field            | Type   | Use Case                                    |
-| ---------------- | ------ | ------------------------------------------- |
-| `enabled`        | bool   | Permanently disable a processor             |
-| `enabledWhen`    | CEL    | Dynamic conditions based on session context |
-| `enabledWhenMCP` | string | Require specific MCP tools to be available  |
+| Field         | Type | Use Case                                    |
+| ------------- | ---- | ------------------------------------------- |
+| `enabled`     | bool | Permanently disable a processor             |
+| `enabledWhen` | CEL  | Dynamic conditions based on session context |
 
-**Evaluation order:** If `enabled: false`, the processor is never loaded. Otherwise,
-both `enabledWhen` and `enabledWhenMCP` conditions must be satisfied.
+If `enabled: false`, the processor is never loaded. Otherwise, the `enabledWhen` CEL
+expression must evaluate to `true`.
 
-**CEL context** — Same variables as prompt `enabledWhen`:
+**CEL context** — Same variables and functions as prompt `enabledWhen`:
 
 - `acp.name`, `acp.type`, `acp.tags`, `acp.autoApprove`
-- `session.id`, `session.name`, `session.isChild`, `session.parentId`
+- `acp.matchesServerType("type")`, `acp.matchesServerType(["a", "b"])` — matches ACP server type only, not display name
+- `session.id`, `session.name`, `session.isChild`, `session.isAutoChild`, `session.parentId`, `session.isPeriodic`
 - `parent.exists`, `parent.name`, `parent.acpServer`
-- `children.count`, `children.exists`, `children.names`, `children.acpServers`
+- `children.count`, `children.exists`, `children.mcpCount`, `children.names`, `children.acpServers`
 - `workspace.uuid`, `workspace.folder`, `workspace.name`
-- `tools.available`, `tools.names`, `tools.hasPattern("glob_*")`
+- `tools.available`, `tools.names`
+- `tools.hasPattern("glob_*")`, `tools.hasAllPatterns(["g1", "g2"])`, `tools.hasAnyPattern(["g1", "g2"])`
+- `permissions.canDoIntrospection`, `permissions.canSendPrompt`, `permissions.canPromptUser`, `permissions.canStartConversation`, `permissions.canInteractOtherWorkspaces`, `permissions.autoApprovePermissions`
 
 ### Automatic Re-run (`rerun`)
 
 Processors with `when: first` normally fire only once (on the first message after session
 start or resume). The `rerun` field allows them to fire again periodically, refreshing
-context for the LLM.
+context for the LLM. Thresholds can be based on time, message count, or token usage.
 
 ```yaml
 when: first
 rerun:
   afterTime: 30m # re-run after 30 minutes since last run
   afterSentMsgs: 20 # re-run after 20 user messages since last run
+  afterTokens: 50000 # re-run after 50000 tokens consumed since last run
 ```
 
 | Field           | Type     | Description                                               |
 | --------------- | -------- | --------------------------------------------------------- |
 | `afterTime`     | duration | Time since last run (`"10m"`, `"1h"`, `"30s"`, `"2h30m"`) |
 | `afterSentMsgs` | int      | Number of user messages sent since last run               |
+| `afterTokens`   | int      | Number of tokens consumed since last run (actual or estimated) |
 
 If both are set, whichever threshold is reached first triggers the re-run.
 
@@ -479,6 +614,9 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 | `@mitto:workspace_uuid`        | Workspace UUID                                                                 |
 | `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
 | `@mitto:children`              | Human-readable list of child sessions — see below                              |
+| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
+| `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
+
 
 ### `@mitto:available_acp_servers` format
 
@@ -556,6 +694,7 @@ output: prepend
 - **Empty values** — e.g. `@mitto:parent_session_id` when there is no parent → replaced with empty string
 - **Fast path** — if the assembled message contains no `@mitto:`, the substitution pass is skipped entirely
 - **CLI mode** — `@mitto:session_id`, `@mitto:parent_session_id`, `@mitto:parent`, `@mitto:session_name`, `@mitto:acp_server`, `@mitto:workspace_uuid`, `@mitto:available_acp_servers`, and `@mitto:children` all substitute to empty string; `@mitto:working_dir` substitutes to the CLI working directory
+- **Escaping** — to include a literal `@mitto:variable` without substitution, prefix it with a backslash: `\@mitto:variable`. The backslash is stripped and the variable name is passed through as-is (e.g. `\@mitto:session_id` → `@mitto:session_id`)
 
 ## Command-Mode Examples
 
@@ -661,16 +800,28 @@ Within the same priority, order is undefined.
 
 Processors that timeout or exit with non-zero status are treated as errors.
 
-## Text-Mode vs Command-Mode Comparison
+## Mode Comparison
 
-| Feature       | Text-Mode                    | Command-Mode                           |
-| ------------- | ---------------------------- | -------------------------------------- |
-| Configuration | `text` field in YAML         | `command` field + external script      |
-| Content       | Static text (with variables) | Dynamic via external commands          |
-| Input         | None (text is inline)        | JSON via stdin                         |
-| Output        | None (text is inline)        | JSON via stdout                        |
-| Use case      | Context, reminders, rules    | Complex transformations, external data |
-| Dependencies  | None                         | External script or binary              |
+| Feature       | Text-Mode                    | Command-Mode                           | Prompt-Mode                                  |
+| ------------- | ---------------------------- | -------------------------------------- | -------------------------------------------- |
+| Configuration | `text` field in YAML         | `command` field + external script      | `prompt` field only                          |
+| Content       | Static text (with variables) | Dynamic via external commands          | Prompt template with `@mitto:variable` subs  |
+| Input         | None (text is inline)        | JSON via stdin                         | Conversation history via `mitto_conversation_history` MCP tool |
+| Output        | Modifies outgoing message    | Modifies outgoing message              | None (fire-and-forget to auxiliary agent)    |
+| Execution     | Synchronous                  | Synchronous                            | Asynchronous (pipeline continues immediately)|
+| Use case      | Context, reminders, rules    | Complex transformations, external data | Background analysis, preference tracking     |
+| Dependencies  | None                         | External script or binary              | Workspace with auxiliary ACP server          |
 
-Both modes share the same triggering (`when`), positioning (`position`), priority,
-conditional enablement (`enabledWhen`, `enabledWhenMCP`), re-run, and error handling features.
+All modes share the same triggering (`when`), priority, conditional enablement
+(`enabledWhen`), re-run, and error handling features. The `position`, `input`, and
+`output` fields are only applicable to text-mode and command-mode processors.
+
+## Processor Statistics
+
+The conversation properties panel displays real-time processor statistics:
+
+- **Processors** — Number of active processors for the current conversation
+- **Activations** — Total number of times the processor pipeline has run
+- **Last activation** — Relative time since the last processor execution (e.g., "2m ago")
+
+These statistics are updated after each prompt completes and during periodic keepalive messages. They are tracked in-memory and reset when the session restarts.

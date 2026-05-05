@@ -38,7 +38,7 @@ var rootCmd = &cobra.Command{
 	Use:   "mitto",
 	Short: "Mitto - A CLI tool for interacting with ACP servers",
 	Long: `Mitto is a command-line interface for communicating with
-Agent Communication Protocol (ACP) servers.
+Agent Client Protocol (ACP) servers.
 
 It allows you to interactively chat with AI coding agents
 like auggie, claude-code, and others that implement ACP.`,
@@ -47,15 +47,7 @@ like auggie, claude-code, and others that implement ACP.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config loading for commands that don't need it
 		// (help, completion, prompts and processors management commands, and mcp proxy mode)
-		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors") {
-			return nil
-		}
-
-		// Skip config loading for mcp command in proxy mode (--proxy-to)
-		// The proxy is a simple STDIO-to-HTTP forwarder that doesn't need any config.
-		// Loading config triggers Keychain access on macOS, which is problematic
-		// when running as a subprocess spawned by an AI agent.
-		if cmd.Name() == "mcp" && cmd.Flags().Changed("proxy-to") {
+		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors" || cmd.Parent().Name() == "agents") {
 			return nil
 		}
 
@@ -84,6 +76,15 @@ like auggie, claude-code, and others that implement ACP.`,
 			return fmt.Errorf("failed to initialize logging: %w", err)
 		}
 
+		// Skip config loading for mcp command entirely.
+		// In proxy mode (--proxy-to), it's a simple STDIO-to-HTTP forwarder.
+		// In standalone STDIO mode, it creates its own config from the sessions directory.
+		// Loading config triggers Keychain access on macOS, which hangs
+		// when running as a subprocess spawned by an AI agent (no TTY for prompts).
+		if cmd.Name() == "mcp" {
+			return nil
+		}
+
 		// Ensure Mitto directory exists
 		if err := appdir.EnsureDir(); err != nil {
 			return fmt.Errorf("failed to create Mitto directory: %w", err)
@@ -110,6 +111,18 @@ like auggie, claude-code, and others that implement ACP.`,
 				slog.Warn("Failed to deploy builtin processors", "error", deployErr)
 			} else if deployed {
 				slog.Info("Deployed builtin processors", "dir", builtinProcessorsDir)
+			}
+		}
+
+		// Deploy builtin agents on first run
+		if builtinAgentsDir, baErr := appdir.BuiltinAgentsDir(); baErr != nil {
+			slog.Warn("Failed to get builtin agents directory", "error", baErr)
+		} else {
+			deployed, deployErr := embeddedconfig.EnsureBuiltinAgents(builtinAgentsDir)
+			if deployErr != nil {
+				slog.Warn("Failed to deploy builtin agents", "error", deployErr)
+			} else if deployed {
+				slog.Info("Deployed builtin agents", "dir", builtinAgentsDir)
 			}
 		}
 
@@ -216,22 +229,22 @@ func parseWorkspaces() ([]Workspace, error) {
 		return nil, fmt.Errorf("configuration not loaded")
 	}
 
+	// defaultServer may be nil when no ACP servers are configured (first-run experience).
+	// That's OK — the web UI will guide the user through agent discovery.
 	defaultServer := cfg.DefaultServer()
-	if defaultServer == nil {
-		return nil, fmt.Errorf("no ACP servers configured")
-	}
 
-	// If no --dir flags provided, use current directory with default server
+	// If no --dir flags provided, use current directory with default server (if any)
 	if len(dirFlags) == 0 {
 		wd, err := os.Getwd()
 		if err != nil {
 			wd = "."
 		}
-		return []Workspace{{
-			ServerName: defaultServer.Name,
-			Server:     defaultServer,
-			Dir:        wd,
-		}}, nil
+		ws := Workspace{Dir: wd}
+		if defaultServer != nil {
+			ws.ServerName = defaultServer.Name
+			ws.Server = defaultServer
+		}
+		return []Workspace{ws}, nil
 	}
 
 	// Parse each --dir flag
@@ -283,9 +296,12 @@ func parseWorkspaces() ([]Workspace, error) {
 			if err != nil {
 				return nil, fmt.Errorf("unknown ACP server %q: %w", serverName, err)
 			}
-		} else {
+		} else if defaultServer != nil {
 			server = defaultServer
 			serverName = defaultServer.Name
+		} else {
+			// No server name in flag and no default server — require explicit server:path format
+			return nil, fmt.Errorf("--dir flag %q requires a server name (server:path format) because no ACP servers are configured", dirFlag)
 		}
 
 		workspaces = append(workspaces, Workspace{

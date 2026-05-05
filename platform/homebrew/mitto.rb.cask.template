@@ -17,7 +17,7 @@ cask "mitto" do
   end
 
   name "Mitto"
-  desc "Desktop client for the Agent Communication Protocol (ACP)"
+  desc "Desktop client for the Agent Client Protocol (ACP)"
   homepage "https://github.com/inercia/mitto"
 
   depends_on formula: "mitto"

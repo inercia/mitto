@@ -25,9 +25,14 @@ func newTestGCManager(
 		logger:          newTestLogger(),
 		processes:       make(map[string]*SharedACPProcess),
 		lastSessionSeen: make(map[string]time.Time),
-		gcConfig:        GCConfig{Interval: 30 * time.Second, GracePeriod: 60 * time.Second},
-		sessionQuery:    query,
-		sessionClose:    closeSession,
+		gcConfig: GCConfig{
+			Interval:            30 * time.Second,
+			GracePeriod:         60 * time.Second,
+			ObserverGracePeriod: 60 * time.Second,
+			IdleTimeout:         5 * time.Minute,
+		},
+		sessionQuery: query,
+		sessionClose: closeSession,
 	}
 }
 
@@ -86,6 +91,7 @@ func TestGCTier1_SkipsActiveSessions(t *testing.T) {
 			{SessionID: "observers", WorkspaceUUID: "ws-1", HasObservers: true},
 			{SessionID: "queue", WorkspaceUUID: "ws-1", QueueLength: 5},
 			{SessionID: "periodic", WorkspaceUUID: "ws-1", NextPeriodicAt: &soon},
+			{SessionID: "connected-clients", WorkspaceUUID: "ws-1", HasConnectedClients: true},
 		},
 	}
 
@@ -405,7 +411,8 @@ func TestGCTier1_SkipsRecentlyDisconnectedObservers(t *testing.T) {
 				HasObservers:          false,
 				QueueLength:           0,
 				ResumedAt:             time.Now().Add(-5 * time.Minute),  // Resumed long ago
-				LastObserverRemovedAt: time.Now().Add(-30 * time.Second), // Observer disconnected 30s ago
+				LastObserverRemovedAt: time.Now().Add(-90 * time.Second), // Observer disconnected 90s ago (well past 60s grace)
+				LastActivityAt:        time.Now().Add(-10 * time.Minute), // No recent activity
 			},
 		},
 	}
@@ -430,7 +437,7 @@ func TestGCTier1_SkipsRecentlyDisconnectedObservers(t *testing.T) {
 		t.Error("session with recently disconnected observers (2s ago) should not be GC'd within the observer grace period")
 	}
 	if !closed["old-disconnect"] {
-		t.Error("session with observers disconnected 30s ago should be closed by Tier 1 GC")
+		t.Error("session with observers disconnected 90s ago should be closed by Tier 1 GC")
 	}
 }
 
@@ -446,7 +453,8 @@ func TestGCTier1_ObserverGracePeriodDoesNotProtectForever(t *testing.T) {
 				HasObservers:          false,
 				QueueLength:           0,
 				ResumedAt:             time.Now().Add(-10 * time.Minute),
-				LastObserverRemovedAt: time.Now().Add(-20 * time.Second), // Well past the 15s grace
+				LastObserverRemovedAt: time.Now().Add(-90 * time.Second), // Well past the 60s grace
+				LastActivityAt:        time.Now().Add(-10 * time.Minute), // No recent activity
 			},
 		},
 	}
@@ -469,6 +477,187 @@ func TestGCTier1_ObserverGracePeriodDoesNotProtectForever(t *testing.T) {
 	defer mu.Unlock()
 	if !closed["expired-grace"] {
 		t.Error("session with expired observer grace period should be GC'd")
+	}
+}
+
+// TestGCTier1_SkipsSessionsWithConnectedClients verifies that sessions with
+// HasConnectedClients=true are not closed by the GC, even when there are no
+// registered observers. Sessions with no connected clients and no observers
+// are still eligible for closure.
+func TestGCTier1_SkipsSessionsWithConnectedClients(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:           "connected-clients",
+				WorkspaceUUID:       "ws-1",
+				HasConnectedClients: true,
+				ResumedAt:           time.Now().Add(-5 * time.Minute),
+			},
+			{
+				SessionID:           "no-clients",
+				WorkspaceUUID:       "ws-1",
+				HasConnectedClients: false,
+				ResumedAt:           time.Now().Add(-5 * time.Minute),
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["connected-clients"] {
+		t.Error("session with connected WebSocket clients should not be GC'd")
+	}
+	if !closed["no-clients"] {
+		t.Error("session with no connected clients and no observers should be GC'd")
+	}
+}
+
+// TestGCTier1_IdleTimeoutPreventsEarlyClosure verifies that sessions with recent
+// activity (within IdleTimeout) are not GC'd, but sessions whose last activity
+// exceeds the timeout are closed normally.
+func TestGCTier1_IdleTimeoutPreventsEarlyClosure(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{
+				SessionID:      "recent-activity",
+				WorkspaceUUID:  "ws-1",
+				ResumedAt:      time.Now().Add(-10 * time.Minute),
+				LastActivityAt: time.Now().Add(-1 * time.Minute), // Within 5min IdleTimeout
+			},
+			{
+				SessionID:      "old-activity",
+				WorkspaceUUID:  "ws-1",
+				ResumedAt:      time.Now().Add(-10 * time.Minute),
+				LastActivityAt: time.Now().Add(-10 * time.Minute), // Beyond 5min IdleTimeout
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["recent-activity"] {
+		t.Error("session with recent activity (1min ago) should not be GC'd within the idle timeout")
+	}
+	if !closed["old-activity"] {
+		t.Error("session with old activity (10min ago) should be GC'd after idle timeout")
+	}
+}
+
+// TestGCTier1_MaxClosuresPerCycle verifies that MaxClosuresPerCycle limits how many
+// sessions the GC closes per cycle. Sessions beyond the limit are deferred to the
+// next GC cycle.
+func TestGCTier1_MaxClosuresPerCycle(t *testing.T) {
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	allSessions := []SessionInfo{
+		{SessionID: "idle-1", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+		{SessionID: "idle-2", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+		{SessionID: "idle-3", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+		{SessionID: "idle-4", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+		{SessionID: "idle-5", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo {
+			mu.Lock()
+			defer mu.Unlock()
+			var remaining []SessionInfo
+			for _, s := range allSessions {
+				if !closed[s.SessionID] {
+					remaining = append(remaining, s)
+				}
+			}
+			return map[string][]SessionInfo{"ws-1": remaining}
+		},
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.gcConfig.MaxClosuresPerCycle = 3
+
+	// First cycle: only 3 should be closed.
+	m.RunGCOnce()
+
+	mu.Lock()
+	if len(closed) != 3 {
+		mu.Unlock()
+		t.Fatalf("expected 3 sessions closed in first cycle, got %d", len(closed))
+	}
+	mu.Unlock()
+
+	// Second cycle: remaining 2 should be closed.
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(closed) != 5 {
+		t.Errorf("expected all 5 sessions closed after two cycles, got %d", len(closed))
+	}
+}
+
+// TestGCTier1_MaxClosuresUnlimited verifies that MaxClosuresPerCycle=0 (unlimited)
+// closes all idle sessions in a single GC cycle.
+func TestGCTier1_MaxClosuresUnlimited(t *testing.T) {
+	sessions := map[string][]SessionInfo{
+		"ws-1": {
+			{SessionID: "idle-1", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+			{SessionID: "idle-2", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+			{SessionID: "idle-3", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+			{SessionID: "idle-4", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+			{SessionID: "idle-5", WorkspaceUUID: "ws-1", ResumedAt: time.Now().Add(-10 * time.Minute)},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	// MaxClosuresPerCycle defaults to 0 in newTestGCManager — unlimited.
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(closed) != 5 {
+		t.Errorf("expected all 5 sessions closed in one cycle with unlimited closures, got %d", len(closed))
 	}
 }
 

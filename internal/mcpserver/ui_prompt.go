@@ -47,6 +47,17 @@ const (
 	// Used by: ACP permission requests for file writes, command execution, etc.
 	// Blocking: Yes (ACP waits for permission decision).
 	UIPromptTypePermission UIPromptType = "permission"
+
+	// UIPromptTypeTextbox displays a large text editing area.
+	// Used by: MCP tools that need the user to review/edit text.
+	// Blocking: Yes (caller waits for response).
+	UIPromptTypeTextbox UIPromptType = "textbox"
+
+	// UIPromptTypeForm displays a sanitized HTML form for user input.
+	// Used by: MCP tools that need structured user input via form fields.
+	// The HTML is strictly sanitized to allow only form-related elements.
+	// Blocking: Yes (caller waits for response).
+	UIPromptTypeForm UIPromptType = "form"
 )
 
 // UIPromptOptionStyle defines the visual style for an option button.
@@ -69,6 +80,9 @@ type UIPromptOption struct {
 	ID string `json:"id"`
 	// Label is the human-readable text displayed to the user.
 	Label string `json:"label"`
+	// Description is an optional longer description shown below the label.
+	// Used by the unified options menu to provide additional context.
+	Description string `json:"description,omitempty"`
 
 	// Response is the text payload to send as a new prompt when this option is selected.
 	// Used by action_buttons type - clicking sends this text as a user message.
@@ -122,6 +136,31 @@ type UIPromptRequest struct {
 	// Description provides detailed information about the prompt.
 	// For permission requests: command details, file paths, etc.
 	Description string `json:"description,omitempty"`
+
+	// AllowFreeText indicates whether the user can type a custom response
+	// in addition to selecting from the predefined options.
+	AllowFreeText bool `json:"allow_free_text,omitempty"`
+
+	// FreeTextPlaceholder is the placeholder text for the free text input.
+	// Only relevant when AllowFreeText is true.
+	FreeTextPlaceholder string `json:"free_text_placeholder,omitempty"`
+
+	// Text is the initial text content for textbox prompts.
+	// Only relevant when Type is UIPromptTypeTextbox.
+	Text string `json:"text,omitempty"`
+
+	// ResultMode controls how textbox results are returned: "text" (full text) or "diff" (unified diff).
+	// Only relevant when Type is UIPromptTypeTextbox.
+	ResultMode string `json:"result_mode,omitempty"`
+
+	// AllowAbort indicates whether the user can abort the textbox editing.
+	// Only relevant when Type is UIPromptTypeTextbox.
+	AllowAbort bool `json:"allow_abort,omitempty"`
+
+	// FormHTML is sanitized HTML content for form prompts.
+	// Only relevant when Type is UIPromptTypeForm.
+	// Contains only whitelisted form elements (input, select, textarea, label, etc.).
+	FormHTML string `json:"form_html,omitempty"`
 }
 
 // UIPromptResponse contains the user's response to a UI prompt.
@@ -135,8 +174,28 @@ type UIPromptResponse struct {
 	// Response is the response payload for action_buttons type.
 	// When user clicks an action button, this contains the button's Response field.
 	Response string `json:"response,omitempty"`
+	// FreeText is the custom text typed by the user when AllowFreeText is enabled.
+	FreeText string `json:"free_text,omitempty"`
 	// TimedOut is true if the prompt timed out without a response.
 	TimedOut bool `json:"timed_out,omitempty"`
+	// Aborted is true if the user clicked the abort button.
+	Aborted bool `json:"aborted,omitempty"`
+}
+
+// UINotifyRequest is sent to the UI to display a non-blocking notification.
+// Unlike UIPromptRequest, this is fire-and-forget — no response is expected.
+type UINotifyRequest struct {
+	// Title is the notification title (required, max 200 chars).
+	Title string `json:"title"`
+	// Message is the optional body text (max 1000 chars).
+	Message string `json:"message,omitempty"`
+	// Style determines the visual appearance: "info", "success", "warning", "error".
+	// Defaults to "info".
+	Style string `json:"style,omitempty"`
+	// Sound requests an audible notification sound when true.
+	Sound bool `json:"sound,omitempty"`
+	// Native requests a native OS notification in addition to the in-app toast.
+	Native bool `json:"native,omitempty"`
 }
 
 // UIPrompter allows MCP tools to display interactive prompts in the UI.
@@ -154,4 +213,9 @@ type UIPrompter interface {
 	// DismissPrompt cancels any active prompt with the given request ID.
 	// This is called when the prompt should be dismissed (e.g., session activity).
 	DismissPrompt(requestID string)
+
+	// UINotify sends a fire-and-forget notification to the UI.
+	// Unlike UIPrompt, this is non-blocking — it returns immediately after
+	// dispatching the notification to all observers without waiting for a response.
+	UINotify(req UINotifyRequest) error
 }

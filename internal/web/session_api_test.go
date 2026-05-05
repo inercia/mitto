@@ -384,7 +384,8 @@ func TestHandleWorkspacePrompts_MethodNotAllowed(t *testing.T) {
 		sessionManager: NewSessionManager("", "", false, nil),
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/prompts", nil)
+	// PUT is not supported (GET, POST, DELETE are)
+	req := httptest.NewRequest(http.MethodPut, "/api/workspaces/prompts", nil)
 	w := httptest.NewRecorder()
 
 	server.handleWorkspacePrompts(w, req)
@@ -825,21 +826,12 @@ func TestHandleDeleteSession_ClearsParentReferences(t *testing.T) {
 		t.Error("Parent session still exists after deletion")
 	}
 
-	// Verify child sessions have their parent references cleared
-	child1After, err := store.GetMetadata("child-api-1")
-	if err != nil {
-		t.Fatalf("GetMetadata child1 failed: %v", err)
+	// Verify child sessions are cascade-deleted along with the parent
+	if store.Exists("child-api-1") {
+		t.Error("Child 1 still exists after parent deletion — expected cascade delete")
 	}
-	if child1After.ParentSessionID != "" {
-		t.Errorf("child1.ParentSessionID = %q, want empty string", child1After.ParentSessionID)
-	}
-
-	child2After, err := store.GetMetadata("child-api-2")
-	if err != nil {
-		t.Fatalf("GetMetadata child2 failed: %v", err)
-	}
-	if child2After.ParentSessionID != "" {
-		t.Errorf("child2.ParentSessionID = %q, want empty string", child2After.ParentSessionID)
+	if store.Exists("child-api-2") {
+		t.Error("Child 2 still exists after parent deletion — expected cascade delete")
 	}
 }
 
@@ -1794,4 +1786,464 @@ func TestHandleUpdateSession_UnarchiveDoesNotStartACP(t *testing.T) {
 
 	// Note: We don't check if ACP was started because ResumeSession will fail
 	// without a valid ACP command. The important thing is that the request succeeds.
+}
+
+// =============================================================================
+// Child Session Guard Tests
+// =============================================================================
+
+// TestHandleUpdateSession_ArchiveChildDeletesInstead tests that archiving a child session
+// deletes it instead of archiving — children should never end up in the archived list.
+func TestHandleUpdateSession_ArchiveChildDeletesInstead(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create a parent session
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-parent-session",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Parent Session",
+	}); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	// Create a child session
+	if err := store.Create(session.Metadata{
+		SessionID:       "test-child-session",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Child Session",
+		ParentSessionID: "test-parent-session",
+	}); err != nil {
+		t.Fatalf("Create child failed: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	// Try to archive the child — should be converted to delete (HTTP 204)
+	archived := true
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/test-child-session", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleUpdateSession(w, req, "test-child-session")
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("Status = %d, want %d (child archive should be converted to delete)", w.Code, http.StatusNoContent)
+	}
+
+	// Verify child is deleted (not just archived)
+	_, err = store.GetMetadata("test-child-session")
+	if err != session.ErrSessionNotFound {
+		t.Errorf("Expected ErrSessionNotFound after child archive-to-delete, got: %v", err)
+	}
+}
+
+// TestHandleUpdateSession_ArchiveTopLevelAllowed tests that a top-level session
+// CAN be archived normally.
+func TestHandleUpdateSession_ArchiveTopLevelAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-toplevel-archive",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Top-Level Session",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: NewSessionManager("", "", false, nil),
+		store:          store,
+		eventsManager:  NewGlobalEventsManager(),
+	}
+
+	archived := true
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/test-toplevel-archive", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleUpdateSession(w, req, "test-toplevel-archive")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d (top-level archive should succeed)", w.Code, http.StatusOK)
+	}
+
+	updatedMeta, _ := store.GetMetadata("test-toplevel-archive")
+	if !updatedMeta.Archived {
+		t.Error("Top-level session should be archived")
+	}
+}
+
+// =============================================================================
+// Periodic Guard Tests
+// =============================================================================
+
+// TestHandleSessionPeriodic_ChildRejected tests that setting periodic on a child session is rejected.
+func TestHandleSessionPeriodic_ChildRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-parent-periodic",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	if err := store.Create(session.Metadata{
+		SessionID:       "test-child-periodic",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		ParentSessionID: "test-parent-periodic",
+	}); err != nil {
+		t.Fatalf("Create child failed: %v", err)
+	}
+
+	server := &Server{store: store}
+
+	// PUT periodic on child — should be rejected
+	body, _ := json.Marshal(PeriodicPromptRequest{
+		Prompt:    "check updates",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-child-periodic/periodic", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSessionPeriodic(w, req, "test-child-periodic", "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("PUT periodic on child: Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	// GET should still work (not rejected as 400)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/sessions/test-child-periodic/periodic", nil)
+	w2 := httptest.NewRecorder()
+
+	server.handleSessionPeriodic(w2, req2, "test-child-periodic", "")
+
+	if w2.Code == http.StatusBadRequest {
+		t.Error("GET periodic on child should NOT be rejected with 400")
+	}
+}
+
+// TestHandleSessionPeriodic_TopLevelAllowed tests that setting periodic on a top-level session works.
+func TestHandleSessionPeriodic_TopLevelAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "test-toplevel-periodic",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		store:         store,
+		eventsManager: NewGlobalEventsManager(),
+	}
+
+	body, _ := json.Marshal(PeriodicPromptRequest{
+		Prompt:    "check updates",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-toplevel-periodic/periodic", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSessionPeriodic(w, req, "test-toplevel-periodic", "")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("PUT periodic on top-level: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+// makePrompt is a helper for constructing config.WebPrompt in tests.
+func makePrompt(name string, opts ...func(*config.WebPrompt)) config.WebPrompt {
+	p := config.WebPrompt{Name: name, Prompt: "Do something useful."}
+	for _, opt := range opts {
+		opt(&p)
+	}
+	return p
+}
+
+func withEnabledWhen(v string) func(*config.WebPrompt) {
+	return func(p *config.WebPrompt) { p.EnabledWhen = v }
+}
+
+func TestFilterPromptsByEnabled(t *testing.T) {
+	server := &Server{} // minimal server – no logger needed for these tests
+
+	tests := []struct {
+		name      string
+		prompts   []config.WebPrompt
+		ctx       *config.PromptEnabledContext
+		wantNames []string
+	}{
+		// 1. Nil context returns all prompts unchanged
+		{
+			name: "nil context returns all prompts",
+			prompts: []config.WebPrompt{
+				makePrompt("a", withEnabledWhen(`acp.matchesServerType("augment")`)),
+				makePrompt("b", withEnabledWhen("session.isChild")),
+			},
+			ctx:       nil,
+			wantNames: []string{"a", "b"},
+		},
+		// 2. No conditions — always included
+		{
+			name:      "no conditions always included",
+			prompts:   []config.WebPrompt{makePrompt("plain")},
+			ctx:       &config.PromptEnabledContext{},
+			wantNames: []string{"plain"},
+		},
+		// 3a. acp.matchesServerType type match — included
+		{
+			name:    "acp_matchesServerType type match included",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+			},
+			wantNames: []string{"p"},
+		},
+		// 3b. acp.matchesServerType display name does not match — excluded
+		{
+			name:    "acp_matchesServerType display name does not match excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("Auggie (Opus 4.6)")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+			},
+			wantNames: nil,
+		},
+		// 4. acp.matchesServerType type match with different display name
+		{
+			name:    "acp_matchesServerType type match different display name",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "Auggie (Sonnet 4.6)", Type: "augment"},
+			},
+			wantNames: []string{"p"},
+		},
+		// 5. acp.matchesServerType list of server types
+		{
+			name:    "acp_matchesServerType list match",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType(["augment", "claude-code"])`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "Claude Code (Opus 4.6)", Type: "claude-code"},
+			},
+			wantNames: []string{"p"},
+		},
+		// 6. acp.matchesServerType case insensitive (matches type)
+		{
+			name:    "acp_matchesServerType case insensitive",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("AUGMENT")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+			},
+			wantNames: []string{"p"},
+		},
+		// 7. acp.matchesServerType fail-open when no ACP active
+		{
+			name:    "acp_matchesServerType fail-open no acp active",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Name: "", Type: ""},
+			},
+			wantNames: []string{"p"},
+		},
+		// 8. tools.hasPattern satisfied
+		{
+			name:    "tools_hasPattern satisfied",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: []string{"mitto_conversation_new", "other_tool"}},
+			},
+			wantNames: []string{"p"},
+		},
+		// 9. tools.hasPattern unsatisfied
+		{
+			name:    "tools_hasPattern unsatisfied",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: []string{"other_tool"}},
+			},
+			wantNames: nil,
+		},
+		// 10. tools.hasAllPatterns all satisfied
+		{
+			name:    "tools_hasAllPatterns all satisfied",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: []string{"mitto_foo", "jira_bar"}},
+			},
+			wantNames: []string{"p"},
+		},
+		// 11. tools.hasAllPatterns partially satisfied — excluded
+		{
+			name:    "tools_hasAllPatterns partially satisfied excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+			},
+			wantNames: nil,
+		},
+		// 12. tools.hasPattern empty tools — excluded
+		{
+			name:    "tools_hasPattern empty tools excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Names: nil},
+			},
+			wantNames: nil,
+		},
+		// 13. enabledWhen CEL true expression
+		{
+			name:    "enabledWhen CEL true expression included",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("session.isChild"))},
+			ctx: &config.PromptEnabledContext{
+				Session: config.SessionContext{IsChild: true},
+			},
+			wantNames: []string{"p"},
+		},
+		// 14. enabledWhen CEL false expression
+		{
+			name:    "enabledWhen CEL false expression excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("session.isChild"))},
+			ctx: &config.PromptEnabledContext{
+				Session: config.SessionContext{IsChild: false},
+			},
+			wantNames: nil,
+		},
+		// 15. enabledWhen CEL complex expression
+		{
+			name: "enabledWhen CEL complex expression included",
+			prompts: []config.WebPrompt{
+				makePrompt("p", withEnabledWhen(`"reasoning" in acp.tags`)),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP: config.ACPContext{Tags: []string{"reasoning", "fast"}},
+			},
+			wantNames: []string{"p"},
+		},
+		// 16. enabledWhen CEL invalid expression (fail-open)
+		{
+			name:      "enabledWhen CEL invalid expression fail-open",
+			prompts:   []config.WebPrompt{makePrompt("p", withEnabledWhen("this is not valid CEL !!"))},
+			ctx:       &config.PromptEnabledContext{},
+			wantNames: []string{"p"},
+		},
+		// 17. Combined: acp.matchesServerType + tools.hasPattern + CEL all pass
+		{
+			name: "combined acp_matchesServerType and tools_hasPattern and CEL all pass",
+			prompts: []config.WebPrompt{
+				makePrompt("p",
+					withEnabledWhen(`acp.matchesServerType("augment") && tools.hasPattern("mitto_*") && !session.isChild`),
+				),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+				Tools:   config.ToolsContext{Names: []string{"mitto_conversation_new"}},
+				Session: config.SessionContext{IsChild: false},
+			},
+			wantNames: []string{"p"},
+		},
+		// 18. Combined: acp.matchesServerType passes, tools.hasPattern fails
+		{
+			name: "combined acp_matchesServerType passes tools_hasPattern fails excluded",
+			prompts: []config.WebPrompt{
+				makePrompt("p",
+					withEnabledWhen(`acp.matchesServerType("augment") && tools.hasPattern("jira_*")`),
+				),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+			},
+			wantNames: nil,
+		},
+		// 19. Combined: acp.matchesServerType fails — whole expression excluded
+		{
+			name: "combined acp_matchesServerType fails excluded",
+			prompts: []config.WebPrompt{
+				makePrompt("p",
+					withEnabledWhen(`acp.matchesServerType("claude") && tools.hasPattern("mitto_*") && true`),
+				),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+			},
+			wantNames: nil,
+		},
+		// 20. Mixed prompts — some pass, some fail, order preserved
+		{
+			name: "mixed prompts correct order",
+			prompts: []config.WebPrompt{
+				makePrompt("included-1"),
+				makePrompt("excluded-acp", withEnabledWhen(`acp.matchesServerType("claude")`)),
+				makePrompt("included-2", withEnabledWhen("!session.isChild")),
+				makePrompt("excluded-mcp", withEnabledWhen(`tools.hasPattern("jira_*")`)),
+				makePrompt("included-3", withEnabledWhen(`acp.matchesServerType("augment")`)),
+			},
+			ctx: &config.PromptEnabledContext{
+				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+				Tools:   config.ToolsContext{Names: []string{"mitto_foo"}},
+				Session: config.SessionContext{IsChild: false},
+			},
+			wantNames: []string{"included-1", "included-2", "included-3"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := server.filterPromptsByEnabled(tc.prompts, tc.ctx)
+
+			// Extract names for easy comparison
+			var gotNames []string
+			for _, p := range got {
+				gotNames = append(gotNames, p.Name)
+			}
+
+			if len(gotNames) != len(tc.wantNames) {
+				t.Errorf("got %v, want %v", gotNames, tc.wantNames)
+				return
+			}
+			for i := range gotNames {
+				if gotNames[i] != tc.wantNames[i] {
+					t.Errorf("got[%d] = %q, want %q (full: got %v want %v)", i, gotNames[i], tc.wantNames[i], gotNames, tc.wantNames)
+				}
+			}
+		})
+	}
 }

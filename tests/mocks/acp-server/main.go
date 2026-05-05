@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -49,8 +50,17 @@ func main() {
 	}
 }
 
+// SessionState stores the state of a session for resume support.
+type SessionState struct {
+	SessionID     string
+	Modes         *SessionModeState
+	ConfigOptions []SessionConfigOption
+}
+
 // MockACPServer implements a mock ACP server
 type MockACPServer struct {
+	mu           sync.Mutex // Protects sessions map
+	sessions     map[string]*SessionState
 	scenarios    map[string]*Scenario
 	scenarioDir  string
 	defaultDelay time.Duration
@@ -58,6 +68,7 @@ type MockACPServer struct {
 	sessionID    string
 	initialized  bool
 	currentMode  string // Current session mode ID
+	currentModel string // Current session model ID
 	reader       *bufio.Reader
 	writer       io.Writer
 }
@@ -72,16 +83,27 @@ var defaultModes = &SessionModeState{
 	},
 }
 
+var defaultModels = &SessionModelState{
+	CurrentModelId: "claude-sonnet-4-6",
+	AvailableModels: []ModelInfo{
+		{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5", Description: strPtr("Fast and efficient")},
+		{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6", Description: strPtr("Balanced performance")},
+		{ModelId: "claude-opus-4-6", Name: "Opus 4.6", Description: strPtr("Most capable model")},
+	},
+}
+
 func strPtr(s string) *string { return &s }
 
 // NewMockACPServer creates a new mock ACP server
 func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bool) *MockACPServer {
 	server := &MockACPServer{
+		sessions:     make(map[string]*SessionState),
 		scenarios:    make(map[string]*Scenario),
 		scenarioDir:  scenarioDir,
 		defaultDelay: defaultDelay,
 		verbose:      verbose,
-		currentMode:  defaultModes.CurrentModeID, // Initialize with default mode
+		currentMode:  defaultModes.CurrentModeID,   // Initialize with default mode
+		currentModel: defaultModels.CurrentModelId, // Initialize with default model
 		reader:       bufio.NewReader(os.Stdin),
 		writer:       os.Stdout,
 	}

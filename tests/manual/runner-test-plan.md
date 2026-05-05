@@ -47,10 +47,10 @@ echo "test" > /tmp/test-file.txt
        restrictions:
          allow_networking: true
          allow_read_folders:
-           - "$WORKSPACE"
+           - "$MITTO_WORKING_DIR"
            - "$HOME/.config"
          allow_write_folders:
-           - "$WORKSPACE"
+           - "$MITTO_WORKING_DIR"
    ```
 3. Start session
 
@@ -66,7 +66,7 @@ echo "test" > /tmp/test-file.txt
 **Test Commands**:
 ```bash
 # Should work (allowed)
-ls $WORKSPACE
+ls $MITTO_WORKING_DIR
 cat $HOME/.config/some-file
 
 # Should fail (denied)
@@ -118,9 +118,9 @@ curl https://example.com
            memory_limit: "512m"
            cpu_limit: "1.0"
          allow_read_folders:
-           - "$WORKSPACE"
+           - "$MITTO_WORKING_DIR"
          allow_write_folders:
-           - "$WORKSPACE"
+           - "$MITTO_WORKING_DIR"
    ```
 3. Start session
 

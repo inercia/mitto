@@ -26,7 +26,9 @@ package main
 #include "notifications_darwin.h"
 #include "webviewlog_darwin.h"
 #include "cache_darwin.h"
+#include "textsubstitution_darwin.h"
 #include "power_darwin.h"
+#include "viewer_darwin.h"
 
 // Global hotkey reference (static to avoid duplicate symbols)
 static EventHotKeyRef gHotKeyRef = NULL;
@@ -285,6 +287,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -635,6 +638,13 @@ func clearWebViewCache() {
 	C.clearWebViewCache()
 }
 
+// disableTextSubstitutions disables macOS automatic text substitutions
+// (smart dashes, smart quotes, text replacement) for this application.
+// Must be called before creating the WKWebView.
+func disableTextSubstitutions() {
+	C.disableTextSubstitutions()
+}
+
 // startNetworkPowerAssertion acquires a kIOPMAssertNetworkClientActive assertion
 // so macOS does not throttle or suspend the app's network activity when the
 // screen locks. Should be called when the external listener starts.
@@ -651,6 +661,15 @@ func startNetworkPowerAssertion() error {
 func stopNetworkPowerAssertion() {
 	C.stopNetworkPowerAssertion()
 	slog.Info("[Mitto] IOPMAssertion released")
+}
+
+// setProcessName sets the OS-level process name so Activity Monitor and WebKit
+// child processes (WebContent) display the correct app name instead of the URL.
+// Should be called as early as possible in app startup, before webview creation.
+func setProcessName(name string) {
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+	C.setProcessName(cName)
 }
 
 // setupMenu creates the native macOS menu bar with standard items.
@@ -704,6 +723,33 @@ func openFileURL(url string) {
 	cURL := C.CString(url)
 	defer C.free(unsafe.Pointer(cURL))
 	C.openURLInBrowser(cURL) // NSWorkspace.openURL handles file:// URLs
+}
+
+// openViewerInNativeWindow opens a file in a native viewer window.
+// This creates a new NSWindow with WKWebView that loads the viewer URL.
+// This is exposed to JavaScript via webview.Bind as window.mittoOpenViewer.
+func openViewerInNativeWindow(viewerURL string) {
+	title := extractFilenameFromViewerURL(viewerURL)
+	cURL := C.CString(viewerURL)
+	defer C.free(unsafe.Pointer(cURL))
+	cTitle := C.CString(title)
+	defer C.free(unsafe.Pointer(cTitle))
+	C.openViewerWindow(cURL, cTitle, 0, 0) // 0,0 = use defaults (1000x750)
+}
+
+// extractFilenameFromViewerURL extracts the filename from a viewer URL for use as window title.
+// It reads the "path" query parameter and returns the base filename.
+// Falls back to "File Viewer" if the URL cannot be parsed or has no path.
+func extractFilenameFromViewerURL(viewerURL string) string {
+	u, err := url.Parse(viewerURL)
+	if err != nil {
+		return "File Viewer"
+	}
+	filePath := u.Query().Get("path")
+	if filePath == "" {
+		return "File Viewer"
+	}
+	return filepath.Base(filePath)
 }
 
 // revealInFinder reveals a file or folder in Finder (macOS file browser).
@@ -931,6 +977,10 @@ func run() error {
 	}
 	defer logging.Close()
 
+	// Set process name early so Activity Monitor and WebKit child processes
+	// (WebContent) display "Mitto" instead of the local server URL.
+	setProcessName(appName)
+
 	// Log startup info including log file location
 	if logConfig.FileLog != nil {
 		slog.Info("Mitto starting", "log_file", logConfig.FileLog.Path)
@@ -969,6 +1019,19 @@ func run() error {
 			slog.Warn("Failed to deploy builtin processors", "error", err)
 		} else if deployed {
 			slog.Info("Deployed builtin processors", "dir", builtinProcessorsDir)
+		}
+	}
+
+	// Deploy builtin agents on first run
+	builtinAgentsDir, err := appdir.BuiltinAgentsDir()
+	if err != nil {
+		slog.Warn("Failed to get builtin agents directory", "error", err)
+	} else {
+		deployed, err := embeddedconfig.EnsureBuiltinAgents(builtinAgentsDir)
+		if err != nil {
+			slog.Warn("Failed to deploy builtin agents", "error", err)
+		} else if deployed {
+			slog.Info("Deployed builtin agents", "dir", builtinAgentsDir)
 		}
 	}
 
@@ -1023,6 +1086,7 @@ func run() error {
 				workspaces = append(workspaces, config.WorkspaceSettings{
 					ACPServer:  server.Name,
 					ACPCommand: server.Command,
+					ACPEnv:     server.Env,
 					WorkingDir: absPath,
 				})
 			}
@@ -1171,7 +1235,7 @@ func run() error {
 	if cfg != nil {
 		// Set up failure callback to broadcast to UI clients
 		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
-			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 		})
 		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
@@ -1179,6 +1243,10 @@ func run() error {
 	// Clear WKWebView cache before creating the webview
 	// This ensures fresh content is loaded, avoiding stale cached JavaScript/CSS
 	clearWebViewCache()
+
+	// Disable macOS automatic text substitutions (smart dashes, smart quotes, etc.)
+	// This prevents "--" from being converted to "—" in text inputs
+	disableTextSubstitutions()
 
 	// Create and run WebView
 	w := webview.New(false)
@@ -1216,6 +1284,7 @@ func run() error {
 	w.Bind("mittoPickFolder", pickFolder)
 	w.Bind("mittoPickImages", pickImages)
 	w.Bind("mittoPickFiles", pickFiles)
+	w.Bind("mittoOpenViewer", openViewerInNativeWindow)
 
 	// Bind login item functions (start at login)
 	w.Bind("mittoIsLoginItemSupported", isLoginItemSupported)
@@ -1346,13 +1415,18 @@ func run() error {
 	// Start health monitor if external address is configured
 	var healthMonitor *hooks.HealthMonitor
 	if cfg != nil && cfg.Web.Hooks.ExternalAddress != "" && upHook != nil {
+		apiPrefix := config.DefaultAPIPrefix
+		if cfg.Web.APIPrefix != "" {
+			apiPrefix = cfg.Web.APIPrefix
+		}
 		healthMonitor = hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
-			Address:  cfg.Web.Hooks.ExternalAddress,
-			UpHook:   cfg.Web.Hooks.Up,
-			DownHook: cfg.Web.Hooks.Down,
-			Port:     hookPort,
+			Address:   cfg.Web.Hooks.ExternalAddress,
+			APIPrefix: apiPrefix,
+			UpHook:    cfg.Web.Hooks.Up,
+			DownHook:  cfg.Web.Hooks.Down,
+			Port:      hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 			},
 			OnRestart: func(attempt int) {
 				srv.BroadcastHookRestarted(attempt)
@@ -1452,9 +1526,12 @@ func getHotkeyConfig(cfg *config.Config) (hotkey string, enabled bool) {
 }
 
 // resolveAccessLogConfigApp determines the access log configuration for the macOS app.
-// Priority: settings.json > default (enabled with platform-specific path)
+// Priority: settings.json > default (enabled with platform-specific path, LogAll=true)
 func resolveAccessLogConfigApp(cfg *config.Config) web.AccessLogConfig {
 	accessLogConfig := web.DefaultAccessLogConfig()
+
+	// Default for macOS app: log all requests (comprehensive access log like nginx/Apache)
+	accessLogConfig.LogAll = true
 
 	// Check settings from config file
 	if cfg != nil && cfg.Web.AccessLog != nil {
@@ -1480,6 +1557,11 @@ func resolveAccessLogConfigApp(cfg *config.Config) web.AccessLogConfig {
 			accessLogConfig.MaxBackups = alCfg.MaxBackups
 		}
 
+		// Respect explicit LogAll override from config
+		if alCfg.LogAll != nil {
+			accessLogConfig.LogAll = *alCfg.LogAll
+		}
+
 		// If path is already set from settings, return
 		if accessLogConfig.Path != "" {
 			return accessLogConfig
@@ -1500,6 +1582,6 @@ func resolveAccessLogConfigApp(cfg *config.Config) web.AccessLogConfig {
 	}
 
 	accessLogConfig.Path = filepath.Join(logsDir, "access.log")
-	slog.Info("Access logging enabled", "path", accessLogConfig.Path)
+	slog.Info("Access logging enabled", "path", accessLogConfig.Path, "log_all", accessLogConfig.LogAll)
 	return accessLogConfig
 }

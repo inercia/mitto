@@ -24,11 +24,21 @@ func TestVariableResolver_Resolve(t *testing.T) {
 	}{
 		{
 			name:     "workspace variable",
-			input:    "$WORKSPACE/src",
+			input:    "$MITTO_WORKING_DIR/src",
 			expected: "/path/to/workspace/src",
 		},
 		{
 			name:     "workspace variable with braces",
+			input:    "${MITTO_WORKING_DIR}/src",
+			expected: "/path/to/workspace/src",
+		},
+		{
+			name:     "legacy workspace variable",
+			input:    "$WORKSPACE/src",
+			expected: "/path/to/workspace/src",
+		},
+		{
+			name:     "legacy workspace variable with braces",
 			input:    "${WORKSPACE}/src",
 			expected: "/path/to/workspace/src",
 		},
@@ -49,7 +59,7 @@ func TestVariableResolver_Resolve(t *testing.T) {
 		},
 		{
 			name:     "multiple variables",
-			input:    "$WORKSPACE/build/$USER",
+			input:    "$MITTO_WORKING_DIR/build/$USER",
 			expected: "/path/to/workspace/build/" + resolver.user,
 		},
 		{
@@ -77,7 +87,7 @@ func TestVariableResolver_ResolvePaths(t *testing.T) {
 	}
 
 	input := []string{
-		"$WORKSPACE/src",
+		"$MITTO_WORKING_DIR/src",
 		"$HOME/.config",
 		"/absolute/path",
 	}
@@ -126,11 +136,11 @@ func TestResolveVariables(t *testing.T) {
 	restrictions := &config.RunnerRestrictions{
 		AllowNetworking: &trueVal,
 		AllowReadFolders: []string{
-			"$WORKSPACE/src",
+			"$MITTO_WORKING_DIR/src",
 			"$HOME/.config",
 		},
 		AllowWriteFolders: []string{
-			"$WORKSPACE/build",
+			"$MITTO_WORKING_DIR/build",
 		},
 	}
 

@@ -40,5 +40,10 @@ void setupSwipeGestureRecognizer(void);
 // This must be called after the window is created.
 void disableWindowFullscreen(void);
 
+// setProcessName sets the process name shown in Activity Monitor and used by
+// WebKit child processes (WebContent) for their display names.
+// This should be called as early as possible in app startup, before webview creation.
+void setProcessName(const char* name);
+
 #endif // MENU_DARWIN_H
 

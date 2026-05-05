@@ -95,9 +95,15 @@ func runStandaloneMCPServer(ctx context.Context) error {
 		slog.Warn("Failed to run migrations", "error", err)
 	}
 
+	// Initialize prompts cache for global prompts
+	promptsCache := config.NewPromptsCache()
+	if len(cfg.PromptsDirs) > 0 {
+		promptsCache.SetAdditionalDirs(cfg.PromptsDirs)
+	}
+
 	srv, err := mcpserver.NewServer(
 		mcpserver.Config{Mode: mcpserver.TransportModeSTDIO},
-		mcpserver.Dependencies{Store: store, Config: cfg},
+		mcpserver.Dependencies{Store: store, Config: cfg, PromptsCache: promptsCache},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create MCP server: %w", err)

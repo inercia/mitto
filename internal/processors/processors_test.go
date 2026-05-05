@@ -189,6 +189,30 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
+			name: "enabledWhen CEL children.mcp_count threshold met",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.mcp_count >= 2`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
+					{ID: "child-2", Name: "Task B", ChildOrigin: "mcp"},
+				},
+			},
+			isFirstMessage: true,
+			expected:       true,
+		},
+		{
+			name: "enabledWhen CEL children.mcp_count below threshold",
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `children.mcp_count >= 2`},
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
+					{ID: "child-2", Name: "Auto child", ChildOrigin: "auto"},
+				},
+			},
+			isFirstMessage: true,
+			expected:       false,
+		},
+		{
 			name: "enabledWhen CEL invalid expression fails open",
 			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `!!!invalid`},
 			input: &ProcessorInput{
@@ -206,7 +230,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhenMCP all patterns satisfied",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: "mitto_*, jira_*"},
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "jira_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list", "jira_search"},
 			},
@@ -215,7 +239,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhenMCP some patterns not satisfied",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: "mitto_*, slack_*"},
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "slack_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
 			},
@@ -224,14 +248,14 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name:           "enabledWhenMCP no tools available",
-			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: "mitto_*"},
+			hook:           &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("mitto_*")`},
 			input:          &ProcessorInput{MCPToolNames: []string{}},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
 			name: "enabledWhenMCP empty means all",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: ""},
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: ""},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"anything"},
 			},
@@ -240,7 +264,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhenMCP exact tool match",
-			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhenMCP: "mitto_conversation_new"},
+			hook: &Processor{When: config.ProcessorWhenAll, EnabledWhen: `tools.hasPattern("mitto_conversation_new")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
 			},
@@ -384,6 +408,156 @@ func TestRerunConfig_Validate(t *testing.T) {
 		{name: "valid msgs", cfg: &RerunConfig{AfterSentMsgs: 5}, wantErr: false},
 		{name: "both set", cfg: &RerunConfig{AfterTime: "1h", AfterSentMsgs: 20}, wantErr: false},
 		{name: "invalid time", cfg: &RerunConfig{AfterTime: "invalid"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestManagerApply_RerunAfterTokens(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "ctx.yaml", `
+name: context-injector
+enabled: true
+when: first
+text: "[CONTEXT]"
+position: prepend
+rerun:
+  afterTokens: 1000
+`)
+
+	mgr := NewManager(dir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// First message — should apply (is first)
+	input1 := &ProcessorInput{Message: "msg1", IsFirstMessage: true}
+	result1, err := mgr.Apply(ctx, input1)
+	if err != nil {
+		t.Fatalf("Apply 1 failed: %v", err)
+	}
+	if !strings.Contains(result1.Message, "[CONTEXT]") {
+		t.Errorf("first apply should have context, got %q", result1.Message)
+	}
+
+	// Accumulate 500 tokens (below threshold)
+	mgr.AccumulateTokenUsage(500)
+
+	// Second message — should NOT apply (tokens below threshold)
+	input2 := &ProcessorInput{Message: "msg2", IsFirstMessage: false}
+	result2, err := mgr.Apply(ctx, input2)
+	if err != nil {
+		t.Fatalf("Apply 2 failed: %v", err)
+	}
+	if strings.Contains(result2.Message, "[CONTEXT]") {
+		t.Errorf("second apply should NOT have context (500 tokens < 1000), got %q", result2.Message)
+	}
+
+	// Accumulate 600 more tokens (total 1100, above threshold)
+	mgr.AccumulateTokenUsage(600)
+
+	// Third message — should re-apply (token threshold reached)
+	input3 := &ProcessorInput{Message: "msg3", IsFirstMessage: false}
+	result3, err := mgr.Apply(ctx, input3)
+	if err != nil {
+		t.Fatalf("Apply 3 failed: %v", err)
+	}
+	if !strings.Contains(result3.Message, "[CONTEXT]") {
+		t.Errorf("third apply should have context (rerun after 1100 tokens >= 1000), got %q", result3.Message)
+	}
+
+	// Fourth message — should NOT apply (tokens reset after rerun)
+	input4 := &ProcessorInput{Message: "msg4", IsFirstMessage: false}
+	result4, err := mgr.Apply(ctx, input4)
+	if err != nil {
+		t.Fatalf("Apply 4 failed: %v", err)
+	}
+	if strings.Contains(result4.Message, "[CONTEXT]") {
+		t.Errorf("fourth apply should NOT have context (tokens reset), got %q", result4.Message)
+	}
+}
+
+func TestEstimateTokens(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{name: "empty string", input: "", expected: 0},
+		{name: "single char", input: "a", expected: 1},
+		{name: "four chars", input: "abcd", expected: 1},
+		{name: "five chars", input: "abcde", expected: 2},
+		{name: "eight chars", input: "abcdefgh", expected: 2},
+		{name: "typical short message", input: "Hello, world!", expected: 4}, // 13 chars → (13+3)/4 = 4
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EstimateTokens(tt.input)
+			if got != tt.expected {
+				t.Errorf("EstimateTokens(%q) = %d, want %d", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestAccumulateTokenUsage(t *testing.T) {
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{
+		{
+			Name:  "tracked",
+			When:  config.ProcessorWhenFirst,
+			Text:  "test",
+			Rerun: &RerunConfig{AfterTokens: 100},
+		},
+		{
+			Name: "no-rerun",
+			When: config.ProcessorWhenFirst,
+			Text: "test2",
+		},
+	}
+
+	// Initialize rerun state by doing first apply
+	ctx := context.Background()
+	input := &ProcessorInput{Message: "init", IsFirstMessage: true}
+	_, _ = mgr.Apply(ctx, input)
+
+	// Accumulate tokens
+	mgr.AccumulateTokenUsage(50)
+	mgr.AccumulateTokenUsage(30)
+
+	// Check state
+	state := mgr.rerunState["tracked"]
+	if state == nil {
+		t.Fatal("expected rerun state for 'tracked'")
+	}
+	if state.tokensSince != 80 {
+		t.Errorf("expected tokensSince=80, got %d", state.tokensSince)
+	}
+
+	// Zero/negative tokens should be ignored
+	mgr.AccumulateTokenUsage(0)
+	mgr.AccumulateTokenUsage(-10)
+	if state.tokensSince != 80 {
+		t.Errorf("expected tokensSince still 80 after zero/negative, got %d", state.tokensSince)
+	}
+}
+
+func TestRerunConfig_Validate_WithTokens(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *RerunConfig
+		wantErr bool
+	}{
+		{name: "tokens only", cfg: &RerunConfig{AfterTokens: 5000}, wantErr: false},
+		{name: "all three set", cfg: &RerunConfig{AfterTime: "1h", AfterSentMsgs: 20, AfterTokens: 50000}, wantErr: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1531,6 +1705,280 @@ text: "global"
 	result := mgr.CloneWithDirProcessors([]string{}, nil)
 	if result != mgr {
 		t.Error("expected same manager for empty dirs")
+	}
+}
+
+func TestProcessorIsPromptMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		proc     *Processor
+		expected bool
+	}{
+		{
+			name:     "prompt set, command and text empty → true",
+			proc:     &Processor{Prompt: "analyze this"},
+			expected: true,
+		},
+		{
+			name:     "prompt and command set → false",
+			proc:     &Processor{Prompt: "analyze this", Command: "/bin/echo"},
+			expected: false,
+		},
+		{
+			name:     "prompt and text set → false",
+			proc:     &Processor{Prompt: "analyze this", Text: "some text"},
+			expected: false,
+		},
+		{
+			name:     "all empty → false",
+			proc:     &Processor{},
+			expected: false,
+		},
+		{
+			name:     "only command set → false",
+			proc:     &Processor{Command: "/bin/echo"},
+			expected: false,
+		},
+		{
+			name:     "only text set → false",
+			proc:     &Processor{Text: "some text"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.proc.IsPromptMode(); got != tt.expected {
+				t.Errorf("IsPromptMode() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestLoaderPromptModeValidation(t *testing.T) {
+	t.Run("valid prompt-mode processor", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "valid.yaml", `
+name: valid-prompt
+when: all
+prompt: "Use mitto_conversation_history to retrieve messages."
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if len(procs) != 1 {
+			t.Fatalf("expected 1 processor, got %d", len(procs))
+		}
+		if !procs[0].IsPromptMode() {
+			t.Error("expected IsPromptMode() = true")
+		}
+	})
+
+	t.Run("prompt + command → validation error (file skipped)", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "bad.yaml", `
+name: bad-proc
+when: all
+prompt: "Analyze this"
+command: /bin/echo
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() should not error (bad files are skipped): %v", err)
+		}
+		if len(procs) != 0 {
+			t.Errorf("expected 0 processors (bad file skipped), got %d", len(procs))
+		}
+	})
+
+	t.Run("prompt + text → validation error (file skipped)", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "bad.yaml", `
+name: bad-proc
+when: all
+prompt: "Analyze this"
+text: "some text"
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() should not error: %v", err)
+		}
+		if len(procs) != 0 {
+			t.Errorf("expected 0 processors (bad file skipped), got %d", len(procs))
+		}
+	})
+}
+
+func TestManagerRoutesPromptModeToApplyWithRerun(t *testing.T) {
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{
+		{
+			Name:   "test-prompt",
+			When:   config.ProcessorWhenAll,
+			Prompt: "Analyze the session @mitto:session_id",
+		},
+	}
+
+	called := make(chan string, 1)
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		called <- prompt
+		return nil
+	})
+
+	input := &ProcessorInput{
+		Message:        "hello",
+		IsFirstMessage: true,
+		WorkspaceUUID:  "ws-123",
+		SessionID:      "sess-abc",
+	}
+
+	result, err := mgr.Apply(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	// Prompt-mode doesn't modify the message (fire-and-forget)
+	if result.Message != "hello" {
+		t.Errorf("expected message unchanged, got %q", result.Message)
+	}
+
+	// Wait for async dispatch
+	select {
+	case prompt := <-called:
+		if !strings.Contains(prompt, "sess-abc") {
+			t.Errorf("expected prompt to contain substituted session_id, got %q", prompt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc was not called within timeout")
+	}
+}
+
+func TestPromptModeSingleNotBatched(t *testing.T) {
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{
+		{
+			Name:   "solo-proc",
+			When:   config.ProcessorWhenAll,
+			Prompt: "Solo prompt",
+		},
+	}
+
+	type call struct {
+		name   string
+		prompt string
+	}
+	calls := make(chan call, 5)
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		calls <- call{name: procName, prompt: prompt}
+		return nil
+	})
+
+	input := &ProcessorInput{
+		Message:        "hello",
+		IsFirstMessage: true,
+		WorkspaceUUID:  "ws-single",
+	}
+
+	_, err := mgr.Apply(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	select {
+	case c := <-calls:
+		// Single processor: dispatched with its own name, no batch header.
+		if c.name != "solo-proc" {
+			t.Errorf("expected name %q, got %q", "solo-proc", c.name)
+		}
+		if strings.Contains(c.prompt, "We would like to fulfill") {
+			t.Errorf("single processor should not use batch header, got prompt %q", c.prompt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc was not called within timeout")
+	}
+
+	// Ensure only one call was made.
+	select {
+	case c := <-calls:
+		t.Errorf("expected exactly 1 promptFunc call, got a second: name=%q", c.name)
+	default:
+		// Good — no extra calls.
+	}
+}
+
+func TestPromptModeBatching(t *testing.T) {
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{
+		{
+			Name:   "proc-alpha",
+			When:   config.ProcessorWhenAll,
+			Prompt: "Alpha task prompt",
+		},
+		{
+			Name:   "proc-beta",
+			When:   config.ProcessorWhenAll,
+			Prompt: "Beta task prompt",
+		},
+	}
+
+	type call struct {
+		name   string
+		prompt string
+	}
+	calls := make(chan call, 5)
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		calls <- call{name: procName, prompt: prompt}
+		return nil
+	})
+
+	input := &ProcessorInput{
+		Message:        "hello",
+		IsFirstMessage: true,
+		WorkspaceUUID:  "ws-batch",
+	}
+
+	_, err := mgr.Apply(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	select {
+	case c := <-calls:
+		// Should be a single batched call, not two separate calls.
+		if !strings.Contains(c.name, "proc-alpha") {
+			t.Errorf("combined name should contain proc-alpha, got %q", c.name)
+		}
+		if !strings.Contains(c.name, "proc-beta") {
+			t.Errorf("combined name should contain proc-beta, got %q", c.name)
+		}
+		if !strings.Contains(c.prompt, "We would like to fulfill the following requirements:") {
+			t.Errorf("batched prompt should have header, got %q", c.prompt)
+		}
+		if !strings.Contains(c.prompt, "Alpha task prompt") {
+			t.Errorf("batched prompt should contain alpha prompt, got %q", c.prompt)
+		}
+		if !strings.Contains(c.prompt, "Beta task prompt") {
+			t.Errorf("batched prompt should contain beta prompt, got %q", c.prompt)
+		}
+		if !strings.Contains(c.prompt, "## Requirement 1: proc-alpha") {
+			t.Errorf("batched prompt should have requirement header for proc-alpha, got %q", c.prompt)
+		}
+		if !strings.Contains(c.prompt, "## Requirement 2: proc-beta") {
+			t.Errorf("batched prompt should have requirement header for proc-beta, got %q", c.prompt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc was not called within timeout")
+	}
+
+	// Ensure only ONE call was made (not two separate calls).
+	select {
+	case c := <-calls:
+		t.Errorf("expected exactly 1 batched promptFunc call, got a second: name=%q", c.name)
+	default:
+		// Good — only one combined call.
 	}
 }
 

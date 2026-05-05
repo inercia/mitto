@@ -12,6 +12,10 @@ import (
 const (
 	// DefaultPollInterval is the default interval between periodic prompt checks.
 	DefaultPollInterval = 1 * time.Minute
+
+	// MaxPeriodicResumeFailures is the number of consecutive ACP resume failures
+	// after which a periodic session's schedule is automatically disabled.
+	MaxPeriodicResumeFailures = 3
 )
 
 // Errors for periodic runner operations.
@@ -27,9 +31,15 @@ var (
 // sessionName is the display name of the session.
 type PeriodicStartedCallback func(sessionID, sessionName string)
 
-// PeriodicRunner manages scheduled periodic prompt delivery.
-// It polls all sessions at regular intervals and delivers prompts
-// that are due according to their schedule.
+// AutoArchiveCallback is called when the periodic runner auto-archives a session.
+// It should handle broadcasting the archive state change and stopping ACP.
+type AutoArchiveCallback func(sessionID string)
+
+// PeriodicRunner manages scheduled periodic prompt delivery and session housekeeping.
+// It polls all sessions at regular intervals and:
+// - Delivers periodic prompts that are due
+// - Auto-archives sessions inactive beyond the configured threshold
+// - Cleans up archived sessions past their retention period
 type PeriodicRunner struct {
 	store          *session.Store
 	sessionManager *SessionManager
@@ -40,8 +50,22 @@ type PeriodicRunner struct {
 	// onPeriodicStarted is called when a periodic prompt is delivered
 	onPeriodicStarted PeriodicStartedCallback
 
+	// onAutoArchive is called when a session is auto-archived.
+	// The callback should broadcast the archive state change and ACP stop to WebSocket clients.
+	onAutoArchive AutoArchiveCallback
+
 	// autoArchiveAfter, when > 0, causes sessions inactive for this long to be archived.
 	autoArchiveAfter time.Duration
+
+	// archiveRetentionPeriod, when non-empty, causes archived sessions older than this
+	// to be permanently deleted during each poll cycle (not just at startup).
+	archiveRetentionPeriod string
+
+	// consecutiveFailures tracks how many times in a row a session's periodic
+	// prompt delivery failed due to ACP resume errors. After MaxPeriodicResumeFailures
+	// consecutive failures, the periodic config is automatically disabled.
+	consecutiveFailures   map[string]int
+	consecutiveFailuresMu sync.Mutex
 
 	mu      sync.Mutex
 	running bool
@@ -52,10 +76,11 @@ type PeriodicRunner struct {
 // NewPeriodicRunner creates a new periodic runner.
 func NewPeriodicRunner(store *session.Store, sm *SessionManager, logger *slog.Logger) *PeriodicRunner {
 	return &PeriodicRunner{
-		store:          store,
-		sessionManager: sm,
-		logger:         logger,
-		pollInterval:   DefaultPollInterval,
+		store:               store,
+		sessionManager:      sm,
+		logger:              logger,
+		pollInterval:        DefaultPollInterval,
+		consecutiveFailures: make(map[string]int),
 	}
 }
 
@@ -76,6 +101,20 @@ func (r *PeriodicRunner) SetAutoArchiveAfter(d time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.autoArchiveAfter = d
+}
+
+// SetOnAutoArchive sets the callback for when a session is auto-archived.
+func (r *PeriodicRunner) SetOnAutoArchive(callback AutoArchiveCallback) {
+	r.onAutoArchive = callback
+}
+
+// SetArchiveRetentionPeriod sets the retention period for archived session cleanup.
+// When set, archived sessions older than this period are permanently deleted during each poll.
+// Pass an empty string to disable periodic cleanup.
+func (r *PeriodicRunner) SetArchiveRetentionPeriod(period string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.archiveRetentionPeriod = period
 }
 
 // Start begins the periodic polling loop in a background goroutine.
@@ -128,8 +167,12 @@ func (r *PeriodicRunner) IsRunning() bool {
 
 // TriggerNow immediately delivers the periodic prompt for a session,
 // bypassing the normal schedule check. This is used for manual "run now" requests.
+// resetTimer controls whether RecordSent() is called after the prompt completes:
+//   - true  → the countdown resets from now (same as a normal scheduled run)
+//   - false → the existing next-run schedule is preserved unchanged
+//
 // Returns an error if the delivery fails or the session is not configured for periodic prompts.
-func (r *PeriodicRunner) TriggerNow(sessionID string) error {
+func (r *PeriodicRunner) TriggerNow(sessionID string, resetTimer bool) error {
 	if r.store == nil {
 		return ErrSessionStoreNotAvailable
 	}
@@ -192,7 +235,7 @@ func (r *PeriodicRunner) TriggerNow(sessionID string) error {
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta.Name, periodic, periodicStore)
+	return r.deliverPrompt(bs, meta.Name, periodic, periodicStore, resetTimer, true)
 }
 
 // pollLoop is the main polling loop that checks for due prompts.
@@ -215,7 +258,8 @@ func (r *PeriodicRunner) pollLoop() {
 	}
 }
 
-// RunOnce performs a single poll iteration, checking all sessions for due prompts.
+// RunOnce performs a single poll iteration, checking all sessions for due prompts,
+// auto-archiving inactive sessions, and cleaning up old archived sessions.
 // Returns counts of delivered, skipped, and errored prompts.
 // This method is exported for testing purposes.
 func (r *PeriodicRunner) RunOnce() (delivered, skipped, errored int) {
@@ -240,6 +284,12 @@ func (r *PeriodicRunner) RunOnce() (delivered, skipped, errored int) {
 		skipped += s
 		errored += e
 	}
+
+	// Auto-archive inactive sessions
+	r.checkAutoArchive(sessions, now)
+
+	// Clean up archived sessions past retention
+	r.checkArchiveCleanup()
 
 	if r.logger != nil {
 		r.logger.Debug("Periodic poll completed",
@@ -337,13 +387,48 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 		var err error
 		bs, err = r.sessionManager.ResumeSession(sessionID, meta.Name, meta.WorkingDir)
 		if err != nil {
+			r.consecutiveFailuresMu.Lock()
+			r.consecutiveFailures[sessionID]++
+			failures := r.consecutiveFailures[sessionID]
+			r.consecutiveFailuresMu.Unlock()
+
 			if r.logger != nil {
 				r.logger.Error("Failed to resume session for periodic prompt",
 					"session_id", sessionID,
+					"consecutive_failures", failures,
+					"max_failures", MaxPeriodicResumeFailures,
 					"error", err)
+			}
+
+			// After too many consecutive failures, disable the periodic schedule
+			// to stop the retry storm. The user can re-enable it manually.
+			if failures >= MaxPeriodicResumeFailures {
+				if r.logger != nil {
+					r.logger.Warn("Disabling periodic schedule after repeated failures",
+						"session_id", sessionID,
+						"session_name", meta.Name,
+						"consecutive_failures", failures)
+				}
+				disabled := false
+				if updateErr := periodicStore.Update(nil, nil, &disabled); updateErr != nil {
+					if r.logger != nil {
+						r.logger.Error("Failed to disable periodic schedule",
+							"session_id", sessionID,
+							"error", updateErr)
+					}
+				}
+				// Reset counter after disabling
+				r.consecutiveFailuresMu.Lock()
+				delete(r.consecutiveFailures, sessionID)
+				r.consecutiveFailuresMu.Unlock()
 			}
 			return 0, 0, 1
 		}
+
+		// Reset consecutive failure counter on successful resume
+		r.consecutiveFailuresMu.Lock()
+		delete(r.consecutiveFailures, sessionID)
+		r.consecutiveFailuresMu.Unlock()
 
 		if r.logger != nil {
 			r.logger.Info("Session auto-resumed for periodic prompt",
@@ -361,8 +446,8 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 		return 0, 1, 0
 	}
 
-	// Deliver the prompt
-	if err := r.deliverPrompt(bs, meta.Name, periodic, periodicStore); err != nil {
+	// Deliver the prompt — normal scheduled runs always reset the timer.
+	if err := r.deliverPrompt(bs, meta.Name, periodic, periodicStore, true, false); err != nil {
 		if r.logger != nil {
 			r.logger.Error("Failed to deliver periodic prompt",
 				"session_id", sessionID,
@@ -375,49 +460,76 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 }
 
 // deliverPrompt sends the periodic prompt to the session.
-func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore) error {
+// resetTimer controls whether RecordSent() is called when the prompt completes:
+//   - true  → schedule advances from now (normal behaviour)
+//   - false → schedule is left untouched (manual "run now" without resetting the timer)
+func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, resetTimer bool, forced bool) error {
 	sessionID := bs.GetSessionID()
 
 	if r.logger != nil {
 		r.logger.Debug("Delivering periodic prompt",
 			"session_id", sessionID,
 			"session_name", sessionName,
+			"reset_timer", resetTimer,
 			"prompt_preview", truncatePrompt(periodic.Prompt, 100))
 	}
 
-	// Send the prompt with metadata indicating it's periodic
-	// Using a special sender ID to identify periodic prompts
+	// Use OnComplete callback to defer RecordSent until the prompt actually finishes.
+	// PromptWithMeta is async — it returns nil immediately. Without OnComplete,
+	// RecordSent would advance the schedule even if the prompt later fails
+	// (e.g., ACP process crash).
 	meta := PromptMeta{
-		SenderID: "periodic-runner",
-		PromptID: "", // No client to confirm delivery to
+		SenderID:         "periodic-runner",
+		PromptID:         "", // No client to confirm delivery to
+		IsPeriodicForced: forced,
+		OnComplete: func(err error) {
+			if err != nil {
+				if r.logger != nil {
+					r.logger.Warn("Periodic prompt failed, schedule not advanced",
+						"session_id", sessionID,
+						"session_name", sessionName,
+						"error", err)
+				}
+				return
+			}
+
+			if !resetTimer {
+				// Manual run with "keep schedule" — leave NextScheduledAt unchanged.
+				if r.logger != nil {
+					r.logger.Debug("Periodic prompt completed, timer not reset (manual run)",
+						"session_id", sessionID,
+						"session_name", sessionName)
+				}
+				return
+			}
+
+			// Prompt completed successfully — now update the schedule
+			if err := periodicStore.RecordSent(); err != nil {
+				if r.logger != nil {
+					r.logger.Warn("Failed to update periodic last_sent_at",
+						"session_id", sessionID,
+						"error", err)
+				}
+			} else {
+				// Log the new schedule (useful for debugging catch-up behavior)
+				if r.logger != nil {
+					if updated, err := periodicStore.Get(); err == nil && updated.NextScheduledAt != nil {
+						r.logger.Debug("Periodic schedule updated after delivery",
+							"session_id", sessionID,
+							"next_scheduled_at", updated.NextScheduledAt)
+					}
+				}
+			}
+		},
 	}
 
 	if err := bs.PromptWithMeta(periodic.Prompt, meta); err != nil {
 		return err
 	}
 
-	// Notify about the periodic prompt delivery
+	// Notify about the periodic prompt delivery (the prompt is now queued/started)
 	if r.onPeriodicStarted != nil {
 		r.onPeriodicStarted(sessionID, sessionName)
-	}
-
-	// Update last_sent_at and next_scheduled_at
-	if err := periodicStore.RecordSent(); err != nil {
-		// Log but don't fail - the prompt was sent successfully
-		if r.logger != nil {
-			r.logger.Warn("Failed to update periodic last_sent_at",
-				"session_id", sessionID,
-				"error", err)
-		}
-	} else {
-		// Log the new schedule (useful for debugging catch-up behavior)
-		if r.logger != nil {
-			if updated, err := periodicStore.Get(); err == nil && updated.NextScheduledAt != nil {
-				r.logger.Debug("Periodic schedule updated after delivery",
-					"session_id", sessionID,
-					"next_scheduled_at", updated.NextScheduledAt)
-			}
-		}
 	}
 
 	return nil
@@ -432,4 +544,144 @@ func truncatePrompt(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// autoArchiveWaitTimeout is the maximum time to wait for a response to complete
+// before forcibly closing a session during auto-archiving.
+const autoArchiveWaitTimeout = 30 * time.Second
+
+// checkAutoArchive archives sessions that have been inactive for longer than autoArchiveAfter.
+// It skips sessions that are already archived, child sessions (children are archived via parent cascade),
+// or sessions with enabled periodic prompts (they should remain active indefinitely).
+func (r *PeriodicRunner) checkAutoArchive(sessions []session.Metadata, now time.Time) {
+	r.mu.Lock()
+	threshold := r.autoArchiveAfter
+	r.mu.Unlock()
+
+	if threshold <= 0 {
+		return
+	}
+
+	if r.sessionManager == nil {
+		return
+	}
+
+	for _, meta := range sessions {
+		// Skip already archived sessions
+		if meta.Archived {
+			continue
+		}
+
+		// Skip child sessions — they are archived via parent cascade only
+		if meta.ParentSessionID != "" {
+			continue
+		}
+
+		// Skip sessions with enabled periodic prompts — they should remain active indefinitely
+		periodicStore := r.store.Periodic(meta.SessionID)
+		periodic, err := periodicStore.Get()
+		if err != nil && err != session.ErrPeriodicNotFound {
+			if r.logger != nil {
+				r.logger.Error("Failed to read periodic config during auto-archive check",
+					"session_id", meta.SessionID,
+					"error", err)
+			}
+			// Continue processing other sessions even if we can't read this one's config
+			continue
+		}
+		if err == nil && periodic.Enabled {
+			if r.logger != nil {
+				r.logger.Debug("Skipping auto-archive for periodic session",
+					"session_id", meta.SessionID,
+					"session_name", meta.Name)
+			}
+			continue
+		}
+
+		// Check inactivity: use LastUserMessageAt if available, fall back to UpdatedAt
+		lastActivity := meta.UpdatedAt
+		if !meta.LastUserMessageAt.IsZero() && meta.LastUserMessageAt.After(lastActivity) {
+			lastActivity = meta.LastUserMessageAt
+		}
+
+		if now.Sub(lastActivity) < threshold {
+			continue
+		}
+
+		// Session is inactive beyond threshold — auto-archive it
+		sessionID := meta.SessionID
+		if r.logger != nil {
+			r.logger.Info("Auto-archiving inactive session",
+				"session_id", sessionID,
+				"session_name", meta.Name,
+				"last_activity", lastActivity,
+				"inactive_for", now.Sub(lastActivity).Round(time.Minute))
+		}
+
+		// 1. Gracefully close ACP process (wait for any in-progress response)
+		reason := "auto_archived"
+		if !r.sessionManager.CloseSessionGracefully(sessionID, reason, autoArchiveWaitTimeout) {
+			if r.logger != nil {
+				r.logger.Warn("Timeout waiting for response before auto-archiving, forcing close",
+					"session_id", sessionID)
+			}
+			reason = "auto_archived_timeout"
+			r.sessionManager.CloseSession(sessionID, reason)
+		}
+
+		// 2. Update metadata to mark as archived
+		err = r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+			m.Archived = true
+			m.ArchivedAt = now
+		})
+		if err != nil {
+			if r.logger != nil {
+				r.logger.Error("Failed to mark session as archived",
+					"session_id", sessionID,
+					"error", err)
+			}
+			continue
+		}
+
+		// 3. Notify via callback (broadcasts to WebSocket clients)
+		if r.onAutoArchive != nil {
+			r.onAutoArchive(sessionID)
+		}
+
+		// 4. Delete child sessions (async, same as manual archive)
+		go r.sessionManager.DeleteChildSessions(sessionID)
+
+		if r.logger != nil {
+			r.logger.Info("Session auto-archived successfully",
+				"session_id", sessionID,
+				"session_name", meta.Name)
+		}
+	}
+}
+
+// checkArchiveCleanup permanently deletes archived sessions older than the retention period.
+func (r *PeriodicRunner) checkArchiveCleanup() {
+	r.mu.Lock()
+	retentionPeriod := r.archiveRetentionPeriod
+	r.mu.Unlock()
+
+	if retentionPeriod == "" {
+		return
+	}
+
+	deleted, err := r.store.CleanupArchivedSessions(retentionPeriod)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Error("Failed to clean up archived sessions",
+				"retention_period", retentionPeriod,
+				"error", err)
+		}
+		return
+	}
+
+	if deleted > 0 && r.logger != nil {
+		r.logger.Info("Periodic archive cleanup completed",
+			"deleted_count", deleted,
+			"retention_period", retentionPeriod)
+	}
 }

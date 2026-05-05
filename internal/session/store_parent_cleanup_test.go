@@ -4,9 +4,9 @@ import (
 	"testing"
 )
 
-// TestDelete_ClearsParentReferences verifies that deleting a parent session
-// clears the ParentSessionID field in all child sessions.
-func TestDelete_ClearsParentReferences(t *testing.T) {
+// TestDelete_CascadeDeletesChildren verifies that deleting a parent session
+// cascade-deletes all child sessions.
+func TestDelete_CascadeDeletesChildren(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)
 	if err != nil {
@@ -25,7 +25,7 @@ func TestDelete_ClearsParentReferences(t *testing.T) {
 		t.Fatalf("Create parent failed: %v", err)
 	}
 
-	// Create multiple child sessions (children inherit parent's flags)
+	// Create multiple child sessions
 	child1Meta := Metadata{
 		SessionID:       "child-session-1",
 		ACPServer:       "test-server",
@@ -59,23 +59,6 @@ func TestDelete_ClearsParentReferences(t *testing.T) {
 		t.Fatalf("Create unrelated failed: %v", err)
 	}
 
-	// Verify initial state - children have parent references
-	child1, err := store.GetMetadata("child-session-1")
-	if err != nil {
-		t.Fatalf("GetMetadata child1 failed: %v", err)
-	}
-	if child1.ParentSessionID != "parent-session-1" {
-		t.Errorf("child1.ParentSessionID = %q, want %q", child1.ParentSessionID, "parent-session-1")
-	}
-
-	child2, err := store.GetMetadata("child-session-2")
-	if err != nil {
-		t.Fatalf("GetMetadata child2 failed: %v", err)
-	}
-	if child2.ParentSessionID != "parent-session-1" {
-		t.Errorf("child2.ParentSessionID = %q, want %q", child2.ParentSessionID, "parent-session-1")
-	}
-
 	// Delete the parent session
 	if err := store.Delete("parent-session-1"); err != nil {
 		t.Fatalf("Delete parent failed: %v", err)
@@ -86,38 +69,17 @@ func TestDelete_ClearsParentReferences(t *testing.T) {
 		t.Error("Parent session still exists after deletion")
 	}
 
-	// Verify child sessions have their parent references cleared
-	child1After, err := store.GetMetadata("child-session-1")
-	if err != nil {
-		t.Fatalf("GetMetadata child1 after delete failed: %v", err)
+	// Verify child sessions are cascade-deleted
+	if store.Exists("child-session-1") {
+		t.Error("Child 1 still exists after parent deletion — expected cascade delete")
 	}
-	if child1After.ParentSessionID != "" {
-		t.Errorf("child1.ParentSessionID after delete = %q, want empty string", child1After.ParentSessionID)
-	}
-
-	child2After, err := store.GetMetadata("child-session-2")
-	if err != nil {
-		t.Fatalf("GetMetadata child2 after delete failed: %v", err)
-	}
-	if child2After.ParentSessionID != "" {
-		t.Errorf("child2.ParentSessionID after delete = %q, want empty string", child2After.ParentSessionID)
+	if store.Exists("child-session-2") {
+		t.Error("Child 2 still exists after parent deletion — expected cascade delete")
 	}
 
 	// Verify unrelated session is unchanged
-	unrelatedAfter, err := store.GetMetadata("unrelated-session")
-	if err != nil {
-		t.Fatalf("GetMetadata unrelated after delete failed: %v", err)
-	}
-	if unrelatedAfter.ParentSessionID != "" {
-		t.Errorf("unrelated.ParentSessionID = %q, want empty string", unrelatedAfter.ParentSessionID)
-	}
-
-	// Verify UpdatedAt was updated for child sessions
-	if !child1After.UpdatedAt.After(child1.UpdatedAt) {
-		t.Error("child1.UpdatedAt was not updated after parent deletion")
-	}
-	if !child2After.UpdatedAt.After(child2.UpdatedAt) {
-		t.Error("child2.UpdatedAt was not updated after parent deletion")
+	if !store.Exists("unrelated-session") {
+		t.Error("Unrelated session was deleted — should not have been affected")
 	}
 }
 
@@ -154,7 +116,7 @@ func TestDelete_NoChildSessions(t *testing.T) {
 }
 
 // TestDelete_NestedParentChild verifies that deleting a middle-level parent
-// in a three-level hierarchy only clears references in direct children.
+// in a three-level hierarchy cascade-deletes its child (grandchild of root).
 func TestDelete_NestedParentChild(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)
@@ -208,21 +170,13 @@ func TestDelete_NestedParentChild(t *testing.T) {
 		t.Error("Parent session still exists after deletion")
 	}
 
-	// Verify child's parent reference is cleared
-	childAfter, err := store.GetMetadata("child")
-	if err != nil {
-		t.Fatalf("GetMetadata child after delete failed: %v", err)
-	}
-	if childAfter.ParentSessionID != "" {
-		t.Errorf("child.ParentSessionID after delete = %q, want empty string", childAfter.ParentSessionID)
+	// Verify child is cascade-deleted along with parent
+	if store.Exists("child") {
+		t.Error("Child still exists after parent deletion — expected cascade delete")
 	}
 
 	// Verify grandparent is unchanged
-	grandparentAfter, err := store.GetMetadata("grandparent")
-	if err != nil {
-		t.Fatalf("GetMetadata grandparent after delete failed: %v", err)
-	}
-	if grandparentAfter.ParentSessionID != "" {
-		t.Errorf("grandparent.ParentSessionID = %q, want empty string", grandparentAfter.ParentSessionID)
+	if !store.Exists("grandparent") {
+		t.Error("Grandparent was deleted — should not have been affected")
 	}
 }

@@ -344,6 +344,63 @@ export function getAgentPlanHeightConstraints() {
 }
 
 // =============================================================================
+// UI Prompt Panel Height Persistence (localStorage)
+// =============================================================================
+
+const UI_PROMPT_HEIGHT_KEY = "mitto_ui_prompt_panel_height";
+const DEFAULT_UI_PROMPT_HEIGHT = 350;
+const MIN_UI_PROMPT_HEIGHT = 150;
+const MAX_UI_PROMPT_HEIGHT = 600;
+
+/**
+ * Get the user's preferred UI prompt panel height from localStorage
+ * @returns {number} The height in pixels, or default if not set
+ */
+export function getUIPromptPanelHeight() {
+  try {
+    const value = localStorage.getItem(UI_PROMPT_HEIGHT_KEY);
+    if (value) {
+      const height = parseInt(value, 10);
+      return Math.max(
+        MIN_UI_PROMPT_HEIGHT,
+        Math.min(MAX_UI_PROMPT_HEIGHT, height),
+      );
+    }
+    return DEFAULT_UI_PROMPT_HEIGHT;
+  } catch (e) {
+    return DEFAULT_UI_PROMPT_HEIGHT;
+  }
+}
+
+/**
+ * Save the user's preferred UI prompt panel height to localStorage
+ * @param {number} height - The height in pixels
+ */
+export function setUIPromptPanelHeight(height) {
+  try {
+    const clampedHeight = Math.max(
+      MIN_UI_PROMPT_HEIGHT,
+      Math.min(MAX_UI_PROMPT_HEIGHT, height),
+    );
+    localStorage.setItem(UI_PROMPT_HEIGHT_KEY, String(clampedHeight));
+  } catch (e) {
+    console.warn("Failed to save UI prompt panel height to localStorage:", e);
+  }
+}
+
+/**
+ * Get UI prompt panel height constraints
+ * @returns {{ min: number, max: number, default: number }}
+ */
+export function getUIPromptPanelHeightConstraints() {
+  return {
+    min: MIN_UI_PROMPT_HEIGHT,
+    max: MAX_UI_PROMPT_HEIGHT,
+    default: DEFAULT_UI_PROMPT_HEIGHT,
+  };
+}
+
+// =============================================================================
 // Conversation Grouping Persistence (localStorage)
 // =============================================================================
 
@@ -385,11 +442,7 @@ export function getSingleExpandedGroupMode() {
 export function getGroupingMode() {
   try {
     const value = localStorage.getItem(GROUPING_MODE_KEY);
-    if (
-      value === "server" ||
-      value === "folder" ||
-      value === "workspace"
-    ) {
+    if (value === "server" || value === "folder" || value === "workspace") {
       return value;
     }
     return "folder"; // Default to folder grouping
@@ -729,7 +782,6 @@ export function cycleFilterTabGrouping(tabId) {
   setFilterTabGrouping(tabId, next);
   return next;
 }
-
 
 // =============================================================================
 // Prompt Sorting Mode

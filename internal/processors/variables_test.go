@@ -151,6 +151,36 @@ func TestSubstituteVariables(t *testing.T) {
 			},
 			expected: "agent-a [fast], agent-b [smart, expensive]",
 		},
+		{
+			name:     "escaped variable not substituted",
+			message:  `id: \@mitto:session_id`,
+			input:    input,
+			expected: "id: @mitto:session_id",
+		},
+		{
+			name:     "escaped and unescaped mixed",
+			message:  `@mitto:session_id and \@mitto:working_dir`,
+			input:    input,
+			expected: `session-123 and @mitto:working_dir`,
+		},
+		{
+			name:     "multiple escaped variables",
+			message:  `\@mitto:session_id \@mitto:acp_server`,
+			input:    input,
+			expected: "@mitto:session_id @mitto:acp_server",
+		},
+		{
+			name:     "escaped unknown variable strips backslash",
+			message:  `\@mitto:unknown`,
+			input:    input,
+			expected: "@mitto:unknown",
+		},
+		{
+			name:     "double backslash before mitto not treated as escape",
+			message:  `\\@mitto:session_id`,
+			input:    input,
+			expected: `\session-123`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -269,6 +299,30 @@ func TestSubstituteVariables_Children(t *testing.T) {
 			},
 			expected: "sess-1",
 		},
+		{
+			name:    "mcp_children_count substitution",
+			message: "Count: @mitto:mcp_children_count",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "c1", Name: "A", ChildOrigin: "mcp"},
+					{ID: "c2", Name: "B", ChildOrigin: "auto"},
+					{ID: "c3", Name: "C", ChildOrigin: "mcp"},
+				},
+			},
+			expected: "Count: 2",
+		},
+		{
+			name:    "mcp_children substitution",
+			message: "Children: @mitto:mcp_children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "c1", Name: "A", ACPServer: "fast", ChildOrigin: "mcp"},
+					{ID: "c2", Name: "B", ACPServer: "fast", ChildOrigin: "auto"},
+					{ID: "c3", ChildOrigin: "mcp"},
+				},
+			},
+			expected: "Children: c1 (A) [fast], c3",
+		},
 	}
 
 	for _, tt := range tests {
@@ -333,6 +387,86 @@ func TestFormatAvailableACPServers(t *testing.T) {
 			got := formatAvailableACPServers(tt.servers)
 			if got != tt.expected {
 				t.Errorf("formatAvailableACPServers() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSubstituteVariables_Periodic(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		input    *ProcessorInput
+		expected string
+	}{
+		{
+			name:     "periodic true",
+			message:  "periodic: @mitto:periodic",
+			input:    &ProcessorInput{IsPeriodic: true},
+			expected: "periodic: true",
+		},
+		{
+			name:     "periodic false",
+			message:  "periodic: @mitto:periodic",
+			input:    &ProcessorInput{IsPeriodic: false},
+			expected: "periodic: false",
+		},
+		{
+			name:     "periodic default (false)",
+			message:  "periodic: @mitto:periodic",
+			input:    &ProcessorInput{},
+			expected: "periodic: false",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubstituteVariables(tt.message, tt.input)
+			if got != tt.expected {
+				t.Errorf("SubstituteVariables() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSubstituteVariables_PeriodicForced(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		input    *ProcessorInput
+		expected string
+	}{
+		{
+			name:     "periodic_forced true",
+			message:  "forced: @mitto:periodic_forced",
+			input:    &ProcessorInput{IsPeriodicForced: true},
+			expected: "forced: true",
+		},
+		{
+			name:     "periodic_forced false",
+			message:  "forced: @mitto:periodic_forced",
+			input:    &ProcessorInput{IsPeriodicForced: false},
+			expected: "forced: false",
+		},
+		{
+			name:     "periodic_forced default (false)",
+			message:  "forced: @mitto:periodic_forced",
+			input:    &ProcessorInput{},
+			expected: "forced: false",
+		},
+		{
+			name:     "periodic_forced does not affect periodic",
+			message:  "p: @mitto:periodic, f: @mitto:periodic_forced",
+			input:    &ProcessorInput{IsPeriodic: true, IsPeriodicForced: true},
+			expected: "p: true, f: true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubstituteVariables(tt.message, tt.input)
+			if got != tt.expected {
+				t.Errorf("SubstituteVariables() = %q, want %q", got, tt.expected)
 			}
 		})
 	}

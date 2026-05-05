@@ -276,6 +276,48 @@ func TestPromptsCache_AdditionalDirsOverride(t *testing.T) {
 	}
 }
 
+func TestPromptsCache_DisabledOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	// Create default prompts directory with an enabled prompt
+	defaultDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(defaultDir, 0755); err != nil {
+		t.Fatalf("Failed to create default prompts dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultDir, "add-tests.md"),
+		[]byte("---\nname: Add tests\n---\nWrite tests for the code"), 0644); err != nil {
+		t.Fatalf("Failed to write add-tests.md: %v", err)
+	}
+
+	// Create additional directory with same-named disabled prompt (higher priority)
+	overrideDir := filepath.Join(tmpDir, "workspace-prompts")
+	if err := os.MkdirAll(overrideDir, 0755); err != nil {
+		t.Fatalf("Failed to create override dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(overrideDir, "add-tests.md"),
+		[]byte("---\nname: Add tests\nenabled: false\n---\n"), 0644); err != nil {
+		t.Fatalf("Failed to write disabled add-tests.md: %v", err)
+	}
+
+	cache := NewPromptsCache()
+	cache.SetAdditionalDirs([]string{overrideDir})
+
+	prompts, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get() failed: %v", err)
+	}
+
+	// The disabled override should suppress the same-named prompt from default dir
+	for _, p := range prompts {
+		if p.Name == "Add tests" {
+			t.Error("'Add tests' prompt should have been suppressed by disabled override")
+		}
+	}
+}
+
 func TestPromptsCache_WorkspaceDirs(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv(appdir.MittoDirEnv, tmpDir)

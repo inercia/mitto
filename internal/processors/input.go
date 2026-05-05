@@ -18,8 +18,6 @@ type ProcessorInput struct {
 	SessionID string `json:"session_id"`
 	// WorkingDir is the session's working directory.
 	WorkingDir string `json:"working_dir"`
-	// History contains previous conversation turns (only for InputConversation).
-	History []HistoryEntry `json:"history,omitempty"`
 
 	// Session metadata for variable substitution
 	// ParentSessionID is the parent conversation ID (empty if this is a root session).
@@ -43,6 +41,31 @@ type ProcessorInput struct {
 	// Used for enabledWhenMCP pattern matching and tools.* CEL context.
 	// May be empty if tools haven't been fetched yet.
 	MCPToolNames []string `json:"-"`
+	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.
+	// Used for @mitto:periodic variable substitution.
+	IsPeriodic bool `json:"is_periodic,omitempty"`
+	// IsPeriodicForced indicates whether this periodic prompt was triggered manually
+	// via "run now" (as opposed to the normal scheduled delivery).
+	// Used for @mitto:periodic_forced variable substitution.
+	IsPeriodicForced bool `json:"is_periodic_forced,omitempty"`
+	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
+	// Used for permissions.* CEL context in enabledWhen expressions.
+	AdvancedSettings map[string]bool `json:"-"`
+	// HasUserDataSchema indicates whether the workspace has a user data schema.
+	// Used for workspace.hasUserDataSchema CEL variable.
+	HasUserDataSchema bool `json:"-"`
+	// HasMittoRC indicates whether a .mittorc file exists in the workspace.
+	// Used for workspace.hasMittoRC CEL variable.
+	HasMittoRC bool `json:"-"`
+	// HasMetadataDescription indicates whether the workspace has metadata.description set.
+	// Used for workspace.hasMetadataDescription CEL variable.
+	HasMetadataDescription bool `json:"-"`
+	// UserDataSchemaJSON is the JSON representation of the workspace user data schema.
+	// Used for @mitto:user_data_schema variable substitution.
+	UserDataSchemaJSON string `json:"-"`
+	// UserDataJSON is the JSON representation of the current session's user data.
+	// Used for @mitto:user_data variable substitution.
+	UserDataJSON string `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.
@@ -68,14 +91,8 @@ type ChildSession struct {
 	ACPServer string `json:"acp_server,omitempty"`
 	// IsAutoChild indicates the child was auto-created with the parent.
 	IsAutoChild bool `json:"is_auto_child,omitempty"`
-}
-
-// HistoryEntry represents a single turn in the conversation history.
-type HistoryEntry struct {
-	// Role is either "user" or "assistant".
-	Role string `json:"role"`
-	// Content is the message content.
-	Content string `json:"content"`
+	// ChildOrigin indicates how the child was created: "auto", "mcp", or "human".
+	ChildOrigin string `json:"child_origin,omitempty"`
 }
 
 // ProcessorOutput contains the result of processor execution.

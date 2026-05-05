@@ -58,15 +58,15 @@ prompts:
 | ----------------- | -------- | ------------------------------------------ |
 | `name`            | Yes      | Button label shown in the UI               |
 | `prompt`          | Yes      | Text sent to the AI agent when clicked     |
+| `enabled`         | No       | Set to `false` to disable the prompt       |
 | `backgroundColor` | No       | Hex color for the button (e.g., `#E8F5E9`) |
 
 ### Prompt Merging
 
-Workspace prompts are **merged** with global prompts:
-
-- Global prompts appear first
-- Workspace prompts appear after global prompts
-- Both are available in the chat interface
+All prompt sources are **merged server-side** into a single list per workspace.
+Workspace `.mittorc` inline prompts have the highest priority and override prompts
+with the same name from any other source. See [Prompts](../prompts.md) for the full
+priority order and details on disabling prompts.
 
 ## Conversation Processing
 

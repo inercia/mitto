@@ -3,7 +3,7 @@
 
 const { useState, useEffect, useCallback, useMemo, html } = window.preact;
 
-import { PeriodicFilledIcon } from "./Icons.js";
+import { PeriodicFilledIcon, PlayFilledIcon } from "./Icons.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
@@ -93,6 +93,8 @@ export function PeriodicFrequencyPanel({
   const [isTriggering, setIsTriggering] = useState(false);
   // Confirmation dialog state
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  // Reset timer checkbox state (default true = reset the countdown after manual run)
+  const [resetTimer, setResetTimer] = useState(true);
   // Error dialog state (for showing errors like "session busy")
   const [errorMessage, setErrorMessage] = useState(null);
 
@@ -132,6 +134,13 @@ export function PeriodicFrequencyPanel({
       setLocalNextScheduledAt(nextScheduledAt);
     }
   }, [nextScheduledAt]);
+
+  // Reset the resetTimer checkbox to default (true) each time the confirm dialog opens
+  useEffect(() => {
+    if (showConfirmDialog) {
+      setResetTimer(true);
+    }
+  }, [showConfirmDialog]);
 
   // Save frequency to backend
   // Note: newAt is in LOCAL time, needs to be converted to UTC before sending
@@ -246,6 +255,7 @@ export function PeriodicFrequencyPanel({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reset_timer: resetTimer }),
         },
       );
 
@@ -271,7 +281,7 @@ export function PeriodicFrequencyPanel({
     } finally {
       setIsTriggering(false);
     }
-  }, [sessionId]);
+  }, [sessionId, resetTimer]);
 
   // Handle cancellation of the confirmation dialog
   const handleCancelConfirmDialog = useCallback(() => {
@@ -319,7 +329,18 @@ export function PeriodicFrequencyPanel({
       isLoading=${isTriggering}
       onConfirm=${handleConfirmImmediateDelivery}
       onCancel=${handleCancelConfirmDialog}
-    />
+    >
+      <label class="flex items-center gap-2 mt-3 text-sm text-gray-300 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked=${resetTimer}
+          onInput=${(e) => setResetTimer(e.target.checked)}
+          class="w-4 h-4 rounded border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          data-testid="reset-timer-checkbox"
+        />
+        Reset countdown for next scheduled run
+      </label>
+    </${ConfirmDialog}>
 
     <!-- Error dialog for showing errors -->
     <${ConfirmDialog}
@@ -377,7 +398,7 @@ export function PeriodicFrequencyPanel({
                         ></path>
                       </svg>
                     `
-                  : html`<${PeriodicFilledIcon}
+                  : html`<${PlayFilledIcon}
                       className="w-4 h-4 text-blue-600 dark:text-blue-400"
                     />`}
               </button>

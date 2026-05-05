@@ -1,4 +1,4 @@
-// Package acp provides ACP (Agent Communication Protocol) client implementation.
+// Package acp provides ACP (Agent Client Protocol) client implementation.
 package acp
 
 import (
@@ -14,7 +14,7 @@ type TerminalHandler interface {
 	TerminalOutput(ctx context.Context, params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error)
 	ReleaseTerminal(ctx context.Context, params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error)
 	WaitForTerminalExit(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error)
-	KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error)
+	KillTerminal(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error)
 }
 
 // StubTerminalHandler provides stub implementations for terminal operations.
@@ -57,7 +57,7 @@ func (s *StubTerminalHandler) WaitForTerminalExit(ctx context.Context, params ac
 	return acp.WaitForTerminalExitResponse{}, nil
 }
 
-// KillTerminalCommand returns an empty response.
-func (s *StubTerminalHandler) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-	return acp.KillTerminalCommandResponse{}, nil
+// KillTerminal returns an empty response.
+func (s *StubTerminalHandler) KillTerminal(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
+	return acp.KillTerminalResponse{}, nil
 }

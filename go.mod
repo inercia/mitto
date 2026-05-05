@@ -3,7 +3,7 @@ module github.com/inercia/mitto
 go 1.25.5
 
 require (
-	github.com/coder/acp-go-sdk v0.6.4-0.20260227160919-584abe6abe22
+	github.com/coder/acp-go-sdk v0.12.0
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-jose/go-jose/v4 v4.1.3

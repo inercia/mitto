@@ -48,10 +48,12 @@ func TestCloudflareAuth_JWTValidation(t *testing.T) {
 	})
 
 	// Test 2: No auth → 401
+	// Note: /api/health is intentionally public (for tunnel monitoring), so we use
+	// /api/sessions which requires authentication.
 	t.Run("no auth rejected", func(t *testing.T) {
-		resp, err := http.Get(baseURL + "/api/health")
+		resp, err := http.Get(baseURL + "/api/sessions")
 		if err != nil {
-			t.Fatalf("GET /api/health: %v", err)
+			t.Fatalf("GET /api/sessions: %v", err)
 		}
 		defer resp.Body.Close()
 
@@ -61,13 +63,15 @@ func TestCloudflareAuth_JWTValidation(t *testing.T) {
 	})
 
 	// Test 3: Invalid JWT → 401
+	// Note: /api/health is intentionally public (for tunnel monitoring), so we use
+	// /api/sessions which requires authentication.
 	t.Run("invalid JWT rejected", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", baseURL+"/api/health", nil)
+		req, _ := http.NewRequest("GET", baseURL+"/api/sessions", nil)
 		req.Header.Set("Cf-Access-Jwt-Assertion", "not.a.valid.jwt")
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("GET /api/health: %v", err)
+			t.Fatalf("GET /api/sessions: %v", err)
 		}
 		defer resp.Body.Close()
 
@@ -122,16 +126,18 @@ func TestCloudflareAuth_JWTValidation(t *testing.T) {
 	})
 
 	// Test 6: Expired JWT → 401
+	// Note: /api/health is intentionally public (for tunnel monitoring), so we use
+	// /api/sessions which requires authentication.
 	t.Run("expired JWT rejected", func(t *testing.T) {
 		if ts.ExpiredJWT == "" {
 			t.Skip("expired JWT not available")
 		}
-		req, _ := http.NewRequest("GET", baseURL+"/api/health", nil)
+		req, _ := http.NewRequest("GET", baseURL+"/api/sessions", nil)
 		req.Header.Set("Cf-Access-Jwt-Assertion", ts.ExpiredJWT)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("GET /api/health: %v", err)
+			t.Fatalf("GET /api/sessions: %v", err)
 		}
 		defer resp.Body.Close()
 
@@ -141,16 +147,18 @@ func TestCloudflareAuth_JWTValidation(t *testing.T) {
 	})
 
 	// Test 7: Wrong audience → 401
+	// Note: /api/health is intentionally public (for tunnel monitoring), so we use
+	// /api/sessions which requires authentication.
 	t.Run("wrong audience rejected", func(t *testing.T) {
 		if ts.WrongAudienceJWT == "" {
 			t.Skip("wrong audience JWT not available")
 		}
-		req, _ := http.NewRequest("GET", baseURL+"/api/health", nil)
+		req, _ := http.NewRequest("GET", baseURL+"/api/sessions", nil)
 		req.Header.Set("Cf-Access-Jwt-Assertion", ts.WrongAudienceJWT)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("GET /api/health: %v", err)
+			t.Fatalf("GET /api/sessions: %v", err)
 		}
 		defer resp.Body.Close()
 

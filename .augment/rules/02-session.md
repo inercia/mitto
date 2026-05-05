@@ -70,16 +70,17 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 
 ### MaxSeq Tracking
 
-The `Metadata.MaxSeq` field tracks the highest persisted sequence number:
+The `Metadata.MaxSeq` field tracks the highest persisted sequence number. `ACPStartFailureCount` persists cold-start failure state across app restarts — `session_manager.go` increments it on exhausted retries and auto-archives when it reaches 3:
 
 ```go
 type Metadata struct {
-    EventCount int   `json:"event_count"`
-    MaxSeq     int64 `json:"max_seq,omitempty"` // Highest seq persisted
+    EventCount          int   `json:"event_count"`
+    MaxSeq              int64 `json:"max_seq,omitempty"`
+    ACPStartFailureCount int  `json:"acp_start_failure_count,omitempty"` // Auto-archive at 3
 }
 ```
 
-This is used by `SessionWSClient.getServerMaxSeq()` for client synchronization.
+`MaxSeq` is used by `SessionWSClient.getServerMaxSeq()` for client synchronization.
 
 ## Lock Management
 

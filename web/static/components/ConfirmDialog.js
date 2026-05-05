@@ -17,6 +17,7 @@ import { CloseIcon } from "./Icons.js";
  * @param {boolean} props.isLoading - Whether the confirm action is in progress
  * @param {Function} props.onConfirm - Callback when user confirms
  * @param {Function} props.onCancel - Callback when user cancels or closes
+ * @param {any} props.children - Optional additional content rendered below the message
  */
 export function ConfirmDialog({
   isOpen,
@@ -28,6 +29,7 @@ export function ConfirmDialog({
   isLoading = false,
   onConfirm,
   onCancel,
+  children,
 }) {
   if (!isOpen) return null;
 
@@ -87,6 +89,7 @@ export function ConfirmDialog({
         <!-- Content -->
         <div class="p-4">
           <p class="text-gray-300">${message}</p>
+          ${children}
         </div>
 
         <!-- Footer with buttons -->

@@ -83,9 +83,9 @@ jobs:
           # typed: strict
           # frozen_string_literal: true
 
-          # Homebrew formula for Mitto - CLI client for the Agent Communication Protocol (ACP)
+          # Homebrew formula for Mitto - CLI client for the Agent Client Protocol (ACP)
           class Mitto < Formula
-            desc "CLI client for the Agent Communication Protocol (ACP)"
+            desc "CLI client for the Agent Client Protocol (ACP)"
             homepage "https://github.com/inercia/mitto"
             version "VERSION_PLACEHOLDER"
             license "Apache-2.0"
@@ -174,7 +174,7 @@ jobs:
             end
 
             name "Mitto"
-            desc "Desktop client for the Agent Communication Protocol (ACP)"
+            desc "Desktop client for the Agent Client Protocol (ACP)"
             homepage "https://github.com/inercia/mitto"
 
             depends_on formula: "mitto"

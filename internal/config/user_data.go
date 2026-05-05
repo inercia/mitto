@@ -37,6 +37,8 @@ func (t UserDataAttributeType) DefaultType() UserDataAttributeType {
 type UserDataSchemaField struct {
 	// Name is the field name.
 	Name string `json:"name" yaml:"name"`
+	// Description is an optional human-readable description of this field.
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 	// Type is the field type (string, url, etc.).
 	Type UserDataAttributeType `json:"type" yaml:"type"`
 }

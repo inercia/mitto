@@ -354,6 +354,33 @@
   background-color: rgba(203, 213, 225, 1); /* slate-300 fixed background */
 }
 
+/* Child expand button streaming pulse - similar approach to filter-tab-streaming */
+.child-expand-streaming {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0.25rem;
+}
+.child-expand-streaming::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 0.25rem;
+  background-color: rgba(59, 130, 246, 0.4); /* blue-500 */
+  animation: filter-tab-pulse 1.8s ease-in-out infinite;
+  will-change: opacity;
+}
+.child-expand-streaming > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Light theme: slightly more subtle blue for child expand button */
+.light .child-expand-streaming::before {
+  background-color: rgba(59, 130, 246, 0.3); /* blue-500, slightly lighter for light theme */
+}
+
 /* Streaming cursor */
 .streaming-cursor::after {
   content: "▋";
@@ -543,7 +570,6 @@ a.mailto-link:hover {
 /* Blockquotes */
 .markdown-content blockquote {
   border-left: 4px solid #3b82f6;
-  padding-left: 1em;
   margin: 0.75em 0;
   color: #94a3b8;
   background: rgba(59, 130, 246, 0.1);
@@ -978,7 +1004,7 @@ a.mailto-link:hover {
 
 .scroll-to-bottom-btn {
   position: relative;
-  bottom: 100px;
+  bottom: 20px;
   width: 44px;
   height: 44px;
   border-radius: 50%;
@@ -1091,7 +1117,7 @@ a.mailto-link:hover {
 /* Mobile adjustments */
 @media (max-width: 640px) {
   .scroll-to-bottom-btn {
-    bottom: 200px;
+    bottom: 16px;
     width: 40px;
     height: 40px;
   }
@@ -1356,6 +1382,20 @@ mitto-action {
    Action Toolbar (collapsible vertical toolbar for ChatInput)
    ============================================================================= */
 
+/* iOS PWA keyboard fix - ensure textarea can receive focus and show keyboard
+   in standalone (PWA) mode. Only target touch devices to avoid affecting the
+   macOS native WKWebView app, which may also match display-mode:standalone. */
+@media screen and (display-mode: standalone) and (pointer: coarse) {
+  textarea,
+  input[type="text"],
+  input[type="search"] {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    /* 16px prevents iOS auto-zoom on focus */
+    font-size: 16px;
+  }
+}
+
 /* Container class for the flex layout that holds the textarea */
 .chat-input-container {
   position: relative;
@@ -1465,6 +1505,19 @@ mitto-action {
   background: #3b82f6;
   border-color: #60a5fa;
   color: white;
+}
+
+
+/* UI Textbox textarea (mitto_ui_textbox) - base dark theme */
+.ui-textbox-textarea {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: #475569;
+  color: #ffffff;
+}
+.light .ui-textbox-textarea {
+  background: #f8fafc;
+  border-color: #d1d5db;
+  color: #18181b;
 }
 
 /* Textarea improving overlay */
@@ -1682,6 +1735,12 @@ mitto-action {
   will-change: auto;
 }
 
+.reduce-animations .child-expand-streaming::before {
+  animation: none;
+  opacity: 0.5;
+  will-change: auto;
+}
+
 .reduce-animations .streaming-cursor::after {
   animation: none;
   opacity: 1;
@@ -1692,6 +1751,21 @@ mitto-action {
   animation: none;
   opacity: 1;
   will-change: auto;
+}
+
+/* Disable backdrop-filter blur on reduced animations — these cause sustained
+   GPU compositing work even when idle, draining battery on mobile devices.
+   Covers both CSS backdrop-filter and Tailwind backdrop-blur-* utilities. */
+.reduce-animations .swipe-arrow-indicator__content {
+  backdrop-filter: none;
+}
+
+.reduce-animations .action-toolbar-overlay {
+  backdrop-filter: none;
+}
+
+.reduce-animations [class*="backdrop-blur"] {
+  backdrop-filter: none;
 }
 
 /* Also respect OS-level reduced motion preference directly via media query.
@@ -1725,5 +1799,17 @@ mitto-action {
     animation: none;
     opacity: 1;
     will-change: auto;
+  }
+
+  .swipe-arrow-indicator__content {
+    backdrop-filter: none;
+  }
+
+  .action-toolbar-overlay {
+    backdrop-filter: none;
+  }
+
+  [class*="backdrop-blur"] {
+    backdrop-filter: none;
   }
 }

@@ -18,7 +18,7 @@ const CONFIG_CACHE_TTL_MS = 30_000;
 
 /**
  * Completed-response cache: cacheKey → { data, etag, timestamp }
- * The cache key is the acpServer string, or "__default__" when none is supplied.
+ * The cache key encodes both acpServer and sessionId (if supplied), or "__default__" when neither is.
  * @type {Map<string, { data: object, etag: string|null, timestamp: number }>}
  */
 const configCache = new Map();
@@ -39,10 +39,11 @@ const inflight = new Map();
  *
  * @param {string|null} acpServer - Optional ACP server to pass as ?acp_server=…
  * @param {boolean} force - When true, bypass both caches and always fetch from network
+ * @param {string|null} sessionId - Optional session ID to pass as ?session_id=… for server-side filtering
  * @returns {Promise<object>} Parsed JSON config object
  */
-export async function fetchConfig(acpServer = null, force = false) {
-  const cacheKey = acpServer || "__default__";
+export async function fetchConfig(acpServer = null, force = false, sessionId = null) {
+  const cacheKey = [acpServer || "", sessionId || ""].join("|") || "__default__";
 
   // 1. Completed-response cache hit
   if (!force) {
@@ -58,9 +59,12 @@ export async function fetchConfig(acpServer = null, force = false) {
     }
   }
 
-  const url = acpServer
+  let url = acpServer
     ? apiUrl(`/api/config?acp_server=${encodeURIComponent(acpServer)}`)
     : apiUrl("/api/config");
+  if (sessionId) {
+    url += (url.includes("?") ? "&" : "?") + `session_id=${encodeURIComponent(sessionId)}`;
+  }
 
   // Attach the stored ETag (if any) so the server can return 304 Not Modified
   // when the config has not changed since the last successful fetch.

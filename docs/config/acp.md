@@ -1,10 +1,10 @@
 # ACP Servers
 
-This document covers configuration and setup for the AI coding agents that Mitto can connect to via the Agent Communication Protocol (ACP).
+This document covers configuration and setup for the AI coding agents that Mitto can connect to via the Agent Client Protocol (ACP).
 
 ## Overview
 
-ACP servers are AI coding agents that implement the Agent Communication Protocol. Mitto acts as an ACP client, connecting to these servers to provide a unified interface for interacting with different AI agents.
+ACP servers are AI coding agents that implement the Agent Client Protocol. Mitto acts as an ACP client, connecting to these servers to provide a unified interface for interacting with different AI agents.
 
 ## Configuration
 
@@ -13,11 +13,11 @@ ACP servers are configured in your `~/.mittorc` (YAML) or `settings.json`:
 ```yaml
 acp:
   - claude-code:
-      command: npx -y @zed-industries/claude-code-acp@latest
+      command: npx -y @agentclientprotocol/claude-agent-acp@latest
   - auggie:
       command: auggie --acp --allow-indexing
-  - copilot:
-      command: copilot --acp
+  - gemini:
+      command: npx -y @google/gemini-cli@latest -- --acp
 ```
 
 Each entry consists of:
@@ -55,10 +55,10 @@ acp:
       command: auggie --acp --allow-indexing
       tags: [coding, ai-assistant]
   - claude-code-fast:
-      command: npx -y @zed-industries/claude-code-acp@latest
+      command: npx -y @agentclientprotocol/claude-agent-acp@latest
       tags: [coding, fast-model]
   - claude-code-safe:
-      command: npx -y @zed-industries/claude-code-acp@latest
+      command: npx -y @agentclientprotocol/claude-agent-acp@latest
       tags: [coding, production]
 ```
 
@@ -80,11 +80,11 @@ acp:
 
   # Claude Code with permission auto-approve (use with caution!)
   - claude-code-yolo:
-      command: npx -y @zed-industries/claude-code-acp@latest --dangerously-skip-permissions
+      command: npx -y @agentclientprotocol/claude-agent-acp@latest --dangerously-skip-permissions
 
   # Claude Code with standard permissions
   - claude-code-safe:
-      command: npx -y @zed-industries/claude-code-acp@latest
+      command: npx -y @agentclientprotocol/claude-agent-acp@latest
 ```
 
 This allows you to:
@@ -108,7 +108,7 @@ acp:
       type: auggie
   # Server without type - uses name as type
   - claude-code:
-      command: npx -y @zed-industries/claude-code-acp@latest
+      command: npx -y @agentclientprotocol/claude-agent-acp@latest
 ```
 
 Now a prompt file with `acps: auggie` will match **both** `auggie-fast` and `auggie-smart`:
@@ -153,7 +153,7 @@ acp:
 
 ### Claude Code
 
-[Claude Code](https://github.com/anthropics/claude-code) is Anthropic's AI coding assistant, available as an ACP server through Zed's community package.
+[Claude Code](https://github.com/anthropics/claude-code) is Anthropic's AI coding assistant, available as an ACP server through the official ACP wrapper.
 
 #### Installation
 
@@ -162,7 +162,7 @@ No installation required—the command uses `npx` to run the latest version:
 ```yaml
 acp:
   - claude-code:
-      command: npx -y @zed-industries/claude-code-acp@latest
+      command: npx -y @agentclientprotocol/claude-agent-acp@latest
 ```
 
 #### Requirements
@@ -214,25 +214,17 @@ acp:
 
 #### Installation
 
-Install the GitHub CLI with Copilot extension, then configure:
+Install via npm, then configure:
 
 ```yaml
 acp:
-  - copilot:
-      command: copilot --acp
-```
-
-Or connect via TCP on a specific port:
-
-```yaml
-acp:
-  - copilot:
-      command: copilot --acp --port 8080
+  - github-copilot:
+      command: npx -y @github/copilot@latest -- --acp
 ```
 
 #### Requirements
 
-- GitHub CLI with Copilot extension
+- Node.js 18 or later
 - Valid GitHub Copilot subscription
 
 #### Features
@@ -243,6 +235,60 @@ acp:
 - Support for text, images, and context resources
 
 For more information, see the [GitHub Copilot ACP documentation](https://docs.github.com/en/copilot/acp).
+
+---
+
+### Gemini CLI
+
+[Gemini CLI](https://geminicli.com) is Google's official command-line interface for Gemini, with native ACP support.
+
+#### Installation
+
+No installation required—the command uses `npx` to run the latest version:
+
+```yaml
+acp:
+  - gemini:
+      command: npx -y @google/gemini-cli@latest -- --acp
+```
+
+#### Requirements
+
+- Node.js 18 or later
+- Valid Google API key or Google AI Studio access
+
+#### Features
+
+- Google's Gemini models with large context windows
+- Built-in web search and grounding
+- Native ACP support via `--acp` flag
+
+---
+
+### Cursor
+
+[Cursor](https://cursor.com) is an AI-first code editor with a built-in coding agent that supports ACP.
+
+#### Installation
+
+Cursor's ACP agent is distributed as part of the Cursor IDE. Install Cursor from [cursor.com](https://cursor.com), then configure:
+
+```yaml
+acp:
+  - cursor:
+      command: cursor acp
+```
+
+#### Requirements
+
+- Cursor IDE installed
+- Valid Cursor subscription
+
+#### Features
+
+- Deep IDE integration with codebase understanding
+- Multi-file editing capabilities
+- Built-in terminal and browser tools
 
 ---
 

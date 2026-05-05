@@ -97,13 +97,13 @@ restricted_runners:
   exec:
     restrictions:
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
     merge_strategy: "extend"
   sandbox-exec:
     restrictions:
       allow_networking: false
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "/tmp"
     merge_strategy: "extend"
   docker:

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -20,7 +21,20 @@ import (
 )
 
 // MaxSessions is the maximum number of concurrent sessions allowed.
-const MaxSessions = 32
+// This limits running sessions (those with an active ACP process), not stored/archived sessions.
+const MaxSessions = 64
+
+// ACPStartFailureThreshold is the number of consecutive ACP start failures after which
+// a session is automatically archived to prevent infinite retry loops on app restart.
+const ACPStartFailureThreshold = 3
+
+// DefaultMaxMessagesPerSession is the default maximum number of messages to retain per session.
+// When exceeded, the oldest messages are automatically pruned after each new event is recorded.
+// This prevents unbounded session growth (especially for periodic sessions) which can cause
+// OOM crashes when many large sessions share a single ACP process.
+// Can be overridden via settings.json or .mitterc with "max_messages_per_session".
+// Set to 0 in settings to disable automatic pruning.
+const DefaultMaxMessagesPerSession = 2000
 
 // ErrTooManySessions is returned when the session limit is reached.
 var ErrTooManySessions = errors.New("maximum number of sessions reached")
@@ -110,6 +124,13 @@ type SessionManager struct {
 	// Used to restore the agent plan panel when switching back to a conversation.
 	planState map[string][]PlanEntry
 
+	// waitingForChildrenMu protects waitingForChildren map.
+	waitingForChildrenMu sync.RWMutex
+	// waitingForChildren tracks which sessions are currently blocked on mitto_children_tasks_wait.
+	// This is in-memory only and is used to populate the session list API response so that
+	// the frontend can show the hourglass icon even after fetchStoredSessions() overwrites storedSessions.
+	waitingForChildren map[string]bool
+
 	// mcpServer is the global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	mcpServer *mcpserver.Server
@@ -150,6 +171,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		autoApprove:               autoApprove,
 		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
 		planState:                 make(map[string][]PlanEntry),
+		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
@@ -187,6 +209,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		workspaceRCCache:          config.NewWorkspaceRCCache(30 * time.Second),
 		apiPrefix:                 opts.APIPrefix,
 		planState:                 make(map[string][]PlanEntry),
+		waitingForChildren:        make(map[string]bool),
 		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 	}
@@ -408,9 +431,10 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 			SessionID:       childID,
 			Name:            child.Title,
 			ACPServer:       targetWS.ACPServer,
-			WorkingDir:      parentWorkingDir, // Inherit parent's working dir
-			ParentSessionID: parentID,         // Mark as child
-			IsAutoChild:     true,             // Cascade delete with parent
+			WorkingDir:      parentWorkingDir,        // Inherit parent's working dir
+			ParentSessionID: parentID,                // Mark as child
+			IsAutoChild:     true,                    // Cascade delete with parent (backward compat)
+			ChildOrigin:     session.ChildOriginAuto, // Created via auto_children config
 		}
 
 		// Create via store
@@ -438,7 +462,7 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 		}
 
 		// Broadcast creation to all connected clients
-		sm.BroadcastSessionCreated(childID, child.Title, targetWS.ACPServer, parentWorkingDir, parentID)
+		sm.BroadcastSessionCreated(childID, child.Title, targetWS.ACPServer, parentWorkingDir, parentID, string(session.ChildOriginAuto))
 
 		if sm.logger != nil {
 			sm.logger.Info("Auto-created child conversation",
@@ -530,6 +554,39 @@ func (sm *SessionManager) GetDefaultWorkspace() *config.WorkspaceSettings {
 
 // buildAvailableACPServers returns the list of ACP servers that have workspaces
 // configured for the given folder, using the same logic as the MCP tool
+
+// buildPruneConfig builds a PruneConfig from the global settings.
+// If no explicit max_messages_per_session is configured, it applies
+// DefaultMaxMessagesPerSession to prevent unbounded session growth.
+// Returns nil only if pruning is explicitly disabled (max_messages_per_session set to 0
+// with no max_session_size_bytes).
+func (sm *SessionManager) buildPruneConfig() *session.PruneConfig {
+	maxMessages := DefaultMaxMessagesPerSession
+	var maxSizeBytes int64
+
+	if sm.mittoConfig != nil && sm.mittoConfig.Session != nil {
+		sc := sm.mittoConfig.Session
+		if sc.MaxMessagesPerSession > 0 {
+			// Explicit positive value overrides default
+			maxMessages = sc.MaxMessagesPerSession
+		} else if sc.MaxMessagesPerSession < 0 {
+			// Negative value disables message-count pruning
+			maxMessages = 0
+		}
+		// 0 means "not set" — keep default
+		maxSizeBytes = sc.MaxSessionSizeBytes
+	}
+
+	if maxMessages == 0 && maxSizeBytes <= 0 {
+		return nil
+	}
+
+	return &session.PruneConfig{
+		MaxMessages:  maxMessages,
+		MaxSizeBytes: maxSizeBytes,
+	}
+}
+
 // (mitto_conversation_get_current). Each entry includes the server name, type,
 // and tags, plus whether it is the currently active server for the session.
 //
@@ -625,6 +682,73 @@ func (sm *SessionManager) GetWorkspaceProcessorsDirs(workingDir string) []string
 	return rc.ProcessorsDirs
 }
 
+// GetProcessorManager returns the global processor manager.
+func (sm *SessionManager) GetProcessorManager() *processors.Manager {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.processorManager
+}
+
+// GetWorkspaceProcessorOverrides returns the processor enabled/disabled overrides from the
+// workspace's .mittorc file. Returns nil if no .mittorc exists or if it has no overrides.
+func (sm *SessionManager) GetWorkspaceProcessorOverrides(workingDir string) []config.ProcessorOverride {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return nil
+	}
+
+	rc, err := sm.workspaceRCCache.Get(workingDir)
+	if err != nil {
+		return nil
+	}
+
+	if rc == nil {
+		return nil
+	}
+
+	return rc.ProcessorOverrides
+}
+
+// GetWorkspaceProcessorManager returns the merged processor manager for a given workspace dir,
+// combining global processors with workspace-specific ones from .mitto/processors/ and processors_dirs.
+// This is used by the workspace processors API to list all applicable processors.
+func (sm *SessionManager) GetWorkspaceProcessorManager(workingDir string) *processors.Manager {
+	sm.mu.RLock()
+	procMgr := sm.processorManager
+	sm.mu.RUnlock()
+
+	if procMgr == nil || workingDir == "" {
+		return procMgr
+	}
+
+	return sm.loadWorkspaceProcessors(procMgr, workingDir)
+}
+
+// GetWorkspaceAllProcessorDirs returns all processor directories applicable to a workspace:
+// the default .mitto/processors/ dir plus any extras from .mittorc processors_dirs.
+func (sm *SessionManager) GetWorkspaceAllProcessorDirs(workingDir string) []string {
+	if workingDir == "" {
+		return nil
+	}
+
+	var dirs []string
+
+	// 1. Default .mitto/processors/ directory
+	defaultDir := appdir.WorkspaceProcessorsDir(workingDir)
+	dirs = append(dirs, defaultDir)
+
+	// 2. Additional processors_dirs from .mittorc
+	if extraDirs := sm.GetWorkspaceProcessorsDirs(workingDir); len(extraDirs) > 0 {
+		for _, dir := range extraDirs {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(workingDir, dir)
+			}
+			dirs = append(dirs, dir)
+		}
+	}
+
+	return dirs
+}
+
 // loadWorkspaceProcessors clones the processor manager with workspace-specific
 // processors loaded from .mitto/processors/ and any processors_dirs in .mittorc.
 // Returns the original manager if no workspace processors are found.
@@ -661,6 +785,15 @@ func (sm *SessionManager) GetWorkspaceRCLastModified(workingDir string) time.Tim
 	return sm.workspaceRCCache.GetLastModified(workingDir)
 }
 
+// InvalidateWorkspaceRC invalidates the cached workspace RC for the given directory,
+// forcing a reload on the next access.
+func (sm *SessionManager) InvalidateWorkspaceRC(workingDir string) {
+	if sm.workspaceRCCache == nil || workingDir == "" {
+		return
+	}
+	sm.workspaceRCCache.Invalidate(workingDir)
+}
+
 // GetUserDataSchema returns the user data schema defined in the workspace's .mittorc file.
 // Returns nil if no .mittorc exists or if it has no user_data schema section.
 // A nil schema means no custom user data attributes are allowed (validation will reject any).
@@ -683,7 +816,10 @@ func (sm *SessionManager) GetUserDataSchema(workingDir string) *config.UserDataS
 		return nil
 	}
 
-	return rc.UserDataSchema
+	if rc.Metadata == nil {
+		return nil
+	}
+	return rc.Metadata.UserDataSchema
 }
 
 // AddWorkspace adds a new workspace to the manager.
@@ -845,6 +981,28 @@ func (sm *SessionManager) SetAuxiliaryManager(am *auxiliary.WorkspaceAuxiliaryMa
 	sm.auxiliaryManager = am
 }
 
+// resolveACPCommand resolves an ACP server name to its shell command.
+// Returns empty string if the server name cannot be resolved.
+func (sm *SessionManager) resolveACPCommand(serverName string) string {
+	sm.mu.RLock()
+	cfg := sm.mittoConfig
+	sm.mu.RUnlock()
+
+	if cfg == nil {
+		return serverName // fallback: use name as command
+	}
+	srv, err := cfg.GetServer(serverName)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Warn("Failed to resolve ACP server command",
+				"server_name", serverName,
+				"error", err)
+		}
+		return ""
+	}
+	return srv.Command
+}
+
 // EnsureWorkspaceProcess ensures the shared ACP process for the given workspace UUID is running,
 // starting it on demand if necessary. This allows auxiliary features (e.g. "improve prompt") to
 // work even when no user session is currently active for that workspace.
@@ -873,6 +1031,37 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 	if p == nil {
 		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
 	}
+
+	// If workspace has a dedicated auxiliary ACP server, ensure its process exists.
+	if ws.HasDedicatedAuxiliary() && sm.acpProcessManager != nil {
+		auxCommand := sm.resolveACPCommand(ws.AuxiliaryACPServer)
+		if auxCommand != "" {
+			auxRunner, auxRunnerErr := sm.createRunner(ws.WorkingDir, ws.AuxiliaryACPServer, ws)
+			if auxRunnerErr != nil {
+				if sm.logger != nil {
+					sm.logger.Warn("Failed to create runner for dedicated auxiliary, proceeding without restriction",
+						"workspace_uuid", workspaceUUID,
+						"aux_acp_server", ws.AuxiliaryACPServer,
+						"error", auxRunnerErr)
+				}
+				auxRunner = nil
+			}
+			if _, auxErr := sm.acpProcessManager.GetOrCreateAuxProcess(ws, auxCommand, auxRunner); auxErr != nil {
+				if sm.logger != nil {
+					sm.logger.Error("Failed to create dedicated auxiliary process",
+						"workspace_uuid", workspaceUUID,
+						"aux_acp_server", ws.AuxiliaryACPServer,
+						"error", auxErr)
+				}
+				// Non-fatal: auxiliary will fall back to main process
+			} else if sm.logger != nil {
+				sm.logger.Info("Dedicated auxiliary process ready",
+					"workspace_uuid", workspaceUUID,
+					"aux_acp_server", ws.AuxiliaryACPServer)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -902,7 +1091,7 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 
 // BroadcastSessionCreated broadcasts a session_created event to all connected clients.
 // This is called when a new session is created (via HTTP API or MCP tools).
-func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string) {
+func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string) {
 	sm.mu.RLock()
 	em := sm.eventsManager
 	sm.mu.RUnlock()
@@ -924,6 +1113,11 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 		sessionData["parent_session_id"] = parentSessionID
 	}
 
+	// Include child_origin so frontend can show the correct icon (e.g., robot for MCP)
+	if childOrigin != "" {
+		sessionData["child_origin"] = childOrigin
+	}
+
 	em.Broadcast(WSMsgTypeSessionCreated, sessionData)
 
 	if sm.logger != nil {
@@ -931,6 +1125,7 @@ func (sm *SessionManager) BroadcastSessionCreated(sessionID, name, acpServer, wo
 			"session_id", sessionID,
 			"name", name,
 			"parent_session_id", parentSessionID,
+			"child_origin", childOrigin,
 			"clients", em.ClientCount())
 	}
 }
@@ -956,6 +1151,163 @@ func (sm *SessionManager) BroadcastSessionArchived(sessionID string, archived bo
 			"session_id", sessionID,
 			"archived", archived,
 			"clients", em.ClientCount())
+	}
+}
+
+// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
+// This is called when a session is permanently deleted.
+func (sm *SessionManager) BroadcastSessionDeleted(sessionID string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionDeleted, map[string]string{
+		"session_id": sessionID,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session deleted",
+			"session_id", sessionID,
+			"clients", em.ClientCount())
+	}
+}
+
+// BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
+// This is called when a session is renamed (e.g., via MCP tools).
+func (sm *SessionManager) BroadcastSessionRenamed(sessionID string, newName string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
+		"session_id": sessionID,
+		"name":       newName,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session renamed",
+			"session_id", sessionID,
+			"name", newName,
+			"clients", em.ClientCount())
+	}
+}
+
+// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
+// This is called when a parent session starts or stops blocking on mitto_children_tasks_wait.
+func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
+	// Track the state so it can be included in the session list API response.
+	// This ensures fetchStoredSessions() returns accurate waiting state even after
+	// a full session list refresh overwrites the frontend's storedSessions.
+	sm.waitingForChildrenMu.Lock()
+	if isWaiting {
+		sm.waitingForChildren[sessionID] = true
+	} else {
+		delete(sm.waitingForChildren, sessionID)
+	}
+	sm.waitingForChildrenMu.Unlock()
+
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionWaiting, map[string]interface{}{
+		"session_id": sessionID,
+		"is_waiting": isWaiting,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session waiting for children",
+			"session_id", sessionID,
+			"is_waiting", isWaiting,
+			"clients", em.ClientCount())
+	}
+}
+
+// IsWaitingForChildren returns whether a session is currently blocked on mitto_children_tasks_wait.
+func (sm *SessionManager) IsWaitingForChildren(sessionID string) bool {
+	sm.waitingForChildrenMu.RLock()
+	defer sm.waitingForChildrenMu.RUnlock()
+	return sm.waitingForChildren[sessionID]
+}
+
+// childArchiveTimeout is the timeout for gracefully closing child sessions when a parent is archived.
+const childArchiveTimeout = 30 * time.Second
+
+// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
+// Each child's ACP process is gracefully stopped, then the session data is removed from disk.
+// Auto-grandchildren are cascade-deleted by store.Delete; MCP-grandchildren are orphaned.
+func (sm *SessionManager) DeleteChildSessions(parentID string) {
+	sm.mu.RLock()
+	store := sm.store
+	sm.mu.RUnlock()
+
+	if store == nil {
+		return
+	}
+
+	children, err := store.ListChildSessions(parentID)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Error("Failed to list child sessions for deletion cascade",
+				"parent_session_id", parentID,
+				"error", err)
+		}
+		return
+	}
+
+	for _, child := range children {
+		childID := child.SessionID
+
+		// Find auto-grandchildren before deletion — store.Delete will cascade-delete them,
+		// so we need their IDs now to close their ACP processes and broadcast deletions.
+		autoGrandchildIDs, _ := store.FindAutoChildrenRecursive(childID)
+
+		// Gracefully close ACP process for the child
+		if !sm.CloseSessionGracefully(childID, "parent_archived", childArchiveTimeout) {
+			sm.CloseSession(childID, "parent_archived_timeout")
+		}
+
+		// Close ACP processes for auto-grandchildren (they will be cascade-deleted)
+		for _, gcID := range autoGrandchildIDs {
+			sm.CloseSession(gcID, "ancestor_archived")
+		}
+
+		// Permanently delete the child (cascade-deletes auto-grandchildren, orphans MCP-grandchildren)
+		if err := store.Delete(childID); err != nil {
+			if sm.logger != nil {
+				sm.logger.Error("Failed to delete child session",
+					"parent_session_id", parentID,
+					"child_session_id", childID,
+					"error", err)
+			}
+			continue
+		}
+
+		// Broadcast deletion for child and any cascade-deleted auto-grandchildren
+		sm.BroadcastSessionDeleted(childID)
+		for _, gcID := range autoGrandchildIDs {
+			sm.BroadcastSessionDeleted(gcID)
+		}
+
+		if sm.logger != nil {
+			sm.logger.Info("Deleted child session (parent archived)",
+				"parent_session_id", parentID,
+				"child_session_id", childID,
+				"child_name", child.Name,
+				"auto_grandchildren_deleted", len(autoGrandchildIDs))
+		}
 	}
 }
 
@@ -1115,6 +1467,11 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
 	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
 
+	// Apply workspace-level processor overrides from .mittorc processors section.
+	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
+		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
+	}
+
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
 	if workspaceConv != nil && workspaceConv.Queue != nil {
@@ -1206,6 +1563,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 
 	configDuration := time.Since(createStart)
 
+	// Build pruning configuration from global settings (with default)
+	pruneConfig := sm.buildPruneConfig()
+
 	// Build available ACP servers list for this workspace folder (used in @mitto:variable substitution).
 	availableServers := sm.buildAvailableACPServers(workingDir, acpServer)
 
@@ -1231,11 +1591,20 @@ func (sm *SessionManager) CreateSessionWithWorkspace(name, workingDir string, wo
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
 		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,   // Auto-pruning configuration (nil = no auto-pruning)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
 					"session_id":   sessionID,
 					"is_streaming": isStreaming,
+				})
+			}
+		},
+		OnUIPromptStateChanged: func(sessionID string, isWaiting bool) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
+					"session_id": sessionID,
+					"is_waiting": isWaiting,
 				})
 			}
 		},
@@ -1605,6 +1974,11 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// Load workspace-local processors from .mitto/processors/ and processors_dirs.
 	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
 
+	// Apply workspace-level processor overrides from .mittorc processors section.
+	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
+		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
+	}
+
 	// Get queue config (prefer workspace config, fall back to global)
 	var queueConfig *config.QueueConfig
 	if workspaceConv != nil && workspaceConv.Queue != nil {
@@ -1667,6 +2041,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	// Falling back again would risk mixing different ACP servers on the same folder.
 	sharedProcess := sm.getSharedProcess(foundWs, r)
 
+	// Build pruning configuration from global settings (with default)
+	pruneConfig := sm.buildPruneConfig()
+
 	// Build available ACP servers list for this workspace folder (used in @mitto:variable substitution).
 	resumeAvailableServers := sm.buildAvailableACPServers(workingDir, acpServer)
 
@@ -1694,11 +2071,20 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		GlobalMCPServer:     sm.mcpServer,
 		AuxiliaryManager:    sm.auxiliaryManager,
 		SharedProcess:       sharedProcess, // Shared ACP process (nil = legacy mode)
+		PruneConfig:         pruneConfig,   // Auto-pruning configuration (nil = no auto-pruning)
 		OnStreamingStateChanged: func(sessionID string, isStreaming bool) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
 					"session_id":   sessionID,
 					"is_streaming": isStreaming,
+				})
+			}
+		},
+		OnUIPromptStateChanged: func(sessionID string, isWaiting bool) {
+			if sm.eventsManager != nil {
+				sm.eventsManager.Broadcast(WSMsgTypeSessionUIPrompt, map[string]interface{}{
+					"session_id": sessionID,
+					"is_waiting": isWaiting,
 				})
 			}
 		},
@@ -1724,8 +2110,49 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		},
 	})
 	if err != nil {
+		// Persist the failure count and auto-archive if threshold is reached.
+		if store != nil {
+			var failureCount int
+			updateErr := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+				m.ACPStartFailureCount++
+				failureCount = m.ACPStartFailureCount
+				if failureCount >= ACPStartFailureThreshold {
+					m.Archived = true
+					m.ArchivedAt = time.Now()
+				}
+			})
+			if updateErr != nil && sm.logger != nil {
+				sm.logger.Warn("Failed to update ACP start failure count",
+					"session_id", sessionID,
+					"error", updateErr)
+			} else if failureCount >= ACPStartFailureThreshold {
+				if sm.logger != nil {
+					sm.logger.Warn("Session auto-archived after repeated ACP start failures",
+						"session_id", sessionID,
+						"failure_count", failureCount,
+						"threshold", ACPStartFailureThreshold)
+				}
+				sm.BroadcastSessionArchived(sessionID, true)
+			} else if sm.logger != nil {
+				sm.logger.Warn("ACP start failed, incremented failure count",
+					"session_id", sessionID,
+					"failure_count", failureCount,
+					"threshold", ACPStartFailureThreshold)
+			}
+		}
 		signalDone(nil, err)
 		return nil, err
+	}
+
+	// ACP started successfully — reset the failure counter.
+	if store != nil {
+		if updateErr := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+			m.ACPStartFailureCount = 0
+		}); updateErr != nil && sm.logger != nil {
+			sm.logger.Warn("Failed to reset ACP start failure count",
+				"session_id", sessionID,
+				"error", updateErr)
+		}
 	}
 
 	sm.mu.Lock()
@@ -2014,15 +2441,27 @@ func (sm *SessionManager) ClearCachedPlanState(sessionID string) {
 // ProcessPendingQueues checks all persisted sessions for queued messages and
 // auto-resumes sessions that have pending queue items and meet the criteria
 // for dequeuing (agent idle, delay elapsed). This is called on server startup.
+//
+// Sessions sharing the same ACP process (identified by working directory + ACP server)
+// are staggered by a configurable delay (session.startup_stagger_ms, default 300 ms)
+// to prevent overwhelming the ACP SDK's internal notification channel.
 func (sm *SessionManager) ProcessPendingQueues() {
 	sm.mu.RLock()
 	store := sm.store
 	globalConv := sm.globalConversations
+	mittoConfig := sm.mittoConfig
 	sm.mu.RUnlock()
 
 	if store == nil {
 		return
 	}
+
+	// Determine the stagger delay between resumes on the same shared ACP process.
+	staggerMs := config.DefaultStartupStaggerMs
+	if mittoConfig != nil && mittoConfig.Session != nil {
+		staggerMs = mittoConfig.Session.GetStartupStaggerMs()
+	}
+	staggerDelay := time.Duration(staggerMs) * time.Millisecond
 
 	// List all persisted sessions
 	sessions, err := store.List()
@@ -2032,6 +2471,30 @@ func (sm *SessionManager) ProcessPendingQueues() {
 		}
 		return
 	}
+
+	// Sort sessions by most recent activity first so that sessions the user interacted
+	// with recently become available sooner after restart. Prefer LastUserMessageAt;
+	// fall back to UpdatedAt when LastUserMessageAt is zero.
+	sort.Slice(sessions, func(i, j int) bool {
+		ti := sessions[i].LastUserMessageAt
+		if ti.IsZero() {
+			ti = sessions[i].UpdatedAt
+		}
+		tj := sessions[j].LastUserMessageAt
+		if tj.IsZero() {
+			tj = sessions[j].UpdatedAt
+		}
+		return ti.After(tj) // descending — newest first
+	})
+
+	// lastResumedForProcess tracks the last time a session was resumed for a given
+	// (workingDir, acpServer) pair — i.e., the shared ACP process key.
+	// Used to apply stagger delays only within the same ACP process.
+	type acpProcessKey struct {
+		workingDir string
+		acpServer  string
+	}
+	lastResumedForProcess := make(map[acpProcessKey]time.Time)
 
 	// Check each session for pending queue items
 	for _, meta := range sessions {
@@ -2075,14 +2538,40 @@ func (sm *SessionManager) ProcessPendingQueues() {
 		}
 
 		if sm.logger != nil {
+			lastActivity := meta.LastUserMessageAt
+			if lastActivity.IsZero() {
+				lastActivity = meta.UpdatedAt
+			}
 			sm.logger.Info("Found session with pending queue items",
 				"session_id", meta.SessionID,
 				"queue_length", queueLen,
-				"working_dir", meta.WorkingDir)
+				"working_dir", meta.WorkingDir,
+				"last_activity", lastActivity.Format(time.RFC3339))
 		}
 
-		// Resume the session to process its queue
-		// The session will check the delay before actually sending
+		// Apply stagger delay for sessions sharing the same ACP process.
+		// Sessions on the same (workingDir, acpServer) use the same SharedACPProcess;
+		// resuming them in rapid succession floods the ACP SDK notification channel.
+		if staggerDelay > 0 {
+			key := acpProcessKey{workingDir: meta.WorkingDir, acpServer: meta.ACPServer}
+			if last, ok := lastResumedForProcess[key]; ok {
+				elapsed := time.Since(last)
+				if elapsed < staggerDelay {
+					wait := staggerDelay - elapsed
+					if sm.logger != nil {
+						sm.logger.Debug("Staggering session resume to avoid ACP notification overflow",
+							"session_id", meta.SessionID,
+							"acp_server", meta.ACPServer,
+							"working_dir", meta.WorkingDir,
+							"wait_ms", wait.Milliseconds())
+					}
+					time.Sleep(wait)
+				}
+			}
+		}
+
+		// Resume the session to process its queue.
+		// The session will check the delay before actually sending.
 		bs, err := sm.ResumeSession(meta.SessionID, meta.Name, meta.WorkingDir)
 		if err != nil {
 			if sm.logger != nil {
@@ -2093,9 +2582,16 @@ func (sm *SessionManager) ProcessPendingQueues() {
 			continue
 		}
 
-		// Try to process the queued message immediately
-		// Note: On startup, the delay is skipped because lastResponseComplete is zero
-		// Run in a goroutine so we don't block startup
+		// Record the resume time for this ACP process key so the next session on the
+		// same process waits the full stagger interval.
+		if staggerDelay > 0 {
+			key := acpProcessKey{workingDir: meta.WorkingDir, acpServer: meta.ACPServer}
+			lastResumedForProcess[key] = time.Now()
+		}
+
+		// Try to process the queued message immediately.
+		// Note: On startup, the delay is skipped because lastResponseComplete is zero.
+		// Run in a goroutine so we don't block the stagger loop for other sessions.
 		go func(session *BackgroundSession, sessionID string) {
 			if session.TryProcessQueuedMessage() {
 				if sm.logger != nil {
@@ -2150,10 +2646,12 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			WorkspaceUUID:         uuid,
 			IsPrompting:           bs.IsPrompting(),
 			HasObservers:          bs.HasObservers(),
+			HasConnectedClients:   bs.HasConnectedClients(),
 			QueueLength:           queueLen,
 			NextPeriodicAt:        nextPeriodic,
 			ResumedAt:             bs.StartedAt(),
 			LastObserverRemovedAt: bs.LastObserverRemovedAt(),
+			LastActivityAt:        bs.LastActivityAt(),
 		})
 	}
 	return result
@@ -2253,7 +2751,7 @@ func (sm *SessionManager) ensureMCPToolsFetch(workspaceUUID string) {
 	}
 
 	go func() {
-		// Use a long timeout — auxiliary RPCs can be queued behind active prompts.
+		// Use a long timeout — auxiliary operations can take several minutes.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 

@@ -1,6 +1,6 @@
 # Mitto — Claude Code Project Memory
 
-Mitto is a multi-agent interface for AI coding agents (Claude Code, Auggie, Cursor) with CLI, Web UI, and native macOS app. It communicates with agents via the Agent Communication Protocol (ACP).
+Mitto is a multi-agent interface for AI coding agents (Claude Code, Auggie, Cursor) with CLI, Web UI, and native macOS app. It communicates with agents via the Agent Client Protocol (ACP).
 
 ## Quick Reference
 

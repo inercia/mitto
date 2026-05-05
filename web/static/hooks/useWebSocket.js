@@ -78,6 +78,10 @@ const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Send keepalive every 5 seconds in native app
 const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Send keepalive every 10 seconds in browser
 const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
+// Cooldown period after stale client recovery. During this window, keepalive
+// will not re-trigger stale detection for the session, giving React state
+// and the auto-load prepend time to settle.
+const STALE_RECOVERY_COOLDOWN_MS = 30000; // 30 seconds
 const KEEPALIVE_MAX_MISSED_DEFAULT = 2; // Force reconnect after 2 missed keepalives
 const KEEPALIVE_MAX_MISSED_LARGE_SESSION = 4; // For sessions with 500+ events
 const LARGE_SESSION_SEQ_THRESHOLD = 500;
@@ -284,8 +288,6 @@ export function useWebSocket() {
   const [acpServers, setAcpServers] = useState([]);
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
-  // Required tools pattern status per workspace UUID: { [workspaceUUID]: { [pattern]: bool } }
-  const [workspaceRequiredToolsStatus, setWorkspaceRequiredToolsStatus] = useState({});
 
   // Track background session completions for toast notifications
   // { sessionId, sessionName, timestamp }
@@ -436,6 +438,11 @@ export function useWebSocket() {
   // reconnection storms during large event syncs (e.g., 790 events).
   // { sessionId: boolean }
   const pendingSyncRef = useRef({});
+
+  // Cooldown after stale recovery to prevent feedback loops.
+  // Maps sessionId → timestamp of last stale recovery.
+  // When set, keepalive skips stale detection for this session for STALE_RECOVERY_COOLDOWN_MS.
+  const staleRecoveryCooldownRef = useRef({});
 
   // Auto-clear timeout for pendingSyncRef to prevent indefinite suppression.
   // If events_loaded never arrives (e.g., server error, WebSocket drop),
@@ -1001,20 +1008,24 @@ export function useWebSocket() {
     if (!activeSessionId || !sessionActionButtons) {
       return [];
     }
-    if (sessionActionButtons.length > 0) {
-      console.log("[ActionButtons] Buttons updated:", {
-        sessionId: activeSessionId,
-        buttonCount: sessionActionButtons.length,
-        buttons: sessionActionButtons.map((b) => b.label),
-      });
-    }
     return sessionActionButtons;
   }, [sessionActionButtons, activeSessionId]);
+
+  // Log when action buttons actually change (not inside useMemo)
+  useEffect(() => {
+    if (actionButtons.length > 0) {
+      console.log("[ActionButtons] Buttons updated:", {
+        sessionId: activeSessionId,
+        buttonCount: actionButtons.length,
+        buttons: actionButtons.map((b) => b.label),
+      });
+    }
+  }, [actionButtons, activeSessionId]);
 
   // Get all active sessions as array for sidebar
   // Memoized with structural fingerprint to prevent unnecessary re-renders
   // when only non-structural properties change (e.g., messageCount, timestamps)
-  const prevActiveSessionsFingerprint = useRef('');
+  const prevActiveSessionsFingerprint = useRef("");
   const prevActiveSessionsResult = useRef([]);
 
   const activeSessions = useMemo(() => {
@@ -1043,7 +1054,8 @@ export function useWebSocket() {
         "";
       // Check if session is archived (from session info or stored session)
       // Archived sessions should not be marked as "active" since they have no ACP connection
-      const isArchived = data.info?.archived || storedSession?.archived || false;
+      const isArchived =
+        data.info?.archived || storedSession?.archived || false;
       // Check if archive is pending (waiting for agent to finish)
       const isArchivePending =
         data.info?.archive_pending || storedSession?.archive_pending || false;
@@ -1054,11 +1066,14 @@ export function useWebSocket() {
         working_dir: workingDir,
         created_at: data.info?.created_at || new Date().toISOString(),
         updated_at: data.info?.updated_at || new Date().toISOString(),
-        last_user_message_at: lastUserMsgTime || data.info?.last_user_message_at,
+        last_user_message_at:
+          lastUserMsgTime || data.info?.last_user_message_at,
         // Archived sessions are not "active" - they have no ACP connection
         status: isArchived ? "archived" : "active",
         isActive: !isArchived,
         isStreaming: !isArchived && (data.isStreaming || false),
+        isWaitingForChildren: data.isWaitingForChildren || false,
+        isWaitingForUserInput: data.isWaitingForUserInput || false,
         messageCount: data.messages?.length || 0,
         archived: isArchived,
         archive_pending: isArchivePending,
@@ -1069,9 +1084,13 @@ export function useWebSocket() {
     // sidebar-relevant fields change. Fields like messageCount, timestamps,
     // and archive_pending change frequently during streaming but don't
     // affect the sidebar layout or tree structure.
-    const fingerprint = result.map(s =>
-      `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.status}`
-    ).sort().join('\n');
+    const fingerprint = result
+      .map(
+        (s) =>
+          `${s.session_id}|${s.name}|${s.working_dir}|${s.acp_server}|${s.archived}|${s.isActive}|${s.isStreaming}|${s.isWaitingForChildren}|${s.isWaitingForUserInput}|${s.status}`,
+      )
+      .sort()
+      .join("\n");
 
     if (fingerprint === prevActiveSessionsFingerprint.current) {
       return prevActiveSessionsResult.current;
@@ -1159,8 +1178,8 @@ export function useWebSocket() {
                 runner_type: msg.data.runner_type || session.info?.runner_type,
                 runner_restricted:
                   msg.data.runner_restricted ?? session.info?.runner_restricted,
-                // Preserve archived flag from existing session info (set by switchSession)
-                archived: session.info?.archived || false,
+                // Use server-sent archived flag, falling back to existing session info
+                archived: msg.data.archived ?? session.info?.archived ?? false,
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
                 // Periodic enabled state from server
@@ -1171,6 +1190,13 @@ export function useWebSocket() {
                 workspace_uuid: msg.data.workspace_uuid ?? null,
                 // ACP readiness: false until acp_started event or explicit true in connected msg
                 acp_ready: msg.data.acp_ready ?? false,
+                // Processor stats
+                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
+                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                // Token usage from last prompt
+                usage: msg.data.usage ?? session.info?.usage ?? null,
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,
@@ -1227,7 +1253,6 @@ export function useWebSocket() {
             last.role === ROLE_AGENT &&
             !last.complete &&
             (sameSeq || !msgSeq);
-
 
           if (shouldAppend) {
             // Safeguard: Check if the incoming HTML is a duplicate of what we already have.
@@ -1459,10 +1484,6 @@ export function useWebSocket() {
             return prev;
           }
 
-          console.log(
-            "[ActionButtons] Storing buttons for session:",
-            sessionId,
-          );
           return {
             ...prev,
             [sessionId]: {
@@ -1546,10 +1567,27 @@ export function useWebSocket() {
                 title: msg.data.title || null,
                 toolCallId: msg.data.tool_call_id || null,
                 blocking: msg.data.blocking !== false, // Default true for backwards compat
+                allowFreeText: msg.data.allow_free_text || false,
+                freeTextPlaceholder: msg.data.free_text_placeholder || "",
+                // Textbox fields
+                text: msg.data.text || "",
+                resultMode: msg.data.result_mode || "text",
+                // Form fields
+                formHTML: msg.data.form_html || "",
               },
             },
           };
         });
+        break;
+      }
+
+      case "notification": {
+        // Fire-and-forget notification from mitto_ui_notify MCP tool
+        console.log("[Notification] Received:", msg.data);
+        // Dispatch a custom event for the app to handle (toast + optional sound/native)
+        window.dispatchEvent(
+          new CustomEvent("mitto:notification", { detail: msg.data }),
+        );
         break;
       }
 
@@ -1610,7 +1648,6 @@ export function useWebSocket() {
           const messages = [...session.messages];
           const lastIdx = messages.length - 1;
 
-
           if (lastIdx >= 0) {
             const last = messages[lastIdx];
             if (last.role === ROLE_AGENT || last.role === ROLE_THOUGHT) {
@@ -1619,7 +1656,21 @@ export function useWebSocket() {
           }
           return {
             ...prev,
-            [sessionId]: { ...session, messages, isStreaming: false },
+            [sessionId]: {
+              ...session,
+              messages,
+              isStreaming: false,
+              // Update processor stats from prompt_complete
+              info: {
+                ...session.info,
+                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
+                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                // Token usage from last prompt
+                usage: msg.data.usage ?? session.info?.usage ?? null,
+              },
+            },
           };
         });
 
@@ -1735,6 +1786,33 @@ export function useWebSocket() {
           });
         }
 
+        // Update processor stats from keepalive_ack (periodic refresh)
+        if (msg.data?.processor_count !== undefined) {
+          setSessions((prev) => {
+            const session = prev[sessionId];
+            if (!session) return prev;
+            const newInfo = {
+              ...session.info,
+              processor_count: msg.data.processor_count,
+              processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+              processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+              processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+            };
+            // Only update if something changed to avoid unnecessary re-renders
+            if (
+              newInfo.processor_count === session.info?.processor_count &&
+              newInfo.processor_activations === session.info?.processor_activations &&
+              newInfo.processor_last_activation === session.info?.processor_last_activation
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [sessionId]: { ...session, info: newInfo },
+            };
+          });
+        }
+
         // Sync queue length from keepalive (for multi-tab sync and mobile wake recovery)
         // Only update if this is the active session to avoid unnecessary state updates
         if (
@@ -1773,12 +1851,40 @@ export function useWebSocket() {
           });
         }
 
+        // Update processor stats from keepalive (provides periodic refresh of activation counts)
+        if (msg.data?.processor_count !== undefined) {
+          setSessions((prev) => {
+            const session = prev[sessionId];
+            if (!session) return prev;
+            return {
+              ...prev,
+              [sessionId]: {
+                ...session,
+                info: {
+                  ...session.info,
+                  processor_count: msg.data.processor_count,
+                  processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+                  processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                  processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                },
+              },
+            };
+          });
+        }
+
         // Sync is_running state (detect if background session disconnected)
         // This is useful for showing a "reconnect" indicator in the UI
+        // Also syncs acp_ready to match is_running — this prevents the
+        // "Reconnecting to AI agent..." banner from getting stuck when the
+        // client misses the acp_started event (e.g., race during unarchive).
         const serverIsRunning = msg.data?.is_running ?? true;
-        if (currentSession?.isRunning !== serverIsRunning) {
+        const clientAcpReady = currentSession?.info?.acp_ready ?? false;
+        if (
+          currentSession?.isRunning !== serverIsRunning ||
+          clientAcpReady !== serverIsRunning
+        ) {
           console.log(
-            `[keepalive] Session ${sessionId} running state sync: ${currentSession?.isRunning} -> ${serverIsRunning}`,
+            `[keepalive] Session ${sessionId} running state sync: isRunning=${currentSession?.isRunning}->${serverIsRunning}, acp_ready=${clientAcpReady}->${serverIsRunning}`,
           );
           setSessions((prev) => {
             const session = prev[sessionId];
@@ -1788,6 +1894,10 @@ export function useWebSocket() {
               [sessionId]: {
                 ...session,
                 isRunning: serverIsRunning,
+                info: {
+                  ...session.info,
+                  acp_ready: serverIsRunning,
+                },
               },
             };
           });
@@ -1815,7 +1925,14 @@ export function useWebSocket() {
             // Trigger a full reload by requesting initial events (no after_seq).
             // Skip if a sync is already in-flight — the response may fix the stale
             // state; if not, the next keepalive_ack will trigger another attempt.
-            if (pendingSyncRef.current[sessionId]) {
+            // Skip if we recently completed a stale recovery — React state and
+            // auto-load prepend need time to settle before we re-evaluate.
+            const lastRecovery = staleRecoveryCooldownRef.current[sessionId];
+            if (lastRecovery && Date.now() - lastRecovery < STALE_RECOVERY_COOLDOWN_MS) {
+              console.debug(
+                `[keepalive] Session ${sessionId} stale state detected but within recovery cooldown (${Math.round((Date.now() - lastRecovery) / 1000)}s ago) — skipping`,
+              );
+            } else if (pendingSyncRef.current[sessionId]) {
               console.debug(
                 `[keepalive] Session ${sessionId} stale state detected but sync already in-flight — skipping duplicate load_events`,
               );
@@ -1839,7 +1956,9 @@ export function useWebSocket() {
             // Use tolerance only during streaming (where markdown buffer may hold unflushed content).
             // For non-streaming sessions, any gap should trigger sync immediately to catch
             // session_end events and other events written during session close.
-            const syncTolerance = currentSession?.isStreaming ? KEEPALIVE_SYNC_TOLERANCE : 0;
+            const syncTolerance = currentSession?.isStreaming
+              ? KEEPALIVE_SYNC_TOLERANCE
+              : 0;
 
             if (serverMaxSeq > clientMaxSeq + syncTolerance) {
               // We're behind. Skip sync if actively streaming — events are arriving
@@ -1989,6 +2108,15 @@ export function useWebSocket() {
         // If either is higher than server's max_seq, the client has stale state.
         // This fixes a bug where messages in memory had high seq values from a previous
         // server session, but lastLoadedSeq was reset, causing stale detection to fail.
+        //
+        // IMPORTANT: Never run stale detection on prepend (paginated older events).
+        // Prepend batches load historical context and arrive AFTER the initial stale
+        // recovery has already reset lastKnownSeqRef synchronously. However, React's
+        // async batching means sessionsRef.current may still contain the old stale
+        // messages (getMaxSeq=2181) until the setSessions updater flushes. Running
+        // stale detection here would incorrectly trigger M1 fix again, scheduling
+        // another auto-load prepend → cascade of 2181>2180 detections until React
+        // finally flushes. Skip stale detection entirely for prepend batches.
         const currentSession = sessionsRef.current[sessionId];
         const sessionMessages = currentSession?.messages || [];
         // Include lastKnownSeqRef for accurate stale detection
@@ -1998,9 +2126,8 @@ export function useWebSocket() {
           getMaxSeq(sessionMessages),
           currentSession?.lastLoadedSeq || 0,
         );
-        const isStaleClient = isStaleClientState(clientLastSeq, maxSeq);
-
-
+        const isStaleClient =
+          !isPrepend && isStaleClientState(clientLastSeq, maxSeq);
 
         // M1 fix: When client has stale state, reset the seq tracker BEFORE processing events.
         // Without this, the seq tracker's highestSeq from the stale state would cause
@@ -2052,6 +2179,9 @@ export function useWebSocket() {
               console.log(
                 `[Stale client recovery] Replacing ${session.messages.length} stale messages with ${newMessages.length} fresh messages`,
               );
+              // Set cooldown to prevent keepalive from re-triggering stale detection
+              // while React state and auto-load prepend are settling.
+              staleRecoveryCooldownRef.current[sessionId] = Date.now();
             }
             messages = newMessages;
           } else {
@@ -2113,11 +2243,17 @@ export function useWebSocket() {
           console.log(
             `[Stale client recovery] Auto-loading remaining ${firstSeq - 1} events for session ${sessionId}`,
           );
-          // Small delay to let the UI update first, then load remaining messages
+          // Small delay to let the UI update first, then load remaining messages.
+          // Mark the sync as pending BEFORE sending so the keepalive handler does not
+          // fire a duplicate stale-detection load_events while this prepend is in-flight.
+          // (The auto-load sends a before_seq prepend request which does not set
+          // pendingSyncRef on its own, leaving keepalive free to fire concurrently
+          // and pile up additional M1-fix cycles.)
           setTimeout(() => {
             const currentWs = sessionWsRefs.current[sessionId];
             if (currentWs && currentWs.readyState === WebSocket.OPEN) {
               // Request all events before the first one we just loaded
+              setPendingSync(sessionId);
               currentWs.send(
                 JSON.stringify({
                   type: "load_events",
@@ -2385,9 +2521,15 @@ export function useWebSocket() {
               fromOtherClient: true,
               seq, // Include seq for ordering and deduplication
             };
-            // Add image references if present (we don't have the actual image data)
+            // Add image references if present, constructing full image objects
+            // with URLs so the Message component can render them immediately
+            // (matching the format produced by convertEventsToMessages in lib.js)
             if (image_ids && image_ids.length > 0) {
-              userMessage.imageIds = image_ids;
+              userMessage.images = image_ids.map((id) => ({
+                id,
+                url: `${getApiPrefix()}/api/sessions/${sessionId}/images/${id}`,
+                name: id,
+              }));
             }
             messages = limitMessages([...messages, userMessage]);
             console.log(
@@ -2488,7 +2630,13 @@ export function useWebSocket() {
         // Defense-in-depth: the global events WS also handles this, but it may be
         // temporarily disconnected. Just set isRunning=true; no system message here
         // to avoid duplicating the one added by the global handler.
+        // Also updates config_options and agent_models that weren't available in the
+        // initial "connected" message due to the async ACP initialization timing race.
         console.log("ACP started for session (per-session WS):", sessionId);
+        // Update config options if provided in the acp_started message
+        if (msg.data.config_options) {
+          setConfigOptions(msg.data.config_options);
+        }
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -2500,6 +2648,21 @@ export function useWebSocket() {
               info: {
                 ...session.info,
                 acp_ready: true,
+                // Update image support capability
+                agent_supports_images:
+                  msg.data.agent_supports_images ??
+                  session.info?.agent_supports_images ??
+                  false,
+                // Update available commands
+                available_commands:
+                  msg.data.available_commands ??
+                  session.info?.available_commands ??
+                  [],
+                // Update processor stats (may have changed since connected message)
+                processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
+                processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
+                processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
               },
             },
           };
@@ -2577,6 +2740,11 @@ export function useWebSocket() {
             console.log(
               `[acp_stopped] Requesting delayed sync for session ${sessionId} after_seq=${lastSeq}`,
             );
+            // Mark sync in-flight so the keepalive handler does not fire a concurrent
+            // stale-detection load_events while this delayed sync is pending.
+            // Without this guard, keepalive can detect clientMaxSeq > serverMaxSeq and
+            // pile up additional M1-fix cycles on top of the delayed sync response.
+            setPendingSync(sessionId);
             ws.send(
               JSON.stringify({
                 type: "load_events",
@@ -2770,7 +2938,9 @@ export function useWebSocket() {
             }
           } else {
             // No watermark at all — true initial load, fetch the last N events.
-            console.log(`Loading session ${sessionId} events (initial load, jitter=${startupJitterMs}ms)`);
+            console.log(
+              `Loading session ${sessionId} events (initial load, jitter=${startupJitterMs}ms)`,
+            );
             setPendingSync(sessionId);
             ws.send(
               JSON.stringify({
@@ -2875,13 +3045,15 @@ export function useWebSocket() {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          console.log(
-            `[WS ${wsId}] Received:`,
-            msg.type,
-            msg.data?.html?.substring(0, 50) ||
-              msg.data?.message?.substring(0, 50) ||
-              "",
-          );
+          if (msg.type !== "keepalive_ack") {
+            console.log(
+              `[WS ${wsId}] Received:`,
+              msg.type,
+              msg.data?.html?.substring(0, 50) ||
+                msg.data?.message?.substring(0, 50) ||
+                "",
+            );
+          }
           handleSessionMessage(sessionId, msg);
         } catch (err) {
           console.error(
@@ -2910,6 +3082,9 @@ export function useWebSocket() {
         // events_loaded will never arrive — without this, pendingSyncRef stays true
         // indefinitely, suppressing keepalive miss-counting after reconnection.
         clearPendingSync(sessionId);
+        // Clear the stale recovery cooldown so the fresh connection gets a clean
+        // stale detection check (the cooldown is only meaningful within a session).
+        delete staleRecoveryCooldownRef.current[sessionId];
 
         // Only delete the ref if it still points to this WebSocket (not a newer one)
         if (sessionWsRefs.current[sessionId] === ws) {
@@ -3071,8 +3246,14 @@ export function useWebSocket() {
           updateGlobalWorkingDir(s.session_id, s.working_dir);
         }
       });
-      setStoredSessions(data || []);
-      return data || [];
+      // Map server-side snake_case field to frontend camelCase so that the
+      // hourglass icon survives fetchStoredSessions() overwriting storedSessions.
+      const mapped = (data || []).map((s) => ({
+        ...s,
+        isWaitingForChildren: s.is_waiting_for_children || false,
+      }));
+      setStoredSessions(mapped);
+      return mapped;
     } catch (err) {
       console.error("Failed to fetch sessions:", err);
       return [];
@@ -3129,9 +3310,7 @@ export function useWebSocket() {
             if (groupingMode === "server") {
               allGroupKeys.add(s.acp_server || "Unknown");
             } else if (groupingMode === "workspace") {
-              allGroupKeys.add(
-                `${s.working_dir || ""}|${s.acp_server || ""}`,
-              );
+              allGroupKeys.add(`${s.working_dir || ""}|${s.acp_server || ""}`);
             } else if (groupingMode === "folder") {
               allGroupKeys.add(s.working_dir || "Unknown");
             }
@@ -3175,7 +3354,6 @@ export function useWebSocket() {
       const storedSession = storedSessionsRef.current?.find(
         (s) => s.session_id === sessionId,
       );
-
 
       const workingDir =
         existingSession?.info?.working_dir || storedSession?.working_dir || "";
@@ -3336,6 +3514,7 @@ export function useWebSocket() {
               acp_server: msg.data.acp_server,
               working_dir: msg.data.working_dir,
               parent_session_id: msg.data.parent_session_id || null, // Preserve parent-child relationship
+              child_origin: msg.data.child_origin || null, // Preserve child origin (mcp, auto, human) for icon rendering
               status: "active",
               created_at: new Date().toISOString(),
             },
@@ -3475,6 +3654,62 @@ export function useWebSocket() {
         });
         break;
 
+      case "session_waiting":
+        // Update session waiting-for-children state
+        // This is broadcast when a parent starts/stops blocking on mitto_children_tasks_wait
+        console.log(
+          `[global] Session waiting state changed: ${msg.data.session_id} -> ${msg.data.is_waiting}`,
+        );
+        // Update in stored sessions (for sidebar display)
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, isWaitingForChildren: msg.data.is_waiting }
+              : s,
+          ),
+        );
+        // Also update in active sessions
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              isWaitingForChildren: msg.data.is_waiting,
+            },
+          };
+        });
+        break;
+
+      case "session_ui_prompt":
+        // Update session waiting-for-user-input state
+        // This is broadcast when a session starts/stops blocking on a UI prompt
+        console.log(
+          `[global] Session UI prompt state changed: ${msg.data.session_id} -> ${msg.data.is_waiting}`,
+        );
+        // Update in stored sessions (for sidebar display)
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, isWaitingForUserInput: msg.data.is_waiting }
+              : s,
+          ),
+        );
+        // Also update in active sessions
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              isWaitingForUserInput: msg.data.is_waiting,
+            },
+          };
+        });
+        break;
+
       case "periodic_updated":
         // Update session periodic state
         // This is broadcast when any session's periodic state changes
@@ -3595,6 +3830,7 @@ export function useWebSocket() {
         // This is broadcast to all clients after unarchiving a session
         console.log("ACP started for session:", msg.data?.session_id);
         // Update session state to allow prompts
+        // Must also set acp_ready to dismiss the "Reconnecting to AI agent..." banner
         setSessions((prev) => {
           const session = prev[msg.data?.session_id];
           if (!session) return prev;
@@ -3603,6 +3839,10 @@ export function useWebSocket() {
             [msg.data.session_id]: {
               ...session,
               isRunning: true,
+              info: {
+                ...session.info,
+                acp_ready: true,
+              },
               // Add a system message to inform the user
               messages: [
                 ...session.messages,
@@ -3675,37 +3915,26 @@ export function useWebSocket() {
       case "mcp_tools_available":
         // Server notifies that MCP tools are available for a workspace.
         // Store them keyed by workspace UUID so the UI can display them.
-        console.log("[MCP] Tools available for workspace:", msg.data.workspace_uuid, "count:", msg.data.tools?.length);
+        console.log(
+          "[MCP] Tools available for workspace:",
+          msg.data.workspace_uuid,
+          "count:",
+          msg.data.tools?.length,
+        );
         if (msg.data.workspace_uuid) {
           setWorkspaceMcpTools((prev) => ({
             ...prev,
             [msg.data.workspace_uuid]: msg.data.tools || [],
           }));
         }
+        // Signal that prompts should be re-fetched: backend filters using new MCP tool context
+        window.dispatchEvent(
+          new CustomEvent("mitto:prompts_changed", {
+            detail: { reason: "mcp_tools_available" },
+          }),
+        );
         break;
 
-      case "required_tools_status":
-        // Server notifies about required tool pattern availability for a workspace.
-        // Sent progressively as retries discover newly-available tools.
-        // Merge results: only upgrade false→true, never downgrade true→false.
-        console.log("[MCP] Required tools status for workspace:", msg.data.workspace_uuid, "patterns:", msg.data.patterns);
-        if (msg.data.workspace_uuid && msg.data.patterns) {
-          setWorkspaceRequiredToolsStatus((prev) => {
-            const existing = prev[msg.data.workspace_uuid] || {};
-            const merged = { ...existing };
-            for (const [pattern, available] of Object.entries(msg.data.patterns)) {
-              // Only upgrade to true, never downgrade
-              if (available || !(pattern in merged)) {
-                merged[pattern] = available;
-              }
-            }
-            return {
-              ...prev,
-              [msg.data.workspace_uuid]: merged,
-            };
-          });
-        }
-        break;
     }
   }, []);
 
@@ -3762,15 +3991,18 @@ export function useWebSocket() {
               (s) => s.session_id !== targetSessionId && !s.archived,
             );
             otherSessions.forEach((session, index) => {
-              setTimeout(() => {
-                // Only connect if not already connected (guard against race conditions)
-                if (!sessionWsRefs.current[session.session_id]) {
-                  console.log(
-                    `[startup] Pre-connecting background session ${session.session_id} (stagger ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
-                  );
-                  connectToSession(session.session_id);
-                }
-              }, (index + 1) * STARTUP_STAGGER_MS);
+              setTimeout(
+                () => {
+                  // Only connect if not already connected (guard against race conditions)
+                  if (!sessionWsRefs.current[session.session_id]) {
+                    console.log(
+                      `[startup] Pre-connecting background session ${session.session_id} (stagger ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
+                    );
+                    connectToSession(session.session_id);
+                  }
+                },
+                (index + 1) * STARTUP_STAGGER_MS,
+              );
             });
           }
         });
@@ -4106,11 +4338,14 @@ export function useWebSocket() {
         };
 
         ws.onclose = (event) => {
-          console.log(`Session WebSocket closed during reconnect: ${sessionId}`, {
-            code: event.code,
-            reason: event.reason,
-            wasClean: event.wasClean,
-          });
+          console.log(
+            `Session WebSocket closed during reconnect: ${sessionId}`,
+            {
+              code: event.code,
+              reason: event.reason,
+              wasClean: event.wasClean,
+            },
+          );
           // If we haven't resolved yet, this is an early close
           clearTimeout(timeoutId);
           if (sessionWsRefs.current[sessionId] === ws) {
@@ -4676,7 +4911,11 @@ export function useWebSocket() {
           // so we don't jump to a session in a different (possibly collapsed) group
           let nextSession = remainingSessions[0];
           const groupingMode = getFilterTabGrouping(FILTER_TAB.CONVERSATIONS);
-          if (getSingleExpandedGroupMode() && groupingMode && groupingMode !== "none") {
+          if (
+            getSingleExpandedGroupMode() &&
+            groupingMode &&
+            groupingMode !== "none"
+          ) {
             // Compute the deleted session's group key (mirrors expandGroupForSession logic)
             let deletedGroupKey;
             if (groupingMode === "server") {
@@ -4734,7 +4973,9 @@ export function useWebSocket() {
       }
       syncTimeoutRef.current = {};
       // Clear pending staggered background-session reconnect timers
-      for (const timerId of Object.values(staggeredBackgroundTimersRef.current)) {
+      for (const timerId of Object.values(
+        staggeredBackgroundTimersRef.current,
+      )) {
         clearTimeout(timerId);
       }
       staggeredBackgroundTimersRef.current = {};
@@ -4823,7 +5064,10 @@ export function useWebSocket() {
     // Layer 1: leading-edge debounce.
     const now = Date.now();
     const elapsed = now - lastStaggeredReconnectRef.current;
-    if (lastStaggeredReconnectRef.current > 0 && elapsed < STAGGERED_RECONNECT_DEBOUNCE_MS) {
+    if (
+      lastStaggeredReconnectRef.current > 0 &&
+      elapsed < STAGGERED_RECONNECT_DEBOUNCE_MS
+    ) {
       console.debug(
         `[stagger] Skipping duplicate staggered reconnect (${elapsed}ms since last, debounce=${STAGGERED_RECONNECT_DEBOUNCE_MS}ms)`,
       );
@@ -4839,12 +5083,16 @@ export function useWebSocket() {
     // Layer 2: cancel any still-pending background-session timers from a prior call
     // before scheduling a new batch.  This prevents two sets of timers from both
     // firing and reconnecting the same background session concurrently.
-    const pendingCount = Object.keys(staggeredBackgroundTimersRef.current).length;
+    const pendingCount = Object.keys(
+      staggeredBackgroundTimersRef.current,
+    ).length;
     if (pendingCount > 0) {
       console.debug(
         `[stagger] Cancelling ${pendingCount} pending background timer(s) from previous call`,
       );
-      for (const timerId of Object.values(staggeredBackgroundTimersRef.current)) {
+      for (const timerId of Object.values(
+        staggeredBackgroundTimersRef.current,
+      )) {
         clearTimeout(timerId);
       }
       staggeredBackgroundTimersRef.current = {};
@@ -4862,21 +5110,24 @@ export function useWebSocket() {
     }
 
     backgroundIds.forEach((sessionId, index) => {
-      const timerId = setTimeout(() => {
-        // Remove our own entry now that we're executing
-        delete staggeredBackgroundTimersRef.current[sessionId];
+      const timerId = setTimeout(
+        () => {
+          // Remove our own entry now that we're executing
+          delete staggeredBackgroundTimersRef.current[sessionId];
 
-        const existingWs = sessionWsRefs.current[sessionId];
-        if (existingWs) {
-          console.log(
-            `[stagger] Reconnecting background session ${sessionId} (delay ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
-          );
-          delete sessionWsRefs.current[sessionId];
-          existingWs.close();
-          // onclose won't reconnect non-active sessions, so reconnect manually
-          connectToSession(sessionId);
-        }
-      }, (index + 1) * STARTUP_STAGGER_MS);
+          const existingWs = sessionWsRefs.current[sessionId];
+          if (existingWs) {
+            console.log(
+              `[stagger] Reconnecting background session ${sessionId} (delay ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
+            );
+            delete sessionWsRefs.current[sessionId];
+            existingWs.close();
+            // onclose won't reconnect non-active sessions, so reconnect manually
+            connectToSession(sessionId);
+          }
+        },
+        (index + 1) * STARTUP_STAGGER_MS,
+      );
 
       // Track timer so it can be cancelled if another call arrives before it fires
       staggeredBackgroundTimersRef.current[sessionId] = timerId;
@@ -5074,12 +5325,13 @@ export function useWebSocket() {
 
   // Send UI prompt answer (yes/no or select response)
   const sendUIPromptAnswer = useCallback(
-    (sessionId, requestId, optionId, label) => {
+    (sessionId, requestId, optionId, label, freeText = "") => {
       console.log("[UIPrompt] Sending answer:", {
         sessionId,
         requestId,
         optionId,
         label,
+        freeText,
       });
 
       const sent = sendToSession(sessionId, {
@@ -5088,6 +5340,7 @@ export function useWebSocket() {
           request_id: requestId,
           option_id: optionId,
           label: label,
+          free_text: freeText,
         },
       });
 
@@ -5126,13 +5379,6 @@ export function useWebSocket() {
     return workspaceMcpTools[uuid] || [];
   }, [sessionInfo, workspaceMcpTools]);
 
-  // Required tools pattern status for the currently active session's workspace
-  const requiredToolsStatus = useMemo(() => {
-    const uuid = sessionInfo?.workspace_uuid;
-    if (!uuid) return {};
-    return workspaceRequiredToolsStatus[uuid] || {};
-  }, [sessionInfo, workspaceRequiredToolsStatus]);
-
   return {
     connected: eventsConnected,
     messages,
@@ -5156,7 +5402,6 @@ export function useWebSocket() {
     actionButtons,
     sessionInfo,
     mcpTools,
-    requiredToolsStatus,
     activeSessionId,
     activeSessions,
     storedSessions,

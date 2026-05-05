@@ -702,6 +702,7 @@ var publicAPIPaths = map[string]bool{
 	"/api/csrf-token":        true, // CSRF token endpoint must be accessible before login
 	"/api/supported-runners": true, // Platform information endpoint (no sensitive data)
 	"/api/auth-info":         true, // Auth info endpoint must be accessible before login (used by login page)
+	"/api/health":            true, // Health check must be accessible without auth for tunnel monitoring
 }
 
 // isPublicPath checks if a path is public (no auth required).
@@ -732,6 +733,13 @@ func (a *AuthManager) isPublicPath(path string) bool {
 			logger.Debug("AUTH: isPublicPath: MATCHED API path", "path", path, "api_path", fullAPIPath)
 			return true
 		}
+	}
+
+	// Check API path prefixes for dynamic paths (callback tokens)
+	callbackPrefix := a.apiPrefix + "/api/callback/"
+	if strings.HasPrefix(path, callbackPrefix) {
+		logger.Debug("AUTH: isPublicPath: MATCHED callback prefix", "path", path)
+		return true
 	}
 
 	// Log all known public paths for debugging
@@ -892,7 +900,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			for i, c := range cookies {
 				cookieNames[i] = c.Name
 			}
-			logger.Info("AUTH: No valid session",
+			logger.Debug("AUTH: No valid session",
 				"path", r.URL.Path,
 				"client_ip", clientIP,
 				"cookies_present", cookieNames,
@@ -915,7 +923,7 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			// For page requests, redirect to login
-			logger.Info("AUTH: Redirecting to auth.html", "path", r.URL.Path, "raw_uri", r.RequestURI)
+			logger.Debug("AUTH: Redirecting to auth.html", "path", r.URL.Path, "raw_uri", r.RequestURI)
 			http.Redirect(w, r, "/auth.html", http.StatusFound)
 			return
 		}

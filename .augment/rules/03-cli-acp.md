@@ -44,11 +44,25 @@ mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
 
 ## ACP Protocol
 
-### SDK Usage
+### SDK: `github.com/coder/acp-go-sdk`
 
-- Import: `github.com/coder/acp-go-sdk`
 - The `Client` struct implements `acp.Client` interface
 - Use `acp.ClientSideConnection` for protocol handling
+- JSON-RPC 2.0 over stdin/stdout of the agent subprocess
+
+### ContentBlock — Discriminated Union
+
+```go
+// Check type via nil pointer checks (NOT a Type() method):
+if block.Image != nil { /* block.Image.Data, block.Image.MimeType */ }
+else if block.Text != nil { /* block.Text.Text */ }
+
+// Create blocks via helpers:
+acp.TextBlock("hello")
+acp.ImageBlock(base64Data, "image/png")
+```
+
+**Anti-pattern**: `block.Type()`, `acp.ContentBlockTypeImage` do NOT exist.
 
 ### Connection Lifecycle
 
@@ -56,9 +70,16 @@ mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
 conn, err := acp.NewConnection(ctx, command, autoApprove, output, logger)
 defer conn.Close()
 
-conn.Initialize(ctx)       // Protocol handshake
-conn.NewSession(ctx, cwd)  // Create session
-conn.Prompt(ctx, message)  // Send prompt
+conn.Initialize(ctx)       // Returns AgentCapabilities
+conn.NewSession(ctx, cwd)  // Returns SessionID + Modes
+conn.Prompt(ctx, message)  // Streaming response via callbacks
+```
+
+### Agent Capabilities
+Always check capabilities before sending unsupported content blocks:
+```go
+caps := resp.AgentCapabilities
+bs.agentSupportsImages = caps.PromptCapabilities.Image
 ```
 
 ### Permission Handling

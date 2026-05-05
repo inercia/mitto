@@ -41,7 +41,9 @@ import {
   ChevronRightIcon,
   DuplicateIcon,
   ShieldIcon,
+  SearchIcon,
 } from "./Icons.js";
+import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
@@ -56,7 +58,7 @@ import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
  * then workspace-level folders below with [×] buttons.
  * In "replace" mode: only workspace folders are shown (inherited are hidden).
  */
-function FolderListEditor({
+export function FolderListEditor({
   folders,
   inheritedFolders,
   mode,
@@ -122,7 +124,7 @@ function FolderListEditor({
                 type="text"
                 value=${f}
                 onInput=${(e) => updateFolder(idx, e.target.value)}
-                placeholder=${placeholder || "$WORKSPACE"}
+                placeholder=${placeholder || "$MITTO_WORKING_DIR"}
                 class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <button
@@ -154,7 +156,7 @@ function FolderListEditor({
  * When a new top-level conversation is created in this workspace,
  * these child conversations will be auto-created with it.
  */
-function AutoChildrenEditor({
+export function AutoChildrenEditor({
   children,
   workspaces,
   currentWorkspaceUUID,
@@ -192,7 +194,7 @@ function AutoChildrenEditor({
               <button
                 type="button"
                 onClick=${addChild}
-                class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
+                class="text-xs px-2 py-1 bg-mitto-input-box hover:bg-blue-600 hover:text-white border border-mitto-border rounded-lg transition-colors"
               >
                 + Add Child
               </button>
@@ -217,14 +219,15 @@ function AutoChildrenEditor({
                 (child, idx) => html`
                   <div
                     key=${idx}
-                    class="flex items-center gap-2 p-2 bg-slate-700/30 rounded border border-slate-600/50"
+                    class="flex items-center gap-2 p-2 bg-mitto-input-box rounded-lg border border-mitto-border"
                   >
                     <input
                       type="text"
                       value=${child.title || ""}
                       placeholder="Child title"
                       onInput=${(e) => updateChild(idx, "title", e.target.value)}
-                      class="flex-1 px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="flex-1 bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      style="height: 38px; box-sizing: border-box"
                     />
                     <select
                       value=${child.target_workspace_uuid || ""}
@@ -234,9 +237,9 @@ function AutoChildrenEditor({
                           "target_workspace_uuid",
                           e.target.value,
                         )}
-                      class="px-2 py-1.5 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="bg-mitto-input border border-mitto-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      style="height: 38px; box-sizing: border-box"
                     >
-                      <option value="">Same workspace</option>
                       ${targetOptions.map(
                         (ws) => html`
                           <option value=${ws.uuid}>
@@ -267,7 +270,7 @@ function AutoChildrenEditor({
  * RunnerRestrictionsEditor — per-workspace runner restriction overrides.
  * Shown when the workspace runner is not "exec".
  */
-function RunnerRestrictionsEditor({
+export function RunnerRestrictionsEditor({
   runnerType,
   config: runnerConfig,
   effectiveConfig,
@@ -429,7 +432,7 @@ function RunnerRestrictionsEditor({
               updateMergeMode(m, setReadMode, setWriteMode)}
             onFoldersChange=${(folders) =>
               updateRestriction("allow_read_folders", folders)}
-            placeholder="$WORKSPACE"
+            placeholder="$MITTO_WORKING_DIR"
           />
 
           <!-- Write folders -->
@@ -443,7 +446,7 @@ function RunnerRestrictionsEditor({
               updateMergeMode(m, setWriteMode, setReadMode)}
             onFoldersChange=${(folders) =>
               updateRestriction("allow_write_folders", folders)}
-            placeholder="$WORKSPACE"
+            placeholder="$MITTO_WORKING_DIR"
           />
 
           ${runnerType === "docker" &&
@@ -526,6 +529,9 @@ function WorkspaceEditForm({
       "#808080",
   );
   const [acpServer, setAcpServer] = useState(workspace.acp_server);
+  const [auxiliaryAcpServer, setAuxiliaryAcpServer] = useState(
+    workspace.auxiliary_acp_server || "",
+  );
   const [runner, setRunner] = useState(workspace.restricted_runner || "exec");
   const [autoApprove, setAutoApprove] = useState(
     workspace.auto_approve === true,
@@ -555,9 +561,9 @@ function WorkspaceEditForm({
     if (newRunner === "exec") {
       setRunnerConfig(null);
     } else if (!runnerConfig) {
-      // Pre-populate write folders with $WORKSPACE when first enabling restrictions
+      // Pre-populate write folders with $MITTO_WORKING_DIR when first enabling restrictions
       setRunnerConfig({
-        restrictions: { allow_write_folders: ["$WORKSPACE"] },
+        restrictions: { allow_write_folders: ["$MITTO_WORKING_DIR"] },
       });
     }
   };
@@ -576,6 +582,7 @@ function WorkspaceEditForm({
       code: sanitizedCode || undefined,
       color: color || undefined,
       acp_server: acpServer,
+      auxiliary_acp_server: auxiliaryAcpServer,
       restricted_runner: runner,
       // Only include runner config for non-exec runners
       restricted_runner_config: runner !== "exec" ? runnerConfig : undefined,
@@ -615,6 +622,31 @@ function WorkspaceEditForm({
             `,
           )}
         </select>
+      </div>
+
+      <!-- Auxiliary ACP Server Selection -->
+      <div>
+        <label class="block text-sm text-gray-400 mb-1"
+          >Auxiliary ACP Server</label
+        >
+        <select
+          value=${auxiliaryAcpServer}
+          onChange=${(e) => setAuxiliaryAcpServer(e.target.value)}
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Default (shared with main)</option>
+          <option value="none">None (disabled)</option>
+          ${sortedServers.map(
+            (srv) => html`
+              <option key=${"aux-" + srv.name} value=${srv.name}>
+                ${srv.name}
+              </option>
+            `,
+          )}
+        </select>
+        <p class="text-xs text-gray-500 mt-1">
+          Dedicated server for background tasks (titles, suggestions)
+        </p>
       </div>
 
       <!-- Sandbox Type -->
@@ -728,7 +760,7 @@ function WorkspaceEditForm({
  * Helper component for editing a server inline
  * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
-function ServerEditForm({ server, onSave, onCancel }) {
+function ServerEditForm({ server, agentTypes = [], onSave, onCancel }) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
   const [type, setType] = useState(server.type || "");
@@ -744,7 +776,25 @@ function ServerEditForm({ server, onSave, onCancel }) {
   // All prompts are now file-based (read-only)
   const filePrompts = server.prompts || [];
 
+  const [typeError, setTypeError] = useState(false);
+  const [formError, setFormError] = useState("");
+
   const handleSave = () => {
+    setFormError("");
+    if (!name.trim()) {
+      setFormError("Server name cannot be empty");
+      return;
+    }
+    if (!command.trim()) {
+      setFormError("Server command cannot be empty");
+      return;
+    }
+    if (!type.trim()) {
+      setTypeError(true);
+      setFormError("Please select an agent type");
+      return;
+    }
+    setTypeError(false);
     // Convert envVars array back to object, filtering out empty keys
     const envObj = {};
     envVars.forEach(({ key, value }) => {
@@ -757,7 +807,10 @@ function ServerEditForm({ server, onSave, onCancel }) {
       .split(",")
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
-    onSave(name, command, type, autoApprove, envObj, parsedTags);
+    const err = onSave(name, command, type, autoApprove, envObj, parsedTags);
+    if (err) {
+      setFormError(err);
+    }
   };
 
   const addEnvVar = () => {
@@ -797,19 +850,26 @@ function ServerEditForm({ server, onSave, onCancel }) {
       <div>
         <label class="block text-sm text-gray-400 mb-1"
           >Type
-          <span class="text-xs text-gray-500"
-            >(optional, for prompt matching)</span
-          ></label
+          <span class="text-xs text-red-400 ml-1">*</span></label
         >
-        <input
-          type="text"
+        <select
           value=${type}
-          onInput=${(e) => setType(e.target.value)}
-          placeholder="e.g., auggie"
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
+          onChange=${(e) => {
+            setType(e.target.value);
+            if (e.target.value) setTypeError(false);
+          }}
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 ${typeError ? "ring-2 ring-red-500" : "focus:ring-blue-500"}"
+        >
+          <option value="">-- Select agent type --</option>
+          ${agentTypes.map(
+            (t) => html`<option key=${t} value=${t}>${t}</option>`,
+          )}
+        </select>
+        ${typeError && html`<p class="text-xs text-red-400 mt-1">
+          Agent type is required.
+        </p>`}
         <p class="text-xs text-gray-500 mt-1">
-          Servers with the same type share prompts. If empty, name is used.
+          Servers with the same type share prompts and agent configuration.
         </p>
       </div>
       <div>
@@ -946,6 +1006,15 @@ function ServerEditForm({ server, onSave, onCancel }) {
         </div>
       `}
 
+      ${formError &&
+      html`
+        <div
+          class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
+        >
+          ⚠️ ${formError}
+        </div>
+      `}
+
       <div class="flex justify-end gap-2">
         <button
           onClick=${onCancel}
@@ -994,9 +1063,9 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         <textarea
           value=${text}
           onInput=${(e) => setText(e.target.value)}
-          rows="3"
+          rows="8"
           disabled=${readOnly}
-          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none ${readOnly
+          class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y ${readOnly
             ? "opacity-60 cursor-not-allowed"
             : ""}"
         />
@@ -1106,6 +1175,8 @@ export function SettingsDialog({
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [warning, setWarning] = useState("");
+  // Agent discovery dialog (triggered from Servers tab)
+  const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
 
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
@@ -1115,25 +1186,7 @@ export function SettingsDialog({
     () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
     [acpServers],
   );
-  // Group workspaces by display name (alphabetical), with ACP servers sorted within each group
-  const groupedWorkspaces = useMemo(() => {
-    const groups = new Map();
-    workspaces.forEach((ws) => {
-      const displayName = ws.name || getBasename(ws.working_dir);
-      if (!groups.has(displayName)) {
-        groups.set(displayName, []);
-      }
-      groups.get(displayName).push(ws);
-    });
-    // Sort workspaces within each group by ACP server name
-    groups.forEach((wsArray) => {
-      wsArray.sort((a, b) => (a.acp_server || "").localeCompare(b.acp_server || ""));
-    });
-    // Convert to array sorted by display name
-    return Array.from(groups.entries())
-      .sort(([nameA], [nameB]) => nameA.localeCompare(nameB))
-      .map(([displayName, wsArray]) => ({ displayName, workspaces: wsArray }));
-  }, [workspaces]);
+
   const [authEnabled, setAuthEnabled] = useState(false);
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -1153,12 +1206,6 @@ export function SettingsDialog({
   // Access log setting (enabled by default)
   const [accessLogEnabled, setAccessLogEnabled] = useState(true);
 
-  // Stored sessions for checking workspace usage
-  const [storedSessions, setStoredSessions] = useState([]);
-
-  // Orphaned workspaces (filtered out due to missing servers)
-  const [orphanedWorkspaces, setOrphanedWorkspaces] = useState([]);
-
   // Supported runners (fetched from server based on platform)
   const [supportedRunners, setSupportedRunners] = useState([]);
 
@@ -1168,11 +1215,6 @@ export function SettingsDialog({
   const [runnerDefaults, setRunnerDefaults] = useState({});
 
   // Form state for adding new items
-  const [showAddWorkspace, setShowAddWorkspace] = useState(false);
-  const [newWorkspacePath, setNewWorkspacePath] = useState("");
-  const [newWorkspaceServer, setNewWorkspaceServer] = useState("");
-  const [newWorkspaceRunner, setNewWorkspaceRunner] = useState("exec");
-
   const [showAddServer, setShowAddServer] = useState(false);
   const [newServerName, setNewServerName] = useState("");
   const [newServerCommand, setNewServerCommand] = useState("");
@@ -1181,29 +1223,13 @@ export function SettingsDialog({
 
   const [editingServer, setEditingServer] = useState(null);
 
-  // State for editing workspace (accordion-style, tracks workspaceKey being edited)
-  const [editingWorkspace, setEditingWorkspace] = useState(null);
+  // Agent types for the type dropdown
+  const [agentTypes, setAgentTypes] = useState([]);
 
   // Track server renames (oldName -> newName) so backend can update sessions
   const [serverRenames, setServerRenames] = useState({});
 
-  // Prompts state
-  const [prompts, setPrompts] = useState([]);
-  // Sorted prompts for display (alphabetical by name)
-  const sortedPrompts = useMemo(
-    () => [...prompts].sort((a, b) => (a.name || "").localeCompare(b.name || "")),
-    [prompts],
-  );
-  const [showAddPrompt, setShowAddPrompt] = useState(false);
-  const [newPromptName, setNewPromptName] = useState("");
-  const [newPromptText, setNewPromptText] = useState("");
-  const [newPromptColor, setNewPromptColor] = useState("");
-  const [newPromptGroup, setNewPromptGroup] = useState("");
-  const [editingPrompt, setEditingPrompt] = useState(null);
 
-  // Prompt drag-and-drop state
-  const [draggedPromptIndex, setDraggedPromptIndex] = useState(null);
-  const [dragOverPromptIndex, setDragOverPromptIndex] = useState(null);
 
   // UI settings state (macOS only)
   const [agentCompletedSound, setAgentCompletedSound] = useState(false);
@@ -1215,7 +1241,7 @@ export function SettingsDialog({
   const [loginItemSupported, setLoginItemSupported] = useState(false);
   const [badgeClickEnabled, setBadgeClickEnabled] = useState(true);
   const [badgeClickCommand, setBadgeClickCommand] =
-    useState("open ${WORKSPACE}");
+    useState("open ${MITTO_WORKING_DIR}");
 
   // Confirmation settings (all platforms)
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
@@ -1228,12 +1254,16 @@ export function SettingsDialog({
 
   // Auto-archive inactive period setting
   const [autoArchiveInactiveAfter, setAutoArchiveInactiveAfter] = useState("");
+  const [maxMessagesPerSession, setMaxMessagesPerSession] = useState(2000);
 
   // Follow-up suggestions settings (advanced) - enabled by default
   const [actionButtonsEnabled, setActionButtonsEnabled] = useState(true);
 
   // External images settings (advanced) - disabled by default for security
   const [externalImagesEnabled, setExternalImagesEnabled] = useState(false);
+
+  // Max child conversations setting - default 10
+  const [maxChildConversations, setMaxChildConversations] = useState(10);
 
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
@@ -1375,25 +1405,17 @@ export function SettingsDialog({
       setWarning("");
       setSuccess("");
       loadConfig();
-      loadStoredSessions();
       loadSupportedRunners();
     }
   }, [isOpen]);
 
-  // Load stored sessions to check workspace usage
-  const loadStoredSessions = async () => {
-    try {
-      const res = await fetch(apiUrl("/api/sessions"), {
-        credentials: "same-origin",
-      });
-      if (res.ok) {
-        const sessions = await res.json();
-        setStoredSessions(sessions || []);
-      }
-    } catch (err) {
-      console.error("Failed to load stored sessions:", err);
-    }
-  };
+  // Fetch available agent types for the type dropdown
+  useEffect(() => {
+    secureFetch(apiUrl("/api/agent-types"))
+      .then((r) => r.json())
+      .then((data) => setAgentTypes(data.agent_types || []))
+      .catch(() => setAgentTypes([]));
+  }, []);
 
   // Load supported runners from server
   const loadSupportedRunners = async () => {
@@ -1434,99 +1456,7 @@ export function SettingsDialog({
     }
   };
 
-  // Count conversations using a specific workspace
-  // If acpServer is provided, counts only sessions matching both directory AND server
-  const getWorkspaceConversationCount = (workingDir, acpServer) => {
-    if (acpServer) {
-      return storedSessions.filter((s) => s.working_dir === workingDir && s.acp_server === acpServer).length;
-    }
-    return storedSessions.filter((s) => s.working_dir === workingDir).length;
-  };
 
-  // Save prompts order to settings.json immediately
-  const savePromptsOrder = async (newPrompts) => {
-    try {
-      // Get current config first (cached read is fine for this read-before-write)
-      const config = await fetchConfig();
-
-      // Build the config object with updated prompts
-      const webConfig = {
-        host: config.web?.host || "127.0.0.1",
-        external_port: config.web?.external_port || 0,
-        auth: config.web?.auth || null,
-        hooks: config.web?.hooks || null,
-      };
-
-      // Filter prompts to only save settings-based prompts (not file-based ones)
-      const settingsPrompts = newPrompts
-        .filter((p) => !p.source || p.source === "settings")
-        .map(({ source, ...rest }) => rest); // Remove source field before saving
-
-      const saveConfig = {
-        workspaces: config.workspaces || [],
-        acp_servers: config.acp_servers || [],
-        prompts: settingsPrompts,
-        web: webConfig,
-        ui: config.ui || {},
-      };
-
-      await secureFetch(apiUrl("/api/config"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(saveConfig),
-      });
-      // Config changed on disk — invalidate cache so next read is fresh.
-      invalidateConfigCache();
-    } catch (err) {
-      console.error("Failed to save prompts order:", err);
-    }
-  };
-
-  // Prompt drag-and-drop handlers
-  const handlePromptDragStart = (e, index) => {
-    setDraggedPromptIndex(index);
-    e.dataTransfer.effectAllowed = "move";
-    // Set drag image data (required for Firefox)
-    e.dataTransfer.setData("text/plain", index.toString());
-  };
-
-  const handlePromptDragEnd = () => {
-    setDraggedPromptIndex(null);
-    setDragOverPromptIndex(null);
-  };
-
-  const handlePromptDragOver = (e, index) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (draggedPromptIndex !== null && index !== draggedPromptIndex) {
-      setDragOverPromptIndex(index);
-    }
-  };
-
-  const handlePromptDragLeave = () => {
-    setDragOverPromptIndex(null);
-  };
-
-  const handlePromptDrop = (e, dropIndex) => {
-    e.preventDefault();
-    if (draggedPromptIndex === null || draggedPromptIndex === dropIndex) {
-      setDraggedPromptIndex(null);
-      setDragOverPromptIndex(null);
-      return;
-    }
-
-    // Reorder prompts
-    const newPrompts = [...prompts];
-    const [draggedItem] = newPrompts.splice(draggedPromptIndex, 1);
-    newPrompts.splice(dropIndex, 0, draggedItem);
-
-    setPrompts(newPrompts);
-    setDraggedPromptIndex(null);
-    setDragOverPromptIndex(null);
-
-    // Save immediately
-    savePromptsOrder(newPrompts);
-  };
 
   const loadConfig = async () => {
     setLoading(true);
@@ -1558,7 +1488,6 @@ export function SettingsDialog({
       // - Must reference an existing ACP server
       const serverNames = new Set(servers.map((s) => s.name));
       const rawWorkspaces = config.workspaces || [];
-      const orphaned = []; // Track workspaces with missing servers
       const validWorkspaces = rawWorkspaces.filter((ws) => {
         // Check for valid working_dir
         if (
@@ -1575,19 +1504,11 @@ export function SettingsDialog({
             "Filtering out workspace with invalid/missing ACP server:",
             ws,
           );
-          // Track orphaned workspaces (those with missing servers)
-          if (ws.acp_server) {
-            orphaned.push({
-              working_dir: ws.working_dir,
-              missing_server: ws.acp_server,
-            });
-          }
           return false;
         }
         return true;
       });
       setWorkspaces(validWorkspaces);
-      setOrphanedWorkspaces(orphaned);
 
       // Load auth settings - check if external access is enabled
       // External access is enabled if any auth is configured OR host is 0.0.0.0
@@ -1626,9 +1547,6 @@ export function SettingsDialog({
       // Load access log setting (enabled by default)
       setAccessLogEnabled(config.web?.access_log?.enabled !== false);
 
-      // Load prompts from top-level (not under web)
-      setPrompts(config.prompts || []);
-
       // Load UI settings (macOS only)
       setAgentCompletedSound(
         config.ui?.mac?.notifications?.sounds?.agent_completed || false,
@@ -1643,7 +1561,7 @@ export function SettingsDialog({
         config.ui?.mac?.badge_click_action?.enabled !== false,
       );
       setBadgeClickCommand(
-        config.ui?.mac?.badge_click_action?.command || "open ${WORKSPACE}",
+        config.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
       );
 
       // Load notification permission status (macOS only) - used to show warning if denied
@@ -1681,6 +1599,16 @@ export function SettingsDialog({
         config.session?.auto_archive_inactive_after || "",
       );
 
+      // Load max messages per session (default 2000).
+      // Backend: 0 = not configured (use default), negative = disabled.
+      // UI: 0 = unlimited (no pruning), positive = limit.
+      const rawMaxMessages = config.session?.max_messages_per_session;
+      if (rawMaxMessages != null && rawMaxMessages < 0) {
+        setMaxMessagesPerSession(0); // Disabled → show as "unlimited" (0)
+      } else {
+        setMaxMessagesPerSession(rawMaxMessages || 2000);
+      }
+
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
         config.conversations?.action_buttons?.enabled !== false,
@@ -1689,6 +1617,11 @@ export function SettingsDialog({
       // Load external images settings (advanced) - disabled by default for security
       setExternalImagesEnabled(
         config.conversations?.external_images?.enabled === true,
+      );
+
+      // Load max child conversations setting - default to 10
+      setMaxChildConversations(
+        config.conversations?.max_child_conversations ?? 10,
       );
 
       // Load input font family setting (web UI) - default to "system"
@@ -1730,10 +1663,6 @@ export function SettingsDialog({
         console.warn("Failed to load advanced flags:", err);
       }
 
-      // Set default server for new workspace
-      if (servers.length > 0) {
-        setNewWorkspaceServer(servers[0].name);
-      }
     } catch (err) {
       setError("Failed to load configuration: " + err.message);
     } finally {
@@ -1748,8 +1677,7 @@ export function SettingsDialog({
 
     // Validation
     if (workspaces.length === 0) {
-      setError("At least one workspace is required");
-      setActiveTab("workspaces");
+      setError("At least one workspace is required. Please open the Workspaces dialog to add one.");
       return;
     }
 
@@ -1897,24 +1825,23 @@ export function SettingsDialog({
         external_images: {
           enabled: externalImagesEnabled,
         },
+        max_child_conversations: maxChildConversations,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
         }),
       };
 
-      // Build session config with archive retention period and auto-archive inactive period
+      // Build session config with archive retention period, auto-archive inactive period,
+      // and max messages per session (auto-pruning).
+      // UI: 0 = unlimited (no pruning) → backend: -1 (disabled).
+      // UI: positive = limit → backend: same value.
       const sessionConfig = {
         archive_retention_period: archiveRetentionPeriod,
         auto_archive_inactive_after: autoArchiveInactiveAfter,
+        max_messages_per_session:
+          maxMessagesPerSession === 0 ? -1 : maxMessagesPerSession,
       };
-
-      // Filter prompts to only save settings-based prompts (not file-based ones)
-      // Prompts with source='settings' or no source (new prompts) should be saved
-      // Prompts with source='file' or source='workspace' should not be saved to settings.json
-      const settingsPrompts = prompts
-        .filter((p) => !p.source || p.source === "settings")
-        .map(({ source, ...rest }) => rest); // Remove source field before saving
 
       // ACP servers are saved with source field so backend can filter out RC file servers
       // (RC file servers are managed in .mittorc, not settings.json)
@@ -1953,7 +1880,7 @@ export function SettingsDialog({
       const config = {
         workspaces: workspaces,
         acp_servers: acpServersToSave,
-        prompts: settingsPrompts, // Only settings-based prompts
+        prompts: [], // Prompts are now managed per-workspace, not in global settings
         web: webConfig,
         ui: uiConfig,
         conversations: conversationsConfig,
@@ -2074,240 +2001,13 @@ export function SettingsDialog({
     }
     // Always require at least one workspace
     if (workspaces.length === 0) {
-      setError("At least one workspace is required");
-      setActiveTab("workspaces");
+      setError("At least one workspace is required. Please open the Workspaces dialog to add one.");
       return;
     }
     onClose?.();
   };
 
-  // Workspace management
-  const addWorkspace = () => {
-    if (!newWorkspacePath.trim()) {
-      setError("Please enter a directory path");
-      return;
-    }
-    if (!newWorkspaceServer) {
-      setError("Please select an ACP server");
-      return;
-    }
 
-    // Find the ACP command for this server
-    const server = acpServers.find((s) => s.name === newWorkspaceServer);
-    if (!server) {
-      setError("Selected ACP server not found");
-      return;
-    }
-
-    // Check for duplicate (same path AND same server)
-    // Multiple workspaces can share the same path if they use different servers
-    const pathTrimmed = newWorkspacePath.trim();
-    if (workspaces.some((ws) => ws.working_dir === pathTrimmed && ws.acp_server === newWorkspaceServer)) {
-      setError("A workspace with this path and server already exists");
-      return;
-    }
-
-    setWorkspaces([
-      ...workspaces,
-      {
-        working_dir: pathTrimmed,
-        acp_server: newWorkspaceServer,
-        acp_command: server.command,
-        restricted_runner: newWorkspaceRunner,
-      },
-    ]);
-    setNewWorkspacePath("");
-    setNewWorkspaceRunner("exec");
-    setShowAddWorkspace(false);
-    setError("");
-  };
-
-  // Helper to create a unique key for a workspace (for display/React keys)
-  // Uses UUID if available, otherwise falls back to working_dir + acp_server
-  const getWorkspaceKey = (ws) => {
-    return ws.uuid || `${ws.working_dir}|${ws.acp_server}`;
-  };
-
-  const removeWorkspace = (workspaceKey) => {
-    if (workspaces.length <= 1) {
-      setError("At least one workspace is required");
-      return;
-    }
-
-    // Find the workspace by key
-    const workspace = workspaces.find((ws) => getWorkspaceKey(ws) === workspaceKey);
-    if (!workspace) {
-      return;
-    }
-
-    // Check if any conversations are using this specific workspace (same dir AND server)
-    const conversationCount = getWorkspaceConversationCount(workspace.working_dir, workspace.acp_server);
-    if (conversationCount > 0) {
-      setError(
-        `Cannot remove workspace: ${conversationCount} conversation(s) are using it. Delete the conversations first.`,
-      );
-      return;
-    }
-
-    setWorkspaces(workspaces.filter((ws) => getWorkspaceKey(ws) !== workspaceKey));
-  };
-
-  // Find an alternative ACP server for a workspace (one that's NOT already used for the same folder)
-  // Returns the alternative server name, or null if none available
-  const getUnusedServerForFolder = (workingDir, currentServerName) => {
-    // Find all servers that are already used for this folder
-    const usedServers = new Set(
-      workspaces
-        .filter((ws) => ws.working_dir === workingDir)
-        .map((ws) => ws.acp_server)
-    );
-
-    // Find a server that is NOT already used for this folder
-    // Prefer servers other than the current one first
-    const altServer = acpServers.find(
-      (s) => s.name !== currentServerName && !usedServers.has(s.name)
-    );
-    if (altServer) {
-      return altServer.name;
-    }
-
-    // Fallback: any unused server (including current if it's somehow not in usedServers)
-    const anyUnusedServer = acpServers.find((s) => !usedServers.has(s.name));
-    return anyUnusedServer ? anyUnusedServer.name : null;
-  };
-
-  // Check if a workspace can be duplicated
-  // Returns true if there's at least one ACP server that's not already used for this folder
-  const canDuplicateWorkspace = (ws) => {
-    return getUnusedServerForFolder(ws.working_dir, ws.acp_server) !== null;
-  };
-
-  const duplicateWorkspace = (workspaceKey) => {
-    // Find the workspace by key
-    const workspace = workspaces.find((ws) => getWorkspaceKey(ws) === workspaceKey);
-    if (!workspace) {
-      return;
-    }
-
-    // Find an alternative ACP server that's not already used for this folder
-    const altServerName = getUnusedServerForFolder(
-      workspace.working_dir,
-      workspace.acp_server
-    );
-    if (!altServerName) {
-      setError(
-        "Cannot duplicate: all ACP servers are already used for this folder"
-      );
-      return;
-    }
-
-    // Find the command for the alternative server
-    const altServer = acpServers.find((s) => s.name === altServerName);
-    if (!altServer) {
-      setError("Cannot duplicate: alternative server not found");
-      return;
-    }
-
-    // Create the duplicate with the same folder but different ACP server
-    // Generate a unique UUID for the new workspace
-    const duplicate = {
-      uuid: crypto.randomUUID(),
-      working_dir: workspace.working_dir,
-      acp_server: altServerName,
-      acp_command: altServer.command,
-      restricted_runner: workspace.restricted_runner || "exec",
-      // Copy optional fields if they exist
-      ...(workspace.name && { name: workspace.name }),
-      ...(workspace.code && { code: workspace.code }),
-      ...(workspace.color && { color: workspace.color }),
-    };
-
-    // Add the duplicate after the original workspace
-    const index = workspaces.findIndex(
-      (ws) => getWorkspaceKey(ws) === workspaceKey
-    );
-    const newWorkspaces = [...workspaces];
-    newWorkspaces.splice(index + 1, 0, duplicate);
-    setWorkspaces(newWorkspaces);
-  };
-
-  // Update workspace color
-  const updateWorkspaceColor = (workspaceKey, color) => {
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? { ...ws, color: color || undefined } // undefined to omit from JSON if empty
-          : ws,
-      ),
-    );
-  };
-
-  // Update workspace friendly name
-  const updateWorkspaceName = (workspaceKey, name) => {
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? { ...ws, name: name || undefined } // undefined to omit from JSON if empty
-          : ws,
-      ),
-    );
-  };
-
-  // Update workspace code (three-letter abbreviation)
-  const updateWorkspaceCode = (workspaceKey, code) => {
-    // Ensure code is uppercase and max 3 characters
-    const sanitizedCode = (code || "").toUpperCase().slice(0, 3);
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? { ...ws, code: sanitizedCode || undefined } // undefined to omit from JSON if empty
-          : ws,
-      ),
-    );
-  };
-
-  // Update workspace restricted runner
-  const updateWorkspaceRunner = (workspaceKey, runner) => {
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? { ...ws, restricted_runner: runner || "exec" }
-          : ws,
-      ),
-    );
-  };
-
-  // Update workspace properties (called from WorkspaceEditForm)
-  const updateWorkspace = (workspaceKey, updates) => {
-    // Find the selected server to get its command
-    const selectedServer = acpServers.find(
-      (s) => s.name === updates.acp_server,
-    );
-    if (!selectedServer) {
-      setError("Selected ACP server not found");
-      return;
-    }
-
-    setWorkspaces(
-      workspaces.map((ws) =>
-        getWorkspaceKey(ws) === workspaceKey
-          ? {
-              ...ws,
-              name: updates.name,
-              code: updates.code,
-              color: updates.color,
-              acp_server: updates.acp_server,
-              acp_command: selectedServer.command,
-              restricted_runner: updates.restricted_runner,
-              restricted_runner_config: updates.restricted_runner_config,
-              auto_approve: updates.auto_approve,
-              auto_children: updates.auto_children,
-            }
-          : ws,
-      ),
-    );
-    setEditingWorkspace(null);
-  };
 
   // ACP Server management
   const addServer = () => {
@@ -2317,6 +2017,10 @@ export function SettingsDialog({
     }
     if (!newServerCommand.trim()) {
       setError("Please enter a server command");
+      return;
+    }
+    if (!newServerType.trim()) {
+      setError("Please select an agent type");
       return;
     }
     if (acpServers.some((s) => s.name === newServerName.trim())) {
@@ -2353,8 +2057,10 @@ export function SettingsDialog({
 
   const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags) => {
     if (!newName.trim() || !newCommand.trim()) {
-      setError("Server name and command cannot be empty");
-      return;
+      return "Server name and command cannot be empty";
+    }
+    if (!newType || !newType.trim()) {
+      return "Please select an agent type";
     }
 
     // Check for duplicate name (excluding current)
@@ -2362,8 +2068,7 @@ export function SettingsDialog({
       newName !== oldName &&
       acpServers.some((s) => s.name === newName.trim())
     ) {
-      setError("A server with this name already exists");
-      return;
+      return "A server with this name already exists";
     }
 
     // Update server (prompts are now read-only from files)
@@ -2432,9 +2137,8 @@ export function SettingsDialog({
       const moreCount = usedBy.length - workspacePaths.length;
       const moreText = moreCount > 0 ? ` and ${moreCount} more` : "";
       setError(
-        `Cannot delete "${serverName}": used by workspace(s): ${pathList}${moreText}. Remove or reassign these workspaces first.`,
+        `Cannot delete "${serverName}": used by workspace(s): ${pathList}${moreText}. Remove or reassign these workspaces first (use the Workspaces dialog).`,
       );
-      setActiveTab("workspaces"); // Switch to workspaces tab to help user fix the issue
       return;
     }
 
@@ -2470,15 +2174,22 @@ export function SettingsDialog({
       newName = `${baseName} (copy ${copyNum})`;
     }
 
-    // Create the duplicated server (prompts are file-based, so they aren't copied)
+    // Create the duplicated server with all copyable properties.
+    // Prompts are file-based and not copied; source defaults to "settings".
     const duplicatedServer = {
       name: newName,
       command: server.command,
+      source: "settings", // Duplicates are always settings-managed
     };
 
     // Copy type if present
     if (server.type) {
       duplicatedServer.type = server.type;
+    }
+
+    // Copy tags if present
+    if (server.tags && server.tags.length > 0) {
+      duplicatedServer.tags = [...server.tags];
     }
 
     // Copy environment variables if present (shallow copy to avoid shared references)
@@ -2503,8 +2214,6 @@ export function SettingsDialog({
   // Define navigation items for sidebar
   const navItems = [
     { id: "servers", label: "ACP Servers", icon: ServerIcon },
-    { id: "workspaces", label: "Workspaces", icon: FolderIcon },
-    { id: "prompts", label: "Prompts", icon: LightningIcon },
     { id: "runners", label: "Runners", icon: LockIcon },
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
@@ -2571,377 +2280,6 @@ export function SettingsDialog({
                   </div>
                 `
               : html`
-                  <!-- Workspaces Tab -->
-                  ${activeTab === "workspaces" &&
-                  html`
-                    <div class="space-y-4">
-                      <!-- Workspace explanation -->
-                      <div
-                        class="p-3 bg-slate-800/50 rounded-lg border border-slate-700"
-                      >
-                        <p class="text-gray-300 text-sm leading-relaxed">
-                          A${" "}
-                          <span class="text-blue-400 font-medium"
-                            >Workspace</span
-                          >
-                          ${" "}pairs a directory with an ACP server. Each
-                          workspace allows you to work on a specific project
-                          with a chosen AI agent. You can configure multiple
-                          workspaces to work on different projects
-                          simultaneously.
-                        </p>
-                      </div>
-
-                      ${orphanedWorkspaces.length > 0 &&
-                      html`
-                        <div
-                          class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg"
-                        >
-                          <div class="flex items-start gap-2">
-                            <span class="text-amber-400 text-lg">⚠️</span>
-                            <div class="flex-1">
-                              <p
-                                class="text-amber-400 text-sm font-medium mb-1"
-                              >
-                                ${orphanedWorkspaces.length}
-                                workspace${orphanedWorkspaces.length > 1
-                                  ? "s"
-                                  : ""}
-                                removed due to missing
-                                server${orphanedWorkspaces.length > 1
-                                  ? "s"
-                                  : ""}
-                              </p>
-                              <p class="text-amber-300/80 text-xs mb-2">
-                                The following
-                                workspace${orphanedWorkspaces.length > 1
-                                  ? "s reference servers that no longer exist"
-                                  : " references a server that no longer exists"}.
-                                This can happen if a server was removed from
-                                your .mittorc file.
-                              </p>
-                              <ul class="text-xs text-amber-300/70 space-y-1">
-                                ${orphanedWorkspaces.map(
-                                  (ow, idx) => html`
-                                    <li
-                                      key=${`orphan-${idx}-${ow.working_dir}-${ow.missing_server}`}
-                                      class="flex items-center gap-1"
-                                    >
-                                      <span class="text-amber-400">•</span>
-                                      <span
-                                        class="font-mono truncate"
-                                        title=${ow.working_dir}
-                                        >${ow.working_dir}</span
-                                      >
-                                      <span class="text-amber-500/70">→</span>
-                                      <span class="text-red-400/80"
-                                        >${ow.missing_server}</span
-                                      >
-                                      <span class="text-amber-500/50"
-                                        >(missing)</span
-                                      >
-                                    </li>
-                                  `,
-                                )}
-                              </ul>
-                            </div>
-                          </div>
-                        </div>
-                      `}
-
-                      <div class="flex items-center justify-between">
-                        <p class="text-gray-400 text-sm">
-                          Configured workspaces:
-                        </p>
-                        <button
-                          onClick=${() =>
-                            acpServers.length > 0 &&
-                            setShowAddWorkspace(!showAddWorkspace)}
-                          disabled=${acpServers.length === 0}
-                          class="p-1.5 rounded-lg transition-colors ${acpServers.length ===
-                          0
-                            ? "opacity-50 cursor-not-allowed"
-                            : "hover:bg-slate-700"} ${showAddWorkspace
-                            ? "bg-slate-700"
-                            : ""}"
-                          title=${acpServers.length === 0
-                            ? "Add an ACP server first"
-                            : "Add Workspace"}
-                        >
-                          <${PlusIcon} className="w-5 h-5" />
-                        </button>
-                      </div>
-                      ${acpServers.length === 0 &&
-                      html`
-                        <div
-                          class="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-400 text-sm"
-                        >
-                          ⚠️ Add an ACP server first before creating workspaces.
-                        </div>
-                      `}
-                      ${showAddWorkspace &&
-                      html`
-                        <div
-                          class="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-3"
-                        >
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Directory Path</label
-                            >
-                            <div class="flex gap-2">
-                              <input
-                                type="text"
-                                value=${newWorkspacePath}
-                                onInput=${(e) => {
-                                  setNewWorkspacePath(e.target.value);
-                                  setError("");
-                                }}
-                                placeholder="/path/to/project"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                              ${hasNativeFolderPicker() &&
-                              html`
-                                <button
-                                  type="button"
-                                  onClick=${async () => {
-                                    const path = await pickFolder();
-                                    if (path) {
-                                      setNewWorkspacePath(path);
-                                    }
-                                  }}
-                                  class="px-3 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm transition-colors whitespace-nowrap"
-                                >
-                                  Browse…
-                                </button>
-                              `}
-                            </div>
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >ACP Server</label
-                            >
-                            <select
-                              value=${newWorkspaceServer}
-                              onChange=${(e) => {
-                                setNewWorkspaceServer(e.target.value);
-                                setError("");
-                              }}
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            >
-                              ${sortedAcpServers.map(
-                                (srv) => html`
-                                  <option key=${srv.name} value=${srv.name}>
-                                    ${srv.name}
-                                  </option>
-                                `,
-                              )}
-                            </select>
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Sandbox Type</label
-                            >
-                            <select
-                              value=${newWorkspaceRunner}
-                              onChange=${(e) => {
-                                setNewWorkspaceRunner(e.target.value);
-                                setError("");
-                              }}
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              title="Choose the runner type for sandboxing agent execution"
-                            >
-                              ${supportedRunners
-                                .filter((r) => r.supported)
-                                .map(
-                                  (r) =>
-                                    html`<option value=${r.type}>
-                                      ${r.label}
-                                    </option>`,
-                                )}
-                            </select>
-                            <p class="text-xs text-gray-500 mt-1">
-                              Controls how the agent is sandboxed. "exec" runs
-                              with no restrictions (recommended for most users).
-                            </p>
-                          </div>
-                          ${error &&
-                          html`
-                            <div
-                              class="p-2 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"
-                            >
-                              ⚠️ ${error}
-                            </div>
-                          `}
-                          <div class="flex justify-end gap-2">
-                            <button
-                              onClick=${() => {
-                                setShowAddWorkspace(false);
-                                setNewWorkspacePath("");
-                                setNewWorkspaceRunner("exec");
-                                setError("");
-                              }}
-                              class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              onClick=${addWorkspace}
-                              class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
-                            >
-                              Add
-                            </button>
-                          </div>
-                        </div>
-                      `}
-                      ${workspaces.length === 0
-                        ? html`
-                            <div class="text-center py-8 text-gray-500">
-                              <${FolderIcon}
-                                className="w-12 h-12 mx-auto mb-2 opacity-50"
-                              />
-                              <p>No workspaces configured.</p>
-                              <p class="text-xs mt-1">
-                                Click + to add a workspace.
-                              </p>
-                            </div>
-                          `
-                        : html`
-                            <div class="space-y-3">
-                              ${groupedWorkspaces.map(({ displayName: groupName, workspaces: wsGroup }) => {
-                                const isGrouped = wsGroup.length > 1;
-                                return html`
-                                  <div key=${groupName} class="space-y-1">
-                                    <div class="px-2 py-1 text-xs font-medium text-gray-400 flex items-center gap-2">
-                                      <span class="truncate">${groupName}</span>
-                                      <span class="text-gray-500">(${wsGroup.length})</span>
-                                    </div>
-                                    ${wsGroup.map((ws) => {
-                                      const wsKey = getWorkspaceKey(ws);
-                                      const isEditing = editingWorkspace === wsKey;
-                                      return html`
-                                        <div
-                                          key=${wsKey}
-                                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50 ${isEditing
-                                            ? ""
-                                            : "hover:bg-slate-700/30"} transition-colors group ml-4"
-                                        >
-                                          ${isEditing
-                                            ? html`
-                                                <!-- Editing mode: show name/path info and edit form -->
-                                                <div class="flex items-center gap-3">
-                                                  <${WorkspaceBadge}
-                                                    path=${ws.working_dir}
-                                                    customColor=${ws.color}
-                                                    customCode=${ws.code}
-                                                    customName=${ws.name}
-                                                    size="sm"
-                                                  />
-                                                  <div class="flex-1 min-w-0">
-                                                    <div
-                                                      class="font-medium text-sm flex items-center gap-2"
-                                                    >
-                                                      ${ws.name ||
-                                                      getBasename(ws.working_dir)}
-                                                      <span
-                                                        class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
-                                                      >
-                                                        ${ws.acp_server}
-                                                      </span>
-                                                    </div>
-                                                    <div
-                                                      class="text-xs text-gray-500 truncate"
-                                                      title=${ws.working_dir}
-                                                    >
-                                                      ${ws.working_dir}
-                                                    </div>
-                                                  </div>
-                                                </div>
-                                                <${WorkspaceEditForm}
-                                                  workspace=${ws}
-                                                  acpServers=${acpServers}
-                                                  allWorkspaces=${workspaces}
-                                                  supportedRunners=${supportedRunners}
-                                                  getWorkspaceVisualInfo=${getWorkspaceVisualInfo}
-                                                  getBasename=${getBasename}
-                                                  onSave=${(updates) =>
-                                                    updateWorkspace(wsKey, updates)}
-                                                  onCancel=${() =>
-                                                    setEditingWorkspace(null)}
-                                                />
-                                              `
-                                            : html`
-                                                <!-- Collapsed view: show info and action buttons -->
-                                                <div class="flex items-center gap-3">
-                                                  <${WorkspaceBadge}
-                                                    path=${ws.working_dir}
-                                                    customColor=${ws.color}
-                                                    customCode=${ws.code}
-                                                    customName=${ws.name}
-                                                    size="sm"
-                                                  />
-                                                  <div class="flex-1 min-w-0">
-                                                    <div
-                                                      class="font-medium text-sm flex items-center gap-2"
-                                                    >
-                                                      <span
-                                                        class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs"
-                                                        title="ACP Server"
-                                                      >
-                                                        ${ws.acp_server}
-                                                      </span>
-                                                    </div>
-                                                    <div
-                                                      class="text-xs text-gray-500 truncate"
-                                                      title=${ws.working_dir}
-                                                    >
-                                                      ${ws.working_dir}
-                                                    </div>
-                                                  </div>
-                                                  <!-- Action buttons (visible on hover) -->
-                                                  ${canDuplicateWorkspace(ws) &&
-                                                  html`
-                                                    <button
-                                                      onClick=${() =>
-                                                        duplicateWorkspace(wsKey)}
-                                                      class="p-1.5 text-gray-500 hover:text-green-400 hover:bg-green-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                      title="Duplicate workspace"
-                                                    >
-                                                      <${DuplicateIcon}
-                                                        className="w-4 h-4"
-                                                      />
-                                                    </button>
-                                                  `}
-                                                  <button
-                                                    onClick=${() =>
-                                                      setEditingWorkspace(wsKey)}
-                                                    class="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                    title="Edit workspace"
-                                                  >
-                                                    <${EditIcon} className="w-4 h-4" />
-                                                  </button>
-                                                  <button
-                                                    onClick=${() =>
-                                                      removeWorkspace(wsKey)}
-                                                    class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                                    title="Remove workspace"
-                                                  >
-                                                    <${TrashIcon}
-                                                      className="w-4 h-4"
-                                                    />
-                                                  </button>
-                                                </div>
-                                              `}
-                                        </div>
-                                      `;
-                                    })}
-                                  </div>
-                                `;
-                              })}
-                            </div>
-                          `}
-                    </div>
-                  `}
-
                   <!-- ACP Servers Tab -->
                   ${activeTab === "servers" &&
                   html`
@@ -2963,6 +2301,13 @@ export function SettingsDialog({
                           configure multiple servers and choose which one to use
                           for each workspace.
                         </p>
+                        <button
+                          onClick=${() => setShowDiscoverAgents(true)}
+                          class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors"
+                          title="Discover Agents"
+                        >
+                          <${SearchIcon} className="w-5 h-5" />
+                        </button>
                         <button
                           onClick=${() => setShowAddServer(!showAddServer)}
                           class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddServer
@@ -3007,21 +2352,22 @@ export function SettingsDialog({
                           <div>
                             <label class="block text-sm text-gray-400 mb-1"
                               >Type
-                              <span class="text-xs text-gray-500"
-                                >(optional)</span
-                              ></label
+                              <span class="text-xs text-red-400 ml-1">*</span></label
                             >
-                            <input
-                              type="text"
+                            <select
                               value=${newServerType}
-                              onInput=${(e) =>
+                              onChange=${(e) =>
                                 setNewServerType(e.target.value)}
-                              placeholder="e.g., auggie"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
+                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 ${!newServerType ? "ring-2 ring-amber-500/50" : "focus:ring-blue-500"}"
+                            >
+                              <option value="">-- Select agent type --</option>
+                              ${agentTypes.map(
+                                (t) => html`<option key=${t} value=${t}>${t}</option>`,
+                              )}
+                            </select>
                             <p class="text-xs text-gray-500 mt-1">
-                              Servers with the same type share prompts. If
-                              empty, name is used.
+                              Servers with the same type share prompts and
+                              agent configuration.
                             </p>
                           </div>
                           <div>
@@ -3104,6 +2450,7 @@ export function SettingsDialog({
                                       ? html`
                                           <${ServerEditForm}
                                             server=${srv}
+                                            agentTypes=${agentTypes}
                                             onSave=${(name, cmd, type, autoApprove, env, tags) =>
                                               updateServer(
                                                 srv.name,
@@ -3227,316 +2574,7 @@ export function SettingsDialog({
                     </div>
                   `}
 
-                  <!-- Prompts Tab -->
-                  ${activeTab === "prompts" &&
-                  html`
-                    <div class="space-y-4">
-                      <div class="flex items-center justify-between">
-                        <p class="text-gray-400 text-sm">
-                          Predefined prompts appear as quick-access buttons in
-                          the chat input.
-                        </p>
-                        <button
-                          onClick=${() => setShowAddPrompt(!showAddPrompt)}
-                          class="p-1.5 hover:bg-slate-700 rounded-lg transition-colors ${showAddPrompt
-                            ? "bg-slate-700"
-                            : ""}"
-                          title="Add Prompt"
-                        >
-                          <${PlusIcon} className="w-5 h-5" />
-                        </button>
-                      </div>
-
-                      <!-- Add New Prompt Form -->
-                      ${showAddPrompt &&
-                      html`
-                        <div
-                          class="p-4 bg-slate-800/50 rounded-lg border border-slate-700 space-y-3"
-                        >
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Button Label</label
-                            >
-                            <input
-                              type="text"
-                              value=${newPromptName}
-                              onInput=${(e) => setNewPromptName(e.target.value)}
-                              placeholder="e.g., Continue"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Prompt Text</label
-                            >
-                            <textarea
-                              value=${newPromptText}
-                              onInput=${(e) => setNewPromptText(e.target.value)}
-                              placeholder="e.g., Please continue with the current task."
-                              rows="3"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                            />
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Group (optional)</label
-                            >
-                            <input
-                              type="text"
-                              value=${newPromptGroup}
-                              onInput=${(e) => setNewPromptGroup(e.target.value)}
-                              placeholder="e.g., Tasks, Code Quality"
-                              class="w-full px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                          </div>
-                          <div>
-                            <label class="block text-sm text-gray-400 mb-1"
-                              >Background Color (optional)</label
-                            >
-                            <div class="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value=${newPromptColor || "#334155"}
-                                onInput=${(e) =>
-                                  setNewPromptColor(e.target.value)}
-                                class="w-10 h-10 rounded cursor-pointer border border-slate-600"
-                                title="Choose background color"
-                              />
-                              <input
-                                type="text"
-                                value=${newPromptColor}
-                                onInput=${(e) =>
-                                  setNewPromptColor(e.target.value)}
-                                placeholder="#E8F5E9"
-                                class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                              />
-                              ${newPromptColor &&
-                              html`
-                                <button
-                                  type="button"
-                                  onClick=${() => setNewPromptColor("")}
-                                  class="p-2 hover:bg-slate-700 rounded-lg transition-colors"
-                                  title="Clear color"
-                                >
-                                  <svg
-                                    class="w-4 h-4 text-gray-400"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      stroke-linecap="round"
-                                      stroke-linejoin="round"
-                                      stroke-width="2"
-                                      d="M6 18L18 6M6 6l12 12"
-                                    />
-                                  </svg>
-                                </button>
-                              `}
-                            </div>
-                          </div>
-                          <div class="flex justify-end gap-2">
-                            <button
-                              onClick=${() => {
-                                setShowAddPrompt(false);
-                                setNewPromptName("");
-                                setNewPromptText("");
-                                setNewPromptColor("");
-                                setNewPromptGroup("");
-                              }}
-                              class="px-3 py-1.5 text-sm hover:bg-slate-700 rounded-lg transition-colors"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              onClick=${() => {
-                                if (
-                                  newPromptName.trim() &&
-                                  newPromptText.trim()
-                                ) {
-                                  const newPrompt = {
-                                    name: newPromptName.trim(),
-                                    prompt: newPromptText.trim(),
-                                  };
-                                  if (newPromptColor) {
-                                    newPrompt.backgroundColor = newPromptColor;
-                                  }
-                                  if (newPromptGroup.trim()) {
-                                    newPrompt.group = newPromptGroup.trim();
-                                  }
-                                  setPrompts([...prompts, newPrompt]);
-                                  setNewPromptName("");
-                                  setNewPromptText("");
-                                  setNewPromptColor("");
-                                  setNewPromptGroup("");
-                                  setShowAddPrompt(false);
-                                }
-                              }}
-                              disabled=${!newPromptName.trim() ||
-                              !newPromptText.trim()}
-                              class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors disabled:opacity-50"
-                            >
-                              Add Prompt
-                            </button>
-                          </div>
-                        </div>
-                      `}
-
-                      <!-- Prompts List -->
-                      <div class="space-y-2">
-                        ${prompts.length === 0
-                          ? html`
-                              <div
-                                class="p-4 text-center text-gray-500 text-sm"
-                              >
-                                No prompts configured. Click + to add one.
-                              </div>
-                            `
-                          : sortedPrompts.map((prompt) => {
-                              // Find original index in the unsorted prompts array
-                              const originalIndex = prompts.findIndex(
-                                (p) =>
-                                  p.name === prompt.name &&
-                                  p.prompt === prompt.prompt,
-                              );
-                              return html`
-                                <div
-                                  key=${prompt.name}
-                                  class="p-3 bg-slate-700/20 rounded-lg border transition-all border-slate-600/50"
-                                >
-                                  ${editingPrompt === originalIndex
-                                    ? html`
-                                        <${PromptEditForm}
-                                          prompt=${prompt}
-                                          readOnly=${prompt.source === "file" ||
-                                          prompt.source === "workspace"}
-                                          onSave=${(name, text, bgColor, group) => {
-                                            const updated = [...prompts];
-                                            updated[originalIndex] = {
-                                              ...prompts[originalIndex],
-                                              name,
-                                              prompt: text,
-                                            };
-                                            if (bgColor) {
-                                              updated[originalIndex]
-                                                .backgroundColor = bgColor;
-                                            }
-                                            if (group && group.trim()) {
-                                              updated[originalIndex].group = group.trim();
-                                            } else {
-                                              delete updated[originalIndex].group;
-                                            }
-                                            setPrompts(updated);
-                                            setEditingPrompt(null);
-                                          }}
-                                          onCancel=${() =>
-                                            setEditingPrompt(null)}
-                                        />
-                                      `
-                                    : html`
-                                        <div
-                                          class="flex items-start justify-between gap-3"
-                                        >
-                                          <div
-                                            class="flex items-center gap-2 flex-1 min-w-0"
-                                          >
-                                            ${prompt.backgroundColor &&
-                                            html`
-                                              <div
-                                                class="w-4 h-4 rounded flex-shrink-0 border border-slate-500"
-                                                style=${{
-                                                  backgroundColor:
-                                                    prompt.backgroundColor,
-                                                }}
-                                                title=${prompt.backgroundColor}
-                                              />
-                                            `}
-                                            <div class="flex-1 min-w-0">
-                                              <div
-                                                class="font-medium text-sm text-blue-400 flex items-center gap-2"
-                                              >
-                                                ${prompt.name}
-                                                ${prompt.source === "file" &&
-                                                html`
-                                                  <span
-                                                    class="text-xs px-1.5 py-0.5 bg-slate-600 text-gray-300 rounded"
-                                                    title="Loaded from file (read-only)"
-                                                    >file</span
-                                                  >
-                                                `}
-                                                ${prompt.source ===
-                                                  "workspace" &&
-                                                html`
-                                                  <span
-                                                    class="text-xs px-1.5 py-0.5 bg-purple-600/50 text-purple-200 rounded"
-                                                    title="Defined in workspace .mittorc (read-only)"
-                                                    >workspace</span
-                                                  >
-                                                `}
-                                              </div>
-                                              <div
-                                                class="text-xs text-gray-500 mt-1 truncate"
-                                              >
-                                                ${prompt.prompt}
-                                              </div>
-                                            </div>
-                                          </div>
-                                          <div class="flex items-center gap-1">
-                                            ${prompt.source !== "file" &&
-                                            prompt.source !== "workspace"
-                                              ? html`
-                                                  <button
-                                                    onClick=${() =>
-                                                      setEditingPrompt(
-                                                        originalIndex,
-                                                      )}
-                                                    class="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                                                    title="Edit"
-                                                  >
-                                                    <${EditIcon}
-                                                      className="w-4 h-4 text-gray-400"
-                                                    />
-                                                  </button>
-                                                  <button
-                                                    onClick=${() => {
-                                                      const updated =
-                                                        prompts.filter(
-                                                          (_, i) =>
-                                                            i !== originalIndex,
-                                                        );
-                                                      setPrompts(updated);
-                                                    }}
-                                                    class="p-1.5 hover:bg-red-500/20 rounded transition-colors"
-                                                    title="Delete"
-                                                  >
-                                                    <${TrashIcon}
-                                                      className="w-4 h-4 text-gray-400 hover:text-red-400"
-                                                    />
-                                                  </button>
-                                                `
-                                              : html`
-                                                  <button
-                                                    onClick=${() =>
-                                                      setEditingPrompt(
-                                                        originalIndex,
-                                                      )}
-                                                    class="p-1.5 hover:bg-slate-700 rounded transition-colors"
-                                                    title="View"
-                                                  >
-                                                    <${EditIcon}
-                                                      className="w-4 h-4 text-gray-500"
-                                                    />
-                                                  </button>
-                                                `}
-                                          </div>
-                                        </div>
-                                      `}
-                                </div>
-                              `;
-                            })}
-                      </div>
-                    </div>
-                  `}
+                  <!-- (Prompts are managed per-workspace in WorkspacesDialog) -->
 
                   <!-- Runners Tab -->
                   ${activeTab === "runners" &&
@@ -3710,7 +2748,7 @@ export function SettingsDialog({
                                                   });
                                                 }}
                                                 class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                placeholder="$WORKSPACE"
+                                                placeholder="$MITTO_WORKING_DIR"
                                               />
                                               <button
                                                 type="button"
@@ -3842,7 +2880,7 @@ export function SettingsDialog({
                                                   });
                                                 }}
                                                 class="flex-1 px-3 py-1.5 bg-slate-700 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                placeholder="$WORKSPACE"
+                                                placeholder="$MITTO_WORKING_DIR"
                                               />
                                               <button
                                                 type="button"
@@ -4219,7 +3257,7 @@ export function SettingsDialog({
                             >${" "}
                             Per-workspace settings can enable auto-approve even
                             when this global setting is off. Configure
-                            workspace-specific settings in the Workspaces tab.
+                            workspace-specific settings in the Workspaces dialog.
                           </p>
                         </div>
 
@@ -4296,6 +3334,76 @@ export function SettingsDialog({
                               <option value="1m">After 1 month</option>
                               <option value="3m">After 3 months</option>
                             </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Conversation History Limits -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Conversation History
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Max messages per conversation
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Automatically prune oldest messages when a
+                                conversation exceeds this limit. Prevents
+                                excessive memory usage in long-running
+                                conversations. Set to 0 for unlimited.
+                              </div>
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100000"
+                              step="100"
+                              value=${maxMessagesPerSession}
+                              onChange=${(e) =>
+                                setMaxMessagesPerSession(
+                                  parseInt(e.target.value, 10) || 0,
+                                )}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm w-24 text-center focus:ring-blue-500 focus:border-blue-500"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Child Conversations Limit -->
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-gray-300">
+                          Child Conversations
+                        </h4>
+                        <div
+                          class="p-3 bg-slate-700/20 rounded-lg border border-slate-600/50"
+                        >
+                          <div class="flex items-center justify-between">
+                            <div>
+                              <div class="font-medium text-sm">
+                                Max Child Conversations
+                              </div>
+                              <div class="text-xs text-gray-500">
+                                Maximum number of child conversations an AI agent
+                                can spawn via MCP. Auto-created children are not
+                                counted. Set to 0 for unlimited.
+                              </div>
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value=${maxChildConversations}
+                              onChange=${(e) =>
+                                setMaxChildConversations(
+                                  parseInt(e.target.value, 10) || 0,
+                                )}
+                              class="bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm w-20 text-center focus:ring-blue-500 focus:border-blue-500"
+                            />
                           </div>
                         </div>
                       </div>
@@ -5119,14 +4227,14 @@ export function SettingsDialog({
                                   value=${badgeClickCommand}
                                   onInput=${(e) =>
                                     setBadgeClickCommand(e.target.value)}
-                                  placeholder="open \${WORKSPACE}"
+                                  placeholder="open \${MITTO_WORKING_DIR}"
                                   class="flex-1 px-3 py-2 bg-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                                 />
                               </div>
                               <p class="text-xs text-gray-500">
                                 Use${" "}
                                 <code class="bg-slate-600 px-1 rounded"
-                                  >\${WORKSPACE}</code
+                                  >\${MITTO_WORKING_DIR}</code
                                 >${" "} as placeholder for the workspace path
                               </p>
                             </div>
@@ -5191,6 +4299,23 @@ export function SettingsDialog({
           </div>
         </div>
       </div>
+
+      <!-- Agent Discovery Dialog (settings mode - returns agents to state without saving) -->
+      <${AgentDiscoveryDialog}
+        isOpen=${showDiscoverAgents}
+        mode="settings"
+        existingServers=${acpServers}
+        onClose=${() => setShowDiscoverAgents(false)}
+        onAgentsSelected=${(newAgents) => {
+          // Deduplicate by case-insensitive name before adding to state
+          const existingNames = new Set(acpServers.map((s) => s.name.toLowerCase()));
+          const toAdd = newAgents.filter((a) => !existingNames.has(a.name.toLowerCase()));
+          if (toAdd.length > 0) {
+            setAcpServers([...acpServers, ...toAdd]);
+          }
+          setShowDiscoverAgents(false);
+        }}
+      />
     </div>
   `;
 }

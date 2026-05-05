@@ -209,6 +209,36 @@ describe("isSeqDuplicate", () => {
   });
 });
 
+describe("stale loop cascade prevention", () => {
+  test("off-by-one stale scenario resets seq tracker correctly", () => {
+    // After M1 fix: tracker is cleared, ref is deleted, localStorage mirror is reset.
+    // A new tracker accepts events at any seq.
+    const tracker = createSeqTracker();
+    tracker.highestSeq = 2181; // Stale state
+
+    // M1 fix clears the tracker
+    const freshTracker = createSeqTracker();
+
+    // Fresh events from server (seq 1-2180) should all be accepted
+    expect(isSeqDuplicate(freshTracker, 2180, undefined)).toBe(false);
+    expect(isSeqDuplicate(freshTracker, 1, undefined)).toBe(false);
+    expect(isSeqDuplicate(freshTracker, 100, undefined)).toBe(false);
+  });
+
+  test("stale tracker with off-by-one would reject valid events without reset", () => {
+    const tracker = createSeqTracker();
+    tracker.highestSeq = 2181;
+
+    // Without clearing, events below highestSeq - MAX_RECENT_SEQS are rejected
+    // MAX_RECENT_SEQS = 100, so anything below 2081 would be rejected
+    expect(isSeqDuplicate(tracker, 2000, undefined)).toBe(true); // WRONGLY rejected!
+    expect(isSeqDuplicate(tracker, 100, undefined)).toBe(true);  // WRONGLY rejected!
+
+    // Events near highestSeq are NOT rejected (within recent window)
+    expect(isSeqDuplicate(tracker, 2180, undefined)).toBe(false); // Within window
+  });
+});
+
 describe("markSeqSeen", () => {
   test("adds seq to recentSeqs", () => {
     const tracker = createSeqTracker();

@@ -89,7 +89,7 @@ func TestHandlePutSessionUserData(t *testing.T) {
 
 	// Create a .mittorc file with user data schema in the workspace
 	mittorc := `
-conversations:
+metadata:
   user_data:
     - name: "JIRA ticket"
       type: url

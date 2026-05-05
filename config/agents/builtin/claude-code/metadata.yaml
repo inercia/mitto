@@ -1,0 +1,10 @@
+# Claude Code agent configuration
+name: "Claude Code"
+displayName: "Claude Code"
+acpId: "claude-code"
+description: "ACP wrapper for Anthropic's Claude"
+repository: "https://github.com/agentclientprotocol/claude-agent-acp"
+license: "proprietary"
+install:
+  method: "npx"
+  package: "@agentclientprotocol/claude-agent-acp"

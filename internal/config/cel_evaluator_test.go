@@ -74,6 +74,14 @@ func TestCELEvaluator_ExampleExpressions(t *testing.T) {
 		// tools.hasPattern("github_*") — only if GitHub tools available
 		{expr: `tools.hasPattern("github_*")`, ctx: childCtx, want: true},
 		{expr: `tools.hasPattern("github_*")`, ctx: rootCtx, want: false},
+
+		// children.mcp_count — only if enough MCP-created children
+		{expr: "children.mcp_count >= 2", ctx: &PromptEnabledContext{
+			Children: ChildrenContext{Count: 3, Exists: true, MCPCount: 2},
+		}, want: true},
+		{expr: "children.mcp_count >= 2", ctx: &PromptEnabledContext{
+			Children: ChildrenContext{Count: 2, Exists: true, MCPCount: 1},
+		}, want: false},
 	}
 
 	for _, tt := range tests {
@@ -119,6 +127,131 @@ func TestCELEvaluator_CompileCache(t *testing.T) {
 	}
 }
 
+// TestCELEvaluator_PermissionsContext validates permissions.* variables in CEL expressions.
+func TestCELEvaluator_PermissionsContext(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	withPerms := &PromptEnabledContext{
+		Session: SessionContext{ID: "sess-1", IsChild: false},
+		Permissions: PermissionsContext{
+			CanDoIntrospection:         true,
+			CanSendPrompt:              true,
+			CanPromptUser:              true,
+			CanStartConversation:       true,
+			CanInteractOtherWorkspaces: false,
+			AutoApprovePermissions:     false,
+		},
+	}
+
+	noPerms := &PromptEnabledContext{
+		Session:  SessionContext{ID: "sess-2", IsChild: true, ParentID: "p1"},
+		Children: ChildrenContext{Count: 1, Exists: true},
+		Permissions: PermissionsContext{
+			CanSendPrompt:        false,
+			CanStartConversation: false,
+		},
+	}
+
+	tests := []struct {
+		expr string
+		ctx  *PromptEnabledContext
+		want bool
+	}{
+		// Basic permissions flag tests
+		{expr: "permissions.canSendPrompt", ctx: withPerms, want: true},
+		{expr: "!permissions.canSendPrompt", ctx: noPerms, want: true},
+		{expr: "permissions.canPromptUser", ctx: withPerms, want: true},
+		{expr: "permissions.canDoIntrospection", ctx: withPerms, want: true},
+		{expr: "permissions.canStartConversation", ctx: withPerms, want: true},
+		{expr: "!permissions.canInteractOtherWorkspaces", ctx: withPerms, want: true},
+		{expr: "!permissions.autoApprovePermissions", ctx: withPerms, want: true},
+		// Combined expressions
+		{expr: "permissions.canStartConversation && !session.isChild", ctx: withPerms, want: true},
+		{expr: "permissions.canStartConversation && !session.isChild", ctx: noPerms, want: false},
+		{expr: "permissions.canSendPrompt && children.exists", ctx: noPerms, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, tt.ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCELConvenienceFunctions validates acp.matchesServerType, tools.hasAllPatterns,
+// and tools.hasAnyPattern CEL convenience functions.
+func TestCELConvenienceFunctions(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	augCtx := &PromptEnabledContext{
+		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+		Tools: ToolsContext{Available: true, Names: []string{"mitto_list", "jira_create_issue", "github_pr"}},
+	}
+	noACPCtx := &PromptEnabledContext{
+		ACP:   ACPContext{Name: "", Type: ""},
+		Tools: ToolsContext{Available: true, Names: []string{"mitto_list"}},
+	}
+	emptyToolsCtx := &PromptEnabledContext{
+		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
+		Tools: ToolsContext{Available: false, Names: nil},
+	}
+
+	tests := []struct {
+		name string
+		expr string
+		ctx  *PromptEnabledContext
+		want bool
+	}{
+		// acp.matchesServerType — matches type only, not display name
+		{"matchesServerType type match", `acp.matchesServerType("augment")`, augCtx, true},
+		{"matchesServerType display name does not match", `acp.matchesServerType("Auggie (Opus 4.6)")`, augCtx, false},
+		{"matchesServerType single no match", `acp.matchesServerType("claude-code")`, augCtx, false},
+		{"matchesServerType case insensitive", `acp.matchesServerType("AUGMENT")`, augCtx, true},
+		{"matchesServerType fail-open empty acp", `acp.matchesServerType("anything")`, noACPCtx, true},
+
+		// acp.matchesServerType — list arg
+		{"matchesServerType list one matches", `acp.matchesServerType(["augment", "claude-code"])`, augCtx, true},
+		{"matchesServerType list none match", `acp.matchesServerType(["cursor", "claude-code"])`, augCtx, false},
+		{"matchesServerType empty list", `acp.matchesServerType([])`, augCtx, false},
+
+		// tools.hasAllPatterns — single string arg
+		{"hasAllPatterns single satisfied", `tools.hasAllPatterns("mitto_*")`, augCtx, true},
+		{"hasAllPatterns single not satisfied", `tools.hasAllPatterns("slack_*")`, augCtx, false},
+
+		// tools.hasAllPatterns — list arg
+		{"hasAllPatterns list all satisfied", `tools.hasAllPatterns(["mitto_*", "jira_*"])`, augCtx, true},
+		{"hasAllPatterns list some unsatisfied", `tools.hasAllPatterns(["mitto_*", "slack_*"])`, augCtx, false},
+		{"hasAllPatterns empty tools", `tools.hasAllPatterns(["mitto_*"])`, emptyToolsCtx, false},
+
+		// tools.hasAnyPattern — list arg
+		{"hasAnyPattern list one satisfied", `tools.hasAnyPattern(["slack_*", "jira_*"])`, augCtx, true},
+		{"hasAnyPattern list none satisfied", `tools.hasAnyPattern(["slack_*", "notion_*"])`, augCtx, false},
+
+		// tools.hasAnyPattern — single string arg
+		{"hasAnyPattern single satisfied", `tools.hasAnyPattern("github_*")`, augCtx, true},
+		{"hasAnyPattern empty tools", `tools.hasAnyPattern(["mitto_*"])`, emptyToolsCtx, false},
+
+		// Combined expression
+		{"combined matchesServerType and hasAllPatterns",
+			`acp.matchesServerType("augment") && tools.hasAllPatterns(["mitto_*", "jira_*"])`,
+			augCtx, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, tt.ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestCELEvaluator_AllContextFields exercises every variable in the context.
 func TestCELEvaluator_AllContextFields(t *testing.T) {
 	e := newTestEvaluator(t)
@@ -127,8 +260,16 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS"},
 		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid"},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
-		Children:  ChildrenContext{Count: 3, Exists: true, Names: []string{"c1"}, ACPServers: []string{"a1"}},
+		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}},
 		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
+		Permissions: PermissionsContext{
+			CanDoIntrospection:         true,
+			CanSendPrompt:              true,
+			CanPromptUser:              true,
+			CanStartConversation:       true,
+			CanInteractOtherWorkspaces: true,
+			AutoApprovePermissions:     true,
+		},
 	}
 
 	exprs := []string{
@@ -149,11 +290,18 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`parent.acpServer == "pacp"`,
 		`children.count == 3`,
 		`children.exists`,
+		`children.mcp_count == 2`,
 		`"c1" in children.names`,
 		`"a1" in children.acpServers`,
 		`tools.available`,
 		`"tool_a" in tools.names`,
 		`tools.hasPattern("tool_*")`,
+		`permissions.canDoIntrospection`,
+		`permissions.canSendPrompt`,
+		`permissions.canPromptUser`,
+		`permissions.canStartConversation`,
+		`permissions.canInteractOtherWorkspaces`,
+		`permissions.autoApprovePermissions`,
 	}
 
 	for _, expr := range exprs {

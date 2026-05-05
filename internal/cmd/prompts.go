@@ -88,9 +88,17 @@ func runPromptsList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	prompts, err := config.LoadPromptsFromDir(promptsDir)
+	allPrompts, err := config.LoadPromptsFromDir(promptsDir)
 	if err != nil {
 		return fmt.Errorf("failed to load prompts: %w", err)
+	}
+
+	// Filter out disabled prompts for display
+	var prompts []*config.PromptFile
+	for _, p := range allPrompts {
+		if p.IsEnabled() {
+			prompts = append(prompts, p)
+		}
 	}
 
 	fmt.Printf("Prompts directory: %s\n\n", promptsDir)

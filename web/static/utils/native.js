@@ -44,11 +44,51 @@ export function openFileURL(url) {
 }
 
 /**
+ * Converts a file:// URL to a viewer page URL.
+ * This is used for backward compatibility with old session recordings that contain file:// links.
+ * @param {string} fileUrl - The file:// URL to convert
+ * @returns {string|null} The viewer URL, or null if conversion failed
+ */
+export function convertFileURLToViewer(fileUrl) {
+  if (!fileUrl || !fileUrl.startsWith("file://")) {
+    return null;
+  }
+
+  // Extract the absolute path from the file:// URL
+  const absolutePath = decodeURIComponent(fileUrl.slice(7)); // Remove "file://"
+
+  // Get the current workspace from the page state
+  const workspace = getCurrentWorkspace();
+  if (!workspace) {
+    console.warn("Cannot convert file URL to viewer: no workspace available");
+    return null;
+  }
+
+  // Calculate the relative path
+  let relativePath = absolutePath;
+  if (absolutePath.startsWith(workspace)) {
+    relativePath = absolutePath.slice(workspace.length);
+    if (relativePath.startsWith("/")) {
+      relativePath = relativePath.slice(1);
+    }
+  }
+
+  // Build the viewer URL
+  const apiPrefix = getAPIPrefix();
+  const workspaceUUID = getCurrentWorkspaceUUID();
+  if (!workspaceUUID) {
+    console.warn(
+      "Cannot convert file URL to viewer: no workspace UUID available",
+    );
+    return null;
+  }
+
+  return `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+}
+
+/**
  * Converts a file:// URL to an HTTP URL for viewing.
- * This is used in web browser mode where file:// URLs are blocked.
- * - Markdown files (.md, .markdown) are opened via /api/files with render=html
- *   so they are rendered as HTML for better viewing.
- * - Other files are opened in the syntax-highlighted viewer page.
+ * @deprecated Use convertFileURLToViewer instead for the unified viewer.
  * @param {string} fileUrl - The file:// URL to convert
  * @returns {string|null} The HTTP URL, or null if conversion failed
  */

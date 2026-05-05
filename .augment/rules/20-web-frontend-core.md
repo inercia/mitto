@@ -73,65 +73,65 @@ App
 | `savePendingPrompt()`          | Save prompt to localStorage before sending             |
 | `hasMarkdownContent(text)`     | Heuristic Markdown detection before rendering          |
 | `renderUserMarkdown(text)`     | Render with marked.js + DOMPurify (graceful fallback)  |
+| `looksLikeFilePath(s)`         | Detect if a string looks like a file/dir path          |
 
 **Design principle**: Keep `lib.js` functions pure (no side effects, no DOM) for testability.
 
-## User Message Markdown Rendering
+## Internal File Viewer URL Pattern
 
-```
-User text → hasMarkdownContent() → false → Plain text (<pre>)
-                                 → true → Length > 10K? → Plain text
-                                        → marked.parse() → DOMPurify → HTML display
-```
-
-## Memory Management
+When rendering a value that might be a file path, use `looksLikeFilePath()` and build a viewer URL:
 
 ```javascript
-export const MAX_MESSAGES = 500;
-const newMessages = limitMessages([...session.messages, message]);
+import { looksLikeFilePath } from "../lib.js";
+import { getAPIPrefix } from "../utils/index.js";
+
+if (value && looksLikeFilePath(value)) {
+  const apiPrefix = getAPIPrefix();
+  const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
+  const wsPath = window.mittoCurrentWorkspace || "";
+  const relativePath = value.replace(/^\.\//, "");
+  let viewerUrl = null;
+  if (workspaceUUID) {
+    viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+    if (wsPath) viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
+  }
+  // render <a class="file-link" href=${viewerUrl}>
+}
 ```
 
-## Context Menu Positioning Anti-Pattern
-
-### Don't: useState + useEffect for Position
+## Context Menu: Use useMemo Not useState+useEffect
 
 ```javascript
-// BAD: First render uses stale values, menu jumps
-const [adjustedPos, setAdjustedPos] = useState({ x, y });
-useEffect(() => {
-    // Runs AFTER paint - visible position jump
-    setAdjustedPos(calculateAdjustedPosition(x, y));
-}, [x, y]);
-```
+// BAD: runs after paint → visible position jump
+const [pos, setPos] = useState({x, y});
+useEffect(() => setPos(calculatePosition(x, y)), [x, y]);
 
-### Do: useMemo for Synchronous Calculation
-
-```javascript
-// GOOD: Position calculated during render, no jump
+// GOOD: synchronous during render, no jump
 const position = useMemo(() => {
-    if (!menuRef.current) return { x, y };
+    if (!menuRef.current) return {x, y};
     const rect = menuRef.current.getBoundingClientRect();
     let newX = x, newY = y;
     if (x + rect.width > window.innerWidth) newX = window.innerWidth - rect.width - 8;
     if (y + rect.height > window.innerHeight) newY = window.innerHeight - rect.height - 8;
-    return { x: newX, y: newY };
+    return {x: newX, y: newY};
 }, [x, y, menuRef.current]);
 ```
 
 ## Click Outside Detection
 
 ```javascript
-// Delay listener to avoid catching the opening click
 useEffect(() => {
     if (!isOpen) return;
-    const handler = (e) => {
-        if (ref.current && !ref.current.contains(e.target)) onClose();
-    };
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
     const tid = setTimeout(() => document.addEventListener("mousedown", handler), 10);
     return () => { clearTimeout(tid); document.removeEventListener("mousedown", handler); };
 }, [isOpen, onClose]);
 ```
 
-## Dual Validation (Frontend + Backend)
+## Adding New Session Capabilities to Frontend
 
-For destructive operations, validate in both layers. Frontend for immediate feedback, backend for security.
+1. **`useWebSocket.js`** — In `case "connected":` handler, add to session.info
+2. **`app.js`** — Pass as prop: `myCapability=${sessionInfo?.my_capability ?? false}`
+3. **Component** — Accept prop with default, use for conditional rendering
+
+

@@ -354,6 +354,10 @@ func (m *mockSessionObserver) OnUIPromptDismiss(requestID string, reason string)
 	// no-op for testing
 }
 
+func (m *mockSessionObserver) OnNotification(req UINotifyRequest) {
+	// no-op for testing
+}
+
 func (m *mockSessionObserver) getACPStoppedReasons() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1864,6 +1868,8 @@ func (o *trackingObserver) OnUIPromptDismiss(requestID string, reason string) {
 	}
 }
 
+func (o *trackingObserver) OnNotification(req UINotifyRequest) {}
+
 // =============================================================================
 // GetMaxAssignedSeq Tests
 // =============================================================================
@@ -3364,7 +3370,7 @@ func TestUIPrompt(t *testing.T) {
 		go func() {
 			<-promptCh // Wait for prompt to be sent
 			time.Sleep(50 * time.Millisecond)
-			bs.HandleUIPromptAnswer("test-request-001", "yes", "Deploy Now")
+			bs.HandleUIPromptAnswer("test-request-001", "yes", "Deploy Now", "")
 		}()
 
 		// Send a UI prompt
@@ -3525,7 +3531,7 @@ func TestUIPrompt(t *testing.T) {
 		}
 
 		// Now answer the second prompt
-		bs.HandleUIPromptAnswer("second-prompt", "yes", "Yes")
+		bs.HandleUIPromptAnswer("second-prompt", "yes", "Yes", "")
 
 		// Get response
 		var resp UIPromptResponse

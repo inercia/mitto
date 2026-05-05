@@ -18,6 +18,11 @@ const (
 	// This ensures content is displayed even if the agent stops mid-block.
 	// Set to 10 seconds to give the agent time to complete blocks normally.
 	inactivityFlushTimeout = 10 * time.Second
+	// inactivityFlushTimeoutInBlock is a longer inactivity timeout used when
+	// inside a structured block (code block, list, or table). These blocks
+	// can legitimately have pauses (e.g., agent thinking between rows) without
+	// meaning the block is finished. A longer timeout reduces premature flushes.
+	inactivityFlushTimeoutInBlock = 30 * time.Second
 	// maxBufferSize is the maximum buffer size before forcing a flush.
 	maxBufferSize = 4096
 	// maxCodeBlockBufferSize is the absolute maximum buffer size, even inside code blocks.
@@ -253,21 +258,29 @@ func (mb *MarkdownBuffer) Write(chunk string) {
 		mb.flushLocked()
 	})
 
-	// Set hard inactivity timeout that forces flush regardless of block state.
-	// This ensures content is displayed even if the agent stops mid-block.
-	// Only set if not already set (we don't want to keep resetting it).
-	if mb.inactivityTimer == nil {
-		mb.inactivityTimer = time.AfterFunc(inactivityFlushTimeout, func() {
-			mb.mu.Lock()
-			defer mb.mu.Unlock()
-			// Force flush if there's any content. This is the HARD timeout -
-			// it flushes regardless of being in a code block, list, or table.
-			// This prevents content from being lost if the agent stops mid-block.
-			if mb.buffer.Len() > 0 {
-				mb.flushLocked()
-			}
-		})
+	// Reset hard inactivity timeout on every write.
+	// This ensures the timeout measures actual inactivity (no new data),
+	// not elapsed time since the first chunk. A table or code block that
+	// takes >10s to stream but receives data continuously will not be
+	// force-flushed mid-block.
+	//
+	// Use a longer timeout when inside structured blocks (tables, lists,
+	// code blocks) since these can have legitimate pauses without meaning
+	// the block is finished.
+	timeout := inactivityFlushTimeout
+	if mb.inCodeBlock || mb.inList || mb.inTable {
+		timeout = inactivityFlushTimeoutInBlock
 	}
+	if mb.inactivityTimer != nil {
+		mb.inactivityTimer.Stop()
+	}
+	mb.inactivityTimer = time.AfterFunc(timeout, func() {
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		if mb.buffer.Len() > 0 {
+			mb.flushLocked()
+		}
+	})
 }
 
 // getLastLine returns the last line in the buffer (after last \n or from start).

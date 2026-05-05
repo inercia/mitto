@@ -1,0 +1,12 @@
+# Gemini CLI agent configuration
+name: "Gemini CLI"
+displayName: "Gemini CLI"
+acpId: "gemini"
+description: "Google's official CLI for Gemini"
+website: "https://geminicli.com"
+repository: "https://github.com/google-gemini/gemini-cli"
+license: "Apache-2.0"
+install:
+  method: "npx"
+  package: "@google/gemini-cli"
+  args: ["--acp"]

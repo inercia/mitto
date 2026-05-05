@@ -9,8 +9,9 @@ import (
 
 // mockProcessProvider is a mock implementation of ProcessProvider for testing.
 type mockProcessProvider struct {
-	promptFunc func(ctx context.Context, workspaceUUID, purpose, message string) (string, error)
-	closeFunc  func(workspaceUUID string) error
+	promptFunc      func(ctx context.Context, workspaceUUID, purpose, message string) (string, error)
+	promptAsyncFunc func(ctx context.Context, workspaceUUID, purpose, message string) error
+	closeFunc       func(workspaceUUID string) error
 }
 
 func (m *mockProcessProvider) PromptAuxiliary(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
@@ -18,6 +19,13 @@ func (m *mockProcessProvider) PromptAuxiliary(ctx context.Context, workspaceUUID
 		return m.promptFunc(ctx, workspaceUUID, purpose, message)
 	}
 	return "", errors.New("not implemented")
+}
+
+func (m *mockProcessProvider) PromptAuxiliaryAsync(ctx context.Context, workspaceUUID, purpose, message string) error {
+	if m.promptAsyncFunc != nil {
+		return m.promptAsyncFunc(ctx, workspaceUUID, purpose, message)
+	}
+	return nil
 }
 
 func (m *mockProcessProvider) CloseWorkspaceAuxiliary(workspaceUUID string) error {

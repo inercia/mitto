@@ -19,6 +19,7 @@ var (
 	webPortExternal int
 	webStaticDir    string
 	webAccessLog    string
+	workspacesFile  string
 )
 
 // webCmd represents the web command
@@ -37,7 +38,8 @@ Example:
   mitto web --port 3000                  # Start on custom port
   mitto web --port 0                     # Use random port (auto-selected)
   mitto web --port-external 8443         # Set external access port
-  mitto web --static-dir ./web/static    # Serve from filesystem (for development)`,
+  mitto web --static-dir ./web/static    # Serve from filesystem (for development)
+  mitto web --workspaces config/workspaces.yaml  # Load workspaces from file`,
 	RunE: runWeb,
 }
 
@@ -48,6 +50,7 @@ func init() {
 	webCmd.Flags().IntVar(&webPortExternal, "port-external", 0, "HTTP server port for external access when enabled (0.0.0.0). Use 0 for random port")
 	webCmd.Flags().StringVar(&webStaticDir, "static-dir", "", "Serve static files from this directory instead of embedded assets (for development)")
 	webCmd.Flags().StringVar(&webAccessLog, "access-log", "", "Path to security access log file (logs auth events, unauthorized access, etc.)")
+	webCmd.Flags().StringVar(&workspacesFile, "workspaces", "", "Path to workspaces file (JSON or YAML)")
 }
 
 func runWeb(cmd *cobra.Command, args []string) error {
@@ -60,20 +63,40 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// Determine if workspaces came from CLI flags
 	fromCLI := len(dirFlags) > 0
 
-	// If no CLI workspaces, try to load from workspaces.json
+	// workspaceSource tracks where workspaces were loaded from (for startup log)
+	var workspaceSource string
+
+	// Three-way priority for workspace loading:
+	// 1. --dir flags (highest priority)
+	// 2. --workspaces file
+	// 3. workspaces.json (default)
 	var webWorkspaces []config.WorkspaceSettings
 	if fromCLI {
 		// Convert CLI workspaces to config.WorkspaceSettings
+		if workspacesFile != "" {
+			slog.Warn("Both --dir and --workspaces specified; --dir takes precedence", "workspaces_file", workspacesFile)
+		}
 		webWorkspaces = make([]config.WorkspaceSettings, len(cliWorkspaces))
 		for i, ws := range cliWorkspaces {
 			webWorkspaces[i] = config.WorkspaceSettings{
 				ACPServer:  ws.ServerName,
 				ACPCommand: ws.Server.Command,
+				ACPEnv:     ws.Server.Env,
 				WorkingDir: ws.Dir,
 			}
 			// Ensure workspace has a UUID for auxiliary sessions
 			webWorkspaces[i].EnsureUUID()
 		}
+		workspaceSource = "CLI flags (changes not persisted)"
+	} else if workspacesFile != "" {
+		// Load from explicit workspaces file
+		fileWorkspaces, err := config.LoadWorkspacesFromFile(workspacesFile)
+		if err != nil {
+			return fmt.Errorf("failed to load workspaces from file: %w", err)
+		}
+		webWorkspaces = fileWorkspaces
+		fromCLI = true
+		workspaceSource = fmt.Sprintf("workspaces file %s (changes not persisted)", workspacesFile)
 	} else {
 		// Try to load from workspaces.json
 		savedWorkspaces, err := config.LoadWorkspaces()
@@ -86,6 +109,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		}
 		// If no saved workspaces, webWorkspaces will be empty
 		// The frontend will show the Settings dialog
+		workspaceSource = "workspaces.json (changes will be saved)"
 	}
 
 	// Determine local port: CLI flag > config > default (8080)
@@ -124,11 +148,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 			fmt.Printf("     - %s: %s\n", ws.ACPServer, ws.WorkingDir)
 		}
 	}
-	if fromCLI {
-		fmt.Printf("   Source: CLI flags (changes not persisted)\n")
-	} else {
-		fmt.Printf("   Source: workspaces.json (changes will be saved)\n")
-	}
+	fmt.Printf("   Source: %s\n", workspaceSource)
 	if staticDir != "" {
 		fmt.Printf("   Static files: %s (hot-reload enabled)\n", staticDir)
 	}
@@ -237,7 +257,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	if cfg != nil {
 		// Set up failure callback to broadcast to UI clients
 		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
-			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 		})
 		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
@@ -263,13 +283,18 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// Start health monitor if external address is configured
 	var healthMonitor *hooks.HealthMonitor
 	if cfg != nil && cfg.Web.Hooks.ExternalAddress != "" && upHook != nil {
+		apiPrefix := config.DefaultAPIPrefix
+		if cfg.Web.APIPrefix != "" {
+			apiPrefix = cfg.Web.APIPrefix
+		}
 		healthMonitor = hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
-			Address:  cfg.Web.Hooks.ExternalAddress,
-			UpHook:   cfg.Web.Hooks.Up,
-			DownHook: cfg.Web.Hooks.Down,
-			Port:     hookPort,
+			Address:   cfg.Web.Hooks.ExternalAddress,
+			APIPrefix: apiPrefix,
+			UpHook:    cfg.Web.Hooks.Up,
+			DownHook:  cfg.Web.Hooks.Down,
+			Port:      hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error)
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
 			},
 			OnRestart: func(attempt int) {
 				srv.BroadcastHookRestarted(attempt)
@@ -362,6 +387,11 @@ func resolveAccessLogConfig(cfg *config.Config, cliPath string) web.AccessLogCon
 		}
 		if alCfg.MaxBackups > 0 {
 			accessLogConfig.MaxBackups = alCfg.MaxBackups
+		}
+
+		// Propagate LogAll from config (default: false for CLI)
+		if alCfg.LogAll != nil {
+			accessLogConfig.LogAll = *alCfg.LogAll
 		}
 
 		if accessLogConfig.Path != "" {

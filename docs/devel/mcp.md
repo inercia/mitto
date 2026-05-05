@@ -148,6 +148,32 @@ Returns runtime information about the Mitto instance:
 | `log_files`     | Paths to log files                        |
 | `config_files`  | Paths to configuration files              |
 
+#### `mitto_workspace_list`
+
+Lists all configured workspaces with settings and metadata from `.mittorc` files.
+
+**Optional parameter:**
+
+| Parameter | Type   | Description                                                   |
+| --------- | ------ | ------------------------------------------------------------- |
+| `filter`  | string | Filter workspaces: `"active"`, `"archived"`, or omit for all |
+
+**Filter values:**
+
+- **`"active"`** — Only workspaces with at least one non-archived conversation
+- **`"archived"`** — Only workspaces where all conversations are archived (excludes workspaces with zero conversations)
+- **omitted** — All workspaces (default)
+
+**Returns per workspace:**
+
+| Field         | Description                                                              |
+| ------------- | ------------------------------------------------------------------------ |
+| `uuid`        | Workspace UUID                                                           |
+| `name`        | Display name (may be empty)                                              |
+| `working_dir` | Absolute path to workspace directory                                     |
+| `acp_server`  | ACP server name                                                          |
+| `metadata`    | Optional `.mittorc` metadata (description, URL, group, user data schema) |
+
 ### Session-Scoped Tools (Require session_id parameter)
 
 These tools operate on a specific conversation and require a `session_id` parameter:
@@ -173,61 +199,136 @@ Returns:
 | `message_count` | Number of messages    |
 | `status`        | Session status        |
 
+#### `mitto_conversation_get`
+
+Get detailed properties of a specific conversation by ID. Returns metadata, status, and runtime info including whether the agent is currently replying.
+
+| Parameter         | Type   | Required | Description                                                                                                                                                              |
+| ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                             |
+| `conversation_id` | string | Yes      | Target conversation ID to query                                                                                                                                          |
+| `workspace`       | string | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
+
+Returns (same `ConversationDetails` as `mitto_conversation_get_current`):
+
+| Field               | Description                                   |
+| ------------------- | --------------------------------------------- |
+| `session_id`        | Session identifier                            |
+| `title`             | Session title                                 |
+| `description`       | Session description                           |
+| `acp_server`        | ACP server name                               |
+| `working_dir`       | Working directory                             |
+| `created_at`        | Creation timestamp (ISO 8601)                 |
+| `updated_at`        | Last update timestamp (ISO 8601)              |
+| `message_count`     | Number of messages                            |
+| `status`            | Session status                                |
+| `archived`          | Whether session is archived                   |
+| `session_folder`    | Full path to session directory                |
+| `is_running`        | Whether session is currently active           |
+| `is_prompting`      | Whether agent is processing a prompt          |
+| `is_locked`         | Whether session is locked                     |
+| `last_seq`          | Last sequence number                          |
+| `parent_session_id` | Parent session ID (if this is a child)        |
+
 #### `mitto_conversation_send_prompt`
 
 Send a prompt to another conversation's queue. Requires `can_send_prompt` flag on the source session.
 
-| Parameter         | Type   | Required | Description                      |
-| ----------------- | ------ | -------- | -------------------------------- |
-| `session_id`      | string | Yes      | Source session ID (your session) |
-| `conversation_id` | string | Yes      | Target conversation ID           |
-| `prompt`          | string | Yes      | The prompt text to send          |
+| Parameter         | Type   | Required | Description                                                                                                                                                              |
+| ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                             |
+| `conversation_id` | string | Yes      | Target conversation ID                                                                                                                                                   |
+| `prompt`          | string | Yes      | The prompt text to send                                                                                                                                                  |
+| `workspace`       | string | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
 
-#### `mitto_ui_ask_yes_no`
+#### `mitto_conversation_wait`
 
-Present a yes/no question to the user. Requires `can_prompt_user` flag.
+Wait until something happens in a conversation. Currently supports `agent_responded` — blocks until the agent finishes responding. Returns immediately if the condition is already met (e.g., agent is not currently responding).
 
-| Parameter         | Type   | Required | Description                  |
-| ----------------- | ------ | -------- | ---------------------------- |
-| `session_id`      | string | Yes      | Session to display prompt in |
-| `question`        | string | Yes      | The question to ask          |
-| `yes_label`       | string | No       | Custom "Yes" button label    |
-| `no_label`        | string | No       | Custom "No" button label     |
-| `timeout_seconds` | int    | No       | Timeout (default: 300)       |
+| Parameter         | Type   | Required | Description                                                                                                                                                              |
+| ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `self_id`         | string | Yes      | YOUR session ID (the caller)                                                                                                                                             |
+| `conversation_id` | string | Yes      | Target conversation to wait on                                                                                                                                           |
+| `what`            | string | Yes      | Condition to wait for: `"agent_responded"`                                                                                                                               |
+| `timeout_seconds` | int    | No       | Timeout in seconds (default: 600)                                                                                                                                        |
+| `workspace`       | string | No       | Optional workspace UUID. When provided, validates the target conversation belongs to the specified workspace and triggers user confirmation for cross-workspace access. |
 
-#### `mitto_ui_options_buttons`
+Returns:
 
-Present multiple options as buttons. Requires `can_prompt_user` flag. Max 4 options.
+| Field       | Description                                            |
+| ----------- | ------------------------------------------------------ |
+| `success`   | Whether the wait completed successfully                |
+| `what`      | The condition that was waited on                       |
+| `timed_out` | true if the condition was not met within the timeout   |
+| `error`     | Error message if the operation failed                  |
 
-| Parameter         | Type     | Required | Description                   |
-| ----------------- | -------- | -------- | ----------------------------- |
-| `session_id`      | string   | Yes      | Session to display prompt in  |
-| `options`         | string[] | Yes      | List of option labels (max 4) |
-| `question`        | string   | No       | Question text                 |
-| `timeout_seconds` | int      | No       | Timeout (default: 300)        |
+#### `mitto_ui_options`
 
-#### `mitto_ui_options_combo`
+Present an options menu to the user. Requires `can_prompt_user` flag. Supports up to 20 options,
+optional per-option descriptions, and an optional free-text input field.
 
-Present a dropdown/combo box. Requires `can_prompt_user` flag. Max 10 options.
+| Parameter              | Type     | Required | Description                                        |
+| ---------------------- | -------- | -------- | -------------------------------------------------- |
+| `self_id`              | string   | Yes      | YOUR session ID (the caller)                       |
+| `question`             | string   | No       | The question to display (default: "Please select") |
+| `options`              | object[] | No       | List of `{label, description}` objects (max 20)    |
+| `allow_free_text`      | bool     | No       | Allow user to type a custom response               |
+| `free_text_placeholder`| string   | No       | Placeholder text for the free-text input           |
+| `timeout_seconds`      | int      | No       | Timeout in seconds (default: 300)                  |
 
-| Parameter         | Type     | Required | Description                    |
-| ----------------- | -------- | -------- | ------------------------------ |
-| `session_id`      | string   | Yes      | Session to display prompt in   |
-| `options`         | string[] | Yes      | List of option labels (max 10) |
-| `question`        | string   | No       | Question text                  |
-| `timeout_seconds` | int      | No       | Timeout (default: 300)         |
+Returns:
+
+| Field      | Description                                      |
+| ---------- | ------------------------------------------------ |
+| `selected` | Label of the selected option (if option chosen)  |
+| `index`    | 0-based index of selected option (-1 if none)    |
+| `free_text`| User-typed text (if free text was entered)       |
+| `timed_out`| true if no response within timeout               |
+
+#### `mitto_ui_form`
+
+Present a sanitized HTML form to the user and wait for submission. Requires `can_prompt_user` flag.
+
+The HTML is strictly sanitized to allow only form-related elements (input, select, textarea, label,
+fieldset, legend, div, span, p, br, hr, headings). Scripts, styles, event handlers, images, links,
+iframes, and all other elements are stripped. Submit/cancel buttons are added automatically.
+Form values are returned as key-value pairs keyed by each element's `name` attribute.
+
+| Parameter         | Type   | Required | Description                                         |
+| ----------------- | ------ | -------- | --------------------------------------------------- |
+| `self_id`         | string | Yes      | YOUR session ID (the caller)                        |
+| `title`           | string | Yes      | Dialog title shown above the form                   |
+| `html`            | string | Yes      | HTML form content (sanitized before rendering)      |
+| `timeout_seconds` | int    | No       | Timeout in seconds (default: 600)                   |
+
+Returns:
+
+| Field       | Description                                                |
+| ----------- | ---------------------------------------------------------- |
+| `submitted` | true if the user submitted the form                        |
+| `cancelled` | true if the user clicked Cancel                            |
+| `timed_out` | true if no response within timeout                         |
+| `values`    | Object of field name → value pairs (when submitted)        |
+
+Supported input types: `text`, `number`, `email`, `url`, `tel`, `password`, `date`, `time`,
+`checkbox`, `radio`, `hidden`, `color`, `range`. Checkbox values are returned as `"true"`/`"false"`.
+Radio groups return the value of the selected option.
 
 #### `mitto_conversation_new`
 
-Create a new conversation in the same workspace as the calling session. Requires `can_start_conversation` flag.
+Create a new conversation. By default creates it in the same workspace as the calling session. Requires `can_start_conversation` flag.
 
 The new conversation inherits the workspace configuration (ACP server, working directory) from the calling session. This is useful for agents that want to spawn sub-conversations for parallel work or delegate tasks.
 
-| Parameter        | Type   | Required | Description                                  |
-| ---------------- | ------ | -------- | -------------------------------------------- |
-| `session_id`     | string | Yes      | Source session ID (your session)             |
-| `title`          | string | No       | Title for the new conversation               |
-| `initial_prompt` | string | No       | Initial message to queue for the new session |
+| Parameter        | Type   | Required | Description                                                                                                                                                                              |
+| ---------------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `self_id`        | string | Yes      | YOUR session ID (the caller)                                                                                                                                                             |
+| `title`          | string | No       | Title for the new conversation                                                                                                                                                           |
+| `initial_prompt` | string | No       | Initial message to queue for the new session                                                                                                                                             |
+| `acp_server`     | string | No       | Optional ACP server name to use (must have a workspace configured for the current folder). Cannot be used together with `workspace`.                                                     |
+| `workspace`      | string | No       | Optional workspace UUID. Creates the conversation in the specified workspace instead of the caller's. Cannot be used with `acp_server`. Requires user confirmation for cross-workspace operations. |
+
+**When `workspace` is specified**, the new conversation uses the target workspace's ACP server and working directory. The `acp_server` parameter cannot be used simultaneously — the workspace determines the ACP server.
 
 Returns (embeds `ConversationDetails`):
 
@@ -282,36 +383,43 @@ Returns:
 - Remove failed children before retrying with new instructions
 - Tidy up the conversation list after a multi-iteration workflow completes
 
-#### `mitto_conversation_userdata_set`
+#### `mitto_conversation_update`
 
-Set a user data attribute in the calling conversation. The key must be defined in the workspace's user data schema (`.mittorc` under `conversations.user_data`).
+Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction).
 
-| Parameter    | Type   | Required | Description                                  |
-| ------------ | ------ | -------- | -------------------------------------------- |
-| `session_id` | string | Yes      | Source session ID (your session)             |
-| `key`        | string | Yes      | Attribute name (must be in schema)           |
-| `value`      | string | Yes      | Value to set (validated against schema type) |
+| Parameter         | Type                            | Required | Description                                                    |
+| ----------------- | ------------------------------- | -------- | -------------------------------------------------------------- |
+| `self_id`         | string                          | Yes      | Your session ID                                                |
+| `conversation_id` | string                          | Yes      | Target conversation to update                                  |
+| `name`            | string                          | No       | New conversation title (omit to leave unchanged)               |
+| `user_data`       | `[{name, value}]`               | No       | User data attributes to set (validated against workspace schema) |
+| `user_data_merge` | bool                            | No       | If `true` (default), merge with existing attributes; if `false`, replace all |
 
 Returns:
 
-| Field     | Description                                |
-| --------- | ------------------------------------------ |
-| `success` | Whether the attribute was set              |
-| `key`     | The key that was set                       |
-| `value`   | The value that was set                     |
-| `error`   | Error message if validation/setting failed |
+| Field             | Description                                     |
+| ----------------- | ----------------------------------------------- |
+| `success`         | Whether the update succeeded                    |
+| `conversation_id` | The updated conversation's ID                   |
+| `updated`         | List of property names that were changed         |
+| `name`            | Current name after update                       |
+| `user_data`       | Current user data attributes after update       |
+| `error`           | Error message if update failed                  |
 
-**Schema validation:**
+**User data validation:**
 
-- If no schema is defined for the workspace, the tool fails
-- If the key is not in the schema, the tool fails
-- If the value doesn't match the field type (e.g., invalid URL for `url` type), the tool fails
+- Values are validated against the workspace schema (`.mittorc` under `metadata.user_data`)
+- If the workspace has no schema, any user data update is rejected
+- If a field name is not in the schema, the update is rejected
+- If a value doesn't match the field type (e.g., invalid URL for `url` type), the update is rejected
+
+**Merge behavior (default):** When `user_data_merge` is `true` (or omitted), existing attributes are preserved and only the specified attributes are added or updated. When `false`, the full attribute set is replaced.
 
 **Example use cases:**
 
-- Update ticket/issue references from within the conversation
-- Set metadata like priority or status
-- Store references to external resources (URLs)
+- Rename a conversation from within an agent
+- Set or update JIRA ticket, sprint, or branch metadata from within a conversation
+- Processors that auto-detect user data values from conversation messages
 
 #### `mitto_children_tasks_wait`
 
@@ -412,6 +520,144 @@ Returns:
 - If the child reports multiple times, each report overwrites the previous one
 - Sessions without a `parent_session_id` cannot use this tool
 
+#### `mitto_conversation_history`
+
+Get and search through the conversation history of a session. Returns events with powerful filtering. Useful for recalling past decisions, finding specific tool calls, searching for errors, or reviewing what happened. Defaults to your own conversation if `conversation_id` is omitted.
+
+| Parameter         | Type     | Required | Description                                                         |
+| ----------------- | -------- | -------- | ------------------------------------------------------------------- |
+| `self_id`         | string   | Yes      | YOUR session ID (the caller)                                        |
+| `conversation_id` | string   | No       | Target conversation (defaults to self if omitted)                   |
+| `event_types`     | string[] | No       | Filter by event types (omit for all). Valid: `user_prompt`, `agent_message`, `agent_thought`, `tool_call`, `tool_call_update`, `plan`, `permission`, `file_read`, `file_write`, `error`, `session_start`, `session_end` |
+| `text_contains`   | string   | No       | Only events whose text content contains this substring (case-insensitive) |
+| `text_excludes`   | string   | No       | Exclude events whose text content contains this substring (case-insensitive) |
+| `after_seq`       | int      | No       | Only events with seq > this value                                   |
+| `before_seq`      | int      | No       | Only events with seq < this value                                   |
+| `last_n`          | int      | No       | Return last N matching events (default: 50, max: 200)               |
+| `offset`          | int      | No       | Skip this many matching events from the end (for backward pagination) |
+| `include_data`    | bool     | No       | Include full event data in results (default: true)                  |
+| `tool_name`       | string   | No       | For `tool_call` events: filter by tool name/title substring         |
+
+Returns:
+
+| Field             | Description                                             |
+| ----------------- | ------------------------------------------------------- |
+| `success`         | Whether the operation succeeded                         |
+| `conversation_id` | The conversation whose history was queried              |
+| `total_events`    | Total events in session (before filtering)              |
+| `returned_events` | Number of events returned                               |
+| `events`          | Array of `ConversationHistoryEvent` (see below)         |
+| `has_more`        | Whether there are more events before the returned range |
+| `error`           | Error message if the operation failed                   |
+
+Each event contains:
+
+| Field       | Description                                                |
+| ----------- | ---------------------------------------------------------- |
+| `seq`       | Sequence number                                            |
+| `type`      | Event type string                                          |
+| `timestamp` | ISO 8601 timestamp                                         |
+| `summary`   | Human-readable one-liner (always present, max 150 chars)   |
+| `data`      | Full event data (omitted when `include_data` is false)     |
+
+**Text search** covers the relevant field for each event type: message text for prompts, HTML content for agent messages, thought text, tool call titles and raw input/output, plan entry content, permission titles, file paths, error messages, etc.
+
+**Data truncation**: Long string fields in `data` are truncated to 2048 characters to keep response sizes manageable.
+
+**Example use cases:**
+- Search for all tool calls that read a specific file: `event_types: ["tool_call"], text_contains: "auth.go"`
+- Find all errors in a session: `event_types: ["error"]`
+- Get the last 10 user prompts: `event_types: ["user_prompt"], last_n: 10`
+- Browse history page by page: `last_n: 20, offset: 0` then `last_n: 20, offset: 20`
+
+#### `mitto_prompt_list`
+
+List all prompts available in a workspace, returning basic metadata for each but NOT the full prompt text. This reflects the merged/effective prompt list from all sources (global files, settings, ACP-specific, workspace directory, workspace inline).
+
+| Parameter   | Type   | Required | Description                                          |
+| ----------- | ------ | -------- | ---------------------------------------------------- |
+| `self_id`   | string | Yes      | YOUR session ID (the caller)                         |
+| `workspace` | string | No       | Optional workspace UUID for cross-workspace access   |
+
+Returns:
+
+| Field        | Description                                    |
+| ------------ | ---------------------------------------------- |
+| `success`    | Whether the operation succeeded                |
+| `prompts`    | Array of prompt metadata (see below)           |
+| `working_dir`| Working directory the prompts were loaded from |
+| `error`      | Error message if the operation failed          |
+
+Each prompt in `prompts` contains:
+
+| Field              | Description                                          |
+| ------------------ | ---------------------------------------------------- |
+| `name`             | Prompt display name                                  |
+| `description`      | Optional description                                 |
+| `group`            | Optional group name for organizing prompts           |
+| `background_color` | Optional hex color for the prompt button             |
+| `source`           | Origin: "file", "settings", "workspace", "builtin"  |
+| `enabled`          | Whether enabled (null = enabled, false = disabled)   |
+
+#### `mitto_prompt_get`
+
+Get full details for a specific prompt in a workspace, including the complete prompt text and all metadata. Prompt name matching is case-insensitive.
+
+| Parameter   | Type   | Required | Description                                          |
+| ----------- | ------ | -------- | ---------------------------------------------------- |
+| `self_id`   | string | Yes      | YOUR session ID (the caller)                         |
+| `name`      | string | Yes      | Prompt name (case-insensitive match)                 |
+| `workspace` | string | No       | Optional workspace UUID for cross-workspace access   |
+
+Returns:
+
+| Field     | Description                                    |
+| --------- | ---------------------------------------------- |
+| `success` | Whether the operation succeeded                |
+| `prompt`  | Full prompt details (see below)                |
+| `error`   | Error message if the operation failed          |
+
+The `prompt` object contains:
+
+| Field              | Description                                          |
+| ------------------ | ---------------------------------------------------- |
+| `name`             | Prompt display name                                  |
+| `prompt`           | Full prompt text                                     |
+| `description`      | Optional description                                 |
+| `group`            | Optional group name                                  |
+| `background_color` | Optional hex color                                   |
+| `source`           | Origin: "file", "settings", "workspace", "builtin"  |
+| `enabled`          | Whether enabled (null = enabled, false = disabled)   |
+
+#### `mitto_prompt_update`
+
+Update a prompt's details including its full text, description, group, color, and enabled status. If the prompt originates from a global source, the update is saved to the workspace-local `.mitto/prompts/` folder, creating a workspace-level override without modifying the global source. Can also create new prompts.
+
+| Parameter          | Type   | Required | Description                                     |
+| ------------------ | ------ | -------- | ----------------------------------------------- |
+| `self_id`          | string | Yes      | YOUR session ID (the caller)                    |
+| `name`             | string | Yes      | Prompt name to update or create                 |
+| `workspace`        | string | No       | Optional workspace UUID                         |
+| `prompt`           | string | No       | New prompt text                                 |
+| `description`      | string | No       | New description                                 |
+| `background_color` | string | No       | New background color (hex)                      |
+| `group`            | string | No       | New group name                                  |
+| `enabled`          | bool   | No       | Enable/disable the prompt                       |
+
+**Key behavior:**
+- If only `enabled` is provided: Uses optimized toggle logic (updates `.mitto/prompts/` frontmatter or `.mittorc`)
+- If content/metadata fields are provided: Writes a full prompt file to `.mitto/prompts/<slug>.md`
+- For global prompts: Creates a workspace-local override (does NOT modify the global source)
+- For new prompts: Creates them in `.mitto/prompts/`
+
+Returns:
+
+| Field     | Description                              |
+| --------- | ---------------------------------------- |
+| `success` | Whether the update succeeded             |
+| `path`    | File path of the saved/updated prompt    |
+| `error`   | Error message if the operation failed    |
+
 ### Permission Flags
 
 Session-scoped tools check permissions at runtime:
@@ -420,11 +666,13 @@ Session-scoped tools check permissions at runtime:
 | ------------------------ | --------------------------------------------------------------------------- |
 | `can_do_introspection`   | (None currently - for future tools)                                         |
 | `can_send_prompt`        | `mitto_conversation_send_prompt`, `mitto_children_tasks_wait`               |
-| `can_prompt_user`        | `mitto_ui_ask_yes_no`, `mitto_ui_options_buttons`, `mitto_ui_options_combo` |
+| `can_prompt_user`        | `mitto_ui_options`, `mitto_ui_textbox`, `mitto_ui_form`                                         |
 | `can_start_conversation` | `mitto_conversation_new`                                                    |
+| `can_interact_other_workspaces` | `mitto_conversation_new`, `mitto_conversation_get`, `mitto_conversation_send_prompt`, `mitto_conversation_wait` (only when `workspace` parameter targets a different workspace) |
 
 **Note:** `mitto_conversation_list` is **always available** (no permission check).
-`mitto_conversation_get_current` and `mitto_conversation_userdata_set` require the session to be registered (running) but no flag check.
+`mitto_conversation_get_current`, `mitto_conversation_get`, `mitto_conversation_wait`, `mitto_conversation_update`, `mitto_conversation_history`, `mitto_prompt_list`, `mitto_prompt_get`, and `mitto_prompt_update` require the session to be registered (running) but no flag check.
+Cross-workspace operations require the `can_interact_other_workspaces` flag AND user confirmation. The confirmation dialog is NOT gated by `can_prompt_user` — it is a mandatory security gate.
 
 ## Configuring AI Agents
 
@@ -590,6 +838,44 @@ Use the log file paths from `mitto_get_runtime_info`:
 - **access.log**: Authentication, security events
 - **webview.log**: Frontend JavaScript errors, WebSocket issues
 
+## Cross-Workspace Operations
+
+Four tools support an optional `workspace` parameter (UUID string) for operating across workspace boundaries:
+
+- `mitto_conversation_new` — Create conversations in a different workspace
+- `mitto_conversation_get` — View conversations from another workspace
+- `mitto_conversation_send_prompt` — Send prompts to conversations in another workspace
+- `mitto_conversation_wait` — Wait on conversations in another workspace
+
+### User Confirmation
+
+Cross-workspace operations require explicit user approval via a blocking UI confirmation dialog:
+
+```
+Conversation "MySession" wants to create a new conversation in workspace "other-project" (/path/to/other). Allow?
+  • Yes
+  • No
+```
+
+Key behaviors:
+
+- **Same-workspace optimization**: If the workspace UUID matches the caller's workspace, no confirmation is needed and the tool proceeds directly
+- **Headless mode**: Cross-workspace operations fail in headless/CLI mode (no UI to show confirmation)
+- **Permission flag**: Cross-workspace operations require the `can_interact_other_workspaces` flag to be enabled on the calling session. This check occurs before the user confirmation dialog. The flag defaults to `false` (disabled).
+- **Security bypass prevention**: The confirmation does NOT require the `can_prompt_user` flag — it is a mandatory security gate that cannot be bypassed by flag configuration
+- **Timeout**: The confirmation dialog times out after 60 seconds; on timeout the operation is denied
+
+### Workspace Resolution
+
+Use `mitto_workspace_list` to discover available workspace UUIDs. The `workspace` parameter accepts the UUID returned in the `uuid` field of that tool's response.
+
+### Restrictions
+
+- `mitto_conversation_new`: Cannot specify both `workspace` and `acp_server` — the workspace determines the ACP server and working directory automatically
+- `mitto_conversation_get`, `mitto_conversation_send_prompt`, `mitto_conversation_wait`: The target conversation must belong to the specified workspace (validated by `working_dir` match); mismatches return an error
+
+---
+
 ## Security
 
 The MCP server binds only to `127.0.0.1` (localhost) and cannot be accessed from other machines. This is intentional for security:
@@ -740,7 +1026,7 @@ sequenceDiagram
     BS->>ACP: NewSession(McpServers: [])
     Note over ACP: Agent uses pre-configured MCP URL
 
-    ACP->>MCP: Call mitto_ui_ask_yes_no(session_id=X)
+    ACP->>MCP: Call mitto_ui_options(self_id=X)
     MCP->>MCP: Look up session X
     MCP->>Store: Read flags for session X
     Store-->>MCP: {can_prompt_user: true}
@@ -835,6 +1121,108 @@ func (s *Server) handleMyNewTool(
     return nil, output, nil
 }
 ```
+
+---
+
+## MCP Availability Checking
+
+Mitto can verify that its MCP tools are available in the user's ACP server (e.g.,
+Claude Desktop). This helps users discover and install the Mitto MCP server.
+
+### How It Works
+
+- **Purpose constant**: `PurposeMCPCheck = "mcp-check"`
+- **Scope**: One auxiliary session per workspace, results cached
+- **Trigger**: User focuses or switches to a conversation (once per workspace per server session)
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant SessionManager
+    participant AuxiliaryManager
+    participant AuxiliarySession
+
+    User->>Frontend: Focus/switch to conversation
+    Frontend->>SessionManager: Check if MCP verified for workspace
+    alt Not checked yet
+        SessionManager->>AuxiliaryManager: CheckMCPAvailability(workspaceUUID, mcpServerURL)
+        AuxiliaryManager->>AuxiliarySession: Send check prompt
+        AuxiliarySession-->>AuxiliaryManager: JSON response
+        AuxiliaryManager->>SessionManager: Mark workspace as checked
+        alt Tools NOT available
+            SessionManager->>Frontend: WebSocket: mcp_tools_unavailable
+            Frontend->>User: Show installation modal
+        end
+    end
+```
+
+The auxiliary session asks the agent to check for `mitto_conversation_get_current`
+and respond with JSON indicating availability, an optional install command
+(`suggested_run`), and optional instructions (`suggested_instructions`, max 500 chars).
+
+### WebSocket Messages
+
+**`mcp_tools_unavailable`** (Server → Frontend) — sent when tools are not available:
+
+```json
+{
+  "type": "mcp_tools_unavailable",
+  "workspace_uuid": "...",
+  "suggested_run": "command",
+  "suggested_instructions": "instructions"
+}
+```
+
+**`run_mcp_install_command`** (Frontend → Server) — sent when user confirms install:
+
+```json
+{
+  "type": "run_mcp_install_command",
+  "command": "..."
+}
+```
+
+### UI Behavior
+
+| Scenario                      | UI                                                                            |
+| ----------------------------- | ----------------------------------------------------------------------------- |
+| `suggested_run` provided      | Modal with command in code block + "Yes, run command" / "No, dismiss" buttons |
+| Only `suggested_instructions` | Modal with instructions + "Dismiss" button                                    |
+| Neither provided              | Warning: "Mitto MCP tools are not available. Some features may not work."     |
+
+### Caching
+
+**Session-level** (`SessionManager.mcpCheckedWorkspaces`): Tracks which workspaces
+have been checked. Prevents repeated prompts during the same session. Cleared when
+user runs install command or session restarts.
+
+**Result-level** (`WorkspaceAuxiliaryManager.mcpCheckCache`): Stores actual check
+results. Prevents repeated auxiliary prompts. Cleared via
+`ClearMCPCheckCache(workspaceUUID)` or after running install command.
+
+### API
+
+```go
+// Check MCP availability (with caching)
+result, err := mgr.CheckMCPAvailability(ctx, workspaceUUID, mcpServerURL)
+mgr.ClearMCPCheckCache(workspaceUUID) // Force re-check
+
+// Session-level tracking
+sm.IsMCPChecked(workspaceUUID)    // Has workspace been checked?
+sm.MarkMCPChecked(workspaceUUID)  // Mark as checked
+sm.ClearMCPChecked(workspaceUUID) // Clear (after installation)
+```
+
+### Implementation Status
+
+| Status | Item                                                                   |
+| ------ | ---------------------------------------------------------------------- |
+| ✅     | Purpose constant, prompt template, `MCPAvailabilityResult` struct      |
+| ✅     | `CheckMCPAvailability()` with caching and JSON parsing                 |
+| ✅     | WebSocket message type definitions, SessionManager tracking            |
+| ⏳     | WebSocket integration (trigger on conversation focus)                  |
+| ⏳     | Command execution handler, frontend UI, cache clearing after execution |
 
 ---
 

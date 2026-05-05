@@ -43,8 +43,14 @@ const (
 	// BuiltinProcessorsDirName is the name of the builtin processors subdirectory.
 	BuiltinProcessorsDirName = "builtin"
 
+	// AgentsDirName is the name of the agents subdirectory.
+	AgentsDirName = "agents"
+
+	// BuiltinAgentsDirName is the name of the builtin agents subdirectory.
+	BuiltinAgentsDirName = "builtin"
+
 	// WorkspaceConfigDirName is the name of the workspace-specific config directory.
-	// This directory is located at the root of a workspace (e.g., $WORKSPACE/.mitto/).
+	// This directory is located at the root of a workspace (e.g., $MITTO_WORKING_DIR/.mitto/).
 	WorkspaceConfigDirName = ".mitto"
 
 	// AuthSessionsFileName is the name of the auth sessions file.
@@ -188,6 +194,12 @@ func EnsureDir() error {
 		return fmt.Errorf("failed to create prompts directory %s: %w", promptsDir, err)
 	}
 
+	// Create agents subdirectory
+	agentsDir := filepath.Join(dir, AgentsDirName)
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create agents directory %s: %w", agentsDir, err)
+	}
+
 	return nil
 }
 
@@ -310,15 +322,34 @@ func BuiltinPromptsDir() (string, error) {
 	return filepath.Join(promptsDir, BuiltinPromptsDirName), nil
 }
 
+// AgentsDir returns the full path to the agents directory.
+func AgentsDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, AgentsDirName), nil
+}
+
+// BuiltinAgentsDir returns the full path to the builtin agents directory.
+// This directory contains agent configs that are deployed from the embedded filesystem.
+func BuiltinAgentsDir() (string, error) {
+	agentsDir, err := AgentsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(agentsDir, BuiltinAgentsDirName), nil
+}
+
 // WorkspacePromptsDir returns the full path to the default workspace prompts directory.
-// This is $WORKSPACE/.mitto/prompts/ and is automatically searched for prompts
+// This is $MITTO_WORKING_DIR/.mitto/prompts/ and is automatically searched for prompts
 // when a workspace is active, without requiring explicit configuration in .mittorc.
 func WorkspacePromptsDir(workspaceRoot string) string {
 	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, PromptsDirName)
 }
 
 // WorkspaceProcessorsDir returns the full path to the default workspace processors directory.
-// This is $WORKSPACE/.mitto/processors/ and is automatically searched for processors
+// This is $MITTO_WORKING_DIR/.mitto/processors/ and is automatically searched for processors
 // when a workspace is active, without requiring explicit configuration in .mittorc.
 func WorkspaceProcessorsDir(workspaceRoot string) string {
 	return filepath.Join(workspaceRoot, WorkspaceConfigDirName, ProcessorsDirName)

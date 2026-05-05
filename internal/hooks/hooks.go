@@ -4,7 +4,9 @@
 package hooks
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -16,11 +18,53 @@ import (
 	"github.com/inercia/mitto/internal/logging"
 )
 
+// maxHookOutputBytes is the maximum number of bytes captured from hook stdout+stderr.
+// Output beyond this limit is silently discarded to prevent memory issues from chatty hooks.
+const maxHookOutputBytes = 4096
+
+// limitedBuffer is an io.Writer that writes to an underlying bytes.Buffer
+// but stops accepting data once maxSize bytes have been written.
+// It is safe for concurrent use (stdout and stderr may write concurrently
+// when used with os/exec) and always reports the full input length to
+// avoid io.ErrShortWrite from io.MultiWriter.
+type limitedBuffer struct {
+	mu      sync.Mutex
+	buf     *bytes.Buffer
+	maxSize int
+}
+
+func (lb *limitedBuffer) Write(p []byte) (n int, err error) {
+	origLen := len(p)
+
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	remaining := lb.maxSize - lb.buf.Len()
+	if remaining <= 0 {
+		return origLen, nil // silently discard
+	}
+
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+
+	written, err := lb.buf.Write(p)
+	if err != nil {
+		return written, err
+	}
+	if written != len(p) {
+		return written, io.ErrShortWrite
+	}
+
+	return origLen, nil
+}
+
 // HookFailure contains information about a hook that failed to execute.
 type HookFailure struct {
 	Name     string // Hook name
 	ExitCode int    // Exit code (-1 if killed by signal)
 	Error    string // Error message
+	Output   string // Captured stdout+stderr from the failed command (truncated to maxHookOutputBytes)
 }
 
 // Process manages a running hook command and its lifecycle.
@@ -73,8 +117,11 @@ func StartUp(hook config.WebHook, port int, opts ...StartUpOption) *Process {
 
 	// Create the command with a new process group so we can kill all children
 	cmd := exec.Command("sh", "-c", command)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Capture stdout+stderr into a limited buffer while still streaming to the console.
+	var rawBuf bytes.Buffer
+	capBuf := &limitedBuffer{buf: &rawBuf, maxSize: maxHookOutputBytes}
+	cmd.Stdout = io.MultiWriter(os.Stdout, capBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, capBuf)
 	// Set process group ID so we can kill the entire process tree
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -90,10 +137,12 @@ func StartUp(hook config.WebHook, port int, opts ...StartUpOption) *Process {
 
 	// Start the command
 	if err := cmd.Start(); err != nil {
+		output := rawBuf.String()
 		fmt.Printf("⚠️  Hook start error: %v\n", err)
 		logger.Error("Failed to start up hook",
 			"name", hookName,
 			"error", err,
+			"output", output,
 		)
 		// Notify about startup failure
 		if hp.onFailure != nil {
@@ -101,6 +150,7 @@ func StartUp(hook config.WebHook, port int, opts ...StartUpOption) *Process {
 				Name:     hookName,
 				ExitCode: -1,
 				Error:    err.Error(),
+				Output:   output,
 			})
 		}
 		return nil
@@ -136,11 +186,16 @@ func StartUp(hook config.WebHook, port int, opts ...StartUpOption) *Process {
 				)
 				return
 			}
+			output := rawBuf.String()
 			fmt.Printf("⚠️  Hook '%s' exited with code %d: %v\n", hookName, exitCode, err)
+			if output != "" {
+				fmt.Printf("   Output: %s\n", output)
+			}
 			logger.Error("Up hook exited with error",
 				"name", hookName,
 				"exit_code", exitCode,
 				"error", err,
+				"output", output,
 			)
 			// Notify about runtime failure
 			if onFailure != nil {
@@ -148,6 +203,7 @@ func StartUp(hook config.WebHook, port int, opts ...StartUpOption) *Process {
 					Name:     hookName,
 					ExitCode: exitCode,
 					Error:    err.Error(),
+					Output:   output,
 				})
 			}
 		} else {
@@ -237,8 +293,11 @@ func RunDown(hook config.WebHook, port int) {
 
 	// Create and run the command synchronously
 	cmd := exec.Command("sh", "-c", command)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Capture stdout+stderr into a limited buffer while still streaming to the console.
+	var rawBuf bytes.Buffer
+	capBuf := &limitedBuffer{buf: &rawBuf, maxSize: maxHookOutputBytes}
+	cmd.Stdout = io.MultiWriter(os.Stdout, capBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, capBuf)
 
 	if err := cmd.Run(); err != nil {
 		// Get exit code for logging
@@ -246,11 +305,16 @@ func RunDown(hook config.WebHook, port int) {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		}
+		output := rawBuf.String()
 		fmt.Printf("⚠️  Down hook '%s' exited with code %d: %v\n", hookName, exitCode, err)
+		if output != "" {
+			fmt.Printf("   Output: %s\n", output)
+		}
 		logger.Error("Down hook failed",
 			"name", hookName,
 			"exit_code", exitCode,
 			"error", err,
+			"output", output,
 		)
 	} else {
 		fmt.Printf("🔗 Down hook '%s' completed (exit code 0)\n", hookName)

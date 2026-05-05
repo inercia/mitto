@@ -1,0 +1,96 @@
+##########################################################################################
+# Builtin processor: automatically extracts user preferences from conversations.
+#
+# This prompt-mode processor watches user messages for preferences, conventions,
+# and how-they-want-things-done patterns. When it finds relevant preferences,
+# it instructs an auxiliary AI agent to save them in a clearly delimited section
+# of the AGENTS.md file in the workspace root.
+#
+# This is a fire-and-forget processor: the prompt is dispatched to a workspace-scoped
+# auxiliary ACP session and the pipeline continues immediately without waiting.
+#
+# Disabled by default — enable in the Workspaces dialog or .mittorc if you want
+# automatic preference tracking.
+#
+# What it captures:
+#   - Code style preferences (naming, formatting, patterns)
+#   - Process preferences (testing approach, review habits, commit style)
+#   - Technology preferences (preferred libraries, tools, frameworks)
+#   - Communication style (verbosity, format preferences)
+#   - Project-specific conventions the user has expressed
+#
+# What it does NOT capture:
+#   - Task-specific instructions (one-off requests)
+#   - Bug reports or feature requests
+#   - Questions or requests for information
+##########################################################################################
+name: memorize-preferences
+description: "Extracts user preferences from conversations and saves them to AGENTS.md"
+enabled: false
+when: first
+priority: 200
+timeout: 120s
+on_error: skip
+rerun:
+  afterSentMsgs: 10
+  afterTokens: 30000
+
+# Skip periodic prompts — only process real user messages
+enabledWhen: '!session.isPeriodic'
+
+prompt: |
+  You are a preference curator. Your job is to analyze the user's messages below
+  and extract any preferences, conventions, or patterns about how they want things
+  done in this project.
+
+  Look for:
+  - Code style preferences (naming conventions, formatting rules, design patterns)
+  - Process preferences (how they want tests written, how they want commits done)
+  - Technology preferences (preferred libraries, tools, approaches)
+  - Communication preferences (level of detail, format they prefer)
+  - Project-specific conventions they've explicitly stated
+
+  Do NOT extract:
+  - One-off task instructions (e.g., "fix this bug", "add this feature")
+  - Questions or requests for information
+  - Code snippets that are part of a task (not a preference)
+  - Anything already captured in the existing preferences section
+
+  If you find relevant preferences, update the AGENTS.md file in the workspace root.
+  Use EXACTLY this format for the section (create it if it doesn't exist, update it
+  if it does — preserve existing entries and only add new ones):
+
+  <!-- BEGIN USER PREFERENCES (auto-managed by memorize-preferences processor) -->
+  ## User Preferences
+
+  - **preference category**: description of preference
+  - **another category**: description
+  <!-- END USER PREFERENCES -->
+
+  If the AGENTS.md file doesn't exist, create it with just this section.
+  If the section already exists, read the existing entries first to avoid duplicates.
+  If no new preferences are found in the messages below, do nothing — do NOT modify
+  any files.
+
+  === User Messages ===
+
+  Use the `mitto_conversation_history` MCP tool to retrieve recent user messages.
+  Call it with:
+  - `self_id`: your session ID (from `mitto_conversation_get_current`)
+  - `conversation_id`: "@mitto:session_id"
+  - `event_types`: ["user_prompt"]
+  - `last_n`: 20
+
+  Review these messages for user preferences and conventions.
+
+  ## Notification
+
+  After completing your work, if you added any new preferences to AGENTS.md, call
+  `mitto_ui_notify` with:
+  - `self_id`: "@mitto:session_id"
+  - `title`: "📝 Preferences Saved"
+  - `message`: a brief summary, e.g. "Memorized 2 new preferences"
+  - `style`: "success"
+
+  If no new preferences were found and no files were modified, do NOT send any
+  notification — stay completely silent.

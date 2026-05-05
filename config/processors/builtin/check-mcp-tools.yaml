@@ -1,3 +1,4 @@
+##########################################################################################
 # Builtin processor: checks if Mitto MCP tools are available and suggests installation.
 #
 # This processor appends a note asking the agent to verify MCP tool availability
@@ -5,20 +6,23 @@
 # and re-runs periodically to re-check.
 #
 # Uses text-mode (no external command).
+##########################################################################################
 name: check-mcp-tools
 description: "Checks if Mitto MCP tools are available and suggests installation"
 enabled: true
+enabledWhen: '!tools.hasPattern("mitto_*")'
 when: first
 position: append
 priority: 15
 rerun:
   afterTime: 20m
   afterSentMsgs: 15
+  afterTokens: 60000
 text: |
   ---
   [Mitto MCP Tools Check]
   Check if Mitto's MCP tools are available. You should have access to
-  tools like `mitto_ui_options_buttons`, `mitto_conversation_new`,
+  tools like `mitto_ui_options`, `mitto_conversation_new`,
   `mitto_conversation_get_current`, etc.
 
   If these tools are NOT available, show the user instructions for adding

@@ -5,9 +5,27 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+)
+
+// pendingPromptDispatch holds a prompt-mode processor ready for dispatch.
+type pendingPromptDispatch struct {
+	name    string
+	prompt  string
+	timeout time.Duration
+}
+
+// RerunReason describes why a processor was re-triggered.
+type RerunReason string
+
+const (
+	RerunReasonTime   RerunReason = "time_elapsed"
+	RerunReasonMsgs   RerunReason = "message_count"
+	RerunReasonTokens RerunReason = "token_count"
 )
 
 // ProcessorResult contains the result of applying processors to a message.
@@ -16,6 +34,9 @@ type ProcessorResult struct {
 	Message string
 	// Attachments contains any file attachments from processors.
 	Attachments []Attachment
+	// AppliedNames contains the names of processors that were applied.
+	// Not serialized to JSON — only used in-memory for stats tracking.
+	AppliedNames []string `json:"-"`
 }
 
 // ApplyProcessors applies all applicable processors to a message.
@@ -30,7 +51,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 		logger = slog.Default()
 	}
 
-	logger.Debug("processor pipeline starting",
+	logger.Info("processor pipeline starting",
 		"total_processors", len(procs),
 		"is_first_message", input.IsFirstMessage,
 		"acp_server", input.ACPServer,
@@ -57,7 +78,8 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 		}
 
 		applied++
-		logger.Debug("applying processor",
+		result.AppliedNames = append(result.AppliedNames, proc.Name)
+		logger.Info("applying processor",
 			"name", proc.Name,
 			"when", proc.When,
 			"mode", map[bool]string{true: "text", false: "command"}[proc.IsTextMode()],
@@ -73,9 +95,20 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			case config.ProcessorPositionAppend:
 				result.Message = result.Message + proc.Text
 			}
-			logger.Debug("text-mode processor applied",
+			logger.Info("text-mode processor applied",
 				"name", proc.Name,
 				"position", proc.GetPosition(),
+			)
+			continue
+		}
+
+		// Prompt-mode: fire-and-forget dispatch via PromptFunc.
+		// ApplyProcessors has no access to a PromptFunc — callers should use Manager.Apply
+		// which routes prompt-mode processors through applyWithRerun where a PromptFunc
+		// is available.
+		if proc.IsPromptMode() {
+			logger.Warn("prompt-mode processor skipped: use Manager.Apply for prompt-mode processors",
+				"name", proc.Name,
 			)
 			continue
 		}
@@ -86,7 +119,6 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			IsFirstMessage:      input.IsFirstMessage,
 			SessionID:           input.SessionID,
 			WorkingDir:          input.WorkingDir,
-			History:             input.History,
 			ParentSessionID:     input.ParentSessionID,
 			SessionName:         input.SessionName,
 			ACPServer:           input.ACPServer,
@@ -154,13 +186,13 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			)
 		}
 
-		logger.Debug("processor applied",
+		logger.Info("processor applied",
 			"name", proc.Name,
 			"output_type", proc.GetOutput(),
 		)
 	}
 
-	logger.Debug("processor pipeline complete",
+	logger.Info("processor pipeline complete",
 		"total", len(procs),
 		"applied", applied,
 		"skipped", skipped,
@@ -177,17 +209,28 @@ type Manager struct {
 	processors    []*Processor
 	logger        *slog.Logger
 
+	// promptFunc is an optional callback for executing prompt-mode processors.
+	// Set by the web layer via SetPromptFunc to bridge to auxiliary ACP sessions.
+	promptFunc PromptFunc
+
 	// rerunState tracks per-processor run state for rerun logic.
 	// Keyed by processor name. Only populated for processors with rerun config.
 	// In-memory only — not persisted across restarts (isFirstPrompt=true on resume
 	// handles restart case).
 	rerunState map[string]*processorRunState
+
+	// Stats tracking — updated after each Apply call.
+	statsMu          sync.Mutex
+	totalActivations int       // Total number of pipeline invocations (Apply calls) across session lifetime
+	lastActivationAt time.Time // When the pipeline was last invoked (zero if never)
+	lastAppliedNames []string  // Names of processors applied on the most recent activation
 }
 
 // processorRunState tracks when a processor last ran, for rerun scheduling.
 type processorRunState struct {
 	lastRunTime   time.Time
 	messagesSince int
+	tokensSince   int
 }
 
 // NewManager creates a new processor manager.
@@ -221,6 +264,7 @@ func (m *Manager) AddTextProcessors(procs []config.MessageProcessor, priority in
 			Position: p.Position,
 			Text:     p.Text,
 			Priority: priority,
+			Source:   ProcessorSourceConfig,
 		}
 		m.processors = append(m.processors, proc)
 	}
@@ -230,15 +274,39 @@ func (m *Manager) AddTextProcessors(procs []config.MessageProcessor, priority in
 	})
 }
 
+// SetPromptFunc sets the callback used to dispatch prompt-mode processors.
+// The callback is injected by the web layer to bridge processor execution to
+// workspace-scoped auxiliary ACP sessions (fire-and-forget).
+func (m *Manager) SetPromptFunc(fn PromptFunc) {
+	m.promptFunc = fn
+}
+
+// SetStats seeds the activation counters from persisted values.
+// This is used when resuming a session to restore the cumulative count.
+func (m *Manager) SetStats(activations int, lastAt time.Time) {
+	m.statsMu.Lock()
+	defer m.statsMu.Unlock()
+	m.totalActivations = activations
+	m.lastActivationAt = lastAt
+}
+
 // CloneWithTextProcessors returns a shallow copy of the Manager with the given
 // text-mode processors merged in. The original Manager is not modified, making
 // this safe to call concurrently on a shared instance.
 func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, priority int) *Manager {
+	m.statsMu.Lock()
+	activations := m.totalActivations
+	lastAt := m.lastActivationAt
+	m.statsMu.Unlock()
+
 	clone := &Manager{
-		processorsDir: m.processorsDir,
-		logger:        m.logger,
-		processors:    make([]*Processor, len(m.processors)),
-		rerunState:    make(map[string]*processorRunState),
+		processorsDir:    m.processorsDir,
+		logger:           m.logger,
+		processors:       make([]*Processor, len(m.processors)),
+		rerunState:       make(map[string]*processorRunState),
+		promptFunc:       m.promptFunc,
+		totalActivations: activations,
+		lastActivationAt: lastAt,
 	}
 	copy(clone.processors, m.processors)
 	clone.AddTextProcessors(procs, priority)
@@ -257,11 +325,19 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 		logger = m.logger
 	}
 
+	m.statsMu.Lock()
+	activations := m.totalActivations
+	lastAt := m.lastActivationAt
+	m.statsMu.Unlock()
+
 	clone := &Manager{
-		processorsDir: m.processorsDir,
-		logger:        logger,
-		processors:    make([]*Processor, len(m.processors)),
-		rerunState:    make(map[string]*processorRunState),
+		processorsDir:    m.processorsDir,
+		logger:           logger,
+		processors:       make([]*Processor, len(m.processors)),
+		rerunState:       make(map[string]*processorRunState),
+		promptFunc:       m.promptFunc,
+		totalActivations: activations,
+		lastActivationAt: lastAt,
 	}
 	copy(clone.processors, m.processors)
 
@@ -285,6 +361,10 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 
 		logger.Debug("Loaded workspace processors", "dir", dir, "count", len(procs))
 		for _, p := range procs {
+			// Stamp workspace source for all dir-loaded processors
+			if p.Source == "" {
+				p.Source = ProcessorSourceWorkspace
+			}
 			if p.Name != "" && seen[p.Name] {
 				// Workspace processor overrides global with same name
 				for i, existing := range clone.processors {
@@ -314,6 +394,53 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 	return clone
 }
 
+// CloneWithEnabledOverrides returns a shallow copy of the Manager with per-processor
+// enabled state overridden by the workspace .mittorc processors section.
+// Each override has a Name and an Enabled pointer; if Enabled is non-nil, the
+// processor's Enabled field is set to that value. The original Manager is not modified.
+func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride) *Manager {
+	if len(overrides) == 0 {
+		return m
+	}
+
+	// Build override map: name → enabled value
+	overrideMap := make(map[string]bool, len(overrides))
+	for _, o := range overrides {
+		if o.Enabled != nil {
+			overrideMap[o.Name] = *o.Enabled
+		}
+	}
+
+	m.statsMu.Lock()
+	activations := m.totalActivations
+	lastAt := m.lastActivationAt
+	m.statsMu.Unlock()
+
+	clone := &Manager{
+		processorsDir:    m.processorsDir,
+		logger:           m.logger,
+		processors:       make([]*Processor, len(m.processors)),
+		rerunState:       make(map[string]*processorRunState),
+		promptFunc:       m.promptFunc,
+		totalActivations: activations,
+		lastActivationAt: lastAt,
+	}
+
+	// Deep-copy processor pointers so we can modify Enabled without affecting the original.
+	for i, p := range m.processors {
+		if enabled, ok := overrideMap[p.Name]; ok {
+			// Make a shallow copy of the processor struct so we can change Enabled.
+			cp := *p
+			cp.Enabled = &enabled
+			clone.processors[i] = &cp
+		} else {
+			clone.processors[i] = p
+		}
+	}
+
+	return clone
+}
+
 // Load loads all processors from the processors directory.
 func (m *Manager) Load() error {
 	loader := NewLoader(m.processorsDir, m.logger)
@@ -322,6 +449,12 @@ func (m *Manager) Load() error {
 		return err
 	}
 	m.processors = procs
+	// Stamp source: global processors come from MITTO_DIR/processors/
+	for _, p := range m.processors {
+		if p.Source == "" {
+			p.Source = ProcessorSourceGlobal
+		}
+	}
 	return nil
 }
 
@@ -343,12 +476,23 @@ func (m *Manager) Apply(ctx context.Context, input *ProcessorInput) (*ProcessorR
 	origIsFirst := input.IsFirstMessage
 	defer func() { input.IsFirstMessage = origIsFirst }()
 
-	if len(rerunOverrides) > 0 {
+	// Route to applyWithRerun if there are rerun overrides or prompt-mode processors.
+	// Prompt-mode processors require Manager state (promptFunc) not available in ApplyProcessors.
+	if len(rerunOverrides) > 0 || m.hasPromptModeProcessors() {
 		// We apply the processors one at a time to handle per-processor overrides.
 		return m.applyWithRerun(ctx, input, origIsFirst, rerunOverrides)
 	}
 
 	result, err := ApplyProcessors(ctx, m.processors, input, m.processorsDir, m.logger)
+
+	// Track pipeline activation
+	m.statsMu.Lock()
+	m.totalActivations++
+	m.lastActivationAt = time.Now()
+	if result != nil {
+		m.lastAppliedNames = result.AppliedNames
+	}
+	m.statsMu.Unlock()
 
 	// Post-pass: update rerun state for all processors
 	m.updateRerunState(input.IsFirstMessage)
@@ -356,14 +500,25 @@ func (m *Manager) Apply(ctx context.Context, input *ProcessorInput) (*ProcessorR
 	return result, err
 }
 
+// hasPromptModeProcessors returns true if any loaded processor is a prompt-mode processor.
+// Used to determine whether Manager.Apply must route through applyWithRerun.
+func (m *Manager) hasPromptModeProcessors() bool {
+	for _, p := range m.processors {
+		if p.IsPromptMode() {
+			return true
+		}
+	}
+	return false
+}
+
 // checkRerunEligibility checks which "when: first" processors with rerun config
-// are due for re-run. Returns a set of processor names that should be re-triggered.
-func (m *Manager) checkRerunEligibility(input *ProcessorInput) map[string]bool {
+// are due for re-run. Returns a map of processor names to the reason they should be re-triggered.
+func (m *Manager) checkRerunEligibility(input *ProcessorInput) map[string]RerunReason {
 	if input.IsFirstMessage {
 		return nil // First message — all "when: first" processors will fire naturally
 	}
 
-	overrides := make(map[string]bool)
+	overrides := make(map[string]RerunReason)
 	now := time.Now()
 
 	for _, proc := range m.processors {
@@ -379,23 +534,34 @@ func (m *Manager) checkRerunEligibility(input *ProcessorInput) map[string]bool {
 		rerun := proc.Rerun
 		// Check time threshold
 		if rerun.GetAfterDuration() > 0 && now.Sub(state.lastRunTime) >= rerun.GetAfterDuration() {
-			m.logger.Debug("processor rerun triggered by time",
+			m.logger.Info("processor rerun triggered by time",
 				"name", proc.Name,
 				"elapsed", now.Sub(state.lastRunTime).String(),
 				"threshold", rerun.AfterTime,
 			)
-			overrides[proc.Name] = true
+			overrides[proc.Name] = RerunReasonTime
 			continue
 		}
 
 		// Check message count threshold
 		if rerun.AfterSentMsgs > 0 && state.messagesSince >= rerun.AfterSentMsgs {
-			m.logger.Debug("processor rerun triggered by message count",
+			m.logger.Info("processor rerun triggered by message count",
 				"name", proc.Name,
 				"messages_since", state.messagesSince,
 				"threshold", rerun.AfterSentMsgs,
 			)
-			overrides[proc.Name] = true
+			overrides[proc.Name] = RerunReasonMsgs
+			continue
+		}
+
+		// Check token count threshold
+		if rerun.AfterTokens > 0 && state.tokensSince >= rerun.AfterTokens {
+			m.logger.Info("processor rerun triggered by token count",
+				"name", proc.Name,
+				"tokens_since", state.tokensSince,
+				"threshold", rerun.AfterTokens,
+			)
+			overrides[proc.Name] = RerunReasonTokens
 		}
 	}
 
@@ -404,10 +570,10 @@ func (m *Manager) checkRerunEligibility(input *ProcessorInput) map[string]bool {
 
 // applyWithRerun applies processors individually, overriding isFirstMessage for
 // processors that are due for re-run.
-func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, origIsFirst bool, rerunOverrides map[string]bool) (*ProcessorResult, error) {
+func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, origIsFirst bool, rerunOverrides map[string]RerunReason) (*ProcessorResult, error) {
 	result := &ProcessorResult{Message: input.Message}
 
-	m.logger.Debug("processor pipeline starting (with rerun)",
+	m.logger.Info("processor pipeline starting (with rerun)",
 		"total_processors", len(m.processors),
 		"is_first_message", origIsFirst,
 		"rerun_count", len(rerunOverrides),
@@ -416,11 +582,15 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 	executor := NewExecutor(m.processorsDir, m.logger)
 	applied := 0
 	skipped := 0
+	var appliedNames []string
+
+	// Collect prompt-mode processors for batched dispatch after the loop.
+	var pendingPrompts []pendingPromptDispatch
 
 	for _, proc := range m.processors {
 		// Determine effective isFirstMessage for this processor
 		effectiveIsFirst := origIsFirst
-		if rerunOverrides[proc.Name] {
+		if _, isRerun := rerunOverrides[proc.Name]; isRerun {
 			effectiveIsFirst = true
 		}
 
@@ -438,13 +608,16 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 		}
 
 		applied++
-		m.logger.Debug("applying processor",
+		appliedNames = append(appliedNames, proc.Name)
+		rerunReason, isRerun := rerunOverrides[proc.Name]
+		m.logger.Info("applying processor",
 			"name", proc.Name,
 			"when", proc.When,
 			"mode", map[bool]string{true: "text", false: "command"}[proc.IsTextMode()],
 			"position", proc.GetPosition(),
 			"priority", proc.GetPriority(),
-			"is_rerun", rerunOverrides[proc.Name],
+			"is_rerun", isRerun,
+			"rerun_reason", string(rerunReason),
 		)
 
 		// Text-mode: directly prepend or append the static text (no external command).
@@ -457,6 +630,41 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				result.Message = result.Message + text
 			}
 			input.Message = result.Message
+		} else if proc.IsPromptMode() {
+			// Prompt-mode: collect for batched dispatch after loop.
+			if m.promptFunc == nil {
+				m.logger.Warn("prompt-mode processor skipped: no PromptFunc configured",
+					"name", proc.Name,
+				)
+				continue
+			}
+
+			// Build the prompt with variable substitution.
+			assembledPrompt := SubstituteVariables(proc.Prompt, input)
+			procTimeout := proc.GetTimeout().Duration()
+
+			// Collect for batched dispatch.
+			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
+				name:    proc.Name,
+				prompt:  assembledPrompt,
+				timeout: procTimeout,
+			})
+
+			// Update rerun tracking for prompt-mode processors.
+			if m.rerunState == nil {
+				m.rerunState = make(map[string]*processorRunState)
+			}
+			if _, ok := m.rerunState[proc.Name]; !ok {
+				m.rerunState[proc.Name] = &processorRunState{}
+			}
+			m.rerunState[proc.Name].lastRunTime = time.Now()
+			m.rerunState[proc.Name].messagesSince = 0
+			m.rerunState[proc.Name].tokensSince = 0
+
+			m.logger.Info("prompt-mode processor collected for dispatch",
+				"name", proc.Name,
+				"prompt_len", len(assembledPrompt),
+			)
 		} else {
 			// Command-mode: execute external command
 			procInput := &ProcessorInput{
@@ -464,7 +672,6 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				IsFirstMessage:      input.IsFirstMessage,
 				SessionID:           input.SessionID,
 				WorkingDir:          input.WorkingDir,
-				History:             input.History,
 				ParentSessionID:     input.ParentSessionID,
 				ParentSessionName:   input.ParentSessionName,
 				SessionName:         input.SessionName,
@@ -494,14 +701,27 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			m.rerunState[proc.Name] = &processorRunState{
 				lastRunTime:   time.Now(),
 				messagesSince: 0,
+				tokensSince:   0,
 			}
 		}
+	}
+
+	// Dispatch collected prompt-mode processors.
+	if len(pendingPrompts) > 0 {
+		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts)
 	}
 
 	// Increment message counters for all rerun-tracked processors that didn't fire
 	m.updateRerunState(origIsFirst)
 
-	m.logger.Debug("processor pipeline complete (with rerun)",
+	// Track pipeline activation
+	m.statsMu.Lock()
+	m.totalActivations++
+	m.lastActivationAt = time.Now()
+	m.lastAppliedNames = appliedNames
+	m.statsMu.Unlock()
+
+	m.logger.Info("processor pipeline complete (with rerun)",
 		"total", len(m.processors),
 		"applied", applied,
 		"skipped", skipped,
@@ -537,9 +757,141 @@ func (m *Manager) updateRerunState(wasFirstMessage bool) {
 	}
 }
 
+// AccumulateTokenUsage adds the given token count to all rerun-tracked processors.
+// Called after each prompt completes with the turn's total token count
+// (actual from ACP Usage or estimated from character count).
+func (m *Manager) AccumulateTokenUsage(totalTokens int) {
+	if totalTokens <= 0 {
+		return
+	}
+	for _, proc := range m.processors {
+		if proc.When != config.ProcessorWhenFirst || proc.Rerun == nil || proc.Name == "" {
+			continue
+		}
+		state, exists := m.rerunState[proc.Name]
+		if !exists {
+			continue
+		}
+		state.tokensSince += totalTokens
+	}
+}
+
+// EstimateTokens estimates the number of tokens in a text string.
+// Uses a rough heuristic of ~4 characters per token, which is a reasonable
+// average for English text and code. Used as fallback when the ACP server
+// doesn't report actual token usage.
+func EstimateTokens(text string) int {
+	if len(text) == 0 {
+		return 0
+	}
+	return (len(text) + 3) / 4 // Round up
+}
+
+// dispatchPromptBatch dispatches prompt-mode processors as fire-and-forget.
+// If there is a single processor, it dispatches directly with the processor name.
+// If there are multiple processors, it combines their prompts into a single
+// request and dispatches to a shared "batch" auxiliary session.
+func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPromptDispatch) {
+	if len(prompts) == 0 {
+		return
+	}
+
+	if len(prompts) == 1 {
+		// Single processor — dispatch directly.
+		p := prompts[0]
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), p.timeout)
+			defer cancel()
+			if err := m.promptFunc(bgCtx, workspaceUUID, p.name, p.prompt); err != nil {
+				if m.logger != nil {
+					m.logger.Error("prompt-mode processor dispatch failed",
+						"name", p.name,
+						"error", err,
+					)
+				}
+			}
+		}()
+		m.logger.Info("prompt-mode processor dispatched (single)",
+			"name", prompts[0].name,
+			"prompt_len", len(prompts[0].prompt),
+		)
+		return
+	}
+
+	// Multiple processors — combine into a single prompt.
+	var sb strings.Builder
+	sb.WriteString("We would like to fulfill the following requirements:\n\n")
+	maxTimeout := time.Duration(0)
+	var names []string
+	for i, p := range prompts {
+		fmt.Fprintf(&sb, "## Requirement %d: %s\n\n", i+1, p.name)
+		sb.WriteString(p.prompt)
+		sb.WriteString("\n\n")
+		if p.timeout > maxTimeout {
+			maxTimeout = p.timeout
+		}
+		names = append(names, p.name)
+	}
+
+	combinedName := strings.Join(names, "+")
+	combinedPrompt := sb.String()
+
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), maxTimeout)
+		defer cancel()
+		if err := m.promptFunc(bgCtx, workspaceUUID, combinedName, combinedPrompt); err != nil {
+			if m.logger != nil {
+				m.logger.Error("batched prompt-mode processor dispatch failed",
+					"names", combinedName,
+					"error", err,
+				)
+			}
+		}
+	}()
+
+	m.logger.Info("prompt-mode processors dispatched (batched)",
+		"names", combinedName,
+		"count", len(prompts),
+		"combined_prompt_len", len(combinedPrompt),
+	)
+}
+
 // ProcessorsDir returns the processors directory path.
 func (m *Manager) ProcessorsDir() string {
 	return m.processorsDir
+}
+
+// ProcessorCount returns the number of loaded processors.
+func (m *Manager) ProcessorCount() int {
+	return len(m.processors)
+}
+
+// TotalActivations returns the total number of pipeline invocations since the manager was created.
+func (m *Manager) TotalActivations() int {
+	m.statsMu.Lock()
+	defer m.statsMu.Unlock()
+	return m.totalActivations
+}
+
+// LastActivationAt returns when the processor pipeline was last invoked.
+// Returns a zero time.Time if the pipeline has never been invoked.
+func (m *Manager) LastActivationAt() time.Time {
+	m.statsMu.Lock()
+	defer m.statsMu.Unlock()
+	return m.lastActivationAt
+}
+
+// LastAppliedNames returns the names of processors that were applied during the
+// most recent pipeline activation. Returns nil if the pipeline has never been invoked.
+func (m *Manager) LastAppliedNames() []string {
+	m.statsMu.Lock()
+	defer m.statsMu.Unlock()
+	if m.lastAppliedNames == nil {
+		return nil
+	}
+	result := make([]string, len(m.lastAppliedNames))
+	copy(result, m.lastAppliedNames)
+	return result
 }
 
 // ToACPAttachments converts processor attachments to a format suitable for ACP.

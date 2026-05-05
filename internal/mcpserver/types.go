@@ -45,6 +45,7 @@ type ConversationInfo struct {
 	LockStatus     string `json:"lock_status,omitempty"`
 	LockClientType string `json:"lock_client_type,omitempty"`
 	LastSeq        int64  `json:"last_seq,omitempty"`
+	IsPeriodic     bool   `json:"is_periodic"`
 }
 
 // ConversationDetails is the unified output structure for conversation-related tools.
@@ -75,6 +76,7 @@ type ConversationDetails struct {
 
 	// Parent/child relationship
 	ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
+	IsPeriodic      bool   `json:"is_periodic"`                 // Whether the conversation has an active periodic prompt
 
 	// Available ACP servers that can be used when creating new conversations from this session
 	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
@@ -315,24 +317,81 @@ type DeleteConversationOutput struct {
 	Error          string `json:"error,omitempty"`
 }
 
-// AskYesNoOutput is the output for the mitto_ui_ask_yes_no tool.
-type AskYesNoOutput struct {
-	Response string `json:"response"` // "yes" | "no" | "timeout"
-	Label    string `json:"label,omitempty"`
+// ConversationUpdateInput is the input for mitto_conversation_update tool.
+type ConversationUpdateInput struct {
+	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"` // Target conversation to update
+
+	// Patchable properties — all optional, only non-nil fields are applied
+	Name *string `json:"name,omitempty"` // Update conversation title
+
+	// User data — optional, only applied if non-nil
+	UserData      []UserDataAttributeUpdate `json:"user_data,omitempty"`       // User data attributes to set
+	UserDataMerge *bool                     `json:"user_data_merge,omitempty"` // If true (default), merge with existing; if false, replace all
 }
 
-// OptionsButtonsOutput is the output for the mitto_ui_options_buttons tool.
-type OptionsButtonsOutput struct {
-	Selected string `json:"selected,omitempty"`
-	Index    int    `json:"index"`
-	TimedOut bool   `json:"timed_out,omitempty"`
+// UserDataAttributeUpdate represents a single user data attribute to set.
+type UserDataAttributeUpdate struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
-// OptionsComboOutput is the output for the mitto_ui_options_combo tool.
-type OptionsComboOutput struct {
-	Selected string `json:"selected,omitempty"`
-	Index    int    `json:"index"`
+// ConversationUpdateOutput is the output for mitto_conversation_update tool.
+type ConversationUpdateOutput struct {
+	Success        bool                      `json:"success"`
+	ConversationID string                    `json:"conversation_id,omitempty"`
+	Updated        []string                  `json:"updated,omitempty"`   // List of property names that were changed
+	Name           string                    `json:"name,omitempty"`      // Current name after update
+	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"` // Current user data after update
+	Error          string                    `json:"error,omitempty"`
+}
+
+// UITextboxInput is the input for the mitto_ui_textbox tool.
+type UITextboxInput struct {
+	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
+	Title          string `json:"title"`                     // Dialog title
+	Text           string `json:"text"`                      // Initial text content
+	ResultMode     string `json:"result"`                    // "text" or "diff"
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Timeout in seconds
+}
+
+// UITextboxOutput is the output for the mitto_ui_textbox tool.
+type UITextboxOutput struct {
+	Changed  bool   `json:"changed"`
+	Aborted  bool   `json:"aborted,omitempty"`
 	TimedOut bool   `json:"timed_out,omitempty"`
+	Result   string `json:"result,omitempty"`
+}
+
+// UIFormInput is the input for the mitto_ui_form tool.
+type UIFormInput struct {
+	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
+	Title          string `json:"title"`                     // Dialog title
+	HTML           string `json:"html"`                      // HTML form content (will be sanitized)
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Timeout in seconds
+}
+
+// UIFormOutput is the output for the mitto_ui_form tool.
+type UIFormOutput struct {
+	Submitted bool              `json:"submitted"`
+	Cancelled bool              `json:"cancelled,omitempty"`
+	TimedOut  bool              `json:"timed_out,omitempty"`
+	Values    map[string]string `json:"values,omitempty"` // field name → value
+}
+
+// UINotifyInput is the input for the mitto_ui_notify tool.
+type UINotifyInput struct {
+	SelfID  string `json:"self_id"`           // YOUR session ID (the caller)
+	Title   string `json:"title"`             // Notification title (required)
+	Message string `json:"message,omitempty"` // Optional body text
+	Style   string `json:"style,omitempty"`   // "info" (default), "success", "warning", "error"
+	Sound   bool   `json:"sound,omitempty"`   // Play notification sound
+	Native  bool   `json:"native,omitempty"`  // Show native OS notification if available
+}
+
+// UINotifyOutput is the output for the mitto_ui_notify tool.
+type UINotifyOutput struct {
+	Success bool `json:"success"`
 }
 
 // =============================================================================
@@ -379,6 +438,38 @@ func (c *childReportCollector) addReport(childID string, taskID string, report j
 	r.Completed = true
 	r.Timestamp = time.Now()
 	r.TaskID = taskID
+
+	c.checkAndSignalWait()
+}
+
+// markChildAutoCompleted marks a child as auto-completed when its agent
+// stops responding without sending a report. This typically happens when
+// the agent finishes processing but doesn't call mitto_children_tasks_report.
+// The reason parameter provides diagnostic info (e.g., "agent_idle", "session_stopped").
+func (c *childReportCollector) markChildAutoCompleted(childID string, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Don't overwrite a real report
+	r := c.reports[childID]
+	if r != nil && r.Completed {
+		return
+	}
+
+	reportJSON, _ := json.Marshal(map[string]string{
+		"status":  "auto_completed",
+		"summary": "Child did not report back: " + reason,
+	})
+
+	if r == nil {
+		r = &childReport{}
+		c.reports[childID] = r
+	}
+	r.Report = reportJSON
+	r.Completed = true
+	r.Timestamp = time.Now()
+	r.AutoCompleted = true
+	r.AutoReason = reason
 
 	c.checkAndSignalWait()
 }
@@ -536,10 +627,12 @@ func (c *childReportCollector) getStuckChildren() []string {
 
 // childReport stores the report from a single child conversation.
 type childReport struct {
-	Report    json.RawMessage `json:"report"`
-	Completed bool            `json:"completed"`
-	Timestamp time.Time       `json:"timestamp"`
-	TaskID    string          `json:"task_id,omitempty"`
+	Report        json.RawMessage `json:"report"`
+	Completed     bool            `json:"completed"`
+	Timestamp     time.Time       `json:"timestamp"`
+	TaskID        string          `json:"task_id,omitempty"`
+	AutoCompleted bool            `json:"auto_completed,omitempty"` // true if auto-completed (agent went idle without reporting)
+	AutoReason    string          `json:"auto_reason,omitempty"`    // reason for auto-completion
 }
 
 // ChildrenTasksWaitInput is the input for mitto_children_tasks_wait tool.
@@ -604,6 +697,7 @@ type ConversationWaitInput struct {
 	ConversationID string `json:"conversation_id"`           // Target conversation to wait on
 	What           string `json:"what"`                      // Condition to wait for: "agent_responded"
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min)
+	Workspace      string `json:"workspace,omitempty"`       // Optional workspace UUID for cross-workspace operations
 }
 
 // ConversationWaitOutput is the output for mitto_conversation_wait tool.
@@ -612,4 +706,115 @@ type ConversationWaitOutput struct {
 	What     string `json:"what"`                // The condition that was waited on
 	TimedOut bool   `json:"timed_out,omitempty"` // True if the wait timed out before the condition was met
 	Error    string `json:"error,omitempty"`
+}
+
+// =============================================================================
+// Conversation History Types
+// =============================================================================
+
+// ConversationHistoryInput is the input for mitto_conversation_history tool.
+type ConversationHistoryInput struct {
+	SelfID         string   `json:"self_id"`                   // YOUR session ID (the caller)
+	ConversationID string   `json:"conversation_id,omitempty"` // Target conversation (defaults to self if omitted)
+	EventTypes     []string `json:"event_types,omitempty"`     // Filter by event types (omit for all)
+	TextContains   string   `json:"text_contains,omitempty"`   // Only events with text matching this (case-insensitive)
+	TextExcludes   string   `json:"text_excludes,omitempty"`   // Exclude events with text matching this (case-insensitive)
+	AfterSeq       int64    `json:"after_seq,omitempty"`       // Only events with seq > this
+	BeforeSeq      int64    `json:"before_seq,omitempty"`      // Only events with seq < this
+	LastN          int      `json:"last_n,omitempty"`          // Return last N matching events (default: 50, max: 200)
+	Offset         int      `json:"offset,omitempty"`          // Skip this many from the end (for pagination backward)
+	IncludeData    *bool    `json:"include_data,omitempty"`    // Include full event data (default: true)
+	ToolName       string   `json:"tool_name,omitempty"`       // For tool_call events: filter by tool name/title substring
+}
+
+// ConversationHistoryOutput is the output for mitto_conversation_history tool.
+type ConversationHistoryOutput struct {
+	Success        bool                       `json:"success"`
+	ConversationID string                     `json:"conversation_id,omitempty"`
+	TotalEvents    int                        `json:"total_events"`    // Total events in session (before filtering)
+	ReturnedEvents int                        `json:"returned_events"` // Number of events returned
+	Events         []ConversationHistoryEvent `json:"events"`          // Must be empty array, not nil — ACP validates this
+	HasMore        bool                       `json:"has_more,omitempty"`
+	Error          string                     `json:"error,omitempty"`
+}
+
+// ConversationHistoryEvent is a single event in the history response.
+type ConversationHistoryEvent struct {
+	Seq       int64       `json:"seq"`
+	Type      string      `json:"type"`
+	Timestamp string      `json:"timestamp"`      // ISO 8601
+	Summary   string      `json:"summary"`        // Human-readable one-liner
+	Data      interface{} `json:"data,omitempty"` // Full event data (if include_data is true)
+}
+
+// =============================================================================
+// Prompt Management Tool Types
+// =============================================================================
+
+// PromptListInput is the input for mitto_prompt_list tool.
+type PromptListInput struct {
+	SelfID    string `json:"self_id"`             // YOUR session ID (the caller)
+	Workspace string `json:"workspace,omitempty"` // Optional workspace UUID for cross-workspace access
+}
+
+// PromptInfo contains basic metadata about a prompt (without full text).
+type PromptInfo struct {
+	Name            string `json:"name"`
+	Description     string `json:"description,omitempty"`
+	Group           string `json:"group,omitempty"`
+	BackgroundColor string `json:"background_color,omitempty"`
+	Source          string `json:"source,omitempty"`  // "file", "settings", "workspace", "builtin"
+	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
+}
+
+// PromptListOutput is the output for mitto_prompt_list tool.
+type PromptListOutput struct {
+	Success    bool         `json:"success"`
+	Prompts    []PromptInfo `json:"prompts"` // Must be empty array, not nil — ACP validates this
+	WorkingDir string       `json:"working_dir,omitempty"`
+	Error      string       `json:"error,omitempty"`
+}
+
+// PromptGetInput is the input for mitto_prompt_get tool.
+type PromptGetInput struct {
+	SelfID    string `json:"self_id"`             // YOUR session ID (the caller)
+	Name      string `json:"name"`                // Prompt name (case-insensitive match)
+	Workspace string `json:"workspace,omitempty"` // Optional workspace UUID
+}
+
+// PromptDetail contains full details about a prompt including text.
+type PromptDetail struct {
+	Name            string `json:"name"`
+	Prompt          string `json:"prompt"` // Full prompt text
+	Description     string `json:"description,omitempty"`
+	Group           string `json:"group,omitempty"`
+	BackgroundColor string `json:"background_color,omitempty"`
+	Source          string `json:"source,omitempty"`  // "file", "settings", "workspace", "builtin"
+	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
+}
+
+// PromptGetOutput is the output for mitto_prompt_get tool.
+type PromptGetOutput struct {
+	Success bool          `json:"success"`
+	Prompt  *PromptDetail `json:"prompt,omitempty"`
+	Error   string        `json:"error,omitempty"`
+}
+
+// PromptUpdateInput is the input for mitto_prompt_update tool.
+type PromptUpdateInput struct {
+	SelfID          string `json:"self_id"`                    // YOUR session ID (the caller)
+	Name            string `json:"name"`                       // Prompt name to update (required)
+	Workspace       string `json:"workspace,omitempty"`        // Optional workspace UUID
+	Prompt          string `json:"prompt,omitempty"`           // New prompt text
+	Description     string `json:"description,omitempty"`      // New description
+	BackgroundColor string `json:"background_color,omitempty"` // New background color
+	Group           string `json:"group,omitempty"`            // New group
+	Enabled         *bool  `json:"enabled,omitempty"`          // Enable/disable
+}
+
+// PromptUpdateOutput is the output for mitto_prompt_update tool.
+type PromptUpdateOutput struct {
+	Success bool   `json:"success"`
+	Path    string `json:"path,omitempty"` // File path of saved/updated prompt
+	Error   string `json:"error,omitempty"`
 }

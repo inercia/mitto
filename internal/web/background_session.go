@@ -2,8 +2,10 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -54,6 +56,11 @@ type BackgroundSession struct {
 	// ACP agent capabilities (set during initialization)
 	agentSupportsImages bool // True if agent advertises prompt_image capability
 
+	// agentModels holds the model state (UNSTABLE) from NewSession/LoadSession/ResumeSession.
+	// Uses UnstableSessionModelState to unify both stable and unstable response variants.
+	// May be nil if the agent doesn't advertise model information.
+	agentModels *acp.UnstableSessionModelState
+
 	// Session persistence
 	recorder *session.Recorder
 
@@ -74,6 +81,15 @@ type BackgroundSession struct {
 	observersMu           sync.RWMutex
 	observers             map[SessionObserver]struct{}
 	lastObserverRemovedAt atomic.Int64 // Unix nanos when observer count last dropped to 0 (for GC grace period)
+
+	// Connected WebSocket client tracking (separate from observers)
+	// Clients are counted from initial WS connection until disconnect,
+	// even before they send load_events and become observers.
+	connectedClients atomic.Int32
+
+	// Activity tracking — updated on observer add and prompt start.
+	// Used by GC to determine if a session has been recently used.
+	lastActivityAt atomic.Int64 // Unix nanos
 
 	// Prompt state
 	promptMu             sync.Mutex
@@ -108,6 +124,7 @@ type BackgroundSession struct {
 	actionButtonsConfig *config.ActionButtonsConfig // Configuration (nil means disabled)
 	actionButtonsMu     sync.RWMutex                // Protects cachedActionButtons
 	cachedActionButtons []ActionButton              // In-memory cache for fast access
+	followUpInProgress  atomic.Bool                 // Prevents concurrent follow-up analyses (prompt completion vs session resume race)
 
 	// File links configuration
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
@@ -119,6 +136,9 @@ type BackgroundSession struct {
 
 	// onStreamingStateChanged is called when the session's streaming state changes.
 	onStreamingStateChanged func(sessionID string, isStreaming bool)
+
+	// onUIPromptStateChanged is called when a blocking UI prompt starts or ends.
+	onUIPromptStateChanged func(sessionID string, isWaiting bool)
 
 	// onPlanStateChanged is called when the agent plan state changes.
 	// Used to cache plan state in SessionManager for restoration on conversation switch.
@@ -164,10 +184,18 @@ type BackgroundSession struct {
 	activePromptMu sync.Mutex
 	activePrompt   *activeUIPrompt
 
+	// Last prompt token usage — updated after each successful prompt completes.
+	lastUsage   *acp.Usage
+	lastUsageMu sync.Mutex
+
 	// sharedProcess is set when this session uses workspace-scoped process sharing.
 	// When non-nil, this session does not own the OS process — it only owns a session
 	// slot on the shared process. nil = legacy per-session process ownership.
 	sharedProcess *SharedACPProcess
+
+	// resumeMethod tracks which method was used to establish the ACP session:
+	// "resume" (UNSTABLE resume API), "load" (history replay), or "new" (fresh session)
+	resumeMethod string
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.
@@ -210,6 +238,9 @@ type BackgroundSessionConfig struct {
 	// It's called with true when streaming starts (user sends prompt) and false when it ends.
 	OnStreamingStateChanged func(sessionID string, isStreaming bool)
 
+	// OnUIPromptStateChanged is called when a blocking UI prompt starts or ends.
+	OnUIPromptStateChanged func(sessionID string, isWaiting bool)
+
 	// OnPlanStateChanged is called when the agent plan state changes.
 	// Used to cache plan state in SessionManager for restoration on conversation switch.
 	OnPlanStateChanged func(sessionID string, entries []PlanEntry)
@@ -234,6 +265,11 @@ type BackgroundSessionConfig struct {
 
 	// SharedProcess is the shared ACP process for this workspace (nil = legacy per-session process).
 	SharedProcess *SharedACPProcess
+
+	// PruneConfig is the pruning configuration for the session recorder.
+	// When set, the recorder automatically prunes old events after each recording
+	// to keep the session within the configured limits (max messages, max size).
+	PruneConfig *session.PruneConfig
 }
 
 // NewBackgroundSession creates a new background session.
@@ -258,6 +294,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		workspaceUUID:           cfg.WorkspaceUUID,
 		runner:                  cfg.Runner,
 		onStreamingStateChanged: cfg.OnStreamingStateChanged,
+		onUIPromptStateChanged:  cfg.OnUIPromptStateChanged,
 		onPlanStateChanged:      cfg.OnPlanStateChanged,
 		onConfigChanged:         cfg.OnConfigOptionChanged,
 		onTitleGenerated:        cfg.OnTitleGenerated,
@@ -267,14 +304,29 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		auxiliaryManager:        cfg.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     cfg.AvailableACPServers, // Pre-computed workspace server list
 	}
+
+	// Wire prompt-mode processor execution to auxiliary sessions
+	if bs.processorManager != nil && bs.auxiliaryManager != nil {
+		bs.processorManager.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
+			return bs.auxiliaryManager.PromptProcessorAsync(ctx, workspaceUUID, processorName, prompt)
+		})
+	}
+
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Initialize activity timestamp
+	bs.lastActivityAt.Store(time.Now().UnixNano())
 
 	// Create recorder for persistence
 	if cfg.Store != nil {
 		bs.recorder = session.NewRecorder(cfg.Store)
 		bs.persistedID = bs.recorder.SessionID()
 		bs.store = cfg.Store
+		// Set pruning configuration so the recorder auto-prunes after each event
+		if cfg.PruneConfig != nil {
+			bs.recorder.SetPruneConfig(cfg.PruneConfig)
+		}
 		if err := bs.recorder.Start(cfg.ACPServer, cfg.WorkingDir, cfg.WorkspaceUUID); err != nil {
 			cancel()
 			return nil, err
@@ -427,6 +479,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		workspaceUUID:           config.WorkspaceUUID,
 		runner:                  config.Runner,
 		onStreamingStateChanged: config.OnStreamingStateChanged,
+		onUIPromptStateChanged:  config.OnUIPromptStateChanged,
 		onPlanStateChanged:      config.OnPlanStateChanged,
 		onConfigChanged:         config.OnConfigOptionChanged,
 		onTitleGenerated:        config.OnTitleGenerated,
@@ -436,12 +489,27 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		auxiliaryManager:        config.AuxiliaryManager,    // Workspace-scoped auxiliary manager
 		availableACPServers:     config.AvailableACPServers, // Pre-computed workspace server list
 	}
+
+	// Wire prompt-mode processor execution to auxiliary sessions
+	if bs.processorManager != nil && bs.auxiliaryManager != nil {
+		bs.processorManager.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
+			return bs.auxiliaryManager.PromptProcessorAsync(ctx, workspaceUUID, processorName, prompt)
+		})
+	}
+
 	// Initialize condition variable for prompt completion waiting
 	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Initialize activity timestamp
+	bs.lastActivityAt.Store(time.Now().UnixNano())
 
 	// Resume recorder for the existing session
 	if config.Store != nil {
 		bs.recorder = session.NewRecorderWithID(config.Store, config.PersistedID)
+		// Set pruning configuration so the recorder auto-prunes after each event
+		if config.PruneConfig != nil {
+			bs.recorder.SetPruneConfig(config.PruneConfig)
+		}
 		if err := bs.recorder.Resume(); err != nil {
 			cancel()
 			return nil, &sessionError{"failed to resume session recording: " + err.Error()}
@@ -471,6 +539,13 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		} else {
 			bs.nextSeq = eventCount + 1
 		}
+
+		// Restore processor activation stats from persisted metadata
+		if bs.processorManager != nil {
+			if meta, err := config.Store.GetMetadata(config.PersistedID); err == nil {
+				bs.processorManager.SetStats(meta.ProcessorActivations, meta.ProcessorLastActivation)
+			}
+		}
 	} else {
 		// No store - initialize nextSeq to 1 to prevent seq=0 errors
 		bs.nextSeq = 1
@@ -495,11 +570,52 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	// Use shared process if available, otherwise start a new per-session process.
 	if config.SharedProcess != nil {
 		if err := bs.resumeSharedACPSession(config.SharedProcess, config.WorkingDir, config.ACPSessionID); err != nil {
-			cancel()
-			if bs.recorder != nil {
-				bs.recorder.Suspend()
+			// Auto-restart the shared process if we hit a pipe/connection error.
+			// This happens when the OS killed the ACP subprocess during app backgrounding
+			// (sleep/screen-lock) and the app has now resumed. The Go conn object is still
+			// non-nil but the underlying pipes are dead, so the first resume attempt fails
+			// with "broken pipe" or "file already closed".
+			// We detect this, restart the shared OS process, and retry once — matching the
+			// same auto-recovery pattern used by PromptWithMeta and the streaming loop.
+			if isACPConnectionError(err) && bs.canRestartACP() {
+				if bs.logger != nil {
+					bs.logger.Info("Shared ACP process appears dead on resume, restarting",
+						"session_id", bs.persistedID,
+						"error", err)
+				}
+				bs.recordRestart(RestartReasonResumeFailure)
+
+				// Restart the shared OS process. SharedACPProcess.Restart() is rate-limited
+				// and idempotent — if another session already triggered a restart, this
+				// returns the already-restarted process without starting another one.
+				if restartErr := config.SharedProcess.Restart(); restartErr != nil {
+					if bs.logger != nil {
+						bs.logger.Warn("Failed to restart shared ACP process on resume",
+							"session_id", bs.persistedID,
+							"error", restartErr)
+					}
+					cancel()
+					if bs.recorder != nil {
+						bs.recorder.Suspend()
+					}
+					return nil, fmt.Errorf("ACP process restart failed on resume: %w", restartErr)
+				}
+
+				// Retry session creation on the now-running process.
+				if err = bs.resumeSharedACPSession(config.SharedProcess, config.WorkingDir, config.ACPSessionID); err != nil {
+					cancel()
+					if bs.recorder != nil {
+						bs.recorder.Suspend()
+					}
+					return nil, err
+				}
+			} else {
+				cancel()
+				if bs.recorder != nil {
+					bs.recorder.Suspend()
+				}
+				return nil, err
 			}
-			return nil, err
 		}
 	} else {
 		// Start ACP process, passing the ACP session ID for potential resumption
@@ -728,6 +844,27 @@ func (bs *BackgroundSession) AgentSupportsImages() bool {
 	return bs.agentSupportsImages
 }
 
+// AgentModels returns the agent's model state (available models and current model).
+// This is from the UNSTABLE SessionModelState API and may be nil if the agent doesn't support it.
+func (bs *BackgroundSession) AgentModels() *acp.UnstableSessionModelState {
+	return bs.agentModels
+}
+
+// logAgentModels logs the agent's model state at DEBUG level.
+func (bs *BackgroundSession) logAgentModels(models *acp.UnstableSessionModelState) {
+	if bs.logger == nil || models == nil {
+		return
+	}
+	modelNames := make([]string, len(models.AvailableModels))
+	for i, m := range models.AvailableModels {
+		modelNames[i] = m.Name
+	}
+	bs.logger.Debug("Agent model state (UNSTABLE)",
+		"current_model", string(models.CurrentModelId),
+		"available_models", modelNames,
+		"model_count", len(models.AvailableModels))
+}
+
 // --- Observer Management ---
 
 // AddObserver adds an observer to receive session events.
@@ -743,6 +880,8 @@ func (bs *BackgroundSession) AddObserver(observer SessionObserver) {
 	bs.observers[observer] = struct{}{}
 	observerCount := len(bs.observers)
 	bs.observersMu.Unlock()
+
+	bs.TouchActivity()
 
 	if bs.logger != nil {
 		bs.logger.Debug("Observer added", "observer_count", observerCount)
@@ -826,6 +965,50 @@ func (bs *BackgroundSession) ObserverCount() int {
 	bs.observersMu.RLock()
 	defer bs.observersMu.RUnlock()
 	return len(bs.observers)
+}
+
+// AddConnectedClient increments the connected WebSocket client counter.
+// Called when a client establishes a WebSocket connection, before load_events.
+func (bs *BackgroundSession) AddConnectedClient() {
+	count := bs.connectedClients.Add(1)
+	if bs.logger != nil {
+		bs.logger.Debug("Connected client added", "connected_client_count", count)
+	}
+}
+
+// RemoveConnectedClient decrements the connected WebSocket client counter.
+// Called when a WebSocket client disconnects (readPump exits).
+func (bs *BackgroundSession) RemoveConnectedClient() {
+	count := bs.connectedClients.Add(-1)
+	if bs.logger != nil {
+		bs.logger.Debug("Connected client removed", "connected_client_count", count)
+	}
+}
+
+// HasConnectedClients returns true if any WebSocket clients are currently connected.
+func (bs *BackgroundSession) HasConnectedClients() bool {
+	return bs.connectedClients.Load() > 0
+}
+
+// ConnectedClientCount returns the number of currently connected WebSocket clients.
+func (bs *BackgroundSession) ConnectedClientCount() int {
+	return int(bs.connectedClients.Load())
+}
+
+// TouchActivity records the current time as the session's last activity timestamp.
+// Called on observer add and at the start of each prompt.
+func (bs *BackgroundSession) TouchActivity() {
+	bs.lastActivityAt.Store(time.Now().UnixNano())
+}
+
+// LastActivityAt returns the time of the most recent session activity.
+// Returns zero time if lastActivityAt was never set (should not happen after construction).
+func (bs *BackgroundSession) LastActivityAt() time.Time {
+	nanos := bs.lastActivityAt.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // HasObservers returns true if any observers are attached.
@@ -1150,6 +1333,23 @@ type RestartStats struct {
 	ReasonCounts    map[RestartReason]int // Count of restarts by reason
 	LastRestartTime time.Time             // Timestamp of most recent restart
 	LastReason      RestartReason         // Reason for most recent restart
+}
+
+// GetProcessorStats returns processor statistics for this session.
+// Returns: processor count, total pipeline activations, last activation time, last applied processor names.
+func (bs *BackgroundSession) GetProcessorStats() (count int, activations int, lastAt time.Time, lastNames []string) {
+	if bs.processorManager == nil {
+		return 0, 0, time.Time{}, nil
+	}
+	return bs.processorManager.ProcessorCount(), bs.processorManager.TotalActivations(), bs.processorManager.LastActivationAt(), bs.processorManager.LastAppliedNames()
+}
+
+// GetLastUsage returns the last prompt's token usage, or nil if no prompt has completed yet.
+// This method is thread-safe.
+func (bs *BackgroundSession) GetLastUsage() *acp.Usage {
+	bs.lastUsageMu.Lock()
+	defer bs.lastUsageMu.Unlock()
+	return bs.lastUsage
 }
 
 // GetRestartStats returns statistics about ACP process restarts for telemetry.
@@ -1514,10 +1714,36 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			"acp_session_id", acpSessionID)
 	}
 
-	// Parse command using shell-aware tokenization
+	// Parse command using shell-aware tokenization FIRST,
+	// then expand $MITTO_* references in each arg individually.
+	// This preserves paths with spaces as single arguments.
 	args, err := mittoAcp.ParseCommand(acpCommand)
 	if err != nil {
 		return "", &sessionError{err.Error()}
+	}
+	mittoEnv := mittoAcp.BuildMittoEnv(bs.persistedID, workingDir, "", "")
+	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
+	if bs.logger != nil {
+		changedIndices := make([]int, 0)
+		for i, orig := range args {
+			if orig != expandedArgs[i] {
+				changedIndices = append(changedIndices, i)
+			}
+		}
+		if len(changedIndices) > 0 {
+			bs.logger.Debug("expanded MITTO_* vars in ACP command args",
+				"changed_indices", changedIndices,
+				"changed_count", len(changedIndices),
+				"session_id", bs.persistedID)
+		}
+	}
+	args = expandedArgs
+	// Expand cwd (single string, not shlex-parsed)
+	originalCwd := acpCwd
+	acpCwd = mittoAcp.ExpandCommand(acpCwd, mittoEnv)
+	if acpCwd != originalCwd && bs.logger != nil {
+		bs.logger.Debug("expanded MITTO_* vars in ACP cwd",
+			"session_id", bs.persistedID)
 	}
 
 	var stdin runner.WriteCloser
@@ -1605,6 +1831,13 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		if err != nil {
 			return "", &sessionError{"failed to create stderr pipe: " + err.Error()}
 		}
+
+		// Set MITTO_* environment variables for the ACP subprocess
+		processEnv := os.Environ()
+		for k, v := range mittoEnv {
+			processEnv = append(processEnv, k+"="+v)
+		}
+		cmd.Env = processEnv
 
 		if err := cmd.Start(); err != nil {
 			return "", &sessionError{"failed to start ACP server: " + err.Error()}
@@ -1771,7 +2004,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	initResp, err := bs.acpConn.Initialize(initCtx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
-			Fs: acp.FileSystemCapability{
+			Fs: acp.FileSystemCapabilities{
 				ReadTextFile:  true,
 				WriteTextFile: true,
 			},
@@ -1811,39 +2044,97 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	// Build MCP servers list based on session settings and agent capabilities
 	mcpServers := bs.startSessionMcpServer(bs.store, initResp.AgentCapabilities)
 
-	// Try to load existing session if we have an ACP session ID and the agent supports it
-	if acpSessionID != "" && initResp.AgentCapabilities.LoadSession {
-		loadCtx, loadCancel := context.WithTimeout(initCtx, 30*time.Second)
-		loadResp, err := bs.acpConn.LoadSession(loadCtx, acp.LoadSessionRequest{
-			SessionId:  acp.SessionId(acpSessionID),
-			Cwd:        cwd,
-			McpServers: mcpServers,
-		})
-		loadCancel()
-		if err == nil {
-			bs.acpID = acpSessionID
-			// Store available modes from session load
-			bs.setSessionModes(loadResp.Modes)
-			if bs.logger != nil {
-				bs.logger.Info("Resumed ACP session",
-					"acp_session_id", acpSessionID)
-				bs.logSessionModes(loadResp.Modes)
+	// Try to resume/load existing session if we have an ACP session ID
+	if acpSessionID != "" {
+		caps := initResp.AgentCapabilities
+		supportsResume := caps.SessionCapabilities.Resume != nil
+		supportsLoad := caps.LoadSession
+
+		// Try Resume first (fast path)
+		if supportsResume {
+			resumeCtx, resumeCancel := context.WithTimeout(initCtx, 10*time.Second)
+			resumeResp, err := bs.acpConn.UnstableResumeSession(resumeCtx, acp.UnstableResumeSessionRequest{
+				SessionId:  acp.SessionId(acpSessionID),
+				Cwd:        cwd,
+				McpServers: mcpServers,
+			})
+			resumeCancel()
+			if err == nil {
+				bs.acpID = acpSessionID
+				bs.resumeMethod = "resume"
+				bs.setSessionModes(resumeResp.Modes)
+				bs.setAgentModels(resumeResp.Models)
+				if bs.logger != nil {
+					bs.logger.Info("Resumed ACP session using UNSTABLE resume API",
+						"acp_session_id", acpSessionID,
+						"resume_method", "resume")
+					bs.logSessionModes(resumeResp.Modes)
+					bs.logAgentModels(resumeResp.Models)
+				}
+				return "", nil
 			}
-			return "", nil
+			// Log resume failure and fall through to Load
+			logFields := []any{
+				"acp_session_id", acpSessionID,
+				"error", err,
+				"method", "resume",
+			}
+			if resumeCtx.Err() == context.DeadlineExceeded {
+				logFields = append(logFields, "timeout", true)
+			}
+			if bs.logger != nil {
+				bs.logger.Info("Resume failed, will try Load or New", logFields...)
+			}
 		}
-		// Log the error but fall through to create a new session
-		logFields := []any{
-			"acp_session_id", acpSessionID,
-			"error", err,
-		}
-		if loadCtx.Err() == context.DeadlineExceeded {
-			logFields = append(logFields, "timeout", true)
-		}
-		if bs.logger != nil {
-			bs.logger.Warn("Failed to load ACP session, creating new session",
-				logFields...)
+
+		// Fallback to Load (slow path with history replay)
+		if supportsLoad {
+			// Suppress event processing during Load to prevent notification queue overflow.
+			// The agent replays the entire conversation history as notifications; with large
+			// sessions this can exceed the SDK's 1024-entry queue before the consumer
+			// (markdown conversion + persistence) can drain it. The events are historical
+			// and already persisted, so discarding them is safe.
+			bs.acpClient.SetLoadingSession(true)
+			loadCtx, loadCancel := context.WithTimeout(initCtx, 30*time.Second)
+			loadResp, err := bs.acpConn.LoadSession(loadCtx, acp.LoadSessionRequest{
+				SessionId:  acp.SessionId(acpSessionID),
+				Cwd:        cwd,
+				McpServers: mcpServers,
+			})
+			loadCancel()
+			bs.acpClient.SetLoadingSession(false)
+			if err == nil {
+				bs.acpID = acpSessionID
+				bs.resumeMethod = "load"
+				// Store available modes from session load
+				bs.setSessionModes(loadResp.Modes)
+				bs.setAgentModels(stableToUnstableModelState(loadResp.Models))
+				if bs.logger != nil {
+					bs.logger.Info("Resumed ACP session using load (with history replay)",
+						"acp_session_id", acpSessionID,
+						"resume_method", "load")
+					bs.logSessionModes(loadResp.Modes)
+					bs.logAgentModels(bs.agentModels)
+				}
+				return "", nil
+			}
+			// Log load failure and fall through to New
+			logFields := []any{
+				"acp_session_id", acpSessionID,
+				"error", err,
+				"method", "load",
+			}
+			if loadCtx.Err() == context.DeadlineExceeded {
+				logFields = append(logFields, "timeout", true)
+			}
+			if bs.logger != nil {
+				bs.logger.Warn("Load failed, creating new session", logFields...)
+			}
 		}
 	}
+
+	// Create new session (final fallback)
+	bs.resumeMethod = "new"
 
 	// Create new session
 	sessResp, err := bs.acpConn.NewSession(initCtx, acp.NewSessionRequest{
@@ -1877,12 +2168,15 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Store available modes from session setup
 	bs.setSessionModes(sessResp.Modes)
+	bs.setAgentModels(stableToUnstableModelState(sessResp.Models))
 
 	if bs.logger != nil {
 		bs.logger.Info("Created new ACP session",
 			"acp_session_id", bs.acpID,
-			"command", acpCommand)
+			"command", acpCommand,
+			"resume_method", bs.resumeMethod)
 		bs.logSessionModes(sessResp.Modes)
+		bs.logAgentModels(bs.agentModels)
 	}
 
 	// Notify observers that ACP is now ready to accept prompts.
@@ -1915,10 +2209,10 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 	if bs.fileLinksConfig.IsEnabled() {
 		cfg.FileLinksConfig = &conversion.FileLinkerConfig{
 			WorkingDir:            bs.workingDir,
+			WorkspacePath:         bs.workingDir,
 			WorkspaceUUID:         bs.workspaceUUID,
 			Enabled:               true,
 			AllowOutsideWorkspace: bs.fileLinksConfig.IsAllowOutsideWorkspace(),
-			UseHTTPLinks:          true,
 			APIPrefix:             bs.apiPrefix,
 		}
 	}
@@ -1962,12 +2256,13 @@ func (bs *BackgroundSession) startSharedACPSession(sharedProcess *SharedACPProce
 		OnTerminalOutput:      bs.acpClient.TerminalOutput,
 		OnReleaseTerminal:     bs.acpClient.ReleaseTerminal,
 		OnWaitForTerminalExit: bs.acpClient.WaitForTerminalExit,
-		OnKillTerminalCommand: bs.acpClient.KillTerminalCommand,
+		OnKillTerminal:        bs.acpClient.KillTerminal,
 	})
 
 	bs.acpID = handle.SessionID
 	bs.agentSupportsImages = caps.PromptCapabilities.Image
 	bs.setSessionModes(handle.Modes)
+	bs.setAgentModels(handle.Models)
 
 	// Bridge the shared process's death channel to bs.acpProcessDone.
 	// bs.acpProcessDone is a bidirectional chan; sharedProcess.ProcessDone() is receive-only.
@@ -1989,6 +2284,7 @@ func (bs *BackgroundSession) startSharedACPSession(sharedProcess *SharedACPProce
 			"session_id", bs.persistedID,
 			"acp_session_id", bs.acpID,
 			"supports_images", bs.agentSupportsImages)
+		bs.logAgentModels(handle.Models)
 	}
 	return nil
 }
@@ -2010,28 +2306,78 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 	var handle *SessionHandle
 	var err error
 
-	// Try to resume an existing session if we have an ID and the agent supports it.
-	if acpSessionID != "" && caps.LoadSession {
-		loadCtx, loadCancel := context.WithTimeout(bs.ctx, 30*time.Second)
-		handle, err = sharedProcess.LoadSession(loadCtx, acpSessionID, workingDir, mcpServers)
-		loadCancel()
-		if err != nil {
-			logFields := []any{
-				"acp_session_id", acpSessionID,
-				"error", err,
+	// Try to resume an existing session if we have an ID.
+	// Prefer Resume over Load for speed (no history replay).
+	if acpSessionID != "" {
+		// Check capabilities
+		supportsResume := caps.SessionCapabilities.Resume != nil
+		supportsLoad := caps.LoadSession
+
+		// Try Resume first (fast path)
+		if supportsResume {
+			resumeCtx, resumeCancel := context.WithTimeout(bs.ctx, 10*time.Second)
+			handle, err = sharedProcess.ResumeSession(resumeCtx, acpSessionID, workingDir, mcpServers)
+			resumeCancel()
+			if err != nil {
+				logFields := []any{
+					"acp_session_id", acpSessionID,
+					"error", err,
+					"method", "resume",
+				}
+				if resumeCtx.Err() == context.DeadlineExceeded {
+					logFields = append(logFields, "timeout", true)
+				}
+				if bs.logger != nil {
+					bs.logger.Info("Resume failed, will try Load or New",
+						logFields...)
+				}
+				// Fall through to try Load
+			} else {
+				bs.resumeMethod = "resume"
+				if bs.logger != nil {
+					bs.logger.Info("Successfully resumed session using UNSTABLE resume API",
+						"acp_session_id", acpSessionID,
+						"resume_method", "resume")
+				}
 			}
-			if loadCtx.Err() == context.DeadlineExceeded {
-				logFields = append(logFields, "timeout", true)
-			}
-			if bs.logger != nil {
-				bs.logger.Warn("Failed to load ACP session on shared process, creating new",
-					logFields...)
+		}
+
+		// Fallback to Load (slow path with history replay)
+		if handle == nil && supportsLoad {
+			// Suppress event processing during Load to prevent notification queue overflow.
+			// See comment in startACPProcess for details.
+			bs.acpClient.SetLoadingSession(true)
+			loadCtx, loadCancel := context.WithTimeout(bs.ctx, 30*time.Second)
+			handle, err = sharedProcess.LoadSession(loadCtx, acpSessionID, workingDir, mcpServers)
+			loadCancel()
+			bs.acpClient.SetLoadingSession(false)
+			if err != nil {
+				logFields := []any{
+					"acp_session_id", acpSessionID,
+					"error", err,
+					"method", "load",
+				}
+				if loadCtx.Err() == context.DeadlineExceeded {
+					logFields = append(logFields, "timeout", true)
+				}
+				if bs.logger != nil {
+					bs.logger.Info("Load failed, creating new session",
+						logFields...)
+				}
+			} else {
+				bs.resumeMethod = "load"
+				if bs.logger != nil {
+					bs.logger.Info("Successfully loaded session (with history replay)",
+						"acp_session_id", acpSessionID,
+						"resume_method", "load")
+				}
 			}
 		}
 	}
 
-	// Fall back to creating a new session.
+	// Final fallback: create new session
 	if handle == nil {
+		bs.resumeMethod = "new"
 		handle, err = sharedProcess.NewSession(bs.ctx, workingDir, mcpServers)
 		if err != nil {
 			bs.stopSessionMcpServer()
@@ -2051,12 +2397,13 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 		OnTerminalOutput:      bs.acpClient.TerminalOutput,
 		OnReleaseTerminal:     bs.acpClient.ReleaseTerminal,
 		OnWaitForTerminalExit: bs.acpClient.WaitForTerminalExit,
-		OnKillTerminalCommand: bs.acpClient.KillTerminalCommand,
+		OnKillTerminal:        bs.acpClient.KillTerminal,
 	})
 
 	bs.acpID = handle.SessionID
 	bs.agentSupportsImages = caps.PromptCapabilities.Image
 	bs.setSessionModes(handle.Modes)
+	bs.setAgentModels(handle.Models)
 
 	// Bridge the shared process's death channel to bs.acpProcessDone.
 	done := make(chan struct{})
@@ -2076,7 +2423,9 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess *SharedACPProc
 			"session_id", bs.persistedID,
 			"acp_session_id", bs.acpID,
 			"requested_acp_session_id", acpSessionID,
+			"resume_method", bs.resumeMethod,
 			"supports_images", bs.agentSupportsImages)
+		bs.logAgentModels(handle.Models)
 	}
 
 	// Notify observers that ACP is now ready to accept prompts.
@@ -2145,7 +2494,15 @@ func (bs *BackgroundSession) logAgentInfo(resp acp.InitializeResponse) {
 	if len(resp.AuthMethods) > 0 {
 		authMethods := make([]string, len(resp.AuthMethods))
 		for i, auth := range resp.AuthMethods {
-			authMethods[i] = auth.Name
+			if auth.Agent != nil {
+				authMethods[i] = auth.Agent.Name
+			} else if auth.EnvVar != nil {
+				authMethods[i] = "env_var"
+			} else if auth.Terminal != nil {
+				authMethods[i] = "terminal"
+			} else {
+				authMethods[i] = "unknown"
+			}
 		}
 		bs.logger.Debug("Agent auth methods",
 			"count", len(resp.AuthMethods),
@@ -2214,11 +2571,12 @@ func (bs *BackgroundSession) GetAuxiliaryManager() *auxiliary.WorkspaceAuxiliary
 
 // PromptMeta contains optional metadata about the prompt source.
 type PromptMeta struct {
-	SenderID   string          // Unique identifier of the sending client (for broadcast deduplication)
-	PromptID   string          // Client-generated prompt ID (for delivery confirmation)
-	ImageIDs   []string        // IDs of images attached to the prompt
-	FileIDs    []string        // IDs of files attached to the prompt
-	OnComplete func(err error) // Called when the async prompt goroutine finishes (nil = success)
+	SenderID         string          // Unique identifier of the sending client (for broadcast deduplication)
+	PromptID         string          // Client-generated prompt ID (for delivery confirmation)
+	ImageIDs         []string        // IDs of images attached to the prompt
+	FileIDs          []string        // IDs of files attached to the prompt
+	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
+	IsPeriodicForced bool            // True when this periodic prompt was triggered manually via "run now"
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -2342,6 +2700,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	bs.isPrompting = true
 	bs.promptStartTime = time.Now()
 	bs.promptCount++
+	bs.TouchActivity()
 
 	// Check if we need to inject conversation history (first prompt of resumed session)
 	shouldInjectHistory := bs.isResumed && !bs.historyInjected
@@ -2509,11 +2868,13 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	// Best-effort: unavailable fields substitute to "".
 	var sessionName, acpServer, parentSessionID, parentSessionName string
 	var childSessions []processors.ChildSession
+	var advancedSettings map[string]bool
 	if bs.store != nil && bs.persistedID != "" {
 		if sessionMeta, metaErr := bs.store.GetMetadata(bs.persistedID); metaErr == nil {
 			sessionName = sessionMeta.Name
 			acpServer = sessionMeta.ACPServer
 			parentSessionID = sessionMeta.ParentSessionID
+			advancedSettings = sessionMeta.AdvancedSettings
 		}
 		// Resolve parent session name for @mitto:parent variable
 		if parentSessionID != "" {
@@ -2529,6 +2890,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 					Name:        child.Name,
 					ACPServer:   child.ACPServer,
 					IsAutoChild: child.IsAutoChild,
+					ChildOrigin: string(child.ChildOrigin),
 				})
 			}
 		}
@@ -2544,19 +2906,59 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		}
 	}
 
+	// Populate user data schema and current user data for processor variables
+	var hasUserDataSchema bool
+	var hasMittoRC bool
+	var hasMetadataDescription bool
+	var userDataSchemaJSON string
+	var userDataJSON string
+	if bs.workingDir != "" {
+		rc, rcErr := config.LoadWorkspaceRC(bs.workingDir)
+		if rcErr == nil && rc != nil &&
+			rc.Metadata != nil && rc.Metadata.UserDataSchema != nil && len(rc.Metadata.UserDataSchema.Fields) > 0 {
+			hasUserDataSchema = true
+			if schemaBytes, err := json.Marshal(rc.Metadata.UserDataSchema.Fields); err == nil {
+				userDataSchemaJSON = string(schemaBytes)
+			}
+		}
+		// Check if .mittorc exists (regardless of content)
+		if rcPath, _, err := config.FindWorkspaceRCPath(bs.workingDir); err == nil && rcPath != "" {
+			hasMittoRC = true
+		}
+		// Check if metadata description is set
+		if rcErr == nil && rc != nil && rc.Metadata != nil && rc.Metadata.Description != "" {
+			hasMetadataDescription = true
+		}
+	}
+	if bs.store != nil && bs.persistedID != "" {
+		if ud, err := bs.store.GetUserData(bs.persistedID); err == nil && ud != nil && len(ud.Attributes) > 0 {
+			if udBytes, err := json.Marshal(ud.Attributes); err == nil {
+				userDataJSON = string(udBytes)
+			}
+		}
+	}
+
 	processorInput := &processors.ProcessorInput{
-		Message:             message,
-		IsFirstMessage:      isFirst,
-		SessionID:           bs.persistedID,
-		WorkingDir:          bs.workingDir,
-		ParentSessionID:     parentSessionID,
-		ParentSessionName:   parentSessionName,
-		SessionName:         sessionName,
-		ACPServer:           acpServer,
-		WorkspaceUUID:       bs.workspaceUUID,
-		AvailableACPServers: bs.availableACPServers,
-		ChildSessions:       childSessions,
-		MCPToolNames:        mcpToolNames,
+		Message:                message,
+		IsFirstMessage:         isFirst,
+		SessionID:              bs.persistedID,
+		WorkingDir:             bs.workingDir,
+		ParentSessionID:        parentSessionID,
+		ParentSessionName:      parentSessionName,
+		SessionName:            sessionName,
+		ACPServer:              acpServer,
+		WorkspaceUUID:          bs.workspaceUUID,
+		AvailableACPServers:    bs.availableACPServers,
+		ChildSessions:          childSessions,
+		MCPToolNames:           mcpToolNames,
+		IsPeriodic:             meta.SenderID == "periodic-runner",
+		IsPeriodicForced:       meta.IsPeriodicForced,
+		AdvancedSettings:       advancedSettings,
+		HasUserDataSchema:      hasUserDataSchema,
+		HasMittoRC:             hasMittoRC,
+		HasMetadataDescription: hasMetadataDescription,
+		UserDataSchemaJSON:     userDataSchemaJSON,
+		UserDataJSON:           userDataJSON,
 	}
 
 	if bs.processorManager != nil {
@@ -2566,7 +2968,17 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				bs.logger.Error("Processor execution failed", "error", procErr)
 			}
 			// Continue with original message on processor failure
-		} else if procResult != nil {
+		} else {
+			// Persist processor activation count to metadata after each successful Apply
+			if bs.store != nil && bs.persistedID != "" {
+				_, procActivations, procLastAt, _ := bs.GetProcessorStats()
+				_ = bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+					m.ProcessorActivations = procActivations
+					m.ProcessorLastActivation = procLastAt
+				})
+			}
+		}
+		if procResult != nil {
 			promptMessage = procResult.Message
 
 			// Convert processor attachments to content blocks
@@ -2676,6 +3088,33 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				SessionId: acp.SessionId(bs.acpID),
 				Prompt:    finalBlocks,
 			})
+		}
+
+		// Store token usage from the prompt response (if available).
+		if promptResp.Usage != nil {
+			bs.lastUsageMu.Lock()
+			bs.lastUsage = promptResp.Usage
+			bs.lastUsageMu.Unlock()
+		}
+
+		// Accumulate token usage for processor rerun tracking.
+		if bs.processorManager != nil {
+			if promptResp.Usage != nil {
+				bs.processorManager.AccumulateTokenUsage(promptResp.Usage.TotalTokens)
+			} else {
+				// Fallback: estimate tokens from message text when ACP doesn't report usage.
+				estimated := processors.EstimateTokens(message)
+				// Also estimate from the agent's response if available.
+				if bs.store != nil {
+					if events, err := bs.store.ReadEvents(bs.persistedID); err == nil {
+						agentMsg := session.GetLastAgentMessage(events)
+						estimated += processors.EstimateTokens(agentMsg)
+					}
+				}
+				if estimated > 0 {
+					bs.processorManager.AccumulateTokenUsage(estimated)
+				}
+			}
 		}
 
 		// Mark prompt as complete BEFORE any further processing
@@ -2868,10 +3307,19 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 // to observers via OnActionButtons. This is non-blocking and runs in a goroutine.
 // userPrompt provides context about what the user asked.
 func (bs *BackgroundSession) analyzeFollowUpQuestions(userPrompt, agentMessage string) {
-	// Use a generous timeout: PromptAuxiliary calls WaitForIdle before sending the
-	// follow-up prompt, and another aux operation (e.g. MCP tool fetch) may be
-	// in-flight at the same time — keeping activeRPCs > 0 for tens of seconds.
-	// 5 minutes is ample for those concurrent aux ops to finish.
+	// Prevent concurrent analysis — only one goroutine should analyze at a time.
+	// If another analysis is already in progress, skip this one.
+	// The in-progress analysis will produce the same results since the session
+	// state hasn't changed (no new prompts while both are running).
+	if !bs.followUpInProgress.CompareAndSwap(false, true) {
+		if bs.logger != nil {
+			bs.logger.Debug("follow-up analysis: skipped, another analysis already in progress")
+		}
+		return
+	}
+	defer bs.followUpInProgress.Store(false)
+
+	// Use a generous timeout for the auxiliary follow-up prompt.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -3012,6 +3460,12 @@ func (bs *BackgroundSession) TriggerFollowUpSuggestions() bool {
 	bs.logger.Debug("follow-up suggestions: triggering analysis for resumed session",
 		"user_prompt_length", len(userPrompt),
 		"agent_message_length", len(agentMessage))
+
+	// Check if analysis is already in progress (e.g., from prompt completion racing with session resume)
+	if bs.followUpInProgress.Load() {
+		bs.logger.Debug("follow-up suggestions: analysis already in progress, skipping")
+		return true
+	}
 
 	// Run analysis asynchronously
 	go bs.analyzeFollowUpQuestions(userPrompt, agentMessage)
@@ -3387,7 +3841,11 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 			Data:      session.AgentMessageData{Text: html},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist agent message", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist agent message", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist agent message", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3435,7 +3893,11 @@ func (bs *BackgroundSession) onAgentThought(seq int64, text string) {
 			Data:      session.AgentThoughtData{Text: text},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist agent thought", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist agent thought", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist agent thought", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3463,7 +3925,11 @@ func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
 			},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist tool call", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist tool call", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist tool call", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3521,7 +3987,11 @@ func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) 
 			},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist tool call update", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist tool call update", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist tool call update", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3554,7 +4024,11 @@ func (bs *BackgroundSession) onPlan(seq int64, entries []PlanEntry) {
 			Data:      session.PlanData{Entries: sessionEntries},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist plan", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist plan", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist plan", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3583,7 +4057,11 @@ func (bs *BackgroundSession) onFileWrite(seq int64, path string, size int) {
 			Data:      session.FileOperationData{Path: path, Size: size},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist file write", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist file write", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist file write", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3607,7 +4085,11 @@ func (bs *BackgroundSession) onFileRead(seq int64, path string, size int) {
 			Data:      session.FileOperationData{Path: path, Size: size},
 		}
 		if err := bs.recorder.RecordEventWithSeq(event); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist file read", "seq", seq, "error", err)
+			if strings.Contains(err.Error(), "session not started") {
+				bs.logger.Warn("Failed to persist file read", "seq", seq, "error", err)
+			} else {
+				bs.logger.Error("Failed to persist file read", "seq", seq, "error", err)
+			}
 		}
 	}
 
@@ -3880,6 +4362,50 @@ func (bs *BackgroundSession) setSessionModes(modes *acp.SessionModeState) {
 	bs.persistConfigValue(ConfigOptionCategoryMode, string(modes.CurrentModeId))
 }
 
+// setAgentModels converts agent model state to a "model" config option.
+// This allows model switching to reuse the config option infrastructure.
+func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelState) {
+	bs.agentModels = models
+	if models == nil || len(models.AvailableModels) == 0 {
+		return
+	}
+
+	// Convert models to config option values
+	options := make([]SessionConfigOptionValue, len(models.AvailableModels))
+	for i, m := range models.AvailableModels {
+		desc := ""
+		if m.Description != nil {
+			desc = *m.Description
+		}
+		options[i] = SessionConfigOptionValue{
+			Value:       string(m.ModelId),
+			Name:        m.Name,
+			Description: desc,
+		}
+	}
+
+	modelOption := SessionConfigOption{
+		ID:           ConfigOptionCategoryModel,
+		Name:         "Model",
+		Description:  "AI model for this session (UNSTABLE)",
+		Category:     ConfigOptionCategoryModel,
+		Type:         ConfigOptionTypeSelect,
+		CurrentValue: string(models.CurrentModelId),
+		Options:      options,
+	}
+
+	bs.configMu.Lock()
+	// Remove any existing model option, then append the new one
+	filtered := make([]SessionConfigOption, 0, len(bs.configOptions)+1)
+	for _, opt := range bs.configOptions {
+		if opt.Category != ConfigOptionCategoryModel {
+			filtered = append(filtered, opt)
+		}
+	}
+	bs.configOptions = append(filtered, modelOption)
+	bs.configMu.Unlock()
+}
+
 // ConfigOptions returns a copy of all session config options.
 func (bs *BackgroundSession) ConfigOptions() []SessionConfigOption {
 	bs.configMu.RLock()
@@ -3966,9 +4492,36 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 			}
 			return fmt.Errorf("failed to set %s: %w", configID, err)
 		}
+	} else if found.Category == ConfigOptionCategoryModel {
+		// Use UNSTABLE SetSessionModel API
+		var err error
+		if bs.sharedProcess != nil {
+			// Shared process doesn't support model switching yet
+			return fmt.Errorf("model switching is not supported on shared process sessions")
+		} else if bs.acpConn != nil {
+			_, err = bs.acpConn.UnstableSetSessionModel(ctx, acp.UnstableSetSessionModelRequest{
+				SessionId: acp.SessionId(bs.acpID),
+				ModelId:   acp.UnstableModelId(value),
+			})
+		} else {
+			return fmt.Errorf("no ACP connection")
+		}
+		if err != nil {
+			if bs.logger != nil {
+				bs.logger.Error("Failed to set session model",
+					"config_id", configID,
+					"value", value,
+					"error", err)
+			}
+			return fmt.Errorf("failed to set %s: %w", configID, err)
+		}
+
+		// Update the internal agentModels state to reflect the new current model
+		if bs.agentModels != nil {
+			bs.agentModels.CurrentModelId = acp.UnstableModelId(value)
+		}
 	} else {
 		// Future: Use SetConfigOption API when available in SDK
-		// For now, only mode category is supported via legacy API
 		return fmt.Errorf("config option %s is not supported by current agent", configID)
 	}
 
@@ -4173,6 +4726,12 @@ func (bs *BackgroundSession) UIPrompt(ctx context.Context, req UIPromptRequest) 
 		o.OnUIPrompt(req)
 	})
 
+	// Broadcast UI prompt state change for sidebar display (only for blocking prompts)
+	if req.Blocking && bs.onUIPromptStateChanged != nil {
+		bs.onUIPromptStateChanged(bs.persistedID, true)
+		defer bs.onUIPromptStateChanged(bs.persistedID, false)
+	}
+
 	// Wait for response, timeout, or cancellation
 	select {
 	case resp := <-responseCh:
@@ -4249,7 +4808,7 @@ func (bs *BackgroundSession) DismissActiveUIPrompt() {
 
 // HandleUIPromptAnswer processes a user's response to a UI prompt.
 // This is called by SessionWSClient when it receives a ui_prompt_answer message.
-func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label string) {
+func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label, freeText string) {
 	bs.activePromptMu.Lock()
 
 	if bs.activePrompt == nil || bs.activePrompt.request.RequestID != requestID {
@@ -4268,6 +4827,8 @@ func (bs *BackgroundSession) HandleUIPromptAnswer(requestID, optionID, label str
 		RequestID: requestID,
 		OptionID:  optionID,
 		Label:     label,
+		FreeText:  freeText,
+		Aborted:   optionID == "abort",
 	}:
 	default:
 		// Already received a response - ignore duplicate
@@ -4330,4 +4891,18 @@ func (bs *BackgroundSession) GetActiveUIPrompt() *UIPromptRequest {
 	// Return a copy
 	req := bs.activePrompt.request
 	return &req
+}
+
+// UINotify sends a fire-and-forget notification to all UI observers.
+// This implements the mcpserver.UIPrompter interface (UINotify method).
+// Unlike UIPrompt, this is non-blocking — it dispatches the notification
+// to all observers and returns immediately without waiting for any response.
+func (bs *BackgroundSession) UINotify(req UINotifyRequest) error {
+	if bs.IsClosed() {
+		return fmt.Errorf("session is closed")
+	}
+	bs.notifyObservers(func(o SessionObserver) {
+		o.OnNotification(req)
+	})
+	return nil
 }

@@ -17,6 +17,8 @@ type PromptEnabledContext struct {
 	Children ChildrenContext
 	// Tools contains MCP tools information (may be empty if not yet loaded)
 	Tools ToolsContext
+	// Permissions contains session permission flags (advanced settings)
+	Permissions PermissionsContext
 }
 
 // ACPContext holds ACP server context for CEL evaluation.
@@ -39,6 +41,12 @@ type WorkspaceContext struct {
 	Folder string
 	// Name is the display name of the workspace
 	Name string
+	// HasUserDataSchema indicates whether the workspace has a user data schema defined in .mittorc
+	HasUserDataSchema bool
+	// HasMittoRC indicates whether a .mittorc file exists in the workspace directory
+	HasMittoRC bool
+	// HasMetadataDescription indicates whether the workspace has a metadata description in .mittorc
+	HasMetadataDescription bool
 }
 
 // SessionContext holds current session context for CEL evaluation.
@@ -53,6 +61,8 @@ type SessionContext struct {
 	IsAutoChild bool
 	// ParentID is the ID of the parent session (empty if not a child)
 	ParentID string
+	// IsPeriodic indicates whether the current prompt was triggered by the periodic runner
+	IsPeriodic bool
 }
 
 // ParentContext holds parent session context for CEL evaluation.
@@ -72,6 +82,8 @@ type ChildrenContext struct {
 	Count int
 	// Exists indicates whether there are any child sessions (Count > 0)
 	Exists bool
+	// MCPCount is the number of child sessions created via the MCP tool
+	MCPCount int
 	// Names contains the display names of child sessions
 	Names []string
 	// ACPServers contains the ACP server names of child sessions
@@ -84,4 +96,21 @@ type ToolsContext struct {
 	Available bool
 	// Names contains the names of available tools
 	Names []string
+}
+
+// PermissionsContext holds session permission flags for CEL evaluation.
+// Values are resolved using session.GetFlagValue() which applies defaults.
+type PermissionsContext struct {
+	// CanDoIntrospection maps to the "can_do_introspection" flag
+	CanDoIntrospection bool
+	// CanSendPrompt maps to the "can_send_prompt" flag
+	CanSendPrompt bool
+	// CanPromptUser maps to the "can_prompt_user" flag
+	CanPromptUser bool
+	// CanStartConversation maps to the "can_start_conversation" flag
+	CanStartConversation bool
+	// CanInteractOtherWorkspaces maps to the "can_interact_other_workspaces" flag
+	CanInteractOtherWorkspaces bool
+	// AutoApprovePermissions maps to the "auto_approve_permissions" flag
+	AutoApprovePermissions bool
 }

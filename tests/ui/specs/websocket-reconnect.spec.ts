@@ -276,8 +276,9 @@ test.describe("WebSocket Reconnection During Send", () => {
     await textarea.fill(testMessage);
     await sendButton.click();
 
-    // Wait for message to appear
-    await expect(page.locator(`text=${testMessage}`)).toBeVisible({
+    // Wait for message to appear (use .first() to avoid strict mode violation since
+    // the same text may appear in sidebar, heading, and message content simultaneously)
+    await expect(page.locator(`text=${testMessage}`).first()).toBeVisible({
       timeout: timeouts.shortAction,
     });
 

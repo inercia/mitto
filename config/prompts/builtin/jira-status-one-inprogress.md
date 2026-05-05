@@ -3,10 +3,14 @@ name: "JIRA: status ONE in-progress"
 description: "Pick one in-progress ticket relevant to this repo and fact-check its implementation status"
 backgroundColor: "#FFF9C4"
 group: "JIRA"
-enabledWhenMCP: jira_*
+enabledWhen: 'tools.hasPattern("jira_*")'
 ---
 
 # JIRA: Status Check — One In-Progress Ticket
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
 ## Step 1 — Identify the current repository
 
@@ -42,7 +46,7 @@ If **no tickets** survive the filter: inform the user and stop.
 
 ## Step 4 — Let the user choose one ticket
 
-Present the filtered tickets using `mitto_ui_options_combo_mitto`, showing each ticket as `KEY - Summary` in the dropdown. Ask: "Which in-progress ticket would you like to check status for?"
+Present the filtered tickets using `mitto_ui_options_mitto(self_id: "@mitto:session_id")`, showing each ticket as `KEY - Summary` in the dropdown. Ask: "Which in-progress ticket would you like to check status for?"
 
 ## Step 5 — Fetch full ticket details
 

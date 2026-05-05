@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/inercia/mitto/internal/agents"
+	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/secrets"
@@ -116,23 +121,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetConfig handles GET {prefix}/api/config.
-// Supports optional query parameter:
-//   - acp_server: If specified, global file prompts are filtered to only include prompts
-//     that are allowed for this ACP server type (based on the "acps" front-matter field).
-//     The server's type is looked up from config; if no type is set, the name is used.
+// Supports optional query parameters:
+//   - acp_server: If specified, per-server prompts are included (prompts with acps: field
+//     targeting this server). The server's type is looked up from config; if no type is set,
+//     the name is used.
+//   - session_id: If specified, merged prompts are further filtered using
+//     filterPromptsByEnabled (enabledWhenACP, enabledWhenMCP, enabledWhen CEL)
+//     with the context of the given session.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	// Get optional acp_server parameter for filtering global file prompts.
-	// We need to resolve the server type for filtering (type falls back to name).
-	acpServerName := r.URL.Query().Get("acp_server")
-	var acpServerType string
-	if acpServerName != "" && s.config.MittoConfig != nil {
-		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
-	}
-	if acpServerType == "" {
-		// Fallback: use name as type if server not found in config
-		acpServerType = acpServerName
-	}
-
 	// Build complete config response including workspaces and ACP servers
 	response := map[string]interface{}{
 		"workspaces":      s.sessionManager.GetWorkspaces(),
@@ -159,15 +155,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 		// Merge prompts from global files and settings
 		// Global file prompts (MITTO_DIR/prompts/*.md) have lower priority than settings prompts
-		// If acpServerType is specified, filter global file prompts by ACP server type
 		var globalFilePrompts []configPkg.WebPrompt
 		if s.config.PromptsCache != nil {
 			var err error
-			if acpServerType != "" {
-				globalFilePrompts, err = s.config.PromptsCache.GetWebPromptsForACP(acpServerType)
-			} else {
-				globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
-			}
+			globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
 			if err != nil && s.logger != nil {
 				s.logger.Warn("Failed to load global file prompts", "error", err)
 			}
@@ -175,6 +166,15 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		// Merge: settings prompts override global file prompts by name
 		// Note: workspace prompts are handled separately via /api/workspace-prompts
 		mergedPrompts := configPkg.MergePrompts(globalFilePrompts, s.config.MittoConfig.Prompts, nil)
+
+		// Filter by session context if session_id is provided
+		sessionID := r.URL.Query().Get("session_id")
+		if sessionID != "" {
+			if visCtx := s.buildPromptEnabledContext(sessionID); visCtx != nil {
+				mergedPrompts = s.filterPromptsByEnabled(mergedPrompts, visCtx)
+			}
+		}
+
 		response["prompts"] = mergedPrompts
 
 		// Convert ACP servers to JSON-friendly format
@@ -385,7 +385,17 @@ func (s *Server) handleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("Failed to improve prompt",
 			"error", err,
 			"workspace_uuid", req.WorkspaceUUID)
-		http.Error(w, "Failed to improve prompt", http.StatusInternalServerError)
+		errMsg := err.Error()
+		var userMsg string
+		if strings.Contains(errMsg, "broken pipe") ||
+			strings.Contains(errMsg, "peer disconnected") ||
+			strings.Contains(errMsg, "connection reset") ||
+			strings.Contains(errMsg, "process has exited") {
+			userMsg = "The AI agent process crashed. Please try again in a moment."
+		} else {
+			userMsg = "Failed to improve prompt"
+		}
+		http.Error(w, userMsg, http.StatusInternalServerError)
 		return
 	}
 
@@ -633,10 +643,14 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		s.sessionManager.SetGlobalConversations(settings.Conversations)
 	}
 
-	// Update workspaces - need to resolve ACP commands
+	// Update workspaces - need to resolve ACP commands and environment variables
 	acpCommandMap := make(map[string]string)
+	acpEnvMap := make(map[string]map[string]string)
 	for _, srv := range newACPServers {
 		acpCommandMap[srv.Name] = srv.Command
+		if len(srv.Env) > 0 {
+			acpEnvMap[srv.Name] = srv.Env
+		}
 	}
 
 	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
@@ -645,6 +659,11 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		// from the server map (since the frontend may not have the latest command).
 		newWorkspaces[i] = ws
 		newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
+		newWorkspaces[i].ACPEnv = acpEnvMap[ws.ACPServer]
+		// Apply user-provided command override if set
+		if ws.ACPCommandOverride != "" {
+			newWorkspaces[i].ACPCommand = ws.ACPCommandOverride
+		}
 	}
 	s.sessionManager.SetWorkspaces(newWorkspaces)
 	s.config.Workspaces = newWorkspaces
@@ -776,6 +795,57 @@ func (s *Server) applyAuthChanges(oldAuthEnabled, newAuthEnabled bool, newAuthCo
 	// Case 4: Auth was disabled and still disabled -> nothing to do
 }
 
+// handleAgentTypes handles GET /api/agent-types.
+// Returns the list of available agent definitions by reading subdirectory names
+// from the agents directory (both builtin and user-created).
+func (s *Server) handleAgentTypes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	agentsDir, err := appdir.AgentsDir()
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{"agent_types": []string{}})
+		return
+	}
+
+	// Collect unique agent type names from all subdirectories
+	typeSet := make(map[string]bool)
+
+	// Walk top-level subdirectories (e.g., "builtin")
+	topEntries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{"agent_types": []string{}})
+		return
+	}
+
+	for _, topEntry := range topEntries {
+		if !topEntry.IsDir() {
+			continue
+		}
+		subDir := filepath.Join(agentsDir, topEntry.Name())
+		entries, err := os.ReadDir(subDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+				typeSet[entry.Name()] = true
+			}
+		}
+	}
+
+	// Convert to sorted slice
+	types := make([]string, 0, len(typeSet))
+	for t := range typeSet {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+
+	writeJSONOK(w, map[string]interface{}{"agent_types": types})
+}
+
 // RunnerInfo contains information about a runner type.
 type RunnerInfo struct {
 	Type        string `json:"type"`
@@ -884,4 +954,86 @@ func checkRunnerSupport(runnerType string) string {
 		}
 	}
 	return ""
+}
+
+// handleWorkspaceMCPTools handles GET /api/workspace-mcp-tools?acp_server=...&dir=...
+// Returns MCP tools available for the workspace's ACP server type by running
+// the agent's mcp-list.sh script.
+func (s *Server) handleWorkspaceMCPTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	acpServerName := r.URL.Query().Get("acp_server")
+	workingDir := r.URL.Query().Get("dir")
+
+	if acpServerName == "" {
+		http.Error(w, "acp_server query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	// Resolve ACP server type from config
+	var acpType string
+	if s.config.MittoConfig != nil {
+		acpType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpType == "" {
+		acpType = acpServerName // fallback
+	}
+
+	// Get agents directory
+	agentsDir, err := appdir.AgentsDir()
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{
+			"servers":    []interface{}{},
+			"error":      "Failed to get agents directory: " + err.Error(),
+			"agent_name": "",
+		})
+		return
+	}
+
+	// Find agent by ACP ID
+	mgr := agents.NewManager(agentsDir, s.logger)
+	agent, err := mgr.GetAgentByACPId(acpType)
+	if err != nil {
+		// No matching agent found - not an error, just no MCP tools
+		writeJSONOK(w, map[string]interface{}{
+			"servers":    []interface{}{},
+			"agent_name": "",
+			"message":    fmt.Sprintf("No agent definition found for ACP type %q", acpType),
+		})
+		return
+	}
+
+	// Check if agent has mcp-list command
+	if !agent.HasCommand(agents.CommandMCPList) {
+		writeJSONOK(w, map[string]interface{}{
+			"servers":    []interface{}{},
+			"agent_name": agent.Metadata.DisplayName,
+			"message":    "Agent does not support MCP listing",
+		})
+		return
+	}
+
+	// Run mcp-list.sh with workspace path
+	input := &agents.MCPListInput{}
+	if workingDir != "" {
+		input.Path = workingDir
+	}
+
+	output, err := mgr.ListMCPServers(r.Context(), agent.DirName, input)
+	if err != nil {
+		writeJSONOK(w, map[string]interface{}{
+			"servers":    []interface{}{},
+			"agent_name": agent.Metadata.DisplayName,
+			"error":      "Failed to list MCP servers: " + err.Error(),
+		})
+		return
+	}
+
+	writeJSONOK(w, map[string]interface{}{
+		"servers":    output.Servers,
+		"agent_name": agent.Metadata.DisplayName,
+	})
 }

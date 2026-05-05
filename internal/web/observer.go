@@ -24,6 +24,7 @@ type (
 	UIPromptOptionStyle = mcpserver.UIPromptOptionStyle
 	UIPromptRequest     = mcpserver.UIPromptRequest
 	UIPromptResponse    = mcpserver.UIPromptResponse
+	UINotifyRequest     = mcpserver.UINotifyRequest
 )
 
 // Re-export UI prompt type constants for convenience.
@@ -33,6 +34,8 @@ const (
 	UIPromptTypeOptions       = mcpserver.UIPromptTypeOptions
 	UIPromptTypeActionButtons = mcpserver.UIPromptTypeActionButtons
 	UIPromptTypePermission    = mcpserver.UIPromptTypePermission
+	UIPromptTypeTextbox       = mcpserver.UIPromptTypeTextbox
+	UIPromptTypeForm          = mcpserver.UIPromptTypeForm
 )
 
 // Re-export UI prompt option style constants for convenience.
@@ -141,4 +144,10 @@ type SessionObserver interface {
 	// This happens when the prompt times out, is cancelled, or is replaced.
 	// reason can be: "timeout", "cancelled", "replaced"
 	OnUIPromptDismiss(requestID string, reason string)
+
+	// OnNotification is called when an MCP tool sends a fire-and-forget notification.
+	// The observer should display the notification as a toast and optionally
+	// play a sound or show a native OS notification.
+	// Unlike OnUIPrompt, no response is expected from the observer.
+	OnNotification(req UINotifyRequest)
 }

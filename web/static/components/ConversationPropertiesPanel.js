@@ -2,7 +2,7 @@
 // Fixed overlay panel on the RIGHT side for viewing and editing conversation properties
 // Always appears above other panels (like the conversations sidebar)
 
-const { html, useState, useEffect, useCallback, useRef, Fragment } =
+const { html, useState, useEffect, useCallback, useRef, useMemo, Fragment } =
   window.preact;
 
 import {
@@ -16,8 +16,61 @@ import {
 } from "./Icons.js";
 import { apiUrl } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 import { formatTimeAgo } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
+
+/**
+ * Format a token count into a compact human-readable string.
+ * @param {number|undefined|null} count
+ * @returns {string} e.g. "1.2k", "3.4M", "512", or "—" for missing values
+ */
+function formatTokenCount(count) {
+  if (count === undefined || count === null) return "—";
+  if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+  return count.toString();
+}
+
+/**
+ * Known context window sizes (in tokens) for common models.
+ * Keys are substrings matched case-insensitively against the model ID.
+ */
+const MODEL_CONTEXT_WINDOWS = {
+  "gemini-2.5": 1048576,
+  "gemini-2.0": 1048576,
+  "gemini-1.5": 1048576,
+  "gemini": 1048576,
+  "o4-mini": 200000,
+  "opus": 200000,
+  "sonnet": 200000,
+  "haiku": 200000,
+  "claude": 200000,
+  "o1": 200000,
+  "o3": 200000,
+  "gpt-4o": 128000,
+  "gpt-4-turbo": 128000,
+  "gpt-4": 8192,
+  "gpt-3.5": 16385,
+};
+
+/**
+ * Look up the context window size for a model ID.
+ * Matches by checking if the model ID contains any known key (case-insensitive),
+ * trying longer (more specific) keys first.
+ * Returns null if no match found.
+ * @param {string|null} modelId
+ * @returns {number|null}
+ */
+function getContextWindowSize(modelId) {
+  if (!modelId) return null;
+  const lower = modelId.toLowerCase();
+  const sortedKeys = Object.keys(MODEL_CONTEXT_WINDOWS).sort((a, b) => b.length - a.length);
+  for (const key of sortedKeys) {
+    if (lower.includes(key)) return MODEL_CONTEXT_WINDOWS[key];
+  }
+  return null;
+}
 
 /**
  * TriStateCheckbox - A checkbox with three states: unset, enabled, disabled
@@ -256,18 +309,13 @@ export function ConversationPropertiesPanel({
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef(null);
 
-  // User data state
-  const [userData, setUserData] = useState({ attributes: [] });
-  const [userDataSchema, setUserDataSchema] = useState(null);
-  const [isLoadingUserData, setIsLoadingUserData] = useState(false);
-  const [editingAttribute, setEditingAttribute] = useState(null);
-  const [editedAttributeValue, setEditedAttributeValue] = useState("");
-  const [isSavingAttribute, setIsSavingAttribute] = useState(false);
-  const [userDataError, setUserDataError] = useState(null);
-  const attributeInputRef = useRef(null);
-
   // Periodic config state
   const [periodicConfig, setPeriodicConfig] = useState(null);
+  const [callbackConfig, setCallbackConfig] = useState(null);
+  const [callbackCopied, setCallbackCopied] = useState(false);
+
+  // Confirmation dialog state
+  const [confirmDialog, setConfirmDialog] = useState(null);
 
   // MCP Tools collapsible state
   const [isMcpToolsExpanded, setIsMcpToolsExpanded] = useState(false);
@@ -282,6 +330,14 @@ export function ConversationPropertiesPanel({
 
   // State for dynamic relative time updates (triggers re-render every 30 seconds)
   const [, setTimeNow] = useState(Date.now());
+
+  // Derive current model ID from the "model" config option (if present).
+  // Used to look up the context window size for the progress bar.
+  const currentModelId = useMemo(() => {
+    if (!configOptions?.length) return null;
+    const modelOpt = configOptions.find((opt) => opt.id === "model");
+    return modelOpt?.current_value || null;
+  }, [configOptions]);
 
   // Update relative time display every 30 seconds while panel is open
   useEffect(() => {
@@ -299,50 +355,30 @@ export function ConversationPropertiesPanel({
   // Reset state when session changes or panel closes
   useEffect(() => {
     setIsEditingTitle(false);
-    setEditingAttribute(null);
-    setUserDataError(null);
     setPeriodicConfig(null);
+    setCallbackConfig(null);
+    setCallbackCopied(false);
     setFlagsError(null);
     setSavingFlags({});
   }, [sessionId, isOpen]);
 
-  // Fetch user data, schema, periodic config, and flags when panel opens
+  // Fetch periodic config, callback config, flags, and session settings when panel opens
   useEffect(() => {
-    if (!isOpen || !sessionId || !sessionInfo?.working_dir) return;
+    if (!isOpen || !sessionId) return;
 
     const fetchData = async () => {
-      setIsLoadingUserData(true);
       setIsLoadingFlags(true);
-      setUserDataError(null);
       setFlagsError(null);
 
       try {
-        // Fetch user data, schema, periodic config, available flags, and session settings in parallel
-        const [userDataRes, schemaRes, periodicRes, flagsRes, settingsRes] =
+        // Fetch periodic config, callback config, available flags, and session settings in parallel
+        const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
-            authFetch(apiUrl(`/api/sessions/${sessionId}/user-data`)),
-            authFetch(
-              apiUrl(
-                `/api/workspace/user-data-schema?working_dir=${encodeURIComponent(sessionInfo.working_dir)}`,
-              ),
-            ),
             authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`)),
+            authFetch(apiUrl(`/api/sessions/${sessionId}/callback`)),
             authFetch(apiUrl("/api/advanced-flags")),
             authFetch(apiUrl(`/api/sessions/${sessionId}/settings`)),
           ]);
-
-        if (userDataRes.ok) {
-          const data = await userDataRes.json();
-          setUserData(data);
-        }
-
-        if (schemaRes.ok) {
-          const schema = await schemaRes.json();
-          setUserDataSchema(schema);
-        } else if (schemaRes.status === 404) {
-          // No schema defined
-          setUserDataSchema({ fields: [] });
-        }
 
         if (periodicRes.ok) {
           const periodic = await periodicRes.json();
@@ -350,6 +386,12 @@ export function ConversationPropertiesPanel({
         } else {
           // No periodic config or error - clear state
           setPeriodicConfig(null);
+        }
+
+        if (callbackRes.ok) {
+          setCallbackConfig(await callbackRes.json());
+        } else {
+          setCallbackConfig(null);
         }
 
         if (flagsRes.ok) {
@@ -364,16 +406,14 @@ export function ConversationPropertiesPanel({
         }
       } catch (err) {
         console.error("Failed to fetch panel data:", err);
-        setUserDataError("Failed to load user data");
         setFlagsError("Failed to load settings");
       } finally {
-        setIsLoadingUserData(false);
         setIsLoadingFlags(false);
       }
     };
 
     fetchData();
-  }, [isOpen, sessionId, sessionInfo?.working_dir]);
+  }, [isOpen, sessionId]);
 
   // Focus title input when entering edit mode
   useEffect(() => {
@@ -382,14 +422,6 @@ export function ConversationPropertiesPanel({
       titleInputRef.current.select();
     }
   }, [isEditingTitle]);
-
-  // Focus attribute input when entering edit mode
-  useEffect(() => {
-    if (editingAttribute && attributeInputRef.current) {
-      attributeInputRef.current.focus();
-      attributeInputRef.current.select();
-    }
-  }, [editingAttribute]);
 
   // Listen for WebSocket session_settings_updated events to keep UI in sync
   useEffect(() => {
@@ -458,91 +490,6 @@ export function ConversationPropertiesPanel({
     [handleSaveTitle],
   );
 
-  // Handle attribute edit start
-  const handleStartEditAttribute = useCallback((attr) => {
-    setEditingAttribute(attr.name);
-    setEditedAttributeValue(attr.value || "");
-  }, []);
-
-  // Handle attribute save
-  const handleSaveAttribute = useCallback(async () => {
-    if (!sessionId || isSavingAttribute || !editingAttribute) return;
-
-    setIsSavingAttribute(true);
-    setUserDataError(null);
-
-    try {
-      // Update the attribute in the list
-      const updatedAttributes = [...userData.attributes];
-      const existingIndex = updatedAttributes.findIndex(
-        (a) => a.name === editingAttribute,
-      );
-
-      if (existingIndex >= 0) {
-        updatedAttributes[existingIndex] = {
-          name: editingAttribute,
-          value: editedAttributeValue,
-        };
-      } else {
-        updatedAttributes.push({
-          name: editingAttribute,
-          value: editedAttributeValue,
-        });
-      }
-
-      const res = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/user-data`),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ attributes: updatedAttributes }),
-        },
-      );
-
-      if (res.ok) {
-        const data = await res.json();
-        setUserData(data);
-        setEditingAttribute(null);
-      } else {
-        const errorData = await res.json().catch(() => ({}));
-        setUserDataError(errorData.message || "Failed to save attribute");
-      }
-    } catch (err) {
-      console.error("Failed to save attribute:", err);
-      setUserDataError("Failed to save attribute");
-    } finally {
-      setIsSavingAttribute(false);
-    }
-  }, [
-    sessionId,
-    editingAttribute,
-    editedAttributeValue,
-    userData.attributes,
-    isSavingAttribute,
-  ]);
-
-  // Handle attribute key press
-  const handleAttributeKeyDown = useCallback(
-    (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        handleSaveAttribute();
-      } else if (e.key === "Escape") {
-        setEditingAttribute(null);
-      }
-    },
-    [handleSaveAttribute],
-  );
-
-  // Get attribute value by name
-  const getAttributeValue = useCallback(
-    (name) => {
-      const attr = userData.attributes.find((a) => a.name === name);
-      return attr?.value || "";
-    },
-    [userData.attributes],
-  );
-
   // Handle flag value change
   const handleFlagChange = useCallback(
     async (flagName, newValue) => {
@@ -579,8 +526,73 @@ export function ConversationPropertiesPanel({
     [sessionId],
   );
 
-  // Check if schema has fields
-  const hasSchema = userDataSchema && userDataSchema.fields?.length > 0;
+  const handleEnableCallback = useCallback(async () => {
+    const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "POST" });
+    if (res.ok) {
+      const data = await res.json();
+      setCallbackConfig(data);
+      try {
+        await navigator.clipboard.writeText(data.callback_url);
+        setCallbackCopied(true);
+        setTimeout(() => setCallbackCopied(false), 2000);
+      } catch (e) {
+        // Clipboard may not be available in some contexts
+        console.warn("Failed to copy to clipboard:", e);
+      }
+    }
+  }, [sessionId]);
+
+  const handleCopyCallbackUrl = useCallback(async () => {
+    if (callbackConfig?.callback_url) {
+      try {
+        await navigator.clipboard.writeText(callbackConfig.callback_url);
+        setCallbackCopied(true);
+        setTimeout(() => setCallbackCopied(false), 2000);
+      } catch (e) {
+        console.warn("Failed to copy to clipboard:", e);
+      }
+    }
+  }, [callbackConfig]);
+
+  const handleRotateCallback = useCallback(() => {
+    setConfirmDialog({
+      title: "Rotate Callback URL",
+      message: "Rotate callback URL? The old URL will stop working immediately.",
+      confirmLabel: "Rotate",
+      confirmVariant: "danger",
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          setCallbackConfig(data);
+          try {
+            await navigator.clipboard.writeText(data.callback_url);
+            setCallbackCopied(true);
+            setTimeout(() => setCallbackCopied(false), 2000);
+          } catch (e) {
+            console.warn("Failed to copy to clipboard:", e);
+          }
+        }
+      },
+    });
+  }, [sessionId]);
+
+  const handleRevokeCallback = useCallback(() => {
+    setConfirmDialog({
+      title: "Revoke Callback URL",
+      message: "Revoke callback URL? It will stop working immediately.",
+      confirmLabel: "Revoke",
+      confirmVariant: "danger",
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        const res = await secureFetch(apiUrl(`/api/sessions/${sessionId}/callback`), { method: "DELETE" });
+        if (res.ok) {
+          setCallbackConfig(null);
+        }
+      },
+    });
+  }, [sessionId]);
 
   // Animation state: track if we're closing to play exit animation
   const [isClosing, setIsClosing] = useState(false);
@@ -615,28 +627,41 @@ export function ConversationPropertiesPanel({
 
   // Fixed overlay on the RIGHT side, above all other panels
   return html`
-    <div
-      class="fixed inset-0 z-50 flex"
-      onClick=${(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
-    >
-      <!-- Backdrop on the left -->
+    <${Fragment}>
       <div
-        class="flex-1 bg-black/50 properties-backdrop ${isClosing
-          ? "closing"
-          : ""}"
-        onClick=${handleClose}
-      />
-      <!-- Panel on the right -->
-      <div
-        class="w-80 bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full overflow-y-auto border-l border-slate-700 properties-panel ${isClosing
-          ? "closing"
-          : ""}"
+        class="fixed inset-0 z-50 flex"
+        onClick=${(e) => {
+          if (e.target === e.currentTarget) handleClose();
+        }}
       >
-        ${renderPanelContent()}
+        <!-- Backdrop on the left -->
+        <div
+          class="flex-1 bg-black/50 properties-backdrop ${isClosing
+            ? "closing"
+            : ""}"
+          onClick=${handleClose}
+        />
+        <!-- Panel on the right -->
+        <div
+          class="w-80 bg-mitto-sidebar flex-shrink-0 shadow-2xl h-full overflow-y-auto border-l border-slate-700 properties-panel ${isClosing
+            ? "closing"
+            : ""}"
+        >
+          ${renderPanelContent()}
+        </div>
       </div>
-    </div>
+
+      <${ConfirmDialog}
+        isOpen=${!!confirmDialog}
+        title=${confirmDialog?.title || "Confirm"}
+        message=${confirmDialog?.message || ""}
+        confirmLabel=${confirmDialog?.confirmLabel || "Yes"}
+        cancelLabel=${confirmDialog?.cancelLabel || "Cancel"}
+        confirmVariant=${confirmDialog?.confirmVariant || "primary"}
+        onConfirm=${confirmDialog?.onConfirm}
+        onCancel=${() => setConfirmDialog(null)}
+      />
+    <//>
   `;
 
   function renderPanelContent() {
@@ -694,7 +719,11 @@ export function ConversationPropertiesPanel({
               `
             : html`
                 <div class="flex items-center gap-2 group">
-                  <span class="flex-1 text-sm truncate">
+                  <span
+                    class="flex-1 text-sm truncate cursor-pointer hover:text-blue-400 transition-colors"
+                    onClick=${handleStartEditTitle}
+                    title="Click to edit title"
+                  >
                     ${sessionInfo?.name || "New conversation"}
                   </span>
                   <button
@@ -773,14 +802,135 @@ export function ConversationPropertiesPanel({
           `}
         </div>
 
-        <!-- Message Count and Time Info -->
-        <div class="flex items-center gap-3 text-sm text-slate-400">
-          ${sessionInfo?.messageCount !== undefined &&
-          html`<span>${sessionInfo.messageCount} messages</span>`}
-          ${sessionInfo?.created_at &&
-          html`<span title=${new Date(sessionInfo.created_at).toLocaleString()}>
-            ${formatTimeAgo(sessionInfo.created_at)}
-          </span>`}
+        <!-- Statistics Section (messages, time, processors, token usage) -->
+        <div>
+          <label class="block text-sm font-medium text-slate-400 mb-1">
+            Statistics
+          </label>
+          <div class="text-xs text-slate-400 space-y-0.5">
+            ${sessionInfo?.messageCount !== undefined && html`
+              <div class="flex justify-between">
+                <span>Messages</span>
+                <span class="text-slate-300">${sessionInfo.messageCount}</span>
+              </div>
+            `}
+            ${sessionInfo?.created_at && html`
+              <div class="flex justify-between">
+                <span>Created</span>
+                <span class="text-slate-300" title=${new Date(sessionInfo.created_at).toLocaleString()}>
+                  ${formatTimeAgo(sessionInfo.created_at)}
+                </span>
+              </div>
+            `}
+            ${(sessionInfo?.processor_count > 0) && html`
+              <div
+                class="flex justify-between"
+                title=${sessionInfo?.processor_last_names?.length
+                  ? `Last applied: ${sessionInfo.processor_last_names.join(', ')}`
+                  : 'No processors applied yet'}
+              >
+                <span>Processors</span>
+                <span class="text-slate-300">${sessionInfo.processor_count}${sessionInfo?.processor_activations > 0 ? ` (${sessionInfo.processor_activations} runs)` : ''}</span>
+              </div>
+            `}
+          </div>
+
+          ${sessionInfo?.usage && html`
+            <div class="mt-2 pt-2 border-t border-slate-700/50">
+              <!-- Context usage bar -->
+              ${(() => {
+                const contextTokens = sessionInfo.usage.input_tokens;
+                const contextWindow = getContextWindowSize(currentModelId);
+                const pct = contextWindow ? Math.min((contextTokens / contextWindow) * 100, 100) : null;
+                const barColor = pct === null ? "bg-blue-500" : pct > 80 ? "bg-red-500" : pct > 50 ? "bg-yellow-500" : "bg-green-500";
+                const textColor = pct === null ? "text-slate-300" : pct > 80 ? "text-red-400" : pct > 50 ? "text-yellow-400" : "text-green-400";
+                return html`
+                  <div class="mb-2">
+                    <div class="flex justify-between items-baseline mb-1">
+                      <span class="text-xs font-medium text-slate-400">Context</span>
+                      <span class="text-xs ${textColor}">
+                        ${formatTokenCount(contextTokens)}${contextWindow ? html` / ${formatTokenCount(contextWindow)}` : ''}
+                      </span>
+                    </div>
+                    <div class="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        class="h-full ${barColor} rounded-full transition-all duration-300"
+                        style="width: ${pct !== null ? pct : 0}%"
+                      />
+                    </div>
+                    ${pct !== null && html`
+                      <div class="text-right mt-0.5">
+                        <span class="text-[10px] text-slate-500">${pct.toFixed(0)}%</span>
+                      </div>
+                    `}
+                  </div>
+                `;
+              })()}
+
+              <!-- Last Turn Tokens breakdown -->
+              <label class="block text-xs font-medium text-slate-500 mb-1">
+                Last Turn Tokens
+              </label>
+              <div class="text-xs text-slate-400 space-y-0.5">
+                <div class="flex justify-between">
+                  <span>Input</span>
+                  <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.input_tokens)}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>Output</span>
+                  <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.output_tokens)}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>Total</span>
+                  <span class="text-slate-300 font-medium">${formatTokenCount(sessionInfo.usage.total_tokens)}</span>
+                </div>
+                ${sessionInfo.usage.cached_read_tokens !== undefined && html`
+                  <div class="flex justify-between">
+                    <span>Cache Read</span>
+                    <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.cached_read_tokens)}</span>
+                  </div>
+                `}
+                ${sessionInfo.usage.cached_write_tokens !== undefined && html`
+                  <div class="flex justify-between">
+                    <span>Cache Write</span>
+                    <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.cached_write_tokens)}</span>
+                  </div>
+                `}
+                ${sessionInfo.usage.thought_tokens !== undefined && html`
+                  <div class="flex justify-between">
+                    <span>Thinking</span>
+                    <span class="text-slate-300">${formatTokenCount(sessionInfo.usage.thought_tokens)}</span>
+                  </div>
+                `}
+              </div>
+            </div>
+          `}
+        </div>
+
+        <!-- Workspace Section -->
+        <div>
+          <label class="block text-sm font-medium text-slate-400 mb-2">
+            Workspace
+          </label>
+          <div class="flex items-center gap-2 text-sm text-slate-300">
+            <${FolderIcon} className="w-4 h-4 flex-shrink-0 text-slate-500" />
+            ${canRevealInFinder() && sessionInfo?.working_dir
+              ? html`
+                  <button
+                    type="button"
+                    class="truncate text-left hover:text-blue-400 hover:underline transition-colors cursor-pointer"
+                    title="Open in Finder: ${sessionInfo.working_dir}"
+                    onClick=${() => revealInFinder(sessionInfo.working_dir)}
+                  >
+                    ${sessionInfo.working_dir}
+                  </button>
+                `
+              : html`
+                  <span class="truncate" title=${sessionInfo?.working_dir || ""}>
+                    ${sessionInfo?.working_dir || "Unknown"}
+                  </span>
+                `}
+          </div>
         </div>
 
         <!-- Session Config Options Section -->
@@ -895,34 +1045,72 @@ export function ConversationPropertiesPanel({
                 </span>
               </p>
             `}
+            ${callbackConfig?.callback_url && html`
+              <div class="mt-3 pt-3 border-t border-slate-700/50">
+                <label class="block text-xs font-medium text-slate-500 mb-1.5">Callback URL</label>
+                <div class="flex items-center gap-1.5">
+                  <button
+                    onClick=${handleCopyCallbackUrl}
+                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                    title="Copy callback URL to clipboard"
+                  >
+                    ${callbackCopied ? '✓ Copied!' : '📋 Copy URL'}
+                  </button>
+                  <button
+                    onClick=${handleRotateCallback}
+                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                    title="Generate new callback URL (invalidates old one)"
+                  >
+                    🔄 Rotate
+                  </button>
+                  <button
+                    onClick=${handleRevokeCallback}
+                    class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-300 transition-colors"
+                    title="Revoke callback URL"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            `}
+            ${!callbackConfig?.callback_url && html`
+              <div class="mt-3 pt-3 border-t border-slate-700/50">
+                <label class="block text-xs font-medium text-slate-500 mb-1.5">Callback URL</label>
+                <button
+                  onClick=${handleEnableCallback}
+                  class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+                  title="Generate a callback URL for triggering this periodic conversation externally"
+                >
+                  🔗 Enable Callback URL
+                </button>
+              </div>
+            `}
           </div>
         `}
 
-        <!-- Workspace Section -->
-        <div>
-          <label class="block text-sm font-medium text-slate-400 mb-2">
-            Workspace
-          </label>
-          <div class="flex items-center gap-2 text-sm text-slate-300">
-            <${FolderIcon} className="w-4 h-4 flex-shrink-0 text-slate-500" />
-            ${canRevealInFinder() && sessionInfo?.working_dir
-              ? html`
-                  <button
-                    type="button"
-                    class="truncate text-left hover:text-blue-400 hover:underline transition-colors cursor-pointer"
-                    title="Open in Finder: ${sessionInfo.working_dir}"
-                    onClick=${() => revealInFinder(sessionInfo.working_dir)}
-                  >
-                    ${sessionInfo.working_dir}
-                  </button>
-                `
-              : html`
-                  <span class="truncate" title=${sessionInfo?.working_dir || ""}>
-                    ${sessionInfo?.working_dir || "Unknown"}
-                  </span>
-                `}
+        <!-- Callback URL when periodic is disabled -->
+        ${!periodicConfig?.enabled && callbackConfig?.callback_url && html`
+          <div class="mt-2">
+            <label class="block text-xs font-medium text-slate-500 mb-1">Callback URL</label>
+            <p class="text-xs text-slate-600 mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
+            <div class="flex items-center gap-1.5">
+              <button
+                onClick=${handleCopyCallbackUrl}
+                class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-slate-400 transition-colors"
+                title="Copy callback URL"
+              >
+                ${callbackCopied ? '✓ Copied!' : '📋 Copy URL'}
+              </button>
+              <button
+                onClick=${handleRevokeCallback}
+                class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-colors"
+                title="Revoke callback URL"
+              >
+                ✕ Revoke
+              </button>
+            </div>
           </div>
-        </div>
+        `}
 
         <!-- MCP Tools Section (Collapsible) -->
         ${mcpTools && mcpTools.length > 0 && html`
@@ -960,14 +1148,6 @@ export function ConversationPropertiesPanel({
             `}
           </div>
         `}
-
-        <!-- User Data Section -->
-        <div>
-          <label class="block text-sm font-medium text-slate-400 mb-2">
-            User Data
-          </label>
-          ${renderUserDataSection()}
-        </div>
 
         <!-- Advanced Section (Collapsible) -->
         ${renderAdvancedSection()}
@@ -1070,110 +1250,4 @@ export function ConversationPropertiesPanel({
     `;
   }
 
-  function renderUserDataSection() {
-    if (isLoadingUserData) {
-      return html` <div class="text-sm text-slate-500">Loading...</div> `;
-    }
-
-    if (!hasSchema) {
-      return html`
-        <div class="text-sm text-slate-500 italic">
-          No user data schema configured for this workspace.
-        </div>
-      `;
-    }
-
-    return html`
-      <div class="space-y-3">
-        ${userDataError &&
-        html`
-          <div class="text-sm text-red-400 bg-red-900/20 rounded px-2 py-1">
-            ${userDataError}
-          </div>
-        `}
-        ${userDataSchema.fields.map((field) => {
-          const value = getAttributeValue(field.name);
-          const isEditing = editingAttribute === field.name;
-
-          return html`
-            <div key=${field.name}>
-              <label class="block text-xs text-slate-500 mb-1">
-                ${field.name}
-              </label>
-              ${isEditing
-                ? html`
-                    <div class="flex items-center gap-2">
-                      <input
-                        ref=${attributeInputRef}
-                        type=${field.type === "url" ? "url" : "text"}
-                        class="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
-                        value=${editedAttributeValue}
-                        onInput=${(e) =>
-                          setEditedAttributeValue(e.target.value)}
-                        onKeyDown=${handleAttributeKeyDown}
-                        onBlur=${() => {
-                          setTimeout(() => {
-                            if (
-                              editingAttribute === field.name &&
-                              !isSavingAttribute
-                            ) {
-                              setEditingAttribute(null);
-                            }
-                          }, 150);
-                        }}
-                        disabled=${isSavingAttribute}
-                        placeholder=${field.type === "url"
-                          ? "https://..."
-                          : "Enter value..."}
-                      />
-                      <button
-                        class="p-1 hover:bg-slate-700 rounded transition-colors text-green-400"
-                        onClick=${handleSaveAttribute}
-                        title="Save"
-                        disabled=${isSavingAttribute}
-                      >
-                        <${CheckIcon} className="w-4 h-4" />
-                      </button>
-                    </div>
-                  `
-                : html`
-                    <div class="flex items-center gap-2 group">
-                      ${field.type === "url" && value
-                        ? html`
-                            <a
-                              href=${value}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              class="flex-1 text-sm text-blue-400 hover:underline truncate"
-                              title=${value}
-                            >
-                              ${value}
-                            </a>
-                          `
-                        : html`
-                            <span
-                              class="flex-1 text-sm truncate ${!value
-                                ? "text-slate-500 italic"
-                                : ""}"
-                              title=${value}
-                            >
-                              ${value || "Not set"}
-                            </span>
-                          `}
-                      <button
-                        class="p-1 hover:bg-slate-700 rounded transition-colors opacity-0 group-hover:opacity-100"
-                        onClick=${() =>
-                          handleStartEditAttribute({ name: field.name, value })}
-                        title="Edit"
-                      >
-                        <${EditIcon} className="w-4 h-4" />
-                      </button>
-                    </div>
-                  `}
-            </div>
-          `;
-        })}
-      </div>
-    `;
-  }
 }

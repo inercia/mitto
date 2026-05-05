@@ -3,11 +3,13 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/common/types/traits"
 )
 
 // CompiledExpression holds a compiled CEL AST ready for evaluation.
@@ -43,6 +45,9 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("workspace.uuid", cel.StringType),
 		cel.Variable("workspace.folder", cel.StringType),
 		cel.Variable("workspace.name", cel.StringType),
+		cel.Variable("workspace.hasUserDataSchema", cel.BoolType),
+		cel.Variable("workspace.hasMittoRC", cel.BoolType),
+		cel.Variable("workspace.hasMetadataDescription", cel.BoolType),
 
 		// Session variables
 		cel.Variable("session.id", cel.StringType),
@@ -50,6 +55,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("session.isChild", cel.BoolType),
 		cel.Variable("session.isAutoChild", cel.BoolType),
 		cel.Variable("session.parentId", cel.StringType),
+		cel.Variable("session.isPeriodic", cel.BoolType),
 
 		// Parent variables
 		cel.Variable("parent.exists", cel.BoolType),
@@ -59,6 +65,8 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// Children variables
 		cel.Variable("children.count", cel.IntType),
 		cel.Variable("children.exists", cel.BoolType),
+		cel.Variable("children.mcpCount", cel.IntType),
+		cel.Variable("children.mcp_count", cel.IntType), // deprecated alias for children.mcpCount
 		cel.Variable("children.names", cel.ListType(cel.StringType)),
 		cel.Variable("children.acpServers", cel.ListType(cel.StringType)),
 
@@ -66,11 +74,59 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("tools.available", cel.BoolType),
 		cel.Variable("tools.names", cel.ListType(cel.StringType)),
 
+		// Permissions variables
+		cel.Variable("permissions.canDoIntrospection", cel.BoolType),
+		cel.Variable("permissions.canSendPrompt", cel.BoolType),
+		cel.Variable("permissions.canPromptUser", cel.BoolType),
+		cel.Variable("permissions.canStartConversation", cel.BoolType),
+		cel.Variable("permissions.canInteractOtherWorkspaces", cel.BoolType),
+		cel.Variable("permissions.autoApprovePermissions", cel.BoolType),
+
 		// Custom function: tools.hasPattern(pattern) bool
 		// The implementation is injected per-evaluation via cel.Functions ProgramOption.
 		cel.Function("tools.hasPattern",
 			cel.Overload("tools_hasPattern_string",
 				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+			),
+		),
+
+		// Custom function: acp.matchesServerType(type) bool / acp.matchesServerType(types_list) bool
+		// Returns true if the current ACP server type matches any of the given types.
+		// Fail-open: returns true if no ACP server is active (acp.name == "").
+		cel.Function("acp.matchesServerType",
+			cel.Overload("acp_matchesServerType_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+			),
+			cel.Overload("acp_matchesServerType_list",
+				[]*cel.Type{cel.ListType(cel.StringType)},
+				cel.BoolType,
+			),
+		),
+
+		// Custom function: tools.hasAllPatterns(pattern) bool / tools.hasAllPatterns(patterns_list) bool
+		// Returns true if ALL glob patterns are satisfied by at least one tool each.
+		cel.Function("tools.hasAllPatterns",
+			cel.Overload("tools_hasAllPatterns_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+			),
+			cel.Overload("tools_hasAllPatterns_list",
+				[]*cel.Type{cel.ListType(cel.StringType)},
+				cel.BoolType,
+			),
+		),
+
+		// Custom function: tools.hasAnyPattern(pattern) bool / tools.hasAnyPattern(patterns_list) bool
+		// Returns true if ANY of the glob patterns is satisfied by at least one tool.
+		cel.Function("tools.hasAnyPattern",
+			cel.Overload("tools_hasAnyPattern_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+			),
+			cel.Overload("tools_hasAnyPattern_list",
+				[]*cel.Type{cel.ListType(cel.StringType)},
 				cel.BoolType,
 			),
 		),
@@ -117,14 +173,51 @@ func (e *CELEvaluator) Evaluate(compiled *CompiledExpression, ctx *PromptEnabled
 		return true, nil
 	}
 
-	// Extend the environment per evaluation so tools.hasPattern can close over the tool names.
-	// env.Extend() creates a child env inheriting all declarations; we add the binding here.
+	// Extend the environment per evaluation so runtime-context functions can close over
+	// the current tools/ACP data. env.Extend() creates a child env inheriting all
+	// declarations; we add the bindings here in a single call.
 	evalEnv, err := e.env.Extend(
 		cel.Function("tools.hasPattern",
 			cel.Overload("tools_hasPattern_string",
 				[]*cel.Type{cel.StringType},
 				cel.BoolType,
 				cel.UnaryBinding(toolsHasPatternImpl(ctx.Tools.Names)),
+			),
+		),
+		cel.Function("acp.matchesServerType",
+			cel.Overload("acp_matchesServerType_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(acpMatchesServerImpl(ctx.ACP.Name, ctx.ACP.Type)),
+			),
+			cel.Overload("acp_matchesServerType_list",
+				[]*cel.Type{cel.ListType(cel.StringType)},
+				cel.BoolType,
+				cel.FunctionBinding(acpMatchesServerImpl(ctx.ACP.Name, ctx.ACP.Type)),
+			),
+		),
+		cel.Function("tools.hasAllPatterns",
+			cel.Overload("tools_hasAllPatterns_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(toolsHasAllPatternsImpl(ctx.Tools.Names)),
+			),
+			cel.Overload("tools_hasAllPatterns_list",
+				[]*cel.Type{cel.ListType(cel.StringType)},
+				cel.BoolType,
+				cel.FunctionBinding(toolsHasAllPatternsImpl(ctx.Tools.Names)),
+			),
+		),
+		cel.Function("tools.hasAnyPattern",
+			cel.Overload("tools_hasAnyPattern_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(toolsHasAnyPatternImpl(ctx.Tools.Names)),
+			),
+			cel.Overload("tools_hasAnyPattern_list",
+				[]*cel.Type{cel.ListType(cel.StringType)},
+				cel.BoolType,
+				cel.FunctionBinding(toolsHasAnyPatternImpl(ctx.Tools.Names)),
 			),
 		),
 	)
@@ -157,15 +250,19 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"acp.tags":        ctx.ACP.Tags,
 		"acp.autoApprove": ctx.ACP.AutoApprove,
 
-		"workspace.uuid":   ctx.Workspace.UUID,
-		"workspace.folder": ctx.Workspace.Folder,
-		"workspace.name":   ctx.Workspace.Name,
+		"workspace.uuid":                   ctx.Workspace.UUID,
+		"workspace.folder":                 ctx.Workspace.Folder,
+		"workspace.name":                   ctx.Workspace.Name,
+		"workspace.hasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
+		"workspace.hasMittoRC":             ctx.Workspace.HasMittoRC,
+		"workspace.hasMetadataDescription": ctx.Workspace.HasMetadataDescription,
 
 		"session.id":          ctx.Session.ID,
 		"session.name":        ctx.Session.Name,
 		"session.isChild":     ctx.Session.IsChild,
 		"session.isAutoChild": ctx.Session.IsAutoChild,
 		"session.parentId":    ctx.Session.ParentID,
+		"session.isPeriodic":  ctx.Session.IsPeriodic,
 
 		"parent.exists":    ctx.Parent.Exists,
 		"parent.name":      ctx.Parent.Name,
@@ -173,11 +270,20 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 
 		"children.count":      int64(ctx.Children.Count),
 		"children.exists":     ctx.Children.Exists,
+		"children.mcpCount":   int64(ctx.Children.MCPCount),
+		"children.mcp_count":  int64(ctx.Children.MCPCount), // deprecated alias
 		"children.names":      ctx.Children.Names,
 		"children.acpServers": ctx.Children.ACPServers,
 
 		"tools.available": ctx.Tools.Available,
 		"tools.names":     ctx.Tools.Names,
+
+		"permissions.canDoIntrospection":         ctx.Permissions.CanDoIntrospection,
+		"permissions.canSendPrompt":              ctx.Permissions.CanSendPrompt,
+		"permissions.canPromptUser":              ctx.Permissions.CanPromptUser,
+		"permissions.canStartConversation":       ctx.Permissions.CanStartConversation,
+		"permissions.canInteractOtherWorkspaces": ctx.Permissions.CanInteractOtherWorkspaces,
+		"permissions.autoApprovePermissions":     ctx.Permissions.AutoApprovePermissions,
 	}
 }
 
@@ -213,4 +319,81 @@ func toolsHasPatternImpl(names []string) func(ref.Val) ref.Val {
 		}
 		return types.Bool(false)
 	}
+}
+
+// acpMatchesServerImpl returns a CEL FunctionOp that checks whether the current ACP
+// server type matches any of the given server types (case-insensitive).
+// Only compares against the server type (e.g., "augment", "claude-code"), not the
+// display name (e.g., "Auggie (Opus 4.6)").
+// Fail-open: if acpName is empty (no ACP server active), always returns true.
+func acpMatchesServerImpl(acpName, acpType string) func(args ...ref.Val) ref.Val {
+	return func(args ...ref.Val) ref.Val {
+		if acpName == "" {
+			return types.Bool(true)
+		}
+		for _, server := range extractStringArgs(args) {
+			if strings.EqualFold(server, acpType) {
+				return types.Bool(true)
+			}
+		}
+		return types.Bool(false)
+	}
+}
+
+// toolsHasAllPatternsImpl returns a CEL FunctionOp that checks whether ALL of the
+// given glob patterns are satisfied by at least one tool name each.
+func toolsHasAllPatternsImpl(names []string) func(args ...ref.Val) ref.Val {
+	return func(args ...ref.Val) ref.Val {
+		patterns := extractStringArgs(args)
+		for _, pattern := range patterns {
+			found := false
+			for _, name := range names {
+				matched, err := filepath.Match(pattern, name)
+				if err == nil && matched {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return types.Bool(false)
+			}
+		}
+		return types.Bool(true)
+	}
+}
+
+// toolsHasAnyPatternImpl returns a CEL FunctionOp that checks whether ANY of the
+// given glob patterns is satisfied by at least one tool name.
+func toolsHasAnyPatternImpl(names []string) func(args ...ref.Val) ref.Val {
+	return func(args ...ref.Val) ref.Val {
+		for _, pattern := range extractStringArgs(args) {
+			for _, name := range names {
+				matched, err := filepath.Match(pattern, name)
+				if err == nil && matched {
+					return types.Bool(true)
+				}
+			}
+		}
+		return types.Bool(false)
+	}
+}
+
+// extractStringArgs extracts string values from CEL function arguments.
+// Handles both individual string args and list(string) args.
+func extractStringArgs(args []ref.Val) []string {
+	var result []string
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case types.String:
+			result = append(result, string(v))
+		case traits.Lister:
+			size := v.Size().(types.Int)
+			for i := types.IntZero; i < size; i++ {
+				if s, ok := v.Get(i).(types.String); ok {
+					result = append(result, string(s))
+				}
+			}
+		}
+	}
+	return result
 }

@@ -28,8 +28,8 @@ type SessionCallbacks struct {
 	OnReleaseTerminal func(ctx context.Context, params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error)
 	// OnWaitForTerminalExit handles terminal wait requests.
 	OnWaitForTerminalExit func(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error)
-	// OnKillTerminalCommand handles terminal kill requests.
-	OnKillTerminalCommand func(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error)
+	// OnKillTerminal handles terminal kill requests.
+	OnKillTerminal func(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error)
 }
 
 // MultiplexClient implements acp.Client and routes all ACP callbacks to the
@@ -126,13 +126,13 @@ func (mc *MultiplexClient) CreateTerminal(ctx context.Context, params acp.Create
 	return cb.OnCreateTerminal(ctx, params)
 }
 
-// KillTerminalCommand routes terminal kill requests to the correct session.
-func (mc *MultiplexClient) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
+// KillTerminal routes terminal kill requests to the correct session.
+func (mc *MultiplexClient) KillTerminal(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
 	cb := mc.getSession(params.SessionId)
-	if cb == nil || cb.OnKillTerminalCommand == nil {
-		return defaultKillTerminalCommand(params)
+	if cb == nil || cb.OnKillTerminal == nil {
+		return defaultKillTerminal(params)
 	}
-	return cb.OnKillTerminalCommand(ctx, params)
+	return cb.OnKillTerminal(ctx, params)
 }
 
 // TerminalOutput routes terminal output requests to the correct session.
@@ -184,8 +184,8 @@ func defaultCreateTerminal(params acp.CreateTerminalRequest) (acp.CreateTerminal
 	return webTerminalStub.CreateTerminal(context.Background(), params)
 }
 
-func defaultKillTerminalCommand(params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-	return webTerminalStub.KillTerminalCommand(context.Background(), params)
+func defaultKillTerminal(params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
+	return webTerminalStub.KillTerminal(context.Background(), params)
 }
 
 func defaultTerminalOutput(params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {

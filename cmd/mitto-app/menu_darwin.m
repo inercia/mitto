@@ -444,6 +444,12 @@ void setupSwipeGestureRecognizer(void) {
         // Monitor scroll wheel events to detect two-finger swipe gestures
         // We track the full gesture from start to end to accumulate the total delta
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel handler:^NSEvent *(NSEvent *event) {
+            // Only process events from the main window to avoid interfering with viewer windows
+            NSWindow *mainWindow = [NSApplication sharedApplication].mainWindow;
+            if (!mainWindow || ![event.window isEqual:mainWindow]) {
+                return event;
+            }
+
             // Only process trackpad events (not mouse scroll wheel)
             // Trackpad events have a phase, mouse events don't
             if (event.phase == NSEventPhaseNone && event.momentumPhase == NSEventPhaseNone) {
@@ -631,5 +637,16 @@ void disableWindowFullscreen(void) {
                       dispatch_get_main_queue(), applyToAllWindows);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                       dispatch_get_main_queue(), applyToAllWindows);
+    }
+}
+
+// setProcessName sets the process name for the current process.
+// This affects how the process appears in Activity Monitor and how WebKit child
+// processes (WebContent) derive their display names.
+// Should be called as early as possible in app startup, before webview creation.
+void setProcessName(const char* name) {
+    @autoreleasepool {
+        NSString *appName = [NSString stringWithUTF8String:name];
+        [[NSProcessInfo processInfo] setProcessName:appName];
     }
 }

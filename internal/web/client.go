@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -28,6 +29,15 @@ type WebClient struct {
 	autoApprove bool
 	seqProvider SeqProvider
 	logger      *slog.Logger
+
+	// isLoadingSession is set to true during LoadSession to suppress event processing.
+	// During Load, the agent replays the entire conversation history as ACP notifications.
+	// With large sessions (hundreds of exchanges), this produces thousands of events that
+	// overwhelm the SDK's bounded notification queue (1024 entries) because the consumer
+	// (markdown conversion, persistence, pruning) is slower than the producer.
+	// When true, SessionUpdate returns immediately — the events are historical and already
+	// persisted by Mitto, so discarding them is safe.
+	isLoadingSession atomic.Bool
 
 	// Callbacks for file operations (not buffered)
 	onFileWrite          func(seq int64, path string, size int)
@@ -171,6 +181,15 @@ func NewWebClient(config WebClientConfig) *WebClient {
 	return c
 }
 
+// SetLoadingSession controls whether the WebClient suppresses event processing.
+// Set to true before calling LoadSession, and false after it returns.
+// During Load, the agent replays the entire conversation history as notifications.
+// Discarding them prevents the SDK's notification queue (1024 entries) from overflowing
+// when the consumer (markdown conversion + persistence) can't keep up.
+func (c *WebClient) SetLoadingSession(loading bool) {
+	c.isLoadingSession.Store(loading)
+}
+
 // SessionUpdate handles streaming updates from the agent.
 // Sequence numbers are assigned at emit time (not receive time) to ensure
 // contiguous numbers without gaps from coalesced chunks.
@@ -179,6 +198,13 @@ func NewWebClient(config WebClientConfig) *WebClient {
 // in the middle of a markdown block (list, table, code block) and emitted
 // after the block completes. This prevents tool calls from breaking lists.
 func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
+	// During LoadSession, discard all replayed history events to prevent
+	// notification queue overflow. These events are historical — Mitto already
+	// has them persisted in events.jsonl.
+	if c.isLoadingSession.Load() {
+		return nil
+	}
+
 	// Log event arrival time from ACP SDK (DEBUG level only).
 	// This helps diagnose whether events arrive in bursts from ACP or are delayed in our processing.
 	receiveTime := time.Now()
@@ -238,14 +264,10 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		}
 
 	case u.ToolCall != nil:
-		// Seq is assigned at emit time by StreamBuffer.
-		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
-		status := string(u.ToolCall.Status)
-		c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
-
-		// Check if this is any mitto_* tool call and extract self_id for correlation.
-		// The tool title contains the tool name (e.g., "mitto_get_current_session_mitto-debug").
-		// All mitto_* tools use self_id for automatic session detection.
+		// Register MCP correlation BEFORE StreamBuffer processing.
+		// The MCP HTTP request arrives in parallel and polls for this correlation.
+		// By registering first, we avoid the MCP handler waiting for StreamBuffer
+		// to finish flushing markdown, persisting events, and notifying observers.
 		if c.onMittoToolCall != nil && strings.Contains(u.ToolCall.Title, "mitto_") {
 			selfID := extractMittoSelfID(u.ToolCall.RawInput)
 			if selfID != "" {
@@ -261,6 +283,11 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 				c.onMittoToolCall("init")
 			}
 		}
+
+		// Seq is assigned at emit time by StreamBuffer.
+		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
+		status := string(u.ToolCall.Status)
+		c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
 
 	case u.ToolCallUpdate != nil:
 		// Seq is assigned at emit time by StreamBuffer.
@@ -399,9 +426,9 @@ func (c *WebClient) WaitForTerminalExit(ctx context.Context, params acp.WaitForT
 	return webTerminalStub.WaitForTerminalExit(ctx, params)
 }
 
-// KillTerminalCommand handles requests to kill terminal commands.
-func (c *WebClient) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-	return webTerminalStub.KillTerminalCommand(ctx, params)
+// KillTerminal handles requests to kill terminals.
+func (c *WebClient) KillTerminal(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
+	return webTerminalStub.KillTerminal(ctx, params)
 }
 
 // FlushMarkdown forces a flush of any buffered content (markdown and pending events).

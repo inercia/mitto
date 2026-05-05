@@ -83,11 +83,11 @@ func TestStubTerminalHandler_KillTerminalCommand(t *testing.T) {
 	handler := &StubTerminalHandler{}
 	ctx := context.Background()
 
-	_, err := handler.KillTerminalCommand(ctx, acp.KillTerminalCommandRequest{
+	_, err := handler.KillTerminal(ctx, acp.KillTerminalRequest{
 		TerminalId: "term-1",
 	})
 	if err != nil {
-		t.Fatalf("KillTerminalCommand failed: %v", err)
+		t.Fatalf("KillTerminal failed: %v", err)
 	}
 }
 

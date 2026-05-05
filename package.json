@@ -14,14 +14,23 @@
     "test:ui:report": "npx playwright show-report tests/ui/playwright-report",
     "test:ui:legacy": "npx playwright test --config=tests/ui/playwright.config.js",
     "tailwind": "tailwindcss -i web/static/tailwind.src.css -o web/static/tailwind.css --minify",
-    "tailwind:watch": "tailwindcss -i web/static/tailwind.src.css -o web/static/tailwind.css --watch"
+    "tailwind:watch": "tailwindcss -i web/static/tailwind.src.css -o web/static/tailwind.css --watch",
+    "lint:html": "bash scripts/lint-html.sh",
+    "lint:css": "stylelint 'web/static/**/*.css' --ignore-path .gitignore",
+    "lint:js": "eslint",
+    "lint:frontend": "npm run lint:html && npm run lint:css && npm run lint:js"
   },
   "devDependencies": {
     "@playwright/test": "^1.50.1",
     "@types/node": "^20.11.0",
+    "eslint": "^10.2.1",
+    "globals": "^17.5.0",
+    "htmlhint": "^1.9.2",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
     "prettier": "^3.8.1",
+    "stylelint": "^17.9.1",
+    "stylelint-config-standard": "^40.0.0",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.4.0"
   },

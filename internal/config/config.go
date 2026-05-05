@@ -61,6 +61,9 @@ const (
 	PromptSourceSettings PromptSource = "settings"
 	// PromptSourceWorkspace indicates the prompt was defined in a workspace .mittorc file
 	PromptSourceWorkspace PromptSource = "workspace"
+	// PromptSourceBuiltin indicates the prompt was loaded from the builtin prompts directory
+	// (MITTO_DIR/prompts/builtin/). These prompts are read-only and can only be disabled.
+	PromptSourceBuiltin PromptSource = "builtin"
 )
 
 // WebPrompt represents a predefined prompt for the web interface.
@@ -84,16 +87,19 @@ type WebPrompt struct {
 	// EnabledWhenACP is an optional comma-separated list of ACP server names this prompt applies to.
 	// If empty, the prompt works with all ACP servers.
 	// Example: "auggie, claude-code" means only show this prompt for those ACP servers.
-	// This is included so the frontend can filter prompts client-side.
-	EnabledWhenACP string `json:"enabledWhenACP,omitempty"`
+	// Filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
+	EnabledWhenACP string `json:"-"`
 	// EnabledWhenMCP is an optional comma-separated list of tool name patterns required for this prompt.
 	// Patterns support * as wildcard (e.g., "jira_*,slack_*").
-	// Sent to frontend so it can filter prompts based on tool availability.
-	EnabledWhenMCP string `json:"enabledWhenMCP,omitempty"`
+	// Filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
+	EnabledWhenMCP string `json:"-"`
 	// EnabledWhen is an optional CEL expression for conditional visibility.
-	// Sent to frontend for display purposes (e.g., showing why prompt is hidden).
-	// Actual filtering happens server-side.
-	EnabledWhen string `json:"enabledWhen,omitempty"`
+	// Actual filtering happens server-side via filterPromptsByEnabled; not serialized to JSON.
+	EnabledWhen string `json:"-"`
+	// Enabled controls whether the prompt is active after merging.
+	// A nil value means enabled (default true). Only explicit false disables.
+	// This is used during merge to allow higher-priority sources to disable prompts.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -244,8 +250,8 @@ type BadgeClickActionConfig struct {
 	// Default: true (enabled by default)
 	Enabled *bool `json:"enabled,omitempty"`
 	// Command is the shell command to execute when the badge is clicked.
-	// Supports ${WORKSPACE} placeholder which is replaced with the workspace directory path.
-	// Default: "open ${WORKSPACE}" (opens the folder in Finder on macOS)
+	// Supports ${MITTO_WORKING_DIR} placeholder which is replaced with the workspace directory path.
+	// Default: "open ${MITTO_WORKING_DIR}" (opens the folder in Finder on macOS)
 	Command string `json:"command,omitempty"`
 }
 
@@ -259,10 +265,10 @@ func (c *BadgeClickActionConfig) GetEnabled() bool {
 }
 
 // GetCommand returns the command to execute.
-// Defaults to "open ${WORKSPACE}" if not set.
+// Defaults to "open ${MITTO_WORKING_DIR}" if not set.
 func (c *BadgeClickActionConfig) GetCommand() string {
 	if c == nil || c.Command == "" {
-		return "open ${WORKSPACE}"
+		return "open ${MITTO_WORKING_DIR}"
 	}
 	return c.Command
 }
@@ -395,6 +401,11 @@ type AccessLogConfig struct {
 	// MaxBackups is the maximum number of old log files to retain.
 	// Default: 1
 	MaxBackups int `json:"max_backups,omitempty"`
+	// LogAll controls whether all HTTP requests are logged (like nginx/Apache access.log)
+	// or only security-relevant events (login attempts, unauthorized access, rate limiting).
+	// When nil, the default depends on the runtime: true for the macOS app, false for CLI.
+	// Set to true for comprehensive HTTP access logging, false for security-events-only mode.
+	LogAll *bool `json:"log_all,omitempty"`
 }
 
 // DefaultAPIPrefix is the default URL prefix for API endpoints.
@@ -506,6 +517,11 @@ type ConversationsConfig struct {
 	// If a flag is not present in this map, the compile-time default from
 	// internal/session/flags.go is used instead.
 	DefaultFlags map[string]bool `json:"default_flags,omitempty" yaml:"default_flags,omitempty"`
+	// MaxChildConversations limits the number of child conversations a session can
+	// spawn via the MCP mitto_conversation_new tool. Auto-children (created via
+	// workspace auto_children config) are NOT counted toward this limit.
+	// nil means use default (10). 0 means unlimited.
+	MaxChildConversations *int `json:"max_child_conversations,omitempty" yaml:"max_child_conversations,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -698,6 +714,20 @@ func (c *ConversationsConfig) AreExternalImagesEnabled() bool {
 	return c.ExternalImages.IsEnabled()
 }
 
+// DefaultMaxChildConversations is the default limit for child conversations
+// spawned via MCP when no explicit limit is configured.
+const DefaultMaxChildConversations = 10
+
+// GetMaxChildConversations returns the configured max child conversations limit.
+// Safe to call on nil receiver - returns DefaultMaxChildConversations if not configured.
+// Returns 0 for unlimited.
+func (c *ConversationsConfig) GetMaxChildConversations() int {
+	if c == nil || c.MaxChildConversations == nil {
+		return DefaultMaxChildConversations
+	}
+	return *c.MaxChildConversations
+}
+
 // MergeProcessors combines global and workspace processors according to precedence rules.
 //
 // Merge behavior:
@@ -787,6 +817,52 @@ func MergePrompts(globalFilePrompts, settingsPrompts, workspacePrompts []WebProm
 		}
 	}
 
+	// Filter out disabled prompts after merge.
+	// Higher-priority sources can set Enabled=false to suppress same-named lower-priority prompts.
+	var filtered []WebPrompt
+	for _, p := range result {
+		if p.Enabled == nil || *p.Enabled {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
+}
+
+// MergePromptsKeepDisabled combines prompts from multiple sources with proper priority,
+// but unlike MergePrompts, it does NOT filter out disabled prompts.
+// This is needed when returning workspace prompts to the frontend, because
+// disabled entries (enabled: false) must reach the frontend so it can use them
+// to suppress same-named global/builtin prompts in the prompts menu.
+func MergePromptsKeepDisabled(globalFilePrompts, settingsPrompts, workspacePrompts []WebPrompt) []WebPrompt {
+	seen := make(map[string]bool)
+	var result []WebPrompt
+
+	// Add workspace prompts first (highest priority)
+	for _, p := range workspacePrompts {
+		if p.Name != "" && !seen[p.Name] {
+			p.Source = PromptSourceWorkspace
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
+	// Add settings prompts (medium priority)
+	for _, p := range settingsPrompts {
+		if p.Name != "" && !seen[p.Name] {
+			p.Source = PromptSourceSettings
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
+	// Add global file prompts (lowest priority)
+	for _, p := range globalFilePrompts {
+		if p.Name != "" && !seen[p.Name] {
+			result = append(result, p)
+			seen[p.Name] = true
+		}
+	}
+
 	return result
 }
 
@@ -807,7 +883,7 @@ type RunnerRestrictions struct {
 	// WARNING: Setting to false will break network-based MCP servers.
 	AllowNetworking *bool `json:"allow_networking,omitempty" yaml:"allow_networking,omitempty"`
 
-	// AllowReadFolders lists folders that can be read (supports variables like $WORKSPACE, $HOME).
+	// AllowReadFolders lists folders that can be read (supports variables like $MITTO_WORKING_DIR, $HOME).
 	AllowReadFolders []string `json:"allow_read_folders,omitempty" yaml:"allow_read_folders,omitempty"`
 
 	// AllowWriteFolders lists folders that can be written (supports variables).
@@ -946,6 +1022,7 @@ type rawACPServerConfig struct {
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		EnabledWhenACP  string `yaml:"enabledWhenACP"`
+		EnabledWhenMCP  string `yaml:"enabledWhenMCP"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -963,6 +1040,7 @@ type rawConfig struct {
 		Description     string `yaml:"description"`
 		Group           string `yaml:"group"`
 		EnabledWhenACP  string `yaml:"enabledWhenACP"`
+		EnabledWhenMCP  string `yaml:"enabledWhenMCP"`
 		Enabled         *bool  `yaml:"enabled"`
 		EnabledWhen     string `yaml:"enabledWhen"`
 	} `yaml:"prompts"`
@@ -1060,7 +1138,8 @@ type rawConfig struct {
 		ExternalImages *struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"external_images"`
-		DefaultFlags map[string]bool `yaml:"default_flags"`
+		DefaultFlags          map[string]bool `yaml:"default_flags"`
+		MaxChildConversations *int            `yaml:"max_child_conversations"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1068,6 +1147,14 @@ type rawConfig struct {
 	Permissions *struct {
 		AutoApprove *bool `yaml:"auto_approve"`
 	} `yaml:"permissions"`
+	// Session is the session storage/startup configuration
+	Session *struct {
+		MaxMessagesPerSession    int    `yaml:"max_messages_per_session"`
+		MaxSessionSizeBytes      int64  `yaml:"max_session_size_bytes"`
+		ArchiveRetentionPeriod   string `yaml:"archive_retention_period"`
+		AutoArchiveInactiveAfter string `yaml:"auto_archive_inactive_after"`
+		StartupStaggerMs         int    `yaml:"startup_stagger_ms"`
+	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
 		Enabled *bool  `yaml:"enabled"`
@@ -1105,10 +1192,6 @@ func ParseJSON(data []byte) (*Config, error) {
 
 	cfg := settings.ToConfig()
 
-	if len(cfg.ACPServers) == 0 {
-		return nil, fmt.Errorf("no ACP servers configured")
-	}
-
 	return cfg, nil
 }
 
@@ -1144,43 +1227,53 @@ func Parse(data []byte) (*Config, error) {
 				if p.Enabled != nil && !*p.Enabled {
 					continue
 				}
-				acpServer.Prompts = append(acpServer.Prompts, WebPrompt{
+				wp := WebPrompt{
 					Name:            p.Name,
 					Prompt:          p.Prompt,
 					BackgroundColor: p.BackgroundColor,
 					Description:     p.Description,
 					Group:           p.Group,
 					EnabledWhenACP:  p.EnabledWhenACP,
+					EnabledWhenMCP:  p.EnabledWhenMCP,
 					EnabledWhen:     p.EnabledWhen,
-				})
+				}
+				// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
+				if wp.EnabledWhenACP != "" || wp.EnabledWhenMCP != "" {
+					wp.EnabledWhen = TranslateShorthandToEnabledWhen(wp.EnabledWhenACP, wp.EnabledWhenMCP, wp.EnabledWhen)
+				}
+				acpServer.Prompts = append(acpServer.Prompts, wp)
 			}
 			cfg.ACPServers = append(cfg.ACPServers, acpServer)
 		}
 	}
 
-	if len(cfg.ACPServers) == 0 {
-		return nil, fmt.Errorf("no ACP servers configured")
-	}
-
 	// Populate global prompts (top-level)
 	for _, p := range raw.Prompts {
-		// Skip prompts with empty name or prompt text
-		if p.Name == "" || p.Prompt == "" {
+		// Skip prompts with empty name
+		if p.Name == "" {
 			continue
 		}
-		// Skip disabled prompts
-		if p.Enabled != nil && !*p.Enabled {
+		// Allow empty prompt text only when disabled (used to suppress same-named prompts)
+		isDisabled := p.Enabled != nil && !*p.Enabled
+		if p.Prompt == "" && !isDisabled {
 			continue
 		}
-		cfg.Prompts = append(cfg.Prompts, WebPrompt{
+		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,
 			BackgroundColor: p.BackgroundColor,
 			Description:     p.Description,
 			Group:           p.Group,
 			EnabledWhenACP:  p.EnabledWhenACP,
+			EnabledWhenMCP:  p.EnabledWhenMCP,
 			EnabledWhen:     p.EnabledWhen,
-		})
+			Enabled:         p.Enabled,
+		}
+		// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
+		if wp.EnabledWhenACP != "" || wp.EnabledWhenMCP != "" {
+			wp.EnabledWhen = TranslateShorthandToEnabledWhen(wp.EnabledWhenACP, wp.EnabledWhenMCP, wp.EnabledWhen)
+		}
+		cfg.Prompts = append(cfg.Prompts, wp)
 	}
 
 	// Populate prompts directories
@@ -1346,10 +1439,15 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.DefaultFlags = raw.Conversations.DefaultFlags
 		}
 
+		// Copy max child conversations
+		if raw.Conversations.MaxChildConversations != nil {
+			cfg.Conversations.MaxChildConversations = raw.Conversations.MaxChildConversations
+		}
+
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
-			cfg.Conversations.DefaultFlags == nil {
+			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil {
 			cfg.Conversations = nil
 		}
 	}
@@ -1361,6 +1459,17 @@ func Parse(data []byte) (*Config, error) {
 	if raw.Permissions != nil {
 		cfg.Permissions = &PermissionsConfig{
 			AutoApprove: raw.Permissions.AutoApprove,
+		}
+	}
+
+	// Parse session config
+	if raw.Session != nil {
+		cfg.Session = &SessionConfig{
+			MaxMessagesPerSession:    raw.Session.MaxMessagesPerSession,
+			MaxSessionSizeBytes:      raw.Session.MaxSessionSizeBytes,
+			ArchiveRetentionPeriod:   raw.Session.ArchiveRetentionPeriod,
+			AutoArchiveInactiveAfter: raw.Session.AutoArchiveInactiveAfter,
+			StartupStaggerMs:         raw.Session.StartupStaggerMs,
 		}
 	}
 

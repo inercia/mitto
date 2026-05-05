@@ -1,0 +1,12 @@
+# GitHub Copilot agent configuration
+name: "GitHub Copilot"
+displayName: "GitHub Copilot"
+acpId: "github-copilot"
+description: "GitHub's AI pair programmer"
+website: "https://github.com/features/copilot/cli/"
+repository: "https://github.com/github/copilot-cli"
+license: "proprietary"
+install:
+  method: "npx"
+  package: "@github/copilot"
+  args: ["--acp"]

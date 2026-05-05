@@ -135,6 +135,17 @@ const (
 	// Data: { "session_id": string, "is_streaming": bool }
 	WSMsgTypeSessionStreaming = "session_streaming"
 
+	// WSMsgTypeSessionWaiting notifies that a session's waiting-for-children state changed.
+	// This is broadcast when a parent session starts or stops blocking on mitto_children_tasks_wait.
+	// Data: { "session_id": string, "is_waiting": bool }
+	WSMsgTypeSessionWaiting = "session_waiting"
+
+	// WSMsgTypeSessionUIPrompt notifies that a session's UI prompt state changed.
+	// This is broadcast when a session starts or stops waiting for user input
+	// (blocking UI prompts from MCP tools or permission requests).
+	// Data: { "session_id": string, "is_waiting": bool }
+	WSMsgTypeSessionUIPrompt = "session_ui_prompt"
+
 	// WSMsgTypeSessionSettingsUpdated notifies that a session's advanced settings changed.
 	// Sent on /api/events to all connected clients.
 	// Data: { "session_id": string, "settings": { "flag_name": bool, ... } }
@@ -377,6 +388,12 @@ const (
 	// Sent via the global events WebSocket when tools are successfully retrieved.
 	// Data: { "workspace_uuid": string, "tools": []MCPToolInfo }
 	WSMsgTypeMCPToolsAvailable = "mcp_tools_available"
+
+	// WSMsgTypeNotification sends a fire-and-forget notification to the client.
+	// Triggered by the mitto_ui_notify MCP tool. No response is expected from the client.
+	// Data: { "session_id": string, "title": string, "message": string, "style": string, "sound": bool, "native": bool }
+	// style is one of: "info", "success", "warning", "error"
+	WSMsgTypeNotification = "notification"
 
 	// WSMsgTypeEnabledWhenMCPStatus notifies the frontend about required tool pattern availability.
 	// Sent after checking which required tool patterns are satisfied in the workspace.

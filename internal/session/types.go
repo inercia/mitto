@@ -56,6 +56,10 @@ type SessionStore interface {
 	// CountChildSessions returns the count of direct child sessions.
 	CountChildSessions(parentID string) (int, error)
 
+	// CountMCPChildSessions returns the count of direct child sessions
+	// excluding auto-children (only MCP and human-created children).
+	CountMCPChildSessions(parentID string) (int, error)
+
 	// HasChildSessions returns true if the session has at least one child.
 	HasChildSessions(parentID string) (bool, error)
 
@@ -203,31 +207,72 @@ type SessionEndData struct {
 
 // Metadata contains session metadata stored separately from the event log.
 type Metadata struct {
-	SessionID         string          `json:"session_id"`
-	Name              string          `json:"name,omitempty"` // User-friendly session name
-	ACPServer         string          `json:"acp_server"`
-	ACPSessionID      string          `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
-	WorkingDir        string          `json:"working_dir"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
-	LastUserMessageAt time.Time       `json:"last_user_message_at,omitempty"` // Time of last user prompt
-	EventCount        int             `json:"event_count"`
-	MaxSeq            int64           `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
-	Status            SessionStatus   `json:"status"`
-	Description       string          `json:"description,omitempty"`
-	Pinned            bool            `json:"pinned,omitempty"`            // Deprecated: use Archived instead. If true, session cannot be deleted
-	Archived          bool            `json:"archived,omitempty"`          // If true, session is archived (hidden from main list by default)
-	ArchivedAt        time.Time       `json:"archived_at,omitempty"`       // Time when session was archived (cleared when unarchived)
-	RunnerType        string          `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
-	RunnerRestricted  bool            `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
-	CurrentModeID     string          `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
-	AdvancedSettings  map[string]bool `json:"advanced_settings,omitempty"` // Per-session feature flags (flag name → enabled)
-	ParentSessionID   string          `json:"parent_session_id,omitempty"` // Session ID that created this session via MCP (prevents infinite recursion)
+	SessionID               string          `json:"session_id"`
+	Name                    string          `json:"name,omitempty"` // User-friendly session name
+	ACPServer               string          `json:"acp_server"`
+	ACPSessionID            string          `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
+	WorkingDir              string          `json:"working_dir"`
+	CreatedAt               time.Time       `json:"created_at"`
+	UpdatedAt               time.Time       `json:"updated_at"`
+	LastUserMessageAt       time.Time       `json:"last_user_message_at,omitempty"` // Time of last user prompt
+	EventCount              int             `json:"event_count"`
+	MaxSeq                  int64           `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
+	Status                  SessionStatus   `json:"status"`
+	Description             string          `json:"description,omitempty"`
+	Pinned                  bool            `json:"pinned,omitempty"`                    // Deprecated: use Archived instead. If true, session cannot be deleted
+	Archived                bool            `json:"archived,omitempty"`                  // If true, session is archived (hidden from main list by default)
+	ArchivedAt              time.Time       `json:"archived_at,omitempty"`               // Time when session was archived (cleared when unarchived)
+	RunnerType              string          `json:"runner_type,omitempty"`               // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted        bool            `json:"runner_restricted,omitempty"`         // Whether the runner has restrictions enabled
+	CurrentModeID           string          `json:"current_mode_id,omitempty"`           // Current session mode ID (e.g., "ask", "code", "architect")
+	AdvancedSettings        map[string]bool `json:"advanced_settings,omitempty"`         // Per-session feature flags (flag name → enabled)
+	ProcessorActivations    int             `json:"processor_activations,omitempty"`     // Cumulative processor pipeline activation count
+	ProcessorLastActivation time.Time       `json:"processor_last_activation,omitempty"` // When processors were last activated
+	ParentSessionID         string          `json:"parent_session_id,omitempty"`         // Session ID that created this session via MCP (prevents infinite recursion)
 	// IsAutoChild indicates this session was auto-created with its parent
 	// (via auto_children workspace config). Auto-children are cascade-deleted
 	// when their parent is deleted. MCP-created children (this field is false)
 	// are orphaned instead (ParentSessionID cleared).
+	// Deprecated: Use ChildOrigin instead. Kept for backward compatibility with existing metadata files.
 	IsAutoChild bool `json:"is_auto_child,omitempty"`
+	// ChildOrigin indicates how a child conversation was created.
+	// Empty string means this is a top-level session (not a child).
+	// Possible values: ChildOriginAuto, ChildOriginMCP, ChildOriginHuman.
+	ChildOrigin ChildOrigin `json:"child_origin,omitempty"`
+	// ACPStartFailureCount tracks consecutive ACP process start failures across restarts.
+	// Incremented each time ResumeSession fails to start the ACP process.
+	// Reset to 0 on successful start. When it reaches ACPStartFailureThreshold,
+	// the session is auto-archived to prevent infinite retry loops.
+	ACPStartFailureCount int `json:"acp_start_failure_count,omitempty"`
+}
+
+// ChildOrigin represents how a child conversation was created.
+type ChildOrigin string
+
+const (
+	// ChildOriginAuto means the child was auto-created via workspace config (auto_children).
+	// These are cascade-deleted when the parent is deleted.
+	ChildOriginAuto ChildOrigin = "auto"
+	// ChildOriginMCP means the child was created via the mitto_conversation_new MCP tool.
+	// These are orphaned (parent link cleared) when the parent is deleted.
+	ChildOriginMCP ChildOrigin = "mcp"
+	// ChildOriginHuman means the child was manually created by the user.
+	// These are orphaned when the parent is deleted.
+	ChildOriginHuman ChildOrigin = "human"
+)
+
+// MigrateChildOrigin ensures ChildOrigin is populated for backward compatibility.
+// If ChildOrigin is empty but IsAutoChild is true, sets ChildOrigin to ChildOriginAuto.
+// If ChildOrigin is empty but ParentSessionID is set, defaults to ChildOriginMCP.
+func (m *Metadata) MigrateChildOrigin() {
+	if m.ChildOrigin != "" {
+		return // Already set
+	}
+	if m.IsAutoChild {
+		m.ChildOrigin = ChildOriginAuto
+	} else if m.ParentSessionID != "" {
+		m.ChildOrigin = ChildOriginMCP
+	}
 }
 
 // LockStatus represents the current activity status of a locked session.

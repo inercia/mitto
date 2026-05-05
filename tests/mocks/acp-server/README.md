@@ -1,6 +1,6 @@
 # Mock ACP Server
 
-A mock implementation of the Agent Communication Protocol (ACP) server for testing Mitto.
+A mock implementation of the Agent Client Protocol (ACP) server for testing Mitto.
 
 ## Purpose
 

@@ -55,7 +55,7 @@ Use the `todo` tool to track progress.
 
 Present plan, wait for approval.
 
-**With Mitto UI**: `mitto_ui_ask_yes_no` → "Approve and start / Modify plan"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Approve and start / Modify plan"
 **Without**: Ask in conversation.
 
 Once approved, per step: implement → write/update tests → verify → report → next.

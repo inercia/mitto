@@ -162,6 +162,7 @@ test-results/
 # -----------------------------------------------------------------------------
 .augment/rules/98-release.md
 .augment/rules/99-local.md
+.augment/rules/*.local.md
 
 # Local workspace config
 .mitto/
@@ -174,3 +175,5 @@ test-results/
 .dolt/
 *.db
 .beads-credential-key
+.augment/settings.local.json
+tests/ui/test-results-auth/

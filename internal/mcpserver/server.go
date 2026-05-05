@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,7 +65,9 @@ type Server struct {
 	mu             sync.RWMutex
 	store          *session.Store
 	config         *config.Config
+	promptsCache   *config.PromptsCache
 	sessionManager SessionManager
+	periodicRunner PeriodicRunner // Optional — for triggering periodic runs via MCP
 	running        bool
 	shutdown       bool
 
@@ -123,6 +127,9 @@ type Dependencies struct {
 	Config *config.Config
 	// SessionManager is optional - provides info about running sessions
 	SessionManager SessionManager
+	// PromptsCache provides cached access to global prompts from MITTO_DIR/prompts/.
+	// If nil, global file prompts are not loaded.
+	PromptsCache *config.PromptsCache
 }
 
 // SessionManager interface for checking session status and managing sessions.
@@ -140,9 +147,37 @@ type SessionManager interface {
 	// Multiple workspaces may share the same folder with different ACP servers.
 	GetWorkspacesForFolder(folder string) []config.WorkspaceSettings
 	// BroadcastSessionCreated broadcasts a session_created event to all connected clients.
-	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID string)
+	BroadcastSessionCreated(sessionID, name, acpServer, workingDir, parentSessionID, childOrigin string)
 	// BroadcastSessionArchived broadcasts a session_archived event to all connected clients.
 	BroadcastSessionArchived(sessionID string, archived bool)
+	// BroadcastSessionDeleted broadcasts a session_deleted event to all connected clients.
+	BroadcastSessionDeleted(sessionID string)
+	// BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
+	BroadcastWaitingForChildren(sessionID string, isWaiting bool)
+	// DeleteChildSessions permanently deletes all child sessions when a parent is archived.
+	DeleteChildSessions(parentID string)
+	// GetWorkspaces returns all configured workspaces.
+	GetWorkspaces() []config.WorkspaceSettings
+	// GetWorkspaceByUUID returns the workspace with the given UUID.
+	// Returns nil if no workspace with that UUID exists.
+	GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings
+	// BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
+	BroadcastSessionRenamed(sessionID string, newName string)
+	// GetUserDataSchema returns the user data schema for a workspace.
+	GetUserDataSchema(workingDir string) *config.UserDataSchema
+	// GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
+	GetWorkspacePrompts(workingDir string) []config.WebPrompt
+	// GetWorkspacePromptsDirs returns the prompts_dirs defined in the workspace's .mittorc file.
+	GetWorkspacePromptsDirs(workingDir string) []string
+	// GetWorkspaceRCLastModified returns the last modification time of the workspace's .mittorc file.
+	GetWorkspaceRCLastModified(workingDir string) time.Time
+	// GetWorkspace returns the first workspace matching the working directory.
+	GetWorkspace(workingDir string) *config.WorkspaceSettings
+}
+
+// PeriodicRunner interface for triggering immediate periodic prompt delivery.
+type PeriodicRunner interface {
+	TriggerNow(sessionID string, resetTimer bool) error
 }
 
 // BackgroundSession interface for session info.
@@ -199,6 +234,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		mode:                  cfg.Mode,
 		store:                 deps.Store,
 		config:                deps.Config,
+		promptsCache:          deps.PromptsCache,
 		sessionManager:        deps.SessionManager,
 		sessions:              make(map[string]*registeredSession),
 		pendingRequests:       make(map[string][]*pendingRequest),
@@ -425,6 +461,17 @@ func (s *Server) UpdateDependencies(deps Dependencies) {
 	if deps.Config != nil {
 		s.config = deps.Config
 	}
+	if deps.PromptsCache != nil {
+		s.promptsCache = deps.PromptsCache
+	}
+}
+
+// SetPeriodicRunner sets the periodic runner for triggering periodic runs via MCP tools.
+// It may be called after NewServer since the periodic runner is created after the MCP server.
+func (s *Server) SetPeriodicRunner(runner PeriodicRunner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.periodicRunner = runner
 }
 
 // RegisterSession registers a session with the MCP server.
@@ -562,6 +609,93 @@ func (s *Server) checkSessionFlag(sessionID string, flagName string) bool {
 	}
 
 	return session.GetFlagValue(meta.AdvancedSettings, flagName)
+}
+
+// confirmCrossWorkspaceOperation shows a blocking confirmation dialog to the user
+// before allowing a cross-workspace operation. This is a security gate that cannot
+// be bypassed — it does NOT require the "can_prompt_user" flag.
+//
+// Returns nil if the user approves, or an error if denied, timed out, or UI unavailable.
+func (s *Server) confirmCrossWorkspaceOperation(
+	ctx context.Context,
+	callerSessionID string,
+	operationDescription string, // e.g., "create a new conversation"
+	targetWorkspace *config.WorkspaceSettings,
+) error {
+	// Get the caller's registered session
+	reg := s.getSession(callerSessionID)
+	if reg == nil {
+		return fmt.Errorf("session not found or not running: %s", callerSessionID)
+	}
+
+	// UIPrompter must be available (requires connected UI)
+	if reg.uiPrompter == nil {
+		return fmt.Errorf("cross-workspace operations require a connected UI (no headless support)")
+	}
+
+	// Build human-readable workspace label
+	workspaceLabel := targetWorkspace.Name
+	if workspaceLabel == "" {
+		workspaceLabel = filepath.Base(targetWorkspace.WorkingDir)
+	}
+
+	// Get caller's session name for the dialog
+	callerName := callerSessionID
+	s.mu.RLock()
+	store := s.store
+	s.mu.RUnlock()
+	if store != nil {
+		if meta, err := store.GetMetadata(callerSessionID); err == nil && meta.Name != "" {
+			callerName = meta.Name
+		}
+	}
+
+	question := fmt.Sprintf(
+		"Conversation %q wants to %s in workspace %q (%s). Allow?",
+		callerName,
+		operationDescription,
+		workspaceLabel,
+		targetWorkspace.WorkingDir,
+	)
+
+	uiRequestID := uuid.New().String()
+	promptReq := UIPromptRequest{
+		RequestID: uiRequestID,
+		Type:      UIPromptTypeOptions,
+		Question:  question,
+		Options: []UIPromptOption{
+			{ID: "yes", Label: "Yes", Style: UIPromptOptionStyleSuccess},
+			{ID: "no", Label: "No", Style: UIPromptOptionStyleDanger},
+		},
+		TimeoutSeconds: 60,
+		Blocking:       true,
+	}
+
+	s.logger.Info("Cross-workspace confirmation requested",
+		"caller_session", callerSessionID,
+		"operation", operationDescription,
+		"target_workspace", targetWorkspace.UUID,
+		"target_path", targetWorkspace.WorkingDir)
+
+	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
+	if err != nil {
+		return fmt.Errorf("failed to display confirmation dialog: %w", err)
+	}
+
+	if resp.TimedOut {
+		return fmt.Errorf("cross-workspace operation timed out waiting for user confirmation")
+	}
+
+	if resp.OptionID != "yes" {
+		return fmt.Errorf("cross-workspace operation denied by user")
+	}
+
+	s.logger.Info("Cross-workspace operation approved by user",
+		"caller_session", callerSessionID,
+		"operation", operationDescription,
+		"target_workspace", targetWorkspace.UUID)
+
+	return nil
 }
 
 // RegisterPendingRequest registers a pending request for session correlation.
@@ -767,6 +901,11 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 			details.LockClientType = lockInfo.ClientType
 			details.IsPrompting = lockInfo.Status == session.LockStatusProcessing
 		}
+
+		// Check if conversation has an active periodic prompt
+		if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
+			details.IsPeriodic = p.Enabled
+		}
 	}
 
 	// Get running session info if available (overrides lock-based IsPrompting)
@@ -843,6 +982,17 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Name:        "mitto_get_runtime_info",
 		Description: "Get runtime information including OS, architecture, log file paths, data directories, and process info",
 	}, s.createGetRuntimeInfoHandler())
+
+	// mitto_workspace_list tool - always available
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_workspace_list",
+		Description: "List all configured workspaces with their settings and metadata. " +
+			"Returns workspace UUID, display name, working directory, ACP server, " +
+			"and optional metadata from the workspace .mittorc file (description, URL, group, user data schema). " +
+			"Optionally filter by activity: 'active' returns only workspaces with at least one non-archived conversation, " +
+			"'archived' returns only workspaces where all conversations are archived (excludes workspaces with zero conversations). " +
+			"Omit filter to return all workspaces. Always available.",
+	}, s.createListWorkspacesHandler())
 }
 
 // selfIDNote is the standard note about self_id for tools that require session identification.
@@ -873,36 +1023,56 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Send a message/prompt to an EXISTING conversation (identified by conversation_id). " +
 			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
 			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_new'. " +
+			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleSendPromptToConversation)
 
-	// mitto_ui_ask_yes_no - Present a yes/no question
+	// mitto_ui_options - Unified options menu
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_ui_ask_yes_no",
-		Description: "Present a yes/no question to the user and wait for their response. " +
-			"The tool blocks until the user clicks a button or the timeout expires. " +
+		Name: "mitto_ui_options",
+		Description: "Present a list of options to the user as an expandable menu and wait for their selection. " +
+			"Each option can have a short label and an optional longer description. " +
+			"Option labels should be short (max 80 characters) and descriptions concise (max 200 characters); longer values will be truncated. " +
+			"Optionally allows the user to type free text instead of selecting a predefined option. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
-	}, s.handleAskYesNo)
+	}, s.handleUIOptions)
 
-	// mitto_ui_options_buttons - Present multiple option buttons
+	// mitto_ui_textbox - Present editable text to user
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_ui_options_buttons",
-		Description: "Present multiple options as buttons to the user and wait for their selection. " +
-			"The tool blocks until the user clicks a button or the timeout expires. " +
+		Name: "mitto_ui_textbox",
+		Description: "Present a text editing dialog to the user and wait for their changes. " +
+			"Shows a modal with a title and a large editable textarea pre-filled with the provided text. " +
+			"The user can edit the text and submit, or abort if allowed. " +
+			"Returns the edited text (or a unified diff of changes). " +
+			"Text is limited to 16KB. For short-to-medium text snippets only, not full files. " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
-	}, s.handleOptionsButtons)
+	}, s.handleUITextbox)
 
-	// mitto_ui_options_combo - Present a combo box
+	// mitto_ui_form - Present a sanitized HTML form to the user
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_ui_options_combo",
-		Description: "Present a dropdown/combo box with options to the user. " +
-			"The user selects an option and clicks OK to confirm. " +
+		Name: "mitto_ui_form",
+		Description: "Present an HTML form to the user and wait for their submission. " +
+			"Provide simple HTML with form elements (input, select, textarea, checkbox, radio) and labels. " +
+			"The HTML is strictly sanitized — only form-related elements are allowed (no scripts, styles, " +
+			"images, links, or event handlers). Submit/cancel buttons are added automatically. " +
+			"Returns the submitted form field values as key-value pairs (keyed by the 'name' attribute). " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
-	}, s.handleOptionsCombo)
+	}, s.handleUIForm)
+
+	// mitto_ui_notify - Send a non-blocking notification to the user
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_ui_notify",
+		Description: "Send a notification to the user. Unlike other UI tools, this is non-blocking — " +
+			"it sends the notification and returns immediately without waiting for user interaction. " +
+			"Useful for informing the user about progress, completion, errors, or other events. " +
+			"style can be: 'info' (default, blue), 'success' (green), 'warning' (amber), 'error' (red). " +
+			"Requires 'Can prompt user' flag to be enabled. " +
+			selfIDNote,
+	}, s.handleUINotify)
 
 	// mitto_conversation_new - Start a new conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
@@ -917,6 +1087,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"but you can specify a different one via the optional 'acp_server' parameter (must have a workspace configured for the current folder) " +
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
+			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
+			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
 			selfIDNote,
@@ -928,6 +1100,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Get detailed properties of a specific conversation by conversation_id. " +
 			"Returns metadata, status, and runtime info including whether the agent is currently replying. " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
+			"Optionally specify a 'workspace' UUID to access a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
 	}, s.handleGetConversation)
 
@@ -943,6 +1116,18 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
 			selfIDNote,
 	}, s.handleSetPeriodic)
+
+	// mitto_conversation_run_periodic_now - Trigger immediate periodic run
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_run_periodic_now",
+		Description: "Trigger an immediate run of a periodic conversation's configured prompt, bypassing the normal schedule. " +
+			"The conversation must have periodic prompts configured and enabled. " +
+			"Use 'reset_timer' to control whether the countdown for the next scheduled run resets (default: true). " +
+			"When reset_timer is true, the next run is scheduled from now (as if a normal run just occurred). " +
+			"When reset_timer is false, the existing next-run schedule is preserved unchanged. " +
+			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
+			selfIDNote,
+	}, s.handleRunPeriodicNow)
 
 	// mitto_conversation_archive - Archive or unarchive a conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
@@ -965,12 +1150,24 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleDeleteConversation)
 
+	// mitto_conversation_update - Update properties of a conversation
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_update",
+		Description: "Update properties of a conversation. " +
+			"Supports partial updates — only specified fields are changed, others are left untouched. " +
+			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes). " +
+			"User data is validated against the workspace's schema defined in .mittorc. " +
+			"Set 'user_data_merge' to true (default) to merge with existing attributes, or false to replace all. " +
+			selfIDNote,
+	}, s.handleConversationUpdate)
+
 	// mitto_conversation_wait - Wait until something happens in a conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_wait",
 		Description: "Wait until something happens in a conversation. " +
 			"Currently supports: 'agent_responded' — blocks until the agent finishes responding. " +
 			"Returns immediately if the condition is already met (e.g., agent is not currently responding). " +
+			"Optionally specify a 'workspace' UUID when waiting on a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
 	}, s.handleConversationWait)
 
@@ -1003,11 +1200,150 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"If the parent provided a task_id in the wait call, include the same task_id in your report. " +
 			selfIDNote,
 	}, s.handleChildrenTasksReport)
+
+	// mitto_conversation_history - Search and retrieve conversation history
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_history",
+		Description: "Get and search through the conversation history of a session. " +
+			"Returns events (user prompts, agent messages, tool calls, etc.) with powerful filtering. " +
+			"Useful for recalling past decisions, finding specific tool calls, searching for errors, " +
+			"or reviewing what happened in a conversation. " +
+			"Defaults to your own conversation if conversation_id is omitted. " +
+			selfIDNote,
+	}, s.handleConversationHistory)
+
+	// mitto_prompt_list - List all prompts in a workspace
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_prompt_list",
+		Description: "List all prompts available in a workspace, returning basic metadata for each (name, origin/source, enabled status, group, etc.) but NOT the full prompt text. " +
+			"This reflects the merged/effective prompt list from all sources (global, settings, ACP-specific, workspace directory, workspace inline). " +
+			"Defaults to the caller's workspace. " + selfIDNote,
+	}, s.handlePromptList)
+
+	// mitto_prompt_get - Get full details for a specific prompt
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_prompt_get",
+		Description: "Get full details for a specific prompt in a workspace, including the complete prompt text and all metadata (origin, enabled status, group, etc.). " +
+			"Prompt name matching is case-insensitive. " + selfIDNote,
+	}, s.handlePromptGet)
+
+	// mitto_prompt_update - Update a prompt's details
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_prompt_update",
+		Description: "Update a prompt's details including its full text, description, group, color, and enabled status. " +
+			"If the prompt originates from a global source, the update is saved to the workspace-local .mitto/prompts/ folder (creating a workspace-level override). " +
+			"If only the enabled field is provided, uses the optimized toggle-enabled logic (updates frontmatter or .mittorc). " +
+			"Can also create new prompts by specifying a name that doesn't exist yet. " + selfIDNote,
+	}, s.handlePromptUpdate)
 }
 
 // ListConversationsOutput wraps the list of conversations for MCP output schema compliance.
 type ListConversationsOutput struct {
 	Conversations []ConversationInfo `json:"conversations"`
+}
+
+// WorkspaceInfo contains information about a single workspace for MCP tool output.
+type WorkspaceInfo struct {
+	UUID       string                    `json:"uuid"`
+	Name       string                    `json:"name,omitempty"`
+	WorkingDir string                    `json:"working_dir"`
+	ACPServer  string                    `json:"acp_server"`
+	Metadata   *config.WorkspaceMetadata `json:"metadata,omitempty"`
+}
+
+// WorkspaceListInput is the input for the mitto_workspace_list tool.
+type WorkspaceListInput struct {
+	Filter string `json:"filter,omitempty"` // Optional: "active", "archived", or empty for all
+}
+
+// WorkspaceListOutput is the output for the mitto_workspace_list tool.
+type WorkspaceListOutput struct {
+	Workspaces []WorkspaceInfo `json:"workspaces"`
+}
+
+// createListWorkspacesHandler creates the handler for mitto_workspace_list tool.
+func (s *Server) createListWorkspacesHandler() mcp.ToolHandlerFor[WorkspaceListInput, WorkspaceListOutput] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input WorkspaceListInput) (*mcp.CallToolResult, WorkspaceListOutput, error) {
+		s.mu.RLock()
+		sm := s.sessionManager
+		s.mu.RUnlock()
+
+		if sm == nil {
+			return nil, WorkspaceListOutput{}, fmt.Errorf("session manager not available")
+		}
+
+		// Build workspace activity map if filtering is requested
+		var wsHasNonArchived map[string]bool // workingDir → has at least one non-archived session
+		var wsHasAnySessions map[string]bool // workingDir → has at least one session (any state)
+		if input.Filter == "active" || input.Filter == "archived" {
+			s.mu.RLock()
+			store := s.store
+			s.mu.RUnlock()
+
+			if store == nil {
+				return nil, WorkspaceListOutput{}, fmt.Errorf("session store not available (required for filtering)")
+			}
+
+			sessions, err := store.List()
+			if err != nil {
+				return nil, WorkspaceListOutput{}, fmt.Errorf("failed to list sessions for filtering: %w", err)
+			}
+
+			wsHasNonArchived = make(map[string]bool)
+			wsHasAnySessions = make(map[string]bool)
+			for _, meta := range sessions {
+				if meta.WorkingDir == "" {
+					continue
+				}
+				wsHasAnySessions[meta.WorkingDir] = true
+				if !meta.Archived {
+					wsHasNonArchived[meta.WorkingDir] = true
+				}
+			}
+		} else if input.Filter != "" {
+			return nil, WorkspaceListOutput{}, fmt.Errorf("invalid filter value %q: must be \"active\", \"archived\", or omitted", input.Filter)
+		}
+
+		workspaces := sm.GetWorkspaces()
+		infos := make([]WorkspaceInfo, 0, len(workspaces))
+
+		for _, ws := range workspaces {
+			// Apply filter
+			if input.Filter == "active" {
+				if !wsHasNonArchived[ws.WorkingDir] {
+					continue // skip: no non-archived sessions
+				}
+			} else if input.Filter == "archived" {
+				if !wsHasAnySessions[ws.WorkingDir] || wsHasNonArchived[ws.WorkingDir] {
+					continue // skip: no sessions at all OR has non-archived sessions
+				}
+			}
+
+			info := WorkspaceInfo{
+				UUID:       ws.UUID,
+				Name:       ws.Name,
+				WorkingDir: ws.WorkingDir,
+				ACPServer:  ws.ACPServer,
+			}
+
+			// Load .mittorc metadata if workspace has a working directory
+			if ws.WorkingDir != "" {
+				rc, err := config.LoadWorkspaceRC(ws.WorkingDir)
+				if err != nil {
+					s.logger.Warn("Failed to load workspace .mittorc",
+						"working_dir", ws.WorkingDir,
+						"error", err)
+				}
+				if rc != nil && rc.Metadata != nil {
+					info.Metadata = rc.Metadata
+				}
+			}
+
+			infos = append(infos, info)
+		}
+
+		return nil, WorkspaceListOutput{Workspaces: infos}, nil
+	}
 }
 
 // createListConversationsHandler creates the handler for list_conversations tool.
@@ -1073,6 +1409,11 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 					info.IsPrompting = bs.IsPrompting()
 					info.LastSeq = bs.GetMaxAssignedSeq()
 				}
+			}
+
+			// Check if conversation has an active periodic prompt
+			if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
+				info.IsPeriodic = p.Enabled
 			}
 
 			// Apply is_running filter after runtime status is resolved
@@ -1202,6 +1543,7 @@ type SendPromptToConversationInput struct {
 	SelfID         string `json:"self_id"`         // YOUR session ID (the caller), not the target
 	ConversationID string `json:"conversation_id"` // Target conversation ID to send prompt to
 	Prompt         string `json:"prompt"`
+	Workspace      string `json:"workspace,omitempty"` // Optional workspace UUID for cross-workspace operations
 }
 
 func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.CallToolRequest, input SendPromptToConversationInput) (*mcp.CallToolResult, SendPromptOutput, error) {
@@ -1259,6 +1601,50 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		}, nil
 	}
 
+	// Cross-workspace support: if workspace UUID is provided, validate and confirm
+	if input.Workspace != "" {
+		if s.sessionManager == nil {
+			return nil, SendPromptOutput{Success: false, Error: "session manager not available"}, nil
+		}
+		targetWS := s.sessionManager.GetWorkspaceByUUID(input.Workspace)
+		if targetWS == nil {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   fmt.Sprintf("workspace not found: %s", input.Workspace),
+			}, nil
+		}
+
+		// Validate conversation belongs to the specified workspace
+		if targetMeta.WorkingDir != targetWS.WorkingDir {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   fmt.Sprintf("conversation %s does not belong to workspace %s", input.ConversationID, input.Workspace),
+			}, nil
+		}
+
+		// Check if cross-workspace (caller's workspace differs from target)
+		sourceMeta, err := store.GetMetadata(realSessionID)
+		if err != nil {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   fmt.Sprintf("failed to get source session metadata: %v", err),
+			}, nil
+		}
+		if sourceMeta.WorkingDir != targetWS.WorkingDir {
+			// Permission check: requires can_interact_other_workspaces flag
+			if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+				return nil, SendPromptOutput{
+					Success: false,
+					Error: fmt.Sprintf("cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+						session.FlagCanInteractOtherWorkspaces),
+				}, nil
+			}
+			if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "send a prompt to a conversation", targetWS); err != nil {
+				return nil, SendPromptOutput{Success: false, Error: err.Error()}, nil
+			}
+		}
+	}
+
 	// Get the queue for the target conversation
 	queue := store.Queue(input.ConversationID)
 
@@ -1310,25 +1696,40 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	}, nil
 }
 
-// AskYesNoInput is the input for the mitto_ui_ask_yes_no tool.
-type AskYesNoInput struct {
-	SelfID         string `json:"self_id"` // YOUR session ID (the caller)
-	Question       string `json:"question"`
-	YesLabel       string `json:"yes_label,omitempty"`
-	NoLabel        string `json:"no_label,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+// UIOptionsItem represents a single option in the unified options menu.
+type UIOptionsItem struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
-func (s *Server) handleAskYesNo(ctx context.Context, req *mcp.CallToolRequest, input AskYesNoInput) (*mcp.CallToolResult, AskYesNoOutput, error) {
+// UIOptionsInput is the input for the mitto_ui_options tool.
+type UIOptionsInput struct {
+	SelfID              string          `json:"self_id"` // YOUR session ID (the caller)
+	Question            string          `json:"question"`
+	Options             []UIOptionsItem `json:"options"`
+	AllowFreeText       bool            `json:"allow_free_text,omitempty"`
+	FreeTextPlaceholder string          `json:"free_text_placeholder,omitempty"`
+	TimeoutSeconds      int             `json:"timeout_seconds,omitempty"`
+}
+
+// UIOptionsOutput is the output for the mitto_ui_options tool.
+type UIOptionsOutput struct {
+	Selected string `json:"selected,omitempty"`
+	Index    int    `json:"index"`
+	FreeText string `json:"free_text,omitempty"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+}
+
+func (s *Server) handleUIOptions(ctx context.Context, req *mcp.CallToolRequest, input UIOptionsInput) (*mcp.CallToolResult, UIOptionsOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
-		return nil, AskYesNoOutput{}, fmt.Errorf("self_id is required")
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("self_id is required")
 	}
 
 	// Resolve the self_id to a real session ID
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
 	if realSessionID == "" {
-		return nil, AskYesNoOutput{}, fmt.Errorf(
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
 			input.SelfID,
 		)
@@ -1337,94 +1738,263 @@ func (s *Server) handleAskYesNo(ctx context.Context, req *mcp.CallToolRequest, i
 	// Check if session is registered and get the UIPrompter
 	reg := s.getSession(realSessionID)
 	if reg == nil {
-		return nil, AskYesNoOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("session not found or not running: %s", realSessionID)
 	}
 
 	// Permission check
 	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
-		return nil, AskYesNoOutput{}, permissionError("mitto_ui_ask_yes_no", session.FlagCanPromptUser, "Can prompt user")
+		return nil, UIOptionsOutput{Index: -1}, permissionError("mitto_ui_options", session.FlagCanPromptUser, "Can prompt user")
 	}
 
 	// Check if UIPrompter is available
 	if reg.uiPrompter == nil {
-		return nil, AskYesNoOutput{}, fmt.Errorf("UI prompts are not available (no UI connected)")
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("UI prompts are not available (no UI connected)")
+	}
+
+	// Validate input
+	if len(input.Options) == 0 && !input.AllowFreeText {
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("at least one option is required (or enable allow_free_text)")
+	}
+	if len(input.Options) > 10 {
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("mitto_ui_options supports at most 10 options (got %d)", len(input.Options))
 	}
 
 	// Apply defaults
-	yesLabel := input.YesLabel
-	if yesLabel == "" {
-		yesLabel = "Yes"
-	}
-	noLabel := input.NoLabel
-	if noLabel == "" {
-		noLabel = "No"
-	}
 	timeout := input.TimeoutSeconds
 	if timeout <= 0 {
-		timeout = 300 // 5 minutes default
+		timeout = 300
+	}
+
+	question := input.Question
+	if question == "" {
+		question = "Please select an option:"
+	}
+	const maxQuestionLen = 500
+	if len([]rune(question)) > maxQuestionLen {
+		question = string([]rune(question)[:maxQuestionLen-1]) + "…"
 	}
 
 	// Generate unique internal request ID for UI prompt
+	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
+
+	// Build options with IDs and descriptions, truncating long text
+	const maxLabelLen = 80
+	const maxDescLen = 200
+	options := make([]UIPromptOption, len(input.Options))
+	for i, item := range input.Options {
+		label := []rune(item.Label)
+		if len(label) > maxLabelLen {
+			label = append(label[:maxLabelLen-1], '…')
+		}
+		desc := []rune(item.Description)
+		if len(desc) > maxDescLen {
+			desc = append(desc[:maxDescLen-1], '…')
+		}
+		options[i] = UIPromptOption{
+			ID:          fmt.Sprintf("%d", i),
+			Label:       string(label),
+			Description: string(desc),
+		}
+	}
+
+	promptReq := UIPromptRequest{
+		RequestID:           uiRequestID,
+		Type:                UIPromptTypeOptions,
+		Question:            question,
+		Options:             options,
+		TimeoutSeconds:      timeout,
+		Blocking:            true,
+		AllowFreeText:       input.AllowFreeText,
+		FreeTextPlaceholder: input.FreeTextPlaceholder,
+	}
+
+	s.logger.Debug("Sending UI options prompt",
+		"session_id", realSessionID,
+		"input_session_id", input.SelfID,
+		"ui_request_id", uiRequestID,
+		"option_count", len(input.Options),
+		"allow_free_text", input.AllowFreeText,
+		"timeout", timeout)
+
+	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
+	if err != nil {
+		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("failed to display UI prompt: %w", err)
+	}
+
+	if resp.TimedOut {
+		s.logger.Debug("UI options prompt timed out", "session_id", realSessionID)
+		return nil, UIOptionsOutput{Index: -1, TimedOut: true}, nil
+	}
+
+	// Handle free text response
+	if resp.FreeText != "" {
+		s.logger.Debug("UI options prompt answered with free text",
+			"session_id", realSessionID,
+			"free_text", resp.FreeText)
+		return nil, UIOptionsOutput{
+			Index:    -1,
+			FreeText: resp.FreeText,
+		}, nil
+	}
+
+	var selectedIndex int
+	if _, err := fmt.Sscanf(resp.OptionID, "%d", &selectedIndex); err != nil {
+		selectedIndex = -1
+	}
+
+	s.logger.Debug("UI options prompt answered",
+		"session_id", realSessionID,
+		"selected", resp.Label,
+		"index", selectedIndex)
+
+	return nil, UIOptionsOutput{
+		Selected: resp.Label,
+		Index:    selectedIndex,
+	}, nil
+}
+
+func (s *Server) handleUITextbox(ctx context.Context, req *mcp.CallToolRequest, input UITextboxInput) (*mcp.CallToolResult, UITextboxOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, UITextboxOutput{}, fmt.Errorf("self_id is required")
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, UITextboxOutput{}, fmt.Errorf(
+			"session not found: the self_id '%s' could not be resolved",
+			input.SelfID,
+		)
+	}
+
+	// Check if session is registered and get the UIPrompter
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, UITextboxOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
+	}
+
+	// Permission check
+	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
+		return nil, UITextboxOutput{}, permissionError("mitto_ui_textbox", session.FlagCanPromptUser, "Can prompt user")
+	}
+
+	// Check if UIPrompter is available
+	if reg.uiPrompter == nil {
+		return nil, UITextboxOutput{}, fmt.Errorf("UI prompts are not available (no UI connected)")
+	}
+
+	// Validate input
+	if input.Title == "" {
+		return nil, UITextboxOutput{}, fmt.Errorf("title is required")
+	}
+	if input.Text == "" {
+		return nil, UITextboxOutput{}, fmt.Errorf("text is required")
+	}
+	const maxTextSize = 16 * 1024 // 16KB
+	if len(input.Text) > maxTextSize {
+		return nil, UITextboxOutput{}, fmt.Errorf("text exceeds maximum size of 16KB (got %d bytes)", len(input.Text))
+	}
+
+	// Validate and default result mode
+	resultMode := input.ResultMode
+	if resultMode == "" {
+		resultMode = "text"
+	}
+	if resultMode != "text" && resultMode != "diff" {
+		return nil, UITextboxOutput{}, fmt.Errorf("result must be 'text' or 'diff' (got '%s')", resultMode)
+	}
+
+	// Apply timeout default
+	timeout := input.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 600 // 10 minutes default for text editing
+	}
+
+	// Generate unique internal request ID
 	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
 
 	// Build the prompt request
 	promptReq := UIPromptRequest{
-		RequestID: uiRequestID,
-		Type:      UIPromptTypeYesNo,
-		Question:  input.Question,
-		Options: []UIPromptOption{
-			{ID: "yes", Label: yesLabel},
-			{ID: "no", Label: noLabel},
-		},
+		RequestID:      uiRequestID,
+		Type:           UIPromptTypeTextbox,
+		Title:          input.Title,
+		Question:       input.Title, // Use title as question for consistency
+		Text:           input.Text,
+		ResultMode:     resultMode,
+		AllowAbort:     true, // Always allow abort
 		TimeoutSeconds: timeout,
+		Blocking:       true,
 	}
 
-	s.logger.Debug("Sending UI yes/no prompt",
+	s.logger.Debug("Sending UI textbox prompt",
 		"session_id", realSessionID,
 		"input_session_id", input.SelfID,
 		"ui_request_id", uiRequestID,
-		"question", input.Question,
+		"title", input.Title,
+		"text_length", len(input.Text),
+		"result_mode", resultMode,
 		"timeout", timeout)
 
-	// Send prompt and wait for response
+	// Send prompt and wait for response (blocks until user responds or timeout)
 	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
 	if err != nil {
-		return nil, AskYesNoOutput{}, fmt.Errorf("failed to display UI prompt: %w", err)
+		return nil, UITextboxOutput{}, fmt.Errorf("failed to display UI textbox: %w", err)
 	}
 
+	// Handle timeout
 	if resp.TimedOut {
-		s.logger.Debug("UI yes/no prompt timed out", "session_id", realSessionID)
-		return nil, AskYesNoOutput{Response: "timeout"}, nil
+		s.logger.Debug("UI textbox prompt timed out", "session_id", realSessionID)
+		return nil, UITextboxOutput{TimedOut: true}, nil
 	}
 
-	s.logger.Debug("UI yes/no prompt answered",
-		"session_id", realSessionID,
-		"response", resp.OptionID)
+	// Handle abort
+	if resp.Aborted || resp.OptionID == "abort" {
+		s.logger.Debug("UI textbox prompt aborted", "session_id", realSessionID)
+		return nil, UITextboxOutput{Aborted: true}, nil
+	}
 
-	return nil, AskYesNoOutput{
-		Response: resp.OptionID,
-		Label:    resp.Label,
+	// Get the edited text from the response
+	editedText := resp.FreeText
+
+	// Check if text was changed
+	changed := editedText != input.Text
+
+	if !changed {
+		s.logger.Debug("UI textbox prompt submitted without changes", "session_id", realSessionID)
+		return nil, UITextboxOutput{Changed: false}, nil
+	}
+
+	// Compute result based on mode
+	var result string
+	if resultMode == "diff" {
+		result = computeUnifiedDiff(input.Text, editedText, "original", "edited")
+	} else {
+		result = editedText
+	}
+
+	s.logger.Debug("UI textbox prompt submitted with changes",
+		"session_id", realSessionID,
+		"result_mode", resultMode,
+		"original_length", len(input.Text),
+		"edited_length", len(editedText))
+
+	return nil, UITextboxOutput{
+		Changed: true,
+		Result:  result,
 	}, nil
 }
 
-// OptionsButtonsInput is the input for the mitto_ui_options_buttons tool.
-type OptionsButtonsInput struct {
-	SelfID         string   `json:"self_id"` // YOUR session ID (the caller)
-	Options        []string `json:"options"`
-	Question       string   `json:"question,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
-}
-
-func (s *Server) handleOptionsButtons(ctx context.Context, req *mcp.CallToolRequest, input OptionsButtonsInput) (*mcp.CallToolResult, OptionsButtonsOutput, error) {
+func (s *Server) handleUIForm(ctx context.Context, req *mcp.CallToolRequest, input UIFormInput) (*mcp.CallToolResult, UIFormOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("self_id is required")
+		return nil, UIFormOutput{}, fmt.Errorf("self_id is required")
 	}
 
 	// Resolve the self_id to a real session ID
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
 	if realSessionID == "" {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf(
+		return nil, UIFormOutput{}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
 			input.SelfID,
 		)
@@ -1433,109 +2003,103 @@ func (s *Server) handleOptionsButtons(ctx context.Context, req *mcp.CallToolRequ
 	// Check if session is registered and get the UIPrompter
 	reg := s.getSession(realSessionID)
 	if reg == nil {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("session not found or not running: %s", realSessionID)
+		return nil, UIFormOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
 	}
 
 	// Permission check
 	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
-		return nil, OptionsButtonsOutput{Index: -1}, permissionError("mitto_ui_options_buttons", session.FlagCanPromptUser, "Can prompt user")
+		return nil, UIFormOutput{}, permissionError("mitto_ui_form", session.FlagCanPromptUser, "Can prompt user")
 	}
 
 	// Check if UIPrompter is available
 	if reg.uiPrompter == nil {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("UI prompts are not available (no UI connected)")
+		return nil, UIFormOutput{}, fmt.Errorf("UI prompts are not available (no UI connected)")
 	}
 
-	// Validate input
-	if len(input.Options) == 0 {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("at least one option is required")
+	// Validate and sanitize HTML
+	if input.Title == "" {
+		return nil, UIFormOutput{}, fmt.Errorf("title is required")
 	}
-	if len(input.Options) > 4 {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("options_buttons supports at most 4 options (got %d); use options_combo for more options", len(input.Options))
+	sanitizedHTML, err := sanitizeFormHTML(input.HTML)
+	if err != nil {
+		return nil, UIFormOutput{}, fmt.Errorf("invalid form HTML: %w", err)
 	}
 
-	// Apply defaults
+	// Apply timeout default
 	timeout := input.TimeoutSeconds
 	if timeout <= 0 {
-		timeout = 300
+		timeout = 600 // 10 minutes default
 	}
 
-	question := input.Question
-	if question == "" {
-		question = "Please select an option:"
-	}
-
-	// Generate unique internal request ID for UI prompt
+	// Generate unique internal request ID
 	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
 
-	// Build options with IDs
-	options := make([]UIPromptOption, len(input.Options))
-	for i, label := range input.Options {
-		options[i] = UIPromptOption{
-			ID:    fmt.Sprintf("%d", i),
-			Label: label,
-		}
-	}
-
+	// Build the prompt request
 	promptReq := UIPromptRequest{
 		RequestID:      uiRequestID,
-		Type:           UIPromptTypeOptions,
-		Question:       question,
-		Options:        options,
+		Type:           UIPromptTypeForm,
+		Title:          input.Title,
+		Question:       input.Title,
+		FormHTML:       sanitizedHTML,
 		TimeoutSeconds: timeout,
+		Blocking:       true,
 	}
 
-	s.logger.Debug("Sending UI options buttons prompt",
+	s.logger.Debug("Sending UI form prompt",
 		"session_id", realSessionID,
 		"input_session_id", input.SelfID,
 		"ui_request_id", uiRequestID,
-		"option_count", len(input.Options),
+		"title", input.Title,
+		"html_length", len(sanitizedHTML),
 		"timeout", timeout)
 
+	// Send prompt and wait for response (blocks until user responds or timeout)
 	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
 	if err != nil {
-		return nil, OptionsButtonsOutput{Index: -1}, fmt.Errorf("failed to display UI prompt: %w", err)
+		return nil, UIFormOutput{}, fmt.Errorf("failed to display UI form: %w", err)
 	}
 
+	// Handle timeout
 	if resp.TimedOut {
-		s.logger.Debug("UI options buttons prompt timed out", "session_id", realSessionID)
-		return nil, OptionsButtonsOutput{Index: -1, TimedOut: true}, nil
+		s.logger.Debug("UI form prompt timed out", "session_id", realSessionID)
+		return nil, UIFormOutput{TimedOut: true}, nil
 	}
 
-	var selectedIndex int
-	if _, err := fmt.Sscanf(resp.OptionID, "%d", &selectedIndex); err != nil {
-		selectedIndex = -1
+	// Handle cancel
+	if resp.Aborted || resp.OptionID == "cancel" {
+		s.logger.Debug("UI form prompt cancelled", "session_id", realSessionID)
+		return nil, UIFormOutput{Cancelled: true}, nil
 	}
 
-	s.logger.Debug("UI options buttons prompt answered",
+	// Parse form values from FreeText (JSON-encoded map[string]string)
+	var values map[string]string
+	if resp.FreeText != "" {
+		if err := json.Unmarshal([]byte(resp.FreeText), &values); err != nil {
+			s.logger.Error("Failed to parse form values", "session_id", realSessionID, "error", err)
+			return nil, UIFormOutput{}, fmt.Errorf("failed to parse form values: %w", err)
+		}
+	}
+
+	s.logger.Debug("UI form prompt submitted",
 		"session_id", realSessionID,
-		"selected", resp.Label,
-		"index", selectedIndex)
+		"field_count", len(values))
 
-	return nil, OptionsButtonsOutput{
-		Selected: resp.Label,
-		Index:    selectedIndex,
+	return nil, UIFormOutput{
+		Submitted: true,
+		Values:    values,
 	}, nil
 }
 
-// OptionsComboInput is the input for the mitto_ui_options_combo tool.
-type OptionsComboInput struct {
-	SelfID         string   `json:"self_id"` // YOUR session ID (the caller)
-	Options        []string `json:"options"`
-	Question       string   `json:"question,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
-}
-
-func (s *Server) handleOptionsCombo(ctx context.Context, req *mcp.CallToolRequest, input OptionsComboInput) (*mcp.CallToolResult, OptionsComboOutput, error) {
+func (s *Server) handleUINotify(_ context.Context, req *mcp.CallToolRequest, input UINotifyInput) (*mcp.CallToolResult, UINotifyOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("self_id is required")
+		return nil, UINotifyOutput{}, fmt.Errorf("self_id is required")
 	}
 
 	// Resolve the self_id to a real session ID
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
 	if realSessionID == "" {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf(
+		return nil, UINotifyOutput{}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
 			input.SelfID,
 		)
@@ -1544,89 +2108,135 @@ func (s *Server) handleOptionsCombo(ctx context.Context, req *mcp.CallToolReques
 	// Check if session is registered and get the UIPrompter
 	reg := s.getSession(realSessionID)
 	if reg == nil {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("session not found or not running: %s", realSessionID)
+		return nil, UINotifyOutput{}, fmt.Errorf("session not found or not running: %s", realSessionID)
 	}
 
 	// Permission check
 	if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
-		return nil, OptionsComboOutput{Index: -1}, permissionError("mitto_ui_options_combo", session.FlagCanPromptUser, "Can prompt user")
+		return nil, UINotifyOutput{}, permissionError("mitto_ui_notify", session.FlagCanPromptUser, "Can prompt user")
 	}
 
 	// Check if UIPrompter is available
 	if reg.uiPrompter == nil {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("UI prompts are not available (no UI connected)")
+		return nil, UINotifyOutput{}, fmt.Errorf("UI notifications are not available (no UI connected)")
 	}
 
-	// Validate input
-	if len(input.Options) == 0 {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("at least one option is required")
-	}
-	if len(input.Options) > 10 {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("options_combo supports at most 10 options (got %d)", len(input.Options))
+	// Validate title
+	if input.Title == "" {
+		return nil, UINotifyOutput{}, fmt.Errorf("title is required")
 	}
 
-	// Apply defaults
-	timeout := input.TimeoutSeconds
-	if timeout <= 0 {
-		timeout = 300
+	// Validate and default style
+	style := input.Style
+	switch style {
+	case "info", "success", "warning", "error":
+		// valid
+	case "":
+		style = "info"
+	default:
+		return nil, UINotifyOutput{}, fmt.Errorf("style must be one of: 'info', 'success', 'warning', 'error' (got '%s')", style)
 	}
 
-	question := input.Question
-	if question == "" {
-		question = "Please select an option:"
+	// Truncate fields to reasonable limits
+	const maxTitleLen = 200
+	const maxMessageLen = 1000
+	title := []rune(input.Title)
+	if len(title) > maxTitleLen {
+		title = append(title[:maxTitleLen-1], '…')
+	}
+	message := []rune(input.Message)
+	if len(message) > maxMessageLen {
+		message = append(message[:maxMessageLen-1], '…')
 	}
 
-	// Generate unique internal request ID for UI prompt
-	uiRequestID := fmt.Sprintf("%s-%s", realSessionID[:8], uuid.New().String()[:8])
+	notifyReq := UINotifyRequest{
+		Title:   string(title),
+		Message: string(message),
+		Style:   style,
+		Sound:   input.Sound,
+		Native:  input.Native,
+	}
 
-	// Build options with IDs
-	options := make([]UIPromptOption, len(input.Options))
-	for i, label := range input.Options {
-		options[i] = UIPromptOption{
-			ID:    fmt.Sprintf("%d", i),
-			Label: label,
+	s.logger.Debug("UI notify dispatched",
+		"session_id", realSessionID,
+		"title", notifyReq.Title,
+		"style", style)
+
+	// Fire-and-forget — UINotify is non-blocking
+	if err := reg.uiPrompter.UINotify(notifyReq); err != nil {
+		return nil, UINotifyOutput{}, fmt.Errorf("failed to send notification: %w", err)
+	}
+
+	return nil, UINotifyOutput{Success: true}, nil
+}
+
+// computeUnifiedDiff generates a simple unified diff between two texts.
+func computeUnifiedDiff(original, edited, originalName, editedName string) string {
+	originalLines := strings.Split(original, "\n")
+	editedLines := strings.Split(edited, "\n")
+
+	var result strings.Builder
+	fmt.Fprintf(&result, "--- %s\n", originalName)
+	fmt.Fprintf(&result, "+++ %s\n", editedName)
+
+	m, n := len(originalLines), len(editedLines)
+
+	// Build LCS table
+	lcs := make([][]int, m+1)
+	for i := range lcs {
+		lcs[i] = make([]int, n+1)
+	}
+	for i := 1; i <= m; i++ {
+		for j := 1; j <= n; j++ {
+			if originalLines[i-1] == editedLines[j-1] {
+				lcs[i][j] = lcs[i-1][j-1] + 1
+			} else if lcs[i-1][j] >= lcs[i][j-1] {
+				lcs[i][j] = lcs[i-1][j]
+			} else {
+				lcs[i][j] = lcs[i][j-1]
+			}
 		}
 	}
 
-	promptReq := UIPromptRequest{
-		RequestID:      uiRequestID,
-		Type:           UIPromptTypeSelect,
-		Question:       question,
-		Options:        options,
-		TimeoutSeconds: timeout,
+	// Backtrack to find the diff operations
+	type diffOp struct {
+		op   byte // ' ' = context, '-' = remove, '+' = add
+		line string
+	}
+	var ops []diffOp
+	i, j := m, n
+	for i > 0 || j > 0 {
+		if i > 0 && j > 0 && originalLines[i-1] == editedLines[j-1] {
+			ops = append(ops, diffOp{' ', originalLines[i-1]})
+			i--
+			j--
+		} else if j > 0 && (i == 0 || lcs[i][j-1] >= lcs[i-1][j]) {
+			ops = append(ops, diffOp{'+', editedLines[j-1]})
+			j--
+		} else if i > 0 {
+			ops = append(ops, diffOp{'-', originalLines[i-1]})
+			i--
+		}
 	}
 
-	s.logger.Debug("Sending UI options combo prompt",
-		"session_id", realSessionID,
-		"input_session_id", input.SelfID,
-		"ui_request_id", uiRequestID,
-		"option_count", len(input.Options),
-		"timeout", timeout)
-
-	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
-	if err != nil {
-		return nil, OptionsComboOutput{Index: -1}, fmt.Errorf("failed to display UI prompt: %w", err)
+	// Reverse ops (we built them backwards)
+	for left, right := 0, len(ops)-1; left < right; left, right = left+1, right-1 {
+		ops[left], ops[right] = ops[right], ops[left]
 	}
 
-	if resp.TimedOut {
-		s.logger.Debug("UI options combo prompt timed out", "session_id", realSessionID)
-		return nil, OptionsComboOutput{Index: -1, TimedOut: true}, nil
+	// Output all ops with unified diff markers
+	for _, op := range ops {
+		switch op.op {
+		case ' ':
+			fmt.Fprintf(&result, " %s\n", op.line)
+		case '-':
+			fmt.Fprintf(&result, "-%s\n", op.line)
+		case '+':
+			fmt.Fprintf(&result, "+%s\n", op.line)
+		}
 	}
 
-	var selectedIndex int
-	if _, err := fmt.Sscanf(resp.OptionID, "%d", &selectedIndex); err != nil {
-		selectedIndex = -1
-	}
-
-	s.logger.Debug("UI options combo prompt answered",
-		"session_id", realSessionID,
-		"selected", resp.Label,
-		"index", selectedIndex)
-
-	return nil, OptionsComboOutput{
-		Selected: resp.Label,
-		Index:    selectedIndex,
-	}, nil
+	return result.String()
 }
 
 // ConversationStartInput is the input for mitto_conversation_new tool.
@@ -1635,6 +2245,7 @@ type ConversationStartInput struct {
 	Title         string `json:"title,omitempty"`          // Optional title for the new conversation
 	InitialPrompt string `json:"initial_prompt,omitempty"` // Optional initial message to queue
 	ACPServer     string `json:"acp_server,omitempty"`     // Optional ACP server name (defaults to parent's server)
+	Workspace     string `json:"workspace,omitempty"`      // Optional workspace UUID for cross-workspace operations
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
@@ -1695,6 +2306,62 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			sourceMeta.ParentSessionID)
 	}
 
+	// Cross-workspace support: if workspace UUID is provided, resolve and potentially confirm
+	var targetWorkspace *config.WorkspaceSettings
+	if input.Workspace != "" {
+		// Cannot specify both workspace and acp_server
+		if input.ACPServer != "" {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"cannot specify both 'workspace' and 'acp_server' — workspace already determines the ACP server")
+		}
+
+		// Resolve workspace UUID
+		if s.sessionManager == nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf("session manager not available")
+		}
+		targetWorkspace = s.sessionManager.GetWorkspaceByUUID(input.Workspace)
+		if targetWorkspace == nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf("workspace not found: %s", input.Workspace)
+		}
+
+		// Check if this is a cross-workspace operation (different working directory)
+		if targetWorkspace.WorkingDir != sourceMeta.WorkingDir {
+			// Permission check: requires can_interact_other_workspaces flag
+			if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+				return nil, ConversationStartOutput{}, fmt.Errorf(
+					"cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+					session.FlagCanInteractOtherWorkspaces)
+			}
+			if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "create a new conversation", targetWorkspace); err != nil {
+				return nil, ConversationStartOutput{}, err
+			}
+		}
+	}
+
+	// Check max child conversations limit
+	// This prevents a single session from spawning too many children and exhausting resources.
+	// Auto-children (from workspace config) are excluded from the count.
+	s.mu.RLock()
+	cfg := s.config
+	s.mu.RUnlock()
+
+	maxChildren := config.DefaultMaxChildConversations
+	if cfg != nil && cfg.Conversations != nil {
+		maxChildren = cfg.Conversations.GetMaxChildConversations()
+	}
+	if maxChildren > 0 { // 0 means unlimited
+		currentCount, err := store.CountMCPChildSessions(realSessionID)
+		if err != nil {
+			s.logger.Warn("Failed to count child sessions", "session_id", realSessionID, "error", err)
+			// Don't block on count errors - just log and proceed
+		} else if currentCount >= maxChildren {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"maximum number of child conversations reached (%d). "+
+					"This limit can be changed in Settings → Conversations → Max Child Conversations",
+				maxChildren)
+		}
+	}
+
 	// Check for duplicate title if title is provided
 	if input.Title != "" {
 		allSessions, err := store.List()
@@ -1710,46 +2377,55 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
-	// Determine which ACP server to use
-	acpServerName := sourceMeta.ACPServer // Default: inherit from parent
-	if input.ACPServer != "" {
-		// Validate the requested ACP server exists in config
-		s.mu.RLock()
-		cfg := s.config
-		s.mu.RUnlock()
+	// Determine which ACP server and working directory to use.
+	var acpServerName string
+	var targetWorkingDir string
+	if targetWorkspace != nil {
+		// Cross-workspace: use the target workspace's server and directory.
+		acpServerName = targetWorkspace.ACPServer
+		targetWorkingDir = targetWorkspace.WorkingDir
+	} else {
+		acpServerName = sourceMeta.ACPServer // Default: inherit from parent
+		targetWorkingDir = sourceMeta.WorkingDir
+		if input.ACPServer != "" {
+			// Validate the requested ACP server exists in config
+			s.mu.RLock()
+			cfg := s.config
+			s.mu.RUnlock()
 
-		if cfg == nil {
-			return nil, ConversationStartOutput{}, fmt.Errorf("server configuration not available")
-		}
-		if _, err := cfg.GetServer(input.ACPServer); err != nil {
-			return nil, ConversationStartOutput{}, fmt.Errorf(
-				"ACP server '%s' not found. Available servers: %v",
-				input.ACPServer, cfg.ServerNames())
-		}
-		acpServerName = input.ACPServer
-	}
-
-	// Validate that a workspace exists for the folder + ACP server combination.
-	// Conversations can only run in defined workspaces (folder + ACP server pairs).
-	if s.sessionManager != nil {
-		workspaces := s.sessionManager.GetWorkspacesForFolder(sourceMeta.WorkingDir)
-		found := false
-		for _, ws := range workspaces {
-			if ws.ACPServer == acpServerName {
-				found = true
-				break
+			if cfg == nil {
+				return nil, ConversationStartOutput{}, fmt.Errorf("server configuration not available")
 			}
+			if _, err := cfg.GetServer(input.ACPServer); err != nil {
+				return nil, ConversationStartOutput{}, fmt.Errorf(
+					"ACP server '%s' not found. Available servers: %v",
+					input.ACPServer, cfg.ServerNames())
+			}
+			acpServerName = input.ACPServer
 		}
-		if !found {
-			availableServers := make([]string, 0, len(workspaces))
+
+		// Validate that a workspace exists for the folder + ACP server combination.
+		// Conversations can only run in defined workspaces (folder + ACP server pairs).
+		if s.sessionManager != nil {
+			workspaces := s.sessionManager.GetWorkspacesForFolder(sourceMeta.WorkingDir)
+			found := false
 			for _, ws := range workspaces {
-				availableServers = append(availableServers, ws.ACPServer)
+				if ws.ACPServer == acpServerName {
+					found = true
+					break
+				}
 			}
-			return nil, ConversationStartOutput{}, fmt.Errorf(
-				"no workspace configured for folder %q with ACP server %q. "+
-					"Available ACP servers for this folder: %v. "+
-					"Create a workspace for this folder+server pair in Settings first",
-				sourceMeta.WorkingDir, acpServerName, availableServers)
+			if !found {
+				availableServers := make([]string, 0, len(workspaces))
+				for _, ws := range workspaces {
+					availableServers = append(availableServers, ws.ACPServer)
+				}
+				return nil, ConversationStartOutput{}, fmt.Errorf(
+					"no workspace configured for folder %q with ACP server %q. "+
+						"Available ACP servers for this folder: %v. "+
+						"Create a workspace for this folder+server pair in Settings first",
+					sourceMeta.WorkingDir, acpServerName, availableServers)
+			}
 		}
 	}
 
@@ -1773,8 +2449,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		SessionID:        newSessionID,
 		Name:             input.Title,
 		ACPServer:        acpServerName,
-		WorkingDir:       sourceMeta.WorkingDir,
-		ParentSessionID:  realSessionID, // Mark this session as a child
+		WorkingDir:       targetWorkingDir,
+		ParentSessionID:  realSessionID,          // Mark this session as a child
+		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
 	}
 
@@ -1787,7 +2464,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		"new_session_id", newSessionID,
 		"parent_session_id", realSessionID,
 		"acp_server", acpServerName,
-		"working_dir", sourceMeta.WorkingDir,
+		"working_dir", targetWorkingDir,
 		"title", input.Title)
 
 	// Re-fetch metadata to get timestamps set by Create()
@@ -1803,7 +2480,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	var bs BackgroundSession
 	if s.sessionManager != nil {
 		var resumeErr error
-		bs, resumeErr = s.sessionManager.ResumeSession(newSessionID, input.Title, sourceMeta.WorkingDir)
+		bs, resumeErr = s.sessionManager.ResumeSession(newSessionID, input.Title, targetWorkingDir)
 		if resumeErr != nil {
 			s.logger.Error("Failed to start ACP for new conversation",
 				"session_id", newSessionID,
@@ -1820,8 +2497,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			newSessionID,
 			input.Title,
 			acpServerName,
-			sourceMeta.WorkingDir,
-			realSessionID, // parent_session_id
+			targetWorkingDir,
+			realSessionID,                  // parent_session_id
+			string(session.ChildOriginMCP), // child_origin
 		)
 	}
 
@@ -1858,8 +2536,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 
 // GetConversationInput is the input for mitto_get_conversation tool.
 type GetConversationInput struct {
-	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
-	ConversationID string `json:"conversation_id"` // Target conversation ID to get properties for
+	SelfID         string `json:"self_id"`             // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"`     // Target conversation ID to get properties for
+	Workspace      string `json:"workspace,omitempty"` // Optional workspace UUID for cross-workspace operations
 }
 
 // GetConversationOutput is the output for mitto_get_conversation tool.
@@ -1903,6 +2582,40 @@ func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolReq
 	meta, err := store.GetMetadata(input.ConversationID)
 	if err != nil {
 		return nil, GetConversationOutput{}, fmt.Errorf("conversation not found: %s", input.ConversationID)
+	}
+
+	// Cross-workspace support: if workspace UUID is provided, validate and confirm
+	if input.Workspace != "" {
+		if s.sessionManager == nil {
+			return nil, GetConversationOutput{}, fmt.Errorf("session manager not available")
+		}
+		targetWS := s.sessionManager.GetWorkspaceByUUID(input.Workspace)
+		if targetWS == nil {
+			return nil, GetConversationOutput{}, fmt.Errorf("workspace not found: %s", input.Workspace)
+		}
+
+		// Validate conversation belongs to the specified workspace
+		if meta.WorkingDir != targetWS.WorkingDir {
+			return nil, GetConversationOutput{}, fmt.Errorf(
+				"conversation %s does not belong to workspace %s", input.ConversationID, input.Workspace)
+		}
+
+		// Check if cross-workspace (caller's workspace differs from target)
+		sourceMeta, err := store.GetMetadata(realSessionID)
+		if err != nil {
+			return nil, GetConversationOutput{}, fmt.Errorf("failed to get source session metadata: %v", err)
+		}
+		if sourceMeta.WorkingDir != targetWS.WorkingDir {
+			// Permission check: requires can_interact_other_workspaces flag
+			if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+				return nil, GetConversationOutput{}, fmt.Errorf(
+					"cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+					session.FlagCanInteractOtherWorkspaces)
+			}
+			if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "view a conversation", targetWS); err != nil {
+				return nil, GetConversationOutput{}, err
+			}
+		}
 	}
 
 	// Build unified conversation details
@@ -1999,10 +2712,19 @@ func (s *Server) handleSetPeriodic(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	// Verify target conversation exists
-	if _, err := store.GetMetadata(input.ConversationID); err != nil {
+	meta, err := store.GetMetadata(input.ConversationID)
+	if err != nil {
 		return nil, SetPeriodicOutput{
 			Success: false,
 			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
+		}, nil
+	}
+
+	// Prevent setting periodic on child sessions
+	if meta.ParentSessionID != "" {
+		return nil, SetPeriodicOutput{
+			Success: false,
+			Error:   "cannot set periodic on a child conversation; only parent or top-level conversations can be periodic",
 		}, nil
 	}
 
@@ -2067,6 +2789,80 @@ func (s *Server) handleSetPeriodic(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	return nil, output, nil
+}
+
+// RunPeriodicNowInput is the input for mitto_conversation_run_periodic_now tool.
+type RunPeriodicNowInput struct {
+	SelfID         string `json:"self_id"`               // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"`       // Target conversation to trigger
+	ResetTimer     *bool  `json:"reset_timer,omitempty"` // Whether to reset the countdown timer (default: true)
+}
+
+// RunPeriodicNowOutput is the output for mitto_conversation_run_periodic_now tool.
+type RunPeriodicNowOutput struct {
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+func (s *Server) handleRunPeriodicNow(ctx context.Context, req *mcp.CallToolRequest, input RunPeriodicNowInput) (*mcp.CallToolResult, RunPeriodicNowOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, RunPeriodicNowOutput{Error: "self_id is required"}, nil
+	}
+
+	// Validate conversation_id
+	if input.ConversationID == "" {
+		return nil, RunPeriodicNowOutput{Error: "conversation_id is required"}, nil
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, RunPeriodicNowOutput{
+			Error: fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
+		}, nil
+	}
+
+	// Check if source session is registered (must be running to use this tool)
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, RunPeriodicNowOutput{Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
+	}
+
+	// Check if periodic runner is available
+	s.mu.RLock()
+	runner := s.periodicRunner
+	s.mu.RUnlock()
+
+	if runner == nil {
+		return nil, RunPeriodicNowOutput{Error: "periodic runner not available"}, nil
+	}
+
+	// Determine reset_timer (default: true — same as normal scheduled runs)
+	resetTimer := true
+	if input.ResetTimer != nil {
+		resetTimer = *input.ResetTimer
+	}
+
+	// Trigger immediate delivery
+	if err := runner.TriggerNow(input.ConversationID, resetTimer); err != nil {
+		return nil, RunPeriodicNowOutput{Error: fmt.Sprintf("failed to trigger periodic run: %v", err)}, nil
+	}
+
+	msg := "Periodic prompt triggered successfully"
+	if !resetTimer {
+		msg += " (countdown timer preserved)"
+	} else {
+		msg += " (countdown timer reset)"
+	}
+
+	s.logger.Info("Periodic prompt triggered via MCP",
+		"source_session", realSessionID,
+		"target_conversation", input.ConversationID,
+		"reset_timer", resetTimer)
+
+	return nil, RunPeriodicNowOutput{Success: true, Message: msg}, nil
 }
 
 // ArchiveConversationInput is the input for mitto_conversation_archive tool.
@@ -2138,6 +2934,29 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		}, nil
 	}
 
+	// When archiving a child session, delegate to handleDeleteConversation (which enforces parent-only permission)
+	if archived && meta.ParentSessionID != "" {
+		if meta.ParentSessionID != realSessionID {
+			return nil, ArchiveConversationOutput{
+				Success: false,
+				Error:   "permission denied: only the parent can archive/delete a child conversation",
+			}, nil
+		}
+		_, deleteOut, err := s.handleDeleteConversation(ctx, req, DeleteConversationInput{
+			SelfID:         input.SelfID,
+			ConversationID: input.ConversationID,
+		})
+		if err != nil {
+			return nil, ArchiveConversationOutput{Success: false, Error: err.Error()}, nil
+		}
+		return nil, ArchiveConversationOutput{
+			Success:        deleteOut.Success,
+			ConversationID: deleteOut.ConversationID,
+			Archived:       deleteOut.Success,
+			Error:          deleteOut.Error,
+		}, nil
+	}
+
 	// Check if already in the desired state
 	if meta.Archived == archived {
 		state := "archived"
@@ -2189,6 +3008,11 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 	// Broadcast the archived state change to all connected WebSocket clients
 	if s.sessionManager != nil {
 		s.sessionManager.BroadcastSessionArchived(input.ConversationID, archived)
+	}
+
+	// Delete all child sessions when parent is archived
+	if archived && s.sessionManager != nil {
+		go s.sessionManager.DeleteChildSessions(input.ConversationID)
 	}
 
 	// Handle unarchive lifecycle: restart ACP session
@@ -2282,7 +3106,15 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 		}, nil
 	}
 
-	// Gracefully stop the child if it's running
+	// Find ALL descendants recursively BEFORE deletion so we can close their ACP processes
+	allDescendantIDs, findErr := store.FindAllChildrenRecursive(input.ConversationID)
+	if findErr != nil {
+		s.logger.Warn("Failed to find descendants for cascade deletion via MCP",
+			"child_session", input.ConversationID,
+			"error", findErr)
+	}
+
+	// Gracefully stop the child and all its descendants
 	if sessionManager != nil {
 		reason := "deleted_by_parent_via_mcp"
 		if !sessionManager.CloseSessionGracefully(input.ConversationID, reason, archiveWaitTimeout) {
@@ -2291,33 +3123,212 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 				"child_session", input.ConversationID)
 			sessionManager.CloseSession(input.ConversationID, "deleted_by_parent_timeout_via_mcp")
 		}
+		// Close ACP for all descendants
+		for _, descendantID := range allDescendantIDs {
+			sessionManager.CloseSession(descendantID, "ancestor_deleted_via_mcp")
+		}
 	}
 
-	// Archive the conversation (mark as read-only rather than permanently deleting)
-	err = store.UpdateMetadata(input.ConversationID, func(m *session.Metadata) {
-		m.Archived = true
-		m.ArchivedAt = time.Now()
-	})
+	// Permanently delete the child conversation from disk
+	// store.Delete() will cascade-delete all descendants via handleChildSessionsOnParentDelete
+	err = store.Delete(input.ConversationID)
 	if err != nil {
 		return nil, DeleteConversationOutput{
 			Success: false,
-			Error:   fmt.Sprintf("failed to archive conversation: %v", err),
+			Error:   fmt.Sprintf("failed to delete conversation: %v", err),
 		}, nil
 	}
 
-	// Broadcast the archived state change to all connected WebSocket clients
+	// Broadcast deletion for the child and all descendants
 	if s.sessionManager != nil {
-		s.sessionManager.BroadcastSessionArchived(input.ConversationID, true)
+		s.sessionManager.BroadcastSessionDeleted(input.ConversationID)
+		for _, descendantID := range allDescendantIDs {
+			s.sessionManager.BroadcastSessionDeleted(descendantID)
+		}
 	}
 
-	s.logger.Info("Child conversation deleted (archived) by parent via MCP",
+	s.logger.Info("Child conversation permanently deleted by parent via MCP",
 		"parent_session", realSessionID,
-		"child_session", input.ConversationID)
+		"child_session", input.ConversationID,
+		"descendants_deleted", len(allDescendantIDs))
 
 	return nil, DeleteConversationOutput{
 		Success:        true,
 		ConversationID: input.ConversationID,
 	}, nil
+}
+
+func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallToolRequest, input ConversationUpdateInput) (*mcp.CallToolResult, ConversationUpdateOutput, error) {
+	// Validate self_id
+	if input.SelfID == "" {
+		return nil, ConversationUpdateOutput{Success: false, Error: "self_id is required"}, nil
+	}
+
+	// Validate conversation_id
+	if input.ConversationID == "" {
+		return nil, ConversationUpdateOutput{Success: false, Error: "conversation_id is required"}, nil
+	}
+
+	// Resolve the self_id to a real session ID
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		return nil, ConversationUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
+		}, nil
+	}
+
+	// Check if source session is registered
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		return nil, ConversationUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("session not found or not running: %s", realSessionID),
+		}, nil
+	}
+
+	s.mu.RLock()
+	store := s.store
+	sm := s.sessionManager
+	s.mu.RUnlock()
+
+	if store == nil {
+		return nil, ConversationUpdateOutput{Success: false, Error: "session store not available"}, nil
+	}
+
+	// Verify target conversation exists
+	meta, err := store.GetMetadata(input.ConversationID)
+	if err != nil {
+		return nil, ConversationUpdateOutput{
+			Success: false,
+			Error:   fmt.Sprintf("conversation not found: %s", input.ConversationID),
+		}, nil
+	}
+
+	var updated []string
+
+	// Update name if provided
+	if input.Name != nil {
+		if err := store.UpdateMetadata(input.ConversationID, func(m *session.Metadata) {
+			m.Name = *input.Name
+		}); err != nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("failed to update name: %v", err),
+			}, nil
+		}
+		updated = append(updated, "name")
+
+		// Broadcast rename to all connected WebSocket clients
+		if sm != nil {
+			sm.BroadcastSessionRenamed(input.ConversationID, *input.Name)
+		}
+
+		s.logger.Info("Conversation renamed via MCP",
+			"source_session", realSessionID,
+			"target_conversation", input.ConversationID,
+			"new_name", *input.Name)
+	}
+
+	// Update user data if provided
+	if len(input.UserData) > 0 {
+		// Determine merge mode (default: true)
+		merge := input.UserDataMerge == nil || *input.UserDataMerge
+
+		var finalAttrs []session.UserDataAttribute
+		if merge {
+			// Load existing user data and merge
+			existing, err := store.GetUserData(input.ConversationID)
+			if err == nil && existing != nil {
+				attrMap := make(map[string]string)
+				var orderedNames []string
+				seen := make(map[string]bool)
+				for _, a := range existing.Attributes {
+					attrMap[a.Name] = a.Value
+					if !seen[a.Name] {
+						orderedNames = append(orderedNames, a.Name)
+						seen[a.Name] = true
+					}
+				}
+				for _, a := range input.UserData {
+					attrMap[a.Name] = a.Value
+					if !seen[a.Name] {
+						orderedNames = append(orderedNames, a.Name)
+						seen[a.Name] = true
+					}
+				}
+				for _, name := range orderedNames {
+					finalAttrs = append(finalAttrs, session.UserDataAttribute{Name: name, Value: attrMap[name]})
+				}
+			} else {
+				for _, a := range input.UserData {
+					finalAttrs = append(finalAttrs, session.UserDataAttribute{Name: a.Name, Value: a.Value})
+				}
+			}
+		} else {
+			// Replace mode
+			for _, a := range input.UserData {
+				finalAttrs = append(finalAttrs, session.UserDataAttribute{Name: a.Name, Value: a.Value})
+			}
+		}
+
+		userData := &session.UserData{Attributes: finalAttrs}
+
+		// Validate against workspace schema
+		if sm != nil {
+			schema := sm.GetUserDataSchema(meta.WorkingDir)
+			if err := userData.Validate(schema); err != nil {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   fmt.Sprintf("user_data validation error: %v", err),
+				}, nil
+			}
+		}
+
+		// Save user data
+		if err := store.SetUserData(input.ConversationID, userData); err != nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("failed to save user data: %v", err),
+			}, nil
+		}
+		updated = append(updated, "user_data")
+
+		s.logger.Info("User data updated via MCP",
+			"source_session", realSessionID,
+			"target_conversation", input.ConversationID,
+			"attributes_count", len(finalAttrs),
+			"merge", merge)
+	}
+
+	// Check if anything was actually updated
+	if len(updated) == 0 {
+		return nil, ConversationUpdateOutput{
+			Success: false,
+			Error:   "no properties to update: specify at least one of 'name', 'user_data'",
+		}, nil
+	}
+
+	// Build output with current state
+	output := ConversationUpdateOutput{
+		Success:        true,
+		ConversationID: input.ConversationID,
+		Updated:        updated,
+	}
+
+	// Read back current name
+	if currentMeta, err := store.GetMetadata(input.ConversationID); err == nil {
+		output.Name = currentMeta.Name
+	}
+
+	// Read back current user data
+	if currentData, err := store.GetUserData(input.ConversationID); err == nil && currentData != nil {
+		for _, a := range currentData.Attributes {
+			output.UserData = append(output.UserData, UserDataAttributeUpdate{Name: a.Name, Value: a.Value})
+		}
+	}
+
+	return nil, output, nil
 }
 
 // =============================================================================
@@ -2375,6 +3386,46 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 	if s.sessionManager == nil {
 		return nil, ConversationWaitOutput{Error: "session manager not available"}, nil
 	}
+
+	// Cross-workspace support: if workspace UUID is provided, validate and confirm
+	if input.Workspace != "" {
+		targetWS := s.sessionManager.GetWorkspaceByUUID(input.Workspace)
+		if targetWS == nil {
+			return nil, ConversationWaitOutput{
+				Error: fmt.Sprintf("workspace not found: %s", input.Workspace),
+			}, nil
+		}
+
+		s.mu.RLock()
+		store := s.store
+		s.mu.RUnlock()
+
+		if store != nil {
+			// Validate the target conversation belongs to the workspace
+			targetMeta, err := store.GetMetadata(input.ConversationID)
+			if err == nil && targetMeta.WorkingDir != targetWS.WorkingDir {
+				return nil, ConversationWaitOutput{
+					Error: fmt.Sprintf("conversation %s does not belong to workspace %s", input.ConversationID, input.Workspace),
+				}, nil
+			}
+
+			// Check if cross-workspace (caller's workspace differs from target)
+			sourceMeta, err := store.GetMetadata(realSessionID)
+			if err == nil && sourceMeta.WorkingDir != targetWS.WorkingDir {
+				// Permission check: requires can_interact_other_workspaces flag
+				if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+					return nil, ConversationWaitOutput{
+						Error: fmt.Sprintf("cross-workspace operations require the 'Can interact with other workspaces' (%s) flag to be enabled in Advanced Settings",
+							session.FlagCanInteractOtherWorkspaces),
+					}, nil
+				}
+				if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "wait on a conversation", targetWS); err != nil {
+					return nil, ConversationWaitOutput{Error: err.Error()}, nil
+				}
+			}
+		}
+	}
+
 	targetBS := s.sessionManager.GetSession(input.ConversationID)
 	if targetBS == nil {
 		return nil, ConversationWaitOutput{
@@ -2405,6 +3456,14 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 		"target_conversation", input.ConversationID,
 		"what", input.What,
 		"timeout", timeout)
+
+	// Broadcast that this session is now waiting (shows hourglass in sidebar)
+	if s.sessionManager != nil {
+		s.sessionManager.BroadcastWaitingForChildren(realSessionID, true)
+		defer func() {
+			s.sessionManager.BroadcastWaitingForChildren(realSessionID, false)
+		}()
+	}
 
 	// Wait for the agent to finish responding, respecting context cancellation.
 	// WaitForResponseComplete blocks with its own timeout, but we also need to
@@ -2694,6 +3753,14 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		timeout = defaultChildrenTasksTimeout
 	}
 
+	// Broadcast that this parent is now waiting for children
+	if s.sessionManager != nil {
+		s.sessionManager.BroadcastWaitingForChildren(realSessionID, true)
+		defer func() {
+			s.sessionManager.BroadcastWaitingForChildren(realSessionID, false)
+		}()
+	}
+
 	// Block until all running children report or timeout
 	s.logger.Info("Waiting for children to report",
 		"parent_session", realSessionID,
@@ -2704,23 +3771,105 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 
 	var timedOut bool
 
-	select {
-	case <-waitCh:
-		// All running children reported
-	case <-time.After(timeout):
-		timedOut = true
-		pendingChildren, reportedChildren := collector.getPendingAndReported()
-		s.logger.Warn("Timeout waiting for children to report",
-			"parent_session", realSessionID,
-			"pending_children", pendingChildren,
-			"reported_children", reportedChildren,
-			"total_running", len(runningChildren),
-			"timeout", timeout)
-	case <-ctx.Done():
-		return nil, ChildrenTasksWaitOutput{
-			Success: false,
-			Error:   "context cancelled while waiting for children to report",
-		}, nil
+	// childIdlePollInterval is how often we check if pending children are still responsive.
+	const childIdlePollInterval = 5 * time.Second
+	// childIdleGracePeriod is how long a child must be idle (not prompting) before
+	// we consider it done without response. This accounts for:
+	// - Time for the child to pick up a queued message
+	// - Time for the agent to process and call the report tool
+	const childIdleGracePeriod = 15 * time.Second
+
+	if s.sessionManager != nil {
+		// Polling loop: check child agent status periodically
+		pollTicker := time.NewTicker(childIdlePollInterval)
+		defer pollTicker.Stop()
+
+		timeoutTimer := time.NewTimer(timeout)
+		defer timeoutTimer.Stop()
+
+		// Track when each child was first seen idle (not prompting)
+		childIdleSince := make(map[string]time.Time)
+
+	waitLoop:
+		for {
+			select {
+			case <-waitCh:
+				// All children reported or auto-completed
+				break waitLoop
+			case <-timeoutTimer.C:
+				timedOut = true
+				pendingChildren, reportedChildren := collector.getPendingAndReported()
+				s.logger.Warn("Timeout waiting for children to report",
+					"parent_session", realSessionID,
+					"pending_children", pendingChildren,
+					"reported_children", reportedChildren,
+					"total_running", len(runningChildren),
+					"timeout", timeout)
+				break waitLoop
+			case <-ctx.Done():
+				return nil, ChildrenTasksWaitOutput{
+					Success: false,
+					Error:   "context cancelled while waiting for children to report",
+				}, nil
+			case <-pollTicker.C:
+				// Check status of pending children
+				pending, _ := collector.getPendingAndReported()
+				for _, childID := range pending {
+					bs := s.sessionManager.GetSession(childID)
+					if bs == nil {
+						// Session is no longer running — auto-complete
+						s.logger.Info("Child session stopped while waiting — auto-completing",
+							"parent_session", realSessionID,
+							"child_session", childID)
+						collector.markChildAutoCompleted(childID, "session_stopped")
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					if bs.IsPrompting() {
+						// Child is actively processing — reset idle timer
+						delete(childIdleSince, childID)
+						continue
+					}
+
+					// Child is running but idle (not prompting)
+					if idleSince, exists := childIdleSince[childID]; exists {
+						if time.Since(idleSince) > childIdleGracePeriod {
+							// Been idle too long without reporting — auto-complete
+							s.logger.Info("Child agent idle without reporting — auto-completing",
+								"parent_session", realSessionID,
+								"child_session", childID,
+								"idle_duration", time.Since(idleSince).Round(time.Second))
+							collector.markChildAutoCompleted(childID, "agent_idle")
+							delete(childIdleSince, childID)
+						}
+					} else {
+						// First time seeing this child idle — start tracking
+						childIdleSince[childID] = time.Now()
+					}
+				}
+			}
+		}
+	} else {
+		// No session manager available — fall back to simple wait (original behavior)
+		select {
+		case <-waitCh:
+			// All running children reported
+		case <-time.After(timeout):
+			timedOut = true
+			pendingChildren, reportedChildren := collector.getPendingAndReported()
+			s.logger.Warn("Timeout waiting for children to report",
+				"parent_session", realSessionID,
+				"pending_children", pendingChildren,
+				"reported_children", reportedChildren,
+				"total_running", len(runningChildren),
+				"timeout", timeout)
+		case <-ctx.Done():
+			return nil, ChildrenTasksWaitOutput{
+				Success: false,
+				Error:   "context cancelled while waiting for children to report",
+			}, nil
+		}
 	}
 
 	// Build the output with whatever reports we have
@@ -2732,21 +3881,31 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		report := collector.reports[childID]
 		info := ChildReportInfo{Completed: false, Status: "pending"}
 		if report != nil && report.Completed {
-			info.Completed = true
-			info.Status = "completed"
-			// Unmarshal the raw JSON report into the typed struct for proper schema validation
-			if len(report.Report) > 0 {
-				var reportData ChildReportData
-				if err := json.Unmarshal(report.Report, &reportData); err != nil {
-					s.logger.Warn("Failed to unmarshal child report data",
-						"child_session", childID,
-						"error", err)
-				} else {
-					info.Report = &reportData
+			if report.AutoCompleted {
+				// Auto-completed: agent went idle without reporting
+				info.Completed = false
+				info.Status = "agent_not_responding"
+				info.Reason = report.AutoReason
+				if !report.Timestamp.IsZero() {
+					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
 				}
-			}
-			if !report.Timestamp.IsZero() {
-				info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
+			} else {
+				info.Completed = true
+				info.Status = "completed"
+				// Unmarshal the raw JSON report into the typed struct for proper schema validation
+				if len(report.Report) > 0 {
+					var reportData ChildReportData
+					if err := json.Unmarshal(report.Report, &reportData); err != nil {
+						s.logger.Warn("Failed to unmarshal child report data",
+							"child_session", childID,
+							"error", err)
+					} else {
+						info.Report = &reportData
+					}
+				}
+				if !report.Timestamp.IsZero() {
+					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
+				}
 			}
 		} else if timedOut {
 			// Add diagnostic reason for timed-out children
@@ -2902,4 +4061,360 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 		Success:         true,
 		ParentSessionID: parentSessionID,
 	}, nil
+}
+
+// =============================================================================
+// Conversation History Handler
+// =============================================================================
+
+const (
+	// historyDefaultLastN is the default number of events to return.
+	historyDefaultLastN = 50
+	// historyMaxLastN is the maximum number of events that can be requested.
+	historyMaxLastN = 200
+	// historyMaxDataStr is the maximum length of string fields in event data.
+	historyMaxDataStr = 2048
+)
+
+// handleConversationHistory handles the mitto_conversation_history tool.
+// It reads events from a session, applies filters, and returns a paginated result.
+func (s *Server) handleConversationHistory(ctx context.Context, req *mcp.CallToolRequest, input ConversationHistoryInput) (*mcp.CallToolResult, ConversationHistoryOutput, error) {
+	emptyOut := ConversationHistoryOutput{Events: []ConversationHistoryEvent{}}
+
+	if input.SelfID == "" {
+		emptyOut.Error = "self_id is required"
+		return nil, emptyOut, nil
+	}
+
+	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	if realSessionID == "" {
+		emptyOut.Error = fmt.Sprintf("session not found: self_id '%s' could not be resolved", input.SelfID)
+		return nil, emptyOut, nil
+	}
+
+	reg := s.getSession(realSessionID)
+	if reg == nil {
+		emptyOut.Error = fmt.Sprintf("session not found or not running: %s", realSessionID)
+		return nil, emptyOut, nil
+	}
+
+	targetID := input.ConversationID
+	if targetID == "" {
+		targetID = realSessionID
+	}
+
+	s.mu.RLock()
+	store := s.store
+	s.mu.RUnlock()
+
+	if store == nil {
+		emptyOut.Error = "session store not available"
+		return nil, emptyOut, nil
+	}
+
+	// Read all events from the target session.
+	allEvents, err := store.ReadEvents(targetID)
+	if err != nil {
+		emptyOut.Error = fmt.Sprintf("failed to read events for session %s: %v", targetID, err)
+		return nil, emptyOut, nil
+	}
+
+	totalEvents := len(allEvents)
+
+	// Apply filters.
+	filtered := historyFilterEvents(allEvents, input)
+
+	// Apply pagination: last_n and offset.
+	// "last_n" means we return the most recent N events.
+	// "offset" pages backward: offset=0 returns the last N, offset=N returns the previous N.
+	lastN := input.LastN
+	if lastN <= 0 {
+		lastN = historyDefaultLastN
+	} else if lastN > historyMaxLastN {
+		lastN = historyMaxLastN
+	}
+
+	offset := input.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	totalFiltered := len(filtered)
+
+	// Calculate window: from the end of filtered, skipping `offset` items.
+	endIdx := totalFiltered - offset
+	if endIdx < 0 {
+		endIdx = 0
+	}
+	startIdx := endIdx - lastN
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	hasMore := startIdx > 0
+
+	paginated := filtered[startIdx:endIdx]
+
+	// Determine whether to include full event data.
+	includeData := input.IncludeData == nil || *input.IncludeData
+
+	// Build response events.
+	events := make([]ConversationHistoryEvent, 0, len(paginated))
+	for _, e := range paginated {
+		histEvent := historyBuildEvent(e, includeData)
+		events = append(events, histEvent)
+	}
+
+	return nil, ConversationHistoryOutput{
+		Success:        true,
+		ConversationID: targetID,
+		TotalEvents:    totalEvents,
+		ReturnedEvents: len(events),
+		Events:         events,
+		HasMore:        hasMore,
+	}, nil
+}
+
+// historyFilterEvents applies all configured filters to the event list.
+func historyFilterEvents(events []session.Event, input ConversationHistoryInput) []session.Event {
+	// Build event type set for O(1) lookup.
+	var typeSet map[string]bool
+	if len(input.EventTypes) > 0 {
+		typeSet = make(map[string]bool, len(input.EventTypes))
+		for _, t := range input.EventTypes {
+			typeSet[t] = true
+		}
+	}
+
+	textContainsLower := strings.ToLower(input.TextContains)
+	textExcludesLower := strings.ToLower(input.TextExcludes)
+	toolNameLower := strings.ToLower(input.ToolName)
+
+	var result []session.Event
+	for _, e := range events {
+		// Seq range filters.
+		if input.AfterSeq > 0 && e.Seq <= input.AfterSeq {
+			continue
+		}
+		if input.BeforeSeq > 0 && e.Seq >= input.BeforeSeq {
+			continue
+		}
+
+		// Event type filter.
+		if typeSet != nil && !typeSet[string(e.Type)] {
+			continue
+		}
+
+		// Decode event data (needed for text and tool_name filters).
+		data, _ := session.DecodeEventData(e)
+
+		// Tool name filter (only applies to tool_call events).
+		if toolNameLower != "" {
+			if e.Type != session.EventTypeToolCall {
+				continue
+			}
+			if d, ok := data.(session.ToolCallData); ok {
+				if !strings.Contains(strings.ToLower(d.Title), toolNameLower) {
+					continue
+				}
+			}
+		}
+
+		// Text content filters.
+		if textContainsLower != "" || textExcludesLower != "" {
+			text := historyExtractText(e.Type, data)
+			lower := strings.ToLower(text)
+			if textContainsLower != "" && !strings.Contains(lower, textContainsLower) {
+				continue
+			}
+			if textExcludesLower != "" && strings.Contains(lower, textExcludesLower) {
+				continue
+			}
+		}
+
+		result = append(result, e)
+	}
+
+	return result
+}
+
+// historyExtractText extracts all searchable text from a decoded event data value.
+func historyExtractText(eventType session.EventType, data interface{}) string {
+	var parts []string
+	switch eventType {
+	case session.EventTypeUserPrompt:
+		if d, ok := data.(session.UserPromptData); ok {
+			parts = append(parts, d.Message)
+		}
+	case session.EventTypeAgentMessage:
+		if d, ok := data.(session.AgentMessageData); ok {
+			parts = append(parts, d.Text) // HTML as-is per spec
+		}
+	case session.EventTypeAgentThought:
+		if d, ok := data.(session.AgentThoughtData); ok {
+			parts = append(parts, d.Text)
+		}
+	case session.EventTypeToolCall:
+		if d, ok := data.(session.ToolCallData); ok {
+			parts = append(parts, d.Title)
+			if d.RawInput != nil {
+				if b, err := json.Marshal(d.RawInput); err == nil {
+					parts = append(parts, string(b))
+				}
+			}
+			if d.RawOutput != nil {
+				if b, err := json.Marshal(d.RawOutput); err == nil {
+					parts = append(parts, string(b))
+				}
+			}
+		}
+	case session.EventTypeToolCallUpdate:
+		if d, ok := data.(session.ToolCallUpdateData); ok {
+			if d.Title != nil {
+				parts = append(parts, *d.Title)
+			}
+			if d.Status != nil {
+				parts = append(parts, *d.Status)
+			}
+		}
+	case session.EventTypePlan:
+		if d, ok := data.(session.PlanData); ok {
+			for _, entry := range d.Entries {
+				parts = append(parts, entry.Content)
+			}
+		}
+	case session.EventTypePermission:
+		if d, ok := data.(session.PermissionData); ok {
+			parts = append(parts, d.Title, d.SelectedOption, d.Outcome)
+		}
+	case session.EventTypeFileRead, session.EventTypeFileWrite:
+		if d, ok := data.(session.FileOperationData); ok {
+			parts = append(parts, d.Path, d.Content)
+		}
+	case session.EventTypeError:
+		if d, ok := data.(session.ErrorData); ok {
+			parts = append(parts, d.Message)
+		}
+	case session.EventTypeSessionStart:
+		if d, ok := data.(session.SessionStartData); ok {
+			parts = append(parts, d.SessionID)
+		}
+	case session.EventTypeSessionEnd:
+		if d, ok := data.(session.SessionEndData); ok {
+			parts = append(parts, d.Reason)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// historyBuildEvent constructs a ConversationHistoryEvent from a raw session event.
+func historyBuildEvent(e session.Event, includeData bool) ConversationHistoryEvent {
+	data, _ := session.DecodeEventData(e)
+
+	hist := ConversationHistoryEvent{
+		Seq:       e.Seq,
+		Type:      string(e.Type),
+		Timestamp: e.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
+		Summary:   historyBuildSummary(e.Type, data),
+	}
+
+	if includeData {
+		hist.Data = historyTruncateData(e.Type, data)
+	}
+
+	return hist
+}
+
+// historyBuildSummary generates a short human-readable one-liner for an event.
+func historyBuildSummary(eventType session.EventType, data interface{}) string {
+	switch eventType {
+	case session.EventTypeUserPrompt:
+		if d, ok := data.(session.UserPromptData); ok {
+			return historyTruncateStr(d.Message, 150)
+		}
+	case session.EventTypeAgentMessage:
+		if d, ok := data.(session.AgentMessageData); ok {
+			return historyTruncateStr(session.StripHTML(d.Text), 150)
+		}
+	case session.EventTypeAgentThought:
+		if d, ok := data.(session.AgentThoughtData); ok {
+			return historyTruncateStr(d.Text, 150)
+		}
+	case session.EventTypeToolCall:
+		if d, ok := data.(session.ToolCallData); ok {
+			return fmt.Sprintf("%s [%s]", d.Title, d.Status)
+		}
+	case session.EventTypeToolCallUpdate:
+		if d, ok := data.(session.ToolCallUpdateData); ok {
+			title := ""
+			if d.Title != nil {
+				title = *d.Title
+			}
+			return fmt.Sprintf("Update: %s", title)
+		}
+	case session.EventTypePlan:
+		if d, ok := data.(session.PlanData); ok {
+			return fmt.Sprintf("Plan: %d entries", len(d.Entries))
+		}
+	case session.EventTypePermission:
+		if d, ok := data.(session.PermissionData); ok {
+			return fmt.Sprintf("%s: %s", d.Title, d.Outcome)
+		}
+	case session.EventTypeFileRead:
+		if d, ok := data.(session.FileOperationData); ok {
+			return fmt.Sprintf("Read: %s", d.Path)
+		}
+	case session.EventTypeFileWrite:
+		if d, ok := data.(session.FileOperationData); ok {
+			return fmt.Sprintf("Write: %s", d.Path)
+		}
+	case session.EventTypeError:
+		if d, ok := data.(session.ErrorData); ok {
+			return historyTruncateStr(d.Message, 150)
+		}
+	case session.EventTypeSessionStart:
+		return "Session started"
+	case session.EventTypeSessionEnd:
+		if d, ok := data.(session.SessionEndData); ok {
+			return fmt.Sprintf("Session ended: %s", d.Reason)
+		}
+	}
+	return string(eventType)
+}
+
+// historyTruncateData returns a copy of event data with long string fields truncated to historyMaxDataStr.
+func historyTruncateData(eventType session.EventType, data interface{}) interface{} {
+	switch eventType {
+	case session.EventTypeUserPrompt:
+		if d, ok := data.(session.UserPromptData); ok {
+			d.Message = historyTruncateDataStr(d.Message)
+			return d
+		}
+	case session.EventTypeAgentMessage:
+		if d, ok := data.(session.AgentMessageData); ok {
+			d.Text = historyTruncateDataStr(d.Text)
+			return d
+		}
+	case session.EventTypeError:
+		if d, ok := data.(session.ErrorData); ok {
+			d.Message = historyTruncateDataStr(d.Message)
+			return d
+		}
+	}
+	return data
+}
+
+// historyTruncateStr truncates a string to maxLen chars, appending "..." if truncated.
+func historyTruncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
+}
+
+// historyTruncateDataStr truncates a string to historyMaxDataStr, appending "..." if truncated.
+func historyTruncateDataStr(s string) string {
+	if len(s) <= historyMaxDataStr {
+		return s
+	}
+	return s[:historyMaxDataStr-3] + "..."
 }

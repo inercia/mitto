@@ -1,9 +1,12 @@
 package web
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -103,13 +106,20 @@ func (s *Server) handlePutSessionUserData(w http.ResponseWriter, r *http.Request
 	writeJSONOK(w, userData)
 }
 
-// handleWorkspaceUserDataSchema handles GET /api/workspace/user-data-schema
+// handleWorkspaceUserDataSchema dispatches GET and PUT /api/workspace/user-data-schema.
 func (s *Server) handleWorkspaceUserDataSchema(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleWorkspaceUserDataSchemaGet(w, r)
+	case http.MethodPut:
+		s.handleWorkspaceUserDataSchemaPut(w, r)
+	default:
 		methodNotAllowed(w)
-		return
 	}
+}
 
+// handleWorkspaceUserDataSchemaGet handles GET /api/workspace/user-data-schema?working_dir=...
+func (s *Server) handleWorkspaceUserDataSchemaGet(w http.ResponseWriter, r *http.Request) {
 	// Get the working directory from query parameter
 	workingDir := r.URL.Query().Get("working_dir")
 	if workingDir == "" {
@@ -141,4 +151,60 @@ func (s *Server) handleWorkspaceUserDataSchema(w http.ResponseWriter, r *http.Re
 		"fields":      schema.Fields,
 		"working_dir": workingDir,
 	})
+}
+
+// handleWorkspaceUserDataSchemaPut handles PUT /api/workspace/user-data-schema.
+// Saves the user data schema to the workspace .mittorc file.
+func (s *Server) handleWorkspaceUserDataSchemaPut(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		WorkingDir string                       `json:"working_dir"`
+		Fields     []config.UserDataSchemaField `json:"fields"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.WorkingDir == "" {
+		http.Error(w, "working_dir is required", http.StatusBadRequest)
+		return
+	}
+	req.WorkingDir = strings.TrimSpace(req.WorkingDir)
+
+	// Validate that this is a known workspace
+	workspace := s.sessionManager.GetWorkspace(req.WorkingDir)
+	if workspace == nil {
+		http.Error(w, "Unknown workspace", http.StatusNotFound)
+		return
+	}
+
+	// Validate each field
+	for i, f := range req.Fields {
+		if strings.TrimSpace(f.Name) == "" {
+			http.Error(w, fmt.Sprintf("field[%d]: name is required", i), http.StatusBadRequest)
+			return
+		}
+		if f.Type != "" && !f.Type.IsValid() {
+			http.Error(w, fmt.Sprintf("field[%d]: invalid type %q (must be 'string' or 'url')", i, f.Type), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if err := config.SaveWorkspaceUserDataSchema(req.WorkingDir, req.Fields); err != nil {
+		if s.logger != nil {
+			s.logger.Error("Failed to save workspace user data schema", "working_dir", req.WorkingDir, "error", err)
+		}
+		http.Error(w, "Failed to save user data schema: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Invalidate the workspace RC cache so subsequent reads pick up the new data
+	if s.sessionManager != nil {
+		s.sessionManager.InvalidateWorkspaceRC(req.WorkingDir)
+	}
+
+	if s.logger != nil {
+		s.logger.Info("Workspace user data schema saved", "working_dir", req.WorkingDir, "fields", len(req.Fields))
+	}
+
+	writeJSONOK(w, map[string]string{"status": "ok"})
 }

@@ -188,14 +188,14 @@ restricted_runners:
     restrictions:
       allow_networking: true
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "$HOME/.config"
         - "$HOME/.local/bin"
         - "$HOME/.npm"
         - "/usr/local/bin"
         - "/opt/homebrew/bin"
       allow_write_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "$HOME/.cache"
     merge_strategy: "extend"
 
@@ -204,13 +204,13 @@ restricted_runners:
     restrictions:
       allow_networking: true
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "$HOME/.config"
         - "$HOME/.local/bin"
         - "$HOME/.npm"
         - "/usr/local/bin"
       allow_write_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "$HOME/.cache"
     merge_strategy: "extend"
 
@@ -223,9 +223,9 @@ restricted_runners:
         memory_limit: "2g"
         cpu_limit: "2.0"
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
       allow_write_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
     merge_strategy: "replace"
 ```
 
@@ -257,10 +257,10 @@ acp_servers:
         restrictions:
           allow_networking: false
           allow_read_folders:
-            - "$WORKSPACE"
+            - "$MITTO_WORKING_DIR"
             - "$HOME/.experimental"
           allow_write_folders:
-            - "$WORKSPACE"
+            - "$MITTO_WORKING_DIR"
         merge_strategy: "extend"
 
       docker:
@@ -298,7 +298,7 @@ restricted_runners:
     # Applied when any workspace in this folder uses exec runner
     restrictions:
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
     merge_strategy: "extend"
 
   sandbox-exec:
@@ -306,7 +306,7 @@ restricted_runners:
     restrictions:
       allow_networking: false
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "/tmp"
     merge_strategy: "extend"
 
@@ -360,7 +360,7 @@ restricted_runners:
     restrictions:
       allow_networking: true
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
 ```
 
 **Agent** (`settings.json`):
@@ -385,14 +385,14 @@ restricted_runners:
   sandbox-exec:
     restrictions:
       allow_read_folders:
-        - "$WORKSPACE/vendor" # Add to agent + global
+        - "$MITTO_WORKING_DIR/vendor" # Add to agent + global
     merge_strategy: "extend"
 ```
 
 **Result** for `experimental` agent with `sandbox-exec` in `/path/to/project`:
 
 - Networking: `false` (from agent)
-- Read folders: `["$WORKSPACE", "$HOME/.experimental", "$WORKSPACE/vendor"]` (merged from all levels)
+- Read folders: `["$MITTO_WORKING_DIR", "$HOME/.experimental", "$MITTO_WORKING_DIR/vendor"]` (merged from all levels)
 
 ## Configuration Options
 
@@ -415,7 +415,7 @@ List of folders the agent can read from. Supports variables.
 
 ```yaml
 allow_read_folders:
-  - "$WORKSPACE" # Current workspace directory
+  - "$MITTO_WORKING_DIR" # Current workspace directory
   - "$HOME/.config" # User config directory
   - "$HOME/.local/bin" # Local executables
   - "/usr/local/bin" # System executables
@@ -427,7 +427,7 @@ List of folders the agent can write to. Supports variables.
 
 ```yaml
 allow_write_folders:
-  - "$WORKSPACE" # Current workspace directory
+  - "$MITTO_WORKING_DIR" # Current workspace directory
   - "$HOME/.cache" # Cache directory
 ```
 
@@ -484,7 +484,7 @@ Variables are resolved at runtime when the agent starts.
 
 | Variable     | Description                 | Example                               |
 | ------------ | --------------------------- | ------------------------------------- |
-| `$WORKSPACE` | Current workspace directory | `/Users/user/project`                 |
+| `$MITTO_WORKING_DIR` | Current workspace directory | `/Users/user/project`                 |
 | `$HOME`      | User's home directory       | `/Users/user`                         |
 | `$MITTO_DIR` | Mitto data directory        | `~/Library/Application Support/Mitto` |
 | `$USER`      | Current username            | `user`                                |
@@ -504,7 +504,7 @@ restricted_runner:
   restrictions:
     allow_networking: true # Required for network-based MCP servers
     allow_read_folders:
-      - "$WORKSPACE"
+      - "$MITTO_WORKING_DIR"
       - "$HOME/.config" # MCP configs
       - "$HOME/.local/bin" # Local MCP executables
       - "$HOME/.npm" # npm global packages (npx-based MCP)
@@ -512,7 +512,7 @@ restricted_runner:
       - "/usr/local/bin" # System-wide executables
       - "/opt/homebrew/bin" # Homebrew (macOS Apple Silicon)
     allow_write_folders:
-      - "$WORKSPACE"
+      - "$MITTO_WORKING_DIR"
       - "$HOME/.cache" # MCP servers may cache data
 ```
 
@@ -593,11 +593,11 @@ restricted_runners:
     restrictions:
       allow_networking: true
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
         - "$HOME/.config"
         - "$HOME/.local/bin"
       allow_write_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
 
 acp_servers:
   - name: auggie
@@ -647,9 +647,9 @@ acp_servers:
         restrictions:
           allow_networking: false
           allow_read_folders:
-            - "$WORKSPACE"
+            - "$MITTO_WORKING_DIR"
           allow_write_folders:
-            - "$WORKSPACE/output"
+            - "$MITTO_WORKING_DIR/output"
         merge_strategy: "replace"
 ```
 
@@ -672,8 +672,8 @@ acp_servers:
         "firejail": {
           "restrictions": {
             "allow_networking": false,
-            "allow_read_folders": ["$WORKSPACE"],
-            "allow_write_folders": ["$WORKSPACE/output"]
+            "allow_read_folders": ["$MITTO_WORKING_DIR"],
+            "allow_write_folders": ["$MITTO_WORKING_DIR/output"]
           },
           "merge_strategy": "replace"
         }
@@ -701,7 +701,7 @@ restricted_runners:
     # Applied to any workspace using exec runner
     restrictions:
       allow_read_folders:
-        - "$WORKSPACE"
+        - "$MITTO_WORKING_DIR"
     merge_strategy: "extend"
 
   docker:
@@ -732,7 +732,7 @@ acp:
       restrictions:
         allow_networking: true
         allow_read_folders:
-          - "$WORKSPACE"
+          - "$MITTO_WORKING_DIR"
 ```
 
 Workspace config (`/path/to/sensitive-project/.mittorc`):
@@ -1058,7 +1058,7 @@ Each runner type enforces restrictions differently:
 
 The following variables are expanded in path configurations:
 
-- `$WORKSPACE`: Current workspace directory
+- `$MITTO_WORKING_DIR`: Current workspace directory
 - `$HOME`: User's home directory
 - `$MITTO_DIR`: Mitto's data directory (from MITTO_DIR env or platform default)
 

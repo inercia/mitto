@@ -1,0 +1,66 @@
+##########################################################################################
+# Builtin processor: delegates Playwright browser automation to a faster model.
+#
+# When using a premium reasoning model (Opus, o3, etc.) and Playwright MCP tools
+# are available (browser_* tools), this processor instructs the agent to delegate
+# browser automation tasks to a cheaper/faster model via a child session.
+#
+# This avoids wasting expensive reasoning tokens on mechanical browser interactions
+# like clicking, typing, navigating, and taking screenshots.
+#
+# Activation conditions:
+#   1. ACP server is a "smart" model (tagged "reasoning"/"thinking" or name matches)
+#   2. Playwright MCP tools are present (browser_* pattern)
+#   3. Mitto conversation tools are available (for spawning child sessions)
+#
+# To activate, tag your premium ACP servers with "reasoning" in your mitto config,
+# or use a name containing "opus", "o3", etc.
+##########################################################################################
+name: delegate-playwright
+description: "Delegates Playwright browser automation to a faster model when using a premium reasoning model"
+enabled: true
+when: first
+position: append
+priority: 91
+rerun:
+  afterTime: 30m
+  afterSentMsgs: 20
+  afterTokens: 80000
+enabledWhen: >-
+  (acp.tags.exists(t, t == "reasoning")
+  || acp.tags.exists(t, t == "thinking")
+  || acp.name.contains("opus")
+  || acp.name.contains("o3")
+  || acp.name.contains("deep-research")
+  || acp.name.contains("codex"))
+  && tools.hasAllPatterns(["browser_*", "mitto_conversation_*"])
+text: |
+  ---
+  [Playwright Delegation Guidance]
+  You have Playwright browser automation tools available (browser_navigate,
+  browser_click, browser_snapshot, etc.), but you are running on a premium
+  reasoning model (@mitto:acp_server) where these tools are wastefully expensive.
+
+  IMPORTANT: Do NOT use the browser_* tools directly. Instead, delegate ALL
+  browser automation tasks to a cheaper/faster child session:
+
+  1. Create or reuse a child session on a fast model (e.g., Sonnet, GPT, Gemini)
+  2. Send detailed browser automation instructions to the child
+  3. Wait for results and incorporate them into your analysis
+
+  Example delegation flow:
+  - You decide what to test/check in the browser (planning — your strength)
+  - Child session executes the browser interactions (mechanical — fast model's strength)
+  - You analyze the results and decide next steps (reasoning — your strength)
+
+  Available agents:
+  
+  @mitto:available_acp_servers
+  
+  Existing children:
+  
+  @mitto:children
+
+  Use `mitto_conversation_new` to create a child, or
+  `mitto_conversation_send_prompt` to instruct an existing child.
+  Use your session ID (@mitto:session_id) as self_id in all mitto_* tool calls.

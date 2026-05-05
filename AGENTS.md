@@ -82,3 +82,11 @@ bd close <id>         # Complete work
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
+
+<!-- BEGIN USER PREFERENCES (auto-managed by memorize-preferences processor) -->
+## User Preferences
+
+- **Preact event handlers**: Use `onInput` (not `onChange`) for text input event handlers to match Preact conventions
+- **Frontend templating**: Use `html` tagged template literals (Preact/HTM style), not JSX, for all frontend component code
+- **Go nil vs empty slices in ACP JSON**: Always initialize slices that are JSON-serialized to the ACP server as empty slices (`[]T{}`) rather than nil (`var x []T`). Go encodes nil slices as JSON `null`, which the ACP server rejects. Use the comment pattern `// Must be empty array, not nil — ACP validates this` to document these fields.
+<!-- END USER PREFERENCES -->

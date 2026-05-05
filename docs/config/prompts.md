@@ -4,14 +4,14 @@ Prompts (also called Quick Actions) are predefined text snippets that appear as 
 in the chat interface. Clicking a prompt button sends its content to the AI agent,
 saving you from typing common requests.
 
+![](prompts-1.png)
+
 ## Overview
 
-Prompts appear in a dropdown menu above the chat input. They are organized into two
-sections:
-
-- **Workspace** (green folder icon) - Prompts from the current workspace's `.mittorc`
-  file
-- **Global** (gear icon) - Prompts from settings, global files, and built-in defaults
+Prompts appear in a dropdown menu above the chat input. All prompt sources are
+**merged server-side** into a single list per workspace. Higher-priority sources
+override lower-priority ones with the same name. Disabled prompts are filtered out
+automatically.
 
 When you hover over a prompt button, a tooltip shows its description (if provided).
 
@@ -26,7 +26,7 @@ higher-priority sources override lower-priority ones.
 | 2           | Global prompts directory      | `MITTO_DIR/prompts/*.md`         |
 | 3           | Additional prompts dirs       | `prompts_dirs` in settings       |
 | 4           | User settings file            | `MITTO_DIR/settings.yaml`        |
-| 5           | Default workspace prompts dir | `$WORKSPACE/.mitto/prompts/*.md` |
+| 5           | Default workspace prompts dir | `$MITTO_WORKING_DIR/.mitto/prompts/*.md` |
 | 6           | Workspace prompts dirs        | `prompts_dirs` in `.mittorc`     |
 | 7 (highest) | Workspace `.mittorc` prompts  | `prompts:` in `.mittorc`         |
 
@@ -234,32 +234,30 @@ Provide specific suggestions with code examples where applicable.
 | ----------------- | -------- | -------- | -------------------------------------------------------------------------------------------- |
 | `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.                              |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
+| `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon identifier (reserved for future use)                                                    |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
+| `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
-| `enabledWhenACP`  | No       | string   | Comma-separated ACP server names where this prompt appears                                   |
-| `enabledWhenMCP`  | No       | string   | Glob pattern for MCP tools required for this prompt to appear                                |
 
 \*If `name` is not specified, it's derived from the filename (e.g., `code-review.md` →
 "code-review").
 
 ### Conditional Enablement Overview
 
-Mitto provides a family of `enabled*` fields for controlling when prompts appear:
+Mitto provides two fields for controlling when prompts appear:
 
-| Field            | Type   | Evaluated  | Use Case                                    |
-| ---------------- | ------ | ---------- | ------------------------------------------- |
-| `enabled`        | bool   | At load    | Permanently disable a prompt                |
-| `enabledWhen`    | CEL    | At display | Dynamic conditions based on session context |
-| `enabledWhenACP` | string | At display | Restrict to specific AI agents              |
-| `enabledWhenMCP` | string | At display | Require specific MCP tools to be available  |
+| Field         | Type | Evaluated  | Use Case                                    |
+| ------------- | ---- | ---------- | ------------------------------------------- |
+| `enabled`     | bool | At load    | Permanently disable a prompt                |
+| `enabledWhen` | CEL  | At display | Dynamic conditions based on session context |
 
-**Evaluation order:** If `enabled: false`, the prompt is never loaded. Otherwise, all
-three `enabledWhen*` conditions must be satisfied for the prompt to appear.
+**Evaluation order:** If `enabled: false`, the prompt is never loaded. Otherwise, the
+`enabledWhen` CEL expression must evaluate to `true` for the prompt to appear.
 
-**Example: Comprehensive prompt configuration**
+**Example:**
 
 ```yaml
 ---
@@ -268,9 +266,7 @@ description: "Pick a JIRA ticket and spawn parallel conversations"
 group: "JIRA"
 backgroundColor: "#BBDEFB"
 enabled: true
-enabledWhen: "!session.isChild"
-enabledWhenACP: "auggie, claude-code"
-enabledWhenMCP: "jira_*, mitto_conversation_*"
+enabledWhen: '!session.isChild && acp.matchesServerType(["augment", "claude-code"]) && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
 ---
 ```
 
@@ -308,6 +304,81 @@ Please analyze the code with the following criteria:
 - Assess code clarity
 - Suggest refactoring opportunities
 ```
+
+## Variable Substitution in Prompts
+
+Prompt text supports `@mitto:variable` placeholders that are automatically replaced with
+live session values before the prompt is sent to the AI agent. This is the same variable
+substitution system used by [message processors](processors.md#variable-substitution).
+
+### Available Variables
+
+| Variable                       | Description                                                                  |
+| ------------------------------ | ---------------------------------------------------------------------------- |
+| `@mitto:session_id`            | Current session/conversation ID                                              |
+| `@mitto:parent_session_id`     | Parent conversation ID (empty if root session)                               |
+| `@mitto:parent`                | Parent session as "id (name)" or empty                                       |
+| `@mitto:session_name`          | Conversation title/name                                                      |
+| `@mitto:working_dir`           | Session working directory                                                    |
+| `@mitto:acp_server`            | ACP server name (e.g., "claude-code")                                        |
+| `@mitto:workspace_uuid`        | Workspace identifier                                                         |
+| `@mitto:available_acp_servers` | ACP servers for this workspace, comma-separated with tags and current marker |
+| `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
+| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
+| `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
+
+### Behavior
+
+- **Automatic**: Substitution happens after all processors run, on the final assembled
+  message — no configuration needed.
+- **Unknown variables**: `@mitto:unknown` is left verbatim in the text.
+- **Empty values**: e.g., `@mitto:parent_session_id` when there is no parent → replaced
+  with empty string.
+- **Fast path**: If the prompt text contains no `@mitto:`, the substitution pass is
+  skipped entirely.
+
+### Why Use Variables in Prompts?
+
+Variables are especially useful for prompts that instruct the AI agent to call MCP tools.
+Many Mitto MCP tools (like `mitto_conversation_new`, `mitto_ui_options`, etc.) require
+a `self_id` parameter. By providing `@mitto:session_id` directly in the prompt text, you
+eliminate the need for the agent to first call `mitto_conversation_get_current` to discover
+its session ID — saving a tool call round-trip.
+
+Similarly, `@mitto:available_acp_servers` and `@mitto:children` provide information that
+would otherwise require additional tool calls to retrieve.
+
+### Example
+
+A prompt that helps the agent use Mitto MCP tools efficiently:
+
+```markdown
+---
+name: "Spawn Workers"
+enabledWhen: 'tools.hasPattern("mitto_conversation_*")'
+---
+
+## Session Context
+
+Your session ID is `@mitto:session_id` — use this as `self_id` for all MCP tool calls.
+Available ACP servers: `@mitto:available_acp_servers`
+Existing children: `@mitto:children`
+
+## Instructions
+
+Create child conversations to work on subtasks...
+```
+
+### Important: Child Session Limitation
+
+When a prompt instructs the agent to create child conversations via
+`mitto_conversation_new`, the `initial_prompt` text passed to the child **will not**
+benefit from the parent's `@mitto:` substitution for the child's own context. The parent's
+`@mitto:session_id` resolves to the parent's ID, not the child's.
+
+Children that need their own session ID (e.g., for `mitto_children_tasks_report`) must
+call `mitto_conversation_get_current(self_id: "init")` to discover it. This is the one
+case where the tool call cannot be avoided.
 
 ### Minimal Example
 
@@ -366,13 +437,14 @@ Information about the current workspace.
 
 Information about the current conversation/session.
 
-| Variable              | Type   | Description                               |
-| --------------------- | ------ | ----------------------------------------- |
-| `session.id`          | string | Session identifier                        |
-| `session.name`        | string | Session display name                      |
-| `session.isChild`     | bool   | `true` if this is a child conversation    |
-| `session.isAutoChild` | bool   | `true` if created automatically by parent |
-| `session.parentId`    | string | Parent session ID (empty if not a child)  |
+| Variable              | Type   | Description                                              |
+| --------------------- | ------ | -------------------------------------------------------- |
+| `session.id`          | string | Session identifier                                       |
+| `session.name`        | string | Session display name                                     |
+| `session.isChild`     | bool   | `true` if this is a child conversation                   |
+| `session.isAutoChild` | bool   | `true` if created automatically by parent                |
+| `session.parentId`    | string | Parent session ID (empty if not a child)                 |
+| `session.isPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
 
 #### Parent Context (`parent.*`)
 
@@ -388,12 +460,26 @@ Information about the parent conversation (only meaningful for child sessions).
 
 Information about child conversations spawned from this session.
 
-| Variable              | Type      | Description                          |
-| --------------------- | --------- | ------------------------------------ |
-| `children.count`      | int       | Number of direct child sessions      |
-| `children.exists`     | bool      | `true` if has at least one child     |
-| `children.names`      | list[str] | List of child session names          |
-| `children.acpServers` | list[str] | List of ACP servers used by children |
+| Variable              | Type      | Description                                  |
+| --------------------- | --------- | -------------------------------------------- |
+| `children.count`      | int       | Number of direct child sessions              |
+| `children.exists`     | bool      | `true` if has at least one child             |
+| `children.mcpCount`   | int       | Number of children created via MCP tools     |
+| `children.names`      | list[str] | List of child session names                  |
+| `children.acpServers` | list[str] | List of ACP servers used by children         |
+
+#### Permissions Context (`permissions.*`)
+
+Information about the permissions granted to the current session.
+
+| Variable                                | Type | Description                                                           |
+| --------------------------------------- | ---- | --------------------------------------------------------------------- |
+| `permissions.canDoIntrospection`        | bool | Whether the session can access Mitto's MCP server for introspection   |
+| `permissions.canSendPrompt`             | bool | Whether the session can send prompts to other conversations           |
+| `permissions.canPromptUser`             | bool | Whether MCP tools can display interactive prompts to the user         |
+| `permissions.canStartConversation`      | bool | Whether the session can create new conversations                      |
+| `permissions.canInteractOtherWorkspaces`| bool | Whether the session can interact with other workspaces                |
+| `permissions.autoApprovePermissions`    | bool | Whether permission requests are auto-approved                         |
 
 #### MCP Tools Context (`tools.*`)
 
@@ -405,13 +491,21 @@ immediately when a session starts.
 | `tools.available` | bool      | `true` if tool list has been loaded |
 | `tools.names`     | list[str] | List of available tool names        |
 
-**Custom function:**
+**Custom functions:**
 
-| Function                 | Returns | Description                                 |
-| ------------------------ | ------- | ------------------------------------------- |
-| `tools.hasPattern(glob)` | bool    | `true` if any tool matches the glob pattern |
+| Function                              | Returns | Description                                                   |
+| ------------------------------------- | ------- | ------------------------------------------------------------- |
+| `acp.matchesServerType("type")`           | bool    | `true` if ACP type matches (case-insensitive, fail-open)      |
+| `acp.matchesServerType(["a", "b"])`       | bool    | `true` if ACP matches any of the listed servers               |
+| `tools.hasPattern("glob")`            | bool    | `true` if any tool matches the glob pattern                   |
+| `tools.hasAllPatterns(["g1", "g2"])`   | bool    | `true` if ALL glob patterns are satisfied                     |
+| `tools.hasAnyPattern(["g1", "g2"])`    | bool    | `true` if ANY glob pattern is satisfied                       |
 
 The glob pattern supports `*` (any characters) and `?` (single character).
+
+**`acp.matchesServerType` details:**
+- Compares against `acp.type` only (case-insensitive), not the display name
+- **Fail-open**: Returns `true` when no ACP server is active (so prompts remain visible during startup)
 
 ### CEL Expression Examples
 
@@ -437,7 +531,13 @@ enabledWhen: "children.count == 0"
 #### ACP Server Filtering
 
 ```yaml
-# Only for Claude-based servers
+# Only for a specific ACP server type (case-insensitive, fail-open)
+enabledWhen: 'acp.matchesServerType("augment")'
+
+# Only for one of several server types
+enabledWhen: 'acp.matchesServerType(["augment", "claude-code"])'
+
+# Only for Claude-based servers (name prefix match)
 enabledWhen: 'acp.name.startsWith("Claude")'
 
 # Only for servers tagged with "coding"
@@ -459,11 +559,30 @@ enabledWhen: 'tools.hasPattern("github_*")'
 # Only show if Jira tools are available
 enabledWhen: 'tools.hasPattern("jira_*")'
 
+# Require ALL tool patterns to be satisfied (AND logic)
+enabledWhen: 'tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+
+# Require ANY tool pattern to be satisfied (OR logic)
+enabledWhen: 'tools.hasAnyPattern(["github_*", "gitlab_*"])'
+
 # Only show if any database tool is available
 enabledWhen: 'tools.hasPattern("*_database_*") || tools.hasPattern("*_sql_*")'
 
 # Only when tools have been loaded
 enabledWhen: "tools.available"
+```
+
+#### Permissions
+
+```yaml
+# Only show delegation prompts when sending to other conversations is allowed
+enabledWhen: "children.exists && permissions.canSendPrompt"
+
+# Only show "spawn workers" when conversation creation is allowed
+enabledWhen: "!session.isChild && permissions.canStartConversation"
+
+# Require both creation and communication permissions
+enabledWhen: "!session.isChild && permissions.canStartConversation && permissions.canSendPrompt"
 ```
 
 #### Combined Conditions
@@ -489,30 +608,27 @@ These examples are from Mitto's built-in prompts:
 ```yaml
 # "Create minions" - Spawn parallel worker conversations
 # Only in parent conversations, requires Mitto MCP tools
-enabledWhen: "!session.isChild"
-enabledWhenMCP: mitto_conversation_*
+enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
 
 # "Report to parent" - Send status back to parent
 # Only in child conversations that have a parent
-enabledWhen: "session.isChild && parent.exists"
+enabledWhen: 'session.isChild && parent.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*")'
 
 # "Continue work in child" - Resume work in existing child
 # Only when the session has spawned children
-enabledWhen: "children.exists"
+enabledWhen: 'children.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*")'
 
 # "JIRA: start work" - Pick a ticket and spawn workers
 # Only in parent conversations, requires both JIRA and Mitto tools
-enabledWhen: "!session.isChild"
-enabledWhenMCP: jira_*, mitto_conversation_*
+enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
 
 # "Improve Augment rules" - Update .augment/rules
-# Only when using Auggie (not Claude Code or other agents)
-enabledWhenACP: auggie
+# Only when using Augment-type agents (not Claude Code or other agents)
+enabledWhen: 'acp.matchesServerType("augment")'
 
 # "Handoff to new conversation" - Continue in a new session
 # Only in parent conversations, requires Mitto tools
-enabledWhen: "!session.isChild"
-enabledWhenMCP: mitto_conversation_*
+enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
 ```
 
 ### CEL Language Reference
@@ -569,19 +685,42 @@ For full CEL documentation, see the [CEL Language Definition](https://github.com
 ## Priority and Override Behavior
 
 When multiple sources define prompts with the same name, the higher-priority source
-wins:
+wins. All sources are merged **server-side** into a single list per workspace:
 
-1. **Workspace `.mittorc`** overrides everything
-2. **User settings** overrides global files and defaults
-3. **Global prompts directory** overrides built-in defaults
-4. **Built-in defaults** are used if no override exists
+1. **Built-in defaults** (lowest priority)
+2. **Global prompts directory** (`MITTO_DIR/prompts/`)
+3. **User settings** (`settings.yaml`)
+4. **ACP server-specific prompts** (per-server files and inline config)
+5. **Workspace prompts directory** (`.mitto/prompts/`)
+6. **Workspace `.mittorc` inline prompts** (highest priority)
 
-### Disabling a Built-in Prompt
+### Disabling a Prompt
 
-To disable a built-in prompt, create a prompt with the same name and set
-`enabled: false`:
+You can disable any prompt (built-in, global, or workspace) using the UI or
+by editing configuration files directly.
 
-**Option 1: In global prompts directory**
+**Option 1: Via the UI (recommended)**
+
+Open the Workspaces dialog, select a workspace, and toggle the switch next to
+any prompt to disable it. This persists the `enabled: false` state in the
+appropriate workspace-local file:
+
+- If the prompt has a `.md` file in `.mitto/prompts/`, the `enabled: false`
+  front-matter is added to that file.
+- Otherwise, an entry is added to the workspace `.mittorc` file.
+
+Re-enabling a prompt via the UI removes the `enabled: false` override.
+
+**Option 2: In workspace `.mittorc`**
+
+```yaml
+# my-project/.mittorc
+prompts:
+  - name: "Continue"
+    enabled: false
+```
+
+**Option 3: In a workspace prompt file**
 
 ```markdown
 ---
@@ -590,12 +729,16 @@ enabled: false
 ---
 ```
 
-**Option 2: In settings.yaml**
+**Option 4: In global prompts directory**
 
-```yaml
-prompts:
-  - name: "Continue"
-    prompt: "" # Empty prompt effectively disables it
+Create a file in `MITTO_DIR/prompts/` with `enabled: false`. This disables
+the prompt across all workspaces (unless a workspace re-enables it).
+
+```markdown
+---
+name: "Continue"
+enabled: false
+---
 ```
 
 ### Overriding a Built-in Prompt
@@ -728,9 +871,10 @@ Total: 3 prompt(s)
 
 ## Hot Reload
 
-Global prompts are automatically reloaded when the prompts dropdown is opened and the
-directory has changed. You don't need to restart Mitto after adding or modifying prompt
-files.
+Prompts are automatically reloaded when the prompts dropdown is opened. The server
+checks file modification times for all prompt sources (global directory, workspace
+`.mitto/prompts/`, and `.mittorc` files) and re-merges when any source has changed.
+You don't need to restart Mitto after adding or modifying prompt files.
 
 ## Related Documentation
 

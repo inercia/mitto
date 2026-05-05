@@ -13,7 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/inercia/mitto/internal/auxiliary"
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -27,6 +28,29 @@ func generateClientID() string {
 		return time.Now().Format("20060102150405.000000000")
 	}
 	return hex.EncodeToString(b)
+}
+
+// buildUsageMap converts an acp.Usage value into a JSON-serialisable map
+// suitable for embedding in WebSocket messages.  Returns nil when usage is nil.
+func buildUsageMap(usage *acp.Usage) map[string]interface{} {
+	if usage == nil {
+		return nil
+	}
+	m := map[string]interface{}{
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+		"total_tokens":  usage.TotalTokens,
+	}
+	if usage.CachedReadTokens != nil {
+		m["cached_read_tokens"] = *usage.CachedReadTokens
+	}
+	if usage.CachedWriteTokens != nil {
+		m["cached_write_tokens"] = *usage.CachedWriteTokens
+	}
+	if usage.ThoughtTokens != nil {
+		m["thought_tokens"] = *usage.ThoughtTokens
+	}
+	return m
 }
 
 // SessionWSClient represents a WebSocket client connected to a specific session.
@@ -224,7 +248,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						if clientLogger != nil {
 							clientLogger.Error("Failed to resume session (async)", "error", err)
 						}
-						s.BroadcastACPStartFailed(sessionID, err, "")
+						s.BroadcastACPStartFailed(sessionID, sessionName, err, "")
 						return
 					}
 					// Invalidate negative cache
@@ -279,6 +303,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// historical events from storage.
 	if bs != nil {
 		client.bgSession = bs
+		bs.AddConnectedClient()
 		// Observer will be added in handleLoadEvents after initial load
 		if clientLogger != nil {
 			clientLogger.Debug("SessionWSClient has background session, observer will be added after initial load",
@@ -335,6 +360,19 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 			data["status"] = meta.Status
 			data["runner_type"] = meta.RunnerType
 			data["runner_restricted"] = meta.RunnerRestricted
+			data["archived"] = meta.Archived
+			if meta.Archived {
+				// Archived sessions don't have ACP connections, so mark as "ready"
+				// to prevent the "Reconnecting to AI agent..." banner
+				data["acp_ready"] = true
+			}
+			// Include parent-child relationship fields for session tree rendering
+			if meta.ParentSessionID != "" {
+				data["parent_session_id"] = meta.ParentSessionID
+			}
+			if meta.ChildOrigin != "" {
+				data["child_origin"] = string(meta.ChildOrigin)
+			}
 			// Override acp_server with session-specific value from metadata
 			// This fixes grouping for multiple workspaces with the same folder but different ACP servers
 			if meta.ACPServer != "" {
@@ -407,6 +445,26 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 		data["acp_ready"] = bs.IsACPReady()
 	}
 
+	// Include processor stats
+	if bs != nil {
+		procCount, procActivations, procLastAt, procLastNames := bs.GetProcessorStats()
+		data["processor_count"] = procCount
+		data["processor_activations"] = procActivations
+		if !procLastAt.IsZero() {
+			data["processor_last_activation"] = procLastAt.Format(time.RFC3339)
+		}
+		if len(procLastNames) > 0 {
+			data["processor_last_names"] = procLastNames
+		}
+	}
+
+	// Include last token usage so reconnecting clients see it immediately.
+	if bs != nil {
+		if usageMap := buildUsageMap(bs.GetLastUsage()); usageMap != nil {
+			data["usage"] = usageMap
+		}
+	}
+
 	c.sendMessage(WSMsgTypeConnected, data)
 }
 
@@ -422,6 +480,7 @@ func (c *SessionWSClient) readPump() {
 		}
 		c.cancel()
 		if c.bgSession != nil {
+			c.bgSession.RemoveConnectedClient()
 			c.bgSession.RemoveObserver(c)
 		}
 		// Note: Don't close c.store - it's owned by the server and shared across handlers
@@ -534,12 +593,13 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 			RequestID string `json:"request_id"`
 			OptionID  string `json:"option_id"`
 			Label     string `json:"label"`
+			FreeText  string `json:"free_text"`
 		}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
 			c.sendError("Invalid message data")
 			return
 		}
-		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label)
+		c.handleUIPromptAnswer(data.RequestID, data.OptionID, data.Label, data.FreeText)
 	}
 }
 
@@ -622,7 +682,7 @@ func (c *SessionWSClient) handlePermissionAnswer(optionID string, cancel bool) {
 	}
 }
 
-func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label string) {
+func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label, freeText string) {
 	// Try to attach to session if unarchived after client connected
 	if c.bgSession == nil {
 		c.tryAttachToSession()
@@ -639,11 +699,12 @@ func (c *SessionWSClient) handleUIPromptAnswer(requestID, optionID, label string
 			"client_id", c.clientID,
 			"request_id", requestID,
 			"option_id", optionID,
-			"label", label)
+			"label", label,
+			"has_free_text", freeText != "")
 	}
 
 	// Forward the answer to the background session
-	c.bgSession.HandleUIPromptAnswer(requestID, optionID, label)
+	c.bgSession.HandleUIPromptAnswer(requestID, optionID, label, freeText)
 }
 
 func (c *SessionWSClient) handleSync(afterSeq int64) {
@@ -1021,6 +1082,20 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 					"after_seq", afterSeq,
 					"observer_count", c.bgSession.ObserverCount())
 			}
+			// Re-send any active UI prompt to the newly connected client.
+			// This handles the case where a page reload occurs while a blocking
+			// UI prompt (e.g., mitto_ui_options) is waiting for user input.
+			// Without this, the prompt dialog is lost and the session appears stuck.
+			if activePrompt := c.bgSession.GetActiveUIPrompt(); activePrompt != nil {
+				if c.logger != nil {
+					c.logger.Info("Re-sending active UI prompt to reconnected client",
+						"session_id", c.sessionID,
+						"client_id", c.clientID,
+						"request_id", activePrompt.RequestID,
+						"prompt_type", activePrompt.Type)
+				}
+				c.OnUIPrompt(*activePrompt)
+			}
 		}
 		c.initialLoadMu.Unlock()
 
@@ -1142,6 +1217,18 @@ func (c *SessionWSClient) syncMissedEventsDuringRegistration(lastLoadedSeq int64
 // - status: Session status (active, completed, error)
 // - is_running: Whether the background session is active
 func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq int64) {
+	// If bgSession is nil, try to attach to a running BackgroundSession.
+	// This handles the race condition where a WebSocket client connected while
+	// the session was archived, and the session was later unarchived via the API.
+	// The unarchive API creates a BackgroundSession but has no way to notify
+	// per-session WS clients directly. The keepalive poll (every 5-10s) discovers it.
+	if c.bgSession == nil {
+		c.tryAttachToSession()
+	}
+
+	if c.bgSession != nil {
+		c.bgSession.TouchActivity()
+	}
 	serverTime := time.Now().UnixMilli()
 
 	// Get the server's current max sequence number for this session
@@ -1186,7 +1273,7 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 	// Send keepalive acknowledgment with timestamps, sequence info, and session state
 	// The is_prompting flag allows the UI to sync its streaming state with the server
 	// Additional fields allow the UI to stay in sync without separate API calls
-	c.sendMessage(WSMsgTypeKeepaliveAck, map[string]interface{}{
+	keepaliveData := map[string]interface{}{
 		"client_time":    clientTime,
 		"server_time":    serverTime,
 		"max_seq":        serverMaxSeq,
@@ -1195,7 +1282,20 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 		"is_running":     isRunning,
 		"queue_length":   queueLength,
 		"status":         status,
-	})
+	}
+	// Include processor stats for periodic UI refresh
+	if c.bgSession != nil {
+		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
+		keepaliveData["processor_count"] = procCount
+		keepaliveData["processor_activations"] = procActivations
+		if !procLastAt.IsZero() {
+			keepaliveData["processor_last_activation"] = procLastAt.Format(time.RFC3339)
+		}
+		if len(procLastNames) > 0 {
+			keepaliveData["processor_last_names"] = procLastNames
+		}
+	}
+	c.sendMessage(WSMsgTypeKeepaliveAck, keepaliveData)
 }
 
 // handleSetConfigOption handles a request to change a session config option value.
@@ -1326,11 +1426,8 @@ func (c *SessionWSClient) triggerMCPAvailabilityCheck(workspaceUUID string) {
 	}
 	auxMgr := c.server.auxiliaryManager
 
-	// Use a long timeout because the ACP agent serializes all RPCs. When the main
-	// session has an active prompt (which can last 5-15+ minutes), the auxiliary
-	// session creation (session/new) and the availability-check prompt are both
-	// queued behind it. A 2-minute timeout is routinely exceeded in practice
-	// (observed: 150-244 s RPCs). 30 minutes matches the worst-case agent runtime.
+	// Use a long timeout — auxiliary session creation and the availability-check prompt
+	// can take several minutes depending on agent load. 30 minutes covers worst-case scenarios.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -1392,11 +1489,8 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	}
 	auxMgr := c.server.auxiliaryManager
 
-	// Use a long timeout because the ACP agent serializes all RPCs. When the main
-	// session has an active prompt (which can last 5-15+ minutes), the auxiliary
-	// session creation (session/new) and the tool-fetch prompt are both queued
-	// behind it. A 2-minute timeout is routinely exceeded in practice
-	// (observed: 150-244 s RPCs). 30 minutes matches the worst-case agent runtime.
+	// Use a long timeout — auxiliary session creation and the tool-fetch prompt
+	// can take several minutes depending on agent load. 30 minutes covers worst-case scenarios.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -1444,22 +1538,15 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 	}
 
 	// After broadcasting tools, check required tool patterns from prompts.
-	go c.checkRequiredToolPatterns(workspaceUUID, tools)
+	go c.checkRequiredToolPatterns(workspaceUUID)
 }
 
-// checkRequiredToolPatterns collects enabledWhenMCP patterns from all prompts,
-// checks them against the initial tools list, and retries unsatisfied patterns
-// with exponential backoff. MCP tools from external servers can take time to appear
-// (e.g., external Python programs), so retries are essential.
-//
-// Flow:
-//  1. Collect all enabledWhenMCP patterns from global + workspace prompts
-//  2. Local match: check patterns against the initial fetched tools list
-//  3. For unsatisfied patterns: query the auxiliary session (targeted check)
-//  4. Broadcast results
-//  5. Retry unsatisfied patterns with backoff: 30s, 60s, 120s
-func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initialTools []auxiliary.MCPToolInfo) {
-	// Collect all enabledWhenMCP patterns from prompts
+// checkRequiredToolPatterns checks if any prompts have enabledWhenMCP patterns and,
+// if so, broadcasts prompts_changed immediately plus at delayed intervals so the frontend
+// re-fetches and the backend re-evaluates with whatever MCP tools are cached at that point.
+// MCP tools from external servers can take time to appear (e.g., external Python programs),
+// so delayed re-broadcasts are used to catch late-appearing tools.
+func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string) {
 	patterns := c.collectRequiredToolPatterns()
 	if len(patterns) == 0 {
 		if c.logger != nil {
@@ -1470,58 +1557,23 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 	}
 
 	if c.logger != nil {
-		c.logger.Debug("required tools check: starting",
+		c.logger.Debug("required tools check: scheduling re-broadcasts for late-loading tools",
 			"workspace_uuid", workspaceUUID,
 			"pattern_count", len(patterns),
 			"patterns", patterns)
 	}
 
-	// Phase 1: Local match against initially fetched tools
-	satisfied := make(map[string]bool)
-	for _, pattern := range patterns {
-		for _, tool := range initialTools {
-			if config.MatchToolPattern(pattern, tool.Name) {
-				satisfied[pattern] = true
-				break
-			}
-		}
-		if !satisfied[pattern] {
-			satisfied[pattern] = false
-		}
-	}
+	// Broadcast immediately so frontend gets initial filtered list.
+	c.broadcastPromptsChanged("mcp_tools_initial")
 
-	// Broadcast initial status
-	c.broadcastEnabledWhenMCPStatus(workspaceUUID, satisfied)
-
-	// Check if all patterns are already satisfied
-	unsatisfied := c.getUnsatisfiedPatterns(satisfied)
-	if len(unsatisfied) == 0 {
-		if c.logger != nil {
-			c.logger.Debug("required tools check: all patterns satisfied from initial tools",
-				"workspace_uuid", workspaceUUID)
-		}
-		return
-	}
-
-	// Phase 2: Query auxiliary session for unsatisfied patterns, with retry
+	// Schedule delayed re-broadcasts to catch late-appearing MCP tools.
 	retryDelays := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
-
-	for attempt, delay := range retryDelays {
-		if c.logger != nil {
-			c.logger.Debug("required tools check: waiting before retry",
-				"workspace_uuid", workspaceUUID,
-				"attempt", attempt+1,
-				"delay", delay,
-				"unsatisfied_count", len(unsatisfied))
-		}
-
-		// Wait before retry; use NewTimer so we can stop it promptly on disconnect.
+	for _, delay := range retryDelays {
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
-			// delay elapsed, proceed to retry
+			c.broadcastPromptsChanged("mcp_tools_retry")
 		case <-c.ctx.Done():
-			// Client disconnected; stop and drain timer to avoid leaking it.
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -1530,54 +1582,6 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string, initia
 			}
 			return
 		}
-
-		// Check auxiliary manager is available
-		if c.server == nil || c.server.auxiliaryManager == nil {
-			return
-		}
-
-		// Query the agent about unsatisfied patterns.
-		// Derive from c.ctx so the query is cancelled if the client disconnects.
-		ctx, cancel := context.WithTimeout(c.ctx, 5*time.Minute)
-		result, err := c.server.auxiliaryManager.CheckRequiredToolPatterns(ctx, workspaceUUID, unsatisfied)
-		cancel()
-
-		if err != nil {
-			if c.logger != nil {
-				c.logger.Debug("required tools check: query failed",
-					"workspace_uuid", workspaceUUID,
-					"attempt", attempt+1,
-					"error", err)
-			}
-			continue
-		}
-
-		// Merge results (only upgrade to true)
-		for pattern, available := range result {
-			if available {
-				satisfied[pattern] = true
-			}
-		}
-
-		// Broadcast updated status
-		c.broadcastEnabledWhenMCPStatus(workspaceUUID, satisfied)
-
-		// Check if all satisfied now
-		unsatisfied = c.getUnsatisfiedPatterns(satisfied)
-		if len(unsatisfied) == 0 {
-			if c.logger != nil {
-				c.logger.Info("required tools check: all patterns satisfied",
-					"workspace_uuid", workspaceUUID,
-					"attempt", attempt+1)
-			}
-			return
-		}
-	}
-
-	if c.logger != nil {
-		c.logger.Info("required tools check: some patterns still unsatisfied after all retries",
-			"workspace_uuid", workspaceUUID,
-			"unsatisfied", unsatisfied)
 	}
 }
 
@@ -1617,23 +1621,15 @@ func (c *SessionWSClient) collectRequiredToolPatterns() []string {
 	return allPatterns
 }
 
-// getUnsatisfiedPatterns returns patterns that are not yet satisfied (false or missing).
-func (c *SessionWSClient) getUnsatisfiedPatterns(satisfied map[string]bool) []string {
-	var unsatisfied []string
-	for pattern, available := range satisfied {
-		if !available {
-			unsatisfied = append(unsatisfied, pattern)
-		}
-	}
-	return unsatisfied
-}
-
-// broadcastEnabledWhenMCPStatus broadcasts the required tools pattern status to all clients.
-func (c *SessionWSClient) broadcastEnabledWhenMCPStatus(workspaceUUID string, patterns map[string]bool) {
+// broadcastPromptsChanged broadcasts a prompts_changed event so clients re-fetch prompts.
+// This replaces the old required_tools_status broadcast: instead of sending pattern status,
+// we signal the frontend to re-fetch (the backend now filters via filterPromptsByEnabled).
+func (c *SessionWSClient) broadcastPromptsChanged(reason string) {
 	if c.server != nil && c.server.eventsManager != nil {
-		c.server.eventsManager.Broadcast(WSMsgTypeEnabledWhenMCPStatus, map[string]interface{}{
-			"workspace_uuid": workspaceUUID,
-			"patterns":       patterns,
+		c.server.eventsManager.Broadcast(WSMsgTypePromptsChanged, map[string]interface{}{
+			"changed_dirs": []string{},
+			"timestamp":    time.Now().UTC().Format(time.RFC3339),
+			"reason":       reason,
 		})
 	}
 }
@@ -1674,6 +1670,7 @@ func (c *SessionWSClient) tryAttachToSession() {
 
 	// Attach to the session
 	c.bgSession = bs
+	bs.AddConnectedClient()
 
 	// Add as observer if initial load is done
 	c.initialLoadMu.Lock()
@@ -1688,6 +1685,19 @@ func (c *SessionWSClient) tryAttachToSession() {
 				"acp_id", bs.GetACPID(),
 				"observer_count", bs.ObserverCount())
 		}
+		// Re-send any active UI prompt to the newly attached client.
+		// This handles the case where a session is unarchived while a blocking
+		// UI prompt is waiting, ensuring the dialog appears for the client.
+		if activePrompt := bs.GetActiveUIPrompt(); activePrompt != nil {
+			if c.logger != nil {
+				c.logger.Info("Re-sending active UI prompt to attached client",
+					"session_id", c.sessionID,
+					"client_id", c.clientID,
+					"request_id", activePrompt.RequestID,
+					"prompt_type", activePrompt.Type)
+			}
+			c.OnUIPrompt(*activePrompt)
+		}
 	} else {
 		if c.logger != nil {
 			c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
@@ -1696,10 +1706,10 @@ func (c *SessionWSClient) tryAttachToSession() {
 		}
 	}
 
-	// Send a notification to the client that the session is now running
-	c.sendMessage(WSMsgTypeACPStarted, map[string]interface{}{
-		"session_id": c.sessionID,
-	})
+	// Send a notification to the client that the session is now running,
+	// including capability data (config_options, agent_models, etc.) that
+	// is now available after ACP finished loading.
+	c.sendMessage(WSMsgTypeACPStarted, c.buildACPStartedPayload())
 }
 
 // --- SessionObserver interface implementation ---
@@ -2065,11 +2075,30 @@ func (c *SessionWSClient) OnPromptComplete(eventCount int) {
 			"event_count", eventCount,
 			"last_sent_seq", c.lastSentSeq)
 	}
-	c.sendMessage(WSMsgTypePromptComplete, map[string]interface{}{
+	data := map[string]interface{}{
 		"session_id":  c.sessionID,
 		"event_count": eventCount,
 		"max_seq":     c.getServerMaxSeq(),
-	})
+	}
+	// Include updated processor stats so the UI reflects activations from this prompt
+	if c.bgSession != nil {
+		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
+		data["processor_count"] = procCount
+		data["processor_activations"] = procActivations
+		if !procLastAt.IsZero() {
+			data["processor_last_activation"] = procLastAt.Format(time.RFC3339)
+		}
+		if len(procLastNames) > 0 {
+			data["processor_last_names"] = procLastNames
+		}
+	}
+	// Include token usage from the last prompt so the UI can display it.
+	if c.bgSession != nil {
+		if usageMap := buildUsageMap(c.bgSession.GetLastUsage()); usageMap != nil {
+			data["usage"] = usageMap
+		}
+	}
+	c.sendMessage(WSMsgTypePromptComplete, data)
 }
 
 // OnActionButtons is called when action buttons are extracted from the agent's response.
@@ -2200,17 +2229,47 @@ func (c *SessionWSClient) OnConfigOptionChanged(configID, value string) {
 	})
 }
 
+// buildACPStartedPayload creates the data payload for acp_started messages.
+// This includes config_options (which now includes the model option) and other
+// capability data that may not have been available in the initial "connected"
+// message (due to the async ACP initialization timing race).
+func (c *SessionWSClient) buildACPStartedPayload() map[string]interface{} {
+	data := map[string]interface{}{
+		"session_id": c.sessionID,
+	}
+	if c.bgSession != nil {
+		if configOptions := c.bgSession.ConfigOptions(); len(configOptions) > 0 {
+			data["config_options"] = configOptions
+		}
+		data["agent_supports_images"] = c.bgSession.AgentSupportsImages()
+		if commands := c.bgSession.AvailableCommands(); len(commands) > 0 {
+			data["available_commands"] = commands
+		}
+		// Include processor stats
+		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
+		data["processor_count"] = procCount
+		data["processor_activations"] = procActivations
+		if !procLastAt.IsZero() {
+			data["processor_last_activation"] = procLastAt.Format(time.RFC3339)
+		}
+		if len(procLastNames) > 0 {
+			data["processor_last_names"] = procLastNames
+		}
+	}
+	return data
+}
+
 // OnACPStarted is called when the ACP connection for this session becomes ready.
 // This notifies the WebSocket client that the session is now running and ready for prompts.
+// It also includes config_options and agent_models that may not have been available when
+// the initial "connected" message was sent (e.g. due to async ACP resume taking ~3 seconds).
 func (c *SessionWSClient) OnACPStarted() {
 	if c.logger != nil {
 		c.logger.Debug("ACP started notification sent to client",
 			"session_id", c.sessionID,
 			"client_id", c.clientID)
 	}
-	c.sendMessage(WSMsgTypeACPStarted, map[string]interface{}{
-		"session_id": c.sessionID,
-	})
+	c.sendMessage(WSMsgTypeACPStarted, c.buildACPStartedPayload())
 }
 
 // OnACPStopped is called when the ACP connection for this session is stopped.
@@ -2244,12 +2303,21 @@ func (c *SessionWSClient) OnUIPrompt(req UIPromptRequest) {
 			"option_count", len(req.Options))
 	}
 	c.sendMessage(WSMsgTypeUIPrompt, map[string]interface{}{
-		"session_id":      c.sessionID,
-		"request_id":      req.RequestID,
-		"prompt_type":     req.Type,
-		"question":        req.Question,
-		"options":         req.Options,
-		"timeout_seconds": req.TimeoutSeconds,
+		"session_id":            c.sessionID,
+		"request_id":            req.RequestID,
+		"prompt_type":           req.Type,
+		"question":              req.Question,
+		"options":               req.Options,
+		"timeout_seconds":       req.TimeoutSeconds,
+		"allow_free_text":       req.AllowFreeText,
+		"free_text_placeholder": req.FreeTextPlaceholder,
+		// Textbox fields
+		"title":       req.Title,
+		"text":        req.Text,
+		"result_mode": req.ResultMode,
+		"allow_abort": req.AllowAbort,
+		// Form fields
+		"form_html": req.FormHTML,
 	})
 }
 
@@ -2266,5 +2334,25 @@ func (c *SessionWSClient) OnUIPromptDismiss(requestID string, reason string) {
 		"session_id": c.sessionID,
 		"request_id": requestID,
 		"reason":     reason,
+	})
+}
+
+// OnNotification is called when an MCP tool sends a fire-and-forget notification.
+// It sends the notification to the frontend WebSocket client without waiting for a response.
+func (c *SessionWSClient) OnNotification(req UINotifyRequest) {
+	if c.logger != nil {
+		c.logger.Debug("Notification sent to client",
+			"session_id", c.sessionID,
+			"client_id", c.clientID,
+			"title", req.Title,
+			"style", req.Style)
+	}
+	c.sendMessage(WSMsgTypeNotification, map[string]interface{}{
+		"session_id": c.sessionID,
+		"title":      req.Title,
+		"message":    req.Message,
+		"style":      req.Style,
+		"sound":      req.Sound,
+		"native":     req.Native,
 	})
 }

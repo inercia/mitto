@@ -42,12 +42,17 @@
         box-sizing: border-box;
       }
 
+      html, body {
+        height: 100%;
+        overflow: hidden;
+      }
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
           Arial, sans-serif;
         background-color: var(--bg-color);
         color: var(--text-color);
-        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
       }
 
       .header {
@@ -57,8 +62,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        position: sticky;
-        top: 0;
+        flex-shrink: 0;
         z-index: 10;
       }
 
@@ -113,14 +117,44 @@
       .btn:hover {
         background-color: var(--border-color);
       }
+      .btn-primary {
+        background-color: #dc2626;
+        border-color: #dc2626;
+        color: #fff;
+      }
+      .btn-primary:hover {
+        background-color: #b91c1c;
+      }
+      .btn-icon {
+        padding: 8px;
+        gap: 0;
+      }
 
       .btn svg {
         width: 16px;
         height: 16px;
       }
 
+      /* Toggle button icons (hidden on large screens, shown on small) */
+      .toggle-icon { display: none; width: 14px; height: 14px; flex-shrink: 0; }
+
+      /* On small screens, hide button text labels — show icons only */
+      @media (max-width: 640px) {
+        .btn .btn-label { display: none; }
+        .btn { gap: 0; padding: 6px 8px; }
+        .toggle-btn .btn-label { display: none; }
+        .toggle-btn { gap: 4px; }
+        .toggle-icon { display: block; }
+        .actions { gap: 4px; }
+        .header { padding: 8px 12px; gap: 8px; }
+        .file-size { display: none; }
+      }
+
       .code-container {
-        overflow-x: auto;
+        flex: 1;
+        overflow: auto;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
       }
 
       pre {
@@ -247,6 +281,87 @@
       /* Mermaid diagram styles */
       .mermaid-diagram { display: flex; justify-content: center; margin: 1em 0; overflow-x: auto; }
       .mermaid-diagram svg { max-width: 100%; }
+
+      /* Render/Source toggle */
+      .toggle-group {
+        display: inline-flex;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .toggle-btn {
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 500;
+        border: none;
+        background-color: var(--header-bg);
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: background-color 0.15s, color 0.15s;
+      }
+      .toggle-btn:not(:last-child) { border-right: 1px solid var(--border-color); }
+      .toggle-btn.active {
+        background-color: var(--border-color);
+        color: var(--text-color);
+      }
+      .toggle-btn:hover:not(.active) { background-color: color-mix(in srgb, var(--border-color) 50%, var(--header-bg)); }
+
+      /* Rendered HTML iframe */
+      .rendered-frame {
+        width: 100%;
+        border: none;
+        min-height: 100%;
+        background: white;
+      }
+
+      /* Bottom bar */
+      .bottom-bar {
+        background-color: var(--header-bg);
+        border-top: 1px solid var(--border-color);
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-shrink: 0;
+        z-index: 10;
+      }
+      .bottom-bar .btn {
+        padding: 8px 16px;
+        font-size: 13px;
+        border-radius: 8px;
+      }
+      .bottom-bar .btn:disabled {
+        opacity: 0.3;
+        cursor: default;
+        pointer-events: none;
+      }
+      .bottom-bar-spacer { flex: 1; }
+
+      /* Diff styles */
+      .diff-container {
+        padding: 0;
+        font-family: "SF Mono", SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: var(--code-font-size, 13px);
+        line-height: 1.5;
+        overflow-x: auto;
+        padding-bottom: 0;
+      }
+      .diff-line { white-space: pre; padding: 1px 16px; }
+      .diff-add { background-color: rgba(46, 160, 67, 0.25); color: #56d364; }
+      .diff-del { background-color: rgba(248, 81, 73, 0.25); color: #ff7b72; }
+      .diff-hunk { color: #79c0ff; background-color: rgba(56, 139, 253, 0.15); font-weight: 600; margin-top: 4px; }
+      .diff-meta { color: #8b949e; font-weight: 600; }
+      .diff-no-changes { display: flex; align-items: center; justify-content: center; min-height: 200px; color: var(--text-secondary); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+      .light .diff-add { background-color: rgba(46, 160, 67, 0.3); color: #1a7f37; }
+      .light .diff-del { background-color: rgba(248, 81, 73, 0.3); color: #cf222e; }
+      .light .diff-hunk { color: #0969da; background-color: rgba(56, 139, 253, 0.15); }
+
+
+
+      @media (max-width: 640px) {
+        .bottom-bar { padding: 6px 12px; gap: 4px; }
+      }
     </style>
   </head>
   <body>
@@ -261,31 +376,34 @@
         <span class="file-size" id="fileSize"></span>
       </div>
       <div class="actions">
-        <button class="btn" id="decreaseFontBtn" title="Decrease font size">
-          A-
-        </button>
-        <button class="btn" id="increaseFontBtn" title="Increase font size">
-          A+
-        </button>
-        <button class="btn" id="downloadBtn" title="Download file">
-          <svg viewBox="0 0 16 16" fill="currentColor">
-            <path
-              d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14Z"
-            />
-            <path
-              d="M7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"
-            />
-          </svg>
-          Download
-        </button>
-        <button class="btn" id="closeBtn" title="Close viewer">
-          <svg viewBox="0 0 16 16" fill="currentColor">
-            <path
-              d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"
-            />
-          </svg>
-          Close
-        </button>
+        <div class="toggle-group" id="fontSizeToggle">
+          <button class="toggle-btn" id="decreaseFontBtn" title="Decrease font size">A-</button>
+          <button class="toggle-btn" id="increaseFontBtn" title="Increase font size">A+</button>
+        </div>
+        <div class="toggle-group" id="renderToggle" style="display: none">
+          <button class="toggle-btn active" id="renderBtn" title="Render preview">
+            <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1.679 7.932c.412-.621 1.242-1.75 2.366-2.717C5.175 4.242 6.527 3.5 8 3.5c1.473 0 2.825.742 3.955 1.715 1.124.967 1.954 2.096 2.366 2.717a.119.119 0 0 1 0 .136c-.412.621-1.242 1.75-2.366 2.717C10.825 11.758 9.473 12.5 8 12.5c-1.473 0-2.825-.742-3.955-1.715C2.92 9.818 2.09 8.69 1.679 8.068a.119.119 0 0 1 0-.136ZM8 2c-1.981 0-3.67.992-4.933 2.078C1.797 5.169.88 6.423.43 7.1a1.619 1.619 0 0 0 0 1.798c.45.679 1.367 1.932 2.637 3.024C4.33 13.008 6.019 14 8 14c1.981 0 3.67-.992 4.933-2.078 1.27-1.091 2.187-2.345 2.637-3.023a1.619 1.619 0 0 0 0-1.798c-.45-.679-1.367-1.932-2.637-3.023C11.67 2.992 9.981 2 8 2Zm0 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></svg>
+            <span class="btn-label">Render</span>
+          </button>
+          <button class="toggle-btn" id="sourceBtn" title="View source">
+            <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="m11.28 3.22 4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L13.94 8l-3.72-3.72a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215Zm-6.56 0a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L2.06 8l3.72 3.72a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L.47 8.53a.75.75 0 0 1 0-1.06Z"/></svg>
+            <span class="btn-label">Source</span>
+          </button>
+          <button class="toggle-btn" id="diffBtn" title="View git diff">
+            <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8.75 1.75V5H12a.75.75 0 0 1 0 1.5H8.75v3.25a.75.75 0 0 1-1.5 0V6.5H4a.75.75 0 0 1 0-1.5h3.25V1.75a.75.75 0 0 1 1.5 0ZM4 13h8a.75.75 0 0 1 0 1.5H4a.75.75 0 0 1 0-1.5Z"/></svg>
+            <span class="btn-label">Diff</span>
+          </button>
+        </div>
+        <div class="toggle-group" id="sourceOnlyToggle" style="display: none">
+          <button class="toggle-btn active" id="sourceOnlyBtn" title="View source">
+            <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="m11.28 3.22 4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L13.94 8l-3.72-3.72a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215Zm-6.56 0a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L2.06 8l3.72 3.72a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L.47 8.53a.75.75 0 0 1 0-1.06Z"/></svg>
+            <span class="btn-label">Source</span>
+          </button>
+          <button class="toggle-btn" id="diffOnlyBtn" title="View git diff">
+            <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8.75 1.75V5H12a.75.75 0 0 1 0 1.5H8.75v3.25a.75.75 0 0 1-1.5 0V6.5H4a.75.75 0 0 1 0-1.5h3.25V1.75a.75.75 0 0 1 1.5 0ZM4 13h8a.75.75 0 0 1 0 1.5H4a.75.75 0 0 1 0-1.5Z"/></svg>
+            <span class="btn-label">Diff</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -299,6 +417,40 @@
       </div>
       <pre id="codeBlock" style="display: none"><code id="code"></code></pre>
       <article id="markdownContent" class="markdown-body" style="display: none"></article>
+      <iframe id="renderedFrame" class="rendered-frame" style="display: none" sandbox="allow-same-origin allow-scripts"></iframe>
+      <div id="diffContent" class="diff-container" style="display: none"></div>
+    </div>
+
+    <!-- Bottom bar: Back, [spacer], Download, Refresh, Open, Close -->
+    <div class="bottom-bar">
+      <button class="btn btn-icon" id="backBtn" title="Go back" disabled>
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M7.78 12.53a.75.75 0 0 1-1.06 0L2.47 8.28a.75.75 0 0 1 0-1.06l4.25-4.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L4.81 7h7.44a.75.75 0 0 1 0 1.5H4.81l2.97 2.97a.75.75 0 0 1 0 1.06Z"/>
+        </svg>
+      </button>
+      <div class="bottom-bar-spacer"></div>
+      <button class="btn btn-icon" id="downloadBtn" title="Download file">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14Z"/>
+          <path d="M7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"/>
+        </svg>
+      </button>
+      <button class="btn btn-icon" id="refreshBtn" title="Refresh file">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 1 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/>
+        </svg>
+      </button>
+      <button class="btn btn-icon" id="openSystemBtn" title="Open in system application" style="display: none">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z"/>
+        </svg>
+      </button>
+      <button class="btn btn-primary" id="closeBtn" title="Close viewer">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
+        </svg>
+        <span class="btn-label">Close</span>
+      </button>
     </div>
 
     <!-- Highlight.js -->
@@ -321,15 +473,55 @@
       // (to prevent XSS from reading nonces). The .nonce property returns the real value.
       const scriptNonce = document.currentScript?.nonce || '';
 
-      // Set up close button (must use JS event listener instead of inline onclick,
-      // because inline event handlers are blocked by nonce-based CSP)
-      document.getElementById("closeBtn").addEventListener("click", () => window.close());
+      // Set up close button - use native bridge if available, fallback to window.close()
+      document.getElementById("closeBtn").addEventListener("click", () => {
+        if (typeof window.mittoCloseViewer === "function") {
+          window.mittoCloseViewer();
+        } else {
+          window.close();
+        }
+      });
+
+      // Set up refresh button - reload the page to get fresh file content
+      document.getElementById("refreshBtn").addEventListener("click", () => {
+        window.location.reload();
+      });
+
+      // Set up back button - navigate back in history (enabled only when there's history)
+      // Back button — enabled only when referrer is another viewer page (internal navigation)
+      const backBtn = document.getElementById("backBtn");
+      const hasViewerHistory = document.referrer && document.referrer.includes("viewer.html");
+      backBtn.disabled = !hasViewerHistory;
+      backBtn.addEventListener("click", () => {
+        window.history.back();
+      });
 
       // Parse URL parameters - support both new format (ws=UUID) and legacy (workspace=path)
       const params = new URLSearchParams(window.location.search);
       const workspaceUUID = params.get("ws");
       const legacyWorkspace = params.get("workspace");
       const path = params.get("path");
+      const wsPath = params.get("ws_path");
+
+      // Show "Open in System App" button in native macOS app.
+      // The native viewer injects mittoOpenFileURL via WKScriptMessageHandler,
+      // and the main webview binds it via webview_go.
+      const openSystemBtn = document.getElementById("openSystemBtn");
+      if (typeof window.mittoOpenFileURL === "function" || window.mittoIsNativeViewer) {
+        openSystemBtn.style.display = "";
+        openSystemBtn.addEventListener("click", () => {
+          if (wsPath && typeof window.mittoOpenFileURL === "function") {
+            const filePath = wsPath.replace(/\/$/, "") + "/" + path.replace(/^\//, "");
+            window.mittoOpenFileURL("file://" + filePath);
+            // Auto-close the viewer after opening in system app
+            if (typeof window.mittoCloseViewer === "function") {
+              window.mittoCloseViewer();
+            } else {
+              window.close();
+            }
+          }
+        });
+      }
 
       // Detect theme preference
       if (
@@ -446,9 +638,42 @@
           const wsParam = workspaceUUID
             ? `ws=${encodeURIComponent(workspaceUUID)}`
             : `workspace=${encodeURIComponent(legacyWorkspace)}`;
-          const url = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}`;
+          const fileUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}`;
 
-          const response = await fetch(url);
+          // Detect file type from extension
+          const ext = path.split(".").pop().toLowerCase();
+
+          // Handle image files — render directly without fetching as text
+          const imageExtensions = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"];
+          if (imageExtensions.includes(ext)) {
+            document.getElementById("loading").style.display = "none";
+            document.getElementById("fontSizeToggle").style.display = "none";
+
+            const container = document.querySelector(".code-container");
+            const imgContainer = document.createElement("div");
+            imgContainer.style.cssText = "display: flex; justify-content: center; align-items: flex-start; padding: 20px; overflow: auto; min-height: 200px;";
+
+            const img = document.createElement("img");
+            img.src = fileUrl;
+            img.alt = path;
+            img.style.cssText = "max-width: 100%; height: auto; object-fit: contain;";
+            img.onerror = () => showError("Failed to load image: " + path);
+
+            imgContainer.appendChild(img);
+            container.appendChild(imgContainer);
+
+            // Set up download for image
+            document.getElementById("downloadBtn").addEventListener("click", () => {
+              const a = document.createElement("a");
+              a.href = fileUrl;
+              a.download = path.split("/").pop();
+              a.click();
+            });
+
+            return;
+          }
+
+          const response = await fetch(fileUrl);
           if (!response.ok) {
             throw new Error(
               response.status === 404
@@ -459,11 +684,154 @@
             );
           }
 
-          const ext = path.split(".").pop().toLowerCase();
           const isMarkdown = (ext === "md" || ext === "markdown");
+          const isHTML = (ext === "html" || ext === "htm");
+          const canRender = isMarkdown || isHTML;
+
+          // Fetch raw content for all text files
+          const rawContent = await response.text();
+          const size = new Blob([rawContent]).size;
+          document.getElementById("fileSize").textContent = formatSize(size);
+
+          // Set up download button with raw content
+          document.getElementById("downloadBtn").onclick = () => {
+            const blob = new Blob([rawContent], { type: "text/plain" });
+            const dlUrl = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = dlUrl;
+            a.download = path.split("/").pop();
+            a.click();
+            URL.revokeObjectURL(dlUrl);
+          };
+
+          // --- Render/Source/Diff toggle logic ---
+          let currentMode = canRender ? "render" : "source";
+          let diffLoaded = false;
+          let diffContent = null;
+
+          function hideAll() {
+            document.getElementById("codeBlock").style.display = "none";
+            document.getElementById("markdownContent").style.display = "none";
+            document.getElementById("renderedFrame").style.display = "none";
+            document.getElementById("diffContent").style.display = "none";
+          }
+
+          function clearAllActive() {
+            // Clear active state on all toggle buttons in both toggle groups
+            document.querySelectorAll(".toggle-btn").forEach(btn => btn.classList.remove("active"));
+          }
+
+          function showRendered() {
+            hideAll();
+            document.getElementById("fontSizeToggle").style.display = "none";
+
+            if (isMarkdown) {
+              document.getElementById("markdownContent").style.display = "block";
+            } else if (isHTML) {
+              const iframe = document.getElementById("renderedFrame");
+              iframe.srcdoc = rawContent;
+              iframe.style.display = "block";
+            }
+
+            clearAllActive();
+            document.getElementById("renderBtn").classList.add("active");
+            currentMode = "render";
+          }
+
+          function showSource() {
+            hideAll();
+            document.getElementById("codeBlock").style.display = "block";
+            document.getElementById("fontSizeToggle").style.display = "";
+
+            clearAllActive();
+            if (canRender) {
+              document.getElementById("sourceBtn").classList.add("active");
+            } else {
+              document.getElementById("sourceOnlyBtn").classList.add("active");
+            }
+            currentMode = "source";
+
+            // Highlight source if not already done
+            const codeElement = document.getElementById("code");
+            if (!codeElement._highlighted) {
+              codeElement.textContent = rawContent;
+              const lang = getLanguage(path);
+              if (lang) codeElement.className = `language-${lang}`;
+              hljs.highlightElement(codeElement);
+              hljs.lineNumbersBlock(codeElement);
+              codeElement._highlighted = true;
+            }
+          }
+
+          async function showDiff() {
+            hideAll();
+            document.getElementById("fontSizeToggle").style.display = "";
+            const diffEl = document.getElementById("diffContent");
+            diffEl.style.display = "block";
+
+            clearAllActive();
+            if (canRender) {
+              document.getElementById("diffBtn").classList.add("active");
+            } else {
+              document.getElementById("diffOnlyBtn").classList.add("active");
+            }
+            currentMode = "diff";
+
+            // Fetch diff if not already loaded
+            if (!diffLoaded) {
+              diffEl.innerHTML = '<div class="diff-no-changes">Loading diff...</div>';
+              try {
+                const diffUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&diff=true`;
+                const resp = await fetch(diffUrl);
+                diffContent = await resp.text();
+                diffLoaded = true;
+              } catch (err) {
+                diffContent = "Error loading diff: " + err.message;
+              }
+            }
+
+            // Render diff with syntax coloring
+            if (diffContent === "No changes" || diffContent === "Not a git repository") {
+              diffEl.innerHTML = `<div class="diff-no-changes">${diffContent === "No changes" ? "No uncommitted changes" : diffContent}</div>`;
+            } else {
+              const lines = diffContent.split("\n");
+              diffEl.innerHTML = lines.map(line => {
+                const escaped = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                if (line.startsWith("+++ ") || line.startsWith("--- ")) {
+                  return `<div class="diff-line diff-meta">${escaped}</div>`;
+                } else if (line.startsWith("@@")) {
+                  return `<div class="diff-line diff-hunk">${escaped}</div>`;
+                } else if (line.startsWith("+")) {
+                  return `<div class="diff-line diff-add">${escaped}</div>`;
+                } else if (line.startsWith("-")) {
+                  return `<div class="diff-line diff-del">${escaped}</div>`;
+                } else if (line.startsWith("diff ") || line.startsWith("index ")) {
+                  return `<div class="diff-line diff-meta">${escaped}</div>`;
+                } else {
+                  return `<div class="diff-line">${escaped}</div>`;
+                }
+              }).join("");
+            }
+          }
+
+          // Show appropriate toggle for file type
+          if (canRender) {
+            // Renderable files: Render | Source | Diff
+            document.getElementById("renderToggle").style.display = "";
+            document.getElementById("renderBtn").addEventListener("click", showRendered);
+            document.getElementById("sourceBtn").addEventListener("click", showSource);
+            document.getElementById("diffBtn").addEventListener("click", showDiff);
+          } else {
+            // Non-renderable files: Source | Diff
+            document.getElementById("sourceOnlyToggle").style.display = "";
+            document.getElementById("sourceOnlyBtn").addEventListener("click", showSource);
+            document.getElementById("diffOnlyBtn").addEventListener("click", showDiff);
+          }
+
+          document.getElementById("loading").style.display = "none";
 
           if (isMarkdown) {
-            // For markdown: fetch server-rendered HTML
+            // Fetch server-rendered HTML for markdown
             const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
             const renderResponse = await fetch(renderUrl);
             if (!renderResponse.ok) throw new Error(`HTTP ${renderResponse.status}`);
@@ -477,42 +845,33 @@
               htmlContent = article ? article.innerHTML : doc.body.innerHTML;
             }
 
-            // Show markdown content, hide code block
             const markdownEl = document.getElementById("markdownContent");
             markdownEl.innerHTML = htmlContent;
-            markdownEl.style.display = "block";
-            document.getElementById("loading").style.display = "none";
 
-            // Hide font size buttons (not relevant for markdown)
-            document.getElementById("decreaseFontBtn").style.display = "none";
-            document.getElementById("increaseFontBtn").style.display = "none";
+            // Rewrite relative image src attributes to use the file server API.
+            // The browser resolves src relative to viewer.html's URL, not the markdown
+            // file's directory, so we must make all relative paths absolute API URLs.
+            markdownEl.querySelectorAll('img').forEach(img => {
+              const src = img.getAttribute('src');
+              if (!src) return;
+              // Skip absolute URLs, absolute paths, data URIs, and protocol-relative URLs
+              if (/^(https?:\/\/|data:|\/\/|\/)/i.test(src)) return;
+              const resolved = resolveWorkspacePath(src);
+              if (resolved) {
+                img.src = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`;
+              }
+            });
 
-            // Update file size from the raw content
-            const rawContent = await response.text();
-            document.getElementById("fileSize").textContent = formatSize(new Blob([rawContent]).size);
-
-            // Set up download with raw markdown content
-            document.getElementById("downloadBtn").onclick = () => {
-              const blob = new Blob([rawContent], { type: "text/plain" });
-              const dlUrl = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = dlUrl;
-              a.download = path.split("/").pop();
-              a.click();
-              URL.revokeObjectURL(dlUrl);
-            };
+            showRendered();
 
             // Handle mermaid diagrams
             const mermaidBlocks = document.querySelectorAll('#markdownContent pre.mermaid');
             if (mermaidBlocks.length > 0) {
               const script = document.createElement('script');
               script.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
-              // Attach the CSP nonce so the dynamically created script is allowed
-              // by nonce-based Content Security Policy
               if (scriptNonce) script.setAttribute('nonce', scriptNonce);
               script.onerror = (err) => {
                 console.error('Failed to load mermaid.js from CDN:', err);
-                // Show visual error on each mermaid block so users know rendering failed
                 mermaidBlocks.forEach((block) => {
                   const notice = document.createElement('div');
                   notice.style.cssText = 'color: var(--text-secondary, #888); font-size: 0.85em; padding: 4px 8px; border-bottom: 1px solid var(--border-color, #333);';
@@ -523,8 +882,6 @@
               script.onload = async function() {
                 const isDark = document.body.classList.contains('light') ? false : true;
                 mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default', securityLevel: 'strict' });
-                // Use for...of to properly serialize async mermaid.render() calls
-                // (forEach with async doesn't await — renders would race each other)
                 for (const [index, block] of Array.from(mermaidBlocks).entries()) {
                   try {
                     const { svg } = await mermaid.render('mermaid-' + index, block.textContent || '');
@@ -543,112 +900,224 @@
               };
               document.head.appendChild(script);
             }
+          } else if (isHTML) {
+            // Render HTML in iframe by default
+            showRendered();
           } else {
-          // Existing code viewer logic
-          const content = await response.text();
-
-          // Update file size
-          const size = new Blob([content]).size;
-          document.getElementById("fileSize").textContent = formatSize(size);
-
-          // Display code with syntax highlighting
-          const codeElement = document.getElementById("code");
-          codeElement.textContent = content;
-
-          // Try to detect language
-          const lang = getLanguage(path);
-          if (lang) {
-            codeElement.className = `language-${lang}`;
+            // Plain source code
+            showSource();
           }
 
-          // Apply highlighting
-          hljs.highlightElement(codeElement);
-
-          // Add line numbers
-          hljs.lineNumbersBlock(codeElement);
-
-          // Show code block
-          document.getElementById("loading").style.display = "none";
-          document.getElementById("codeBlock").style.display = "block";
-
-          // Font size management
+          // Font size management (shared across all modes)
           const MIN_FONT_SIZE = 8;
           const MAX_FONT_SIZE = 24;
           const DEFAULT_FONT_SIZE = 13;
           let currentFontSize = DEFAULT_FONT_SIZE;
 
-          // Try to load saved font size from localStorage
           try {
             const saved = localStorage.getItem("mitto-viewer-font-size");
             if (saved) {
               currentFontSize = parseInt(saved, 10);
-              if (
-                isNaN(currentFontSize) ||
-                currentFontSize < MIN_FONT_SIZE ||
-                currentFontSize > MAX_FONT_SIZE
-              ) {
+              if (isNaN(currentFontSize) || currentFontSize < MIN_FONT_SIZE || currentFontSize > MAX_FONT_SIZE) {
                 currentFontSize = DEFAULT_FONT_SIZE;
               }
             }
-          } catch (err) {
-            console.error("Failed to load font size:", err);
-          }
+          } catch (err) { /* ignore */ }
 
-          // Apply initial font size
-          document.documentElement.style.setProperty(
-            "--code-font-size",
-            `${currentFontSize}px`,
-          );
+          document.documentElement.style.setProperty("--code-font-size", `${currentFontSize}px`);
 
-          // Set up font size decrease button
           document.getElementById("decreaseFontBtn").onclick = () => {
             if (currentFontSize > MIN_FONT_SIZE) {
               currentFontSize--;
-              document.documentElement.style.setProperty(
-                "--code-font-size",
-                `${currentFontSize}px`,
-              );
-              try {
-                localStorage.setItem(
-                  "mitto-viewer-font-size",
-                  currentFontSize.toString(),
-                );
-              } catch (err) {
-                console.error("Failed to save font size:", err);
-              }
+              document.documentElement.style.setProperty("--code-font-size", `${currentFontSize}px`);
+              try { localStorage.setItem("mitto-viewer-font-size", currentFontSize.toString()); } catch (e) {}
             }
           };
 
-          // Set up font size increase button
           document.getElementById("increaseFontBtn").onclick = () => {
             if (currentFontSize < MAX_FONT_SIZE) {
               currentFontSize++;
-              document.documentElement.style.setProperty(
-                "--code-font-size",
-                `${currentFontSize}px`,
-              );
-              try {
-                localStorage.setItem(
-                  "mitto-viewer-font-size",
-                  currentFontSize.toString(),
-                );
-              } catch (err) {
-                console.error("Failed to save font size:", err);
-              }
+              document.documentElement.style.setProperty("--code-font-size", `${currentFontSize}px`);
+              try { localStorage.setItem("mitto-viewer-font-size", currentFontSize.toString()); } catch (e) {}
             }
           };
 
-          // Set up download button
-          document.getElementById("downloadBtn").onclick = () => {
-            const blob = new Blob([content], { type: "text/plain" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = path.split("/").pop();
-            a.click();
-            URL.revokeObjectURL(url);
-          };
-          } // end else (code viewer)
+          // --- Link interception for rendered content ---
+          // Relative links → resolve against current file's directory, open in viewer if file exists.
+          // External links (http/https/mailto) → open in system browser.
+
+          function openLinkExternally(url) {
+            if (typeof window.mittoOpenFileURL === "function") {
+              window.mittoOpenFileURL(url);
+            } else {
+              window.open(url, "_blank", "noopener,noreferrer");
+            }
+          }
+
+          // Resolve a relative href against the current file's directory in the workspace.
+          // Handles URL-encoded characters, special characters, double-encoding, and various edge cases.
+          function resolveWorkspacePath(href) {
+            // Handle null/undefined/empty input
+            if (!href || typeof href !== 'string') return null;
+
+            // Trim leading/trailing whitespace
+            href = href.trim();
+            if (!href) return null;
+
+            // Decode URL-encoded characters FIRST (e.g., %20 for spaces, %23 for #)
+            // This is important because %23 (encoded #) should become a real fragment separator
+            // Only decode once to avoid double-decoding issues
+            try {
+              href = decodeURIComponent(href);
+            } catch (e) {
+              // If decoding fails (malformed %), use original href
+              console.warn("Failed to decode URL:", href, e);
+              // Continue with original href
+            }
+
+            // Extract fragment (hash) AFTER decoding
+            // This way %23 in the original URL becomes # and is properly treated as a fragment
+            const hashIdx = href.indexOf("#");
+            let linkPath = hashIdx >= 0 ? href.substring(0, hashIdx) : href;
+            const fragment = hashIdx >= 0 ? href.substring(hashIdx) : "";
+
+            // Pure fragment (no path)
+            if (!linkPath) return null;
+
+            // Trim the path (in case of spaces at edges)
+            linkPath = linkPath.trim();
+            if (!linkPath) return null;
+
+            // Get current directory from the global 'path' variable
+            const currentDir = path.includes("/")
+              ? path.substring(0, path.lastIndexOf("/"))
+              : "";
+
+            // Resolve absolute vs relative paths
+            let resolved;
+            if (linkPath.startsWith("/")) {
+              // Absolute path (relative to workspace root)
+              resolved = linkPath.substring(1);
+            } else {
+              // Relative path (relative to current file's directory)
+              resolved = currentDir ? currentDir + "/" + linkPath : linkPath;
+            }
+
+            // Normalize path:
+            // - Remove empty components (from double slashes //)
+            // - Resolve . (current directory)
+            // - Resolve .. (parent directory)
+            // - Preserve case exactly
+            const parts = resolved.split("/");
+            const normalized = [];
+
+            for (const part of parts) {
+              // Skip empty parts (from // or leading/trailing slashes)
+              if (part === "" || part === ".") {
+                continue;
+              }
+
+              // Handle parent directory (..)
+              if (part === "..") {
+                // Only pop if there's something to go back to
+                if (normalized.length > 0) {
+                  normalized.pop();
+                }
+                // If we're already at the root, .. is a no-op
+                continue;
+              }
+
+              // Normal path component - preserve exactly as-is (case-sensitive)
+              normalized.push(part);
+            }
+
+            // Join normalized parts
+            const finalPath = normalized.join("/");
+
+            return {
+              path: finalPath,
+              fragment: fragment
+            };
+          }
+
+          // Check if a file exists in the workspace via HEAD request.
+          async function fileExistsInWorkspace(filePath) {
+            const wsParam = workspaceUUID
+              ? `ws=${encodeURIComponent(workspaceUUID)}`
+              : `workspace=${encodeURIComponent(wsPath || "")}`;
+            const url = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(filePath)}`;
+            try {
+              const resp = await fetch(url, { method: "HEAD" });
+              return resp.ok;
+            } catch { return false; }
+          }
+
+          // Build a viewer URL for a workspace file path.
+          function buildViewerUrl(filePath, fragment) {
+            const wsParam = workspaceUUID ? encodeURIComponent(workspaceUUID) : "";
+            let url = `${window.location.pathname}?ws=${wsParam}&path=${encodeURIComponent(filePath)}`;
+            if (wsPath) {
+              url += `&ws_path=${encodeURIComponent(wsPath)}`;
+            }
+            if (fragment) url += fragment;
+            return url;
+          }
+
+          // Handle a link click in rendered content.
+          async function handleContentLink(href) {
+            // External URLs → open in system browser
+            if (/^(https?:\/\/|file:\/\/|mailto:)/i.test(href)) {
+              openLinkExternally(href);
+              return;
+            }
+
+            // Relative link → resolve against current file's workspace directory
+            const resolved = resolveWorkspacePath(href);
+            if (!resolved) return;
+
+            const exists = await fileExistsInWorkspace(resolved.path);
+            if (exists) {
+              // File exists in workspace → navigate the viewer to it
+              window.location.href = buildViewerUrl(resolved.path, resolved.fragment);
+            } else {
+              // Not a workspace file → try as external URL
+              openLinkExternally(href);
+            }
+          }
+
+          if (canRender) {
+            // Intercept clicks on links in rendered markdown
+            document.getElementById("markdownContent").addEventListener("click", function(e) {
+              const link = e.target.closest("a");
+              if (!link) return;
+              const href = link.getAttribute("href");
+              if (!href || href.startsWith("#")) return;
+              e.preventDefault();
+              e.stopPropagation();
+              handleContentLink(href);
+            });
+
+            // Intercept clicks on links in rendered HTML iframe
+            const renderedFrame = document.getElementById("renderedFrame");
+            renderedFrame.addEventListener("load", function() {
+              try {
+                const doc = renderedFrame.contentDocument;
+                if (!doc) return;
+                doc.addEventListener("click", function(e) {
+                  const link = e.target.closest("a");
+                  if (!link) return;
+                  const href = link.getAttribute("href");
+                  if (!href || href.startsWith("#")) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleContentLink(href);
+                });
+              } catch (err) {
+                console.warn("Cannot attach link handler to iframe:", err);
+              }
+            });
+          }
+
         } catch (err) {
           showError(err.message);
         }

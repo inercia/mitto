@@ -12,6 +12,7 @@ Create Git commits for changes in this repository with proper organization and m
 **Formatting:** Run project formatters. Report any files modified and include in commit analysis.
 
 **Tests:**
+
 - If not run recently: warn user, ask to proceed or run tests first
 - If failing: warn user, ask to fix or proceed
 
@@ -22,11 +23,25 @@ git branch --show-current
 ```
 
 If on `main`/`master`/protected branch:
+
 - Check recent branch naming: `git branch -r --sort=-committerdate | head -20`
 - Suggest branch name following detected convention (based on the changes to commit)
-- **With Mitto UI**: `mitto_ui_options_buttons` → "Create feature branch / Continue on current branch"
+- **With Mitto UI**: Use `mitto_ui_form` to let the user choose:
+  ```
+  mitto_ui_form(self_id: "@mitto:session_id", title: "Create Feature Branch?", html: "
+    <label for='action'>Action:</label>
+    <select name='action' id='action'>
+      <option value='create_branch'>Create feature branch</option>
+      <option value='continue'>Continue on current branch</option>
+    </select>
+    <div>
+      <label for='branch_name'>Branch name:</label>
+      <input type='text' name='branch_name' id='branch_name' placeholder='feat/my-feature' value='<suggested-name>'>
+    </div>
+  ")
+  ```
+  If `action == "create_branch"`: `git checkout -b <branch_name>`
 - **Without**: Ask in conversation
-- If confirmed: `git checkout -b <branch-name>`
 
 If on feature branch: fetch and rebase on target branch (usually "main").
 
@@ -46,8 +61,28 @@ Files can use wildcards (`*.md`, `docs/*`). Order logically.
 
 ### 4. Wait for Approval
 
-**With Mitto UI**: `mitto_ui_options_buttons` → "Approve all / Modify / Cancel"
+**With Mitto UI**: Use `mitto_ui_options` for the top-level decision:
+```
+mitto_ui_options(self_id: "@mitto:session_id", question: "Proposed N commits (see above). How to proceed?",
+  options: [{label: "Approve all"}, {label: "Edit commit messages"}, {label: "Modify plan"}, {label: "Cancel"}])
+```
+- If **"Edit commit messages"**: proceed to step 4a.
+- If **"Approve all"**: proceed to step 5.
+- If **"Modify plan"**: discuss changes, update plan, return to step 4.
+- If **"Cancel"**: stop.
+
 **Without**: Ask in conversation. Wait for explicit approval.
+
+### 4a. Edit Commit Messages (With Mitto UI)
+
+For each commit, present the message in a textbox for editing:
+```
+mitto_ui_textbox(self_id: "@mitto:session_id",
+  title: "Edit commit message (1/N)",
+  text: "<type>(<scope>): <description>\n\n<body>",
+  result: "edited_text")
+```
+Use the edited text as the final commit message. If `changed == false`, use the original.
 
 ### 5. Execute
 

@@ -23,5 +23,5 @@ Analyze progress and suggest next steps.
 
 Consider: dependencies, risk (tackle risky items early), value (high-impact first), blockers.
 
-**With Mitto UI**: `mitto_ui_ask_yes_no` → "Proceed with top priority task?"
+**With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Proceed with top priority task?"
 **Without**: Ask in conversation.

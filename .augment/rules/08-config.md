@@ -1,5 +1,5 @@
 ---
-description: Configuration loading with LoadSettings, Config vs Settings types, queue configuration, and workspace persistence
+description: Configuration loading with LoadSettings, Config vs Settings types, queue configuration, workspace persistence, and workspace RC files
 globs:
   - "internal/config/**/*"
   - "config/**/*"
@@ -13,6 +13,10 @@ keywords:
   - queue configuration
   - workspace persistence
   - config merging
+  - workspace RC
+  - .mitto/mittorc
+  - WorkspaceRC
+  - SaveWorkspaceRC
 ---
 
 # Configuration System
@@ -47,22 +51,7 @@ result := LoadSettingsWithFallback()
 
 ### Source Tracking
 
-```go
-type ConfigItemSource string
-
-const (
-    SourceRCFile   ConfigItemSource = "rcfile"   // From ~/.mittorc
-    SourceSettings ConfigItemSource = "settings" // From settings.json
-    SourceDefault  ConfigItemSource = "default"  // From embedded defaults
-)
-
-// ACPServer has Source field:
-type ACPServer struct {
-    Name    string
-    Command string
-    Source  ConfigItemSource // Track origin
-}
-```
+`ConfigItemSource`: `"rcfile"` (from `~/.mittorc`), `"settings"` (from `settings.json`), `"default"` (embedded). `ACPServer.Source` tracks origin; UI hides edit/delete for `rcfile` servers.
 
 ## Key Functions
 
@@ -104,6 +93,32 @@ conversations:
 
 See [docs/devel/message-queue.md](../docs/devel/message-queue.md) for details.
 
+## Workspace RC Files
+
+Per-workspace configuration via RC files. Search order (first found wins):
+1. `{workspace}/.mittorc`
+2. `{workspace}/.mitto/mittorc`
+3. `{workspace}/.mitto/mittorc.yaml`
+
+```go
+// Load workspace RC
+rc := config.LoadWorkspaceRC(workingDir)
+
+// Save prompt enabled state to workspace RC
+config.SaveWorkspaceRCPromptEnabled(workingDir, "Add tests", false)
+
+// Save processor enabled state to workspace RC (mirrors prompts pattern)
+config.SaveWorkspaceRCProcessorEnabled(workingDir, "memorize-preferences", true)
+
+// Get workspace-specific overrides
+dirs := sessionManager.GetWorkspacePromptsDirs(workingDir)
+overrides := sessionManager.GetWorkspaceProcessorOverrides(workingDir)
+```
+
+Workspace RC supports: `prompts` (inline prompts + disable overrides), `processors` (processor enabled/disabled overrides using `{name, enabled}` entries — mirrors the prompts pattern), `prompts_dirs` (extra search paths), `processors_dirs` (extra processor search paths), `user_data_schema` (per-workspace metadata).
+
+See `07-prompts.md` for prompt-specific workspace RC usage.
+
 ## Workspace Persistence
 
 | Startup Mode        | Source            | Persistence      |
@@ -112,25 +127,13 @@ See [docs/devel/message-queue.md](../docs/devel/message-queue.md) for details.
 | CLI without `--dir` | `workspaces.json` | Saved on changes |
 | macOS app           | `workspaces.json` | Saved on changes |
 
-## Generic Merger System
+## WorkspaceSettings Override Pattern
 
-The `GenericMerger[T]` type in `internal/config/merger.go` provides reusable config merging:
+`WorkspaceSettings.ACPCommandOverride` (`json:"acp_command_override,omitempty"`): set default from server map, then apply override if non-empty:
 
 ```go
-// Create a custom merger for any config type
-merger := &GenericMerger[MyType]{
-    KeyFunc:   func(item MyType) string { return item.Name },
-    SetSource: func(item *MyType, s ConfigItemSource) { item.Source = s },
-    GetSource: func(item MyType) ConfigItemSource { return item.Source },
-    Strategy:  MergeStrategyUnion, // or MergeStrategyReplace
-}
-
-result := merger.Merge(rcItems, settingsItems)
-// result.Items - merged list
-// result.HasRCFileItems - true if any RC file items
-// result.HasSettingsItems - true if any settings items
+newWorkspaces[i].ACPCommand = acpCommandMap[ws.ACPServer]
+if ws.ACPCommandOverride != "" { newWorkspaces[i].ACPCommand = ws.ACPCommandOverride }
 ```
 
-Strategies:
-- `MergeStrategyUnion`: Combine all, RC file overrides by key
-- `MergeStrategyReplace`: Use RC file items if any, else settings
+Follow this same pattern for any future `*Override` fields. See `internal/config/merger.go` for `GenericMerger[T]` (reusable config merging with `MergeStrategyUnion` or `MergeStrategyReplace`).

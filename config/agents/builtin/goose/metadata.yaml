@@ -1,0 +1,12 @@
+# Goose agent configuration
+name: "Goose"
+displayName: "Goose"
+acpId: "goose"
+description: "A local, extensible, open source AI agent that automates engineering tasks"
+website: "https://block.github.io/goose/"
+repository: "https://github.com/block/goose"
+license: "Apache-2.0"
+install:
+  method: "binary"
+  note: "Download from https://github.com/block/goose/releases"
+  args: ["acp"]

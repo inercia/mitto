@@ -1591,3 +1591,81 @@ func TestSessionManager_WorkspaceAutoApprove_GetWorkspaces(t *testing.T) {
 		t.Error("GetWorkspaces should return all workspaces")
 	}
 }
+
+// =============================================================================
+// DeleteChildSessions Tests
+// =============================================================================
+
+// TestSessionManager_DeleteChildSessions tests that DeleteChildSessions
+// permanently deletes all direct children of a parent session.
+func TestSessionManager_DeleteChildSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create parent
+	if err := store.Create(session.Metadata{
+		SessionID:  "parent-1",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Parent",
+	}); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	// Create two children
+	if err := store.Create(session.Metadata{
+		SessionID:       "child-1",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Child 1",
+		ParentSessionID: "parent-1",
+	}); err != nil {
+		t.Fatalf("Create child1 failed: %v", err)
+	}
+
+	if err := store.Create(session.Metadata{
+		SessionID:       "child-2",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Child 2",
+		ParentSessionID: "parent-1",
+	}); err != nil {
+		t.Fatalf("Create child2 failed: %v", err)
+	}
+
+	// Create an unrelated session (should NOT be deleted)
+	if err := store.Create(session.Metadata{
+		SessionID:  "unrelated-1",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Unrelated",
+	}); err != nil {
+		t.Fatalf("Create unrelated failed: %v", err)
+	}
+
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetStore(store)
+
+	// Delete child sessions of parent
+	sm.DeleteChildSessions("parent-1")
+
+	// Children should be deleted
+	if store.Exists("child-1") {
+		t.Error("child-1 should be deleted")
+	}
+	if store.Exists("child-2") {
+		t.Error("child-2 should be deleted")
+	}
+
+	// Parent and unrelated should still exist
+	if !store.Exists("parent-1") {
+		t.Error("parent-1 should still exist")
+	}
+	if !store.Exists("unrelated-1") {
+		t.Error("unrelated-1 should still exist")
+	}
+}

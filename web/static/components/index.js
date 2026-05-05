@@ -4,10 +4,13 @@
 export { Message } from "./Message.js";
 export { ChatInput } from "./ChatInput.js";
 export { SettingsDialog } from "./SettingsDialog.js";
+export { WorkspacesDialog } from "./WorkspacesDialog.js";
 export { ConfirmDialog } from "./ConfirmDialog.js";
+export { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 export { SavePromptDialog } from "./SavePromptDialog.js";
 export { QueueDropdown } from "./QueueDropdown.js";
 export { ConversationPropertiesPanel } from "./ConversationPropertiesPanel.js";
+export { UserDataPanel } from "./UserDataPanel.js";
 
 // Icon components
 export {
@@ -27,6 +30,8 @@ export {
   MagicWandIcon,
   ImageIcon,
   LightningIcon,
+  RobotIcon,
+  PersonIcon,
   StopIcon,
   ErrorIcon,
   ServerIcon,
@@ -39,4 +44,6 @@ export {
   ListIcon,
   ArchiveIcon,
   ArchiveFilledIcon,
+  SearchIcon,
+  TagIcon,
 } from "./Icons.js";

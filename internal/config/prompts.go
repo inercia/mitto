@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -77,51 +78,33 @@ func (p *PromptFile) IsEnabled() bool {
 	return p.Enabled == nil || *p.Enabled
 }
 
-// IsAllowedForACP returns true if the prompt is allowed for the given ACP server.
-// If the ACPs field is empty, the prompt is allowed for all ACP servers.
-// The ACPs field is a comma-separated list of ACP server names.
-func (p *PromptFile) IsAllowedForACP(acpServer string) bool {
-	// Empty ACPs means allowed for all
-	if p.EnabledWhenACP == "" {
-		return true
-	}
-
-	// If no ACP server specified, allow all prompts
-	if acpServer == "" {
-		return true
-	}
-
-	// Parse comma-separated list and check for match
-	for _, acp := range strings.Split(p.EnabledWhenACP, ",") {
-		acp = strings.TrimSpace(acp)
-		if strings.EqualFold(acp, acpServer) {
-			return true
-		}
-	}
-	return false
-}
-
 // IsSpecificToACP returns true if the prompt is specifically targeted at the given ACP server.
 // Unlike IsAllowedForACP, this returns false for prompts with empty ACPs field (generic prompts).
 // This is used to show ACP-specific prompts in the server settings UI.
 func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
-	// Empty ACPs means generic prompt, not specific to any ACP
-	if p.EnabledWhenACP == "" {
-		return false
-	}
-
-	// If no ACP server specified, can't match
 	if acpServer == "" {
 		return false
 	}
 
-	// Parse comma-separated list and check for match
-	for _, acp := range strings.Split(p.EnabledWhenACP, ",") {
-		acp = strings.TrimSpace(acp)
-		if strings.EqualFold(acp, acpServer) {
+	// Check legacy enabledWhenACP field (backward compat for user configs)
+	if p.EnabledWhenACP != "" {
+		for _, acp := range strings.Split(p.EnabledWhenACP, ",") {
+			acp = strings.TrimSpace(acp)
+			if strings.EqualFold(acp, acpServer) {
+				return true
+			}
+		}
+	}
+
+	// Check enabledWhen CEL expression for acp.matchesServerType("serverType")
+	if p.EnabledWhen != "" {
+		lowerExpr := strings.ToLower(p.EnabledWhen)
+		lowerServer := strings.ToLower(acpServer)
+		if strings.Contains(lowerExpr, "acp.matchesserver") && strings.Contains(lowerExpr, lowerServer) {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -138,6 +121,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		EnabledWhenACP:  p.EnabledWhenACP,
 		EnabledWhenMCP:  p.EnabledWhenMCP,
 		EnabledWhen:     p.EnabledWhen,
+		Enabled:         p.Enabled,
 	}
 }
 
@@ -224,6 +208,12 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 			// Handles "acps" → EnabledWhenACP and "required_tools" → EnabledWhenMCP.
 			migratePromptLegacyFields(prompt, frontMatterBytes)
 
+			// Translate shorthand fields to enabledWhen CEL expression for backward compatibility.
+			// Users may still use enabledWhenACP/enabledWhenMCP in their prompt files.
+			if prompt.EnabledWhenACP != "" || prompt.EnabledWhenMCP != "" {
+				prompt.EnabledWhen = TranslateShorthandToEnabledWhen(prompt.EnabledWhenACP, prompt.EnabledWhenMCP, prompt.EnabledWhen)
+			}
+
 			// Extract content after front-matter
 			if frontMatterEnd+1 < len(lines) {
 				prompt.Content = strings.TrimSpace(strings.Join(lines[frontMatterEnd+1:], "\n"))
@@ -264,7 +254,8 @@ func LoadPromptFile(promptsDir, relativePath string) (*PromptFile, error) {
 }
 
 // LoadPromptsFromDir loads all .md files from a directory recursively.
-// Files with enabled: false in front-matter are excluded.
+// Disabled prompts (enabled: false) are included so they can suppress same-named
+// prompts from lower-priority directories during the merge phase.
 // Returns an empty slice if the directory doesn't exist.
 func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 	// Check if directory exists
@@ -303,11 +294,6 @@ func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 			return nil
 		}
 
-		// Skip disabled prompts
-		if !prompt.IsEnabled() {
-			return nil
-		}
-
 		prompts = append(prompts, prompt)
 		return nil
 	})
@@ -328,22 +314,6 @@ func PromptsToWebPrompts(prompts []*PromptFile) []WebPrompt {
 	result := make([]WebPrompt, 0, len(prompts))
 	for _, p := range prompts {
 		result = append(result, p.ToWebPrompt())
-	}
-	return result
-}
-
-// FilterPromptsByACP filters prompts to only include those allowed for the given ACP server.
-// If acpServer is empty, all prompts are returned (no filtering).
-func FilterPromptsByACP(prompts []*PromptFile, acpServer string) []*PromptFile {
-	if acpServer == "" || len(prompts) == 0 {
-		return prompts
-	}
-
-	result := make([]*PromptFile, 0, len(prompts))
-	for _, p := range prompts {
-		if p.IsAllowedForACP(acpServer) {
-			result = append(result, p)
-		}
 	}
 	return result
 }
@@ -396,112 +366,227 @@ func GetPromptsDirModTime(dir string) time.Time {
 	return latest
 }
 
-// MatchToolPattern checks if a tool name matches a pattern.
-// Patterns support * as a wildcard that matches any sequence of characters.
-// Examples: "jira_*" matches "jira_search", "jira_get_issue"
-//
-//	"slack_*" matches "slack_post_message"
-//	"exact_tool" matches only "exact_tool"
-func MatchToolPattern(pattern, toolName string) bool {
-	pattern = strings.ToLower(strings.TrimSpace(pattern))
-	toolName = strings.ToLower(strings.TrimSpace(toolName))
+// toolPatternCallRe matches tools.has*Pattern* function calls in CEL expressions.
+var toolPatternCallRe = regexp.MustCompile(`tools\.has(?:All|Any)?Patterns?\([^)]*`)
 
-	if pattern == "" || toolName == "" {
-		return false
-	}
+// quotedStringRe matches double-quoted string literals.
+var quotedStringRe = regexp.MustCompile(`"([^"]+)"`)
 
-	// No wildcard - exact match
-	if !strings.Contains(pattern, "*") {
-		return pattern == toolName
+// extractToolPatternsFromCEL extracts tool glob patterns from enabledWhen CEL expressions.
+// Looks for tools.hasPattern("..."), tools.hasAllPatterns([...]), tools.hasAnyPattern([...]).
+func extractToolPatternsFromCEL(expr string) []string {
+	if expr == "" || !strings.Contains(expr, "tools.has") {
+		return nil
 	}
-
-	// Split on * and check parts match in order
-	parts := strings.Split(pattern, "*")
-	remaining := toolName
-	for i, part := range parts {
-		if part == "" {
-			continue
+	var patterns []string
+	calls := toolPatternCallRe.FindAllString(expr, -1)
+	for _, call := range calls {
+		matches := quotedStringRe.FindAllStringSubmatch(call, -1)
+		for _, m := range matches {
+			if len(m) > 1 {
+				patterns = append(patterns, m[1])
+			}
 		}
-		idx := strings.Index(remaining, part)
-		if idx < 0 {
-			return false
-		}
-		// First part must match at the start (if pattern doesn't start with *)
-		if i == 0 && idx != 0 {
-			return false
-		}
-		remaining = remaining[idx+len(part):]
 	}
-	// If pattern doesn't end with *, remaining must be empty
-	if !strings.HasSuffix(pattern, "*") && remaining != "" {
-		return false
-	}
-	return true
+	return patterns
 }
 
 // CollectRequiredToolPatterns extracts all unique required tool patterns from a list of prompts.
-// Returns a deduplicated list of individual patterns (each prompt's enabledWhenMCP is comma-separated).
+// Patterns may come from the legacy enabledWhenMCP field or from enabledWhen CEL expressions.
 func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 	seen := make(map[string]bool)
 	var patterns []string
 
-	for _, p := range prompts {
-		if p.EnabledWhenMCP == "" {
-			continue
+	addPattern := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			patterns = append(patterns, p)
 		}
-		for _, pattern := range strings.Split(p.EnabledWhenMCP, ",") {
-			pattern = strings.TrimSpace(pattern)
-			if pattern != "" && !seen[pattern] {
-				seen[pattern] = true
-				patterns = append(patterns, pattern)
+	}
+
+	for _, p := range prompts {
+		// From legacy enabledWhenMCP field
+		if p.EnabledWhenMCP != "" {
+			for _, pattern := range strings.Split(p.EnabledWhenMCP, ",") {
+				addPattern(strings.TrimSpace(pattern))
 			}
+		}
+		// From enabledWhen CEL expression
+		for _, pattern := range extractToolPatternsFromCEL(p.EnabledWhen) {
+			addPattern(pattern)
 		}
 	}
 	return patterns
 }
 
 // CollectRequiredToolPatternsFromWebPrompts extracts all unique required tool patterns from WebPrompts.
+// Patterns may come from the legacy enabledWhenMCP field or from enabledWhen CEL expressions.
 func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 	seen := make(map[string]bool)
 	var patterns []string
 
-	for _, p := range prompts {
-		if p.EnabledWhenMCP == "" {
-			continue
+	addPattern := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			patterns = append(patterns, p)
 		}
-		for _, pattern := range strings.Split(p.EnabledWhenMCP, ",") {
-			pattern = strings.TrimSpace(pattern)
-			if pattern != "" && !seen[pattern] {
-				seen[pattern] = true
-				patterns = append(patterns, pattern)
+	}
+
+	for _, p := range prompts {
+		// From legacy enabledWhenMCP field
+		if p.EnabledWhenMCP != "" {
+			for _, pattern := range strings.Split(p.EnabledWhenMCP, ",") {
+				addPattern(strings.TrimSpace(pattern))
 			}
+		}
+		// From enabledWhen CEL expression
+		for _, pattern := range extractToolPatternsFromCEL(p.EnabledWhen) {
+			addPattern(pattern)
 		}
 	}
 	return patterns
 }
 
-// AreEnabledWhenMCPSatisfied checks if all required tool patterns for a prompt are satisfied.
-// satisfiedPatterns maps pattern strings to their availability status.
-// Returns true if the prompt has no enabledWhenMCP or all patterns are satisfied.
-func AreEnabledWhenMCPSatisfied(requiredTools string, satisfiedPatterns map[string]bool) bool {
-	if requiredTools == "" {
-		return true
+// TranslateShorthandToEnabledWhen merges enabledWhenACP and enabledWhenMCP
+// into an enabledWhen CEL expression using convenience functions.
+// If enabledWhen is already set, the shorthand conditions are ANDed with it.
+// The shorthand fields are syntactic sugar for the underlying CEL functions:
+//   - enabledWhenACP: "augment" → acp.matchesServerType("augment")
+//   - enabledWhenACP: "augment, claude-code" → acp.matchesServerType(["augment", "claude-code"])
+//   - enabledWhenMCP: "mitto_*" → tools.hasPattern("mitto_*")
+//   - enabledWhenMCP: "mitto_*, jira_*" → tools.hasAllPatterns(["mitto_*", "jira_*"])
+func TranslateShorthandToEnabledWhen(enabledWhenACP, enabledWhenMCP, existingEnabledWhen string) string {
+	var parts []string
+
+	if enabledWhenACP != "" {
+		servers := splitAndTrimCSV(enabledWhenACP)
+		if len(servers) == 1 {
+			parts = append(parts, fmt.Sprintf("acp.matchesServerType(%q)", servers[0]))
+		} else if len(servers) > 1 {
+			quoted := make([]string, len(servers))
+			for i, s := range servers {
+				quoted[i] = fmt.Sprintf("%q", s)
+			}
+			parts = append(parts, fmt.Sprintf("acp.matchesServerType([%s])", strings.Join(quoted, ", ")))
+		}
 	}
 
-	for _, pattern := range strings.Split(requiredTools, ",") {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			continue
-		}
-		if !satisfiedPatterns[pattern] {
-			return false
+	if enabledWhenMCP != "" {
+		patterns := splitAndTrimCSV(enabledWhenMCP)
+		if len(patterns) == 1 {
+			parts = append(parts, fmt.Sprintf("tools.hasPattern(%q)", patterns[0]))
+		} else if len(patterns) > 1 {
+			quoted := make([]string, len(patterns))
+			for i, p := range patterns {
+				quoted[i] = fmt.Sprintf("%q", p)
+			}
+			parts = append(parts, fmt.Sprintf("tools.hasAllPatterns([%s])", strings.Join(quoted, ", ")))
 		}
 	}
-	return true
+
+	if existingEnabledWhen != "" {
+		parts = append(parts, existingEnabledWhen)
+	}
+
+	return strings.Join(parts, " && ")
+}
+
+// splitAndTrimCSV splits a comma-separated string and trims whitespace from each element.
+func splitAndTrimCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // init registers a custom YAML unmarshaler for handling the enabled field.
 func init() {
 	// Ensure bytes package is used (for potential future use)
 	_ = bytes.Buffer{}
+}
+
+// UpdatePromptFileEnabled reads a prompt .md file, updates the enabled field in its YAML
+// frontmatter, and writes it back. When enabling (enabled=true), the enabled key is deleted
+// from the frontmatter (nil means default=true). When disabling (enabled=false), it is set
+// to false explicitly.
+func UpdatePromptFileEnabled(filePath string, enabled bool) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read prompt file %s: %w", filePath, err)
+	}
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+
+	// Find frontmatter boundaries
+	if !strings.HasPrefix(strings.TrimSpace(content), frontMatterDelimiter) {
+		return fmt.Errorf("prompt file %s has no YAML frontmatter", filePath)
+	}
+
+	frontMatterEnd := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == frontMatterDelimiter {
+			frontMatterEnd = i
+			break
+		}
+	}
+	if frontMatterEnd < 0 {
+		return fmt.Errorf("prompt file %s has malformed frontmatter (no closing ---)", filePath)
+	}
+
+	// Parse frontmatter into a map to preserve unknown fields
+	frontMatterText := strings.Join(lines[1:frontMatterEnd], "\n")
+	var fm map[string]interface{}
+	if err := yaml.Unmarshal([]byte(frontMatterText), &fm); err != nil {
+		return fmt.Errorf("failed to parse frontmatter in %s: %w", filePath, err)
+	}
+	if fm == nil {
+		fm = make(map[string]interface{})
+	}
+
+	if enabled {
+		// Remove enabled key — nil means enabled by default
+		delete(fm, "enabled")
+	} else {
+		fm["enabled"] = false
+	}
+
+	// Re-marshal frontmatter
+	fmBytes, err := yaml.Marshal(fm)
+	if err != nil {
+		return fmt.Errorf("failed to marshal frontmatter for %s: %w", filePath, err)
+	}
+
+	// Reconstruct file: ---\n<yaml>---\n<body>
+	body := strings.Join(lines[frontMatterEnd+1:], "\n")
+	newContent := "---\n" + string(fmBytes) + "---\n" + body
+
+	if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to write prompt file %s: %w", filePath, err)
+	}
+
+	return nil
+}
+
+// SlugifyPromptName converts a prompt name to a filesystem-safe slug.
+// e.g., "Add tests" → "add-tests"
+func SlugifyPromptName(name string) string {
+	slug := strings.ToLower(name)
+	var result []byte
+	lastHyphen := false
+	for _, c := range slug {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			result = append(result, byte(c))
+			lastHyphen = false
+		} else if !lastHyphen {
+			result = append(result, '-')
+			lastHyphen = true
+		}
+	}
+	return strings.Trim(string(result), "-")
 }

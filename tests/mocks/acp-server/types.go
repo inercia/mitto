@@ -45,12 +45,31 @@ type InitializeResult struct {
 }
 
 type AgentCapabilities struct {
-	Streaming          bool               `json:"streaming"`
-	PromptCapabilities PromptCapabilities `json:"promptCapabilities,omitempty"`
+	Streaming           bool                 `json:"streaming"`
+	PromptCapabilities  PromptCapabilities   `json:"promptCapabilities,omitempty"`
+	SessionCapabilities *SessionCapabilities `json:"sessionCapabilities,omitempty"`
 }
 
 type PromptCapabilities struct {
 	Image bool `json:"image,omitempty"`
+}
+
+type SessionCapabilities struct {
+	Resume *SessionResumeCapabilities `json:"resume,omitempty"`
+	Fork   *SessionForkCapabilities   `json:"fork,omitempty"`
+	List   *SessionListCapabilities   `json:"list,omitempty"`
+}
+
+type SessionResumeCapabilities struct {
+	Meta map[string]any `json:"_meta,omitempty"`
+}
+
+type SessionForkCapabilities struct {
+	Meta map[string]any `json:"_meta,omitempty"`
+}
+
+type SessionListCapabilities struct {
+	Meta map[string]any `json:"_meta,omitempty"`
 }
 
 type NewSessionParams struct {
@@ -59,8 +78,57 @@ type NewSessionParams struct {
 }
 
 type NewSessionResult struct {
-	SessionID string            `json:"sessionId"`
-	Modes     *SessionModeState `json:"modes,omitempty"`
+	SessionID string             `json:"sessionId"`
+	Modes     *SessionModeState  `json:"modes,omitempty"`
+	Models    *SessionModelState `json:"models,omitempty"`
+}
+
+// SessionModelState represents available models and the current model (UNSTABLE).
+type SessionModelState struct {
+	AvailableModels []ModelInfo `json:"availableModels"`
+	CurrentModelId  string      `json:"currentModelId"`
+}
+
+// ModelInfo represents a single model option.
+type ModelInfo struct {
+	ModelId     string  `json:"modelId"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+}
+
+// SessionID is a type alias for session identifiers.
+type SessionID string
+
+// McpServer represents an MCP server configuration.
+type McpServer struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+	Env     []string `json:"env,omitempty"`
+}
+
+// SessionConfigOption represents a configuration option for the session.
+type SessionConfigOption struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type"`
+	Value       any    `json:"value,omitempty"`
+}
+
+// UnstableResumeSessionRequest is the request to resume an existing session.
+type UnstableResumeSessionRequest struct {
+	Meta       map[string]any `json:"_meta,omitempty"`
+	SessionID  SessionID      `json:"sessionId"`
+	Cwd        string         `json:"cwd"`
+	McpServers []McpServer    `json:"mcpServers,omitempty"`
+}
+
+// UnstableResumeSessionResponse is the response from resuming a session.
+type UnstableResumeSessionResponse struct {
+	Meta          map[string]any        `json:"_meta,omitempty"`
+	ConfigOptions []SessionConfigOption `json:"configOptions,omitempty"`
+	Models        *SessionModelState    `json:"models,omitempty"`
+	Modes         *SessionModeState     `json:"modes,omitempty"`
 }
 
 // SessionModeState represents the set of modes and the one currently active.
@@ -87,10 +155,27 @@ type SetSessionModeResult struct {
 	// Empty response on success
 }
 
+// SetSessionModelParams is the request to change the session model (UNSTABLE).
+type SetSessionModelParams struct {
+	SessionID string `json:"sessionId"`
+	ModelId   string `json:"modelId"`
+}
+
+// SetSessionModelResult is the response after changing the session model.
+type SetSessionModelResult struct {
+	// Empty response on success
+}
+
 // SessionCurrentModeUpdate is sent when the current mode changes.
 type SessionCurrentModeUpdate struct {
 	SessionUpdate string `json:"sessionUpdate"`
 	CurrentModeID string `json:"currentModeId"`
+}
+
+// SessionCurrentModelUpdate is sent when the current model changes.
+type SessionCurrentModelUpdate struct {
+	SessionUpdate  string `json:"sessionUpdate"`
+	CurrentModelId string `json:"currentModelId"`
 }
 
 type PromptParams struct {
@@ -120,12 +205,13 @@ type SessionNotification struct {
 }
 
 type SessionUpdate struct {
-	AgentMessageChunk *AgentMessageChunk        `json:"-"` // Tagged union - use custom marshal
-	AgentThoughtChunk *AgentThoughtChunk        `json:"-"` // Tagged union - use custom marshal
-	ToolCall          *ToolCall                 `json:"-"` // Tagged union - use custom marshal
-	ToolCallUpdate    *ToolCallUpdate           `json:"-"` // Tagged union - use custom marshal
-	Plan              *Plan                     `json:"-"` // Tagged union - use custom marshal
-	CurrentModeUpdate *SessionCurrentModeUpdate `json:"-"` // Tagged union - use custom marshal
+	AgentMessageChunk  *AgentMessageChunk         `json:"-"` // Tagged union - use custom marshal
+	AgentThoughtChunk  *AgentThoughtChunk         `json:"-"` // Tagged union - use custom marshal
+	ToolCall           *ToolCall                  `json:"-"` // Tagged union - use custom marshal
+	ToolCallUpdate     *ToolCallUpdate            `json:"-"` // Tagged union - use custom marshal
+	Plan               *Plan                      `json:"-"` // Tagged union - use custom marshal
+	CurrentModeUpdate  *SessionCurrentModeUpdate  `json:"-"` // Tagged union - use custom marshal
+	CurrentModelUpdate *SessionCurrentModelUpdate `json:"-"` // Tagged union - use custom marshal
 }
 
 // MarshalJSON implements the ACP SDK's tagged union format.
@@ -191,6 +277,15 @@ func (u SessionUpdate) MarshalJSON() ([]byte, error) {
 		}{
 			SessionUpdate: "current_mode_update",
 			CurrentModeID: u.CurrentModeUpdate.CurrentModeID,
+		})
+	}
+	if u.CurrentModelUpdate != nil {
+		return json.Marshal(struct {
+			SessionUpdate  string `json:"sessionUpdate"`
+			CurrentModelId string `json:"currentModelId"`
+		}{
+			SessionUpdate:  "current_model_update",
+			CurrentModelId: u.CurrentModelUpdate.CurrentModelId,
 		})
 	}
 	return []byte("{}"), nil

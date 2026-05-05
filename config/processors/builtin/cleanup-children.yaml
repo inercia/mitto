@@ -1,0 +1,36 @@
+##########################################################################################
+# Builtin processor: reminds the agent to clean up child conversations it no longer needs.
+#
+# When the current session has 2 or more MCP-created child conversations,
+# this processor appends a reminder suggesting the agent delete children
+# that are no longer needed.
+#
+# Activation conditions:
+#   1. At least 2 MCP-created child conversations exist (enabledWhen CEL)
+#   2. The mitto_conversation_delete_* MCP tool is available (tools.hasPattern CEL)
+#
+# Throttling:
+#   - Fires on the first message, then re-runs every 10 user messages or 15 minutes
+#   - This prevents spamming the reminder on every single message
+##########################################################################################
+name: cleanup-children
+description: "Reminds the agent to clean up child conversations it no longer needs"
+enabled: true
+when: first
+position: append
+priority: 95
+rerun:
+  afterSentMsgs: 10
+  afterTime: 15m
+  afterTokens: 40000
+enabledWhen: 'children.mcpCount >= 2 && tools.hasPattern("mitto_conversation_delete_*")'
+text: |
+  ---
+  [Child Conversation Cleanup Reminder]
+  You have @mitto:mcp_children_count active child conversations that were created
+  by you. Consider deleting child conversations you no longer need using
+  `mitto_conversation_delete` to free up resources.
+
+  Your MCP-created children: @mitto:mcp_children
+
+  Use your session ID (@mitto:session_id) as self_id when calling the delete tool.
