@@ -47,9 +47,11 @@ prompt: |
   Analyze these messages: @mitto:messages   # legacy; see note below
 timeout: 300s
 
-# Auto re-run for when:first processors:
+# Auto re-run for when:first processors (whichever threshold fires first):
 rerun:
-  afterSentMsgs: 15
+  afterSentMsgs: 15    # message count since last run
+  afterTokens: 50000   # token usage since last run (falls back to char estimation)
+  afterTime: 1h        # elapsed time since last run
 ```
 
 ## Two Enable Layers
@@ -64,6 +66,17 @@ When a processor has both `enabled: false` and `enabledWhen`, it is never loaded
 ## `@mitto:messages` Substitution
 
 The `@mitto:messages` placeholder (plus `messages:` YAML block) is **supported for backward compatibility** in user-defined processors. Builtin processors have migrated to using the `mitto_conversation_history` MCP tool instead — the agent calls the tool directly to fetch filtered history. Do NOT add new `messages:` blocks to builtin YAML files.
+
+## Adding New `@mitto:` Variables (Checklist)
+
+New substitution variables (e.g. `@mitto:periodic_forced`) require changes in four files:
+
+| File | Change |
+|------|--------|
+| `internal/web/background_session.go` | Add field to `PromptMeta` struct; wire it in `PromptWithMeta` → `processorInput` |
+| `internal/processors/input.go` | Add field to `ProcessorInput` struct (with json tag) |
+| `internal/processors/variables.go` | Add substitution case in `SubstituteVariables`; update doc comment |
+| Callers (e.g. `periodic_runner.go`) | Pass the value when constructing `PromptMeta` |
 
 ## Builtin Processors (`config/processors/builtin/`)
 

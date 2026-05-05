@@ -325,6 +325,7 @@ substitution system used by [message processors](processors.md#variable-substitu
 | `@mitto:available_acp_servers` | ACP servers for this workspace, comma-separated with tags and current marker |
 | `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
 | `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
+| `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
 
 ### Behavior
 

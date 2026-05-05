@@ -345,6 +345,7 @@ enabledWhen: 'acp.tags.exists(t, t == "reasoning") && tools.hasAllPatterns(["mit
 rerun:
   afterTime: 30m # re-run after 30 minutes since last run
   afterSentMsgs: 20 # re-run after 20 user messages since last run
+  afterTokens: 50000 # re-run after 50000 tokens consumed since last run
 ```
 
 ### Conditional Enablement
@@ -375,19 +376,21 @@ expression must evaluate to `true`.
 
 Processors with `when: first` normally fire only once (on the first message after session
 start or resume). The `rerun` field allows them to fire again periodically, refreshing
-context for the LLM.
+context for the LLM. Thresholds can be based on time, message count, or token usage.
 
 ```yaml
 when: first
 rerun:
   afterTime: 30m # re-run after 30 minutes since last run
   afterSentMsgs: 20 # re-run after 20 user messages since last run
+  afterTokens: 50000 # re-run after 50000 tokens consumed since last run
 ```
 
 | Field           | Type     | Description                                               |
 | --------------- | -------- | --------------------------------------------------------- |
 | `afterTime`     | duration | Time since last run (`"10m"`, `"1h"`, `"30s"`, `"2h30m"`) |
 | `afterSentMsgs` | int      | Number of user messages sent since last run               |
+| `afterTokens`   | int      | Number of tokens consumed since last run (actual or estimated) |
 
 If both are set, whichever threshold is reached first triggers the re-run.
 
@@ -612,6 +615,7 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 | `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
 | `@mitto:children`              | Human-readable list of child sessions — see below                              |
 | `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
+| `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
 
 
 ### `@mitto:available_acp_servers` format

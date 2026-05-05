@@ -291,6 +291,7 @@ This is consistent with the existing `@namespace:value` convention used by proce
 | `@mitto:workspace_uuid`        | Workspace identifier                                             |
 | `@mitto:available_acp_servers` | ACP servers with workspaces for the session's folder — see below |
 | `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
+| `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
 
 ### `@mitto:available_acp_servers` detail
 
