@@ -33,6 +33,7 @@ timeout: 120s
 on_error: skip
 rerun:
   afterSentMsgs: 10
+  afterTokens: 30000
 
 # Skip periodic prompts — only process real user messages
 enabledWhen: '!session.isPeriodic'

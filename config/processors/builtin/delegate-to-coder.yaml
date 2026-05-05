@@ -20,6 +20,7 @@ priority: 90
 rerun:
   afterTime: 30m
   afterSentMsgs: 20
+  afterTokens: 80000
 enabledWhen: >-
   acp.tags.exists(t, t == "reasoning")
   || acp.tags.exists(t, t == "thinking")

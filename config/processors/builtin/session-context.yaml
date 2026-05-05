@@ -15,6 +15,7 @@ priority: 10
 rerun:
   afterTime: 30m
   afterSentMsgs: 20
+  afterTokens: 80000
 text: |
   [Session Context]
   Session: @mitto:session_id (@mitto:session_name)

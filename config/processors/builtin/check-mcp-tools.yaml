@@ -17,6 +17,7 @@ priority: 15
 rerun:
   afterTime: 20m
   afterSentMsgs: 15
+  afterTokens: 60000
 text: |
   ---
   [Mitto MCP Tools Check]

@@ -2,8 +2,8 @@
 # Builtin processor: generates and maintains Augment rules files for a workspace.
 #
 # On first run, dispatches a prompt to an auxiliary AI agent that explores the workspace
-# and generates comprehensive .augment/rules/ files. On subsequent runs (every 15
-# messages), it reviews recent conversation history and updates the rules with new
+# and generates comprehensive .augment/rules/ files. On subsequent runs (every 10
+# messages or 40K tokens), it reviews recent conversation history and updates the rules with new
 # patterns, conventions, and lessons learned.
 #
 # Fire-and-forget: the auxiliary agent works in the background while the main
@@ -21,6 +21,7 @@ timeout: 300s
 on_error: skip
 rerun:
   afterSentMsgs: 10
+  afterTokens: 40000
 
 # Only for Auggie sessions, skip periodic prompts
 enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'

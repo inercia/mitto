@@ -21,6 +21,7 @@ timeout: 120s
 on_error: skip
 rerun:
   afterSentMsgs: 5
+  afterTokens: 15000
 
 # Only activate when the workspace has a user data schema and this isn't a periodic prompt
 enabledWhen: 'workspace.hasUserDataSchema && !session.isPeriodic'
