@@ -235,7 +235,7 @@ func (r *PeriodicRunner) TriggerNow(sessionID string, resetTimer bool) error {
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta.Name, periodic, periodicStore, resetTimer)
+	return r.deliverPrompt(bs, meta.Name, periodic, periodicStore, resetTimer, true)
 }
 
 // pollLoop is the main polling loop that checks for due prompts.
@@ -447,7 +447,7 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 	}
 
 	// Deliver the prompt — normal scheduled runs always reset the timer.
-	if err := r.deliverPrompt(bs, meta.Name, periodic, periodicStore, true); err != nil {
+	if err := r.deliverPrompt(bs, meta.Name, periodic, periodicStore, true, false); err != nil {
 		if r.logger != nil {
 			r.logger.Error("Failed to deliver periodic prompt",
 				"session_id", sessionID,
@@ -463,7 +463,7 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
 //   - false → schedule is left untouched (manual "run now" without resetting the timer)
-func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, resetTimer bool) error {
+func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, resetTimer bool, forced bool) error {
 	sessionID := bs.GetSessionID()
 
 	if r.logger != nil {
@@ -479,8 +479,9 @@ func (r *PeriodicRunner) deliverPrompt(bs *BackgroundSession, sessionName string
 	// RecordSent would advance the schedule even if the prompt later fails
 	// (e.g., ACP process crash).
 	meta := PromptMeta{
-		SenderID: "periodic-runner",
-		PromptID: "", // No client to confirm delivery to
+		SenderID:         "periodic-runner",
+		PromptID:         "", // No client to confirm delivery to
+		IsPeriodicForced: forced,
 		OnComplete: func(err error) {
 			if err != nil {
 				if r.logger != nil {

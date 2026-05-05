@@ -2559,11 +2559,12 @@ func (bs *BackgroundSession) GetAuxiliaryManager() *auxiliary.WorkspaceAuxiliary
 
 // PromptMeta contains optional metadata about the prompt source.
 type PromptMeta struct {
-	SenderID   string          // Unique identifier of the sending client (for broadcast deduplication)
-	PromptID   string          // Client-generated prompt ID (for delivery confirmation)
-	ImageIDs   []string        // IDs of images attached to the prompt
-	FileIDs    []string        // IDs of files attached to the prompt
-	OnComplete func(err error) // Called when the async prompt goroutine finishes (nil = success)
+	SenderID         string          // Unique identifier of the sending client (for broadcast deduplication)
+	PromptID         string          // Client-generated prompt ID (for delivery confirmation)
+	ImageIDs         []string        // IDs of images attached to the prompt
+	FileIDs          []string        // IDs of files attached to the prompt
+	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
+	IsPeriodicForced bool            // True when this periodic prompt was triggered manually via "run now"
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -2926,20 +2927,21 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 	}
 
 	processorInput := &processors.ProcessorInput{
-		Message:             message,
-		IsFirstMessage:      isFirst,
-		SessionID:           bs.persistedID,
-		WorkingDir:          bs.workingDir,
-		ParentSessionID:     parentSessionID,
-		ParentSessionName:   parentSessionName,
-		SessionName:         sessionName,
-		ACPServer:           acpServer,
-		WorkspaceUUID:       bs.workspaceUUID,
-		AvailableACPServers: bs.availableACPServers,
-		ChildSessions:       childSessions,
-		MCPToolNames:        mcpToolNames,
-		IsPeriodic:          meta.SenderID == "periodic-runner",
-		AdvancedSettings:    advancedSettings,
+		Message:                message,
+		IsFirstMessage:         isFirst,
+		SessionID:              bs.persistedID,
+		WorkingDir:             bs.workingDir,
+		ParentSessionID:        parentSessionID,
+		ParentSessionName:      parentSessionName,
+		SessionName:            sessionName,
+		ACPServer:              acpServer,
+		WorkspaceUUID:          bs.workspaceUUID,
+		AvailableACPServers:    bs.availableACPServers,
+		ChildSessions:          childSessions,
+		MCPToolNames:           mcpToolNames,
+		IsPeriodic:             meta.SenderID == "periodic-runner",
+		IsPeriodicForced:       meta.IsPeriodicForced,
+		AdvancedSettings:       advancedSettings,
 		HasUserDataSchema:      hasUserDataSchema,
 		HasMittoRC:             hasMittoRC,
 		HasMetadataDescription: hasMetadataDescription,

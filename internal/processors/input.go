@@ -44,6 +44,10 @@ type ProcessorInput struct {
 	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.
 	// Used for @mitto:periodic variable substitution.
 	IsPeriodic bool `json:"is_periodic,omitempty"`
+	// IsPeriodicForced indicates whether this periodic prompt was triggered manually
+	// via "run now" (as opposed to the normal scheduled delivery).
+	// Used for @mitto:periodic_forced variable substitution.
+	IsPeriodicForced bool `json:"is_periodic_forced,omitempty"`
 	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`

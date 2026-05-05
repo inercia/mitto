@@ -428,3 +428,46 @@ func TestSubstituteVariables_Periodic(t *testing.T) {
 		})
 	}
 }
+
+func TestSubstituteVariables_PeriodicForced(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		input    *ProcessorInput
+		expected string
+	}{
+		{
+			name:     "periodic_forced true",
+			message:  "forced: @mitto:periodic_forced",
+			input:    &ProcessorInput{IsPeriodicForced: true},
+			expected: "forced: true",
+		},
+		{
+			name:     "periodic_forced false",
+			message:  "forced: @mitto:periodic_forced",
+			input:    &ProcessorInput{IsPeriodicForced: false},
+			expected: "forced: false",
+		},
+		{
+			name:     "periodic_forced default (false)",
+			message:  "forced: @mitto:periodic_forced",
+			input:    &ProcessorInput{},
+			expected: "forced: false",
+		},
+		{
+			name:     "periodic_forced does not affect periodic",
+			message:  "p: @mitto:periodic, f: @mitto:periodic_forced",
+			input:    &ProcessorInput{IsPeriodic: true, IsPeriodicForced: true},
+			expected: "p: true, f: true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubstituteVariables(tt.message, tt.input)
+			if got != tt.expected {
+				t.Errorf("SubstituteVariables() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
