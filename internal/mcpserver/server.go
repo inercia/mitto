@@ -2793,9 +2793,9 @@ func (s *Server) handleSetPeriodic(ctx context.Context, req *mcp.CallToolRequest
 
 // RunPeriodicNowInput is the input for mitto_conversation_run_periodic_now tool.
 type RunPeriodicNowInput struct {
-	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
-	ConversationID string `json:"conversation_id"`           // Target conversation to trigger
-	ResetTimer     *bool  `json:"reset_timer,omitempty"`     // Whether to reset the countdown timer (default: true)
+	SelfID         string `json:"self_id"`               // YOUR session ID (the caller)
+	ConversationID string `json:"conversation_id"`       // Target conversation to trigger
+	ResetTimer     *bool  `json:"reset_timer,omitempty"` // Whether to reset the countdown timer (default: true)
 }
 
 // RunPeriodicNowOutput is the output for mitto_conversation_run_periodic_now tool.

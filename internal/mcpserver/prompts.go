@@ -138,7 +138,6 @@ func (s *Server) resolvePromptWorkingDir(realSessionID string, workspaceUUID str
 	return workingDir, nil
 }
 
-
 // handlePromptList handles the mitto_prompt_list tool.
 func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest, input PromptListInput) (*mcp.CallToolResult, PromptListOutput, error) {
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
@@ -207,7 +206,6 @@ func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, 
 	return nil, PromptGetOutput{Error: "prompt not found: " + input.Name}, nil
 }
 
-
 // handlePromptUpdate handles the mitto_prompt_update tool.
 func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolRequest, input PromptUpdateInput) (*mcp.CallToolResult, PromptUpdateOutput, error) {
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
@@ -271,7 +269,7 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 	description := input.Description
 	backgroundColor := input.BackgroundColor
 	group := input.Group
-	var enabled *bool = input.Enabled
+	enabled := input.Enabled
 	if existing != nil {
 		if promptText == "" {
 			promptText = existing.Prompt
@@ -296,15 +294,15 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 
 	var frontMatter strings.Builder
 	frontMatter.WriteString("---\n")
-	frontMatter.WriteString(fmt.Sprintf("name: %q\n", name))
+	fmt.Fprintf(&frontMatter, "name: %q\n", name)
 	if description != "" {
-		frontMatter.WriteString(fmt.Sprintf("description: %q\n", description))
+		fmt.Fprintf(&frontMatter, "description: %q\n", description)
 	}
 	if backgroundColor != "" {
-		frontMatter.WriteString(fmt.Sprintf("backgroundColor: %q\n", backgroundColor))
+		fmt.Fprintf(&frontMatter, "backgroundColor: %q\n", backgroundColor)
 	}
 	if group != "" {
-		frontMatter.WriteString(fmt.Sprintf("group: %q\n", group))
+		fmt.Fprintf(&frontMatter, "group: %q\n", group)
 	}
 	if enabled != nil && !*enabled {
 		frontMatter.WriteString("enabled: false\n")
@@ -319,5 +317,3 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 	s.logger.Debug("Updated workspace prompt file", "path", filePath, "name", name)
 	return nil, PromptUpdateOutput{Success: true, Path: filePath}, nil
 }
-
-

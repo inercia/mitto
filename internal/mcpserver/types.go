@@ -770,7 +770,7 @@ type PromptInfo struct {
 // PromptListOutput is the output for mitto_prompt_list tool.
 type PromptListOutput struct {
 	Success    bool         `json:"success"`
-	Prompts    []PromptInfo `json:"prompts"`               // Must be empty array, not nil — ACP validates this
+	Prompts    []PromptInfo `json:"prompts"` // Must be empty array, not nil — ACP validates this
 	WorkingDir string       `json:"working_dir,omitempty"`
 	Error      string       `json:"error,omitempty"`
 }
@@ -785,11 +785,11 @@ type PromptGetInput struct {
 // PromptDetail contains full details about a prompt including text.
 type PromptDetail struct {
 	Name            string `json:"name"`
-	Prompt          string `json:"prompt"`                    // Full prompt text
+	Prompt          string `json:"prompt"` // Full prompt text
 	Description     string `json:"description,omitempty"`
 	Group           string `json:"group,omitempty"`
 	BackgroundColor string `json:"background_color,omitempty"`
-	Source          string `json:"source,omitempty"` // "file", "settings", "workspace", "builtin"
+	Source          string `json:"source,omitempty"`  // "file", "settings", "workspace", "builtin"
 	Enabled         *bool  `json:"enabled,omitempty"` // nil = enabled (default true)
 }
 
@@ -802,14 +802,14 @@ type PromptGetOutput struct {
 
 // PromptUpdateInput is the input for mitto_prompt_update tool.
 type PromptUpdateInput struct {
-	SelfID          string `json:"self_id"`                   // YOUR session ID (the caller)
-	Name            string `json:"name"`                      // Prompt name to update (required)
-	Workspace       string `json:"workspace,omitempty"`       // Optional workspace UUID
-	Prompt          string `json:"prompt,omitempty"`          // New prompt text
-	Description     string `json:"description,omitempty"`    // New description
+	SelfID          string `json:"self_id"`                    // YOUR session ID (the caller)
+	Name            string `json:"name"`                       // Prompt name to update (required)
+	Workspace       string `json:"workspace,omitempty"`        // Optional workspace UUID
+	Prompt          string `json:"prompt,omitempty"`           // New prompt text
+	Description     string `json:"description,omitempty"`      // New description
 	BackgroundColor string `json:"background_color,omitempty"` // New background color
-	Group           string `json:"group,omitempty"`           // New group
-	Enabled         *bool  `json:"enabled,omitempty"`         // Enable/disable
+	Group           string `json:"group,omitempty"`            // New group
+	Enabled         *bool  `json:"enabled,omitempty"`          // Enable/disable
 }
 
 // PromptUpdateOutput is the output for mitto_prompt_update tool.

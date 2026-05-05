@@ -250,12 +250,12 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"acp.tags":        ctx.ACP.Tags,
 		"acp.autoApprove": ctx.ACP.AutoApprove,
 
-		"workspace.uuid":                    ctx.Workspace.UUID,
-		"workspace.folder":                  ctx.Workspace.Folder,
-		"workspace.name":                    ctx.Workspace.Name,
-		"workspace.hasUserDataSchema":        ctx.Workspace.HasUserDataSchema,
-		"workspace.hasMittoRC":              ctx.Workspace.HasMittoRC,
-		"workspace.hasMetadataDescription":  ctx.Workspace.HasMetadataDescription,
+		"workspace.uuid":                   ctx.Workspace.UUID,
+		"workspace.folder":                 ctx.Workspace.Folder,
+		"workspace.name":                   ctx.Workspace.Name,
+		"workspace.hasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
+		"workspace.hasMittoRC":             ctx.Workspace.HasMittoRC,
+		"workspace.hasMetadataDescription": ctx.Workspace.HasMetadataDescription,
 
 		"session.id":          ctx.Session.ID,
 		"session.name":        ctx.Session.Name,

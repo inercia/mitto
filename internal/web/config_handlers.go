@@ -129,18 +129,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 //     filterPromptsByEnabled (enabledWhenACP, enabledWhenMCP, enabledWhen CEL)
 //     with the context of the given session.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	// Get optional acp_server parameter for filtering global file prompts.
-	// We need to resolve the server type for filtering (type falls back to name).
-	acpServerName := r.URL.Query().Get("acp_server")
-	var acpServerType string
-	if acpServerName != "" && s.config.MittoConfig != nil {
-		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
-	}
-	if acpServerType == "" {
-		// Fallback: use name as type if server not found in config
-		acpServerType = acpServerName
-	}
-
 	// Build complete config response including workspaces and ACP servers
 	response := map[string]interface{}{
 		"workspaces":      s.sessionManager.GetWorkspaces(),

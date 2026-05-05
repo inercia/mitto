@@ -434,8 +434,10 @@ func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName s
 func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema   { return nil }
 func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt     { return nil }
 func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string           { return nil }
-func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time       { return time.Time{} }
-func (m *mockSessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings     { return nil }
+func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time {
+	return time.Time{}
+}
+func (m *mockSessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings { return nil }
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -3404,8 +3406,10 @@ func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string) 
 func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt   { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string         { return nil }
-func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.Time     { return time.Time{} }
-func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings   { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.Time {
+	return time.Time{}
+}
+func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings { return nil }
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -6627,7 +6631,6 @@ func TestConversationHistory_DefaultLastN(t *testing.T) {
 		t.Errorf("ReturnedEvents = %d, want 15", out.ReturnedEvents)
 	}
 }
-
 
 // --- Prompt tool tests ---
 

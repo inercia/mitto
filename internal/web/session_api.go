@@ -893,8 +893,6 @@ func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeNoContent(w)
 }
 
-
-
 // handleWorkspacePrompts handles GET/POST/DELETE /api/workspace-prompts
 //
 //   - GET ?dir=...                      Returns workspace prompts (backward-compat)
@@ -1191,15 +1189,15 @@ func (s *Server) handleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Reque
 	// Build the YAML front-matter
 	var frontMatter strings.Builder
 	frontMatter.WriteString("---\n")
-	frontMatter.WriteString(fmt.Sprintf("name: %q\n", req.Name))
+	fmt.Fprintf(&frontMatter, "name: %q\n", req.Name)
 	if req.Description != "" {
-		frontMatter.WriteString(fmt.Sprintf("description: %q\n", req.Description))
+		fmt.Fprintf(&frontMatter, "description: %q\n", req.Description)
 	}
 	if req.BackgroundColor != "" {
-		frontMatter.WriteString(fmt.Sprintf("backgroundColor: %q\n", req.BackgroundColor))
+		fmt.Fprintf(&frontMatter, "backgroundColor: %q\n", req.BackgroundColor)
 	}
 	if req.Group != "" {
-		frontMatter.WriteString(fmt.Sprintf("group: %q\n", req.Group))
+		fmt.Fprintf(&frontMatter, "group: %q\n", req.Group)
 	}
 	// Only include enabled in front-matter when explicitly false
 	if req.Enabled != nil && !*req.Enabled {
