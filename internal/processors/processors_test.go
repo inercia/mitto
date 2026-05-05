@@ -419,6 +419,156 @@ func TestRerunConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestManagerApply_RerunAfterTokens(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "ctx.yaml", `
+name: context-injector
+enabled: true
+when: first
+text: "[CONTEXT]"
+position: prepend
+rerun:
+  afterTokens: 1000
+`)
+
+	mgr := NewManager(dir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// First message — should apply (is first)
+	input1 := &ProcessorInput{Message: "msg1", IsFirstMessage: true}
+	result1, err := mgr.Apply(ctx, input1)
+	if err != nil {
+		t.Fatalf("Apply 1 failed: %v", err)
+	}
+	if !strings.Contains(result1.Message, "[CONTEXT]") {
+		t.Errorf("first apply should have context, got %q", result1.Message)
+	}
+
+	// Accumulate 500 tokens (below threshold)
+	mgr.AccumulateTokenUsage(500)
+
+	// Second message — should NOT apply (tokens below threshold)
+	input2 := &ProcessorInput{Message: "msg2", IsFirstMessage: false}
+	result2, err := mgr.Apply(ctx, input2)
+	if err != nil {
+		t.Fatalf("Apply 2 failed: %v", err)
+	}
+	if strings.Contains(result2.Message, "[CONTEXT]") {
+		t.Errorf("second apply should NOT have context (500 tokens < 1000), got %q", result2.Message)
+	}
+
+	// Accumulate 600 more tokens (total 1100, above threshold)
+	mgr.AccumulateTokenUsage(600)
+
+	// Third message — should re-apply (token threshold reached)
+	input3 := &ProcessorInput{Message: "msg3", IsFirstMessage: false}
+	result3, err := mgr.Apply(ctx, input3)
+	if err != nil {
+		t.Fatalf("Apply 3 failed: %v", err)
+	}
+	if !strings.Contains(result3.Message, "[CONTEXT]") {
+		t.Errorf("third apply should have context (rerun after 1100 tokens >= 1000), got %q", result3.Message)
+	}
+
+	// Fourth message — should NOT apply (tokens reset after rerun)
+	input4 := &ProcessorInput{Message: "msg4", IsFirstMessage: false}
+	result4, err := mgr.Apply(ctx, input4)
+	if err != nil {
+		t.Fatalf("Apply 4 failed: %v", err)
+	}
+	if strings.Contains(result4.Message, "[CONTEXT]") {
+		t.Errorf("fourth apply should NOT have context (tokens reset), got %q", result4.Message)
+	}
+}
+
+func TestEstimateTokens(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{name: "empty string", input: "", expected: 0},
+		{name: "single char", input: "a", expected: 1},
+		{name: "four chars", input: "abcd", expected: 1},
+		{name: "five chars", input: "abcde", expected: 2},
+		{name: "eight chars", input: "abcdefgh", expected: 2},
+		{name: "typical short message", input: "Hello, world!", expected: 4}, // 13 chars → (13+3)/4 = 4
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EstimateTokens(tt.input)
+			if got != tt.expected {
+				t.Errorf("EstimateTokens(%q) = %d, want %d", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestAccumulateTokenUsage(t *testing.T) {
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{
+		{
+			Name:  "tracked",
+			When:  config.ProcessorWhenFirst,
+			Text:  "test",
+			Rerun: &RerunConfig{AfterTokens: 100},
+		},
+		{
+			Name: "no-rerun",
+			When: config.ProcessorWhenFirst,
+			Text: "test2",
+		},
+	}
+
+	// Initialize rerun state by doing first apply
+	ctx := context.Background()
+	input := &ProcessorInput{Message: "init", IsFirstMessage: true}
+	_, _ = mgr.Apply(ctx, input)
+
+	// Accumulate tokens
+	mgr.AccumulateTokenUsage(50)
+	mgr.AccumulateTokenUsage(30)
+
+	// Check state
+	state := mgr.rerunState["tracked"]
+	if state == nil {
+		t.Fatal("expected rerun state for 'tracked'")
+	}
+	if state.tokensSince != 80 {
+		t.Errorf("expected tokensSince=80, got %d", state.tokensSince)
+	}
+
+	// Zero/negative tokens should be ignored
+	mgr.AccumulateTokenUsage(0)
+	mgr.AccumulateTokenUsage(-10)
+	if state.tokensSince != 80 {
+		t.Errorf("expected tokensSince still 80 after zero/negative, got %d", state.tokensSince)
+	}
+}
+
+func TestRerunConfig_Validate_WithTokens(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *RerunConfig
+		wantErr bool
+	}{
+		{name: "tokens only", cfg: &RerunConfig{AfterTokens: 5000}, wantErr: false},
+		{name: "all three set", cfg: &RerunConfig{AfterTime: "1h", AfterSentMsgs: 20, AfterTokens: 50000}, wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoader_RerunOnlyWithFirst(t *testing.T) {
 	dir := t.TempDir()
 	writeYAML(t, dir, "bad.yaml", `

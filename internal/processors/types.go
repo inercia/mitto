@@ -143,7 +143,7 @@ type Processor struct {
 	// Rerun configures automatic re-run for "when: first" processors.
 	// Allows a first-only processor to fire again after a time interval or message count,
 	// refreshing context for the LLM. Only used with when: first.
-	// If both AfterTime and AfterSentMsgs are set, whichever threshold is reached first
+	// If both AfterTime, AfterSentMsgs, and AfterTokens are set, whichever threshold is reached first
 	// triggers the re-run.
 	Rerun *RerunConfig `yaml:"rerun,omitempty" json:"rerun,omitempty"`
 
@@ -177,6 +177,10 @@ type RerunConfig struct {
 	// AfterSentMsgs is the number of user messages sent since the last run
 	// after which the processor should re-run.
 	AfterSentMsgs int `yaml:"afterSentMsgs,omitempty" json:"after_sent_msgs,omitempty"`
+	// AfterTokens is the number of tokens consumed since the last run
+	// after which the processor should re-run. Uses actual token usage from
+	// the ACP server when available, falling back to character-based estimation.
+	AfterTokens int `yaml:"afterTokens,omitempty" json:"after_tokens,omitempty"`
 
 	// parsedDuration is the parsed duration from AfterTime (set during validation).
 	parsedDuration time.Duration

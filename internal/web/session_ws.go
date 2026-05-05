@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -26,6 +28,29 @@ func generateClientID() string {
 		return time.Now().Format("20060102150405.000000000")
 	}
 	return hex.EncodeToString(b)
+}
+
+// buildUsageMap converts an acp.Usage value into a JSON-serialisable map
+// suitable for embedding in WebSocket messages.  Returns nil when usage is nil.
+func buildUsageMap(usage *acp.Usage) map[string]interface{} {
+	if usage == nil {
+		return nil
+	}
+	m := map[string]interface{}{
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+		"total_tokens":  usage.TotalTokens,
+	}
+	if usage.CachedReadTokens != nil {
+		m["cached_read_tokens"] = *usage.CachedReadTokens
+	}
+	if usage.CachedWriteTokens != nil {
+		m["cached_write_tokens"] = *usage.CachedWriteTokens
+	}
+	if usage.ThoughtTokens != nil {
+		m["thought_tokens"] = *usage.ThoughtTokens
+	}
+	return m
 }
 
 // SessionWSClient represents a WebSocket client connected to a specific session.
@@ -422,11 +447,21 @@ func (c *SessionWSClient) sendSessionConnected(bs *BackgroundSession) {
 
 	// Include processor stats
 	if bs != nil {
-		procCount, procActivations, procLastAt := bs.GetProcessorStats()
+		procCount, procActivations, procLastAt, procLastNames := bs.GetProcessorStats()
 		data["processor_count"] = procCount
 		data["processor_activations"] = procActivations
 		if !procLastAt.IsZero() {
 			data["processor_last_activation"] = procLastAt.Format(time.RFC3339)
+		}
+		if len(procLastNames) > 0 {
+			data["processor_last_names"] = procLastNames
+		}
+	}
+
+	// Include last token usage so reconnecting clients see it immediately.
+	if bs != nil {
+		if usageMap := buildUsageMap(bs.GetLastUsage()); usageMap != nil {
+			data["usage"] = usageMap
 		}
 	}
 
@@ -1250,11 +1285,14 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 	}
 	// Include processor stats for periodic UI refresh
 	if c.bgSession != nil {
-		procCount, procActivations, procLastAt := c.bgSession.GetProcessorStats()
+		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
 		keepaliveData["processor_count"] = procCount
 		keepaliveData["processor_activations"] = procActivations
 		if !procLastAt.IsZero() {
 			keepaliveData["processor_last_activation"] = procLastAt.Format(time.RFC3339)
+		}
+		if len(procLastNames) > 0 {
+			keepaliveData["processor_last_names"] = procLastNames
 		}
 	}
 	c.sendMessage(WSMsgTypeKeepaliveAck, keepaliveData)
@@ -2044,11 +2082,20 @@ func (c *SessionWSClient) OnPromptComplete(eventCount int) {
 	}
 	// Include updated processor stats so the UI reflects activations from this prompt
 	if c.bgSession != nil {
-		procCount, procActivations, procLastAt := c.bgSession.GetProcessorStats()
+		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
 		data["processor_count"] = procCount
 		data["processor_activations"] = procActivations
 		if !procLastAt.IsZero() {
 			data["processor_last_activation"] = procLastAt.Format(time.RFC3339)
+		}
+		if len(procLastNames) > 0 {
+			data["processor_last_names"] = procLastNames
+		}
+	}
+	// Include token usage from the last prompt so the UI can display it.
+	if c.bgSession != nil {
+		if usageMap := buildUsageMap(c.bgSession.GetLastUsage()); usageMap != nil {
+			data["usage"] = usageMap
 		}
 	}
 	c.sendMessage(WSMsgTypePromptComplete, data)
@@ -2199,11 +2246,14 @@ func (c *SessionWSClient) buildACPStartedPayload() map[string]interface{} {
 			data["available_commands"] = commands
 		}
 		// Include processor stats
-		procCount, procActivations, procLastAt := c.bgSession.GetProcessorStats()
+		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
 		data["processor_count"] = procCount
 		data["processor_activations"] = procActivations
 		if !procLastAt.IsZero() {
 			data["processor_last_activation"] = procLastAt.Format(time.RFC3339)
+		}
+		if len(procLastNames) > 0 {
+			data["processor_last_names"] = procLastNames
 		}
 	}
 	return data

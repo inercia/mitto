@@ -184,6 +184,10 @@ type BackgroundSession struct {
 	activePromptMu sync.Mutex
 	activePrompt   *activeUIPrompt
 
+	// Last prompt token usage — updated after each successful prompt completes.
+	lastUsage   *acp.Usage
+	lastUsageMu sync.Mutex
+
 	// sharedProcess is set when this session uses workspace-scoped process sharing.
 	// When non-nil, this session does not own the OS process — it only owns a session
 	// slot on the shared process. nil = legacy per-session process ownership.
@@ -1332,12 +1336,20 @@ type RestartStats struct {
 }
 
 // GetProcessorStats returns processor statistics for this session.
-// Returns: processor count, total pipeline activations, last activation time.
-func (bs *BackgroundSession) GetProcessorStats() (count int, activations int, lastAt time.Time) {
+// Returns: processor count, total pipeline activations, last activation time, last applied processor names.
+func (bs *BackgroundSession) GetProcessorStats() (count int, activations int, lastAt time.Time, lastNames []string) {
 	if bs.processorManager == nil {
-		return 0, 0, time.Time{}
+		return 0, 0, time.Time{}, nil
 	}
-	return bs.processorManager.ProcessorCount(), bs.processorManager.TotalActivations(), bs.processorManager.LastActivationAt()
+	return bs.processorManager.ProcessorCount(), bs.processorManager.TotalActivations(), bs.processorManager.LastActivationAt(), bs.processorManager.LastAppliedNames()
+}
+
+// GetLastUsage returns the last prompt's token usage, or nil if no prompt has completed yet.
+// This method is thread-safe.
+func (bs *BackgroundSession) GetLastUsage() *acp.Usage {
+	bs.lastUsageMu.Lock()
+	defer bs.lastUsageMu.Unlock()
+	return bs.lastUsage
 }
 
 // GetRestartStats returns statistics about ACP process restarts for telemetry.
@@ -2959,7 +2971,7 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 		} else {
 			// Persist processor activation count to metadata after each successful Apply
 			if bs.store != nil && bs.persistedID != "" {
-				_, procActivations, procLastAt := bs.GetProcessorStats()
+				_, procActivations, procLastAt, _ := bs.GetProcessorStats()
 				_ = bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
 					m.ProcessorActivations = procActivations
 					m.ProcessorLastActivation = procLastAt
@@ -3076,6 +3088,33 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 				SessionId: acp.SessionId(bs.acpID),
 				Prompt:    finalBlocks,
 			})
+		}
+
+		// Store token usage from the prompt response (if available).
+		if promptResp.Usage != nil {
+			bs.lastUsageMu.Lock()
+			bs.lastUsage = promptResp.Usage
+			bs.lastUsageMu.Unlock()
+		}
+
+		// Accumulate token usage for processor rerun tracking.
+		if bs.processorManager != nil {
+			if promptResp.Usage != nil {
+				bs.processorManager.AccumulateTokenUsage(promptResp.Usage.TotalTokens)
+			} else {
+				// Fallback: estimate tokens from message text when ACP doesn't report usage.
+				estimated := processors.EstimateTokens(message)
+				// Also estimate from the agent's response if available.
+				if bs.store != nil {
+					if events, err := bs.store.ReadEvents(bs.persistedID); err == nil {
+						agentMsg := session.GetLastAgentMessage(events)
+						estimated += processors.EstimateTokens(agentMsg)
+					}
+				}
+				if estimated > 0 {
+					bs.processorManager.AccumulateTokenUsage(estimated)
+				}
+			}
 		}
 
 		// Mark prompt as complete BEFORE any further processing

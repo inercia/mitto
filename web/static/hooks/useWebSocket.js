@@ -1194,6 +1194,9 @@ export function useWebSocket() {
                 processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
                 processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
                 processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                // Token usage from last prompt
+                usage: msg.data.usage ?? session.info?.usage ?? null,
               },
               isStreaming: msg.data.is_prompting || false,
               isRunning: msg.data.is_running ?? session.isRunning ?? false,
@@ -1663,6 +1666,9 @@ export function useWebSocket() {
                 processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
                 processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
                 processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
+                // Token usage from last prompt
+                usage: msg.data.usage ?? session.info?.usage ?? null,
               },
             },
           };
@@ -1790,6 +1796,7 @@ export function useWebSocket() {
               processor_count: msg.data.processor_count,
               processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
               processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+              processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
             };
             // Only update if something changed to avoid unnecessary re-renders
             if (
@@ -1858,6 +1865,7 @@ export function useWebSocket() {
                   processor_count: msg.data.processor_count,
                   processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
                   processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                  processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
                 },
               },
             };
@@ -2654,6 +2662,7 @@ export function useWebSocket() {
                 processor_count: msg.data.processor_count ?? session.info?.processor_count ?? 0,
                 processor_activations: msg.data.processor_activations ?? session.info?.processor_activations ?? 0,
                 processor_last_activation: msg.data.processor_last_activation ?? session.info?.processor_last_activation ?? null,
+                processor_last_names: msg.data.processor_last_names ?? session.info?.processor_last_names ?? null,
               },
             },
           };
