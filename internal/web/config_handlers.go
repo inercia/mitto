@@ -514,11 +514,9 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 				Username: req.Web.Auth.Simple.Username,
 				Password: password, // Empty when stored in Keychain
 			}
-		} else {
+		} else if secrets.IsSupported() {
 			// Clean up stored password when simple auth is disabled
-			if secrets.IsSupported() {
-				_ = secrets.DeleteExternalAccessPassword()
-			}
+			_ = secrets.DeleteExternalAccessPassword()
 		}
 
 		// Cloudflare Access auth

@@ -66,7 +66,7 @@ const (
 	// WSMsgTypeSyncSession requests incremental sync of events missed while disconnected.
 	// Used by mobile clients that may have been suspended.
 	// Data: { "session_id": string, "after_seq": int }
-	// DEPRECATED: Use WSMsgTypeLoadEvents instead for unified event loading.
+	// Deprecated: Use WSMsgTypeLoadEvents instead for unified event loading.
 	WSMsgTypeSyncSession = "sync_session"
 
 	// WSMsgTypeLoadEvents requests events from the session with pagination support.
@@ -225,7 +225,7 @@ const (
 
 	// WSMsgTypeSessionSync responds to a sync_session request with missed events.
 	// Data: { "session_id": string, "events": []object }
-	// DEPRECATED: Use WSMsgTypeEventsLoaded instead for unified event loading.
+	// Deprecated: Use WSMsgTypeEventsLoaded instead for unified event loading.
 	WSMsgTypeSessionSync = "session_sync"
 
 	// WSMsgTypeEventsLoaded responds to a load_events request with events.

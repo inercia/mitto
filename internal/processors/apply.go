@@ -93,7 +93,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			case config.ProcessorPositionPrepend:
 				result.Message = proc.Text + result.Message
 			case config.ProcessorPositionAppend:
-				result.Message = result.Message + proc.Text
+				result.Message += proc.Text
 			}
 			logger.Info("text-mode processor applied",
 				"name", proc.Name,
@@ -627,7 +627,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			case config.ProcessorPositionPrepend:
 				result.Message = text + result.Message
 			case config.ProcessorPositionAppend:
-				result.Message = result.Message + text
+				result.Message += text
 			}
 			input.Message = result.Message
 		} else if proc.IsPromptMode() {

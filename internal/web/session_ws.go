@@ -1698,12 +1698,10 @@ func (c *SessionWSClient) tryAttachToSession() {
 			}
 			c.OnUIPrompt(*activePrompt)
 		}
-	} else {
-		if c.logger != nil {
-			c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
-				"session_id", c.sessionID,
-				"acp_id", bs.GetACPID())
-		}
+	} else if c.logger != nil {
+		c.logger.Debug("Attached to session after unarchive (observer will be added after load)",
+			"session_id", c.sessionID,
+			"acp_id", bs.GetACPID())
 	}
 
 	// Send a notification to the client that the session is now running,

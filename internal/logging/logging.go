@@ -64,6 +64,7 @@ type Config struct {
 	// If empty, defaults to Level.
 	FileLevel string
 	// LogFile is an optional file path to write logs to (in addition to console)
+	//
 	// Deprecated: Use FileLog for rotation support
 	LogFile string
 	// FileLog is the configuration for file-based logging with rotation.
