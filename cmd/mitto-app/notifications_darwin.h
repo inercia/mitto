@@ -27,12 +27,21 @@ int getNotificationPermissionStatus(void);
 // title: The notification title (e.g., session name)
 // body: The notification body text (e.g., "Agent completed")
 // sessionId: Identifier used for grouping and click handling
+// sticky: When 1, the notification persists in Notification Center until dismissed.
+//         When 0, the notification auto-removes after 5 seconds.
 // Returns 0 on success, non-zero on failure.
-int showNativeNotification(const char* title, const char* body, const char* sessionId);
+int showNativeNotification(const char* title, const char* body, const char* sessionId, int sticky);
 
 // removeNotificationsForSession removes all delivered notifications for a session.
 // sessionId: The session identifier
 void removeNotificationsForSession(const char* sessionId);
+
+// setDockBadgeCount sets the red badge count on the app's dock icon.
+// Pass 0 to clear the badge.
+void setDockBadgeCount(int count);
+
+// clearDockBadge removes the badge from the app's dock icon.
+void clearDockBadge(void);
 
 #endif // NOTIFICATIONS_DARWIN_H
 

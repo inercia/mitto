@@ -37,27 +37,28 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     completionHandler();
 }
 
-// Called when notification arrives while app is in foreground
-// We don't show notifications when app is active (user is already looking at it)
+// Called when notification arrives while app is in foreground.
+// Always show notifications with banner, sound, and list (Notification Center) so that
+// sticky notifications persist in Notification Center even when the app is active.
+// Previously we suppressed all notifications when active, but that prevented MCP
+// notifications from being seen at all if the user was looking at Mitto.
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:(void(^)(UNNotificationPresentationOptions))completionHandler {
-    // Check if app is active - if so, don't show the notification
-    if ([[NSApplication sharedApplication] isActive]) {
-        completionHandler(UNNotificationPresentationOptionNone);
-    } else {
-        // App is in background, show the notification with banner and sound
-        // UNNotificationPresentationOptionBanner was introduced in macOS 11.0
-        // For older systems, use the deprecated Alert option (suppressing warning)
+    // UNNotificationPresentationOptionBanner and List were introduced in macOS 11.0.
+    // Banner shows the temporary slide-in notification.
+    // List adds it to Notification Center so sticky notifications persist.
+    // For older systems, use the deprecated Alert option (suppressing warning).
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        if (@available(macOS 11.0, *)) {
-            completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
-        } else {
-            completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound);
-        }
-#pragma clang diagnostic pop
+    if (@available(macOS 11.0, *)) {
+        completionHandler(UNNotificationPresentationOptionBanner |
+                          UNNotificationPresentationOptionList |
+                          UNNotificationPresentationOptionSound);
+    } else {
+        completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound);
     }
+#pragma clang diagnostic pop
 }
 
 @end
@@ -114,8 +115,9 @@ int getNotificationPermissionStatus(void) {
 }
 
 // Show a native notification
-// The notification will auto-dismiss after a few seconds to avoid cluttering Notification Center
-int showNativeNotification(const char* title, const char* body, const char* sessionId) {
+// When sticky is 0, the notification auto-dismisses after 5 seconds.
+// When sticky is 1, the notification persists in Notification Center until the user dismisses it.
+int showNativeNotification(const char* title, const char* body, const char* sessionId, int sticky) {
     @autoreleasepool {
         UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
         content.title = [NSString stringWithUTF8String:title];
@@ -140,6 +142,10 @@ int showNativeNotification(const char* title, const char* body, const char* sess
 
         UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
 
+        // Capture sticky as a local BOOL so the block can use it safely
+        BOOL isSticky = (sticky != 0);
+        NSLog(@"[Mitto] showNativeNotification: title=%@ sticky=%d isSticky=%d", content.title, sticky, isSticky);
+
         // Add to notification center
         [center addNotificationRequest:request
             withCompletionHandler:^(NSError * _Nullable error) {
@@ -148,16 +154,38 @@ int showNativeNotification(const char* title, const char* body, const char* sess
                     return;
                 }
 
-                // Auto-remove the notification after 5 seconds to keep Notification Center clean
-                // This gives the user enough time to see and click it, but doesn't persist
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
-                              dispatch_get_main_queue(), ^{
-                    [center removeDeliveredNotificationsWithIdentifiers:@[identifier]];
-                });
+                // Auto-remove the notification after 5 seconds to keep Notification Center clean,
+                // unless sticky is requested — in that case, leave it until the user dismisses it.
+                if (!isSticky) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
+                                  dispatch_get_main_queue(), ^{
+                        [center removeDeliveredNotificationsWithIdentifiers:@[identifier]];
+                    });
+                }
             }];
 
         return 0;
     }
+}
+
+// Set the dock badge count. Pass 0 to clear the badge.
+void setDockBadgeCount(int count) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSDockTile *tile = [NSApp dockTile];
+        if (count > 0) {
+            tile.badgeLabel = [NSString stringWithFormat:@"%d", count];
+        } else {
+            tile.badgeLabel = nil;
+        }
+        // Force the dock tile to redraw immediately
+        [tile display];
+        NSLog(@"[Mitto] setDockBadgeCount: %d (badgeLabel=%@)", count, tile.badgeLabel);
+    });
+}
+
+// Clear the dock badge (convenience wrapper).
+void clearDockBadge(void) {
+    setDockBadgeCount(0);
 }
 
 // Remove all notifications for a specific session
